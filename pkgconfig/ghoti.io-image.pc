@@ -1,0 +1,7 @@
+Name: Ghoti.io Image(BRANCH)
+Description: Raster image decoding/encoding, metadata, transformations, and color management
+Version: (VERSION)
+URL: https://github.com/Ghoti-io/image
+Libs: -L(PC_LIB_DIR) -l(SUITE)-(PROJECT)(BRANCH)
+CFlags: -I(PC_INCLUDE_DIR)
+Requires:
