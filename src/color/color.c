@@ -8,11 +8,11 @@
 
 #include <ghoti.io/image/color.h>
 
-GIMG_API void gimg_color_info_default(GIMG_COLOR_INFO * info) {
+GIMG_API void gimg_color_info_default(GIMG_Color_Info * info) {
   if (!info) {
     return;
   }
-  *info = (GIMG_COLOR_INFO){
+  *info = (GIMG_Color_Info){
       .primaries = GIMG_PRIMARIES_UNKNOWN,
       .white_point = GIMG_PRIMARIES_UNKNOWN,
       .transfer = GIMG_TRANSFER_UNKNOWN,

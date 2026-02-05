@@ -12,15 +12,15 @@
 #include "../core/alloc_internal.h"
 #include "stream_internal.h"
 
-GIMG_API GIMG_RESULT gimg_stream_create_memory(
-    const void * data, size_t size, GIMG_STREAM ** out_stream) {
+GIMG_API GIMG_Result gimg_stream_create_memory(
+    const void * data, size_t size, GIMG_Stream ** out_stream) {
   return gimg_stream_create_memory_with_allocator(NULL, data, size,
       out_stream);
 }
 
-GIMG_API GIMG_RESULT gimg_stream_create_memory_with_allocator(
-    const GIMG_ALLOCATOR * allocator, const void * data, size_t size,
-    GIMG_STREAM ** out_stream) {
+GIMG_API GIMG_Result gimg_stream_create_memory_with_allocator(
+    const GIMG_Allocator * allocator, const void * data, size_t size,
+    GIMG_Stream ** out_stream) {
   if (!out_stream) {
     return GIMG_ERR_INTERNAL;
   }
@@ -28,8 +28,8 @@ GIMG_API GIMG_RESULT gimg_stream_create_memory_with_allocator(
     return GIMG_ERR_INTERNAL;
   }
   allocator = gimg_alloc_or_default(allocator);
-  GIMG_STREAM * s =
-      (GIMG_STREAM *)gimg_malloc(allocator, sizeof(GIMG_STREAM));
+  GIMG_Stream * s =
+      (GIMG_Stream *)gimg_malloc(allocator, sizeof(GIMG_Stream));
   if (!s) {
     return GIMG_ERR_OOM;
   }
@@ -43,15 +43,15 @@ GIMG_API GIMG_RESULT gimg_stream_create_memory_with_allocator(
   return GIMG_OK;
 }
 
-GIMG_API void gimg_stream_destroy(GIMG_STREAM * stream) {
+GIMG_API void gimg_stream_destroy(GIMG_Stream * stream) {
   if (!stream) {
     return;
   }
   gimg_free(stream->allocator, stream);
 }
 
-GIMG_API GIMG_RESULT gimg_stream_read(
-    GIMG_STREAM * stream, void * buffer, size_t size, size_t * out_bytes_read) {
+GIMG_API GIMG_Result gimg_stream_read(
+    GIMG_Stream * stream, void * buffer, size_t size, size_t * out_bytes_read) {
   if (!stream || !buffer || !out_bytes_read) {
     return GIMG_ERR_INTERNAL;
   }
@@ -71,7 +71,7 @@ GIMG_API GIMG_RESULT gimg_stream_read(
   return GIMG_OK;
 }
 
-GIMG_API GIMG_RESULT gimg_stream_peek(GIMG_STREAM * stream, void * buffer,
+GIMG_API GIMG_Result gimg_stream_peek(GIMG_Stream * stream, void * buffer,
     size_t size, size_t * out_bytes_available) {
   if (!stream || !buffer || !out_bytes_available) {
     return GIMG_ERR_INTERNAL;
@@ -91,8 +91,8 @@ GIMG_API GIMG_RESULT gimg_stream_peek(GIMG_STREAM * stream, void * buffer,
   return GIMG_OK;
 }
 
-GIMG_API GIMG_RESULT gimg_stream_skip(
-    GIMG_STREAM * stream, size_t count, size_t * out_bytes_skipped) {
+GIMG_API GIMG_Result gimg_stream_skip(
+    GIMG_Stream * stream, size_t count, size_t * out_bytes_skipped) {
   if (!stream || !out_bytes_skipped) {
     return GIMG_ERR_INTERNAL;
   }
@@ -109,7 +109,7 @@ GIMG_API GIMG_RESULT gimg_stream_skip(
   return GIMG_OK;
 }
 
-GIMG_API GIMG_RESULT gimg_stream_seek(GIMG_STREAM * stream, size_t offset) {
+GIMG_API GIMG_Result gimg_stream_seek(GIMG_Stream * stream, size_t offset) {
   if (!stream) {
     return GIMG_ERR_INTERNAL;
   }
@@ -124,21 +124,21 @@ GIMG_API GIMG_RESULT gimg_stream_seek(GIMG_STREAM * stream, size_t offset) {
   return GIMG_OK;
 }
 
-GIMG_API size_t gimg_stream_tell(const GIMG_STREAM * stream) {
+GIMG_API size_t gimg_stream_tell(const GIMG_Stream * stream) {
   return stream ? stream->position : (size_t)-1;
 }
 
-GIMG_API size_t gimg_stream_size(const GIMG_STREAM * stream) {
+GIMG_API size_t gimg_stream_size(const GIMG_Stream * stream) {
   return stream ? stream->size : (size_t)-1;
 }
 
-GIMG_API GIMG_RESULT gimg_stream_error(const GIMG_STREAM * stream) {
+GIMG_API GIMG_Result gimg_stream_error(const GIMG_Stream * stream) {
   return stream ? stream->error : GIMG_ERR_INTERNAL;
 }
 
-GIMG_API void gimg_limits_default(GIMG_LIMITS * limits) {
+GIMG_API void gimg_limits_default(GIMG_Limits * limits) {
   if (!limits) {
     return;
   }
-  *limits = (GIMG_LIMITS){0};
+  *limits = (GIMG_Limits){0};
 }

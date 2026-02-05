@@ -14,18 +14,18 @@
 
 #define INITIAL_CAPACITY 8
 
-GIMG_API GIMG_RESULT gimg_meta_raw_create(GIMG_META_RAW ** out_raw) {
+GIMG_API GIMG_Result gimg_meta_raw_create(GIMG_Meta_Raw ** out_raw) {
   return gimg_meta_raw_create_with_allocator(NULL, out_raw);
 }
 
-GIMG_API GIMG_RESULT gimg_meta_raw_create_with_allocator(
-    const GIMG_ALLOCATOR * allocator, GIMG_META_RAW ** out_raw) {
+GIMG_API GIMG_Result gimg_meta_raw_create_with_allocator(
+    const GIMG_Allocator * allocator, GIMG_Meta_Raw ** out_raw) {
   if (!out_raw) {
     return GIMG_ERR_INTERNAL;
   }
   allocator = gimg_alloc_or_default(allocator);
-  GIMG_META_RAW * r =
-      (GIMG_META_RAW *)gimg_malloc(allocator, sizeof(GIMG_META_RAW));
+  GIMG_Meta_Raw * r =
+      (GIMG_Meta_Raw *)gimg_malloc(allocator, sizeof(GIMG_Meta_Raw));
   if (!r) {
     return GIMG_ERR_OOM;
   }
@@ -37,11 +37,11 @@ GIMG_API GIMG_RESULT gimg_meta_raw_create_with_allocator(
   return GIMG_OK;
 }
 
-GIMG_API void gimg_meta_raw_destroy(GIMG_META_RAW * raw) {
+GIMG_API void gimg_meta_raw_destroy(GIMG_Meta_Raw * raw) {
   if (!raw) {
     return;
   }
-  const GIMG_ALLOCATOR * alloc = raw->allocator;
+  const GIMG_Allocator * alloc = raw->allocator;
   for (size_t i = 0; i < raw->count; i++) {
     gimg_free(alloc, raw->blocks[i].format_id);
     gimg_free(alloc, raw->blocks[i].data);
@@ -50,13 +50,13 @@ GIMG_API void gimg_meta_raw_destroy(GIMG_META_RAW * raw) {
   gimg_free(alloc, raw);
 }
 
-GIMG_API GIMG_RESULT gimg_meta_raw_attach(GIMG_META_RAW * raw,
+GIMG_API GIMG_Result gimg_meta_raw_attach(GIMG_Meta_Raw * raw,
     const char * format_id, uint32_t tag_or_chunk_id, const void * data,
     size_t size) {
   if (!raw || !format_id) {
     return GIMG_ERR_INTERNAL;
   }
-  const GIMG_ALLOCATOR * alloc = raw->allocator;
+  const GIMG_Allocator * alloc = raw->allocator;
   if (raw->count >= raw->capacity) {
     size_t new_cap = raw->capacity ? raw->capacity * 2 : INITIAL_CAPACITY;
     gimg_meta_raw_block_t * new_blocks = (gimg_meta_raw_block_t *)gimg_realloc(
@@ -90,7 +90,7 @@ GIMG_API GIMG_RESULT gimg_meta_raw_attach(GIMG_META_RAW * raw,
   return GIMG_OK;
 }
 
-GIMG_API GIMG_RESULT gimg_meta_raw_get(const GIMG_META_RAW * raw,
+GIMG_API GIMG_Result gimg_meta_raw_get(const GIMG_Meta_Raw * raw,
     const char * format_id, uint32_t tag_or_chunk_id, void * data,
     size_t * size) {
   if (!raw || !format_id || !size) {

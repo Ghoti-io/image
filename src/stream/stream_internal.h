@@ -18,12 +18,12 @@
 /**
  * @brief Stream implementation (memory stream).
  */
-struct GIMG_STREAM {
-  const GIMG_ALLOCATOR * allocator;
+struct GIMG_Stream {
+  const GIMG_Allocator * allocator;
   const unsigned char * data;
   size_t size;
   size_t position;
-  GIMG_RESULT error;  ///< Stored error state.
+  GIMG_Result error;  ///< Stored error state.
   bool can_seek;      ///< True if seek/tell/size supported.
 };
 

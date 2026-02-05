@@ -23,7 +23,7 @@ extern "C" {
 #endif
 
 /** @brief Opaque codec descriptor (name, probe, capabilities). */
-typedef struct GIMG_CODEC GIMG_CODEC;
+typedef struct GIMG_Codec GIMG_Codec;
 
 /**
  * @brief Probe result: likely format name and confidence.
@@ -32,29 +32,29 @@ typedef struct {
   const char * format_name; ///< e.g. "png", "jpeg"; NULL if no match.
   unsigned int confidence;  ///< 0–100; 0 = no match.
   uint8_t _reserved[4];
-} GIMG_PROBE_RESULT;
+} GIMG_Probe_Result;
 
 /**
  * @brief Create a stub codec for registration (uses default allocator).
  */
-GIMG_API GIMG_RESULT gimg_codec_create_stub(const char * name,
-    const void * magic_bytes, size_t magic_len, GIMG_CODEC ** out_codec);
+GIMG_API GIMG_Result gimg_codec_create_stub(const char * name,
+    const void * magic_bytes, size_t magic_len, GIMG_Codec ** out_codec);
 
 /**
  * @brief Create a stub codec with a specific allocator.
  * @param allocator Allocator for codec and its name/magic copies (NULL =
  * default).
  */
-GIMG_API GIMG_RESULT gimg_codec_create_stub_with_allocator(
-    const GIMG_ALLOCATOR * allocator, const char * name,
-    const void * magic_bytes, size_t magic_len, GIMG_CODEC ** out_codec);
+GIMG_API GIMG_Result gimg_codec_create_stub_with_allocator(
+    const GIMG_Allocator * allocator, const char * name,
+    const void * magic_bytes, size_t magic_len, GIMG_Codec ** out_codec);
 
 /**
  * @brief Register a codec (by name, probe, capabilities).
  * @param codec Codec to register (library takes ownership of pointer).
  * @return GIMG_OK or GIMG_ERR_OOM / duplicate name.
  */
-GIMG_API GIMG_RESULT gimg_codec_register(GIMG_CODEC * codec);
+GIMG_API GIMG_Result gimg_codec_register(GIMG_Codec * codec);
 
 /**
  * @brief Get number of registered codecs.
@@ -64,17 +64,17 @@ GIMG_API size_t gimg_codec_count(void);
 /**
  * @brief Get codec by index (0 .. count-1).
  */
-GIMG_API GIMG_CODEC * gimg_codec_by_index(size_t index);
+GIMG_API GIMG_Codec * gimg_codec_by_index(size_t index);
 
 /**
  * @brief Get codec by name (NULL if not found).
  */
-GIMG_API GIMG_CODEC * gimg_codec_by_name(const char * name);
+GIMG_API GIMG_Codec * gimg_codec_by_name(const char * name);
 
 /**
  * @brief Get codec display name.
  */
-GIMG_API const char * gimg_codec_name(const GIMG_CODEC * codec);
+GIMG_API const char * gimg_codec_name(const GIMG_Codec * codec);
 
 /**
  * @brief Probe stream to identify format (peek where possible).
@@ -82,62 +82,62 @@ GIMG_API const char * gimg_codec_name(const GIMG_CODEC * codec);
  * @param result Filled with format name and confidence.
  * @return GIMG_OK; result->format_name NULL if no codec matched.
  */
-GIMG_API GIMG_RESULT gimg_probe(
-    GIMG_STREAM * stream, GIMG_PROBE_RESULT * result);
+GIMG_API GIMG_Result gimg_probe(
+    GIMG_Stream * stream, GIMG_Probe_Result * result);
 
 /**
  * @brief Load options (limits, strictness, etc.).
  */
 typedef struct {
-  const GIMG_LIMITS * limits; ///< NULL = use defaults.
-  GIMG_STRICTNESS strictness;
+  const GIMG_Limits * limits; ///< NULL = use defaults.
+  GIMG_Strictness strictness;
   uint8_t _reserved[8];
-} GIMG_LOAD_OPTIONS;
+} GIMG_Load_Options;
 
 /**
  * @brief Load document from stream (stub: returns UNSUPPORTED or minimal doc).
  */
-GIMG_API GIMG_RESULT gimg_doc_load(GIMG_STREAM * stream,
-    const GIMG_LOAD_OPTIONS * options, GIMG_DIAGNOSTICS * diagnostics,
-    GIMG_DOC ** out_doc);
+GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    GIMG_Doc ** out_doc);
 
 /**
  * @brief Save options (metadata policy, etc.).
  */
 typedef struct {
-  GIMG_META_POLICY metadata_policy;
+  GIMG_Meta_Policy metadata_policy;
   uint8_t _reserved[8];
-} GIMG_SAVE_OPTIONS;
+} GIMG_Save_Options;
 
 /**
  * @brief Save report (warnings, bytes written, etc.).
  */
 typedef struct {
   size_t bytes_written;
-  GIMG_DIAGNOSTICS * diagnostics;
+  GIMG_Diagnostics * diagnostics;
   uint8_t _reserved[8];
-} GIMG_SAVE_REPORT;
+} GIMG_Save_Report;
 
 /**
  * @brief Save document to stream (stub: fails until codecs exist).
  */
-GIMG_API GIMG_RESULT gimg_doc_save(const GIMG_DOC * doc, GIMG_STREAM * stream,
-    const char * format_name, const GIMG_SAVE_OPTIONS * options,
-    GIMG_SAVE_REPORT * report);
+GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
+    const char * format_name, const GIMG_Save_Options * options,
+    GIMG_Save_Report * report);
 
 /**
  * @brief Decode options.
  */
 typedef struct {
-  const GIMG_LIMITS * limits;
+  const GIMG_Limits * limits;
   uint8_t _reserved[8];
-} GIMG_DECODE_OPTIONS;
+} GIMG_Decode_Options;
 
 /**
  * @brief Decode item to raster (stub: returns UNSUPPORTED or minimal raster).
  */
-GIMG_API GIMG_RESULT gimg_item_decode(const GIMG_ITEM * item,
-    const GIMG_DECODE_OPTIONS * options, GIMG_RASTER ** out_raster);
+GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
+    const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
 #ifdef __cplusplus
 }

@@ -14,9 +14,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-struct GIMG_META_COMMON {
-  const GIMG_ALLOCATOR * allocator;
-  GIMG_ORIENTATION orientation;
+struct GIMG_Meta_Common {
+  const GIMG_Allocator * allocator;
+  GIMG_Orientation orientation;
   uint32_t x_dpi;
   uint32_t y_dpi;
 };
@@ -28,8 +28,8 @@ typedef struct gimg_meta_raw_block {
   size_t size;
 } gimg_meta_raw_block_t;
 
-struct GIMG_META_RAW {
-  const GIMG_ALLOCATOR * allocator;
+struct GIMG_Meta_Raw {
+  const GIMG_Allocator * allocator;
   gimg_meta_raw_block_t * blocks;
   size_t count;
   size_t capacity;

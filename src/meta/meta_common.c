@@ -11,18 +11,18 @@
 #include "../core/alloc_internal.h"
 #include "meta_internal.h"
 
-GIMG_API GIMG_RESULT gimg_meta_common_create(GIMG_META_COMMON ** out_meta) {
+GIMG_API GIMG_Result gimg_meta_common_create(GIMG_Meta_Common ** out_meta) {
   return gimg_meta_common_create_with_allocator(NULL, out_meta);
 }
 
-GIMG_API GIMG_RESULT gimg_meta_common_create_with_allocator(
-    const GIMG_ALLOCATOR * allocator, GIMG_META_COMMON ** out_meta) {
+GIMG_API GIMG_Result gimg_meta_common_create_with_allocator(
+    const GIMG_Allocator * allocator, GIMG_Meta_Common ** out_meta) {
   if (!out_meta) {
     return GIMG_ERR_INTERNAL;
   }
   allocator = gimg_alloc_or_default(allocator);
-  GIMG_META_COMMON * m =
-      (GIMG_META_COMMON *)gimg_malloc(allocator, sizeof(GIMG_META_COMMON));
+  GIMG_Meta_Common * m =
+      (GIMG_Meta_Common *)gimg_malloc(allocator, sizeof(GIMG_Meta_Common));
   if (!m) {
     return GIMG_ERR_OOM;
   }
@@ -34,7 +34,7 @@ GIMG_API GIMG_RESULT gimg_meta_common_create_with_allocator(
   return GIMG_OK;
 }
 
-GIMG_API void gimg_meta_common_destroy(GIMG_META_COMMON * meta) {
+GIMG_API void gimg_meta_common_destroy(GIMG_Meta_Common * meta) {
   if (!meta) {
     return;
   }
@@ -42,19 +42,19 @@ GIMG_API void gimg_meta_common_destroy(GIMG_META_COMMON * meta) {
 }
 
 GIMG_API void gimg_meta_common_set_orientation(
-    GIMG_META_COMMON * meta, GIMG_ORIENTATION value) {
+    GIMG_Meta_Common * meta, GIMG_Orientation value) {
   if (meta) {
     meta->orientation = value;
   }
 }
 
-GIMG_API GIMG_ORIENTATION gimg_meta_common_orientation(
-    const GIMG_META_COMMON * meta) {
+GIMG_API GIMG_Orientation gimg_meta_common_orientation(
+    const GIMG_Meta_Common * meta) {
   return meta ? meta->orientation : GIMG_ORIENTATION_UNKNOWN;
 }
 
 GIMG_API void gimg_meta_common_set_dpi(
-    GIMG_META_COMMON * meta, uint32_t x_dpi, uint32_t y_dpi) {
+    GIMG_Meta_Common * meta, uint32_t x_dpi, uint32_t y_dpi) {
   if (meta) {
     meta->x_dpi = x_dpi;
     meta->y_dpi = y_dpi;
@@ -62,7 +62,7 @@ GIMG_API void gimg_meta_common_set_dpi(
 }
 
 GIMG_API void gimg_meta_common_dpi(
-    const GIMG_META_COMMON * meta, uint32_t * out_x, uint32_t * out_y) {
+    const GIMG_Meta_Common * meta, uint32_t * out_x, uint32_t * out_y) {
   if (meta && out_x && out_y) {
     *out_x = meta->x_dpi;
     *out_y = meta->y_dpi;

@@ -19,7 +19,7 @@ static const char * const gimg_result_strings[] = {
     "internal error",
 };
 
-GIMG_API const char * gimg_result_string(GIMG_RESULT result) {
+GIMG_API const char * gimg_result_string(GIMG_Result result) {
   if ((unsigned int)result >= (unsigned int)GIMG_RESULT_COUNT) {
     return "unknown";
   }

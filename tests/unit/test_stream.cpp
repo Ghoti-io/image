@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * Unit tests for GIMG_STREAM (memory stream: read, peek, skip, seek, tell).
+ * Unit tests for GIMG_Stream (memory stream: read, peek, skip, seek, tell).
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -12,8 +12,8 @@
 
 TEST(StreamMemory, CreateAndRead) {
   const unsigned char data[] = {1, 2, 3, 4, 5};
-  GIMG_STREAM * s = nullptr;
-  GIMG_RESULT r = gimg_stream_create_memory(data, sizeof(data), &s);
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(data, sizeof(data), &s);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(s, nullptr);
   unsigned char buf[3];
@@ -30,11 +30,11 @@ TEST(StreamMemory, CreateAndRead) {
 
 TEST(StreamMemory, PeekDoesNotConsume) {
   const unsigned char data[] = {10, 20};
-  GIMG_STREAM * s = nullptr;
+  GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(data, 2, &s);
   unsigned char buf[2];
   size_t avail = 0;
-  GIMG_RESULT r = gimg_stream_peek(s, buf, 2, &avail);
+  GIMG_Result r = gimg_stream_peek(s, buf, 2, &avail);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(avail, 2u);
   EXPECT_EQ(buf[0], 10);
@@ -48,10 +48,10 @@ TEST(StreamMemory, PeekDoesNotConsume) {
 
 TEST(StreamMemory, Skip) {
   const unsigned char data[] = {1, 2, 3, 4};
-  GIMG_STREAM * s = nullptr;
+  GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(data, 4, &s);
   size_t skipped = 0;
-  GIMG_RESULT r = gimg_stream_skip(s, 2, &skipped);
+  GIMG_Result r = gimg_stream_skip(s, 2, &skipped);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(skipped, 2u);
   EXPECT_EQ(gimg_stream_tell(s), 2u);
@@ -65,9 +65,9 @@ TEST(StreamMemory, Skip) {
 
 TEST(StreamMemory, SeekAndTell) {
   const unsigned char data[] = {1, 2, 3};
-  GIMG_STREAM * s = nullptr;
+  GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(data, 3, &s);
-  GIMG_RESULT r = gimg_stream_seek(s, 2);
+  GIMG_Result r = gimg_stream_seek(s, 2);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(gimg_stream_tell(s), 2u);
   EXPECT_EQ(gimg_stream_size(s), 3u);
@@ -80,7 +80,7 @@ TEST(StreamMemory, SeekAndTell) {
 }
 
 TEST(StreamMemory, LimitsDefault) {
-  GIMG_LIMITS lim = {};
+  GIMG_Limits lim = {};
   gimg_limits_default(&lim);
   EXPECT_EQ(lim.max_decoded_pixels, 0u);
   EXPECT_EQ(lim.max_frame_count, 0u);

@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * Unit tests for GIMG_RASTER create/destroy and accessors.
+ * Unit tests for GIMG_Raster create/destroy and accessors.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -10,8 +10,8 @@
 #include <gtest/gtest.h>
 
 TEST(Raster, CreateOwned) {
-  GIMG_RASTER * r = nullptr;
-  GIMG_RESULT res = gimg_raster_create(
+  GIMG_Raster * r = nullptr;
+  GIMG_Result res = gimg_raster_create(
       10, 20, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &r);
   ASSERT_EQ(res, GIMG_OK);
   ASSERT_NE(r, nullptr);
@@ -26,8 +26,8 @@ TEST(Raster, CreateOwned) {
 
 TEST(Raster, BorrowedViewDoesNotFree) {
   unsigned char buf[40 * 5] = {0};
-  GIMG_RASTER * r = nullptr;
-  GIMG_RESULT res = gimg_raster_create(
+  GIMG_Raster * r = nullptr;
+  GIMG_Result res = gimg_raster_create(
       10, 5, &GIMG_PIXEL_RGBA8, GIMG_RASTER_BORROWED, buf, 40, &r);
   ASSERT_EQ(res, GIMG_OK);
   ASSERT_NE(r, nullptr);

@@ -7,7 +7,7 @@ This section will contain detailed documentation for each module in the Ghoti.io
 ## Modules
 
 - **Core** — Core types, invariants, error model (`image.h`, `core.h`).
-- **Allocator** — Configurable allocator (`allocator.h`): `GIMG_ALLOCATOR` with malloc/free/realloc/calloc; used by raster, doc, stream, meta, codec, and ops. Pass NULL to use the default stdlib-backed allocator.
+- **Allocator** — Configurable allocator (`allocator.h`): `GIMG_Allocator` with malloc/free/realloc/calloc; used by raster, doc, stream, meta, codec, and ops. Pass NULL to use the default stdlib-backed allocator.
 - **Stream** — Stream abstraction for I/O (`stream.h`).
 - **Container** — Documents and items (`doc.h`).
 - **Raster** — Raster image type and pixel formats (`raster.h`).

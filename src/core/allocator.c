@@ -35,8 +35,8 @@ static void gimg_stdlib_free(GIMG_MAYBE_UNUSED(void * ctx), void * ptr) {
   free(ptr);
 }
 
-GIMG_API const GIMG_ALLOCATOR * gimg_allocator_default(void) {
-  static const GIMG_ALLOCATOR allocator = {
+GIMG_API const GIMG_Allocator * gimg_allocator_default(void) {
+  static const GIMG_Allocator allocator = {
       .ctx = NULL,
       .malloc_fn = gimg_stdlib_malloc,
       .calloc_fn = gimg_stdlib_calloc,

@@ -24,8 +24,8 @@ extern "C" {
  * @param orientation Source orientation (e.g. from GIMG_META_COMMON).
  * @return GIMG_OK or GIMG_ERR_UNSUPPORTED for unimplemented orientation.
  */
-GIMG_API GIMG_RESULT gimg_ops_apply_orientation(
-    GIMG_RASTER * raster, GIMG_ORIENTATION orientation);
+GIMG_API GIMG_Result gimg_ops_apply_orientation(
+    GIMG_Raster * raster, GIMG_Orientation orientation);
 
 /**
  * @brief Convert pixel format (stub: same-format copy or UNSUPPORTED).
@@ -33,22 +33,22 @@ GIMG_API GIMG_RESULT gimg_ops_apply_orientation(
  * @param dst_format Target format descriptor.
  * @param out_raster On success, new raster in target format.
  */
-GIMG_API GIMG_RESULT gimg_ops_convert_pixel_format(const GIMG_RASTER * src,
-    const GIMG_PIXEL_FORMAT * dst_format, GIMG_RASTER ** out_raster);
+GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
+    const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster);
 
 /**
  * @brief Premultiply alpha (straight -> premultiplied) (spec §4.4).
  * @param raster RGBA raster (in-place).
  * @return GIMG_OK or GIMG_ERR_UNSUPPORTED if format not supported.
  */
-GIMG_API GIMG_RESULT gimg_alpha_premultiply(GIMG_RASTER * raster);
+GIMG_API GIMG_Result gimg_alpha_premultiply(GIMG_Raster * raster);
 
 /**
  * @brief Unpremultiply alpha (premultiplied -> straight).
  * @param raster RGBA raster (in-place).
  * @return GIMG_OK or GIMG_ERR_UNSUPPORTED if format not supported.
  */
-GIMG_API GIMG_RESULT gimg_alpha_unpremultiply(GIMG_RASTER * raster);
+GIMG_API GIMG_Result gimg_alpha_unpremultiply(GIMG_Raster * raster);
 
 #ifdef __cplusplus
 }

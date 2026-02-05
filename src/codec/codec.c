@@ -12,33 +12,34 @@
 #include <ghoti.io/image/stream.h>
 #include <string.h>
 
+#include "../container/doc_internal.h"
 #include "../core/alloc_internal.h"
 #include "codec_internal.h"
 
 #define REGISTRY_INITIAL 8
 
-static GIMG_CODEC ** gimg_codec_registry = NULL;
+static GIMG_Codec ** gimg_codec_registry = NULL;
 static size_t gimg_codec_registry_count = 0;
 static size_t gimg_codec_registry_capacity = 0;
 
-static const GIMG_ALLOCATOR * gimg_codec_registry_allocator(void) {
+static const GIMG_Allocator * gimg_codec_registry_allocator(void) {
   return gimg_allocator_default();
 }
 
-GIMG_API GIMG_RESULT gimg_codec_create_stub(const char * name,
-    const void * magic_bytes, size_t magic_len, GIMG_CODEC ** out_codec) {
+GIMG_API GIMG_Result gimg_codec_create_stub(const char * name,
+    const void * magic_bytes, size_t magic_len, GIMG_Codec ** out_codec) {
   return gimg_codec_create_stub_with_allocator(NULL, name, magic_bytes,
       magic_len, out_codec);
 }
 
-GIMG_API GIMG_RESULT gimg_codec_create_stub_with_allocator(
-    const GIMG_ALLOCATOR * allocator, const char * name,
-    const void * magic_bytes, size_t magic_len, GIMG_CODEC ** out_codec) {
+GIMG_API GIMG_Result gimg_codec_create_stub_with_allocator(
+    const GIMG_Allocator * allocator, const char * name,
+    const void * magic_bytes, size_t magic_len, GIMG_Codec ** out_codec) {
   if (!name || !out_codec) {
     return GIMG_ERR_INTERNAL;
   }
   allocator = gimg_alloc_or_default(allocator);
-  GIMG_CODEC * c = (GIMG_CODEC *)gimg_malloc(allocator, sizeof(GIMG_CODEC));
+  GIMG_Codec * c = (GIMG_Codec *)gimg_malloc(allocator, sizeof(GIMG_Codec));
   if (!c) {
     return GIMG_ERR_OOM;
   }
@@ -73,15 +74,44 @@ GIMG_API GIMG_RESULT gimg_codec_create_stub_with_allocator(
     c->magics[0].offset = 0;
   }
   c->capabilities = 0;
+  c->load_cb = NULL;
+  c->save_cb = NULL;
+  c->decode_cb = NULL;
+  c->free_doc_private = NULL;
   *out_codec = c;
   return GIMG_OK;
 }
 
-GIMG_API GIMG_RESULT gimg_codec_register(GIMG_CODEC * codec) {
+void gimg_codec_set_free_doc_private(GIMG_Codec * codec,
+    gimg_codec_free_doc_private_fn fn) {
+  if (codec) {
+    codec->free_doc_private = fn;
+  }
+}
+
+void gimg_codec_set_load_cb(GIMG_Codec * codec, gimg_codec_load_fn fn) {
+  if (codec) {
+    codec->load_cb = fn;
+  }
+}
+
+void gimg_codec_set_save_cb(GIMG_Codec * codec, gimg_codec_save_fn fn) {
+  if (codec) {
+    codec->save_cb = fn;
+  }
+}
+
+void gimg_codec_set_decode_cb(GIMG_Codec * codec, gimg_codec_decode_fn fn) {
+  if (codec) {
+    codec->decode_cb = fn;
+  }
+}
+
+GIMG_API GIMG_Result gimg_codec_register(GIMG_Codec * codec) {
   if (!codec || !codec->name) {
     return GIMG_ERR_INTERNAL;
   }
-  const GIMG_ALLOCATOR * alloc = gimg_codec_registry_allocator();
+  const GIMG_Allocator * alloc = gimg_codec_registry_allocator();
   for (size_t i = 0; i < gimg_codec_registry_count; i++) {
     if (strcmp(gimg_codec_registry[i]->name, codec->name) == 0) {
       return GIMG_ERR_INTERNAL;  // Duplicate
@@ -91,8 +121,8 @@ GIMG_API GIMG_RESULT gimg_codec_register(GIMG_CODEC * codec) {
     size_t new_cap = gimg_codec_registry_capacity
         ? gimg_codec_registry_capacity * 2
         : REGISTRY_INITIAL;
-    GIMG_CODEC ** new_reg = (GIMG_CODEC **)gimg_realloc(alloc,
-        gimg_codec_registry, new_cap * sizeof(GIMG_CODEC *));
+    GIMG_Codec ** new_reg = (GIMG_Codec **)gimg_realloc(alloc,
+        gimg_codec_registry, new_cap * sizeof(GIMG_Codec *));
     if (!new_reg) {
       return GIMG_ERR_OOM;
     }
@@ -107,14 +137,14 @@ GIMG_API size_t gimg_codec_count(void) {
   return gimg_codec_registry_count;
 }
 
-GIMG_API GIMG_CODEC * gimg_codec_by_index(size_t index) {
+GIMG_API GIMG_Codec * gimg_codec_by_index(size_t index) {
   if (index >= gimg_codec_registry_count) {
     return NULL;
   }
   return gimg_codec_registry[index];
 }
 
-GIMG_API GIMG_CODEC * gimg_codec_by_name(const char * name) {
+GIMG_API GIMG_Codec * gimg_codec_by_name(const char * name) {
   if (!name) {
     return NULL;
   }
@@ -126,12 +156,12 @@ GIMG_API GIMG_CODEC * gimg_codec_by_name(const char * name) {
   return NULL;
 }
 
-GIMG_API const char * gimg_codec_name(const GIMG_CODEC * codec) {
+GIMG_API const char * gimg_codec_name(const GIMG_Codec * codec) {
   return codec ? codec->name : NULL;
 }
 
-GIMG_API GIMG_RESULT gimg_probe(
-    GIMG_STREAM * stream, GIMG_PROBE_RESULT * result) {
+GIMG_API GIMG_Result gimg_probe(
+    GIMG_Stream * stream, GIMG_Probe_Result * result) {
   if (!stream || !result) {
     return GIMG_ERR_INTERNAL;
   }
@@ -140,13 +170,13 @@ GIMG_API GIMG_RESULT gimg_probe(
 
   unsigned char peek_buf[32];
   size_t peeked = 0;
-  GIMG_RESULT r = gimg_stream_peek(stream, peek_buf, sizeof(peek_buf), &peeked);
+  GIMG_Result r = gimg_stream_peek(stream, peek_buf, sizeof(peek_buf), &peeked);
   if (r != GIMG_OK || peeked == 0) {
     return GIMG_OK; // No match
   }
 
   for (size_t c = 0; c < gimg_codec_registry_count; c++) {
-    GIMG_CODEC * codec = gimg_codec_registry[c];
+    GIMG_Codec * codec = gimg_codec_registry[c];
     for (size_t m = 0; m < codec->magic_count; m++) {
       gimg_codec_magic_t * mag = &codec->magics[m];
       if (mag->length == 0 || mag->bytes == NULL) {
@@ -166,37 +196,60 @@ GIMG_API GIMG_RESULT gimg_probe(
   return GIMG_OK;
 }
 
-GIMG_API GIMG_RESULT gimg_doc_load(GIMG_STREAM * stream,
-    const GIMG_LOAD_OPTIONS * options, GIMG_DIAGNOSTICS * diagnostics,
-    GIMG_DOC ** out_doc) {
-  (void)stream;
-  (void)options;
-  (void)diagnostics;
-  if (!out_doc) {
+GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    GIMG_Doc ** out_doc) {
+  if (!stream || !out_doc) {
     return GIMG_ERR_INTERNAL;
   }
   *out_doc = NULL;
-  return GIMG_ERR_UNSUPPORTED;
+
+  GIMG_Probe_Result probe = {0};
+  GIMG_Result r = gimg_probe(stream, &probe);
+  if (r != GIMG_OK || !probe.format_name) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  GIMG_Codec * codec = gimg_codec_by_name(probe.format_name);
+  if (!codec || !codec->load_cb) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  return codec->load_cb(codec, stream, options, diagnostics, out_doc);
 }
 
-GIMG_API GIMG_RESULT gimg_doc_save(const GIMG_DOC * doc, GIMG_STREAM * stream,
-    const char * format_name, const GIMG_SAVE_OPTIONS * options,
-    GIMG_SAVE_REPORT * report) {
-  (void)doc;
-  (void)stream;
-  (void)format_name;
-  (void)options;
-  (void)report;
-  return GIMG_ERR_UNSUPPORTED;
+GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
+    const char * format_name, const GIMG_Save_Options * options,
+    GIMG_Save_Report * report) {
+  if (!doc || !stream || !format_name) {
+    return GIMG_ERR_INTERNAL;
+  }
+
+  GIMG_Codec * codec = gimg_codec_by_name(format_name);
+  if (!codec || !codec->save_cb) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  return codec->save_cb((GIMG_Codec *)codec, doc, stream, format_name,
+      options, report);
 }
 
-GIMG_API GIMG_RESULT gimg_item_decode(const GIMG_ITEM * item,
-    const GIMG_DECODE_OPTIONS * options, GIMG_RASTER ** out_raster) {
-  (void)item;
-  (void)options;
-  if (!out_raster) {
+GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
+    const GIMG_Decode_Options * options, GIMG_Raster ** out_raster) {
+  if (!item || !out_raster) {
     return GIMG_ERR_INTERNAL;
   }
   *out_raster = NULL;
-  return GIMG_ERR_UNSUPPORTED;
+
+  const GIMG_Doc * doc = item->doc;
+  if (!doc || !doc->loaded_by_codec) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  GIMG_Codec * codec = doc->loaded_by_codec;
+  if (!codec->decode_cb) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  return codec->decode_cb(codec, item, options, out_raster);
 }

@@ -20,8 +20,8 @@ extern "C" {
 #endif
 
 /** @brief Document or item may carry metadata; types are opaque. */
-typedef struct GIMG_META_COMMON GIMG_META_COMMON;
-typedef struct GIMG_META_RAW GIMG_META_RAW;
+typedef struct GIMG_Meta_Common GIMG_Meta_Common;
+typedef struct GIMG_Meta_Raw GIMG_Meta_Raw;
 
 //
 // Normalized common fields (spec §5.1). Storage is internal; accessors here.
@@ -40,31 +40,31 @@ typedef enum {
   GIMG_ORIENTATION_ROTATE_90_CW = 6,
   GIMG_ORIENTATION_TRANSVERSE = 7,
   GIMG_ORIENTATION_ROTATE_90_CCW = 8
-} GIMG_ORIENTATION;
+} GIMG_Orientation;
 
 /**
  * @brief Set/get orientation on common metadata.
  */
 GIMG_API void gimg_meta_common_set_orientation(
-    GIMG_META_COMMON * meta, GIMG_ORIENTATION value);
-GIMG_API GIMG_ORIENTATION gimg_meta_common_orientation(
-    const GIMG_META_COMMON * meta);
+    GIMG_Meta_Common * meta, GIMG_Orientation value);
+GIMG_API GIMG_Orientation gimg_meta_common_orientation(
+    const GIMG_Meta_Common * meta);
 
 /**
  * @brief DPI (0 = unknown).
  */
 GIMG_API void gimg_meta_common_set_dpi(
-    GIMG_META_COMMON * meta, uint32_t x_dpi, uint32_t y_dpi);
+    GIMG_Meta_Common * meta, uint32_t x_dpi, uint32_t y_dpi);
 GIMG_API void gimg_meta_common_dpi(
-    const GIMG_META_COMMON * meta, uint32_t * out_x, uint32_t * out_y);
+    const GIMG_Meta_Common * meta, uint32_t * out_x, uint32_t * out_y);
 
 /**
  * @brief Create/destroy common metadata block (create uses default allocator).
  */
-GIMG_API GIMG_RESULT gimg_meta_common_create(GIMG_META_COMMON ** out_meta);
-GIMG_API GIMG_RESULT gimg_meta_common_create_with_allocator(
-    const GIMG_ALLOCATOR * allocator, GIMG_META_COMMON ** out_meta);
-GIMG_API void gimg_meta_common_destroy(GIMG_META_COMMON * meta);
+GIMG_API GIMG_Result gimg_meta_common_create(GIMG_Meta_Common ** out_meta);
+GIMG_API GIMG_Result gimg_meta_common_create_with_allocator(
+    const GIMG_Allocator * allocator, GIMG_Meta_Common ** out_meta);
+GIMG_API void gimg_meta_common_destroy(GIMG_Meta_Common * meta);
 
 //
 // Raw metadata (spec §5.2): format-native chunks/tags preserved by identity.
@@ -73,14 +73,14 @@ GIMG_API void gimg_meta_common_destroy(GIMG_META_COMMON * meta);
 /**
  * @brief Attach raw block (format_id + tag/chunk id, bytes). Library copies.
  */
-GIMG_API GIMG_RESULT gimg_meta_raw_attach(GIMG_META_RAW * raw,
+GIMG_API GIMG_Result gimg_meta_raw_attach(GIMG_Meta_Raw * raw,
     const char * format_id, uint32_t tag_or_chunk_id, const void * data,
     size_t size);
 
 /**
  * @brief Retrieve raw block; returns size. NULL data = query size only.
  */
-GIMG_API GIMG_RESULT gimg_meta_raw_get(const GIMG_META_RAW * raw,
+GIMG_API GIMG_Result gimg_meta_raw_get(const GIMG_Meta_Raw * raw,
     const char * format_id, uint32_t tag_or_chunk_id, void * data,
     size_t * size);
 
@@ -88,10 +88,10 @@ GIMG_API GIMG_RESULT gimg_meta_raw_get(const GIMG_META_RAW * raw,
  * @brief Create/destroy raw metadata container (create uses default
  * allocator).
  */
-GIMG_API GIMG_RESULT gimg_meta_raw_create(GIMG_META_RAW ** out_raw);
-GIMG_API GIMG_RESULT gimg_meta_raw_create_with_allocator(
-    const GIMG_ALLOCATOR * allocator, GIMG_META_RAW ** out_raw);
-GIMG_API void gimg_meta_raw_destroy(GIMG_META_RAW * raw);
+GIMG_API GIMG_Result gimg_meta_raw_create(GIMG_Meta_Raw ** out_raw);
+GIMG_API GIMG_Result gimg_meta_raw_create_with_allocator(
+    const GIMG_Allocator * allocator, GIMG_Meta_Raw ** out_raw);
+GIMG_API void gimg_meta_raw_destroy(GIMG_Meta_Raw * raw);
 
 //
 // Save policies (spec §5.3). No silent stripping.
@@ -105,7 +105,7 @@ typedef enum {
   GIMG_META_KEEP_RAW_ONLY,
   GIMG_META_KEEP_COMMON_ONLY,
   GIMG_META_POLICY_COUNT
-} GIMG_META_POLICY;
+} GIMG_Meta_Policy;
 
 #ifdef __cplusplus
 }

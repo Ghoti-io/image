@@ -19,19 +19,19 @@
 /**
  * @brief Raster image instance.
  */
-struct GIMG_RASTER {
-  const GIMG_ALLOCATOR * allocator;
+struct GIMG_Raster {
+  const GIMG_Allocator * allocator;
   uint32_t width;
   uint32_t height;
   size_t stride_bytes;
-  GIMG_PIXEL_FORMAT format;
-  GIMG_RASTER_OWNERSHIP ownership;
+  GIMG_Pixel_Format format;
+  GIMG_Raster_Ownership ownership;
   void * pixels;  ///< Owned buffer or borrowed pointer.
 };
 
 /**
  * @brief Compute bytes per pixel for interleaved format (simplified).
  */
-size_t gimg_raster_bytes_per_pixel(const GIMG_PIXEL_FORMAT * format);
+size_t gimg_raster_bytes_per_pixel(const GIMG_Pixel_Format * format);
 
 #endif // GHOTI_IO_GIMG_RASTER_INTERNAL_H

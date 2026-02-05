@@ -25,7 +25,7 @@ typedef enum {
   GIMG_PRIMARIES_SRGB,
   GIMG_PRIMARIES_ADOBE_RGB,
   GIMG_PRIMARIES_COUNT
-} GIMG_PRIMARIES;
+} GIMG_Primaries;
 
 /**
  * @brief Transfer function.
@@ -36,7 +36,7 @@ typedef enum {
   GIMG_TRANSFER_SRGB,
   GIMG_TRANSFER_GAMMA, ///< Use gamma_value in struct.
   GIMG_TRANSFER_COUNT
-} GIMG_TRANSFER;
+} GIMG_Transfer;
 
 /**
  * @brief Rendering intent (when ICC present).
@@ -47,26 +47,26 @@ typedef enum {
   GIMG_INTENT_SATURATION,
   GIMG_INTENT_ABSOLUTE_COLORIMETRIC,
   GIMG_INTENT_COUNT
-} GIMG_RENDERING_INTENT;
+} GIMG_Rendering_Intent;
 
 /**
  * @brief Color info attached to raster (spec §4.2).
  */
 typedef struct {
-  GIMG_PRIMARIES primaries;
-  GIMG_PRIMARIES white_point;
-  GIMG_TRANSFER transfer;
+  GIMG_Primaries primaries;
+  GIMG_Primaries white_point;
+  GIMG_Transfer transfer;
   double gamma_value; ///< Used when transfer == GIMG_TRANSFER_GAMMA.
-  GIMG_RENDERING_INTENT intent;
+  GIMG_Rendering_Intent intent;
   const void * icc_bytes; ///< Opaque; library does not take ownership.
   size_t icc_size;        ///< ICC profile size in bytes.
   uint8_t _reserved[8];
-} GIMG_COLOR_INFO;
+} GIMG_Color_Info;
 
 /**
  * @brief Initialize color info to unknown/default.
  */
-GIMG_API void gimg_color_info_default(GIMG_COLOR_INFO * info);
+GIMG_API void gimg_color_info_default(GIMG_Color_Info * info);
 
 #ifdef __cplusplus
 }

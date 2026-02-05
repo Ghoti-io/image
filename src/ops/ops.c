@@ -17,8 +17,8 @@
 // by reallocating and copying. For 90/270 we swap width/height and stride.
 //
 
-static GIMG_RESULT apply_orientation_180(GIMG_RASTER * raster) {
-  const GIMG_ALLOCATOR * alloc = gimg_raster_allocator(raster);
+static GIMG_Result apply_orientation_180(GIMG_Raster * raster) {
+  const GIMG_Allocator * alloc = gimg_raster_allocator(raster);
   size_t stride = gimg_raster_stride_bytes(raster);
   size_t bpp = gimg_raster_bytes_per_pixel(gimg_raster_format(raster));
   size_t row_bytes = gimg_raster_width(raster) * bpp;
@@ -51,14 +51,14 @@ static GIMG_RESULT apply_orientation_180(GIMG_RASTER * raster) {
   return GIMG_OK;
 }
 
-static int format_is_rgba8(const GIMG_PIXEL_FORMAT * f) {
+static int format_is_rgba8(const GIMG_Pixel_Format * f) {
   return f->channel_model == GIMG_CHANNEL_RGBA && f->channel_count == 4 &&
       f->bits_per_channel[0] == 8 && f->bits_per_channel[1] == 8 &&
       f->bits_per_channel[2] == 8 && f->bits_per_channel[3] == 8;
 }
 
-GIMG_API GIMG_RESULT gimg_ops_apply_orientation(
-    GIMG_RASTER * raster, GIMG_ORIENTATION orientation) {
+GIMG_API GIMG_Result gimg_ops_apply_orientation(
+    GIMG_Raster * raster, GIMG_Orientation orientation) {
   if (!raster) {
     return GIMG_ERR_INTERNAL;
   }
@@ -83,12 +83,12 @@ GIMG_API GIMG_RESULT gimg_ops_apply_orientation(
   }
 }
 
-GIMG_API GIMG_RESULT gimg_ops_convert_pixel_format(const GIMG_RASTER * src,
-    const GIMG_PIXEL_FORMAT * dst_format, GIMG_RASTER ** out_raster) {
+GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
+    const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster) {
   if (!src || !dst_format || !out_raster) {
     return GIMG_ERR_INTERNAL;
   }
-  const GIMG_PIXEL_FORMAT * src_f = gimg_raster_format(src);
+  const GIMG_Pixel_Format * src_f = gimg_raster_format(src);
   if (src_f->channel_model != dst_format->channel_model ||
       src_f->channel_type != dst_format->channel_type ||
       src_f->channel_count != dst_format->channel_count) {
@@ -103,7 +103,7 @@ GIMG_API GIMG_RESULT gimg_ops_convert_pixel_format(const GIMG_RASTER * src,
   }
   uint32_t w = gimg_raster_width(src);
   uint32_t h = gimg_raster_height(src);
-  GIMG_RESULT r = gimg_raster_create_with_allocator(gimg_raster_allocator(src),
+  GIMG_Result r = gimg_raster_create_with_allocator(gimg_raster_allocator(src),
       w, h, dst_format, GIMG_RASTER_OWNED, NULL, 0, out_raster);
   if (r != GIMG_OK) {
     return r;
@@ -122,7 +122,7 @@ GIMG_API GIMG_RESULT gimg_ops_convert_pixel_format(const GIMG_RASTER * src,
   return GIMG_OK;
 }
 
-GIMG_API GIMG_RESULT gimg_alpha_premultiply(GIMG_RASTER * raster) {
+GIMG_API GIMG_Result gimg_alpha_premultiply(GIMG_Raster * raster) {
   if (!raster) {
     return GIMG_ERR_INTERNAL;
   }
@@ -150,7 +150,7 @@ GIMG_API GIMG_RESULT gimg_alpha_premultiply(GIMG_RASTER * raster) {
   return GIMG_OK;
 }
 
-GIMG_API GIMG_RESULT gimg_alpha_unpremultiply(GIMG_RASTER * raster) {
+GIMG_API GIMG_Result gimg_alpha_unpremultiply(GIMG_Raster * raster) {
   if (!raster) {
     return GIMG_ERR_INTERNAL;
   }

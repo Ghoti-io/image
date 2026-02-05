@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * Unit tests for GIMG_RESULT and gimg_result_string.
+ * Unit tests for GIMG_Result and gimg_result_string.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -43,13 +43,13 @@ TEST(Result, ErrInternalMapsToString) {
 }
 
 TEST(Result, InvalidValueReturnsUnknown) {
-  EXPECT_STREQ(gimg_result_string((GIMG_RESULT)GIMG_RESULT_COUNT), "unknown");
-  EXPECT_STREQ(gimg_result_string((GIMG_RESULT)99), "unknown");
+  EXPECT_STREQ(gimg_result_string((GIMG_Result)GIMG_RESULT_COUNT), "unknown");
+  EXPECT_STREQ(gimg_result_string((GIMG_Result)99), "unknown");
 }
 
 TEST(Result, AllValidCodesNonEmpty) {
   for (int i = 0; i < (int)GIMG_RESULT_COUNT; i++) {
-    const char * s = gimg_result_string((GIMG_RESULT)i);
+    const char * s = gimg_result_string((GIMG_Result)i);
     EXPECT_NE(s, nullptr);
     EXPECT_GT(std::strlen(s), 0u);
   }

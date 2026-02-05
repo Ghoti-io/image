@@ -13,21 +13,27 @@
 #include <ghoti.io/image/doc.h>
 #include <stddef.h>
 
+struct GIMG_Codec;
+
 /**
  * @brief Single item (page/frame/level/thumbnail).
  */
-struct GIMG_ITEM {
-  size_t index; ///< Index in parent doc.
+struct GIMG_Item {
+  size_t index;   ///< Index in parent doc.
+  GIMG_Doc * doc; ///< Parent document (for decode dispatch).
   /* Per-item metadata and timing stubs added in meta milestone. */
 };
 
 /**
  * @brief Document container.
  */
-struct GIMG_DOC {
-  const GIMG_ALLOCATOR * allocator;
-  GIMG_ITEM * items;
+struct GIMG_Doc {
+  const GIMG_Allocator * allocator;
+  GIMG_Item * items;
   size_t item_count;
+  struct GIMG_Codec * loaded_by_codec; ///< Codec that loaded this doc (NULL if
+                                       ///< created, not loaded).
+  void * codec_private; ///< Format-specific state; owned and freed by codec.
 };
 
 #endif // GHOTI_IO_GIMG_DOC_INTERNAL_H

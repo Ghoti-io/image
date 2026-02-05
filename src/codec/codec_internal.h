@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * Internal codec registry structures.
+ * Internal codec registry structures and load/save/decode callbacks.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -24,14 +24,66 @@ typedef struct {
 } gimg_codec_magic_t;
 
 /**
+ * @brief Codec load callback: stream -> document.
+ */
+typedef GIMG_Result (*gimg_codec_load_fn)(GIMG_Codec * codec,
+    GIMG_Stream * stream, const GIMG_Load_Options * options,
+    GIMG_Diagnostics * diagnostics, GIMG_Doc ** out_doc);
+
+/**
+ * @brief Codec save callback: document -> stream.
+ */
+typedef GIMG_Result (*gimg_codec_save_fn)(GIMG_Codec * codec,
+    const GIMG_Doc * doc, GIMG_Stream * stream, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report);
+
+/**
+ * @brief Codec decode callback: item -> raster.
+ */
+typedef GIMG_Result (*gimg_codec_decode_fn)(GIMG_Codec * codec,
+    const GIMG_Item * item, const GIMG_Decode_Options * options,
+    GIMG_Raster ** out_raster);
+
+/**
+ * @brief Codec callback to free doc->codec_private when document is destroyed.
+ */
+typedef void (*gimg_codec_free_doc_private_fn)(GIMG_Codec * codec,
+    void * codec_private);
+
+/**
  * @brief Codec descriptor (registry entry).
  */
-struct GIMG_CODEC {
-  const GIMG_ALLOCATOR * allocator;
+struct GIMG_Codec {
+  const GIMG_Allocator * allocator;
   char * name;
   gimg_codec_magic_t * magics;
   size_t magic_count;
   unsigned int capabilities;  ///< Read/write etc. (bitmask for later).
+  gimg_codec_load_fn load_cb;
+  gimg_codec_save_fn save_cb;
+  gimg_codec_decode_fn decode_cb;
+  gimg_codec_free_doc_private_fn free_doc_private;
 };
+
+/**
+ * @brief Set load callback (internal; used by codec registration).
+ */
+void gimg_codec_set_load_cb(GIMG_Codec * codec, gimg_codec_load_fn fn);
+
+/**
+ * @brief Set save callback (internal; used by codec registration).
+ */
+void gimg_codec_set_save_cb(GIMG_Codec * codec, gimg_codec_save_fn fn);
+
+/**
+ * @brief Set decode callback (internal; used by codec registration).
+ */
+void gimg_codec_set_decode_cb(GIMG_Codec * codec, gimg_codec_decode_fn fn);
+
+/**
+ * @brief Set free_doc_private callback (internal; used by codec registration).
+ */
+void gimg_codec_set_free_doc_private(GIMG_Codec * codec,
+    gimg_codec_free_doc_private_fn fn);
 
 #endif // GHOTI_IO_GIMG_CODEC_INTERNAL_H

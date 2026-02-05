@@ -11,8 +11,8 @@
 #include <gtest/gtest.h>
 
 TEST(MetaCommon, CreateSetGetOrientation) {
-  GIMG_META_COMMON * m = nullptr;
-  GIMG_RESULT r = gimg_meta_common_create(&m);
+  GIMG_Meta_Common * m = nullptr;
+  GIMG_Result r = gimg_meta_common_create(&m);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(m, nullptr);
   EXPECT_EQ(gimg_meta_common_orientation(m), GIMG_ORIENTATION_UNKNOWN);
@@ -22,7 +22,7 @@ TEST(MetaCommon, CreateSetGetOrientation) {
 }
 
 TEST(MetaCommon, SetGetDpi) {
-  GIMG_META_COMMON * m = nullptr;
+  GIMG_Meta_Common * m = nullptr;
   gimg_meta_common_create(&m);
   gimg_meta_common_set_dpi(m, 300, 150);
   uint32_t x = 0, y = 0;
@@ -33,8 +33,8 @@ TEST(MetaCommon, SetGetDpi) {
 }
 
 TEST(MetaRaw, AttachAndGet) {
-  GIMG_META_RAW * raw = nullptr;
-  GIMG_RESULT r = gimg_meta_raw_create(&raw);
+  GIMG_Meta_Raw * raw = nullptr;
+  GIMG_Result r = gimg_meta_raw_create(&raw);
   ASSERT_EQ(r, GIMG_OK);
   const unsigned char data[] = {1, 2, 3};
   r = gimg_meta_raw_attach(raw, "fmt", 42, data, sizeof(data));
@@ -55,10 +55,10 @@ TEST(MetaRaw, AttachAndGet) {
 }
 
 TEST(MetaRaw, GetNotFound) {
-  GIMG_META_RAW * raw = nullptr;
+  GIMG_Meta_Raw * raw = nullptr;
   gimg_meta_raw_create(&raw);
   size_t size = 0;
-  GIMG_RESULT r = gimg_meta_raw_get(raw, "x", 1, nullptr, &size);
+  GIMG_Result r = gimg_meta_raw_get(raw, "x", 1, nullptr, &size);
   EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
   gimg_meta_raw_destroy(raw);
 }

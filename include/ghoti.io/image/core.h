@@ -30,7 +30,7 @@ typedef enum {
   GIMG_ERR_OOM,         ///< Out of memory.
   GIMG_ERR_INTERNAL,    ///< Internal library error.
   GIMG_RESULT_COUNT
-} GIMG_RESULT;
+} GIMG_Result;
 
 /**
  * @brief Severity of a diagnostic (spec §13.2).
@@ -39,7 +39,7 @@ typedef enum {
   GIMG_DIAG_WARNING = 0,
   GIMG_DIAG_ERROR,
   GIMG_DIAG_SEVERITY_COUNT
-} GIMG_DIAG_SEVERITY;
+} GIMG_Diag_Severity;
 
 /**
  * @brief Single diagnostic: codec, offset, chunk/tag, severity, action.
@@ -48,20 +48,20 @@ typedef struct {
   const char * codec_name;
   size_t offset;
   uint32_t chunk_or_tag_id;
-  GIMG_DIAG_SEVERITY severity;
+  GIMG_Diag_Severity severity;
   const char *
       recommended_action; ///< Optional; e.g. "increase max_chunk_size".
   uint8_t _reserved[8];
-} GIMG_DIAGNOSTIC;
+} GIMG_Diagnostic;
 
 /**
  * @brief Diagnostics payload (list of diagnostics; no silent truncation).
  */
 typedef struct {
-  GIMG_DIAGNOSTIC * items;
+  GIMG_Diagnostic * items;
   size_t count;
   size_t capacity;
-} GIMG_DIAGNOSTICS;
+} GIMG_Diagnostics;
 
 /**
  * @brief Strictness level (spec §7.4).
@@ -71,14 +71,14 @@ typedef enum {
   GIMG_NORMAL,     ///< Safe recoveries + warnings.
   GIMG_PERMISSIVE, ///< More heuristics + warnings.
   GIMG_STRICTNESS_COUNT
-} GIMG_STRICTNESS;
+} GIMG_Strictness;
 
 /**
  * @brief Get a human-readable string for a result code.
  * @param result The result code.
  * @return Static string describing the result, or "unknown" for invalid values.
  */
-GIMG_API const char * gimg_result_string(GIMG_RESULT result);
+GIMG_API const char * gimg_result_string(GIMG_Result result);
 
 #ifdef __cplusplus
 }

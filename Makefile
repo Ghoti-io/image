@@ -123,6 +123,18 @@ endif
 
 # The standard include directories for the project.
 INCLUDE := -I include/ -I $(GEN_DIR)/
+# ghoti.io-compress (required for PNG codec). Prefer pkg-config; fallback to sibling.
+COMPRESS_PC ?= ghoti.io-compress
+COMPRESS_CFLAGS := $(shell pkg-config --cflags $(COMPRESS_PC) 2>/dev/null)
+COMPRESS_LIBS := $(shell pkg-config --libs $(COMPRESS_PC) 2>/dev/null)
+# Use sibling path when pkg-config failed (empty) or returned unsubstituted placeholder.
+COMPRESS_PLACEHOLDER := (
+COMPRESS_NEED_FALLBACK := $(or $(findstring $(COMPRESS_PLACEHOLDER),$(COMPRESS_CFLAGS)),$(if $(COMPRESS_CFLAGS),,y))
+ifneq ($(COMPRESS_NEED_FALLBACK),)
+COMPRESS_CFLAGS := -I../compress/include
+COMPRESS_LIBS := -L../compress/build/$(BUILD)/apps -lghoti.io-compress$(BRANCH)
+endif
+INCLUDE += $(COMPRESS_CFLAGS)
 
 # Automatically collect all .c source files under the src directory.
 SOURCES := $(shell find src -type f -name '*.c')
@@ -202,7 +214,7 @@ $(APP_DIR)/$(TARGET): \
 		$(LIBOBJECTS)
 	@printf "\n### Compiling Image Library ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -shared -o $@ $^ $(LDFLAGS) $(OS_SPECIFIC_LIBRARY_NAME_FLAG)
+	$(CXX) $(CXXFLAGS) -shared -o $@ $^ $(LDFLAGS) $(COMPRESS_LIBS) $(OS_SPECIFIC_LIBRARY_NAME_FLAG)
 
 ifeq ($(OS_NAME), Linux)
 	@ln -f -s $(TARGET) $(APP_DIR)/$(SO_NAME)
@@ -237,6 +249,12 @@ $(OBJ_DIR)/tests/%.o: tests/%.cpp
 # Tests in tests/unit/ (object still under tests/ so executable name matches)
 $(OBJ_DIR)/tests/%.o: tests/unit/%.cpp
 	@printf "\n### Compiling Test Object: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
+# Test in tests/codec/png/ (object name from basename for link)
+$(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
+	@printf "\n### Compiling Test Object: test_png_chunk ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
@@ -334,6 +352,9 @@ else ifeq ($(OS_NAME), Windows)
 endif
 	@printf "\n"
 
+# So tests can load image lib and its dependency (e.g. compress for PNG).
+TEST_LD_PATH := $(APP_DIR):../compress/build/$(BUILD)/apps
+
 test: ## Make and run the Unit tests
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 	@for test_exe in $(TEST_EXECUTABLES); do \
@@ -343,7 +364,7 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 		printf "### Running %s tests ###\n" "$$test_name"; \
 		printf "############################"; \
 		printf "\033[0m\n\n"; \
-		LD_LIBRARY_PATH="$(APP_DIR)" $$test_exe --gtest_brief=1; \
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" $$test_exe --gtest_brief=1; \
 	done
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
@@ -353,7 +374,7 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 	printf "\033[1;36m%-30s %8s %10s %s\033[0m\n" "------------------------------" "--------" "----------" "------"; \
 	for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
-		output=$$(LD_LIBRARY_PATH="$(APP_DIR)" $$test_exe --gtest_brief=1 2>&1); \
+		output=$$(LD_LIBRARY_PATH="$(TEST_LD_PATH)" $$test_exe --gtest_brief=1 2>&1); \
 		exit_code=$$?; \
 		num_tests=$$(echo "$$output" | grep -oP '\[\s*=+\s*\]\s*\K\d+(?=\s+tests?)' | head -1); \
 		time_ms=$$(echo "$$output" | grep -oP '\(\K\d+(?=\s*ms\s*total\))' | head -1); \
@@ -392,7 +413,7 @@ ifeq ($(OS_NAME), Linux)
 		printf "### Running %s tests under Valgrind ###\n" "$$test_name"; \
 		printf "############################"; \
 		printf "\033[0m\n\n"; \
-		LD_LIBRARY_PATH="$(APP_DIR)" valgrind $(VALGRIND_FLAGS) $$test_exe --gtest_brief=1; \
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" valgrind $(VALGRIND_FLAGS) $$test_exe --gtest_brief=1; \
 	done
 else
 	@printf "\033[0;31m\n"
@@ -409,7 +430,7 @@ ifeq ($(OS_NAME), Linux)
 	printf "\033[1;35m%-30s %8s %10s %s\033[0m\n" "------------------------------" "--------" "----------" "------"; \
 	for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
-		output=$$(LD_LIBRARY_PATH="$(APP_DIR)" valgrind $(VALGRIND_FLAGS) $$test_exe --gtest_brief=1 2>&1); \
+		output=$$(LD_LIBRARY_PATH="$(TEST_LD_PATH)" valgrind $(VALGRIND_FLAGS) $$test_exe --gtest_brief=1 2>&1); \
 		exit_code=$$?; \
 		num_tests=$$(echo "$$output" | grep -oP '\[\s*=+\s*\]\s*\K\d+(?=\s+tests?)' | head -1); \
 		time_ms=$$(echo "$$output" | grep -oP '\(\K\d+(?=\s*ms\s*total\))' | head -1); \

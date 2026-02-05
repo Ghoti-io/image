@@ -22,13 +22,13 @@ extern "C" {
  * All function pointers must be non-NULL. When an allocator is passed as
  * optional (e.g. NULL), the library uses the default allocator.
  */
-typedef struct GIMG_ALLOCATOR {
+typedef struct GIMG_Allocator {
   void * ctx;
   void * (*malloc_fn)(void * ctx, size_t size);
   void * (*calloc_fn)(void * ctx, size_t nitems, size_t size);
   void * (*realloc_fn)(void * ctx, void * ptr, size_t size);
   void (*free_fn)(void * ctx, void * ptr);
-} GIMG_ALLOCATOR;
+} GIMG_Allocator;
 
 /**
  * @brief Get the default allocator (stdlib-backed).
@@ -38,7 +38,7 @@ typedef struct GIMG_ALLOCATOR {
  *
  * @return Pointer to a process-global allocator instance.
  */
-GIMG_API const GIMG_ALLOCATOR * gimg_allocator_default(void);
+GIMG_API const GIMG_Allocator * gimg_allocator_default(void);
 
 #ifdef __cplusplus
 }

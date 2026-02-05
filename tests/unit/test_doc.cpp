@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * Unit tests for GIMG_DOC and GIMG_ITEM.
+ * Unit tests for GIMG_Doc and GIMG_Item.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -10,12 +10,12 @@
 #include <gtest/gtest.h>
 
 TEST(Doc, CreateHasOneItem) {
-  GIMG_DOC * doc = nullptr;
-  GIMG_RESULT res = gimg_doc_create(&doc);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result res = gimg_doc_create(&doc);
   ASSERT_EQ(res, GIMG_OK);
   ASSERT_NE(doc, nullptr);
   EXPECT_EQ(gimg_doc_item_count(doc), 1u);
-  GIMG_ITEM * item = gimg_doc_item(doc, 0);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
   ASSERT_NE(item, nullptr);
   EXPECT_EQ(gimg_doc_item(doc, 1), nullptr);
   gimg_doc_destroy(doc);
