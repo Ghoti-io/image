@@ -9,7 +9,9 @@
  * #5CRC-algorithm (5.5), #11IHDR (11.2.1), #11PLTE (11.2.2), #11IDAT (11.2.3),
  * #11IEND (11.2.4), #11tRNS (11.3.1.1), #11tEXt / #11zTXt / #11iTXt (11.3.3),
  * #11iCCP (11.3.2.3), #11sRGB (11.3.2.5), #11gAMA (11.3.2.2), #11cHRM (11.3.2.1),
- * #eXIf (11.3.4). See also image/documentation/format-references.md.
+ * #eXIf (11.3.4). Interlace (Adam7): W3C DataRep §2.6
+ * (https://www.w3.org/TR/PNG-DataRep.html#DR.Interlaced-data-order).
+ * See also image/documentation/format-references.md.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -154,5 +156,11 @@ GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
 GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc);
+
+/**
+ * @brief PNG codec decode callback: decode item to raster (DEFLATE + filters).
+ */
+GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
+    const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
 #endif // GHOTI_IO_GIMG_PNG_INTERNAL_H
