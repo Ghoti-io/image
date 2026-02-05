@@ -9,6 +9,7 @@
 
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/stream.h>
 #include <stddef.h>
 #include <string.h>
@@ -318,8 +319,29 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   }
   doc->loaded_by_codec = codec;
   doc->codec_private = state;
+  doc->meta_raw = NULL;
   doc->items[0].index = 0;
   doc->items[0].doc = doc;
+
+  /* Attach eXIf (and other raw metadata) to doc for round-trip. */
+  for (size_t i = 0; i < state->ancillary_count; i++) {
+    if (state->ancillary[i].type == GIMG_PNG_eXIf &&
+        state->ancillary[i].payload && state->ancillary[i].payload_size > 0) {
+      GIMG_Meta_Raw * raw = NULL;
+      r = gimg_doc_ensure_meta_raw(doc, &raw);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+      r = gimg_meta_raw_attach(raw, "png", (uint32_t)GIMG_PNG_eXIf,
+          state->ancillary[i].payload, state->ancillary[i].payload_size);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+      break; /* First eXIf chunk only per spec. */
+    }
+  }
 
   *out_doc = doc;
   return GIMG_OK;

@@ -16,6 +16,7 @@
  */
 
 #include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <stddef.h>
@@ -30,6 +31,9 @@
 #include "../../raster/raster_internal.h"
 #include "../codec_internal.h"
 #include "png_internal.h"
+
+/** Max decompressed ICC profile size (bomb protection). */
+#define GIMG_PNG_ICC_MAX_DECODED (4u * 1024u * 1024u)
 
 /** Map compress status to image result (for decode path). */
 static GIMG_Result gimg_png_result_from_gcomp(gcomp_status_t s) {
@@ -47,6 +51,116 @@ static GIMG_Result gimg_png_result_from_gcomp(gcomp_status_t s) {
   default:
     return GIMG_ERR_FORMAT;
   }
+}
+
+/**
+ * Color chunk policy (PNG allows at most one of sRGB, iCCP, or gAMA+cHRM).
+ * We use first in priority order: sRGB > iCCP > gAMA/cHRM.
+ * Fills @a out_info; for iCCP allocates decompressed profile and sets
+ * @a out_icc_owned (caller frees). Returns 1 if color info was set, 0 if none.
+ */
+static int gimg_png_fill_color_info_from_ancillary(
+    const gimg_png_doc_state_t * state, const GIMG_Allocator * alloc,
+    GIMG_Color_Info * out_info, void ** out_icc_owned, size_t * out_icc_size) {
+  gimg_color_info_default(out_info);
+  *out_icc_owned = NULL;
+  *out_icc_size = 0;
+
+  size_t first_srgb = (size_t)-1, first_iccp = (size_t)-1, first_gama = (size_t)-1;
+  for (size_t i = 0; i < state->ancillary_count; i++) {
+    gimg_png_chunk_type_t t = state->ancillary[i].type;
+    if (t == GIMG_PNG_sRGB && first_srgb == (size_t)-1) {
+      first_srgb = i;
+    }
+    else if (t == GIMG_PNG_iCCP && first_iccp == (size_t)-1) {
+      first_iccp = i;
+    }
+    else if (t == GIMG_PNG_gAMA && first_gama == (size_t)-1) {
+      first_gama = i;
+    }
+  }
+
+  /* Priority: sRGB > iCCP > gAMA. */
+  if (first_srgb != (size_t)-1) {
+    const unsigned char * p = state->ancillary[first_srgb].payload;
+    size_t len = state->ancillary[first_srgb].payload_size;
+    if (len >= 1) {
+      unsigned int intent = (unsigned int)p[0];
+      if (intent > 3) {
+        intent = 0;
+      }
+      out_info->primaries = GIMG_PRIMARIES_SRGB;
+      out_info->white_point = GIMG_PRIMARIES_SRGB;
+      out_info->transfer = GIMG_TRANSFER_SRGB;
+      out_info->intent = (GIMG_Rendering_Intent)intent;
+      return 1;
+    }
+  }
+  if (first_iccp != (size_t)-1) {
+    const unsigned char * payload = state->ancillary[first_iccp].payload;
+    size_t payload_len = state->ancillary[first_iccp].payload_size;
+    const unsigned char * name_end =
+        (const unsigned char *)memchr(payload, 0, payload_len);
+    if (name_end && name_end - payload + 2 < (ptrdiff_t)payload_len) {
+      size_t name_len = (size_t)(name_end - payload);
+      uint8_t comp = payload[name_len + 1];
+      const unsigned char * zlib_start = payload + name_len + 2;
+      size_t zlib_len = payload_len - name_len - 2;
+      if (comp == 0 && zlib_len > 6) {
+        const unsigned char * deflate_src = zlib_start + 2;
+        size_t deflate_len = zlib_len - 6;
+        size_t max_out = GIMG_PNG_ICC_MAX_DECODED;
+        void * decoded = gimg_malloc(alloc, max_out);
+        if (!decoded) {
+          return 0;
+        }
+        size_t out_len = 0;
+        gcomp_options_t * gopts = NULL;
+        gcomp_status_t gs = gcomp_options_create(&gopts);
+        if (gs != GCOMP_OK || !gopts) {
+          gimg_free(alloc, decoded);
+          return 0;
+        }
+        gs = gcomp_options_set_uint64(gopts, "limits.max_output_bytes", max_out);
+        if (gs != GCOMP_OK) {
+          gcomp_options_destroy(gopts);
+          gimg_free(alloc, decoded);
+          return 0;
+        }
+        gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate", gopts,
+            deflate_src, deflate_len, decoded, max_out, &out_len);
+        gcomp_options_destroy(gopts);
+        if (gs != GCOMP_OK) {
+          gimg_free(alloc, decoded);
+          return 0;
+        }
+        out_info->primaries = GIMG_PRIMARIES_UNKNOWN;
+        out_info->white_point = GIMG_PRIMARIES_UNKNOWN;
+        out_info->transfer = GIMG_TRANSFER_UNKNOWN;
+        out_info->icc_bytes = decoded;
+        out_info->icc_size = out_len;
+        *out_icc_owned = decoded;
+        *out_icc_size = out_len;
+        return 1;
+      }
+    }
+  }
+  if (first_gama != (size_t)-1) {
+    const unsigned char * p = state->ancillary[first_gama].payload;
+    size_t len = state->ancillary[first_gama].payload_size;
+    if (len >= 4) {
+      uint32_t gama_val = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 |
+          (uint32_t)p[2] << 8 | (uint32_t)p[3];
+      if (gama_val > 0) {
+        out_info->primaries = GIMG_PRIMARIES_UNKNOWN;
+        out_info->white_point = GIMG_PRIMARIES_UNKNOWN;
+        out_info->transfer = GIMG_TRANSFER_GAMMA;
+        out_info->gamma_value = (double)gama_val / 100000.0;
+        return 1;
+      }
+    }
+  }
+  return 0;
 }
 
 /** Bytes per row for a given pixel width (excluding filter byte). PNG §3.2. */
@@ -680,5 +794,25 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     gimg_free(alloc, pixels);
     return r;
   }
+
+  /* Apply color chunks (sRGB > iCCP > gAMA/cHRM); store in raster color_info. */
+  {
+    GIMG_Color_Info color_info;
+    void * icc_owned = NULL;
+    size_t icc_size = 0;
+    if (gimg_png_fill_color_info_from_ancillary(state, alloc, &color_info,
+            &icc_owned, &icc_size)) {
+      r = gimg_raster_set_color_info(*out_raster, &color_info);
+      if (icc_owned) {
+        gimg_free(alloc, icc_owned);
+      }
+      if (r != GIMG_OK) {
+        gimg_raster_destroy(*out_raster);
+        *out_raster = NULL;
+        return r;
+      }
+    }
+  }
+
   return GIMG_OK;
 }

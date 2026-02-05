@@ -11,6 +11,7 @@
 
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <stddef.h>
 
 struct GIMG_Codec;
@@ -33,7 +34,8 @@ struct GIMG_Doc {
   size_t item_count;
   struct GIMG_Codec * loaded_by_codec; ///< Codec that loaded this doc (NULL if
                                        ///< created, not loaded).
-  void * codec_private; ///< Format-specific state; owned and freed by codec.
+  void * codec_private;                ///< Format-specific state; owned and freed by codec.
+  GIMG_Meta_Raw * meta_raw;            ///< Optional raw metadata (eXIf, etc.); owned by doc.
 };
 
 #endif // GHOTI_IO_GIMG_DOC_INTERNAL_H

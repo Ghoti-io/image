@@ -12,6 +12,7 @@
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/macros.h>
+#include <ghoti.io/image/meta.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -53,6 +54,20 @@ GIMG_API GIMG_Result gimg_doc_create_with_allocator(
  * @param doc Document to destroy (no-op if NULL).
  */
 GIMG_API void gimg_doc_destroy(GIMG_Doc * doc);
+
+/**
+ * @brief Get raw metadata (eXIf, etc.). Returns NULL if not set.
+ */
+GIMG_API GIMG_Meta_Raw * gimg_doc_meta_raw(const GIMG_Doc * doc);
+
+/**
+ * @brief Ensure document has a raw metadata container; create if missing.
+ * @param doc Document.
+ * @param out_raw On success, set to the document's meta_raw (caller may attach blocks).
+ * @return GIMG_OK or GIMG_ERR_OOM.
+ */
+GIMG_API GIMG_Result gimg_doc_ensure_meta_raw(GIMG_Doc * doc,
+    GIMG_Meta_Raw ** out_raw);
 
 #ifdef __cplusplus
 }

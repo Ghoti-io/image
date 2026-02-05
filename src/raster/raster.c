@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/raster.h>
 #include <string.h>
 
@@ -123,6 +124,8 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
   r->stride_bytes = stride_bytes;
   r->format = *format;
   r->ownership = ownership;
+  gimg_color_info_default(&r->color_info);
+  r->color_icc_owned = NULL;
 
   if (ownership == GIMG_RASTER_OWNED) {
     size_t total = stride_bytes * height;
@@ -151,6 +154,10 @@ GIMG_API void gimg_raster_destroy(GIMG_Raster * raster) {
     return;
   }
   const GIMG_Allocator * alloc = raster->allocator;
+  if (raster->color_icc_owned) {
+    gimg_free(alloc, raster->color_icc_owned);
+    raster->color_icc_owned = NULL;
+  }
   if (raster->ownership == GIMG_RASTER_OWNED && raster->pixels) {
     gimg_free(alloc, raster->pixels);
   }
@@ -190,4 +197,33 @@ GIMG_API const void * gimg_raster_pixels_const(const GIMG_Raster * raster) {
 GIMG_API const GIMG_Allocator * gimg_raster_allocator(
     const GIMG_Raster * raster) {
   return raster ? raster->allocator : NULL;
+}
+
+GIMG_API const GIMG_Color_Info * gimg_raster_color_info_const(
+    const GIMG_Raster * raster) {
+  return raster ? &raster->color_info : NULL;
+}
+
+GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
+    const GIMG_Color_Info * info) {
+  if (!raster || !info) {
+    return GIMG_ERR_INTERNAL;
+  }
+  const GIMG_Allocator * alloc = raster->allocator;
+  if (raster->color_icc_owned) {
+    gimg_free(alloc, raster->color_icc_owned);
+    raster->color_icc_owned = NULL;
+  }
+  raster->color_info = *info;
+  if (info->icc_size > 0 && info->icc_bytes) {
+    void * copy = gimg_malloc(alloc, info->icc_size);
+    if (!copy) {
+      gimg_color_info_default(&raster->color_info);
+      return GIMG_ERR_OOM;
+    }
+    memcpy(copy, info->icc_bytes, info->icc_size);
+    raster->color_icc_owned = copy;
+    raster->color_info.icc_bytes = copy;
+  }
+  return GIMG_OK;
 }
