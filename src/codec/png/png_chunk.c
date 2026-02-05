@@ -4,6 +4,23 @@
  * PNG signature and chunk parsing with CRC verification.
  *
  * Copyright 2026 by Corey Pennycuff
+ *
+ * --- Internal algorithms and design ---
+ *
+ * CRC: PNG spec (5.5) requires CRC-32 over the 4-byte chunk type (big-endian)
+ * followed by the payload. We emit the type as big-endian bytes before
+ * hashing so the result is spec-compliant on any host endianness. The
+ * compress library's gcomp_crc32_update/finalize are used; CRC is verified
+ * after reading the payload and the 4-byte CRC that follows.
+ *
+ * Limits: When GIMG_Limits is provided and max_chunk_size is non-zero, we
+ * reject chunks whose payload length exceeds it (bomb protection) before
+ * reading any payload.
+ *
+ * Payload buffer: For small payloads (<= 4096 bytes) we use a stack buffer
+ * to avoid heap allocation when the caller does not provide a buffer; for
+ * larger payloads we allocate so we can read in one shot and still verify
+ * CRC. Caller-provided payload_buf is used when non-NULL.
  */
 
 #include <ghoti.io/image/core.h>

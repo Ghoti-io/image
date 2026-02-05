@@ -25,7 +25,15 @@
  *
  * Limits: GIMG_Load_Options.limits (e.g. max_chunk_size) is passed to
  * gimg_png_read_chunk_payload_and_crc() to reject oversized chunks (bomb
- * protection).
+ * protection). For APNG, limits->max_frame_count caps the number of frames
+ * we accept (acTL num_frames is validated against actual fcTL/fdAT count).
+ *
+ * APNG: When acTL is present we treat the stream as APNG. We require fcTL
+ * before each frame's data (IDAT for frame 0 or fdAT for any frame). fdAT
+ * payloads (4-byte sequence number + DEFLATE data) are concatenated per
+ * frame. Frame count is validated and capped by max_frame_count; doc items
+ * and frame timing (delay_num/den, dispose_op, blend_op) are filled from
+ * fcTL for each frame.
  */
 
 #include <ghoti.io/image/codec.h>

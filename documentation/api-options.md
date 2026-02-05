@@ -9,6 +9,21 @@ This page documents the main option structures and enumerations used by the code
 - **GIMG_Probe_Result** — Filled by `gimg_probe()`. Contains `format_name` (e.g. `"png"`) and `confidence` (0–100). Used to select the codec for `gimg_doc_load()` or to report format detection.
 - **GIMG_Codec** — Opaque codec descriptor. Create stubs with `gimg_codec_create_stub()` or `gimg_codec_create_stub_with_allocator()`, register with `gimg_codec_register()`. Look up by name with `gimg_codec_by_name()`.
 
+@section api_options_codec_capabilities Codec capabilities (GIMG_CAP_*)
+
+Codec capability bits (see `ghoti.io/image/codec.h`) form a bitmask returned by `gimg_codec_capabilities()`. They indicate what a codec supports so callers can check before using load/save/decode or format-specific options.
+
+| Bit | Meaning |
+|-----|---------|
+| **GIMG_CAP_READ** | Codec can load documents (probe + load). |
+| **GIMG_CAP_WRITE** | Codec can save documents. |
+| **GIMG_CAP_ANIMATION** | Format supports multiple frames (e.g. APNG); document may have multiple items with frame timing. |
+| **GIMG_CAP_PALETTE** | Codec supports palette/indexed color. |
+| **GIMG_CAP_ICC** | Codec supports ICC profile (e.g. iCCP in PNG). |
+| **GIMG_CAP_16BPC** | Codec supports 16-bit-per-channel samples. |
+
+Example: PNG is registered with READ, WRITE, ANIMATION, PALETTE, ICC, and 16BPC set.
+
 ## Load options
 
 **GIMG_Load_Options** (see `ghoti.io/image/codec.h`):
@@ -92,3 +107,13 @@ The compress library’s DEFLATE decoder may use a separate limit (e.g. `limits.
 
 - **GIMG_Result** — Result codes (e.g. `GIMG_OK`, `GIMG_ERR_FORMAT`, `GIMG_ERR_LIMIT`, `GIMG_ERR_CORRUPT`). See `ghoti.io/image/core.h`.
 - **GIMG_Diagnostics** — List of **GIMG_Diagnostic** items (codec name, offset, chunk/tag id, severity, recommended action). Filled when provided to load/save/decode.
+
+@section api_options_animation Animation (item frame API)
+
+For multi-frame formats (e.g. APNG), each **GIMG_Item** carries frame timing and compositing hints. Defined in `ghoti.io/image/doc.h`:
+
+- **Frame delay:** `gimg_item_frame_delay()` / `gimg_item_set_frame_delay()` — numerator and denominator (e.g. fcTL `delay_num`/`delay_den`). Delay in seconds = num/den; den 0 is treated as 100 when writing APNG.
+- **Dispose:** `gimg_item_dispose_op()` / `gimg_item_set_dispose_op()` — **GIMG_Dispose_Op**: `GIMG_DISPOSE_NONE`, `GIMG_DISPOSE_BACKGROUND`, `GIMG_DISPOSE_PREVIOUS`. How to clear the frame region before the next frame.
+- **Blend:** `gimg_item_blend_op()` / `gimg_item_set_blend_op()` — **GIMG_Blend_Op**: `GIMG_BLEND_SOURCE`, `GIMG_BLEND_OVER`. How to composite the frame over the canvas.
+
+Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read them on save.

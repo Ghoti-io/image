@@ -34,6 +34,16 @@
  * allocating the raster. The compress library DEFLATE decoder is given
  * limits.max_output_bytes (from the same or default limits) to cap decompressed
  * IDAT size.
+ *
+ * APNG frame assembly: For multi-frame (APNG) we produce a full composited
+ * canvas at IHDR dimensions. For each frame index we iterate from 0 to that
+ * index: (1) Apply previous frame's dispose (BACKGROUND = clear rect to
+ * transparent black; PREVIOUS = restore rect from a saved copy of the canvas
+ * before that frame was drawn). (2) If current frame has PREVIOUS, save the
+ * current canvas rect before drawing. (3) Decode this frame's raw pixels
+ * (DEFLATE + filters), then blend onto canvas: SOURCE = replace rect;
+ * OVER = alpha-blend. The returned raster is the canvas after the requested
+ * frame. prev_rect is used only to restore for DISPOSE_PREVIOUS.
  */
 
 #include <ghoti.io/image/codec.h>
