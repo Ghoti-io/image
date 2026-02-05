@@ -45,6 +45,7 @@ See the examples directory for usage examples.
 - [Modules](@ref modules) - Detailed documentation for library modules
 - [Examples](@ref examples) - Example programs demonstrating library usage
 - [Function Index](@ref functions_index) - Complete API reference
+- [Format and specification references](documentation/format-references.md) - External specs and parts implemented per format (PNG, APNG, etc.)
 
 ## Macros and Utilities
 
