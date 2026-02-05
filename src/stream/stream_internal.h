@@ -17,14 +17,18 @@
 
 /**
  * @brief Stream implementation (memory stream).
+ * For read streams: data is input buffer, size is length, position is read offset.
+ * For output streams: data is write buffer (owned, may realloc), size is capacity,
+ * position is bytes written.
  */
 struct GIMG_Stream {
   const GIMG_Allocator * allocator;
-  const unsigned char * data;
-  size_t size;
-  size_t position;
-  GIMG_Result error;  ///< Stored error state.
-  bool can_seek;      ///< True if seek/tell/size supported.
+  unsigned char * data;  ///< Read: const in use; output: owned, growable.
+  size_t size;           ///< Read: total bytes; output: capacity.
+  size_t position;       ///< Read: read offset; output: bytes written.
+  GIMG_Result error;     ///< Stored error state.
+  bool can_seek;         ///< True if seek/tell/size supported.
+  bool writable;         ///< True if stream supports write (output stream).
 };
 
 #endif // GHOTI_IO_GIMG_STREAM_INTERNAL_H

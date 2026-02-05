@@ -411,7 +411,18 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   *out_raster = NULL;
 
   const GIMG_Doc * doc = item->doc;
-  if (!doc || doc->loaded_by_codec != codec || !doc->codec_private) {
+  if (!doc || !doc->codec_private) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  // Allow decode when the codec that loaded the doc is the same as the one
+  // requesting decode (pointer match), or when they match by name (handles
+  // save path where codec comes from gimg_codec_by_name and may differ by
+  // pointer from doc->loaded_by_codec in some link scenarios).
+  const GIMG_Codec * doc_codec = doc->loaded_by_codec;
+  if (!doc_codec ||
+      (doc_codec != codec &&
+       (!gimg_codec_name(doc_codec) || !gimg_codec_name(codec) ||
+        strcmp(gimg_codec_name(doc_codec), gimg_codec_name(codec)) != 0))) {
     return GIMG_ERR_UNSUPPORTED;
   }
 

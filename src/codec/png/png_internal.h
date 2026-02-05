@@ -93,8 +93,7 @@ struct gimg_png_doc_state {
   size_t trns_size;
   unsigned char * idat;
   size_t idat_size;
-  /** Ordered list of ancillary chunks (read order) for round-trip. */
-  gimg_png_ancillary_t * ancillary;
+  gimg_png_ancillary_t * ancillary;  ///< Ordered list of ancillary chunks (read order) for round-trip.
   size_t ancillary_count;
   size_t ancillary_capacity;
   const GIMG_Allocator * allocator;
@@ -162,5 +161,20 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
  */
 GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
+
+/**
+ * @brief Write one PNG chunk to stream: length (4 BE), type (4), payload, CRC (4).
+ * Stream must support write.
+ */
+GIMG_Result gimg_png_write_chunk(GIMG_Stream * stream,
+    gimg_png_chunk_type_t type, const unsigned char * payload,
+    size_t payload_size);
+
+/**
+ * @brief PNG codec save callback: document to PNG bytes.
+ */
+GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
+    GIMG_Stream * stream, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report);
 
 #endif // GHOTI_IO_GIMG_PNG_INTERNAL_H

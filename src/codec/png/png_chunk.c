@@ -132,6 +132,50 @@ GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
   return GIMG_OK;
 }
 
+GIMG_Result gimg_png_write_chunk(GIMG_Stream * stream,
+    gimg_png_chunk_type_t type, const unsigned char * payload,
+    size_t payload_size) {
+  if (!stream) {
+    return GIMG_ERR_INTERNAL;
+  }
+  uint32_t len = (uint32_t)(payload_size > 0x7FFFFFFFu ? 0x7FFFFFFFu
+                                                       : payload_size);
+  unsigned char header[8];
+  header[0] = (unsigned char)(len >> 24);
+  header[1] = (unsigned char)(len >> 16);
+  header[2] = (unsigned char)(len >> 8);
+  header[3] = (unsigned char)(len & 0xFF);
+  header[4] = (unsigned char)(type >> 24);
+  header[5] = (unsigned char)(type >> 16);
+  header[6] = (unsigned char)(type >> 8);
+  header[7] = (unsigned char)(type & 0xFF);
+  size_t n = 0;
+  GIMG_Result r = gimg_stream_write(stream, header, 8, &n);
+  if (r != GIMG_OK || n != 8) {
+    return r != GIMG_OK ? r : GIMG_ERR_IO;
+  }
+  uint32_t crc = GCOMP_CRC32_INIT;
+  crc = gcomp_crc32_update(crc, header + 4, 4);
+  if (len > 0 && payload) {
+    r = gimg_stream_write(stream, payload, (size_t)len, &n);
+    if (r != GIMG_OK || n != (size_t)len) {
+      return r != GIMG_OK ? r : GIMG_ERR_IO;
+    }
+    crc = gcomp_crc32_update(crc, payload, (size_t)len);
+  }
+  crc = gcomp_crc32_finalize(crc);
+  unsigned char crc_buf[4];
+  crc_buf[0] = (unsigned char)(crc >> 24);
+  crc_buf[1] = (unsigned char)(crc >> 16);
+  crc_buf[2] = (unsigned char)(crc >> 8);
+  crc_buf[3] = (unsigned char)(crc & 0xFF);
+  r = gimg_stream_write(stream, crc_buf, 4, &n);
+  if (r != GIMG_OK || n != 4) {
+    return r != GIMG_OK ? r : GIMG_ERR_IO;
+  }
+  return GIMG_OK;
+}
+
 GIMG_Result gimg_png_parse_ihdr(const unsigned char * payload,
     gimg_png_ihdr_t * ihdr) {
   if (!payload || !ihdr) {

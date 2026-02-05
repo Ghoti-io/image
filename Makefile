@@ -260,10 +260,17 @@ $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
 
 # Test data path for PNG decode tests (reference files from tests/data/png/generate.py).
 TEST_DATA_PNG := $(CURDIR)/tests/data/png
+# Output directory for PNG encode tests (written when GIMG_TEST_OUT_PNG is set; add to .gitignore).
+TEST_OUT_PNG := $(CURDIR)/tests/out/png
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
+$(OBJ_DIR)/tests/test_png_encode.o: tests/codec/png/test_png_encode.cpp
+	@printf "\n### Compiling Test Object: test_png_encode ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Pattern rule for building test executables. Args: $1 = source path, $2 = executable name (from TEST_PAIRS).
 # Tests are compiled to .o files first, then linked separately (relink only when library changes).
@@ -299,7 +306,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c $(APP_DIR)/$(TARGET)
 # General commands
 .PHONY: clean cloc docs docs-pdf examples
 # Release build commands
-.PHONY: all install test test-quiet test-valgrind test-valgrind-quiet test-watch uninstall watch
+.PHONY: all install test test-quiet test-valgrind test-valgrind-quiet test-verify-png test-watch uninstall watch
 # Debug build commands
 .PHONY: all-debug install-debug test-debug test-valgrind-debug test-watch-debug uninstall-debug watch-debug
 
@@ -362,8 +369,9 @@ endif
 # So tests can load image lib and its dependency (e.g. compress for PNG).
 TEST_LD_PATH := $(APP_DIR):../compress/build/$(BUILD)/apps
 
-test: ## Make and run the Unit tests
+test: ## Make and run the Unit tests, then verify PNG output with PIL
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
+	@mkdir -p $(TEST_OUT_PNG)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION) | sed 's/test/\\u&/'); \
 		printf "\033[0;30;43m\n"; \
@@ -373,6 +381,9 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 		printf "\033[0m\n\n"; \
 		LD_LIBRARY_PATH="$(TEST_LD_PATH)" $$test_exe --gtest_brief=1; \
 	done
+	@printf "\033[0;30;43m\n############################\n### Verifying PNG output (PIL) ###\n############################\033[0m\n\n"; \
+	python3 $(CURDIR)/tests/data/png/verify_png_output.py $(TEST_OUT_PNG) && \
+	printf "\033[0;32mPNG output verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
 test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
@@ -404,11 +415,18 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 	printf "\033[1;36m%-30s %8s %10s %s\033[0m\n" "------------------------------" "--------" "----------" "------"; \
 	if [ $$total_failed -eq 0 ]; then \
 		printf "\033[0;32m%-30s %8d %6dms PASS\033[0m\n\n" "TOTAL" "$$total_tests" "$$total_time"; \
+		python3 $(CURDIR)/tests/data/png/verify_png_output.py $(TEST_OUT_PNG) && \
+		printf "\033[0;32mPNG output verification passed.\033[0m\n"; \
 	else \
 		printf "\033[0;31m%-30s %8d %6dms FAIL (%d failed)\033[0m\n" "TOTAL" "$$total_tests" "$$total_time" "$$total_failed"; \
 		printf "$$failed_suites\n"; \
 		exit 1; \
 	fi
+
+test-verify-png: ## Run only PNG output verification (run 'make test' for full test + verify)
+	@mkdir -p $(TEST_OUT_PNG)
+	@python3 $(CURDIR)/tests/data/png/verify_png_output.py $(TEST_OUT_PNG) && \
+		printf "\033[0;32mPNG output verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
 test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)

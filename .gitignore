@@ -9,3 +9,6 @@ example.output.*
 
 # Task documents
 tasks
+
+# Test output (e.g. PNGs written by encode tests for verification)
+tests/out

@@ -34,6 +34,17 @@ GIMG_API GIMG_Result gimg_stream_read(
     GIMG_Stream * stream, void * buffer, size_t size, size_t * out_bytes_read);
 
 /**
+ * @brief Write size bytes from buffer to stream.
+ * @param stream Stream (must support write, e.g. memory output stream).
+ * @param buffer Input buffer.
+ * @param size Bytes to write.
+ * @param out_bytes_written On success, bytes actually written.
+ * @return GIMG_OK, GIMG_ERR_IO, GIMG_ERR_UNSUPPORTED if stream is read-only.
+ */
+GIMG_API GIMG_Result gimg_stream_write(GIMG_Stream * stream,
+    const void * buffer, size_t size, size_t * out_bytes_written);
+
+/**
  * @brief Peek at up to size bytes without consuming.
  * @param stream Stream.
  * @param buffer Output buffer.
@@ -90,6 +101,28 @@ GIMG_API GIMG_Result gimg_stream_create_memory(
 GIMG_API GIMG_Result gimg_stream_create_memory_with_allocator(
     const GIMG_Allocator * allocator, const void * data, size_t size,
     GIMG_Stream ** out_stream);
+
+/**
+ * @brief Create a writable memory stream (for save/output).
+ * Data is appended on write; buffer grows as needed.
+ * @param out_stream On success, a stream that supports gimg_stream_write.
+ */
+GIMG_API GIMG_Result gimg_stream_create_memory_output(
+    GIMG_Stream ** out_stream);
+
+/**
+ * @brief Create a writable memory stream with a specific allocator.
+ */
+GIMG_API GIMG_Result gimg_stream_create_memory_output_with_allocator(
+    const GIMG_Allocator * allocator, GIMG_Stream ** out_stream);
+
+/**
+ * @brief Get the buffer and size written to a memory output stream.
+ * Only valid for streams created with gimg_stream_create_memory_output*.
+ * The buffer is owned by the stream and invalid after gimg_stream_destroy.
+ */
+GIMG_API void gimg_stream_output_buffer(const GIMG_Stream * stream,
+    const void ** out_data, size_t * out_size);
 
 /**
  * @brief Destroy stream and release resources.

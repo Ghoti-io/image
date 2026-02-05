@@ -12,6 +12,8 @@
 #include "../core/alloc_internal.h"
 #include "stream_internal.h"
 
+#define OUTPUT_INITIAL_CAP 4096
+
 GIMG_API GIMG_Result gimg_stream_create_memory(
     const void * data, size_t size, GIMG_Stream ** out_stream) {
   return gimg_stream_create_memory_with_allocator(NULL, data, size,
@@ -34,20 +36,111 @@ GIMG_API GIMG_Result gimg_stream_create_memory_with_allocator(
     return GIMG_ERR_OOM;
   }
   s->allocator = allocator;
-  s->data = (const unsigned char *)data;
+  s->data = (unsigned char *)data;
   s->size = size;
   s->position = 0;
   s->error = GIMG_OK;
   s->can_seek = true;
+  s->writable = false;
   *out_stream = s;
   return GIMG_OK;
+}
+
+static GIMG_Result grow_output(GIMG_Stream * s, size_t need) {
+  size_t new_cap = s->size ? s->size : OUTPUT_INITIAL_CAP;
+  while (new_cap < need) {
+    if (new_cap > (size_t)-1 / 2) {
+      return GIMG_ERR_OOM;
+    }
+    new_cap *= 2;
+  }
+  unsigned char * new_buf =
+      (unsigned char *)gimg_realloc(s->allocator, s->data, new_cap);
+  if (!new_buf) {
+    return GIMG_ERR_OOM;
+  }
+  s->data = new_buf;
+  s->size = new_cap;
+  return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_stream_create_memory_output(
+    GIMG_Stream ** out_stream) {
+  return gimg_stream_create_memory_output_with_allocator(NULL, out_stream);
+}
+
+GIMG_API GIMG_Result gimg_stream_create_memory_output_with_allocator(
+    const GIMG_Allocator * allocator, GIMG_Stream ** out_stream) {
+  if (!out_stream) {
+    return GIMG_ERR_INTERNAL;
+  }
+  allocator = gimg_alloc_or_default(allocator);
+  GIMG_Stream * s =
+      (GIMG_Stream *)gimg_malloc(allocator, sizeof(GIMG_Stream));
+  if (!s) {
+    return GIMG_ERR_OOM;
+  }
+  s->allocator = allocator;
+  s->data = NULL;
+  s->size = 0;
+  s->position = 0;
+  s->error = GIMG_OK;
+  s->can_seek = true;
+  s->writable = true;
+  *out_stream = s;
+  return GIMG_OK;
+}
+
+GIMG_API void gimg_stream_output_buffer(const GIMG_Stream * stream,
+    const void ** out_data, size_t * out_size) {
+  if (!stream || !out_data || !out_size) {
+    return;
+  }
+  *out_data = stream->writable ? stream->data : NULL;
+  *out_size = stream->writable ? stream->position : 0;
 }
 
 GIMG_API void gimg_stream_destroy(GIMG_Stream * stream) {
   if (!stream) {
     return;
   }
+  if (stream->writable && stream->data) {
+    gimg_free(stream->allocator, stream->data);
+    stream->data = NULL;
+  }
   gimg_free(stream->allocator, stream);
+}
+
+GIMG_API GIMG_Result gimg_stream_write(GIMG_Stream * stream,
+    const void * buffer, size_t size, size_t * out_bytes_written) {
+  if (!stream || !out_bytes_written) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_bytes_written = 0;
+  if (!stream->writable) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (stream->error != GIMG_OK) {
+    return stream->error;
+  }
+  if (size == 0) {
+    return GIMG_OK;
+  }
+  if (!buffer) {
+    return GIMG_ERR_INTERNAL;
+  }
+  size_t need = stream->position + size;
+  if (need > stream->size) {
+    GIMG_Result r = grow_output(stream, need);
+    if (r != GIMG_OK) {
+      stream->error = r;
+      return r;
+    }
+  }
+  memcpy(stream->data + stream->position, buffer, size);
+  stream->position += size;
+  *out_bytes_written = size;
+  return GIMG_OK;
 }
 
 GIMG_API GIMG_Result gimg_stream_read(
@@ -58,6 +151,10 @@ GIMG_API GIMG_Result gimg_stream_read(
   if (stream->error != GIMG_OK) {
     *out_bytes_read = 0;
     return stream->error;
+  }
+  if (stream->writable) {
+    *out_bytes_read = 0;
+    return GIMG_OK;
   }
   size_t avail = stream->size - stream->position;
   if (size > avail) {

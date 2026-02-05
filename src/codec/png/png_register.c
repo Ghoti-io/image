@@ -27,7 +27,7 @@ static void gimg_png_register(void) {
     return;
   }
   gimg_codec_set_load_cb(codec, (gimg_codec_load_fn)gimg_png_load);
-  gimg_codec_set_save_cb(codec, NULL);
+  gimg_codec_set_save_cb(codec, (gimg_codec_save_fn)gimg_png_save);
   gimg_codec_set_decode_cb(codec, (gimg_codec_decode_fn)gimg_png_decode);
   gimg_codec_set_free_doc_private(codec, gimg_png_free_doc_state);
   (void)gimg_codec_register(codec);

@@ -20,3 +20,10 @@ Generated files:
 | `png_iccp.png` | 1×1 gray + iCCP chunk (tiny zlib-compressed profile) |
 
 Tests in `tests/codec/png/test_png_decode.cpp` load these files when built with `GIMG_TEST_DATA_PNG` (the Makefile sets this to the path of this directory).
+
+**Encode test output:** When the PNG encode tests run, they write encoded PNGs to `tests/out/png/` (see `GIMG_TEST_OUT_PNG` in the Makefile). That directory is in `.gitignore`. `make test` runs all unit tests and then verifies these PNGs with PIL (Pillow); Pillow is required (`pip install Pillow`). To verify outputs manually:
+
+```bash
+python3 tests/data/png/verify_png_output.py
+# Or: python3 tests/data/png/verify_png_output.py /path/to/tests/out/png
+```
