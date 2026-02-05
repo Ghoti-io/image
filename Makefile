@@ -258,9 +258,9 @@ $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-# Test data path for PNG decode tests (reference files from tests/data/png/generate.py).
+# Test data path for PNG tests (reference files from tests/data/png/generate.py).
 TEST_DATA_PNG := $(CURDIR)/tests/data/png
-# Output directory for PNG encode tests (written when GIMG_TEST_OUT_PNG is set; add to .gitignore).
+# Output directory for PNG encode test output (add to .gitignore); verifier reads this.
 TEST_OUT_PNG := $(CURDIR)/tests/out/png
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
@@ -270,7 +270,7 @@ $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
 $(OBJ_DIR)/tests/test_png_encode.o: tests/codec/png/test_png_encode.cpp
 	@printf "\n### Compiling Test Object: test_png_encode ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Pattern rule for building test executables. Args: $1 = source path, $2 = executable name (from TEST_PAIRS).
 # Tests are compiled to .o files first, then linked separately (relink only when library changes).

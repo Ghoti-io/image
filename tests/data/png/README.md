@@ -22,7 +22,13 @@ Generated files:
 
 Tests in `tests/codec/png/test_png_decode.cpp` load these files when built with `GIMG_TEST_DATA_PNG` (the Makefile sets this to the path of this directory).
 
-**Encode test output:** When the PNG encode tests run, they write encoded PNGs to `tests/out/png/` (see `GIMG_TEST_OUT_PNG` in the Makefile). That directory is in `.gitignore`. `make test` runs all unit tests and then verifies these PNGs with PIL (Pillow); Pillow is required (`pip install Pillow`). To verify outputs manually:
+**Encode test output:** When the PNG encode tests run (with `GIMG_TEST_DATA_PNG` set), they write encoded PNGs to `tests/out/png/`. That directory is in `.gitignore`. `make test` runs all unit tests and then verifies these PNGs with PIL (Pillow); Pillow is required (`pip install Pillow`). Verification ensures:
+
+- Each file has a valid PNG signature and IHDR chunk.
+- Python (PIL) can open and verify each file (`Image.open()` + `im.verify()`).
+- Optional *expected features* per filename (see `verify_png_output.py` `EXPECTATIONS`): e.g. `interlaced_roundtrip.png` must have IHDR `interlace_method == 1`; `preserve_exif.png` must contain an `eXIf` chunk.
+
+To verify outputs manually:
 
 ```bash
 python3 tests/data/png/verify_png_output.py

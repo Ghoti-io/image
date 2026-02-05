@@ -102,11 +102,12 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
     GIMG_Doc ** out_doc);
 
 /**
- * @brief Save options (metadata policy, etc.).
+ * @brief Save options (metadata policy, interlace, etc.).
  */
 typedef struct {
   GIMG_Meta_Policy metadata_policy;
-  uint8_t _reserved[8];
+  unsigned int interlaced;  ///< 0 = non-interlaced (default), 1 = Adam7 (PNG).
+  uint8_t _reserved[4];
 } GIMG_Save_Options;
 
 /**

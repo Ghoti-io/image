@@ -2,9 +2,9 @@
  * @file
  *
  * PNG encode/save tests: round-trip, save to stream, metadata policy.
- * Uses reference files from tests/data/png/ when GIMG_TEST_DATA_PNG is defined.
- * When GIMG_TEST_OUT_PNG is defined, writes encoded PNGs to that directory for
- * inspection and verification (e.g. by tests/out/verify_png_output.py).
+ * When GIMG_TEST_DATA_PNG is defined, loads reference files from that
+ * directory and writes encoded PNGs to tests/out/png/ for verification
+ * (e.g. by tests/data/png/verify_png_output.py).
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
@@ -19,7 +20,7 @@
 #include <gtest/gtest.h>
 #include <vector>
 
-#if defined(GIMG_TEST_DATA_PNG) || defined(GIMG_TEST_OUT_PNG)
+#ifdef GIMG_TEST_DATA_PNG
 #include <fstream>
 #include <string>
 #endif
@@ -44,13 +45,25 @@ bool load_png_file(const char * filename, std::vector<uint8_t> & out) {
   }
   return true;
 }
-#endif
 
-#ifdef GIMG_TEST_OUT_PNG
-/** Write PNG bytes to tests/out/png/ for inspection or verification. */
+// Output directory derived from GIMG_TEST_DATA_PNG (data/png -> out/png).
+static std::string png_output_dir() {
+  std::string s(GIMG_TEST_DATA_PNG);
+  std::string const needle("data/png");
+  auto const pos = s.rfind(needle);
+  if (pos != std::string::npos) {
+    s.replace(pos, needle.size(), "out/png");
+  }
+  else {
+    s += "/../out/png";
+  }
+  return s;
+}
+
+/** Write PNG bytes to tests/out/png/ for verification. */
 static void write_png_output(
     const char * filename, const uint8_t * data, size_t size) {
-  std::string path = std::string(GIMG_TEST_OUT_PNG) + "/" + filename;
+  std::string path = png_output_dir() + "/" + filename;
   std::ofstream f(path, std::ios::binary);
   if (f && data && size > 0) {
     f.write(reinterpret_cast<const char *>(data),
@@ -105,7 +118,7 @@ TEST(PngEncode, SaveNullDocReturnsInternal) {
   GIMG_Result r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(out_s, nullptr);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(nullptr, out_s, "png", &opts, &report);
   EXPECT_NE(r, GIMG_OK);
@@ -134,7 +147,7 @@ TEST(PngEncode, SaveToMemoryOutputSucceeds) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(out_s, nullptr);
 
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save (1x1 gray)";
@@ -176,7 +189,7 @@ TEST(PngEncode, RoundTrip1x1Gray) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r != GIMG_OK) {
@@ -191,10 +204,8 @@ TEST(PngEncode, RoundTrip1x1Gray) {
       static_cast<const uint8_t *>(out_ptr) + saved_size);
   gimg_stream_destroy(out_s);
   out_s = nullptr;
-#ifdef GIMG_TEST_OUT_PNG
   write_png_output(
       "roundtrip_1x1_gray.png", saved_data.data(), saved_data.size());
-#endif
 
   /* Re-load from saved buffer */
   GIMG_Stream * s2 = nullptr;
@@ -244,7 +255,7 @@ TEST(PngEncode, RoundTrip1x1Rgba) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r != GIMG_OK) {
@@ -258,10 +269,8 @@ TEST(PngEncode, RoundTrip1x1Rgba) {
       static_cast<const uint8_t *>(out_ptr) + saved_size);
   gimg_stream_destroy(out_s);
   out_s = nullptr;
-#ifdef GIMG_TEST_OUT_PNG
   write_png_output(
       "roundtrip_1x1_rgba.png", saved_data.data(), saved_data.size());
-#endif
 
   GIMG_Stream * s2 = nullptr;
   r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
@@ -308,7 +317,7 @@ TEST(PngEncode, RoundTrip16BitGray) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save 16-bit grayscale";
@@ -367,7 +376,7 @@ TEST(PngEncode, RoundTrip16BitRgba) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save 16-bit RGBA";
@@ -426,7 +435,7 @@ TEST(PngEncode, RoundTripPalette) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save palette (PLTE + tRNS)";
@@ -485,7 +494,7 @@ TEST(PngEncode, SaveWithPreserveAllKeepsExif) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r != GIMG_OK) {
@@ -499,9 +508,7 @@ TEST(PngEncode, SaveWithPreserveAllKeepsExif) {
       static_cast<const uint8_t *>(out_ptr) + saved_size);
   gimg_stream_destroy(out_s);
   out_s = nullptr;
-#ifdef GIMG_TEST_OUT_PNG
   write_png_output("preserve_exif.png", saved_data.data(), saved_data.size());
-#endif
   gimg_doc_destroy(doc);
 
   /* Re-load and verify eXIf is present */
@@ -541,7 +548,7 @@ TEST(PngEncode, SaveWithDropAllStripsMetadata) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = { GIMG_META_DROP_ALL, { 0 } };
+  GIMG_Save_Options opts = {GIMG_META_DROP_ALL, 0, {0}};
   GIMG_Save_Report report = { 0, nullptr, { 0 } };
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK);
@@ -574,6 +581,270 @@ TEST(PngEncode, SaveWithDropAllStripsMetadata) {
     EXPECT_EQ(exif_size, 0u) << "eXIf must be stripped when saving with DROP_ALL";
   }
   gimg_doc_destroy(doc2);
+}
+
+TEST(PngEncode, SaveWithStripGpsOmitsExif) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_exif.png", buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_STRIP_GPS, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(
+      static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  gimg_stream_destroy(s2);
+
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc2);
+  if (raw) {
+    size_t exif_size = 0;
+    r = gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &exif_size);
+    EXPECT_NE(r, GIMG_OK);
+    EXPECT_EQ(exif_size, 0u)
+        << "eXIf must be stripped when saving with STRIP_GPS";
+  }
+  gimg_doc_destroy(doc2);
+}
+
+TEST(PngEncode, SaveWithNormalizeExifPreservesExif) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_exif.png", buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_NORMALIZE_EXIF, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(
+      static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  gimg_stream_destroy(s2);
+
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc2);
+  ASSERT_NE(raw, nullptr);
+  size_t exif_size = 0;
+  r = gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &exif_size);
+  EXPECT_EQ(r, GIMG_OK);
+  EXPECT_EQ(exif_size, 6u)
+      << "eXIf preserved after save with NORMALIZE_EXIF";
+  gimg_doc_destroy(doc2);
+}
+
+TEST(PngEncode, SaveWithKeepRawOnlyOmitsKnownSemantic) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_exif.png", buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_KEEP_RAW_ONLY, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(
+      static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  gimg_stream_destroy(s2);
+
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc2);
+  if (raw) {
+    size_t exif_size = 0;
+    r = gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &exif_size);
+    EXPECT_NE(r, GIMG_OK);
+    EXPECT_EQ(exif_size, 0u)
+        << "eXIf (known semantic) must be omitted with KEEP_RAW_ONLY";
+  }
+  gimg_doc_destroy(doc2);
+}
+
+TEST(PngEncode, SaveWithKeepCommonOnlyRoundTripsColorOnly) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_srgb.png", buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_KEEP_COMMON_ONLY, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(
+      static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  gimg_stream_destroy(s2);
+
+  GIMG_Raster * raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item((GIMG_Doc *)doc2, 0), nullptr, &raster);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+  EXPECT_NE(info, nullptr);
+  if (info) {
+    EXPECT_EQ(info->transfer, GIMG_TRANSFER_SRGB)
+        << "KEEP_COMMON_ONLY should preserve sRGB from raster";
+  }
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc2);
+}
+
+TEST(PngEncode, SaveInterlacedRoundTrip) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_1x1_rgba.png", buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Raster * ref_raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item((GIMG_Doc *)doc, 0), nullptr, &ref_raster);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(ref_raster, nullptr);
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 1, {0}};  /* interlaced=1 */
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(
+      static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  gimg_stream_destroy(s2);
+
+  GIMG_Raster * decoded = nullptr;
+  r = gimg_item_decode(gimg_doc_item((GIMG_Doc *)doc2, 0), nullptr, &decoded);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(decoded, nullptr);
+  EXPECT_TRUE(rasters_equal(ref_raster, decoded))
+      << "Interlaced save round-trip should match original pixels";
+  gimg_raster_destroy(ref_raster);
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(doc2);
+  write_png_output("interlaced_roundtrip.png", saved_data.data(),
+      saved_data.size());
 }
 
 #endif // GIMG_TEST_DATA_PNG
