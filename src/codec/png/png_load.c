@@ -5,6 +5,27 @@
  * codec-private state for decode.
  *
  * Copyright 2026 by Corey Pennycuff
+ *
+ * --- Internal algorithms and design ---
+ *
+ * Chunk order enforcement: We require the first chunk after the signature to
+ * be IHDR. For palette images (color_type 3), PLTE must appear before IDAT,
+ * and tRNS (if present) after PLTE and before IDAT. IDAT chunks may appear
+ * multiple times; we concatenate their payloads. Any other critical chunk
+ * (unknown or duplicate IHDR) is rejected. Ancillary chunks are accepted in
+ * any allowed position and stored in read order so save can round-trip them
+ * in the same order when metadata policy permits.
+ *
+ * Ancillary storage: Each ancillary chunk (tEXt, zTXt, iTXt, iCCP, sRGB, gAMA,
+ * cHRM, eXIf, or unknown 4-byte type) is appended to state->ancillary with a
+ * copy of its payload. Color interpretation (sRGB/iCCP/gAMA) is not applied
+ * during load; it is applied at decode time in png_decode.c so that the
+ * raster gets the correct GIMG_Color_Info. eXIf is also attached to doc
+ * meta_raw for round-trip (first eXIf only).
+ *
+ * Limits: GIMG_Load_Options.limits (e.g. max_chunk_size) is passed to
+ * gimg_png_read_chunk_payload_and_crc() to reject oversized chunks (bomb
+ * protection).
  */
 
 #include <ghoti.io/image/codec.h>

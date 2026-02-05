@@ -97,6 +97,7 @@ GIMG_API void gimg_meta_raw_destroy(GIMG_Meta_Raw * raw);
 // Save policies (spec §5.3). No silent stripping.
 //
 
+/** @see api_options for behavior per policy. */
 typedef enum {
   GIMG_META_PRESERVE_ALL = 0,
   GIMG_META_DROP_ALL,

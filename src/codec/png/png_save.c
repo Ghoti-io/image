@@ -6,6 +6,37 @@
  * raw DEFLATE + 4-byte Adler-32 per RFC 1950).
  *
  * Copyright 2026 by Corey Pennycuff
+ *
+ * --- Internal algorithms and design ---
+ *
+ * Chunk order: We emit chunks in PNG spec order (see format-references.md):
+ * signature, IHDR, ancillary (per GIMG_Meta_Policy), PLTE/tRNS if palette,
+ * IDAT (one or multiple), IEND. Ancillary is written in the order stored
+ * during load (read order) when policy is PRESERVE_ALL/STRIP_GPS/NORMALIZE_EXIF.
+ *
+ * Filter: All rows use filter type 0 (None). A heuristic (e.g. Sub/Up/Average/
+ * Paeth) could be added later to improve compression; raw bytes are passed to
+ * DEFLATE as-is.
+ *
+ * DEFLATE: We use the compress library's "deflate" method with strategy
+ * "filtered" (zlib-friendly). The raw image buffer (filter byte + row data
+ * per row, or Adam7 pass order when interlaced) is compressed in one shot;
+ * then we zlib-wrap (RFC 1950): 2-byte header (0x78 0x9C), raw DEFLATE bytes,
+ * 4-byte Adler-32 of the uncompressed data (big-endian).
+ *
+ * IDAT splitting: The zlib payload is written as one or more IDAT chunks with
+ * a maximum of 32 KiB per chunk. Some decoders expect smaller IDATs; splitting
+ * avoids compatibility issues while keeping chunk count low.
+ *
+ * Palette round-trip: When the doc was loaded from a palette PNG (state has
+ * PLTE/tRNS), we encode as palette if the raster is RGBA8 and every pixel
+ * matches a PLTE entry (and tRNS alpha when present). Matching is exact; no
+ * quantization. If any pixel has no match we fall back to unsupported (caller
+ * would need to requantize or use RGB).
+ *
+ * Interlace (Adam7): When options->interlaced is set, we fill raw rows in
+ * Adam7 pass order (seven passes per W3C §2.6), each row prefixed with filter
+ * byte 0, then DEFLATE the entire interlaced buffer.
  */
 
 #include <ghoti.io/image/codec.h>

@@ -87,6 +87,7 @@ GIMG_API GIMG_Result gimg_probe(
 
 /**
  * @brief Load options (limits, strictness, etc.).
+ * @see api_options
  */
 typedef struct {
   const GIMG_Limits * limits; ///< NULL = use defaults.
@@ -103,6 +104,7 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
 
 /**
  * @brief Save options (metadata policy, interlace, etc.).
+ * @see api_options
  */
 typedef struct {
   GIMG_Meta_Policy metadata_policy;
@@ -128,6 +130,7 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
 
 /**
  * @brief Decode options.
+ * @see api_options
  */
 typedef struct {
   const GIMG_Limits * limits;

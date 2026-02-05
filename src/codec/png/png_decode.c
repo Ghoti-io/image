@@ -13,6 +13,27 @@
  *   https://www.w3.org/TR/PNG-DataRep.html#DR.Interlaced-data-order
  *
  * Copyright 2026 by Corey Pennycuff
+ *
+ * --- Internal algorithms and design ---
+ *
+ * Pipeline: (1) Decompress concatenated IDAT payload (zlib: skip 2-byte header
+ * and 4-byte Adler-32, feed middle bytes to DEFLATE). (2) Apply row filters in
+ * reverse (None, Sub, Up, Average, Paeth per W3C PNG-Filters). (3) Convert
+ * raw samples to raster (grayscale/palette/RGBA, 8/16-bit, scale 1/2/4-bit to
+ * 8-bit). For interlaced (Adam7), step (2) is applied per pass; then we
+ * reassemble into a single raster by writing each pass into the correct
+ * pixel positions (x = x_offset + i*x_step, y = y_offset + j*y_step).
+ *
+ * Color chunk priority: PNG allows at most one of sRGB, iCCP, or gAMA (with
+ * optional cHRM) for color interpretation. We use first in priority order:
+ * sRGB > iCCP > gAMA. gimg_png_fill_color_info_from_ancillary() implements
+ * this; iCCP payload is decompressed (DEFLATE) with a max size limit (bomb
+ * protection) and the decompressed ICC bytes are attached to the raster.
+ *
+ * Limits: GIMG_Decode_Options.limits (max_decoded_pixels) is enforced before
+ * allocating the raster. The compress library DEFLATE decoder is given
+ * limits.max_output_bytes (from the same or default limits) to cap decompressed
+ * IDAT size.
  */
 
 #include <ghoti.io/image/codec.h>

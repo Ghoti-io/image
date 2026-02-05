@@ -13,6 +13,13 @@
  * (https://www.w3.org/TR/PNG-DataRep.html#DR.Interlaced-data-order).
  * See also image/documentation/format-references.md.
  *
+ * Internal design: PNG doc state (gimg_png_doc_state_t) holds IHDR, PLTE, tRNS,
+ * concatenated IDAT bytes, and an ordered list of ancillary chunks. Ancillary
+ * is stored in file read order so that save can emit chunks in spec order
+ * without re-sorting. Decode uses this state to DEFLATE-decompress IDAT,
+ * apply filters, and produce a raster; color interpretation (sRGB/iCCP/gAMA)
+ * is applied from the ancillary list at decode time (see png_decode.c).
+ *
  * Copyright 2026 by Corey Pennycuff
  */
 

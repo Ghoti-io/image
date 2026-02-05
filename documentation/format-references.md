@@ -1,3 +1,5 @@
+@page format_references Format and Specification References
+
 # Format and specification references
 
 This document lists the external specifications (or parts thereof) that the image library implements for each format. Use these as the authoritative reference for chunk layout, ordering, and behavior.
