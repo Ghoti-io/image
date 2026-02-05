@@ -160,6 +160,10 @@ GIMG_API const char * gimg_codec_name(const GIMG_Codec * codec) {
   return codec ? codec->name : NULL;
 }
 
+GIMG_API unsigned int gimg_codec_capabilities(const GIMG_Codec * codec) {
+  return codec ? codec->capabilities : 0;
+}
+
 GIMG_API GIMG_Result gimg_probe(
     GIMG_Stream * stream, GIMG_Probe_Result * result) {
   if (!stream || !result) {

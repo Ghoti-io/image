@@ -29,6 +29,7 @@
  */
 
 #include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/stream.h>
@@ -39,6 +40,17 @@
 #include "../../core/alloc_internal.h"
 #include "../codec_internal.h"
 #include "png_internal.h"
+
+/** Append diagnostic on load error (codec "png", offset, chunk type). */
+static void png_load_diag(GIMG_Diagnostics * d, size_t offset,
+    gimg_png_chunk_type_t type, GIMG_Result r, const char * action) {
+  if (!d) {
+    return;
+  }
+  (void)gimg_diagnostics_append(
+      d, "png", offset, (uint32_t)type, GIMG_DIAG_ERROR, action);
+  (void)r;
+}
 
 /** Chunk is critical if type has bit 5 of first byte = 0 (uppercase). */
 static int gimg_png_chunk_is_critical(gimg_png_chunk_type_t type) {
@@ -57,7 +69,7 @@ GIMG_Result gimg_png_append_ancillary(gimg_png_doc_state_t * state,
   alloc = gimg_alloc_or_default(alloc);
   if (state->ancillary_count >= state->ancillary_capacity) {
     size_t new_cap = state->ancillary_capacity ? state->ancillary_capacity * 2
-                                                : ANCILLARY_INITIAL_CAP;
+                                               : ANCILLARY_INITIAL_CAP;
     gimg_png_ancillary_t * new_arr = (gimg_png_ancillary_t *)gimg_realloc(
         alloc, state->ancillary, new_cap * sizeof(gimg_png_ancillary_t));
     if (!new_arr) {
@@ -106,8 +118,8 @@ void gimg_png_free_doc_state(GIMG_Codec * codec, void * codec_private) {
 }
 
 /** Append bytes to idat buffer; state->idat may be reallocated. */
-static GIMG_Result gimg_png_append_idat(gimg_png_doc_state_t * state,
-    const unsigned char * data, size_t len) {
+static GIMG_Result gimg_png_append_idat(
+    gimg_png_doc_state_t * state, const unsigned char * data, size_t len) {
   const GIMG_Allocator * alloc = state->allocator;
   alloc = gimg_alloc_or_default(alloc);
   size_t new_size = state->idat_size + len;
@@ -147,7 +159,6 @@ GIMG_Result gimg_png_append_frame_data(gimg_png_doc_state_t * state,
 GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc) {
-  (void)diagnostics;
   if (!codec || !stream || !out_doc) {
     return GIMG_ERR_INTERNAL;
   }
@@ -162,20 +173,29 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   alloc = gimg_alloc_or_default(alloc);
   const GIMG_Limits * limits = options ? options->limits : NULL;
 
-  // First chunk must be IHDR.
+  // First chunk must be IHDR (chunk starts at offset 8 after signature).
   uint32_t length = 0;
   gimg_png_chunk_type_t type = 0;
   r = gimg_png_read_chunk_header(stream, &length, &type);
   if (r != GIMG_OK) {
+    if (diagnostics) {
+      (void)gimg_diagnostics_append(diagnostics, "png", 8u, 0u, GIMG_DIAG_ERROR,
+          "truncated or invalid chunk header");
+    }
     return r;
   }
   if (type != GIMG_PNG_IHDR || length != GIMG_PNG_IHDR_LEN) {
+    png_load_diag(
+        diagnostics, 8u, type, GIMG_ERR_FORMAT, "first chunk must be IHDR");
     return GIMG_ERR_FORMAT;
   }
   unsigned char ihdr_buf[GIMG_PNG_IHDR_LEN];
-  r = gimg_png_read_chunk_payload_and_crc(stream, length, type, ihdr_buf,
-      limits);
+  r = gimg_png_read_chunk_payload_and_crc(
+      stream, length, type, ihdr_buf, limits);
   if (r != GIMG_OK) {
+    png_load_diag(diagnostics, 8u, type, r,
+        r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                            : "bad CRC or truncated");
     return r;
   }
   gimg_png_doc_state_t * state =
@@ -196,16 +216,24 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   int seen_idat = 0;
   /* APNG state (only meaningful when state->is_apng). */
   int actl_seen = 0;
-  int fcTL_before_first_idat = 0;  /* 1 if frame 0 uses IDAT (fcTL(0) before IDAT). */
+  int fcTL_before_first_idat =
+      0; /* 1 if frame 0 uses IDAT (fcTL(0) before IDAT). */
   uint32_t next_sequence = 0;
   size_t num_fcTL_seen = 0;
 
   for (;;) {
     r = gimg_png_read_chunk_header(stream, &length, &type);
     if (r != GIMG_OK) {
+      if (diagnostics) {
+        size_t pos = gimg_stream_tell(stream);
+        (void)gimg_diagnostics_append(diagnostics, "png",
+            pos >= 8 ? pos - 8 : 0, 0u, GIMG_DIAG_ERROR,
+            "truncated or invalid chunk header");
+      }
       gimg_png_free_doc_state(codec, state);
       return r;
     }
+    size_t chunk_start = gimg_stream_tell(stream) - 8;
 
     if (type == GIMG_PNG_IHDR) {
       gimg_png_free_doc_state(codec, state);
@@ -213,9 +241,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
 
     if (type == GIMG_PNG_IEND) {
-      r = gimg_png_read_chunk_payload_and_crc(stream, length, type, NULL,
-          limits);
+      r = gimg_png_read_chunk_payload_and_crc(
+          stream, length, type, NULL, limits);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                : "bad CRC or truncated");
         gimg_png_free_doc_state(codec, state);
         return r;
       }
@@ -225,20 +256,23 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (type == GIMG_PNG_acTL) {
       if (seen_idat) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;  /* acTL must appear before first IDAT. */
+        return GIMG_ERR_FORMAT; /* acTL must appear before first IDAT. */
       }
       if (actl_seen) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;  /* Duplicate acTL. */
+        return GIMG_ERR_FORMAT; /* Duplicate acTL. */
       }
       if (length != GIMG_PNG_acTL_LEN) {
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
       unsigned char actl_buf[GIMG_PNG_acTL_LEN];
-      r = gimg_png_read_chunk_payload_and_crc(stream, length, type, actl_buf,
-          limits);
+      r = gimg_png_read_chunk_payload_and_crc(
+          stream, length, type, actl_buf, limits);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                : "bad CRC or truncated");
         gimg_png_free_doc_state(codec, state);
         return r;
       }
@@ -251,14 +285,16 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       if (limits && limits->max_frame_count != 0 &&
           num_frames > limits->max_frame_count) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_LIMIT,
+            "increase max_frame_count");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_LIMIT;
       }
       state->is_apng = 1;
       state->frame_count = (size_t)num_frames;
       state->num_plays = num_plays;
-      state->frames = (gimg_png_frame_t *)gimg_calloc(alloc,
-          num_frames, sizeof(gimg_png_frame_t));
+      state->frames = (gimg_png_frame_t *)gimg_calloc(
+          alloc, num_frames, sizeof(gimg_png_frame_t));
       if (!state->frames) {
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_OOM;
@@ -273,9 +309,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return GIMG_ERR_FORMAT;
       }
       unsigned char fctl_buf[GIMG_PNG_fcTL_LEN];
-      r = gimg_png_read_chunk_payload_and_crc(stream, length, type, fctl_buf,
-          limits);
+      r = gimg_png_read_chunk_payload_and_crc(
+          stream, length, type, fctl_buf, limits);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                : "bad CRC or truncated");
         gimg_png_free_doc_state(codec, state);
         return r;
       }
@@ -287,13 +326,14 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       if (fctl.sequence_number != next_sequence) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;  /* Out-of-order sequence. */
+        return GIMG_ERR_FORMAT; /* Out-of-order sequence. */
       }
       next_sequence++;
       if (num_fcTL_seen == 0 && !seen_idat) {
         /* fcTL(0) before IDAT: default image is first frame. */
-        if (fctl.width != state->ihdr.width || fctl.height != state->ihdr.height ||
-            fctl.x_offset != 0 || fctl.y_offset != 0) {
+        if (fctl.width != state->ihdr.width ||
+            fctl.height != state->ihdr.height || fctl.x_offset != 0 ||
+            fctl.y_offset != 0) {
           gimg_png_free_doc_state(codec, state);
           return GIMG_ERR_FORMAT;
         }
@@ -301,7 +341,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       if (num_fcTL_seen >= state->frame_count) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;  /* More fcTL than acTL num_frames. */
+        return GIMG_ERR_FORMAT; /* More fcTL than acTL num_frames. */
       }
       state->frames[num_fcTL_seen].fctl = fctl;
       num_fcTL_seen++;
@@ -311,11 +351,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (type == GIMG_PNG_fdAT) {
       if (!state->is_apng) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;  /* fdAT only in APNG. */
+        return GIMG_ERR_FORMAT; /* fdAT only in APNG. */
       }
       if (num_fcTL_seen == 0) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;  /* fdAT must follow an fcTL. */
+        return GIMG_ERR_FORMAT; /* fdAT must follow an fcTL. */
       }
       if (length < GIMG_PNG_fdAT_SEQ_LEN) {
         gimg_png_free_doc_state(codec, state);
@@ -326,9 +366,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_OOM;
       }
-      r = gimg_png_read_chunk_payload_and_crc(stream, length, type, fdat_buf,
-          limits);
+      r = gimg_png_read_chunk_payload_and_crc(
+          stream, length, type, fdat_buf, limits);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                : "bad CRC or truncated");
         gimg_free(alloc, fdat_buf);
         gimg_png_free_doc_state(codec, state);
         return r;
@@ -370,9 +413,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return GIMG_ERR_OOM;
       }
       state->plte_size = length;
-      r = gimg_png_read_chunk_payload_and_crc(stream, length, type,
-          state->plte, limits);
+      r = gimg_png_read_chunk_payload_and_crc(
+          stream, length, type, state->plte, limits);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                : "bad CRC or truncated");
         gimg_png_free_doc_state(codec, state);
         return r;
       }
@@ -395,9 +441,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return GIMG_ERR_OOM;
       }
       state->trns_size = length;
-      r = gimg_png_read_chunk_payload_and_crc(stream, length, type,
-          state->trns, limits);
+      r = gimg_png_read_chunk_payload_and_crc(
+          stream, length, type, state->trns, limits);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                : "bad CRC or truncated");
         gimg_png_free_doc_state(codec, state);
         return r;
       }
@@ -416,14 +465,18 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
           gimg_png_free_doc_state(codec, state);
           return GIMG_ERR_OOM;
         }
-        r = gimg_png_read_chunk_payload_and_crc(stream, length, type, buf,
-            limits);
+        r = gimg_png_read_chunk_payload_and_crc(
+            stream, length, type, buf, limits);
         if (r != GIMG_OK) {
+          png_load_diag(diagnostics, chunk_start, type, r,
+              r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                  : "bad CRC or truncated");
           gimg_free(alloc, buf);
           gimg_png_free_doc_state(codec, state);
           return r;
         }
-        if (state->is_apng && fcTL_before_first_idat && state->frame_count > 0) {
+        if (state->is_apng && fcTL_before_first_idat &&
+            state->frame_count > 0) {
           r = gimg_png_append_frame_data(state, 0, buf, length);
         }
         else {
@@ -436,9 +489,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         }
       }
       else {
-        r = gimg_png_read_chunk_payload_and_crc(stream, length, type, NULL,
-            limits);
+        r = gimg_png_read_chunk_payload_and_crc(
+            stream, length, type, NULL, limits);
         if (r != GIMG_OK) {
+          png_load_diag(diagnostics, chunk_start, type, r,
+              r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                  : "bad CRC or truncated");
           gimg_png_free_doc_state(codec, state);
           return r;
         }
@@ -462,9 +518,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_OOM;
       }
-      r = gimg_png_read_chunk_payload_and_crc(stream, length, type,
-          payload_buf, limits);
+      r = gimg_png_read_chunk_payload_and_crc(
+          stream, length, type, payload_buf, limits);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                : "bad CRC or truncated");
         gimg_free(alloc, payload_buf);
         gimg_png_free_doc_state(codec, state);
         return r;
@@ -477,9 +536,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
     }
     else {
-      r = gimg_png_read_chunk_payload_and_crc(stream, length, type, NULL,
-          limits);
+      r = gimg_png_read_chunk_payload_and_crc(
+          stream, length, type, NULL, limits);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
+                                : "bad CRC or truncated");
         gimg_png_free_doc_state(codec, state);
         return r;
       }
@@ -536,9 +598,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       const gimg_png_fctl_t * f = &state->frames[i].fctl;
       doc->items[i].frame_delay_num = f->delay_num;
       doc->items[i].frame_delay_den = f->delay_den;
-      doc->items[i].dispose_op = (f->dispose_op == 0) ? GIMG_DISPOSE_NONE :
-          (f->dispose_op == 1) ? GIMG_DISPOSE_BACKGROUND : GIMG_DISPOSE_PREVIOUS;
-      doc->items[i].blend_op = (f->blend_op == 0) ? GIMG_BLEND_SOURCE : GIMG_BLEND_OVER;
+      doc->items[i].dispose_op = (f->dispose_op == 0) ? GIMG_DISPOSE_NONE
+          : (f->dispose_op == 1)                      ? GIMG_DISPOSE_BACKGROUND
+                                                      : GIMG_DISPOSE_PREVIOUS;
+      doc->items[i].blend_op =
+          (f->blend_op == 0) ? GIMG_BLEND_SOURCE : GIMG_BLEND_OVER;
     }
   }
 

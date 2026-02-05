@@ -26,6 +26,16 @@ extern "C" {
 typedef struct GIMG_Codec GIMG_Codec;
 
 /**
+ * @brief Codec capability bits (bitmask for codec->capabilities).
+ */
+#define GIMG_CAP_READ (1u << 0)
+#define GIMG_CAP_WRITE (1u << 1)
+#define GIMG_CAP_ANIMATION (1u << 2)
+#define GIMG_CAP_PALETTE (1u << 3)
+#define GIMG_CAP_ICC (1u << 4)
+#define GIMG_CAP_16BPC (1u << 5)
+
+/**
  * @brief Probe result: likely format name and confidence.
  */
 typedef struct {
@@ -77,6 +87,11 @@ GIMG_API GIMG_Codec * gimg_codec_by_name(const char * name);
 GIMG_API const char * gimg_codec_name(const GIMG_Codec * codec);
 
 /**
+ * @brief Get codec capability bitmask (GIMG_CAP_*).
+ */
+GIMG_API unsigned int gimg_codec_capabilities(const GIMG_Codec * codec);
+
+/**
  * @brief Probe stream to identify format (peek where possible).
  * @param stream Stream to probe.
  * @param result Filled with format name and confidence.
@@ -108,7 +123,7 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
  */
 typedef struct {
   GIMG_Meta_Policy metadata_policy;
-  unsigned int interlaced;  ///< 0 = non-interlaced (default), 1 = Adam7 (PNG).
+  unsigned int interlaced; ///< 0 = non-interlaced (default), 1 = Adam7 (PNG).
   uint8_t _reserved[4];
 } GIMG_Save_Options;
 

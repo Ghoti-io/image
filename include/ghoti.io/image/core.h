@@ -74,6 +74,21 @@ typedef enum {
 } GIMG_Strictness;
 
 /**
+ * @brief Append one diagnostic (grows the list; uses default allocator).
+ * @param diagnostics Diagnostics to append to (may be zero-initialized).
+ * @param codec_name Codec name (e.g. "png"); stored by reference.
+ * @param offset Stream offset when relevant (e.g. chunk start).
+ * @param chunk_or_tag_id Chunk type or tag (e.g. PNG 4-byte type as uint32_t).
+ * @param severity Warning or error.
+ * @param recommended_action Optional message (e.g. "increase max_chunk_size");
+ *   stored by reference, may be NULL.
+ * @return GIMG_OK or GIMG_ERR_OOM if realloc failed.
+ */
+GIMG_API GIMG_Result gimg_diagnostics_append(GIMG_Diagnostics * diagnostics,
+    const char * codec_name, size_t offset, uint32_t chunk_or_tag_id,
+    GIMG_Diag_Severity severity, const char * recommended_action);
+
+/**
  * @brief Get a human-readable string for a result code.
  * @param result The result code.
  * @return Static string describing the result, or "unknown" for invalid values.
