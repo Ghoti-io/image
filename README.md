@@ -7,6 +7,7 @@ Raster image decoding/encoding, metadata, transformations, and color management 
 The `image` library provides:
 
 - Core types and stream abstraction for image I/O
+- **Configurable allocator** — Pluggable malloc/free/realloc (`GIMG_ALLOCATOR`) for embedding and custom memory management; all owned allocations use the allocator (default is stdlib when NULL is passed)
 - Multi-image container model (documents, items, frames/pages)
 - Pixel formats, color representation, and metadata (common + raw preservation)
 - Codec framework and format support (PNG, JPEG, GIF, TIFF, etc. per spec roadmap)

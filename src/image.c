@@ -9,6 +9,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -28,12 +29,12 @@ GIMG_API uint32_t gimg_version_patch(void) {
 
 GIMG_API const char * gimg_version_string(void) {
   static char version_string[32];
-  static int initialized = 0;
+  static bool initialized = false;
 
   if (!initialized) {
     snprintf(version_string, sizeof(version_string), "%u.%u.%u",
         GIMG_VERSION_MAJOR, GIMG_VERSION_MINOR, GIMG_VERSION_PATCH);
-    initialized = 1;
+    initialized = true;
   }
 
   return version_string;

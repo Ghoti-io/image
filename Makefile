@@ -234,6 +234,11 @@ $(OBJ_DIR)/tests/%.o: tests/%.cpp
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+# Tests in tests/unit/ (object still under tests/ so executable name matches)
+$(OBJ_DIR)/tests/%.o: tests/unit/%.cpp
+	@printf "\n### Compiling Test Object: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Pattern rule for building test executables. Args: $1 = source path, $2 = executable name (from TEST_PAIRS).
 # Tests are compiled to .o files first, then linked separately (relink only when library changes).
