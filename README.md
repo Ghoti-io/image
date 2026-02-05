@@ -67,6 +67,3 @@ void my_function(int GIMG_MAYBE_UNUSED(param)) {
 }
 ```
 
-## Spec and roadmap
-
-See `tasks/ImageLibrarySpec.md` for the full feature specification and phase plan.

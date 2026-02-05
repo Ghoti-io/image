@@ -5,7 +5,8 @@
  *
  * Specification references:
  * - W3C PNG: https://www.w3.org/TR/PNG/ (Recommendation 10 Nov 2003)
- * - W3C Data representation (filtering, interlace): https://www.w3.org/TR/PNG-DataRep.html
+ * - W3C Data representation (filtering, interlace):
+ * https://www.w3.org/TR/PNG-DataRep.html
  * - W3C Filter algorithms: https://www.w3.org/TR/PNG-Filters.html
  * - ISO/IEC 15948:2004 (PNG — Portable Network Graphics)
  * - Interlaced data order (Adam7): W3C §2.6
@@ -49,8 +50,8 @@ static GIMG_Result gimg_png_result_from_gcomp(gcomp_status_t s) {
 }
 
 /** Bytes per row for a given pixel width (excluding filter byte). PNG §3.2. */
-static size_t gimg_png_row_bytes_for_width(const gimg_png_ihdr_t * ihdr,
-    uint32_t width) {
+static size_t gimg_png_row_bytes_for_width(
+    const gimg_png_ihdr_t * ihdr, uint32_t width) {
   uint8_t depth = ihdr->bit_depth;
   uint8_t ct = ihdr->color_type;
   size_t samples_per_row = 0;
@@ -90,8 +91,13 @@ typedef struct {
 } gimg_png_adam7_pass_t;
 
 static const gimg_png_adam7_pass_t gimg_png_adam7_passes[7] = {
-    {0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4},
-    {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2},
+    {0, 0, 8, 8},
+    {4, 0, 8, 8},
+    {0, 4, 4, 8},
+    {2, 0, 4, 4},
+    {0, 2, 2, 4},
+    {1, 0, 2, 2},
+    {0, 1, 1, 2},
 };
 
 /** Pass width/height for Adam7 (empty pass returns 0). W3C §2.6. */
@@ -107,7 +113,8 @@ static void gimg_png_adam7_pass_dims(uint32_t image_width,
       : 0;
 }
 
-/** Expected decompressed size for Adam7: sum over passes of rows × (1 + row_bytes). */
+/** Expected decompressed size for Adam7: sum over passes of rows × (1 +
+ * row_bytes). */
 static size_t gimg_png_expected_raw_size_adam7(const gimg_png_ihdr_t * ihdr) {
   uint32_t w = ihdr->width;
   uint32_t h = ihdr->height;
@@ -150,6 +157,54 @@ static unsigned char gimg_png_paeth(int a, int b, int c) {
     return (unsigned char)b;
   }
   return (unsigned char)c;
+}
+
+/** Scale a sample from 1/2/4-bit to 8-bit (PNG sample range to 0..255). */
+static unsigned char gimg_png_scale_to_8(unsigned int sample, uint8_t depth) {
+  if (depth >= 8) {
+    return (unsigned char)sample;
+  }
+  unsigned int max_val = (1u << depth) - 1u;
+  if (max_val == 0) {
+    return (unsigned char)(sample ? 255 : 0);
+  }
+  return (unsigned char)((sample * 255u + max_val / 2u) / max_val);
+}
+
+/** Read 16-bit big-endian sample from buffer. */
+static uint16_t gimg_png_read_be16(const unsigned char * p) {
+  return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
+
+/**
+ * Get one sample (channel) at x from a decoded row. For depth 1/2/4 samples are
+ * packed; for 8 one byte; for 16 two bytes big-endian. Returns value in
+ * 0..(2^depth - 1) for depth <= 8, or 0..65535 for depth 16.
+ */
+static uint32_t gimg_png_sample_at(
+    const unsigned char * row, uint32_t x, uint8_t depth) {
+  if (depth == 8) {
+    return (uint32_t)row[x];
+  }
+  if (depth == 16) {
+    return (uint32_t)gimg_png_read_be16(row + (size_t)x * 2u);
+  }
+  if (depth == 1) {
+    size_t byte_ix = (size_t)x / 8u;
+    unsigned int bit = 7 - (unsigned int)(x % 8u);
+    return (uint32_t)((row[byte_ix] >> bit) & 1u);
+  }
+  if (depth == 2) {
+    size_t byte_ix = (size_t)x / 4u;
+    unsigned int shift = 6 - 2u * (unsigned int)(x % 4u);
+    return (uint32_t)((row[byte_ix] >> shift) & 3u);
+  }
+  if (depth == 4) {
+    size_t byte_ix = (size_t)x / 2u;
+    uint32_t v = (uint32_t)row[byte_ix];
+    return (x & 1u) ? (v & 15u) : (v >> 4u);
+  }
+  return 0;
 }
 
 /** Bytes per pixel for raw PNG (bpp for filter). */
@@ -284,6 +339,15 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_INTERNAL;
   }
 
+  /* PNG IDAT is zlib-wrapped (RFC 1950): 2-byte header + raw DEFLATE + 4-byte
+   * Adler-32. The compress library "deflate" method expects raw DEFLATE. */
+  if (state->idat_size < 6) {
+    gcomp_options_destroy(gopts);
+    return GIMG_ERR_CORRUPT;
+  }
+  const unsigned char * deflate_src = state->idat + 2;
+  size_t deflate_len = state->idat_size - 6;
+
   unsigned char * raw = (unsigned char *)gimg_malloc(alloc, raw_size);
   if (!raw) {
     gcomp_options_destroy(gopts);
@@ -292,7 +356,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
 
   size_t out_len = 0;
   gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate", gopts,
-      state->idat, state->idat_size, raw, raw_size, &out_len);
+      deflate_src, deflate_len, raw, raw_size, &out_len);
   gcomp_options_destroy(gopts);
   if (gs != GCOMP_OK) {
     gimg_free(alloc, raw);
@@ -307,7 +371,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   uint32_t w = ihdr->width;
   uint32_t h = ihdr->height;
 
-  /* Build unfiltered image in row-major form (no filter bytes) for raster copy. */
+  /* Build unfiltered image in row-major form (no filter bytes) for raster copy.
+   */
   size_t raw_full_size = (size_t)h * row_bytes;
   unsigned char * raw_full = (unsigned char *)gimg_malloc(alloc, raw_full_size);
   if (!raw_full) {
@@ -357,32 +422,33 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
 
   gimg_free(alloc, raw);
 
-  /* Build raster in a canonical format (1.2.1: grayscale/RGB 8-bit). */
+  /* Select output format and whether we need alpha from tRNS. */
+  int use_trns = (state->trns && state->trns_size > 0) ? 1 : 0;
   const GIMG_Pixel_Format * format = NULL;
   switch (ihdr->color_type) {
   case 0:
-    format = &GIMG_PIXEL_GRAY8;
+    if (ihdr->bit_depth <= 8) {
+      format = use_trns ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_GRAY8;
+    }
+    else {
+      format = use_trns ? &GIMG_PIXEL_RGBA16 : &GIMG_PIXEL_GRAY16;
+    }
     break;
   case 2:
-    format = &GIMG_PIXEL_RGBA8;
+    format = (ihdr->bit_depth <= 8) ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_RGBA16;
     break;
   case 3:
-    format = &GIMG_PIXEL_RGBA8; /* Palette -> expand in 1.2.2; use RGBA8. */
+    format = &GIMG_PIXEL_RGBA8; /* Palette always expanded to RGBA8 (+ tRNS). */
     break;
   case 4:
-    format = &GIMG_PIXEL_RGBA8; /* Gray+alpha -> RGBA8 (R=G=B=gray, A=alpha). */
+    format = (ihdr->bit_depth <= 8) ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_RGBA16;
     break;
   case 6:
-    format = &GIMG_PIXEL_RGBA8;
+    format = (ihdr->bit_depth <= 8) ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_RGBA16;
     break;
   default:
-    gimg_free(alloc, raw);
+    gimg_free(alloc, raw_full);
     return GIMG_ERR_FORMAT;
-  }
-
-  if (ihdr->bit_depth != 8) {
-    gimg_free(alloc, raw);
-    return GIMG_ERR_UNSUPPORTED; /* 16-bit in 1.2.2. */
   }
 
   size_t bpp_out = gimg_raster_bytes_per_pixel(format);
@@ -398,53 +464,127 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_OOM;
   }
 
-  /* Copy unfiltered raw_full (row stride row_bytes) into output raster. */
+  /* Convert raw_full to output raster (all bit depths, tRNS, palette). */
+  uint8_t depth = ihdr->bit_depth;
+  size_t plte_entries = state->plte ? state->plte_size / 3u : 0;
+
   if (ihdr->color_type == 0) {
-    for (uint32_t y = 0; y < h; y++) {
-      const unsigned char * src = raw_full + (size_t)y * row_bytes;
-      unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
-      memcpy(dst, src, row_bytes);
+    /* Grayscale: 1/2/4/8/16-bit; tRNS = 2-byte gray key (BE). */
+    uint16_t trns_gray = 0;
+    if (use_trns && state->trns_size >= 2) {
+      trns_gray = gimg_png_read_be16(state->trns);
     }
-  }
-  else if (ihdr->color_type == 4) {
-    for (uint32_t y = 0; y < h; y++) {
-      const unsigned char * src = raw_full + (size_t)y * row_bytes;
-      unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
-      for (size_t x = 0; x < (size_t)w; x++) {
-        unsigned char g = src[0];
-        unsigned char a = src[1];
-        dst[0] = g;
-        dst[1] = g;
-        dst[2] = g;
-        dst[3] = a;
-        src += 2;
-        dst += 4;
+    if (format == &GIMG_PIXEL_GRAY8) {
+      for (uint32_t y = 0; y < h; y++) {
+        const unsigned char * src = raw_full + (size_t)y * row_bytes;
+        unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < w; x++) {
+          uint32_t v = gimg_png_sample_at(src, x, depth);
+          dst[x] = gimg_png_scale_to_8((unsigned int)v, depth);
+        }
+      }
+    }
+    else if (format == &GIMG_PIXEL_GRAY16) {
+      for (uint32_t y = 0; y < h; y++) {
+        const unsigned char * src = raw_full + (size_t)y * row_bytes;
+        unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < w; x++) {
+          uint32_t v = gimg_png_sample_at(src, x, depth);
+          uint16_t le = (uint16_t)v;
+          dst[x * 2u] = (unsigned char)(le & 0xFFu);
+          dst[x * 2u + 1u] = (unsigned char)(le >> 8);
+        }
+      }
+    }
+    else {
+      /* RGBA8 or RGBA16 with optional tRNS key. */
+      int has_trns = use_trns && state->trns_size >= 2;
+      for (uint32_t y = 0; y < h; y++) {
+        const unsigned char * src = raw_full + (size_t)y * row_bytes;
+        unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < w; x++) {
+          uint32_t v = gimg_png_sample_at(src, x, depth);
+          unsigned char g8 = depth <= 8
+              ? gimg_png_scale_to_8((unsigned int)v, depth)
+              : (unsigned char)((v >> 8) & 0xFFu);
+          uint16_t v16 = (uint16_t)v;
+          int match = has_trns && (v16 == trns_gray);
+          if (format == &GIMG_PIXEL_RGBA8) {
+            dst[0] = g8;
+            dst[1] = g8;
+            dst[2] = g8;
+            dst[3] = (unsigned char)(match ? 0 : 255);
+            dst += 4;
+          }
+          else {
+            uint16_t a16 = (uint16_t)(match ? 0 : 65535);
+            dst[0] = (unsigned char)(v16 & 0xFFu);
+            dst[1] = (unsigned char)(v16 >> 8);
+            dst[2] = (unsigned char)(v16 & 0xFFu);
+            dst[3] = (unsigned char)(v16 >> 8);
+            dst[4] = (unsigned char)(v16 & 0xFFu);
+            dst[5] = (unsigned char)(v16 >> 8);
+            dst[6] = (unsigned char)(a16 & 0xFFu);
+            dst[7] = (unsigned char)(a16 >> 8);
+            dst += 8;
+          }
+        }
       }
     }
   }
   else if (ihdr->color_type == 2) {
-    for (uint32_t y = 0; y < h; y++) {
-      const unsigned char * src = raw_full + (size_t)y * row_bytes;
-      unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
-      for (size_t x = 0; x < (size_t)w; x++) {
-        dst[0] = src[0];
-        dst[1] = src[1];
-        dst[2] = src[2];
-        dst[3] = 0xFF;
-        src += 3;
-        dst += 4;
+    /* RGB: 8 or 16-bit; tRNS = 6 bytes R,G,B key (BE). */
+    uint16_t trns_r = 0, trns_g = 0, trns_b = 0;
+    int has_trns = 0;
+    if (use_trns && state->trns_size >= 6) {
+      trns_r = gimg_png_read_be16(state->trns);
+      trns_g = gimg_png_read_be16(state->trns + 2);
+      trns_b = gimg_png_read_be16(state->trns + 4);
+      has_trns = 1;
+    }
+    if (depth == 8) {
+      for (uint32_t y = 0; y < h; y++) {
+        const unsigned char * src = raw_full + (size_t)y * row_bytes;
+        unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < w; x++) {
+          unsigned char r = src[0], g = src[1], b = src[2];
+          int match = has_trns &&
+              (r == (trns_r & 0xFF) && g == (trns_g & 0xFF) &&
+                  b == (trns_b & 0xFF));
+          dst[0] = r;
+          dst[1] = g;
+          dst[2] = b;
+          dst[3] = (unsigned char)(match ? 0 : 255);
+          src += 3;
+          dst += 4;
+        }
+      }
+    }
+    else {
+      for (uint32_t y = 0; y < h; y++) {
+        const unsigned char * src = raw_full + (size_t)y * row_bytes;
+        unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < w; x++) {
+          uint16_t r = gimg_png_read_be16(src), g = gimg_png_read_be16(src + 2),
+                   b = gimg_png_read_be16(src + 4);
+          int match = has_trns && (r == trns_r && g == trns_g && b == trns_b);
+          dst[0] = (unsigned char)(r & 0xFFu);
+          dst[1] = (unsigned char)(r >> 8);
+          dst[2] = (unsigned char)(g & 0xFFu);
+          dst[3] = (unsigned char)(g >> 8);
+          dst[4] = (unsigned char)(b & 0xFFu);
+          dst[5] = (unsigned char)(b >> 8);
+          dst[6] = (unsigned char)(match ? 0 : 255);
+          dst[7] = (unsigned char)(match ? 0 : 255);
+          src += 6;
+          dst += 8;
+        }
       }
     }
   }
-  else if (ihdr->color_type == 6) {
-    for (uint32_t y = 0; y < h; y++) {
-      const unsigned char * src = raw_full + (size_t)y * row_bytes;
-      unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
-      memcpy(dst, src, (size_t)w * 4);
-    }
-  }
   else if (ihdr->color_type == 3) {
-    if (!state->plte || state->plte_size < 3) {
+    /* Palette: 1/2/4/8-bit index; PLTE + optional tRNS (1 byte per entry). */
+    if (plte_entries == 0) {
       gimg_free(alloc, pixels);
       gimg_free(alloc, raw_full);
       return GIMG_ERR_FORMAT;
@@ -452,13 +592,82 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     for (uint32_t y = 0; y < h; y++) {
       const unsigned char * src = raw_full + (size_t)y * row_bytes;
       unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
-      for (size_t x = 0; x < (size_t)w; x++) {
-        unsigned int i = (unsigned int)(*src++) * 3;
-        dst[0] = i + 0 < state->plte_size ? state->plte[i + 0] : 0;
-        dst[1] = i + 1 < state->plte_size ? state->plte[i + 1] : 0;
-        dst[2] = i + 2 < state->plte_size ? state->plte[i + 2] : 0;
-        dst[3] = 0xFF;
+      for (uint32_t x = 0; x < w; x++) {
+        unsigned int idx = (unsigned int)gimg_png_sample_at(src, x, depth);
+        if (idx >= 256) {
+          idx = 255;
+        }
+        size_t off = (size_t)idx * 3u;
+        dst[0] = off + 0 < state->plte_size ? state->plte[off + 0] : 0;
+        dst[1] = off + 1 < state->plte_size ? state->plte[off + 1] : 0;
+        dst[2] = off + 2 < state->plte_size ? state->plte[off + 2] : 0;
+        dst[3] = (state->trns && (size_t)idx < state->trns_size)
+            ? state->trns[idx]
+            : (unsigned char)255;
         dst += 4;
+      }
+    }
+  }
+  else if (ihdr->color_type == 4) {
+    /* Grayscale + alpha: 8 or 16-bit. */
+    if (depth == 8) {
+      for (uint32_t y = 0; y < h; y++) {
+        const unsigned char * src = raw_full + (size_t)y * row_bytes;
+        unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < w; x++) {
+          unsigned char g = src[0], a = src[1];
+          dst[0] = dst[1] = dst[2] = g;
+          dst[3] = a;
+          src += 2;
+          dst += 4;
+        }
+      }
+    }
+    else {
+      for (uint32_t y = 0; y < h; y++) {
+        const unsigned char * src = raw_full + (size_t)y * row_bytes;
+        unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < w; x++) {
+          uint16_t g = gimg_png_read_be16(src), a = gimg_png_read_be16(src + 2);
+          dst[0] = (unsigned char)(g & 0xFFu);
+          dst[1] = (unsigned char)(g >> 8);
+          dst[2] = (unsigned char)(g & 0xFFu);
+          dst[3] = (unsigned char)(g >> 8);
+          dst[4] = (unsigned char)(g & 0xFFu);
+          dst[5] = (unsigned char)(g >> 8);
+          dst[6] = (unsigned char)(a & 0xFFu);
+          dst[7] = (unsigned char)(a >> 8);
+          src += 4;
+          dst += 8;
+        }
+      }
+    }
+  }
+  else if (ihdr->color_type == 6) {
+    /* RGBA: 8 or 16-bit. */
+    if (depth == 8) {
+      for (uint32_t y = 0; y < h; y++) {
+        const unsigned char * src = raw_full + (size_t)y * row_bytes;
+        unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
+        memcpy(dst, src, (size_t)w * 4u);
+      }
+    }
+    else {
+      for (uint32_t y = 0; y < h; y++) {
+        const unsigned char * src = raw_full + (size_t)y * row_bytes;
+        unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < w; x++) {
+          dst[0] = (unsigned char)(gimg_png_read_be16(src) & 0xFFu);
+          dst[1] = (unsigned char)(gimg_png_read_be16(src) >> 8);
+          dst[2] = (unsigned char)(gimg_png_read_be16(src + 2) & 0xFFu);
+          dst[3] = (unsigned char)(gimg_png_read_be16(src + 2) >> 8);
+          dst[4] = (unsigned char)(gimg_png_read_be16(src + 4) & 0xFFu);
+          dst[5] = (unsigned char)(gimg_png_read_be16(src + 4) >> 8);
+          dst[6] = (unsigned char)(gimg_png_read_be16(src + 6) & 0xFFu);
+          dst[7] = (unsigned char)(gimg_png_read_be16(src + 6) >> 8);
+          src += 8;
+          dst += 8;
+        }
       }
     }
   }

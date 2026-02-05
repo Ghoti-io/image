@@ -79,8 +79,8 @@ static size_t align_stride(size_t stride, uint8_t alignment) {
 GIMG_API GIMG_Result gimg_raster_create(uint32_t width, uint32_t height,
     const GIMG_Pixel_Format * format, GIMG_Raster_Ownership ownership,
     void * buffer, size_t stride_bytes, GIMG_Raster ** out_raster) {
-  return gimg_raster_create_with_allocator(NULL, width, height, format,
-      ownership, buffer, stride_bytes, out_raster);
+  return gimg_raster_create_with_allocator(
+      NULL, width, height, format, ownership, buffer, stride_bytes, out_raster);
 }
 
 GIMG_API GIMG_Result gimg_raster_create_with_allocator(
@@ -112,8 +112,7 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
   }
 
   allocator = gimg_alloc_or_default(allocator);
-  GIMG_Raster * r =
-      (GIMG_Raster *)gimg_malloc(allocator, sizeof(GIMG_Raster));
+  GIMG_Raster * r = (GIMG_Raster *)gimg_malloc(allocator, sizeof(GIMG_Raster));
   if (!r) {
     return GIMG_ERR_OOM;
   }
@@ -127,10 +126,16 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
 
   if (ownership == GIMG_RASTER_OWNED) {
     size_t total = stride_bytes * height;
-    r->pixels = gimg_calloc(allocator, 1, total);
-    if (!r->pixels) {
-      gimg_free(allocator, r);
-      return GIMG_ERR_OOM;
+    if (buffer) {
+      // Caller transferred ownership; see raster.h OWNED + non-NULL.
+      r->pixels = buffer;
+    }
+    else {
+      r->pixels = gimg_calloc(allocator, 1, total);
+      if (!r->pixels) {
+        gimg_free(allocator, r);
+        return GIMG_ERR_OOM;
+      }
     }
   }
   else {

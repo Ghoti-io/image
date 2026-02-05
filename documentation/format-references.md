@@ -10,7 +10,7 @@ This document lists the external specifications (or parts thereof) that the imag
 - **Interlaced data order (Adam7):** W3C §2.6 — <https://www.w3.org/TR/PNG-DataRep.html#DR.Interlaced-data-order>
 - **APNG:** APNG extension (animated PNG); see <https://wiki.mozilla.org/APNG_Specification> and common implementations.
 
-### Parts implemented (Phase 1)
+### Parts implemented
 
 - **Chunk layout and CRC:** Signature (5.2), chunk structure — 4-byte length (big-endian), 4-byte type, payload, 4-byte CRC (5.3). CRC-32 over type+payload per PNG spec.
 - **Chunk ordering:** Critical and ancillary chunk order per spec (5.4 and 11.2–11.3): IHDR first; PLTE (and tRNS if present) before IDAT for palette images; ancillary in allowed positions; IDAT contiguous; IEND last. On save, emit chunks in this order.

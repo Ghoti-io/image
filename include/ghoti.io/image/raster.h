@@ -82,10 +82,15 @@ extern const GIMG_Pixel_Format GIMG_PIXEL_GRAY16;
 
 /**
  * @brief Ownership of the pixel buffer.
+ *
+ * With GIMG_RASTER_OWNED, @a buffer may be NULL (library allocates and zeros)
+ * or non-NULL (caller transfers ownership; must have been allocated with the
+ * same allocator passed to create; that allocator frees it on destroy).
+ * Caller must not free or use the buffer after a successful return.
  */
 typedef enum {
-  GIMG_RASTER_OWNED = 0, ///< Library owns buffer; destroyed with raster.
-  GIMG_RASTER_BORROWED,  ///< Caller-owned view; raster does not free buffer.
+  GIMG_RASTER_OWNED = 0, ///< Library owns buffer; freed with raster.
+  GIMG_RASTER_BORROWED,  ///< Caller-owned; not freed by raster. buffer non-NULL.
   GIMG_RASTER_OWNERSHIP_COUNT
 } GIMG_Raster_Ownership;
 
@@ -98,8 +103,9 @@ GIMG_API GIMG_Result gimg_raster_create(uint32_t width, uint32_t height,
 
 /**
  * @brief Create a raster image with a specific allocator.
- * @param allocator Allocator for raster and owned pixel buffer (NULL =
- * default).
+ * @param allocator Allocator for the raster struct and, when OWNED and @a buffer is NULL,
+ * for the pixel buffer. When OWNED and @a buffer is non-NULL, @a buffer must have been
+ * allocated with this same allocator (freed with it on destroy). NULL = default allocator.
  */
 GIMG_API GIMG_Result gimg_raster_create_with_allocator(
     const GIMG_Allocator * allocator, uint32_t width, uint32_t height,

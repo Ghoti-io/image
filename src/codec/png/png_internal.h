@@ -46,7 +46,7 @@ typedef uint32_t gimg_png_chunk_type_t;
  * §11.2 Critical chunks.
  */
 #define GIMG_PNG_IHDR UINT32_C(0x49484452)   // 'IHDR' §11.2.1
-#define GIMG_PNG_PLTE UINT32_C(0x506C5445)   // 'PLTE' §11.2.2
+#define GIMG_PNG_PLTE UINT32_C(0x504C5445)   // 'PLTE' §11.2.2
 #define GIMG_PNG_IDAT UINT32_C(0x49444154)   // 'IDAT' §11.2.3
 #define GIMG_PNG_IEND UINT32_C(0x49454E44)   // 'IEND' §11.2.4
 #define GIMG_PNG_tRNS UINT32_C(0x74524E53)   // 'tRNS' §11.3.1.1

@@ -111,7 +111,7 @@ typedef struct GIMG_Limits {
 } GIMG_Limits;
 
 /**
- * @brief Initialize limits to defaults (no limits for Phase 0).
+ * @brief Initialize limits to defaults (no limits).
  */
 GIMG_API void gimg_limits_default(GIMG_Limits * limits);
 

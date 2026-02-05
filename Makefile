@@ -443,7 +443,7 @@ ifeq ($(OS_NAME), Linux)
 		[ -z "$$time_ms" ] && time_ms=0; \
 		total_tests=$$((total_tests + num_tests)); \
 		total_time=$$((total_time + time_ms)); \
-		has_leak=$$(echo "$$output" | grep -c "definitely lost\|indirectly lost\|possibly lost" || true); \
+		has_leak=$$(echo "$$output" | grep -c "are definitely lost\|are indirectly lost\|are possibly lost" || true); \
 		if [ $$exit_code -eq 0 ] && [ $$has_leak -eq 0 ]; then \
 			total_passed=$$((total_passed + num_tests)); \
 			printf "%-30s %8d %8dms \033[0;32mPASS\033[0m\n" "$$test_name" "$$num_tests" "$$time_ms"; \

@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * PNG chunk parsing and CRC tests (Phase 1.1.1).
+ * PNG chunk parsing and CRC tests.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -190,7 +190,7 @@ TEST(PngChunk, ProbeReturnsPng) {
 
 TEST(PngChunk, AncillaryTextChunkParsedAndStored) {
   // Minimal PNG with one tEXt ancillary chunk (payload "A\0B"); load must
-  // succeed and chunk is stored for round-trip (1.1.3).
+  // succeed and chunk is stored for round-trip.
   std::vector<uint8_t> buf;
   append(buf, kPngSignature, sizeof(kPngSignature));
   append(buf, kIhdrChunk, sizeof(kIhdrChunk));
@@ -212,7 +212,7 @@ TEST(PngChunk, AncillaryTextChunkParsedAndStored) {
 }
 
 TEST(PngChunk, MultipleAncillaryChunksStoredInOrder) {
-  // PNG with two tEXt chunks; load must succeed and both stored in order (1.1.3).
+  // PNG with two tEXt chunks; load must succeed and both stored in order.
   std::vector<uint8_t> buf;
   append(buf, kPngSignature, sizeof(kPngSignature));
   append(buf, kIhdrChunk, sizeof(kIhdrChunk));
