@@ -20,6 +20,9 @@ Generated files:
 | `png_exif.png` | 1×1 gray + eXIf chunk (minimal payload) |
 | `png_iccp.png` | 1×1 gray + iCCP chunk (tiny zlib-compressed profile) |
 | `png_apng_2frame.png` | 2-frame APNG: default image is first frame (1×1 gray 0, then 0x80); frame 0 delay 50/100, dispose NONE, blend SOURCE; frame 1 delay 25/100, dispose BACKGROUND, blend OVER |
+| `png_apng_3frame.png` | 3-frame APNG: gray 0, 0x80, 0xC0; frame 0 delay 50/100 dispose NONE blend SOURCE; frame 1 delay 25/100 dispose BACKGROUND blend OVER; frame 2 delay 10/100 dispose PREVIOUS blend OVER |
+
+**APNG (1.4):** Multi-frame reference files above are used by decode and encode tests. Tests also cover invalid/truncated APNG (no crash, error returned) and limits (`max_frame_count`, `max_chunk_size`).
 
 Tests in `tests/codec/png/test_png_decode.cpp` load these files when built with `GIMG_TEST_DATA_PNG` (the Makefile sets this to the path of this directory).
 

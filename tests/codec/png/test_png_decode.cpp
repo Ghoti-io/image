@@ -419,6 +419,152 @@ TEST(PngDecode, ApngTwoFramesLoadAndDecode) {
   gimg_stream_destroy(s);
 }
 
+TEST(PngDecode, ApngThreeFramesLoadAndDecode) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_apng_3frame.png", buf))
+      << "Run tests/data/png/generate.py";
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(s, nullptr);
+
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  EXPECT_EQ(gimg_doc_item_count(doc), 3u);
+
+  uint16_t num = 0, den = 0;
+  GIMG_Item * item0 = gimg_doc_item((GIMG_Doc *)doc, 0);
+  GIMG_Item * item1 = gimg_doc_item((GIMG_Doc *)doc, 1);
+  GIMG_Item * item2 = gimg_doc_item((GIMG_Doc *)doc, 2);
+  ASSERT_NE(item0, nullptr);
+  ASSERT_NE(item1, nullptr);
+  ASSERT_NE(item2, nullptr);
+
+  gimg_item_frame_delay(item0, &num, &den);
+  EXPECT_EQ(num, 50u);
+  EXPECT_EQ(den, 100u);
+  EXPECT_EQ(gimg_item_dispose_op(item0), GIMG_DISPOSE_NONE);
+  EXPECT_EQ(gimg_item_blend_op(item0), GIMG_BLEND_SOURCE);
+
+  gimg_item_frame_delay(item1, &num, &den);
+  EXPECT_EQ(num, 25u);
+  EXPECT_EQ(den, 100u);
+  EXPECT_EQ(gimg_item_dispose_op(item1), GIMG_DISPOSE_BACKGROUND);
+  EXPECT_EQ(gimg_item_blend_op(item1), GIMG_BLEND_OVER);
+
+  gimg_item_frame_delay(item2, &num, &den);
+  EXPECT_EQ(num, 10u);
+  EXPECT_EQ(den, 100u);
+  EXPECT_EQ(gimg_item_dispose_op(item2), GIMG_DISPOSE_PREVIOUS);
+  EXPECT_EQ(gimg_item_blend_op(item2), GIMG_BLEND_OVER);
+
+  GIMG_Raster * r0 = nullptr;
+  GIMG_Raster * r1 = nullptr;
+  GIMG_Raster * r2 = nullptr;
+  r = gimg_item_decode(item0, nullptr, &r0);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(r0, nullptr);
+  r = gimg_item_decode(item1, nullptr, &r1);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(r1, nullptr);
+  r = gimg_item_decode(item2, nullptr, &r2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(r2, nullptr);
+
+  EXPECT_EQ(static_cast<const unsigned char *>(gimg_raster_pixels_const(r0))[0],
+            0);
+  EXPECT_EQ(static_cast<const unsigned char *>(gimg_raster_pixels_const(r1))[0],
+            0x80);
+  EXPECT_EQ(static_cast<const unsigned char *>(gimg_raster_pixels_const(r2))[0],
+            0xC0);
+
+  gimg_raster_destroy(r0);
+  gimg_raster_destroy(r1);
+  gimg_raster_destroy(r2);
+  gimg_doc_destroy(doc);
+}
+
+TEST(PngDecode, ApngTruncatedReturnsErrorNoCrash) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf));
+
+  /* Truncate before IEND (e.g. remove last 20 bytes). Load should fail. */
+  if (buf.size() > 20) {
+    buf.resize(buf.size() - 20);
+  }
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(s, nullptr);
+
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(doc, nullptr);
+  gimg_stream_destroy(s);
+}
+
+TEST(PngDecode, ApngInvalidSignatureRejected) {
+  /* Not a PNG signature: load should fail with FORMAT or similar. */
+  std::vector<uint8_t> buf = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(s, nullptr);
+
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(doc, nullptr);
+  gimg_stream_destroy(s);
+}
+
+TEST(PngDecode, ApngMaxFrameCountLimitEnforced) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf));
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(s, nullptr);
+
+  GIMG_Limits limits = {};
+  limits.max_frame_count = 1;
+  GIMG_Load_Options opts = {&limits, GIMG_NORMAL, {0}};
+
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, &opts, nullptr, &doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(r, GIMG_ERR_LIMIT) << "acTL num_frames=2 exceeds max_frame_count=1";
+  EXPECT_EQ(doc, nullptr);
+}
+
+TEST(PngDecode, ApngMaxChunkSizeLimitEnforced) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_1x1_gray.png", buf));
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(s, nullptr);
+
+  GIMG_Limits limits = {};
+  limits.max_chunk_size = 8;  /* IHDR payload is 13 bytes */
+  GIMG_Load_Options opts = {&limits, GIMG_NORMAL, {0}};
+
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, &opts, nullptr, &doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(r, GIMG_ERR_LIMIT) << "IHDR length 13 exceeds max_chunk_size=8";
+  EXPECT_EQ(doc, nullptr);
+}
+
 #endif // GIMG_TEST_DATA_PNG
 
 int main(int argc, char ** argv) {

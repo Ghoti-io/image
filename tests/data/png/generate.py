@@ -189,6 +189,32 @@ def main() -> None:
     )
     write_png("png_apng_2frame.png", apng_2frame)
 
+    # ---- 3-frame APNG (dispose/blend variants): gray 0, 0x80, 0xC0 ----
+    # Frame 0: NONE/SOURCE; frame 1: BACKGROUND/OVER; frame 2: PREVIOUS/OVER
+    actl3 = struct.pack(">II", 3, 0)
+    fctl0_3 = struct.pack(">IIIIIHHBB", 0, 1, 1, 0, 0, 50, 100, 0, 0)
+    fctl1_3 = struct.pack(">IIIIIHHBB", 1, 1, 1, 0, 0, 25, 100, 1, 1)
+    # fcTL sequence numbers share counter with fdAT: 0,1, then fdAT=2, then fcTL=3, fdAT=4
+    fctl2_3 = struct.pack(">IIIIIHHBB", 3, 1, 1, 0, 0, 10, 100, 2, 1)
+    raw_f2 = bytes([0x00, 0xC0])
+    frame2_zlib = idat_zlib(raw_f2)
+    # fdAT seq: after fcTL(0),fcTL(1) next_sequence=2; after fdAT next_sequence=3; after fcTL(2) next_sequence=4
+    fdat1 = struct.pack(">I", 2) + frame1_zlib   # first fdAT (frame 1) seq=2
+    fdat2 = struct.pack(">I", 4) + frame2_zlib   # second fdAT (frame 2) seq=4
+    apng_3frame = (
+        signature
+        + png_chunk(b"IHDR", ihdr_1x1_gray)
+        + png_chunk(b"acTL", actl3)
+        + png_chunk(b"fcTL", fctl0_3)
+        + png_chunk(b"IDAT", idat_frame0)
+        + png_chunk(b"fcTL", fctl1_3)
+        + png_chunk(b"fdAT", fdat1)
+        + png_chunk(b"fcTL", fctl2_3)
+        + png_chunk(b"fdAT", fdat2)
+        + iend
+    )
+    write_png("png_apng_3frame.png", apng_3frame)
+
 
 if __name__ == "__main__":
     main()

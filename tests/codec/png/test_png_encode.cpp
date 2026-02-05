@@ -847,6 +847,94 @@ TEST(PngEncode, SaveInterlacedRoundTrip) {
       saved_data.size());
 }
 
+TEST(PngEncode, ApngRoundTrip) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf))
+      << "Run tests/data/png/generate.py";
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK) << "APNG save";
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(
+      static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+
+  /* Re-load and verify frame count, timing, dispose/blend, and pixels. */
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc2), 2u);
+  gimg_stream_destroy(s2);
+
+  GIMG_Item * item0 = gimg_doc_item((GIMG_Doc *)doc2, 0);
+  GIMG_Item * item1 = gimg_doc_item((GIMG_Doc *)doc2, 1);
+  ASSERT_NE(item0, nullptr);
+  ASSERT_NE(item1, nullptr);
+
+  uint16_t num = 0, den = 0;
+  gimg_item_frame_delay(item0, &num, &den);
+  EXPECT_EQ(num, 50u);
+  EXPECT_EQ(den, 100u);
+  EXPECT_EQ(gimg_item_dispose_op(item0), GIMG_DISPOSE_NONE);
+  EXPECT_EQ(gimg_item_blend_op(item0), GIMG_BLEND_SOURCE);
+
+  gimg_item_frame_delay(item1, &num, &den);
+  EXPECT_EQ(num, 25u);
+  EXPECT_EQ(den, 100u);
+  EXPECT_EQ(gimg_item_dispose_op(item1), GIMG_DISPOSE_BACKGROUND);
+  EXPECT_EQ(gimg_item_blend_op(item1), GIMG_BLEND_OVER);
+
+  GIMG_Raster * r0 = nullptr;
+  GIMG_Raster * r1 = nullptr;
+  r = gimg_item_decode(item0, nullptr, &r0);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(r0, nullptr);
+  r = gimg_item_decode(item1, nullptr, &r1);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(r1, nullptr);
+
+  const unsigned char * px0 =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(r0));
+  const unsigned char * px1 =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(r1));
+  ASSERT_NE(px0, nullptr);
+  ASSERT_NE(px1, nullptr);
+  EXPECT_EQ(px0[0], 0) << "frame 0 gray";
+  EXPECT_EQ(px1[0], 0x80) << "frame 1 gray";
+
+  gimg_raster_destroy(r0);
+  gimg_raster_destroy(r1);
+  gimg_doc_destroy(doc2);
+  write_png_output("apng_2frame_roundtrip.png", saved_data.data(),
+      saved_data.size());
+}
+
 #endif // GIMG_TEST_DATA_PNG
 
 int main(int argc, char ** argv) {
