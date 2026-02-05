@@ -6,11 +6,13 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <string.h>
+
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 
-#include "../core/alloc_internal.h"
 #include "../codec/codec_internal.h"
+#include "../core/alloc_internal.h"
 #include "doc_internal.h"
 
 GIMG_API GIMG_Result gimg_doc_create(GIMG_Doc ** out_doc) {
@@ -39,6 +41,10 @@ GIMG_API GIMG_Result gimg_doc_create_with_allocator(
   doc->meta_raw = NULL;
   doc->items[0].index = 0;
   doc->items[0].doc = doc;
+  doc->items[0].frame_delay_num = 0;
+  doc->items[0].frame_delay_den = 0;
+  doc->items[0].dispose_op = GIMG_DISPOSE_NONE;
+  doc->items[0].blend_op = GIMG_BLEND_SOURCE;
   *out_doc = doc;
   return GIMG_OK;
 }
@@ -73,12 +79,94 @@ GIMG_API GIMG_Item * gimg_doc_item(const GIMG_Doc * doc, size_t index) {
   return &doc->items[index];
 }
 
+GIMG_API GIMG_Result gimg_doc_set_item_count(GIMG_Doc * doc, size_t count) {
+  if (!doc || count < 1) {
+    return GIMG_ERR_INTERNAL;
+  }
+  const GIMG_Allocator * alloc = doc->allocator;
+  if (count == doc->item_count) {
+    return GIMG_OK;
+  }
+  GIMG_Item * new_items =
+      (GIMG_Item *)gimg_malloc(alloc, count * sizeof(GIMG_Item));
+  if (!new_items) {
+    return GIMG_ERR_OOM;
+  }
+  size_t copy_count = count < doc->item_count ? count : doc->item_count;
+  if (copy_count > 0) {
+    memcpy(new_items, doc->items, copy_count * sizeof(GIMG_Item));
+  }
+  for (size_t i = copy_count; i < count; i++) {
+    new_items[i].index = i;
+    new_items[i].doc = doc;
+    new_items[i].frame_delay_num = 0;
+    new_items[i].frame_delay_den = 0;
+    new_items[i].dispose_op = GIMG_DISPOSE_NONE;
+    new_items[i].blend_op = GIMG_BLEND_SOURCE;
+  }
+  for (size_t i = 0; i < count; i++) {
+    new_items[i].doc = doc;
+    new_items[i].index = i;
+  }
+  gimg_free(alloc, doc->items);
+  doc->items = new_items;
+  doc->item_count = count;
+  return GIMG_OK;
+}
+
+GIMG_API void gimg_item_frame_delay(
+    const GIMG_Item * item, uint16_t * num, uint16_t * den) {
+  if (!item) {
+    if (num) {
+      *num = 0;
+    }
+    if (den) {
+      *den = 0;
+    }
+    return;
+  }
+  if (num) {
+    *num = item->frame_delay_num;
+  }
+  if (den) {
+    *den = item->frame_delay_den;
+  }
+}
+
+GIMG_API void gimg_item_set_frame_delay(
+    GIMG_Item * item, uint16_t num, uint16_t den) {
+  if (item) {
+    item->frame_delay_num = num;
+    item->frame_delay_den = den;
+  }
+}
+
+GIMG_API GIMG_Dispose_Op gimg_item_dispose_op(const GIMG_Item * item) {
+  return item ? item->dispose_op : GIMG_DISPOSE_NONE;
+}
+
+GIMG_API void gimg_item_set_dispose_op(GIMG_Item * item, GIMG_Dispose_Op op) {
+  if (item && (unsigned)op < (unsigned)GIMG_DISPOSE_OP_COUNT) {
+    item->dispose_op = op;
+  }
+}
+
+GIMG_API GIMG_Blend_Op gimg_item_blend_op(const GIMG_Item * item) {
+  return item ? item->blend_op : GIMG_BLEND_SOURCE;
+}
+
+GIMG_API void gimg_item_set_blend_op(GIMG_Item * item, GIMG_Blend_Op op) {
+  if (item && (unsigned)op < (unsigned)GIMG_BLEND_OP_COUNT) {
+    item->blend_op = op;
+  }
+}
+
 GIMG_API GIMG_Meta_Raw * gimg_doc_meta_raw(const GIMG_Doc * doc) {
   return doc ? doc->meta_raw : NULL;
 }
 
-GIMG_API GIMG_Result gimg_doc_ensure_meta_raw(GIMG_Doc * doc,
-    GIMG_Meta_Raw ** out_raw) {
+GIMG_API GIMG_Result gimg_doc_ensure_meta_raw(
+    GIMG_Doc * doc, GIMG_Meta_Raw ** out_raw) {
   if (!doc || !out_raw) {
     return GIMG_ERR_INTERNAL;
   }
@@ -87,8 +175,8 @@ GIMG_API GIMG_Result gimg_doc_ensure_meta_raw(GIMG_Doc * doc,
     *out_raw = doc->meta_raw;
     return GIMG_OK;
   }
-  GIMG_Result r = gimg_meta_raw_create_with_allocator(doc->allocator,
-      &doc->meta_raw);
+  GIMG_Result r =
+      gimg_meta_raw_create_with_allocator(doc->allocator, &doc->meta_raw);
   if (r != GIMG_OK) {
     return r;
   }

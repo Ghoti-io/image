@@ -19,6 +19,7 @@ Generated files:
 | `png_srgb.png` | 1×1 gray + sRGB chunk (rendering intent 0) |
 | `png_exif.png` | 1×1 gray + eXIf chunk (minimal payload) |
 | `png_iccp.png` | 1×1 gray + iCCP chunk (tiny zlib-compressed profile) |
+| `png_apng_2frame.png` | 2-frame APNG: default image is first frame (1×1 gray 0, then 0x80); frame 0 delay 50/100, dispose NONE, blend SOURCE; frame 1 delay 25/100, dispose BACKGROUND, blend OVER |
 
 Tests in `tests/codec/png/test_png_decode.cpp` load these files when built with `GIMG_TEST_DATA_PNG` (the Makefile sets this to the path of this directory).
 

@@ -212,11 +212,6 @@ static size_t gimg_png_row_bytes_for_width(
   return (samples_per_row * (size_t)depth + 7) / 8;
 }
 
-/** Bytes per row of image data (excluding filter byte). */
-static size_t gimg_png_row_bytes(const gimg_png_ihdr_t * ihdr) {
-  return gimg_png_row_bytes_for_width(ihdr, ihdr->width);
-}
-
 /** Adam7 pass parameters (W3C §2.6 Interlaced data order). */
 typedef struct {
   unsigned int x_offset;
@@ -246,37 +241,6 @@ static void gimg_png_adam7_pass_dims(uint32_t image_width,
   *out_pass_height = (image_height > p->y_offset)
       ? (uint32_t)((image_height - p->y_offset + p->y_step - 1) / p->y_step)
       : 0;
-}
-
-/** Expected decompressed size for Adam7: sum over passes of rows × (1 +
- * row_bytes). */
-static size_t gimg_png_expected_raw_size_adam7(const gimg_png_ihdr_t * ihdr) {
-  uint32_t w = ihdr->width;
-  uint32_t h = ihdr->height;
-  size_t total = 0;
-  for (int pass = 0; pass < 7; pass++) {
-    uint32_t pw = 0;
-    uint32_t ph = 0;
-    gimg_png_adam7_pass_dims(w, h, (unsigned int)pass, &pw, &ph);
-    if (pw == 0 || ph == 0) {
-      continue;
-    }
-    size_t row_bytes = gimg_png_row_bytes_for_width(ihdr, pw);
-    total += (size_t)ph * (1 + row_bytes);
-  }
-  return total;
-}
-
-/** Expected decompressed size (non-interlaced or Adam7). */
-static size_t gimg_png_expected_raw_size(const gimg_png_ihdr_t * ihdr) {
-  if (ihdr->interlace_method == 0) {
-    size_t row = gimg_png_row_bytes(ihdr);
-    if (row == 0) {
-      return 0;
-    }
-    return (size_t)ihdr->height * (1 + row);
-  }
-  return gimg_png_expected_raw_size_adam7(ihdr);
 }
 
 /** Paeth predictor (W3C PNG-Filters §6.6). */
@@ -448,26 +412,63 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   }
 
   gimg_png_doc_state_t * state = (gimg_png_doc_state_t *)doc->codec_private;
-  if (item->index >= 1) {
-    return GIMG_ERR_UNSUPPORTED; // Single-frame only for now.
-  }
 
   const gimg_png_ihdr_t * ihdr = &state->ihdr;
+  uint32_t frame_width = ihdr->width;
+  uint32_t frame_height = ihdr->height;
+  const unsigned char * idat_ptr = state->idat;
+  size_t idat_len = state->idat_size;
+
+  if (state->is_apng && state->frames) {
+    if (item->index >= state->frame_count) {
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    const gimg_png_frame_t * frame = &state->frames[item->index];
+    frame_width = frame->fctl.width;
+    frame_height = frame->fctl.height;
+    idat_ptr = frame->data;
+    idat_len = frame->data_size;
+  }
+  else if (item->index >= 1) {
+    return GIMG_ERR_UNSUPPORTED;  /* Single-frame only for non-APNG. */
+  }
+
   if (ihdr->interlace_method > 1) {
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  size_t row_bytes = gimg_png_row_bytes(ihdr);
-  size_t raw_size = gimg_png_expected_raw_size(ihdr);
-  if (raw_size == 0 || !state->idat) {
+  size_t row_bytes = gimg_png_row_bytes_for_width(ihdr, frame_width);
+  size_t raw_size;
+  if (ihdr->interlace_method == 0) {
+    if (row_bytes == 0) {
+      return GIMG_ERR_FORMAT;
+    }
+    raw_size = (size_t)frame_height * (1 + row_bytes);
+  }
+  else {
+    size_t total = 0;
+    for (int pass = 0; pass < 7; pass++) {
+      uint32_t pw = 0;
+      uint32_t ph = 0;
+      gimg_png_adam7_pass_dims(frame_width, frame_height, (unsigned int)pass,
+          &pw, &ph);
+      if (pw == 0 || ph == 0) {
+        continue;
+      }
+      size_t pass_row_bytes = gimg_png_row_bytes_for_width(ihdr, pw);
+      total += (size_t)ph * (1 + pass_row_bytes);
+    }
+    raw_size = total;
+  }
+  if (raw_size == 0 || !idat_ptr) {
     return GIMG_ERR_FORMAT;
   }
 
   const GIMG_Limits * limits = options ? options->limits : NULL;
   size_t max_pixels = (limits && limits->max_decoded_pixels != 0)
       ? limits->max_decoded_pixels
-      : (size_t)ihdr->width * (size_t)ihdr->height;
-  if ((size_t)ihdr->width * (size_t)ihdr->height > max_pixels) {
+      : (size_t)frame_width * (size_t)frame_height;
+  if ((size_t)frame_width * (size_t)frame_height > max_pixels) {
     return GIMG_ERR_LIMIT;
   }
 
@@ -485,14 +486,14 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_INTERNAL;
   }
 
-  // PNG IDAT is zlib-wrapped (RFC 1950): 2-byte header + raw DEFLATE + 4-byte
+  // PNG IDAT/fdAT is zlib-wrapped (RFC 1950): 2-byte header + raw DEFLATE + 4-byte
   // Adler-32. The compress library "deflate" method expects raw DEFLATE.
-  if (state->idat_size < 6) {
+  if (idat_len < 6) {
     gcomp_options_destroy(gopts);
     return GIMG_ERR_CORRUPT;
   }
-  const unsigned char * deflate_src = state->idat + 2;
-  size_t deflate_len = state->idat_size - 6;
+  const unsigned char * deflate_src = idat_ptr + 2;
+  size_t deflate_len = idat_len - 6;
 
   unsigned char * raw = (unsigned char *)gimg_malloc(alloc, raw_size);
   if (!raw) {
@@ -514,8 +515,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   }
 
   unsigned int bpp = gimg_png_bpp(ihdr);
-  uint32_t w = ihdr->width;
-  uint32_t h = ihdr->height;
+  uint32_t w = frame_width;
+  uint32_t h = frame_height;
 
   // Build unfiltered image in row-major form (no filter bytes) for raster copy.
   size_t raw_full_size = (size_t)h * row_bytes;
@@ -597,12 +598,12 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   }
 
   size_t bpp_out = gimg_raster_bytes_per_pixel(format);
-  size_t stride = (size_t)ihdr->width * bpp_out;
+  size_t stride = (size_t)frame_width * bpp_out;
   if (stride % GIMG_DEFAULT_STRIDE_ALIGNMENT) {
     stride = (stride + GIMG_DEFAULT_STRIDE_ALIGNMENT - 1) &
         ~(size_t)(GIMG_DEFAULT_STRIDE_ALIGNMENT - 1);
   }
-  size_t total = stride * (size_t)ihdr->height;
+  size_t total = stride * (size_t)frame_height;
   void * pixels = gimg_malloc(alloc, total);
   if (!pixels) {
     gimg_free(alloc, raw_full);
@@ -819,8 +820,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
 
   gimg_free(alloc, raw_full);
 
-  GIMG_Result r = gimg_raster_create_with_allocator(alloc, ihdr->width,
-      ihdr->height, format, GIMG_RASTER_OWNED, pixels, stride, out_raster);
+  GIMG_Result r = gimg_raster_create_with_allocator(alloc, frame_width,
+      frame_height, format, GIMG_RASTER_OWNED, pixels, stride, out_raster);
   if (r != GIMG_OK) {
     gimg_free(alloc, pixels);
     return r;

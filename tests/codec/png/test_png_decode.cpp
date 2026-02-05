@@ -355,6 +355,70 @@ TEST(PngDecode, DecodeIccpSetsColorInfo) {
   gimg_stream_destroy(s);
 }
 
+TEST(PngDecode, ApngTwoFramesLoadAndDecode) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf))
+      << "Run tests/data/png/generate.py";
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(s, nullptr);
+
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u) << "APNG has 2 frames";
+
+  GIMG_Item * item0 = gimg_doc_item(doc, 0);
+  GIMG_Item * item1 = gimg_doc_item(doc, 1);
+  ASSERT_NE(item0, nullptr);
+  ASSERT_NE(item1, nullptr);
+
+  uint16_t num = 0;
+  uint16_t den = 0;
+  gimg_item_frame_delay(item0, &num, &den);
+  EXPECT_EQ(num, 50u) << "frame 0 delay_num";
+  EXPECT_EQ(den, 100u) << "frame 0 delay_den";
+  EXPECT_EQ(gimg_item_dispose_op(item0), GIMG_DISPOSE_NONE);
+  EXPECT_EQ(gimg_item_blend_op(item0), GIMG_BLEND_SOURCE);
+
+  gimg_item_frame_delay(item1, &num, &den);
+  EXPECT_EQ(num, 25u) << "frame 1 delay_num";
+  EXPECT_EQ(den, 100u) << "frame 1 delay_den";
+  EXPECT_EQ(gimg_item_dispose_op(item1), GIMG_DISPOSE_BACKGROUND);
+  EXPECT_EQ(gimg_item_blend_op(item1), GIMG_BLEND_OVER);
+
+  GIMG_Raster * raster0 = nullptr;
+  r = gimg_item_decode(item0, nullptr, &raster0);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(raster0, nullptr);
+  EXPECT_EQ(gimg_raster_width(raster0), 1u);
+  EXPECT_EQ(gimg_raster_height(raster0), 1u);
+  const unsigned char * px0 =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(raster0));
+  ASSERT_NE(px0, nullptr);
+  EXPECT_EQ(px0[0], 0) << "frame 0 is black (gray 0)";
+
+  GIMG_Raster * raster1 = nullptr;
+  r = gimg_item_decode(item1, nullptr, &raster1);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(raster1, nullptr);
+  EXPECT_EQ(gimg_raster_width(raster1), 1u);
+  EXPECT_EQ(gimg_raster_height(raster1), 1u);
+  const unsigned char * px1 =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(raster1));
+  ASSERT_NE(px1, nullptr);
+  EXPECT_EQ(px1[0], 0x80) << "frame 1 is gray 0x80";
+
+  gimg_raster_destroy(raster0);
+  gimg_raster_destroy(raster1);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
 #endif // GIMG_TEST_DATA_PNG
 
 int main(int argc, char ** argv) {

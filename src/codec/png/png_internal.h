@@ -3,13 +3,13 @@
  *
  * PNG codec internal constants and structures.
  *
- * Formal specification: ISO/IEC 15948 (PNG); W3C PNG Specification (Third Edition):
- *   https://www.w3.org/TR/PNG/
- * Section anchors for constants below: #3PNGsignature (5.2), #5Chunk-layout (5.3),
- * #5CRC-algorithm (5.5), #11IHDR (11.2.1), #11PLTE (11.2.2), #11IDAT (11.2.3),
- * #11IEND (11.2.4), #11tRNS (11.3.1.1), #11tEXt / #11zTXt / #11iTXt (11.3.3),
- * #11iCCP (11.3.2.3), #11sRGB (11.3.2.5), #11gAMA (11.3.2.2), #11cHRM (11.3.2.1),
- * #eXIf (11.3.4). Interlace (Adam7): W3C DataRep §2.6
+ * Formal specification: ISO/IEC 15948 (PNG); W3C PNG Specification (Third
+ * Edition): https://www.w3.org/TR/PNG/ Section anchors for constants below:
+ * #3PNGsignature (5.2), #5Chunk-layout (5.3), #5CRC-algorithm (5.5), #11IHDR
+ * (11.2.1), #11PLTE (11.2.2), #11IDAT (11.2.3), #11IEND (11.2.4), #11tRNS
+ * (11.3.1.1), #11tEXt / #11zTXt / #11iTXt (11.3.3), #11iCCP (11.3.2.3), #11sRGB
+ * (11.3.2.5), #11gAMA (11.3.2.2), #11cHRM (11.3.2.1), #eXIf (11.3.4). Interlace
+ * (Adam7): W3C DataRep §2.6
  * (https://www.w3.org/TR/PNG-DataRep.html#DR.Interlaced-data-order).
  * See also image/documentation/format-references.md.
  *
@@ -52,21 +52,55 @@ typedef uint32_t gimg_png_chunk_type_t;
  * from the file (first byte = MSB; see png_chunk.c). §4.8.2 Chunk types,
  * §11.2 Critical chunks.
  */
-#define GIMG_PNG_IHDR UINT32_C(0x49484452)   // 'IHDR' §11.2.1
-#define GIMG_PNG_PLTE UINT32_C(0x504C5445)   // 'PLTE' §11.2.2
-#define GIMG_PNG_IDAT UINT32_C(0x49444154)   // 'IDAT' §11.2.3
-#define GIMG_PNG_IEND UINT32_C(0x49454E44)   // 'IEND' §11.2.4
-#define GIMG_PNG_tRNS UINT32_C(0x74524E53)   // 'tRNS' §11.3.1.1
+#define GIMG_PNG_IHDR UINT32_C(0x49484452) // 'IHDR' §11.2.1
+#define GIMG_PNG_PLTE UINT32_C(0x504C5445) // 'PLTE' §11.2.2
+#define GIMG_PNG_IDAT UINT32_C(0x49444154) // 'IDAT' §11.2.3
+#define GIMG_PNG_IEND UINT32_C(0x49454E44) // 'IEND' §11.2.4
+#define GIMG_PNG_tRNS UINT32_C(0x74524E53) // 'tRNS' §11.3.1.1
 
 /** Ancillary chunk type IDs. §11.3 Ancillary chunks. */
-#define GIMG_PNG_tEXt UINT32_C(0x74455874)   // 'tEXt' §11.3.3
-#define GIMG_PNG_zTXt UINT32_C(0x7A545874)   // 'zTXt' §11.3.3
-#define GIMG_PNG_iTXt UINT32_C(0x69545874)   // 'iTXt' §11.3.3
-#define GIMG_PNG_iCCP UINT32_C(0x69434350)   // 'iCCP' §11.3.2.3
-#define GIMG_PNG_sRGB UINT32_C(0x73524742)   // 'sRGB' §11.3.2.5
-#define GIMG_PNG_gAMA UINT32_C(0x67414D41)   // 'gAMA' §11.3.2.2
-#define GIMG_PNG_cHRM UINT32_C(0x6348524D)   // 'cHRM' §11.3.2.1
-#define GIMG_PNG_eXIf UINT32_C(0x65584966)   // 'eXIf' §11.3.4
+#define GIMG_PNG_tEXt UINT32_C(0x74455874) // 'tEXt' §11.3.3
+#define GIMG_PNG_zTXt UINT32_C(0x7A545874) // 'zTXt' §11.3.3
+#define GIMG_PNG_iTXt UINT32_C(0x69545874) // 'iTXt' §11.3.3
+#define GIMG_PNG_iCCP UINT32_C(0x69434350) // 'iCCP' §11.3.2.3
+#define GIMG_PNG_sRGB UINT32_C(0x73524742) // 'sRGB' §11.3.2.5
+#define GIMG_PNG_gAMA UINT32_C(0x67414D41) // 'gAMA' §11.3.2.2
+#define GIMG_PNG_cHRM UINT32_C(0x6348524D) // 'cHRM' §11.3.2.1
+#define GIMG_PNG_eXIf UINT32_C(0x65584966) // 'eXIf' §11.3.4
+
+/** APNG chunk type IDs (Mozilla APNG spec). */
+#define GIMG_PNG_acTL UINT32_C(0x6163544C) // 'acTL' animation control
+#define GIMG_PNG_fcTL UINT32_C(0x6663544C) // 'fcTL' frame control
+#define GIMG_PNG_fdAT UINT32_C(0x66644154) // 'fdAT' frame data
+
+/** acTL payload length (num_frames + num_plays). */
+#define GIMG_PNG_acTL_LEN 8
+/** fcTL payload length (sequence, width, height, x_off, y_off, delay_num,
+ * delay_den, dispose_op, blend_op). */
+#define GIMG_PNG_fcTL_LEN 26
+/** fdAT minimum payload (4-byte sequence number + at least 0 bytes frame data).
+ */
+#define GIMG_PNG_fdAT_SEQ_LEN 4
+
+/** Parsed fcTL fields (APNG frame control). */
+typedef struct {
+  uint32_t sequence_number;
+  uint32_t width;
+  uint32_t height;
+  uint32_t x_offset;
+  uint32_t y_offset;
+  uint16_t delay_num;
+  uint16_t delay_den;
+  uint8_t dispose_op; ///< 0=NONE, 1=BACKGROUND, 2=PREVIOUS
+  uint8_t blend_op;   ///< 0=SOURCE, 1=OVER
+} gimg_png_fctl_t;
+
+/** Per-frame data for APNG (fcTL + concatenated IDAT/fdAT bytes). */
+typedef struct {
+  gimg_png_fctl_t fctl;
+  unsigned char * data; ///< Zlib-wrapped DEFLATE (same as IDAT); owned.
+  size_t data_size;
+} gimg_png_frame_t;
 
 /** Single ancillary chunk (payload owned). */
 typedef struct {
@@ -75,7 +109,8 @@ typedef struct {
   size_t payload_size;
 } gimg_png_ancillary_t;
 
-/** IHDR payload length (width, height, bit depth, color type, etc.). §11.2.1 IHDR. */
+/** IHDR payload length (width, height, bit depth, color type, etc.). §11.2.1
+ * IHDR. */
 #define GIMG_PNG_IHDR_LEN 13
 
 /** Parsed IHDR fields. §11.2.1 Image header. */
@@ -98,19 +133,27 @@ struct gimg_png_doc_state {
   size_t plte_size;
   unsigned char * trns;
   size_t trns_size;
-  unsigned char * idat;
+  unsigned char * idat; ///< Single-frame PNG: image data. APNG: default image
+                        ///< only (if not first frame).
   size_t idat_size;
-  gimg_png_ancillary_t * ancillary;  ///< Ordered list of ancillary chunks (read order) for round-trip.
+  gimg_png_ancillary_t * ancillary; ///< Ordered list of ancillary chunks (read
+                                    ///< order) for round-trip.
   size_t ancillary_count;
   size_t ancillary_capacity;
   const GIMG_Allocator * allocator;
+  /* APNG: animation control and per-frame data. */
+  int is_apng;        ///< 1 if acTL was seen (before first IDAT).
+  uint32_t num_plays; ///< 0 = loop forever.
+  gimg_png_frame_t *
+      frames;         ///< Array of length frame_count; NULL for non-APNG.
+  size_t frame_count; ///< 1 for static PNG, acTL num_frames for APNG.
 };
 
 /**
  * @brief Validate IHDR and parse into ihdr. Returns GIMG_ERR_FORMAT if invalid.
  */
-GIMG_Result gimg_png_parse_ihdr(const unsigned char * payload,
-    gimg_png_ihdr_t * ihdr);
+GIMG_Result gimg_png_parse_ihdr(
+    const unsigned char * payload, gimg_png_ihdr_t * ihdr);
 
 /**
  * @brief Append one ancillary chunk (type + payload copy) to doc state.
@@ -157,6 +200,26 @@ GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
     const GIMG_Limits * limits);
 
 /**
+ * @brief Parse acTL payload (8 bytes): num_frames, num_plays (big-endian).
+ * @return GIMG_OK or GIMG_ERR_FORMAT if invalid.
+ */
+GIMG_Result gimg_png_parse_actl(
+    const unsigned char * payload, uint32_t * num_frames, uint32_t * num_plays);
+
+/**
+ * @brief Parse fcTL payload (26 bytes) into fctl (big-endian where applicable).
+ * @return GIMG_OK or GIMG_ERR_FORMAT if invalid.
+ */
+GIMG_Result gimg_png_parse_fctl(
+    const unsigned char * payload, gimg_png_fctl_t * fctl);
+
+/**
+ * @brief Append bytes to a frame's data buffer (realloc as needed).
+ */
+GIMG_Result gimg_png_append_frame_data(gimg_png_doc_state_t * state,
+    size_t frame_index, const unsigned char * data, size_t len);
+
+/**
  * @brief PNG codec load callback (used by png_register).
  */
 GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
@@ -170,8 +233,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
 /**
- * @brief Write one PNG chunk to stream: length (4 BE), type (4), payload, CRC (4).
- * Stream must support write.
+ * @brief Write one PNG chunk to stream: length (4 BE), type (4), payload, CRC
+ * (4). Stream must support write.
  */
 GIMG_Result gimg_png_write_chunk(GIMG_Stream * stream,
     gimg_png_chunk_type_t type, const unsigned char * payload,

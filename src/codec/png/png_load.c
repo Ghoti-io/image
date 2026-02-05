@@ -96,6 +96,12 @@ void gimg_png_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   gimg_free(alloc, state->plte);
   gimg_free(alloc, state->trns);
   gimg_free(alloc, state->idat);
+  if (state->frames) {
+    for (size_t i = 0; i < state->frame_count; i++) {
+      gimg_free(alloc, state->frames[i].data);
+    }
+    gimg_free(alloc, state->frames);
+  }
   gimg_free(alloc, state);
 }
 
@@ -113,6 +119,28 @@ static GIMG_Result gimg_png_append_idat(gimg_png_doc_state_t * state,
   state->idat = new_buf;
   memcpy(state->idat + state->idat_size, data, len);
   state->idat_size = new_size;
+  return GIMG_OK;
+}
+
+GIMG_Result gimg_png_append_frame_data(gimg_png_doc_state_t * state,
+    size_t frame_index, const unsigned char * data, size_t len) {
+  if (!state || !state->frames || frame_index >= state->frame_count) {
+    return GIMG_ERR_INTERNAL;
+  }
+  const GIMG_Allocator * alloc = state->allocator;
+  alloc = gimg_alloc_or_default(alloc);
+  gimg_png_frame_t * f = &state->frames[frame_index];
+  size_t new_size = f->data_size + len;
+  unsigned char * new_buf =
+      (unsigned char *)gimg_realloc(alloc, f->data, new_size);
+  if (!new_buf) {
+    return GIMG_ERR_OOM;
+  }
+  f->data = new_buf;
+  if (len > 0 && data) {
+    memcpy(f->data + f->data_size, data, len);
+  }
+  f->data_size = new_size;
   return GIMG_OK;
 }
 
@@ -166,6 +194,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   int have_plte = 0;
   int have_trns = 0;
   int seen_idat = 0;
+  /* APNG state (only meaningful when state->is_apng). */
+  int actl_seen = 0;
+  int fcTL_before_first_idat = 0;  /* 1 if frame 0 uses IDAT (fcTL(0) before IDAT). */
+  uint32_t next_sequence = 0;
+  size_t num_fcTL_seen = 0;
 
   for (;;) {
     r = gimg_png_read_chunk_header(stream, &length, &type);
@@ -187,6 +220,135 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return r;
       }
       break;
+    }
+
+    if (type == GIMG_PNG_acTL) {
+      if (seen_idat) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;  /* acTL must appear before first IDAT. */
+      }
+      if (actl_seen) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;  /* Duplicate acTL. */
+      }
+      if (length != GIMG_PNG_acTL_LEN) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      unsigned char actl_buf[GIMG_PNG_acTL_LEN];
+      r = gimg_png_read_chunk_payload_and_crc(stream, length, type, actl_buf,
+          limits);
+      if (r != GIMG_OK) {
+        gimg_png_free_doc_state(codec, state);
+        return r;
+      }
+      uint32_t num_frames = 0;
+      uint32_t num_plays = 0;
+      r = gimg_png_parse_actl(actl_buf, &num_frames, &num_plays);
+      if (r != GIMG_OK) {
+        gimg_png_free_doc_state(codec, state);
+        return r;
+      }
+      if (limits && limits->max_frame_count != 0 &&
+          num_frames > limits->max_frame_count) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_LIMIT;
+      }
+      state->is_apng = 1;
+      state->frame_count = (size_t)num_frames;
+      state->num_plays = num_plays;
+      state->frames = (gimg_png_frame_t *)gimg_calloc(alloc,
+          num_frames, sizeof(gimg_png_frame_t));
+      if (!state->frames) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_OOM;
+      }
+      actl_seen = 1;
+      continue;
+    }
+
+    if (type == GIMG_PNG_fcTL) {
+      if (!state->is_apng || length != GIMG_PNG_fcTL_LEN) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      unsigned char fctl_buf[GIMG_PNG_fcTL_LEN];
+      r = gimg_png_read_chunk_payload_and_crc(stream, length, type, fctl_buf,
+          limits);
+      if (r != GIMG_OK) {
+        gimg_png_free_doc_state(codec, state);
+        return r;
+      }
+      gimg_png_fctl_t fctl;
+      r = gimg_png_parse_fctl(fctl_buf, &fctl);
+      if (r != GIMG_OK) {
+        gimg_png_free_doc_state(codec, state);
+        return r;
+      }
+      if (fctl.sequence_number != next_sequence) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;  /* Out-of-order sequence. */
+      }
+      next_sequence++;
+      if (num_fcTL_seen == 0 && !seen_idat) {
+        /* fcTL(0) before IDAT: default image is first frame. */
+        if (fctl.width != state->ihdr.width || fctl.height != state->ihdr.height ||
+            fctl.x_offset != 0 || fctl.y_offset != 0) {
+          gimg_png_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        fcTL_before_first_idat = 1;
+      }
+      if (num_fcTL_seen >= state->frame_count) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;  /* More fcTL than acTL num_frames. */
+      }
+      state->frames[num_fcTL_seen].fctl = fctl;
+      num_fcTL_seen++;
+      continue;
+    }
+
+    if (type == GIMG_PNG_fdAT) {
+      if (!state->is_apng) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;  /* fdAT only in APNG. */
+      }
+      if (num_fcTL_seen == 0) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;  /* fdAT must follow an fcTL. */
+      }
+      if (length < GIMG_PNG_fdAT_SEQ_LEN) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      unsigned char * fdat_buf = (unsigned char *)gimg_malloc(alloc, length);
+      if (!fdat_buf) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_OOM;
+      }
+      r = gimg_png_read_chunk_payload_and_crc(stream, length, type, fdat_buf,
+          limits);
+      if (r != GIMG_OK) {
+        gimg_free(alloc, fdat_buf);
+        gimg_png_free_doc_state(codec, state);
+        return r;
+      }
+      uint32_t seq = (uint32_t)fdat_buf[0] << 24 | (uint32_t)fdat_buf[1] << 16 |
+          (uint32_t)fdat_buf[2] << 8 | (uint32_t)fdat_buf[3];
+      if (seq != next_sequence) {
+        gimg_free(alloc, fdat_buf);
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      next_sequence++;
+      r = gimg_png_append_frame_data(state, num_fcTL_seen - 1,
+          fdat_buf + GIMG_PNG_fdAT_SEQ_LEN, length - GIMG_PNG_fdAT_SEQ_LEN);
+      gimg_free(alloc, fdat_buf);
+      if (r != GIMG_OK) {
+        gimg_png_free_doc_state(codec, state);
+        return r;
+      }
+      continue;
     }
 
     if (type == GIMG_PNG_PLTE) {
@@ -261,7 +423,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
           gimg_png_free_doc_state(codec, state);
           return r;
         }
-        r = gimg_png_append_idat(state, buf, length);
+        if (state->is_apng && fcTL_before_first_idat && state->frame_count > 0) {
+          r = gimg_png_append_frame_data(state, 0, buf, length);
+        }
+        else {
+          r = gimg_png_append_idat(state, buf, length);
+        }
         gimg_free(alloc, buf);
         if (r != GIMG_OK) {
           gimg_png_free_doc_state(codec, state);
@@ -324,15 +491,30 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
   }
 
+  /* APNG: validate we saw the right number of fcTL and each frame has data. */
+  if (state->is_apng) {
+    if (num_fcTL_seen != state->frame_count) {
+      gimg_png_free_doc_state(codec, state);
+      return GIMG_ERR_FORMAT;
+    }
+    for (size_t i = 0; i < state->frame_count; i++) {
+      if (!state->frames[i].data || state->frames[i].data_size == 0) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+    }
+  }
+
   // Build document.
+  size_t item_count = state->is_apng ? state->frame_count : 1;
   GIMG_Doc * doc = (GIMG_Doc *)gimg_malloc(alloc, sizeof(GIMG_Doc));
   if (!doc) {
     gimg_png_free_doc_state(codec, state);
     return GIMG_ERR_OOM;
   }
   doc->allocator = alloc;
-  doc->item_count = 1;
-  doc->items = (GIMG_Item *)gimg_malloc(alloc, sizeof(GIMG_Item));
+  doc->item_count = item_count;
+  doc->items = (GIMG_Item *)gimg_malloc(alloc, item_count * sizeof(GIMG_Item));
   if (!doc->items) {
     gimg_free(alloc, doc);
     gimg_png_free_doc_state(codec, state);
@@ -341,8 +523,24 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   doc->loaded_by_codec = codec;
   doc->codec_private = state;
   doc->meta_raw = NULL;
-  doc->items[0].index = 0;
-  doc->items[0].doc = doc;
+  for (size_t i = 0; i < item_count; i++) {
+    doc->items[i].index = i;
+    doc->items[i].doc = doc;
+    doc->items[i].frame_delay_num = 0;
+    doc->items[i].frame_delay_den = 0;
+    doc->items[i].dispose_op = GIMG_DISPOSE_NONE;
+    doc->items[i].blend_op = GIMG_BLEND_SOURCE;
+  }
+  if (state->is_apng) {
+    for (size_t i = 0; i < state->frame_count; i++) {
+      const gimg_png_fctl_t * f = &state->frames[i].fctl;
+      doc->items[i].frame_delay_num = f->delay_num;
+      doc->items[i].frame_delay_den = f->delay_den;
+      doc->items[i].dispose_op = (f->dispose_op == 0) ? GIMG_DISPOSE_NONE :
+          (f->dispose_op == 1) ? GIMG_DISPOSE_BACKGROUND : GIMG_DISPOSE_PREVIOUS;
+      doc->items[i].blend_op = (f->blend_op == 0) ? GIMG_BLEND_SOURCE : GIMG_BLEND_OVER;
+    }
+  }
 
   // Attach eXIf (and other raw metadata) to doc for round-trip.
   for (size_t i = 0; i < state->ancillary_count; i++) {

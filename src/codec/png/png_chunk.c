@@ -239,3 +239,49 @@ GIMG_Result gimg_png_parse_ihdr(const unsigned char * payload,
   ihdr->interlace_method = interlace;
   return GIMG_OK;
 }
+
+GIMG_Result gimg_png_parse_actl(const unsigned char * payload,
+    uint32_t * num_frames, uint32_t * num_plays) {
+  if (!payload || !num_frames || !num_plays) {
+    return GIMG_ERR_INTERNAL;
+  }
+  uint32_t nf = (uint32_t)payload[0] << 24 | (uint32_t)payload[1] << 16 |
+      (uint32_t)payload[2] << 8 | (uint32_t)payload[3];
+  uint32_t np = (uint32_t)payload[4] << 24 | (uint32_t)payload[5] << 16 |
+      (uint32_t)payload[6] << 8 | (uint32_t)payload[7];
+  if (nf == 0) {
+    return GIMG_ERR_FORMAT;  /* num_frames must not be 0. */
+  }
+  *num_frames = nf;
+  *num_plays = np;
+  return GIMG_OK;
+}
+
+GIMG_Result gimg_png_parse_fctl(const unsigned char * payload,
+    gimg_png_fctl_t * fctl) {
+  if (!payload || !fctl) {
+    return GIMG_ERR_INTERNAL;
+  }
+  fctl->sequence_number = (uint32_t)payload[0] << 24 |
+      (uint32_t)payload[1] << 16 | (uint32_t)payload[2] << 8 |
+      (uint32_t)payload[3];
+  fctl->width = (uint32_t)payload[4] << 24 | (uint32_t)payload[5] << 16 |
+      (uint32_t)payload[6] << 8 | (uint32_t)payload[7];
+  fctl->height = (uint32_t)payload[8] << 24 | (uint32_t)payload[9] << 16 |
+      (uint32_t)payload[10] << 8 | (uint32_t)payload[11];
+  fctl->x_offset = (uint32_t)payload[12] << 24 | (uint32_t)payload[13] << 16 |
+      (uint32_t)payload[14] << 8 | (uint32_t)payload[15];
+  fctl->y_offset = (uint32_t)payload[16] << 24 | (uint32_t)payload[17] << 16 |
+      (uint32_t)payload[18] << 8 | (uint32_t)payload[19];
+  fctl->delay_num = (uint16_t)(((uint16_t)payload[20] << 8) | (uint16_t)payload[21]);
+  fctl->delay_den = (uint16_t)(((uint16_t)payload[22] << 8) | (uint16_t)payload[23]);
+  fctl->dispose_op = payload[24];
+  fctl->blend_op = payload[25];
+  if (fctl->dispose_op > 2) {
+    return GIMG_ERR_FORMAT;
+  }
+  if (fctl->blend_op > 1) {
+    return GIMG_ERR_FORMAT;
+  }
+  return GIMG_OK;
+}

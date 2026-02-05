@@ -158,6 +158,37 @@ def main() -> None:
     )
     write_png("png_iccp.png", png_iccp)
 
+    # ---- 2-frame APNG (default image is first frame): 1x1 gray frame 0 (black), frame 1 (gray 0x80) ----
+    # acTL: num_frames=2, num_plays=0 (infinite)
+    actl = struct.pack(">II", 2, 0)
+    # fcTL frame 0: seq=0, 1x1, x_off=0, y_off=0, delay_num=50, delay_den=100, dispose=0, blend=0
+    fctl0 = struct.pack(
+        ">IIIIIHHBB",
+        0, 1, 1, 0, 0, 50, 100, 0, 0,
+    )
+    # Frame 0 image data (same as 1x1 gray black)
+    idat_frame0 = idat_zlib(raw_1x1_gray)
+    # fcTL frame 1: seq=1, 1x1, delay_num=25, delay_den=100, dispose=1 (background), blend=1 (over)
+    fctl1 = struct.pack(
+        ">IIIIIHHBB",
+        1, 1, 1, 0, 0, 25, 100, 1, 1,
+    )
+    # Frame 1 image data: 1x1 gray value 0x80
+    raw_frame1 = bytes([0x00, 0x80])
+    frame1_zlib = idat_zlib(raw_frame1)
+    fdat_payload = struct.pack(">I", 2) + frame1_zlib  # seq=2
+    apng_2frame = (
+        signature
+        + png_chunk(b"IHDR", ihdr_1x1_gray)
+        + png_chunk(b"acTL", actl)
+        + png_chunk(b"fcTL", fctl0)
+        + png_chunk(b"IDAT", idat_frame0)
+        + png_chunk(b"fcTL", fctl1)
+        + png_chunk(b"fdAT", fdat_payload)
+        + iend
+    )
+    write_png("png_apng_2frame.png", apng_2frame)
+
 
 if __name__ == "__main__":
     main()
