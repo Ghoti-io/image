@@ -72,6 +72,40 @@ static void write_png_output(
 }
 #endif
 
+/** FNV-1a 64-bit over raster pixel bytes (row-major, width*bpp per row). */
+static constexpr uint64_t kFnv1aOffsetBasis = 0xcbf29ce484222325ULL;
+static constexpr uint64_t kFnv1aPrime = 0x100000001b3ULL;
+
+static uint64_t raster_pixel_hash(const GIMG_Raster * raster) {
+  if (!raster) {
+    return 0;
+  }
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+  if (bpp == 0) {
+    return 0;
+  }
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  size_t row_bytes = w * bpp;
+  const unsigned char * pixels =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(
+          const_cast<GIMG_Raster *>(raster)));
+  size_t stride = gimg_raster_stride_bytes(raster);
+  if (!pixels || stride < row_bytes) {
+    return 0;
+  }
+  uint64_t hval = kFnv1aOffsetBasis;
+  for (uint32_t y = 0; y < h; y++) {
+    const unsigned char * row = pixels + y * stride;
+    for (size_t i = 0; i < row_bytes; i++) {
+      hval ^= static_cast<uint64_t>(row[i]);
+      hval *= kFnv1aPrime;
+    }
+  }
+  return hval;
+}
+
 /** Compare two rasters (same dimensions and format); return true if pixel data
  * matches. */
 bool rasters_equal(const GIMG_Raster * a, const GIMG_Raster * b) {
@@ -230,6 +264,10 @@ TEST(PngEncode, RoundTrip1x1Gray) {
 
   EXPECT_TRUE(rasters_equal(orig, decoded))
       << "Round-trip pixel data must match";
+
+  /* Golden encode test: re-decoded pixels must match canonical decode hash. */
+  EXPECT_EQ(raster_pixel_hash(decoded), 12638153115695167455ULL)
+      << "Round-trip decode hash must match golden 1x1 gray";
 
   gimg_raster_destroy(decoded);
   gimg_raster_destroy(orig);

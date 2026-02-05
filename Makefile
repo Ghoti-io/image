@@ -600,5 +600,22 @@ docs-pdf: docs ## Generate the documentation as a pdf, at ./docs/(SUITE)-(PROJEC
 cloc: ## Count the lines of code used in the project
 	cloc src include tests Makefile
 
+####################################################################
+# Fuzz target (libFuzzer): PNG/APNG load and decode
+####################################################################
+FUZZ_CXX ?= clang++
+FUZZ_FLAGS := -fsanitize=fuzzer -g -O2
+# Check if clang++ is available for fuzz
+FUZZ_CXX_OK := $(shell which $(FUZZ_CXX) 2>/dev/null)
+
+fuzz-png: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for PNG/APNG (requires clang++)
+	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
+		echo "fuzz-png requires $(FUZZ_CXX); install clang or set FUZZ_CXX"; exit 1; \
+	fi
+	@mkdir -p $(OBJ_DIR) $(APP_DIR)
+	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_png_load.cpp -o $(OBJ_DIR)/fuzz_png_load.o
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_png_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_png_load.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	@echo "Fuzz harness: $(APP_DIR)/fuzz_png_load$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_png_load tests/fuzz/corpus"
+
 help: ## Display this help
 	@grep -E '^[ a-zA-Z_-]+:.*?## .*$$' Makefile | sort | sed 's/\\([^:]*\\):.*## \\(.*\\)/\\1:\\2/' | awk -F: '{printf "%-15s %s\n", $$1, $$2}' | sed "s/(SUITE)/$(SUITE)/g; s/(PROJECT)/$(PROJECT)/g; s/(BRANCH)/$(BRANCH)/g"

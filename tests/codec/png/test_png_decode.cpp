@@ -65,6 +65,46 @@ bool load_png_file(const char * filename, std::vector<uint8_t> & out) {
 /** PNG eXIf chunk type (for meta_raw tag). */
 static constexpr uint32_t kPngChunk_eXIf = 0x65584966u;
 
+/** FNV-1a 64-bit offset basis and prime (for canonical pixel hash). */
+static constexpr uint64_t kFnv1aOffsetBasis = 0xcbf29ce484222325ULL;
+static constexpr uint64_t kFnv1aPrime = 0x100000001b3ULL;
+
+/**
+ * Compute canonical pixel hash of decoded raster: FNV-1a 64-bit over raw
+ * pixel bytes, row-major top-down. Only the pixel data (width * bpp per row)
+ * is hashed, not stride padding. Ensures decode is deterministic and
+ * regression-free.
+ */
+uint64_t raster_pixel_hash(const GIMG_Raster * raster) {
+  if (!raster) {
+    return 0;
+  }
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+  if (bpp == 0) {
+    return 0;
+  }
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  size_t row_bytes = w * bpp;
+  const unsigned char * pixels =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(
+          const_cast<GIMG_Raster *>(raster)));
+  size_t stride = gimg_raster_stride_bytes(raster);
+  if (!pixels || stride < row_bytes) {
+    return 0;
+  }
+  uint64_t hval = kFnv1aOffsetBasis;
+  for (uint32_t y = 0; y < h; y++) {
+    const unsigned char * row = pixels + y * stride;
+    for (size_t i = 0; i < row_bytes; i++) {
+      hval ^= static_cast<uint64_t>(row[i]);
+      hval *= kFnv1aPrime;
+    }
+  }
+  return hval;
+}
+
 } // namespace
 
 TEST(PngDecode, DecodeNoIdatReturnsFormat) {
@@ -563,6 +603,189 @@ TEST(PngDecode, ApngMaxChunkSizeLimitEnforced) {
   gimg_stream_destroy(s);
   EXPECT_EQ(r, GIMG_ERR_LIMIT) << "IHDR length 13 exceeds max_chunk_size=8";
   EXPECT_EQ(doc, nullptr);
+}
+
+// ---- Golden-file decode tests: canonical pixel hash per reference file ----
+
+TEST(PngDecode, Golden1x1Gray) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_1x1_gray.png", buf));
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  ASSERT_EQ(r, GIMG_OK);
+  uint64_t hash = raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 12638153115695167455ULL) << "canonical pixel hash 1x1 gray";
+}
+
+TEST(PngDecode, Golden1x1Palette) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_1x1_palette.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  GIMG_Raster * raster = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  uint64_t hash = raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 15243095932836669713ULL) << "canonical pixel hash 1x1 palette+tRNS";
+}
+
+TEST(PngDecode, Golden16bitGray) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_16bit_gray.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  GIMG_Raster * raster = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  uint64_t hash = raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 571567958656141443ULL) << "canonical pixel hash 16-bit gray";
+}
+
+TEST(PngDecode, Golden1x1Rgba) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_1x1_rgba.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  GIMG_Raster * raster = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  uint64_t hash = raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 15243095932836669713ULL) << "canonical pixel hash 1x1 RGBA";
+}
+
+TEST(PngDecode, Golden16bitRgba) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_16bit_rgba.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  GIMG_Raster * raster = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  uint64_t hash = raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 1173251487157325173ULL) << "canonical pixel hash 16-bit RGBA";
+}
+
+TEST(PngDecode, GoldenSrgb) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_srgb.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  GIMG_Raster * raster = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  uint64_t hash = raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 12638153115695167455ULL) << "canonical pixel hash sRGB (same pixels as 1x1 gray)";
+}
+
+TEST(PngDecode, GoldenExif) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_exif.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  GIMG_Raster * raster = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  uint64_t hash = raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 12638153115695167455ULL) << "canonical pixel hash eXIf (same pixels as 1x1 gray)";
+}
+
+TEST(PngDecode, GoldenIccp) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_iccp.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  GIMG_Raster * raster = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  uint64_t hash = raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 12638153115695167455ULL) << "canonical pixel hash iCCP (same pixels as 1x1 gray)";
+}
+
+TEST(PngDecode, GoldenApng2Frame) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(gimg_doc_item_count(doc), 2u);
+  uint64_t hash0 = 0, hash1 = 0;
+  GIMG_Raster * r0 = nullptr;
+  GIMG_Raster * r1 = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &r0);
+  gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &r1);
+  hash0 = raster_pixel_hash(r0);
+  hash1 = raster_pixel_hash(r1);
+  gimg_raster_destroy(r0);
+  gimg_raster_destroy(r1);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash0, 12638153115695167455ULL) << "APNG frame 0 pixel hash";
+  EXPECT_EQ(hash1, 12638293853183578463ULL) << "APNG frame 1 pixel hash";
+}
+
+TEST(PngDecode, GoldenApng3Frame) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_apng_3frame.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(gimg_doc_item_count(doc), 3u);
+  GIMG_Raster * r0 = nullptr;
+  GIMG_Raster * r1 = nullptr;
+  GIMG_Raster * r2 = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &r0);
+  gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &r1);
+  gimg_item_decode(gimg_doc_item(doc, 2), nullptr, &r2);
+  uint64_t h0 = raster_pixel_hash(r0);
+  uint64_t h1 = raster_pixel_hash(r1);
+  uint64_t h2 = raster_pixel_hash(r2);
+  gimg_raster_destroy(r0);
+  gimg_raster_destroy(r1);
+  gimg_raster_destroy(r2);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(h0, 12638153115695167455ULL) << "APNG 3-frame: frame 0";
+  EXPECT_EQ(h1, 12638293853183578463ULL) << "APNG 3-frame: frame 1";
+  EXPECT_EQ(h2, 12638364221927783967ULL) << "APNG 3-frame: frame 2";
 }
 
 #endif // GIMG_TEST_DATA_PNG
