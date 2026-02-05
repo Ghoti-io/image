@@ -40,23 +40,42 @@ static uint32_t gimg_png_adler32(const unsigned char * data, size_t len) {
   return (s2 << 16) | s1;
 }
 
-/** Map raster format to PNG color_type and bit_depth. Returns 0 on unsupported. */
+/**
+ * Map raster format to PNG color_type and bit_depth.
+ * Returns 1 on success, 0 on unsupported. Does not handle palette (caller uses
+ * doc state for that).
+ */
 static int gimg_png_raster_to_ihdr(const GIMG_Raster * raster,
     uint8_t * color_type, uint8_t * bit_depth) {
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   if (!fmt || fmt->layout != GIMG_LAYOUT_INTERLEAVED) {
     return 0;
   }
-  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
-  if (bpp == 1) {
-    *color_type = 0;
-    *bit_depth = 8;
-    return 1;
+  if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count >= 1) {
+    if (fmt->bits_per_channel[0] == 8) {
+      *color_type = 0;
+      *bit_depth = 8;
+      return 1;
+    }
+    if (fmt->bits_per_channel[0] == 16) {
+      *color_type = 0;
+      *bit_depth = 16;
+      return 1;
+    }
+    return 0;
   }
-  if (bpp == 4) {
-    *color_type = 6;
-    *bit_depth = 8;
-    return 1;
+  if (fmt->channel_model == GIMG_CHANNEL_RGBA && fmt->channel_count == 4) {
+    if (fmt->bits_per_channel[0] == 8) {
+      *color_type = 6;
+      *bit_depth = 8;
+      return 1;
+    }
+    if (fmt->bits_per_channel[0] == 16) {
+      *color_type = 6;
+      *bit_depth = 16;
+      return 1;
+    }
+    return 0;
   }
   return 0;
 }
@@ -79,20 +98,32 @@ static void gimg_png_build_ihdr(unsigned char * out,
   out[12] = 0;  // interlace_method
 }
 
+/** Write a 16-bit sample (host order) to buffer in PNG big-endian order. */
+static void gimg_png_write_be16(unsigned char * out, uint16_t value) {
+  out[0] = (unsigned char)(value >> 8);
+  out[1] = (unsigned char)(value & 0xFFu);
+}
+
 /** Fill raw image rows (filter byte + row data) from raster. Caller allocates
- * raw_size = height * (1 + row_bytes). */
+ * raw_size = height * (1 + row_bytes). For palette (color_type 3), @a state
+ * must be non-NULL with plte/trns; raster must be RGBA8. */
 static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
-    uint8_t color_type, unsigned char * raw, size_t raw_size) {
+    uint8_t color_type, uint8_t bit_depth, const gimg_png_doc_state_t * state,
+    unsigned char * raw, size_t raw_size) {
   uint32_t w = gimg_raster_width(raster);
   uint32_t h = gimg_raster_height(raster);
   size_t row_bytes = 0;
-  if (color_type == 0) {
+  switch (color_type) {
+  case 0:
+    row_bytes = (size_t)w * (bit_depth == 16 ? 2u : 1u);
+    break;
+  case 3:
     row_bytes = (size_t)w;
-  }
-  else if (color_type == 6) {
-    row_bytes = (size_t)w * 4u;
-  }
-  else {
+    break;
+  case 6:
+    row_bytes = (size_t)w * (bit_depth == 16 ? 8u : 4u);
+    break;
+  default:
     return GIMG_ERR_FORMAT;
   }
   if (raw_size < (size_t)h * (1u + row_bytes)) {
@@ -101,15 +132,75 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
   size_t stride = gimg_raster_stride_bytes(raster);
   const unsigned char * pixels =
       (const unsigned char *)gimg_raster_pixels_const(raster);
+
+  if (color_type == 3) {
+    if (!state || !state->plte || state->plte_size == 0) {
+      return GIMG_ERR_FORMAT;
+    }
+    size_t plte_entries = state->plte_size / 3u;
+    size_t trns_count = state->trns ? state->trns_size : 0;
+    for (uint32_t y = 0; y < h; y++) {
+      unsigned char * row = raw + (size_t)y * (1u + row_bytes);
+      row[0] = 0;
+      const unsigned char * src = pixels + (size_t)y * stride;
+      for (uint32_t x = 0; x < w; x++) {
+        unsigned char r = src[0], g = src[1], b = src[2], a = src[3];
+        size_t idx = (size_t)-1;
+        for (size_t i = 0; i < plte_entries; i++) {
+          if (state->plte[i * 3u] != r || state->plte[i * 3u + 1u] != g ||
+              state->plte[i * 3u + 2u] != b) {
+            continue;
+          }
+          unsigned char want_a = (i < trns_count) ? state->trns[i] : (unsigned char)255;
+          if (a != want_a) {
+            continue;
+          }
+          idx = i;
+          break;
+        }
+        if (idx == (size_t)-1) {
+          return GIMG_ERR_UNSUPPORTED;
+        }
+        row[1u + (size_t)x] = (unsigned char)idx;
+        src += 4;
+      }
+    }
+    return GIMG_OK;
+  }
+
   for (uint32_t y = 0; y < h; y++) {
     unsigned char * row = raw + (size_t)y * (1u + row_bytes);
-    row[0] = 0;  // filter None
+    row[0] = 0;
     const unsigned char * src = pixels + (size_t)y * stride;
     if (color_type == 0) {
-      memcpy(row + 1, src, row_bytes);
+      if (bit_depth == 8) {
+        memcpy(row + 1, src, row_bytes);
+      }
+      else {
+        for (uint32_t x = 0; x < w; x++) {
+          uint16_t v = (uint16_t)(src[0] | (src[1] << 8));
+          gimg_png_write_be16(row + 1 + (size_t)x * 2u, v);
+          src += 2;
+        }
+      }
     }
-    else {
-      memcpy(row + 1, src, row_bytes);
+    else if (color_type == 6) {
+      if (bit_depth == 8) {
+        memcpy(row + 1, src, row_bytes);
+      }
+      else {
+        for (uint32_t x = 0; x < w; x++) {
+          gimg_png_write_be16(row + 1 + 8u * (size_t)x + 0u,
+              (uint16_t)(src[0] | (src[1] << 8)));
+          gimg_png_write_be16(row + 1 + 8u * (size_t)x + 2u,
+              (uint16_t)(src[2] | (src[3] << 8)));
+          gimg_png_write_be16(row + 1 + 8u * (size_t)x + 4u,
+              (uint16_t)(src[4] | (src[5] << 8)));
+          gimg_png_write_be16(row + 1 + 8u * (size_t)x + 6u,
+              (uint16_t)(src[6] | (src[7] << 8)));
+          src += 8;
+        }
+      }
     }
   }
   return GIMG_OK;
@@ -135,17 +226,39 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   if (r != GIMG_OK || !raster) {
     return r != GIMG_OK ? r : GIMG_ERR_FORMAT;
   }
+  gimg_png_doc_state_t * state =
+      (gimg_png_doc_state_t *)doc->codec_private;
   uint8_t color_type = 0;
   uint8_t bit_depth = 0;
-  if (!gimg_png_raster_to_ihdr(raster, &color_type, &bit_depth)) {
+  int use_palette = 0;
+  if (state && state->plte && state->plte_size > 0 && state->ihdr.color_type == 3) {
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    if (fmt && fmt->channel_model == GIMG_CHANNEL_RGBA &&
+        fmt->channel_count == 4 && fmt->bits_per_channel[0] == 8) {
+      use_palette = 1;
+      color_type = 3;
+      bit_depth = state->ihdr.bit_depth;
+      if (bit_depth != 1 && bit_depth != 2 && bit_depth != 4 && bit_depth != 8) {
+        bit_depth = 8;
+      }
+    }
+  }
+  if (!use_palette && !gimg_png_raster_to_ihdr(raster, &color_type, &bit_depth)) {
     gimg_raster_destroy(raster);
     return GIMG_ERR_UNSUPPORTED;
   }
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
-  size_t row_bytes = (color_type == 0)
-      ? (size_t)width
-      : (size_t)width * 4u;
+  size_t row_bytes;
+  if (color_type == 0) {
+    row_bytes = (size_t)width * (bit_depth == 16 ? 2u : 1u);
+  }
+  else if (color_type == 3) {
+    row_bytes = (size_t)width;
+  }
+  else {
+    row_bytes = (size_t)width * (bit_depth == 16 ? 8u : 4u);
+  }
   size_t raw_size = (size_t)height * (1u + row_bytes);
   unsigned char * raw = (unsigned char *)gimg_malloc(
       gimg_alloc_or_default(codec->allocator), raw_size);
@@ -153,7 +266,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     gimg_raster_destroy(raster);
     return GIMG_ERR_OOM;
   }
-  r = gimg_png_raster_to_raw_rows(raster, color_type, raw, raw_size);
+  r = gimg_png_raster_to_raw_rows(raster, color_type, bit_depth,
+      use_palette ? state : NULL, raw, raw_size);
   gimg_raster_destroy(raster);
   if (r != GIMG_OK) {
     gimg_free(gimg_alloc_or_default(codec->allocator), raw);
@@ -237,8 +351,6 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
   // Ancillary before IDAT (per policy). Preserve from codec_private if PNG-loaded.
   GIMG_Meta_Policy policy = options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
-  gimg_png_doc_state_t * state =
-      (gimg_png_doc_state_t *)doc->codec_private;
   if (policy == GIMG_META_PRESERVE_ALL && state && state->ancillary) {
     for (size_t i = 0; i < state->ancillary_count; i++) {
       gimg_png_chunk_type_t t = state->ancillary[i].type;
@@ -282,6 +394,26 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           return r;
         }
       }
+    }
+  }
+
+  // Palette: PLTE and tRNS before IDAT per PNG spec.
+  if (color_type == 3 && state && state->plte && state->plte_size > 0) {
+    r = gimg_png_write_chunk(stream, GIMG_PNG_PLTE, state->plte,
+        state->plte_size);
+    if (r != GIMG_OK) {
+      gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+      return r;
+    }
+    report->bytes_written += 8 + state->plte_size + 4;
+    if (state->trns && state->trns_size > 0) {
+      r = gimg_png_write_chunk(stream, GIMG_PNG_tRNS, state->trns,
+          state->trns_size);
+      if (r != GIMG_OK) {
+        gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+        return r;
+      }
+      report->bytes_written += 8 + state->trns_size + 4;
     }
   }
 

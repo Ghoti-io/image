@@ -15,6 +15,7 @@ Generated files:
 | `png_1x1_palette.png` | 1×1 palette + tRNS (R=0x11 G=0x22 B=0x33 A=0x80) |
 | `png_16bit_gray.png` | 1×1 grayscale 16-bit (value 0x1234) |
 | `png_1x1_rgba.png` | 1×1 RGBA 8-bit (R=0x11 G=0x22 B=0x33 A=0x80) |
+| `png_16bit_rgba.png` | 1×1 RGBA 16-bit (R=0x1234 G=0x5678 B=0x9ABC A=0xDEF0) |
 | `png_srgb.png` | 1×1 gray + sRGB chunk (rendering intent 0) |
 | `png_exif.png` | 1×1 gray + eXIf chunk (minimal payload) |
 | `png_iccp.png` | 1×1 gray + iCCP chunk (tiny zlib-compressed profile) |

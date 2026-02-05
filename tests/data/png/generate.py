@@ -104,6 +104,21 @@ def main() -> None:
     )
     write_png("png_1x1_rgba.png", png_rgba)
 
+    # ---- 1x1 16-bit RGBA (R=0x1234 G=0x5678 B=0x9ABC A=0xDEF0) ----
+    raw_16rgba = bytes([
+        0x00,
+        0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+    ])
+    idat_16rgba = idat_zlib(raw_16rgba)
+    ihdr_16rgba = struct.pack(">IIBBBBB", 1, 1, 16, 6, 0, 0, 0)
+    png_16rgba = (
+        signature
+        + png_chunk(b"IHDR", ihdr_16rgba)
+        + png_chunk(b"IDAT", idat_16rgba)
+        + iend
+    )
+    write_png("png_16bit_rgba.png", png_16rgba)
+
     # ---- 1x1 gray + sRGB chunk (rendering intent 0 = Perceptual) ----
     srgb_payload = bytes([0x00])
     png_srgb = (
