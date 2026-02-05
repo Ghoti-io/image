@@ -80,7 +80,7 @@ static int gimg_png_fill_color_info_from_ancillary(
     }
   }
 
-  /* Priority: sRGB > iCCP > gAMA. */
+  // Priority: sRGB > iCCP > gAMA.
   if (first_srgb != (size_t)-1) {
     const unsigned char * p = state->ancillary[first_srgb].payload;
     size_t len = state->ancillary[first_srgb].payload_size;
@@ -356,11 +356,11 @@ static void gimg_png_unfilter_row(unsigned char * row, size_t row_bytes,
   size_t n = row_bytes;
 
   switch (filter) {
-  case 0: /* None */
+  case 0: // None
     (void)prior;
     (void)bpp;
     break;
-  case 1: /* Sub */
+  case 1: // Sub
   {
     (void)prior;
     for (size_t i = 0; i < n; i++) {
@@ -369,7 +369,7 @@ static void gimg_png_unfilter_row(unsigned char * row, size_t row_bytes,
     }
     break;
   }
-  case 2: /* Up */
+  case 2: // Up
   {
     for (size_t i = 0; i < n; i++) {
       unsigned char up = prior ? prior[i] : 0;
@@ -377,7 +377,7 @@ static void gimg_png_unfilter_row(unsigned char * row, size_t row_bytes,
     }
     break;
   }
-  case 3: /* Average */
+  case 3: // Average
   {
     for (size_t i = 0; i < n; i++) {
       unsigned char left = (i >= (size_t)bpp) ? raw[i - bpp] : 0;
@@ -387,7 +387,7 @@ static void gimg_png_unfilter_row(unsigned char * row, size_t row_bytes,
     }
     break;
   }
-  case 4: /* Paeth */
+  case 4: // Paeth
   {
     for (size_t i = 0; i < n; i++) {
       int a = (i >= (size_t)bpp) ? (int)raw[i - bpp] : 0;
@@ -417,7 +417,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
 
   gimg_png_doc_state_t * state = (gimg_png_doc_state_t *)doc->codec_private;
   if (item->index >= 1) {
-    return GIMG_ERR_UNSUPPORTED; /* Single-frame only for now. */
+    return GIMG_ERR_UNSUPPORTED; // Single-frame only for now.
   }
 
   const gimg_png_ihdr_t * ihdr = &state->ihdr;
@@ -453,8 +453,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_INTERNAL;
   }
 
-  /* PNG IDAT is zlib-wrapped (RFC 1950): 2-byte header + raw DEFLATE + 4-byte
-   * Adler-32. The compress library "deflate" method expects raw DEFLATE. */
+  // PNG IDAT is zlib-wrapped (RFC 1950): 2-byte header + raw DEFLATE + 4-byte
+  // Adler-32. The compress library "deflate" method expects raw DEFLATE.
   if (state->idat_size < 6) {
     gcomp_options_destroy(gopts);
     return GIMG_ERR_CORRUPT;
@@ -485,8 +485,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   uint32_t w = ihdr->width;
   uint32_t h = ihdr->height;
 
-  /* Build unfiltered image in row-major form (no filter bytes) for raster copy.
-   */
+  // Build unfiltered image in row-major form (no filter bytes) for raster copy.
   size_t raw_full_size = (size_t)h * row_bytes;
   unsigned char * raw_full = (unsigned char *)gimg_malloc(alloc, raw_full_size);
   if (!raw_full) {
@@ -505,7 +504,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     }
   }
   else {
-    /* Adam7: each pass is filtered independently; scatter into raw_full. */
+    // Adam7: each pass is filtered independently; scatter into raw_full.
     size_t raw_off = 0;
     for (int pass = 0; pass < 7; pass++) {
       uint32_t pw = 0;
@@ -536,7 +535,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
 
   gimg_free(alloc, raw);
 
-  /* Select output format and whether we need alpha from tRNS. */
+  // Select output format and whether we need alpha from tRNS.
   int use_trns = (state->trns && state->trns_size > 0) ? 1 : 0;
   const GIMG_Pixel_Format * format = NULL;
   switch (ihdr->color_type) {
@@ -552,7 +551,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     format = (ihdr->bit_depth <= 8) ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_RGBA16;
     break;
   case 3:
-    format = &GIMG_PIXEL_RGBA8; /* Palette always expanded to RGBA8 (+ tRNS). */
+    format = &GIMG_PIXEL_RGBA8; // Palette always expanded to RGBA8 (+ tRNS).
     break;
   case 4:
     format = (ihdr->bit_depth <= 8) ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_RGBA16;
@@ -578,12 +577,12 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_OOM;
   }
 
-  /* Convert raw_full to output raster (all bit depths, tRNS, palette). */
+  // Convert raw_full to output raster (all bit depths, tRNS, palette).
   uint8_t depth = ihdr->bit_depth;
   size_t plte_entries = state->plte ? state->plte_size / 3u : 0;
 
   if (ihdr->color_type == 0) {
-    /* Grayscale: 1/2/4/8/16-bit; tRNS = 2-byte gray key (BE). */
+    // Grayscale: 1/2/4/8/16-bit; tRNS = 2-byte gray key (BE).
     uint16_t trns_gray = 0;
     if (use_trns && state->trns_size >= 2) {
       trns_gray = gimg_png_read_be16(state->trns);
@@ -611,7 +610,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
       }
     }
     else {
-      /* RGBA8 or RGBA16 with optional tRNS key. */
+      // RGBA8 or RGBA16 with optional tRNS key.
       int has_trns = use_trns && state->trns_size >= 2;
       for (uint32_t y = 0; y < h; y++) {
         const unsigned char * src = raw_full + (size_t)y * row_bytes;
@@ -647,7 +646,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     }
   }
   else if (ihdr->color_type == 2) {
-    /* RGB: 8 or 16-bit; tRNS = 6 bytes R,G,B key (BE). */
+    // RGB: 8 or 16-bit; tRNS = 6 bytes R,G,B key (BE).
     uint16_t trns_r = 0, trns_g = 0, trns_b = 0;
     int has_trns = 0;
     if (use_trns && state->trns_size >= 6) {
@@ -697,7 +696,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     }
   }
   else if (ihdr->color_type == 3) {
-    /* Palette: 1/2/4/8-bit index; PLTE + optional tRNS (1 byte per entry). */
+    // Palette: 1/2/4/8-bit index; PLTE + optional tRNS (1 byte per entry).
     if (plte_entries == 0) {
       gimg_free(alloc, pixels);
       gimg_free(alloc, raw_full);
@@ -723,7 +722,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     }
   }
   else if (ihdr->color_type == 4) {
-    /* Grayscale + alpha: 8 or 16-bit. */
+    // Grayscale + alpha: 8 or 16-bit.
     if (depth == 8) {
       for (uint32_t y = 0; y < h; y++) {
         const unsigned char * src = raw_full + (size_t)y * row_bytes;
@@ -758,7 +757,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     }
   }
   else if (ihdr->color_type == 6) {
-    /* RGBA: 8 or 16-bit. */
+    // RGBA: 8 or 16-bit.
     if (depth == 8) {
       for (uint32_t y = 0; y < h; y++) {
         const unsigned char * src = raw_full + (size_t)y * row_bytes;
@@ -795,7 +794,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return r;
   }
 
-  /* Apply color chunks (sRGB > iCCP > gAMA/cHRM); store in raster color_info. */
+  // Apply color chunks (sRGB > iCCP > gAMA/cHRM); store in raster color_info.
   {
     GIMG_Color_Info color_info;
     void * icc_owned = NULL;

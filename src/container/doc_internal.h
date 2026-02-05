@@ -22,7 +22,7 @@ struct GIMG_Codec;
 struct GIMG_Item {
   size_t index;   ///< Index in parent doc.
   GIMG_Doc * doc; ///< Parent document (for decode dispatch).
-  /* Per-item metadata and timing stubs. */
+  // Per-item metadata and timing stubs.
 };
 
 /**

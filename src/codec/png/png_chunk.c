@@ -159,25 +159,25 @@ GIMG_Result gimg_png_parse_ihdr(const unsigned char * payload,
     return GIMG_ERR_FORMAT;
   }
   switch (color_type) {
-  case 0: /* Grayscale */
+  case 0: // Grayscale
     if (bit_depth != 1 && bit_depth != 2 && bit_depth != 4 &&
         bit_depth != 8 && bit_depth != 16) {
       return GIMG_ERR_FORMAT;
     }
     break;
-  case 2: /* RGB */
+  case 2: // RGB
     if (bit_depth != 8 && bit_depth != 16) {
       return GIMG_ERR_FORMAT;
     }
     break;
-  case 3: /* Palette */
+  case 3: // Palette
     if (bit_depth != 1 && bit_depth != 2 && bit_depth != 4 &&
         bit_depth != 8) {
       return GIMG_ERR_FORMAT;
     }
     break;
-  case 4: /* Grayscale + alpha */
-  case 6: /* RGBA */
+  case 4: // Grayscale + alpha
+  case 6: // RGBA
     if (bit_depth != 8 && bit_depth != 16) {
       return GIMG_ERR_FORMAT;
     }

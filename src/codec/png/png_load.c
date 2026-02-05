@@ -113,7 +113,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   alloc = gimg_alloc_or_default(alloc);
   const GIMG_Limits * limits = options ? options->limits : NULL;
 
-  /* First chunk must be IHDR. */
+  // First chunk must be IHDR.
   uint32_t length = 0;
   gimg_png_chunk_type_t type = 0;
   r = gimg_png_read_chunk_header(stream, &length, &type);
@@ -155,7 +155,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     if (type == GIMG_PNG_IHDR) {
       gimg_png_free_doc_state(codec, state);
-      return GIMG_ERR_FORMAT; /* Duplicate IHDR. */
+      return GIMG_ERR_FORMAT; // Duplicate IHDR.
     }
 
     if (type == GIMG_PNG_IEND) {
@@ -171,11 +171,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (type == GIMG_PNG_PLTE) {
       if (state->ihdr.color_type != 3) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* PLTE only for palette. */
+        return GIMG_ERR_FORMAT; // PLTE only for palette.
       }
       if (seen_idat || have_plte) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* PLTE before IDAT, single PLTE. */
+        return GIMG_ERR_FORMAT; // PLTE before IDAT, single PLTE.
       }
       if (length % 3 != 0 || length == 0 || length > 256 * 3) {
         gimg_png_free_doc_state(codec, state);
@@ -200,11 +200,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (type == GIMG_PNG_tRNS) {
       if (seen_idat || have_trns) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* tRNS before IDAT, single tRNS. */
+        return GIMG_ERR_FORMAT; // tRNS before IDAT, single tRNS.
       }
       if (state->ihdr.color_type == 3 && !have_plte) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* For palette, PLTE before tRNS. */
+        return GIMG_ERR_FORMAT; // For palette, PLTE before tRNS.
       }
       state->trns = (unsigned char *)gimg_malloc(alloc, length);
       if (!state->trns) {
@@ -225,7 +225,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (type == GIMG_PNG_IDAT) {
       if (state->ihdr.color_type == 3 && !have_plte) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* Palette requires PLTE before IDAT. */
+        return GIMG_ERR_FORMAT; // Palette requires PLTE before IDAT.
       }
       if (length > 0) {
         unsigned char * buf = (unsigned char *)gimg_malloc(alloc, length);
@@ -259,14 +259,14 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       continue;
     }
 
-    /* Other critical chunk: invalid. */
+    // Other critical chunk: invalid.
     if (gimg_png_chunk_is_critical(type)) {
       gimg_png_free_doc_state(codec, state);
       return GIMG_ERR_FORMAT;
     }
 
-    /* Ancillary: parse and store (tEXt, zTXt, iTXt, iCCP, sRGB, gAMA, cHRM,
-     * eXIf, and any unknown ancillary) in read order for round-trip. */
+    // Ancillary: parse and store (tEXt, zTXt, iTXt, iCCP, sRGB, gAMA, cHRM,
+    // eXIf, and any unknown ancillary) in read order for round-trip.
     if (length > 0) {
       unsigned char * payload_buf =
           (unsigned char *)gimg_malloc(alloc, (size_t)length);
@@ -303,7 +303,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
   }
 
-  /* Build document. */
+  // Build document.
   GIMG_Doc * doc = (GIMG_Doc *)gimg_malloc(alloc, sizeof(GIMG_Doc));
   if (!doc) {
     gimg_png_free_doc_state(codec, state);
@@ -323,7 +323,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   doc->items[0].index = 0;
   doc->items[0].doc = doc;
 
-  /* Attach eXIf (and other raw metadata) to doc for round-trip. */
+  // Attach eXIf (and other raw metadata) to doc for round-trip.
   for (size_t i = 0; i < state->ancillary_count; i++) {
     if (state->ancillary[i].type == GIMG_PNG_eXIf &&
         state->ancillary[i].payload && state->ancillary[i].payload_size > 0) {
@@ -339,7 +339,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_doc_destroy(doc);
         return r;
       }
-      break; /* First eXIf chunk only per spec. */
+      break; // First eXIf chunk only per spec.
     }
   }
 
