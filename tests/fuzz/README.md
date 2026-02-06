@@ -1,16 +1,19 @@
-# PNG/APNG fuzz harness
+# PNG/APNG fuzz harnesses
 
-LibFuzzer harness for PNG/APNG load and decode. Ensures the parser and decoder do not crash on random or truncated input and return appropriate errors (e.g. `GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, `GIMG_ERR_LIMIT`).
+**fuzz_png_load**: LibFuzzer harness for PNG/APNG load and decode. Ensures the parser and decoder do not crash on random or truncated input and return appropriate errors (e.g. `GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, `GIMG_ERR_LIMIT`).
+
+**fuzz_png_encode**: Round-trip harness (load -> decode all items -> save -> load). Stress-tests the encoder; invalid input that fails load or save is ignored (no crash).
 
 ## Build
 
 From the image library root, with clang available:
 
 ```bash
-make fuzz-png
+make fuzz-png          # load/decode only
+make fuzz-png-encode   # round-trip load/save/load
 ```
 
-This builds `build/<build-dir>/apps/fuzz_png_load` with `-fsanitize=fuzzer`.
+These build `build/<build-dir>/apps/fuzz_png_load` and `fuzz_png_encode` with `-fsanitize=fuzzer`.
 
 ## Corpus
 
@@ -30,6 +33,8 @@ Run in CI or periodically:
 ```bash
 LD_LIBRARY_PATH="build/linux/release/apps:../compress/build/linux/release/apps" \
   build/linux/release/apps/fuzz_png_load tests/fuzz/corpus
+LD_LIBRARY_PATH="build/linux/release/apps:../compress/build/linux/release/apps" \
+  build/linux/release/apps/fuzz_png_encode tests/fuzz/corpus
 ```
 
 Without a corpus directory, the fuzzer runs with no seeds (slower to find coverage). Use `-max_total_time=N` to limit run time.

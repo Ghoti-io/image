@@ -192,7 +192,7 @@ TEST(PngChunk, ProbeReturnsPng) {
 }
 
 TEST(PngChunk, ProbeThenLoadViaDispatch) {
-  // Minimal PNG: probe → "png", load → doc. Decode is exercised in
+  // Minimal PNG: probe -> "png", load -> doc. Decode is exercised in
   // test_png_decode.
   std::vector<uint8_t> buf;
   append(buf, kPngSignature, sizeof(kPngSignature));

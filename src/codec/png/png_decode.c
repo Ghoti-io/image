@@ -363,6 +363,9 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         return GIMG_ERR_OOM;
       }
       memset(prev_rect, 0, canvas_stride * (size_t)canvas_h);
+      // APNG canvas loop: for each frame up to the requested index, apply
+      // previous frame's dispose (BACKGROUND or PREVIOUS), then save rect for
+      // PREVIOUS if needed, decode this frame, and blend onto canvas.
       for (size_t i = 0; i <= item->index; i++) {
         const gimg_png_fctl_t * fctl = &state->frames[i].fctl;
         uint32_t fx = fctl->x_offset;
