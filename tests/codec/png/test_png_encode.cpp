@@ -21,130 +21,12 @@
 #include <vector>
 
 #ifdef GIMG_TEST_DATA_PNG
+#include "png_test_utils.h"
 #include <fstream>
 #include <string>
 #endif
 
 namespace {
-
-#ifdef GIMG_TEST_DATA_PNG
-bool load_png_file(const char * filename, std::vector<uint8_t> & out) {
-  std::string path = std::string(GIMG_TEST_DATA_PNG) + "/" + filename;
-  std::ifstream f(path, std::ios::binary | std::ios::ate);
-  if (!f) {
-    return false;
-  }
-  std::ifstream::pos_type size = f.tellg();
-  if (size <= 0) {
-    return false;
-  }
-  out.resize(static_cast<size_t>(size));
-  f.seekg(0);
-  if (!f.read(reinterpret_cast<char *>(out.data()), out.size())) {
-    return false;
-  }
-  return true;
-}
-
-// Output directory derived from GIMG_TEST_DATA_PNG (data/png -> out/png).
-static std::string png_output_dir() {
-  std::string s(GIMG_TEST_DATA_PNG);
-  std::string const needle("data/png");
-  auto const pos = s.rfind(needle);
-  if (pos != std::string::npos) {
-    s.replace(pos, needle.size(), "out/png");
-  }
-  else {
-    s += "/../out/png";
-  }
-  return s;
-}
-
-/** Write PNG bytes to tests/out/png/ for verification. */
-static void write_png_output(
-    const char * filename, const uint8_t * data, size_t size) {
-  std::string path = png_output_dir() + "/" + filename;
-  std::ofstream f(path, std::ios::binary);
-  if (f && data && size > 0) {
-    f.write(reinterpret_cast<const char *>(data),
-        static_cast<std::streamsize>(size));
-  }
-}
-#endif
-
-/** FNV-1a 64-bit over raster pixel bytes (row-major, width*bpp per row). */
-static constexpr uint64_t kFnv1aOffsetBasis = 0xcbf29ce484222325ULL;
-static constexpr uint64_t kFnv1aPrime = 0x100000001b3ULL;
-
-static uint64_t raster_pixel_hash(const GIMG_Raster * raster) {
-  if (!raster) {
-    return 0;
-  }
-  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
-  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
-  if (bpp == 0) {
-    return 0;
-  }
-  uint32_t w = gimg_raster_width(raster);
-  uint32_t h = gimg_raster_height(raster);
-  size_t row_bytes = w * bpp;
-  const unsigned char * pixels =
-      static_cast<const unsigned char *>(gimg_raster_pixels_const(
-          const_cast<GIMG_Raster *>(raster)));
-  size_t stride = gimg_raster_stride_bytes(raster);
-  if (!pixels || stride < row_bytes) {
-    return 0;
-  }
-  uint64_t hval = kFnv1aOffsetBasis;
-  for (uint32_t y = 0; y < h; y++) {
-    const unsigned char * row = pixels + y * stride;
-    for (size_t i = 0; i < row_bytes; i++) {
-      hval ^= static_cast<uint64_t>(row[i]);
-      hval *= kFnv1aPrime;
-    }
-  }
-  return hval;
-}
-
-/** Compare two rasters (same dimensions and format); return true if pixel data
- * matches. */
-bool rasters_equal(const GIMG_Raster * a, const GIMG_Raster * b) {
-  if (!a || !b) {
-    return false;
-  }
-  if (gimg_raster_width(a) != gimg_raster_width(b) ||
-      gimg_raster_height(a) != gimg_raster_height(b)) {
-    return false;
-  }
-  const GIMG_Pixel_Format * fa = gimg_raster_format(a);
-  const GIMG_Pixel_Format * fb = gimg_raster_format(b);
-  if (!fa || !fb || fa->channel_model != fb->channel_model ||
-      fa->channel_count != fb->channel_count) {
-    return false;
-  }
-  size_t bpp = gimg_raster_bytes_per_pixel(fa);
-  if (bpp == 0) {
-    return false;
-  }
-  uint32_t w = gimg_raster_width(a);
-  uint32_t h = gimg_raster_height(a);
-  size_t stride_a = gimg_raster_stride_bytes(a);
-  size_t stride_b = gimg_raster_stride_bytes(b);
-  const unsigned char * pa = static_cast<const unsigned char *>(
-      gimg_raster_pixels_const((GIMG_Raster *)a));
-  const unsigned char * pb = static_cast<const unsigned char *>(
-      gimg_raster_pixels_const((GIMG_Raster *)b));
-  if (!pa || !pb) {
-    return false;
-  }
-  for (uint32_t y = 0; y < h; y++) {
-    if (std::memcmp(pa + y * stride_a, pb + y * stride_b, w * bpp) != 0) {
-      return false;
-    }
-  }
-  return true;
-}
-
 } // namespace
 
 TEST(PngEncode, SaveNullDocReturnsInternal) {
@@ -162,7 +44,7 @@ TEST(PngEncode, SaveNullDocReturnsInternal) {
 #ifdef GIMG_TEST_DATA_PNG
 TEST(PngEncode, SaveToMemoryOutputSucceeds) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_gray.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_gray.png", buf))
       << "Run tests/data/png/generate.py";
   GIMG_Stream * in_s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &in_s);
@@ -207,7 +89,7 @@ TEST(PngEncode, SaveToMemoryOutputSucceeds) {
 #ifdef GIMG_TEST_DATA_PNG
 TEST(PngEncode, RoundTrip1x1Gray) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_gray.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_gray.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -238,7 +120,7 @@ TEST(PngEncode, RoundTrip1x1Gray) {
       static_cast<const uint8_t *>(out_ptr) + saved_size);
   gimg_stream_destroy(out_s);
   out_s = nullptr;
-  write_png_output(
+  png_test::write_png_output(
       "roundtrip_1x1_gray.png", saved_data.data(), saved_data.size());
 
   // Re-load from saved buffer
@@ -262,11 +144,11 @@ TEST(PngEncode, RoundTrip1x1Gray) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
 
-  EXPECT_TRUE(rasters_equal(orig, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(orig, decoded))
       << "Round-trip pixel data must match";
 
   // Golden encode test: re-decoded pixels must match canonical decode hash.
-  EXPECT_EQ(raster_pixel_hash(decoded), 12638153115695167455ULL)
+  EXPECT_EQ(png_test::raster_pixel_hash(decoded), 12638153115695167455ULL)
       << "Round-trip decode hash must match golden 1x1 gray";
 
   gimg_raster_destroy(decoded);
@@ -277,7 +159,7 @@ TEST(PngEncode, RoundTrip1x1Gray) {
 
 TEST(PngEncode, RoundTrip1x1Rgba) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_rgba.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_rgba.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -307,7 +189,7 @@ TEST(PngEncode, RoundTrip1x1Rgba) {
       static_cast<const uint8_t *>(out_ptr) + saved_size);
   gimg_stream_destroy(out_s);
   out_s = nullptr;
-  write_png_output(
+  png_test::write_png_output(
       "roundtrip_1x1_rgba.png", saved_data.data(), saved_data.size());
 
   GIMG_Stream * s2 = nullptr;
@@ -328,7 +210,7 @@ TEST(PngEncode, RoundTrip1x1Rgba) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
 
-  EXPECT_TRUE(rasters_equal(orig, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(orig, decoded))
       << "Round-trip RGBA pixel data must match";
 
   gimg_raster_destroy(decoded);
@@ -339,7 +221,7 @@ TEST(PngEncode, RoundTrip1x1Rgba) {
 
 TEST(PngEncode, RoundTrip16BitGray) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_16bit_gray.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_16bit_gray.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -387,7 +269,7 @@ TEST(PngEncode, RoundTrip16BitGray) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
 
-  EXPECT_TRUE(rasters_equal(orig, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(orig, decoded))
       << "Round-trip 16-bit grayscale pixel data must match";
 
   gimg_raster_destroy(decoded);
@@ -398,7 +280,7 @@ TEST(PngEncode, RoundTrip16BitGray) {
 
 TEST(PngEncode, RoundTrip16BitRgba) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_16bit_rgba.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_16bit_rgba.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -446,7 +328,7 @@ TEST(PngEncode, RoundTrip16BitRgba) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
 
-  EXPECT_TRUE(rasters_equal(orig, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(orig, decoded))
       << "Round-trip 16-bit RGBA pixel data must match";
 
   gimg_raster_destroy(decoded);
@@ -457,7 +339,7 @@ TEST(PngEncode, RoundTrip16BitRgba) {
 
 TEST(PngEncode, RoundTrip1x1Rgb) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_rgb.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_rgb.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -486,7 +368,7 @@ TEST(PngEncode, RoundTrip1x1Rgb) {
       static_cast<const uint8_t *>(out_ptr) + saved_size);
   gimg_stream_destroy(out_s);
   out_s = nullptr;
-  write_png_output(
+  png_test::write_png_output(
       "roundtrip_1x1_rgb.png", saved_data.data(), saved_data.size());
 
   GIMG_Stream * s2 = nullptr;
@@ -507,7 +389,7 @@ TEST(PngEncode, RoundTrip1x1Rgb) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
 
-  EXPECT_TRUE(rasters_equal(orig, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(orig, decoded))
       << "Round-trip RGB (color_type 2) pixel data must match";
 
   gimg_raster_destroy(decoded);
@@ -518,7 +400,7 @@ TEST(PngEncode, RoundTrip1x1Rgb) {
 
 TEST(PngEncode, RoundTrip16BitRgb) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_16bit_rgb.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_16bit_rgb.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -566,7 +448,7 @@ TEST(PngEncode, RoundTrip16BitRgb) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
 
-  EXPECT_TRUE(rasters_equal(orig, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(orig, decoded))
       << "Round-trip 16-bit RGB pixel data must match";
 
   gimg_raster_destroy(decoded);
@@ -577,7 +459,7 @@ TEST(PngEncode, RoundTrip16BitRgb) {
 
 TEST(PngEncode, RoundTrip1x1Grayalpha) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_grayalpha.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_grayalpha.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -606,7 +488,7 @@ TEST(PngEncode, RoundTrip1x1Grayalpha) {
       static_cast<const uint8_t *>(out_ptr) + saved_size);
   gimg_stream_destroy(out_s);
   out_s = nullptr;
-  write_png_output(
+  png_test::write_png_output(
       "roundtrip_1x1_grayalpha.png", saved_data.data(), saved_data.size());
 
   GIMG_Stream * s2 = nullptr;
@@ -627,7 +509,7 @@ TEST(PngEncode, RoundTrip1x1Grayalpha) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
 
-  EXPECT_TRUE(rasters_equal(orig, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(orig, decoded))
       << "Round-trip grayscale+alpha (color_type 4) pixel data must match";
 
   gimg_raster_destroy(decoded);
@@ -638,7 +520,7 @@ TEST(PngEncode, RoundTrip1x1Grayalpha) {
 
 TEST(PngEncode, RoundTrip16BitGrayalpha) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_16bit_grayalpha.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_16bit_grayalpha.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -686,7 +568,7 @@ TEST(PngEncode, RoundTrip16BitGrayalpha) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
 
-  EXPECT_TRUE(rasters_equal(orig, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(orig, decoded))
       << "Round-trip 16-bit grayscale+alpha pixel data must match";
 
   gimg_raster_destroy(decoded);
@@ -697,7 +579,7 @@ TEST(PngEncode, RoundTrip16BitGrayalpha) {
 
 TEST(PngEncode, RoundTripPalette) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_palette.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_palette.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -745,7 +627,7 @@ TEST(PngEncode, RoundTripPalette) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
 
-  EXPECT_TRUE(rasters_equal(orig, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(orig, decoded))
       << "Round-trip palette + tRNS pixel data must match";
 
   gimg_raster_destroy(decoded);
@@ -756,7 +638,7 @@ TEST(PngEncode, RoundTripPalette) {
 
 TEST(PngEncode, SaveWithPreserveAllKeepsExif) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_exif.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -786,7 +668,7 @@ TEST(PngEncode, SaveWithPreserveAllKeepsExif) {
       static_cast<const uint8_t *>(out_ptr) + saved_size);
   gimg_stream_destroy(out_s);
   out_s = nullptr;
-  write_png_output("preserve_exif.png", saved_data.data(), saved_data.size());
+  png_test::write_png_output("preserve_exif.png", saved_data.data(), saved_data.size());
   gimg_doc_destroy(doc);
 
   // Re-load and verify eXIf is present
@@ -811,7 +693,7 @@ TEST(PngEncode, SaveWithPreserveAllKeepsExif) {
 
 TEST(PngEncode, SaveWithDropAllStripsMetadata) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_exif.png", buf)) << "Run tests/data/png/generate.py";
+  ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf)) << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -864,7 +746,7 @@ TEST(PngEncode, SaveWithDropAllStripsMetadata) {
 TEST(PngEncode, SaveWithStripGpsStripsOnlyGps) {
   // STRIP_GPS strips only GPS from eXIf; eXIf chunk is preserved (re-written without GPS IFD).
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_exif.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf))
       << "Run tests/data/png/generate.py";
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -913,7 +795,7 @@ TEST(PngEncode, SaveWithStripGpsStripsOnlyGps) {
 
 TEST(PngEncode, SaveWithNormalizeExifPreservesExif) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_exif.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf))
       << "Run tests/data/png/generate.py";
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -963,7 +845,7 @@ TEST(PngEncode, SaveWithNormalizeExifPreservesExif) {
 
 TEST(PngEncode, SaveWithKeepRawOnlyOmitsKnownSemantic) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_exif.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf))
       << "Run tests/data/png/generate.py";
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -1014,7 +896,7 @@ TEST(PngEncode, SaveWithKeepRawOnlyOmitsKnownSemantic) {
 
 TEST(PngEncode, SaveWithKeepCommonOnlyRoundTripsColorOnly) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_srgb.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_srgb.png", buf))
       << "Run tests/data/png/generate.py";
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -1068,7 +950,7 @@ TEST(PngEncode, SaveWithKeepCommonOnlyRoundTripsColorOnly) {
 
 TEST(PngEncode, SaveInterlacedRoundTrip) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_rgba.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_rgba.png", buf))
       << "Run tests/data/png/generate.py";
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -1115,18 +997,18 @@ TEST(PngEncode, SaveInterlacedRoundTrip) {
   r = gimg_item_decode(gimg_doc_item((GIMG_Doc *)doc2, 0), nullptr, &decoded);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(decoded, nullptr);
-  EXPECT_TRUE(rasters_equal(ref_raster, decoded))
+  EXPECT_TRUE(png_test::rasters_equal(ref_raster, decoded))
       << "Interlaced save round-trip should match original pixels";
   gimg_raster_destroy(ref_raster);
   gimg_raster_destroy(decoded);
   gimg_doc_destroy(doc2);
-  write_png_output("interlaced_roundtrip.png", saved_data.data(),
+  png_test::write_png_output("interlaced_roundtrip.png", saved_data.data(),
       saved_data.size());
 }
 
 TEST(PngEncode, ApngRoundTrip) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_apng_2frame.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -1208,7 +1090,7 @@ TEST(PngEncode, ApngRoundTrip) {
   gimg_raster_destroy(r0);
   gimg_raster_destroy(r1);
   gimg_doc_destroy(doc2);
-  write_png_output("apng_2frame_roundtrip.png", saved_data.data(),
+  png_test::write_png_output("apng_2frame_roundtrip.png", saved_data.data(),
       saved_data.size());
 }
 

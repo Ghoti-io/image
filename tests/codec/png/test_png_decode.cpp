@@ -20,6 +20,7 @@
 #include <vector>
 
 #ifdef GIMG_TEST_DATA_PNG
+#include "png_test_utils.h"
 #include <array>
 #include <fstream>
 #include <string>
@@ -42,69 +43,8 @@ void append(std::vector<uint8_t> & out, const unsigned char * p, size_t n) {
   out.insert(out.end(), p, p + n);
 }
 
-#ifdef GIMG_TEST_DATA_PNG
-/** Load a PNG reference file into a buffer. Returns true on success. */
-bool load_png_file(const char * filename, std::vector<uint8_t> & out) {
-  std::string path = std::string(GIMG_TEST_DATA_PNG) + "/" + filename;
-  std::ifstream f(path, std::ios::binary | std::ios::ate);
-  if (!f) {
-    return false;
-  }
-  std::ifstream::pos_type size = f.tellg();
-  if (size <= 0) {
-    return false;
-  }
-  out.resize(static_cast<size_t>(size));
-  f.seekg(0);
-  if (!f.read(reinterpret_cast<char *>(out.data()), out.size())) {
-    return false;
-  }
-  return true;
-}
-#endif
-
 /** PNG eXIf chunk type (for meta_raw tag). */
 static constexpr uint32_t kPngChunk_eXIf = 0x65584966u;
-
-/** FNV-1a 64-bit offset basis and prime (for canonical pixel hash). */
-static constexpr uint64_t kFnv1aOffsetBasis = 0xcbf29ce484222325ULL;
-static constexpr uint64_t kFnv1aPrime = 0x100000001b3ULL;
-
-/**
- * Compute canonical pixel hash of decoded raster: FNV-1a 64-bit over raw
- * pixel bytes, row-major top-down. Only the pixel data (width * bpp per row)
- * is hashed, not stride padding. Ensures decode is deterministic and
- * regression-free.
- */
-uint64_t raster_pixel_hash(const GIMG_Raster * raster) {
-  if (!raster) {
-    return 0;
-  }
-  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
-  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
-  if (bpp == 0) {
-    return 0;
-  }
-  uint32_t w = gimg_raster_width(raster);
-  uint32_t h = gimg_raster_height(raster);
-  size_t row_bytes = w * bpp;
-  const unsigned char * pixels =
-      static_cast<const unsigned char *>(gimg_raster_pixels_const(
-          const_cast<GIMG_Raster *>(raster)));
-  size_t stride = gimg_raster_stride_bytes(raster);
-  if (!pixels || stride < row_bytes) {
-    return 0;
-  }
-  uint64_t hval = kFnv1aOffsetBasis;
-  for (uint32_t y = 0; y < h; y++) {
-    const unsigned char * row = pixels + y * stride;
-    for (size_t i = 0; i < row_bytes; i++) {
-      hval ^= static_cast<uint64_t>(row[i]);
-      hval *= kFnv1aPrime;
-    }
-  }
-  return hval;
-}
 
 } // namespace
 
@@ -168,7 +108,7 @@ TEST(PngDecode, DecodeEmptyIdatReturnsCorrupt) {
 
 TEST(PngDecode, Decode1x1GrayFromFile) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_gray.png", buf)) << "Run tests/data/png/generate.py";
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_gray.png", buf)) << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -201,7 +141,7 @@ TEST(PngDecode, Decode1x1GrayFromFile) {
 
 TEST(PngDecode, Decode1x1PaletteWithTrnsFromFile) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_palette.png", buf)) << "Run tests/data/png/generate.py";
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_palette.png", buf)) << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -237,7 +177,7 @@ TEST(PngDecode, Decode1x1PaletteWithTrnsFromFile) {
 
 TEST(PngDecode, Decode16bitGrayFromFile) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_16bit_gray.png", buf)) << "Run tests/data/png/generate.py";
+  ASSERT_TRUE(png_test::load_png_file("png_16bit_gray.png", buf)) << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -271,7 +211,7 @@ TEST(PngDecode, Decode16bitGrayFromFile) {
 
 TEST(PngDecode, Decode1x1RgbaFromFile) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_rgba.png", buf)) << "Run tests/data/png/generate.py";
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_rgba.png", buf)) << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -306,7 +246,7 @@ TEST(PngDecode, Decode1x1RgbaFromFile) {
 
 TEST(PngDecode, DecodeSrgbSetsColorInfo) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_srgb.png", buf)) << "Run tests/data/png/generate.py";
+  ASSERT_TRUE(png_test::load_png_file("png_srgb.png", buf)) << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -336,7 +276,7 @@ TEST(PngDecode, DecodeSrgbSetsColorInfo) {
 
 TEST(PngDecode, DecodeExifAttachedToMetaRaw) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_exif.png", buf)) << "Run tests/data/png/generate.py";
+  ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf)) << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -369,7 +309,7 @@ TEST(PngDecode, DecodeExifAttachedToMetaRaw) {
 
 TEST(PngDecode, DecodeExifPopulatesMetaCommonOrientation) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_exif_orientation.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_exif_orientation.png", buf))
       << "Run tests/data/png/generate.py";
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -388,7 +328,7 @@ TEST(PngDecode, DecodeExifPopulatesMetaCommonOrientation) {
 
 TEST(PngDecode, DecodeIccpSetsColorInfo) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_iccp.png", buf)) << "Run tests/data/png/generate.py";
+  ASSERT_TRUE(png_test::load_png_file("png_iccp.png", buf)) << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -417,7 +357,7 @@ TEST(PngDecode, DecodeIccpSetsColorInfo) {
 
 TEST(PngDecode, ApngTwoFramesLoadAndDecode) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_apng_2frame.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -481,7 +421,7 @@ TEST(PngDecode, ApngTwoFramesLoadAndDecode) {
 
 TEST(PngDecode, ApngThreeFramesLoadAndDecode) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_apng_3frame.png", buf))
+  ASSERT_TRUE(png_test::load_png_file("png_apng_3frame.png", buf))
       << "Run tests/data/png/generate.py";
 
   GIMG_Stream * s = nullptr;
@@ -552,7 +492,7 @@ TEST(PngDecode, ApngThreeFramesLoadAndDecode) {
 
 TEST(PngDecode, ApngTruncatedReturnsErrorNoCrash) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_apng_2frame.png", buf));
 
   // Truncate before IEND (e.g. remove last 20 bytes). Load should fail.
   if (buf.size() > 20) {
@@ -587,7 +527,7 @@ TEST(PngDecode, ApngInvalidSignatureRejected) {
 
 TEST(PngDecode, ApngMaxFrameCountLimitEnforced) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_apng_2frame.png", buf));
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -607,7 +547,7 @@ TEST(PngDecode, ApngMaxFrameCountLimitEnforced) {
 
 TEST(PngDecode, ApngMaxChunkSizeLimitEnforced) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_gray.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_gray.png", buf));
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -629,7 +569,7 @@ TEST(PngDecode, ApngMaxChunkSizeLimitEnforced) {
 
 TEST(PngDecode, Golden1x1Gray) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_gray.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_gray.png", buf));
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
   ASSERT_EQ(r, GIMG_OK);
@@ -639,7 +579,7 @@ TEST(PngDecode, Golden1x1Gray) {
   GIMG_Raster * raster = nullptr;
   r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
   ASSERT_EQ(r, GIMG_OK);
-  uint64_t hash = raster_pixel_hash(raster);
+  uint64_t hash = png_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -648,14 +588,14 @@ TEST(PngDecode, Golden1x1Gray) {
 
 TEST(PngDecode, Golden1x1Palette) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_palette.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_palette.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
   gimg_doc_load(s, nullptr, nullptr, &doc);
   GIMG_Raster * raster = nullptr;
   gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
-  uint64_t hash = raster_pixel_hash(raster);
+  uint64_t hash = png_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -664,14 +604,14 @@ TEST(PngDecode, Golden1x1Palette) {
 
 TEST(PngDecode, Golden16bitGray) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_16bit_gray.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_16bit_gray.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
   gimg_doc_load(s, nullptr, nullptr, &doc);
   GIMG_Raster * raster = nullptr;
   gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
-  uint64_t hash = raster_pixel_hash(raster);
+  uint64_t hash = png_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -680,14 +620,14 @@ TEST(PngDecode, Golden16bitGray) {
 
 TEST(PngDecode, Golden1x1Rgba) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_1x1_rgba.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_1x1_rgba.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
   gimg_doc_load(s, nullptr, nullptr, &doc);
   GIMG_Raster * raster = nullptr;
   gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
-  uint64_t hash = raster_pixel_hash(raster);
+  uint64_t hash = png_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -696,14 +636,14 @@ TEST(PngDecode, Golden1x1Rgba) {
 
 TEST(PngDecode, Golden16bitRgba) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_16bit_rgba.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_16bit_rgba.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
   gimg_doc_load(s, nullptr, nullptr, &doc);
   GIMG_Raster * raster = nullptr;
   gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
-  uint64_t hash = raster_pixel_hash(raster);
+  uint64_t hash = png_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -712,14 +652,14 @@ TEST(PngDecode, Golden16bitRgba) {
 
 TEST(PngDecode, GoldenSrgb) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_srgb.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_srgb.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
   gimg_doc_load(s, nullptr, nullptr, &doc);
   GIMG_Raster * raster = nullptr;
   gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
-  uint64_t hash = raster_pixel_hash(raster);
+  uint64_t hash = png_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -728,14 +668,14 @@ TEST(PngDecode, GoldenSrgb) {
 
 TEST(PngDecode, GoldenExif) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_exif.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
   gimg_doc_load(s, nullptr, nullptr, &doc);
   GIMG_Raster * raster = nullptr;
   gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
-  uint64_t hash = raster_pixel_hash(raster);
+  uint64_t hash = png_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -744,14 +684,14 @@ TEST(PngDecode, GoldenExif) {
 
 TEST(PngDecode, GoldenIccp) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_iccp.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_iccp.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
   gimg_doc_load(s, nullptr, nullptr, &doc);
   GIMG_Raster * raster = nullptr;
   gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
-  uint64_t hash = raster_pixel_hash(raster);
+  uint64_t hash = png_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -760,7 +700,7 @@ TEST(PngDecode, GoldenIccp) {
 
 TEST(PngDecode, GoldenApng2Frame) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_apng_2frame.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
@@ -771,8 +711,8 @@ TEST(PngDecode, GoldenApng2Frame) {
   GIMG_Raster * r1 = nullptr;
   gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &r0);
   gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &r1);
-  hash0 = raster_pixel_hash(r0);
-  hash1 = raster_pixel_hash(r1);
+  hash0 = png_test::raster_pixel_hash(r0);
+  hash1 = png_test::raster_pixel_hash(r1);
   gimg_raster_destroy(r0);
   gimg_raster_destroy(r1);
   gimg_doc_destroy(doc);
@@ -783,7 +723,7 @@ TEST(PngDecode, GoldenApng2Frame) {
 
 TEST(PngDecode, GoldenApng3Frame) {
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_apng_3frame.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_apng_3frame.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
@@ -795,9 +735,9 @@ TEST(PngDecode, GoldenApng3Frame) {
   gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &r0);
   gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &r1);
   gimg_item_decode(gimg_doc_item(doc, 2), nullptr, &r2);
-  uint64_t h0 = raster_pixel_hash(r0);
-  uint64_t h1 = raster_pixel_hash(r1);
-  uint64_t h2 = raster_pixel_hash(r2);
+  uint64_t h0 = png_test::raster_pixel_hash(r0);
+  uint64_t h1 = png_test::raster_pixel_hash(r1);
+  uint64_t h2 = png_test::raster_pixel_hash(r2);
   gimg_raster_destroy(r0);
   gimg_raster_destroy(r1);
   gimg_raster_destroy(r2);
@@ -813,7 +753,7 @@ TEST(PngDecode, GoldenApng16bitRgbaBlend) {
   // Expected pixels are spec-correct 16-bit values written by generate.py
   // (frame 0 black opaque, frame 1 composited OVER); no blend logic in the test.
   std::vector<uint8_t> buf;
-  ASSERT_TRUE(load_png_file("png_apng_2frame_16bit_rgba.png", buf));
+  ASSERT_TRUE(png_test::load_png_file("png_apng_2frame_16bit_rgba.png", buf));
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
   GIMG_Doc * doc = nullptr;
@@ -864,9 +804,9 @@ TEST(PngDecode, GoldenApng16bitRgbaBlend) {
                 static_cast<double>(tol))
         << "frame 1 component " << c << " (RGBA)";
   }
-  EXPECT_EQ(raster_pixel_hash(r0), 12289102041121930043ULL)
+  EXPECT_EQ(png_test::raster_pixel_hash(r0), 12289102041121930043ULL)
       << "frame 0 hash (documented)";
-  EXPECT_EQ(raster_pixel_hash(r1), 18296124214518667195ULL)
+  EXPECT_EQ(png_test::raster_pixel_hash(r1), 18296124214518667195ULL)
       << "frame 1 hash (documented)";
   gimg_raster_destroy(r0);
   gimg_raster_destroy(r1);
