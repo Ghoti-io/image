@@ -43,4 +43,4 @@ void write_png_output(const char * filename, const uint8_t * data, size_t size);
 
 } // namespace png_test
 
-#endif /* GIMG_TESTS_CODEC_PNG_PNG_TEST_UTILS_H */
+#endif // GIMG_TESTS_CODEC_PNG_PNG_TEST_UTILS_H

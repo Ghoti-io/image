@@ -227,3 +227,50 @@ GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
   }
   return GIMG_OK;
 }
+
+GIMG_API GIMG_Result gimg_raster_copy(const GIMG_Raster * src,
+    GIMG_Raster ** out_raster) {
+  return gimg_raster_copy_with_allocator(NULL, src, out_raster);
+}
+
+GIMG_API GIMG_Result gimg_raster_copy_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Raster * src,
+    GIMG_Raster ** out_raster) {
+  if (!src || !out_raster) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_raster = NULL;
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(src);
+  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+  if (bpp == 0) {
+    return GIMG_ERR_UNSUPPORTED; // Planar or invalid format.
+  }
+  uint32_t w = gimg_raster_width(src);
+  uint32_t h = gimg_raster_height(src);
+  GIMG_Result r = gimg_raster_create_with_allocator(allocator, w, h, fmt,
+      GIMG_RASTER_OWNED, NULL, 0, out_raster);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  size_t src_stride = gimg_raster_stride_bytes(src);
+  size_t dst_stride = gimg_raster_stride_bytes(*out_raster);
+  size_t row_bytes = (size_t)w * bpp;
+  const unsigned char * sp =
+      (const unsigned char *)gimg_raster_pixels_const(src);
+  unsigned char * dp = (unsigned char *)gimg_raster_pixels(*out_raster);
+  for (uint32_t y = 0; y < h; y++) {
+    memcpy(dp, sp, row_bytes);
+    sp += src_stride;
+    dp += dst_stride;
+  }
+  const GIMG_Color_Info * ci = gimg_raster_color_info_const(src);
+  if (ci) {
+    r = gimg_raster_set_color_info(*out_raster, ci);
+    if (r != GIMG_OK) {
+      gimg_raster_destroy(*out_raster);
+      *out_raster = NULL;
+      return r;
+    }
+  }
+  return GIMG_OK;
+}

@@ -162,6 +162,17 @@ typedef struct {
 GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
+/**
+ * @brief Ensure the item has an attached raster: if already present, no-op;
+ * otherwise decode via the document's codec and attach the raster to the item.
+ * The document owns the attached raster. Use for load -> modify -> save flows.
+ * @param item Item (must belong to a document that was loaded with a codec).
+ * @param options Decode options (limits, etc.); NULL for defaults.
+ * @return GIMG_OK, GIMG_ERR_UNSUPPORTED (no codec / not loaded), or decode error.
+ */
+GIMG_API GIMG_Result gimg_item_ensure_decoded(GIMG_Item * item,
+    const GIMG_Decode_Options * options);
+
 #ifdef __cplusplus
 }
 #endif

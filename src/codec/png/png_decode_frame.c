@@ -148,7 +148,7 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
   *out_stride = 0;
 
   if (!idat_ptr || idat_len < GIMG_PNG_ZLIB_MIN_BYTES) {
-    return GIMG_ERR_CORRUPT; /* Truncated or empty zlib payload. */
+    return GIMG_ERR_CORRUPT; // Truncated or empty zlib payload.
   }
   size_t row_bytes = gimg_png_row_bytes_from_ihdr(ihdr, w);
   size_t raw_size = 0;

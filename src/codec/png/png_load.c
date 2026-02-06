@@ -62,7 +62,7 @@ static void png_load_diag(GIMG_Diagnostics * d, size_t offset,
 }
 
 /** Chunk is critical if type has bit 5 of first byte = 0 (uppercase). */
-static int gimg_png_chunk_is_critical(gimg_png_chunk_type_t type) {
+static bool gimg_png_chunk_is_critical(gimg_png_chunk_type_t type) {
   return (type & 0x20000000u) == 0;
 }
 
@@ -603,6 +603,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     doc->items[i].frame_delay_den = 0;
     doc->items[i].dispose_op = GIMG_DISPOSE_NONE;
     doc->items[i].blend_op = GIMG_BLEND_SOURCE;
+    doc->items[i].raster = NULL;
   }
   if (state->is_apng) {
     for (size_t i = 0; i < state->frame_count; i++) {

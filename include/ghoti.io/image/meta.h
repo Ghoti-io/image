@@ -93,6 +93,19 @@ GIMG_API GIMG_Result gimg_meta_raw_create_with_allocator(
     const GIMG_Allocator * allocator, GIMG_Meta_Raw ** out_raw);
 GIMG_API void gimg_meta_raw_destroy(GIMG_Meta_Raw * raw);
 
+/**
+ * @brief Deep-copy raw metadata (all blocks). Uses default allocator.
+ */
+GIMG_API GIMG_Result gimg_meta_raw_copy(
+    const GIMG_Meta_Raw * src, GIMG_Meta_Raw ** out_raw);
+
+/**
+ * @brief Deep-copy raw metadata with a specific allocator (NULL = default).
+ */
+GIMG_API GIMG_Result gimg_meta_raw_copy_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Meta_Raw * src,
+    GIMG_Meta_Raw ** out_raw);
+
 //
 // Save policies (spec §5.3). No silent stripping.
 //

@@ -176,6 +176,43 @@ GIMG_API GIMG_Meta_Common * gimg_doc_meta_common(const GIMG_Doc * doc);
 GIMG_API GIMG_Result gimg_doc_ensure_meta_common(
     GIMG_Doc * doc, GIMG_Meta_Common ** out_meta);
 
+/**
+ * @brief Copy document: same item count, per-item frame delay/dispose/blend and
+ * attached rasters (each raster is copied via gimg_raster_copy). Doc-level
+ * meta_common and meta_raw are deep-copied if present. loaded_by_codec and
+ * codec_private are not copied (the copy is a synthetic document). Caller owns
+ * the returned document.
+ */
+GIMG_API GIMG_Result gimg_doc_copy(const GIMG_Doc * src, GIMG_Doc ** out_doc);
+/**
+ * @brief Copy document with a specific allocator (NULL = default).
+ */
+GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Doc * src, GIMG_Doc ** out_doc);
+
+/**
+ * @brief Create a one-item document with a copy of the given raster attached to
+ * item 0. Caller keeps ownership of the original raster. Use with
+ * gimg_doc_save to "save this one raster".
+ */
+GIMG_API GIMG_Result gimg_doc_from_raster(const GIMG_Raster * raster,
+    GIMG_Doc ** out_doc);
+/**
+ * @brief Same as gimg_doc_from_raster with a specific allocator (NULL = default).
+ */
+GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Raster * raster,
+    GIMG_Doc ** out_doc);
+
+/**
+ * @brief Copy one item into another: frame delay, dispose_op, blend_op, and
+ * attached raster (via gimg_raster_copy). Source and destination may be in
+ * the same or different documents. Any existing raster on @a dst_item is
+ * destroyed and replaced.
+ */
+GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
+    GIMG_Item * dst_item);
+
 #ifdef __cplusplus
 }
 #endif

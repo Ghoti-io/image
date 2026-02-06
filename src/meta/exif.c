@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "../core/alloc_internal.h"
@@ -14,7 +15,7 @@
 // Minimum size: TIFF header (8) + IFD at least 2 + 0 entries + 4 = 14.
 #define GIMG_EXIF_MIN_SIZE 14u
 
-static int is_little_endian(const unsigned char * h) {
+static bool is_little_endian(const unsigned char * h) {
   return h[0] == 0x49u && h[1] == 0x49u;  // "II"
 }
 

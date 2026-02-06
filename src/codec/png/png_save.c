@@ -83,25 +83,25 @@ static uint32_t gimg_png_adler32(const unsigned char * data, size_t len) {
  * 2 (RGB) or 4 (grayscale+alpha), and the raster is RGBA with matching bit
  * depth, that color_type is used so round-trip preserves format.
  */
-static int gimg_png_raster_to_ihdr(
+static bool gimg_png_raster_to_ihdr(
     const GIMG_Raster * raster, const gimg_png_doc_state_t * state,
     uint8_t * color_type, uint8_t * bit_depth) {
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   if (!fmt || fmt->layout != GIMG_LAYOUT_INTERLEAVED) {
-    return 0;
+    return false;
   }
   if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count >= 1) {
     if (fmt->bits_per_channel[0] == 8) {
       *color_type = 0;
       *bit_depth = 8;
-      return 1;
+      return true;
     }
     if (fmt->bits_per_channel[0] == 16) {
       *color_type = 0;
       *bit_depth = 16;
-      return 1;
+      return true;
     }
-    return 0;
+    return false;
   }
   if (fmt->channel_model == GIMG_CHANNEL_RGBA && fmt->channel_count == 4) {
     uint8_t bd = 0;
@@ -112,19 +112,19 @@ static int gimg_png_raster_to_ihdr(
       bd = 16;
     }
     else {
-      return 0;
+      return false;
     }
     if (state && (state->ihdr.color_type == 2 || state->ihdr.color_type == 4) &&
         state->ihdr.bit_depth == bd) {
       *color_type = state->ihdr.color_type;
       *bit_depth = bd;
-      return 1;
+      return true;
     }
     *color_type = 6;
     *bit_depth = bd;
-    return 1;
+    return true;
   }
-  return 0;
+  return false;
 }
 
 /** Build IHDR payload (13 bytes). @a interlace_method 0 or 1 (Adam7). */
@@ -192,28 +192,28 @@ static void gimg_png_build_fctl(unsigned char * out, uint32_t sequence_number,
   out[25] = blend_op;
 }
 
-/** Return 1 if chunk type is known semantic metadata (color, Exif, text). */
-static int gimg_png_chunk_is_known_semantic(gimg_png_chunk_type_t t) {
+/** Return true if chunk type is known semantic metadata (color, Exif, text). */
+static bool gimg_png_chunk_is_known_semantic(gimg_png_chunk_type_t t) {
   return t == GIMG_PNG_iCCP || t == GIMG_PNG_sRGB || t == GIMG_PNG_gAMA ||
       t == GIMG_PNG_cHRM || t == GIMG_PNG_eXIf || t == GIMG_PNG_tEXt ||
       t == GIMG_PNG_zTXt || t == GIMG_PNG_iTXt;
 }
 
 /**
- * Return 1 if the text chunk payload has a GPS-related keyword (tEXt/zTXt/iTXt:
+ * Return true if the text chunk payload has a GPS-related keyword (tEXt/zTXt/iTXt:
  * keyword is the first null-terminated string). STRIP_GPS skips such chunks.
  */
-static int gimg_png_text_keyword_is_gps(
+static bool gimg_png_text_keyword_is_gps(
     const unsigned char * payload, size_t payload_size) {
   if (!payload || payload_size == 0) {
-    return 0;
+    return false;
   }
   size_t kw_len = 0;
   while (kw_len < payload_size && payload[kw_len] != 0) {
     kw_len++;
   }
   if (kw_len == 0) {
-    return 0;
+    return false;
   }
   // Case-insensitive: "GPS", "GPS ", "EXIF:GPS", "exif:gps", etc.
   if (kw_len >= 3) {
@@ -222,24 +222,24 @@ static int gimg_png_text_keyword_is_gps(
     unsigned char c = (unsigned char)tolower((unsigned char)payload[2]);
     if (a == 'g' && b == 'p' && c == 's') {
       if (kw_len == 3 || payload[3] == ' ' || payload[3] == 0) {
-        return 1;
+        return true;
       }
     }
   }
   if (kw_len >= 8) {
     const char * exif_gps = "exif:gps";
-    int match = 1;
+    bool match = true;
     for (size_t i = 0; i < 8 && i < kw_len; i++) {
       if (tolower((unsigned char)payload[i]) != (unsigned char)exif_gps[i]) {
-        match = 0;
+        match = false;
         break;
       }
     }
     if (match) {
-      return 1;
+      return true;
     }
   }
-  return 0;
+  return false;
 }
 
 /** Write a 16-bit sample (host order) to buffer in PNG big-endian order. */

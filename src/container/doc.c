@@ -243,3 +243,132 @@ GIMG_API GIMG_Result gimg_doc_ensure_meta_common(
   *out_meta = doc->meta_common;
   return GIMG_OK;
 }
+
+GIMG_API GIMG_Result gimg_doc_copy(const GIMG_Doc * src, GIMG_Doc ** out_doc) {
+  return gimg_doc_copy_with_allocator(NULL, src, out_doc);
+}
+
+GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Doc * src,
+    GIMG_Doc ** out_doc) {
+  if (!src || !out_doc) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_doc = NULL;
+  GIMG_Result r = gimg_doc_create_with_allocator(allocator, out_doc);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  GIMG_Doc * doc = *out_doc;
+  size_t n = gimg_doc_item_count(src);
+  if (n > 1) {
+    r = gimg_doc_set_item_count(doc, n);
+    if (r != GIMG_OK) {
+      gimg_doc_destroy(doc);
+      *out_doc = NULL;
+      return r;
+    }
+  }
+  for (size_t i = 0; i < n; i++) {
+    const GIMG_Item * si = gimg_doc_item(src, i);
+    GIMG_Item * di = gimg_doc_item(doc, i);
+    if (!si || !di) {
+      continue;
+    }
+    uint16_t num = 0, den = 0;
+    gimg_item_frame_delay(si, &num, &den);
+    gimg_item_set_frame_delay(di, num, den);
+    gimg_item_set_dispose_op(di, gimg_item_dispose_op(si));
+    gimg_item_set_blend_op(di, gimg_item_blend_op(si));
+    GIMG_Raster * sr = gimg_item_raster(si);
+    if (sr) {
+      GIMG_Raster * copy_r = NULL;
+      r = gimg_raster_copy_with_allocator(doc->allocator, sr, &copy_r);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        *out_doc = NULL;
+        return r;
+      }
+      gimg_item_set_raster(di, copy_r);
+    }
+  }
+  if (src->meta_common) {
+    r = gimg_meta_common_create_with_allocator(doc->allocator,
+        &doc->meta_common);
+    if (r != GIMG_OK) {
+      gimg_doc_destroy(doc);
+      *out_doc = NULL;
+      return r;
+    }
+    gimg_meta_common_set_orientation(doc->meta_common,
+        gimg_meta_common_orientation(src->meta_common));
+    uint32_t x = 0, y = 0;
+    gimg_meta_common_dpi(src->meta_common, &x, &y);
+    gimg_meta_common_set_dpi(doc->meta_common, x, y);
+  }
+  if (src->meta_raw) {
+    r = gimg_meta_raw_copy_with_allocator(doc->allocator, src->meta_raw,
+        &doc->meta_raw);
+    if (r != GIMG_OK) {
+      gimg_doc_destroy(doc);
+      *out_doc = NULL;
+      return r;
+    }
+  }
+  return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_doc_from_raster(const GIMG_Raster * raster,
+    GIMG_Doc ** out_doc) {
+  return gimg_doc_from_raster_with_allocator(NULL, raster, out_doc);
+}
+
+GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Raster * raster,
+    GIMG_Doc ** out_doc) {
+  if (!raster || !out_doc) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_doc = NULL;
+  GIMG_Result r = gimg_doc_create_with_allocator(allocator, out_doc);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  GIMG_Raster * copy_r = NULL;
+  r = gimg_raster_copy_with_allocator(
+      (*out_doc)->allocator, raster, &copy_r);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(*out_doc);
+    *out_doc = NULL;
+    return r;
+  }
+  gimg_item_set_raster(gimg_doc_item(*out_doc, 0), copy_r);
+  return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
+    GIMG_Item * dst_item) {
+  if (!src_item || !dst_item) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_item_set_frame_delay(dst_item,
+      (uint16_t)(src_item->frame_delay_num),
+      (uint16_t)(src_item->frame_delay_den));
+  gimg_item_set_dispose_op(dst_item, src_item->dispose_op);
+  gimg_item_set_blend_op(dst_item, src_item->blend_op);
+  GIMG_Raster * sr = gimg_item_raster(src_item);
+  if (sr) {
+    const GIMG_Allocator * alloc = dst_item->doc ? dst_item->doc->allocator
+                                                  : NULL;
+    GIMG_Raster * copy_r = NULL;
+    GIMG_Result r = gimg_raster_copy_with_allocator(alloc, sr, &copy_r);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    gimg_item_set_raster(dst_item, copy_r);
+  }
+  else {
+    gimg_item_set_raster(dst_item, NULL);
+  }
+  return GIMG_OK;
+}

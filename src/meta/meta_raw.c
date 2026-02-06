@@ -111,3 +111,35 @@ GIMG_API GIMG_Result gimg_meta_raw_get(const GIMG_Meta_Raw * raw,
   }
   return GIMG_ERR_UNSUPPORTED; // Not found
 }
+
+GIMG_API GIMG_Result gimg_meta_raw_copy(const GIMG_Meta_Raw * src,
+    GIMG_Meta_Raw ** out_raw) {
+  return gimg_meta_raw_copy_with_allocator(NULL, src, out_raw);
+}
+
+GIMG_API GIMG_Result gimg_meta_raw_copy_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Meta_Raw * src,
+    GIMG_Meta_Raw ** out_raw) {
+  if (!out_raw) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_raw = NULL;
+  if (!src) {
+    return GIMG_OK;
+  }
+  GIMG_Result r = gimg_meta_raw_create_with_allocator(allocator, out_raw);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  for (size_t i = 0; i < src->count; i++) {
+    const gimg_meta_raw_block_t * b = &src->blocks[i];
+    r = gimg_meta_raw_attach(*out_raw, b->format_id, b->tag_or_chunk_id,
+        b->data, b->size);
+    if (r != GIMG_OK) {
+      gimg_meta_raw_destroy(*out_raw);
+      *out_raw = NULL;
+      return r;
+    }
+  }
+  return GIMG_OK;
+}

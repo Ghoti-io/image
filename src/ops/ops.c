@@ -51,7 +51,7 @@ static GIMG_Result apply_orientation_180(GIMG_Raster * raster) {
   return GIMG_OK;
 }
 
-static int format_is_rgba8(const GIMG_Pixel_Format * f) {
+static bool format_is_rgba8(const GIMG_Pixel_Format * f) {
   return f->channel_model == GIMG_CHANNEL_RGBA && f->channel_count == 4 &&
       f->bits_per_channel[0] == 8 && f->bits_per_channel[1] == 8 &&
       f->bits_per_channel[2] == 8 && f->bits_per_channel[3] == 8;
@@ -175,4 +175,49 @@ GIMG_API GIMG_Result gimg_alpha_unpremultiply(GIMG_Raster * raster) {
     }
   }
   return GIMG_OK;
+}
+
+GIMG_API bool gimg_ops_raster_equal(const GIMG_Raster * a, const GIMG_Raster * b) {
+  if (!a || !b) {
+    return false;
+  }
+  if (gimg_raster_width(a) != gimg_raster_width(b) ||
+      gimg_raster_height(a) != gimg_raster_height(b)) {
+    return false;
+  }
+  const GIMG_Pixel_Format * fa = gimg_raster_format(a);
+  const GIMG_Pixel_Format * fb = gimg_raster_format(b);
+  if (!fa || !fb || fa->channel_model != fb->channel_model ||
+      fa->channel_type != fb->channel_type ||
+      fa->channel_count != fb->channel_count) {
+    return false;
+  }
+  for (int i = 0; i < 8; i++) {
+    if (fa->bits_per_channel[i] != fb->bits_per_channel[i]) {
+      return false;
+    }
+  }
+  size_t bpp = gimg_raster_bytes_per_pixel(fa);
+  if (bpp == 0) {
+    return false;
+  }
+  uint32_t w = gimg_raster_width(a);
+  uint32_t h = gimg_raster_height(a);
+  size_t row_bytes = (size_t)w * bpp;
+  size_t stride_a = gimg_raster_stride_bytes(a);
+  size_t stride_b = gimg_raster_stride_bytes(b);
+  const unsigned char * pa =
+      (const unsigned char *)gimg_raster_pixels_const(a);
+  const unsigned char * pb =
+      (const unsigned char *)gimg_raster_pixels_const(b);
+  if (!pa || !pb) {
+    return false;
+  }
+  for (uint32_t y = 0; y < h; y++) {
+    if (memcmp(pa + (size_t)y * stride_a, pb + (size_t)y * stride_b,
+            row_bytes) != 0) {
+      return false;
+    }
+  }
+  return true;
 }

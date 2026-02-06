@@ -31,6 +31,7 @@
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <ghoti.io/compress/options.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -203,8 +204,8 @@ size_t gimg_png_row_bytes_from_ihdr(const gimg_png_ihdr_t * ihdr,
     uint32_t width);
 
 /** Expected raw size for interlaced (Adam7) image: sum over passes of
- * (1 + row_bytes) * pass_height. Returns 1 on success, 0 on overflow. */
-int gimg_png_adam7_raw_size(uint32_t width, uint32_t height,
+ * (1 + row_bytes) * pass_height. Returns true on success, false on overflow. */
+bool gimg_png_adam7_raw_size(uint32_t width, uint32_t height,
     uint8_t color_type, uint8_t bit_depth, size_t * out_size);
 
 /**

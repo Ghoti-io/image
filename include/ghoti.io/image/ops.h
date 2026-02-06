@@ -13,6 +13,7 @@
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,6 +50,16 @@ GIMG_API GIMG_Result gimg_alpha_premultiply(GIMG_Raster * raster);
  * @return GIMG_OK or GIMG_ERR_UNSUPPORTED if format not supported.
  */
 GIMG_API GIMG_Result gimg_alpha_unpremultiply(GIMG_Raster * raster);
+
+/**
+ * @brief Compare two rasters: dimensions, format, and pixel data must match.
+ * Strides may differ; comparison is row-by-row over pixel bytes. Color info is
+ * not compared.
+ * @return true if equal, false if either is NULL or dimensions/format/pixels
+ * differ.
+ */
+GIMG_API bool gimg_ops_raster_equal(
+    const GIMG_Raster * a, const GIMG_Raster * b);
 
 #ifdef __cplusplus
 }

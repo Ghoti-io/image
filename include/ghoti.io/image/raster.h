@@ -171,6 +171,26 @@ GIMG_API const GIMG_Color_Info * gimg_raster_color_info_const(
 GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
     const GIMG_Color_Info * info);
 
+/**
+ * @brief Copy a raster: same dimensions and format, new owned buffer (library
+ * stride). Pixel data is copied row-by-row (source stride respected). Color
+ * info is copied if set on the source. Uses default allocator.
+ * @param src Source raster (not modified).
+ * @param out_raster On success, new raster; caller owns it.
+ * @return GIMG_OK, GIMG_ERR_UNSUPPORTED (e.g. planar format), GIMG_ERR_OOM.
+ */
+GIMG_API GIMG_Result gimg_raster_copy(const GIMG_Raster * src,
+    GIMG_Raster ** out_raster);
+
+/**
+ * @brief Copy a raster with a specific allocator. Same semantics as
+ * gimg_raster_copy; the new raster and its buffer use @a allocator (NULL =
+ * default).
+ */
+GIMG_API GIMG_Result gimg_raster_copy_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Raster * src,
+    GIMG_Raster ** out_raster);
+
 #ifdef __cplusplus
 }
 #endif

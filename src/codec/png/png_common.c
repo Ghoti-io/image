@@ -11,6 +11,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -106,7 +107,7 @@ GIMG_Result gimg_png_deflate_options_for_decode(
   return GIMG_OK;
 }
 
-int gimg_png_adam7_raw_size(uint32_t width, uint32_t height, uint8_t color_type,
+bool gimg_png_adam7_raw_size(uint32_t width, uint32_t height, uint8_t color_type,
     uint8_t bit_depth, size_t * out_size) {
   size_t total = 0;
   for (int pass = 0; pass < 7; pass++) {
@@ -121,9 +122,9 @@ int gimg_png_adam7_raw_size(uint32_t width, uint32_t height, uint8_t color_type,
     size_t pass_size = 0;
     if (!gimg_safe_mul_size((size_t)ph, pass_row_stride, &pass_size) ||
         !gimg_safe_add_size(total, pass_size, &total)) {
-      return 0;
+      return false;
     }
   }
   *out_size = total;
-  return 1;
+  return true;
 }

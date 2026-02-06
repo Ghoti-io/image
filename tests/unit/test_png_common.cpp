@@ -87,12 +87,12 @@ TEST(PngCommon, Adam7RawSize) {
   size_t out = 0;
   // Non-interlaced equivalent for 8x8 RGBA8: 8 * (1 + 32) = 264
   // Adam7: sum of (1 + row_bytes) * pass_height over 7 passes
-  int r = gimg_png_adam7_raw_size(8, 8, 6, 8, &out);
-  EXPECT_EQ(r, 1);
+  bool ok = gimg_png_adam7_raw_size(8, 8, 6, 8, &out);
+  EXPECT_TRUE(ok);
   EXPECT_GT(out, 0u);
   // Overflow case: huge dimensions might overflow
-  r = gimg_png_adam7_raw_size(1, 1, 0, 8, &out);
-  EXPECT_EQ(r, 1);
+  ok = gimg_png_adam7_raw_size(1, 1, 0, 8, &out);
+  EXPECT_TRUE(ok);
   EXPECT_GT(out, 0u);
 }
 

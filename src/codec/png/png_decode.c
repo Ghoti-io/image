@@ -67,9 +67,9 @@
  * Color chunk policy (PNG allows at most one of sRGB, iCCP, or gAMA+cHRM).
  * We use first in priority order: sRGB > iCCP > gAMA/cHRM.
  * Fills @a out_info; for iCCP allocates decompressed profile and sets
- * @a out_icc_owned (caller frees). Returns 1 if color info was set, 0 if none.
+ * @a out_icc_owned (caller frees). Returns true if color info was set, false if none.
  */
-static int gimg_png_fill_color_info_from_ancillary(
+static bool gimg_png_fill_color_info_from_ancillary(
     const gimg_png_doc_state_t * state, const GIMG_Allocator * alloc,
     GIMG_Color_Info * out_info, void ** out_icc_owned, size_t * out_icc_size) {
   gimg_color_info_default(out_info);
@@ -104,7 +104,7 @@ static int gimg_png_fill_color_info_from_ancillary(
       out_info->white_point = GIMG_PRIMARIES_SRGB;
       out_info->transfer = GIMG_TRANSFER_SRGB;
       out_info->intent = (GIMG_Rendering_Intent)intent;
-      return 1;
+      return true;
     }
   }
   if (first_iccp != (size_t)-1) {
@@ -123,13 +123,13 @@ static int gimg_png_fill_color_info_from_ancillary(
         size_t max_out = GIMG_PNG_ICC_MAX_DECODED;
         void * decoded = gimg_malloc(alloc, max_out);
         if (!decoded) {
-          return 0;
+          return false;
         }
         size_t out_len = 0;
         gcomp_options_t * gopts = NULL;
         if (gimg_png_deflate_options_for_decode(max_out, &gopts) != GIMG_OK) {
           gimg_free(alloc, decoded);
-          return 0;
+          return false;
         }
         gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(),
             "deflate", gopts, deflate_src, deflate_len, decoded, max_out,
@@ -137,7 +137,7 @@ static int gimg_png_fill_color_info_from_ancillary(
         gcomp_options_destroy(gopts);
         if (gs != GCOMP_OK) {
           gimg_free(alloc, decoded);
-          return 0;
+          return false;
         }
         out_info->primaries = GIMG_PRIMARIES_UNKNOWN;
         out_info->white_point = GIMG_PRIMARIES_UNKNOWN;
@@ -146,7 +146,7 @@ static int gimg_png_fill_color_info_from_ancillary(
         out_info->icc_size = out_len;
         *out_icc_owned = decoded;
         *out_icc_size = out_len;
-        return 1;
+        return true;
       }
     }
   }
@@ -162,11 +162,11 @@ static int gimg_png_fill_color_info_from_ancillary(
         out_info->transfer = GIMG_TRANSFER_GAMMA;
         out_info->gamma_value =
             (double)gama_val / (double)GIMG_PNG_GAMA_SCALE;
-        return 1;
+        return true;
       }
     }
   }
-  return 0;
+  return false;
 }
 
 /** Blend frame rectangle onto canvas at (fx,fy). SOURCE = replace; OVER = alpha

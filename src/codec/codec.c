@@ -257,3 +257,20 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
 
   return codec->decode_cb(codec, item, options, out_raster);
 }
+
+GIMG_API GIMG_Result gimg_item_ensure_decoded(GIMG_Item * item,
+    const GIMG_Decode_Options * options) {
+  if (!item) {
+    return GIMG_ERR_INTERNAL;
+  }
+  if (item->raster) {
+    return GIMG_OK; // Already decoded.
+  }
+  GIMG_Raster * decoded = NULL;
+  GIMG_Result r = gimg_item_decode(item, options, &decoded);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  gimg_item_set_raster(item, decoded); // Item takes ownership.
+  return GIMG_OK;
+}

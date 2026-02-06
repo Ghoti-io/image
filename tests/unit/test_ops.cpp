@@ -90,6 +90,69 @@ TEST(Ops, AlphaPremultiplyUnpremultiplyRoundTrip) {
   gimg_raster_destroy(r);
 }
 
+TEST(Ops, RasterEqualIdentical) {
+  GIMG_Raster * a = nullptr;
+  GIMG_Raster * b = nullptr;
+  gimg_raster_create(
+      2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &a);
+  gimg_raster_create(
+      2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &b);
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  unsigned char * pa = (unsigned char *)gimg_raster_pixels(a);
+  unsigned char * pb = (unsigned char *)gimg_raster_pixels(b);
+  for (int i = 0; i < 16; i++) {
+    pa[i] = pb[i] = (unsigned char)i;
+  }
+  EXPECT_TRUE(gimg_ops_raster_equal(a, b));
+  gimg_raster_destroy(a);
+  gimg_raster_destroy(b);
+}
+
+TEST(Ops, RasterEqualDifferentDimensions) {
+  GIMG_Raster * a = nullptr;
+  GIMG_Raster * b = nullptr;
+  gimg_raster_create(
+      2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &a);
+  gimg_raster_create(
+      2, 3, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &b);
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  EXPECT_FALSE(gimg_ops_raster_equal(a, b));
+  gimg_raster_destroy(a);
+  gimg_raster_destroy(b);
+}
+
+TEST(Ops, RasterEqualOnePixelDifferent) {
+  GIMG_Raster * a = nullptr;
+  GIMG_Raster * b = nullptr;
+  gimg_raster_create(
+      2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &a);
+  gimg_raster_create(
+      2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &b);
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  unsigned char * pa = (unsigned char *)gimg_raster_pixels(a);
+  unsigned char * pb = (unsigned char *)gimg_raster_pixels(b);
+  for (int i = 0; i < 16; i++) {
+    pa[i] = pb[i] = (unsigned char)i;
+  }
+  pb[5] = 99;
+  EXPECT_FALSE(gimg_ops_raster_equal(a, b));
+  gimg_raster_destroy(a);
+  gimg_raster_destroy(b);
+}
+
+TEST(Ops, RasterEqualNull) {
+  GIMG_Raster * a = nullptr;
+  gimg_raster_create(
+      1, 1, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &a);
+  ASSERT_NE(a, nullptr);
+  EXPECT_FALSE(gimg_ops_raster_equal(nullptr, a));
+  EXPECT_FALSE(gimg_ops_raster_equal(a, nullptr));
+  gimg_raster_destroy(a);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
