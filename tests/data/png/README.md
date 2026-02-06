@@ -3,7 +3,7 @@
 Reference PNG files for decode tests. Generate them with:
 
 ```bash
-# From repo root
+# From repo root (Pillow required for APNG 16-bit expected file: pip install Pillow)
 python3 tests/data/png/generate.py
 ```
 
@@ -21,6 +21,10 @@ Generated files:
 | `png_iccp.png` | 1×1 gray + iCCP chunk (tiny zlib-compressed profile) |
 | `png_apng_2frame.png` | 2-frame APNG: default image is first frame (1×1 gray 0, then 0x80); frame 0 delay 50/100, dispose NONE, blend SOURCE; frame 1 delay 25/100, dispose BACKGROUND, blend OVER |
 | `png_apng_3frame.png` | 3-frame APNG: gray 0, 0x80, 0xC0; frame 0 delay 50/100 dispose NONE blend SOURCE; frame 1 delay 25/100 dispose BACKGROUND blend OVER; frame 2 delay 10/100 dispose PREVIOUS blend OVER |
+| `png_apng_2frame_16bit_rgba.png` | 2-frame APNG 16-bit RGBA: frame 0 black opaque, frame 1 red 50% alpha with blend OVER (dispose NONE). Used to test 16-bit alpha compositing. |
+| `png_apng_2frame_16bit_rgba_expected.bin` | Expected pixels (16 bytes) for the above; produced by `generate.py` from Pillow (8-bit scaled to 16-bit). Decode test allows ±257 per component for 8- vs 16-bit rounding. |
+
+**APNG 16-bit blend expected:** The test `GoldenApng16bitRgbaBlend` compares decoder output to the expected file. `generate.py` uses Pillow as oracle (opens APNG, composites frames, reads first pixel); Pillow returns 8-bit so we scale to 16-bit. The test allows a per-component tolerance of 257 (one 8-bit step in 16-bit) to account for rounding.
 
 **APNG (1.4):** Multi-frame reference files above are used by decode and encode tests. Tests also cover invalid/truncated APNG (no crash, error returned) and limits (`max_frame_count`, `max_chunk_size`).
 

@@ -633,6 +633,7 @@ static GIMG_Result gimg_png_decode_one_apng_frame(
     gimg_free(alloc, raw_full);
     return GIMG_ERR_OOM;
   }
+  memset(pixels, 0, stride * (size_t)fh);
   gimg_png_raw_full_to_pixels(
       state, ihdr, format, raw_full, fw, fh, row_bytes, pixels, stride);
   gimg_free(alloc, raw_full);
@@ -697,8 +698,10 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
     return;
   }
   if (bpp == 8) {
-    // RGBA16: blend component-wise (simplified: treat as replace for now to
-    // avoid 16-bit overflow details).
+    // RGBA16: Porter-Duff Over (non-premultiplied). Per APNG / compositing:
+    //   Co = (Cs*As + Cd*Ad*(1-As))/(Ao), Ao = As + Ad*(1-As).
+    // For opaque destination (Ad=65535): Ao=65535, Co = (Cs*As + Cd*(65535-As))/65535.
+    // 64-bit intermediates to avoid overflow (sc*sa + dc*inv_sa can exceed 2^32).
     for (uint32_t y = 0; y < fh; y++) {
       unsigned char * dst =
           canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * 8u;
@@ -713,23 +716,22 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
             memcpy(dst, src, 8);
           }
           else if (sa != 0) {
-            uint32_t inv_sa = 65535 - sa;
+            uint32_t inv_sa = 65535u - (uint32_t)sa;
             for (int c = 0; c < 4; c++) {
               uint16_t sc =
                   (uint16_t)src[c * 2] | ((uint16_t)src[c * 2 + 1] << 8);
               uint16_t dc =
                   (uint16_t)dst[c * 2] | ((uint16_t)dst[c * 2 + 1] << 8);
-              uint32_t v;
+              uint64_t sum;
               if (c < 3) {
-                v = (uint32_t)sc * sa + (uint32_t)dc * inv_sa;
-                v /= 65535;
+                sum = (uint64_t)sc * (uint32_t)sa + (uint64_t)dc * inv_sa;
               }
               else {
-                v = (uint32_t)sa * 65535u + (uint32_t)dc * inv_sa;
-                v /= 65535;
-                if (v > 65535u) {
-                  v = 65535u;
-                }
+                sum = (uint64_t)sa * 65535u + (uint64_t)dc * inv_sa;
+              }
+              uint32_t v = (uint32_t)(sum / 65535u);
+              if (v > 65535u) {
+                v = 65535u;
               }
               dst[c * 2] = (unsigned char)(v & 0xFFu);
               dst[c * 2 + 1] = (unsigned char)(v >> 8);
@@ -890,6 +892,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         gimg_free(a, canvas);
         return GIMG_ERR_OOM;
       }
+      memset(prev_rect, 0, canvas_stride * (size_t)canvas_h);
       for (size_t i = 0; i <= item->index; i++) {
         const gimg_png_fctl_t * fctl = &state->frames[i].fctl;
         uint32_t fx = fctl->x_offset;

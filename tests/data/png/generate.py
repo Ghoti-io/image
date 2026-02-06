@@ -3,6 +3,11 @@
 Generate PNG test data for decode tests. Single source of truth for all PNG
 variants. Writes to the same directory as this script (tests/data/png/).
 
+Also writes the APNG 16-bit blend expected file using Pillow as oracle (opens
+APNG, composites frames, reads first pixel of each). Pillow returns 8-bit
+for 16-bit PNGs; we scale to 16-bit. The decode test allows a small per-
+component tolerance to account for 8- vs 16-bit rounding. Requires Pillow.
+
 Run from repo root: python3 tests/data/png/generate.py
 Or from this dir: python3 generate.py
 """
@@ -11,6 +16,10 @@ import struct
 import zlib
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Paths for the 16-bit APNG and its oracle expected file
+PNG_APNG_16BIT = os.path.join(SCRIPT_DIR, "png_apng_2frame_16bit_rgba.png")
+APNG_16BIT_EXPECTED = os.path.join(SCRIPT_DIR, "png_apng_2frame_16bit_rgba_expected.bin")
 
 
 def png_chunk(ctype: bytes, payload: bytes) -> bytes:
@@ -268,6 +277,86 @@ def main() -> None:
         + iend
     )
     write_png("png_apng_3frame.png", apng_3frame)
+
+    # ---- 2-frame APNG 16-bit RGBA with blend OVER (tests 16-bit alpha blend) ----
+    # Layout per APNG spec (wiki.mozilla.org/APNG_Specification): acTL before IDAT;
+    # fcTL(seq=0), IDAT, fcTL(seq=1), fdAT(seq=2). Frame 0: black opaque. Frame 1:
+    # red 50% alpha, blend=OVER, dispose=NONE. If a decoder disagrees on frame 1,
+    # validate this file externally (e.g. littlesvr.ca/apng) to rule out generator bugs.
+    ihdr_16rgba_1x1 = struct.pack(">IIBBBBB", 1, 1, 16, 6, 0, 0, 0)
+    # Raw row: filter 0, then Rhi Rlo Ghi Glo Bhi Blo Ahi Alo (big-endian)
+    raw_apng16_f0 = bytes([
+        0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF,  # black opaque
+    ])
+    raw_apng16_f1 = bytes([
+        0x00,
+        0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00,  # red, alpha 32768
+    ])
+    idat_apng16_f0 = idat_zlib(raw_apng16_f0)
+    fctl_apng16_0 = struct.pack(
+        ">IIIIIHHBB", 0, 1, 1, 0, 0, 50, 100, 0, 0,
+    )
+    fctl_apng16_1 = struct.pack(
+        ">IIIIIHHBB", 1, 1, 1, 0, 0, 25, 100, 0, 1,
+    )  # dispose=0 (NONE), blend=1 (OVER)
+    fdat_apng16_1 = struct.pack(">I", 2) + idat_zlib(raw_apng16_f1)
+    apng_16rgba = (
+        signature
+        + png_chunk(b"IHDR", ihdr_16rgba_1x1)
+        + png_chunk(b"acTL", actl)
+        + png_chunk(b"fcTL", fctl_apng16_0)
+        + png_chunk(b"IDAT", idat_apng16_f0)
+        + png_chunk(b"fcTL", fctl_apng16_1)
+        + png_chunk(b"fdAT", fdat_apng16_1)
+        + iend
+    )
+    write_png("png_apng_2frame_16bit_rgba.png", apng_16rgba)
+    _write_apng16_oracle_expected()
+
+
+def _write_apng16_oracle_expected() -> None:
+    """Write expected pixels for the 16-bit APNG blend test using Pillow as oracle.
+
+    Pillow opens the APNG, composites frames (blend OVER), and we read the first
+    pixel of frame 0 and frame 1. Pillow typically returns 8-bit; we scale to
+    16-bit with (v*65535+127)//255. The decode test compares with a per-component
+    tolerance to account for 8- vs 16-bit rounding.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        raise SystemExit(
+            "Pillow is required to generate the APNG 16-bit blend expected file. "
+            "Install with: pip install Pillow"
+        ) from None
+    if not os.path.isfile(PNG_APNG_16BIT):
+        return
+    img = Image.open(PNG_APNG_16BIT)
+    n_frames = getattr(img, "n_frames", 1)
+    if n_frames < 2:
+        raise SystemExit(
+            f"APNG has only {n_frames} frame(s); need 2. "
+            "Ensure the file is the 2-frame 16-bit RGBA APNG from generate.py."
+        )
+    pixels_16 = []
+    for frame_idx in (0, 1):
+        img.seek(frame_idx)
+        img.load()
+        px = img.getpixel((0, 0))
+        if len(px) == 3:
+            px = (px[0], px[1], px[2], 65535)
+        elif len(px) != 4:
+            raise SystemExit(
+                f"Frame {frame_idx}: unexpected pixel format (expected RGBA)"
+            )
+        if max(px) <= 255:
+            px = tuple((v * 65535 + 127) // 255 for v in px)
+        pixels_16.append(px)
+    data = struct.pack("<4H", *pixels_16[0]) + struct.pack("<4H", *pixels_16[1])
+    with open(APNG_16BIT_EXPECTED, "wb") as f:
+        f.write(data)
+    print("Wrote", APNG_16BIT_EXPECTED, f"({len(data)} bytes, from Pillow)")
 
 
 if __name__ == "__main__":

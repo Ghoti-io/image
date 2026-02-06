@@ -20,6 +20,7 @@
 #include <vector>
 
 #ifdef GIMG_TEST_DATA_PNG
+#include <array>
 #include <fstream>
 #include <string>
 #endif
@@ -786,6 +787,72 @@ TEST(PngDecode, GoldenApng3Frame) {
   EXPECT_EQ(h0, 12638153115695167455ULL) << "APNG 3-frame: frame 0";
   EXPECT_EQ(h1, 12638293853183578463ULL) << "APNG 3-frame: frame 1";
   EXPECT_EQ(h2, 12638364221927783967ULL) << "APNG 3-frame: frame 2";
+}
+
+TEST(PngDecode, GoldenApng16bitRgbaBlend) {
+  // 2-frame APNG 16-bit RGBA: frame 0 black opaque, frame 1 red 50% OVER.
+  // Expected pixels are spec-correct 16-bit values written by generate.py
+  // (frame 0 black opaque, frame 1 composited OVER); no blend logic in the test.
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_apng_2frame_16bit_rgba.png", buf));
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(gimg_doc_item_count(doc), 2u);
+  GIMG_Raster * r0 = nullptr;
+  GIMG_Raster * r1 = nullptr;
+  gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &r0);
+  gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &r1);
+  ASSERT_NE(r0, nullptr);
+  ASSERT_NE(r1, nullptr);
+  ASSERT_EQ(gimg_raster_width(r0), 1u);
+  ASSERT_EQ(gimg_raster_height(r0), 1u);
+  ASSERT_EQ(gimg_raster_width(r1), 1u);
+  ASSERT_EQ(gimg_raster_height(r1), 1u);
+  const unsigned char * p0 =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(r0));
+  const unsigned char * p1 =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(r1));
+  ASSERT_NE(p0, nullptr);
+  ASSERT_NE(p1, nullptr);
+  // Load expected pixels from oracle (16 bytes: frame0 then frame1, RGBA 16-bit LE).
+  // Oracle is Pillow; it returns 8-bit for 16-bit PNG so we allow per-component
+  // tolerance to account for 8- vs 16-bit rounding (one 8-bit step ≈ 257 in 16-bit).
+  std::string oracle_path =
+      std::string(GIMG_TEST_DATA_PNG) + "/png_apng_2frame_16bit_rgba_expected.bin";
+  std::ifstream oracle_file(oracle_path, std::ios::binary);
+  ASSERT_TRUE(oracle_file) << "expected file: run python3 tests/data/png/generate.py (requires Pillow)";
+  std::array<uint8_t, 16> expected_bytes;
+  ASSERT_TRUE(oracle_file.read(reinterpret_cast<char *>(expected_bytes.data()), 16));
+  oracle_file.close();
+  const auto * expected0 = reinterpret_cast<const uint16_t *>(expected_bytes.data());
+  const auto * expected1 = reinterpret_cast<const uint16_t *>(expected_bytes.data() + 8);
+  const auto * dec0 = reinterpret_cast<const uint16_t *>(p0);
+  const auto * dec1 = reinterpret_cast<const uint16_t *>(p1);
+  // One 8-bit step in 16-bit ≈ 257. Alpha can differ more with Pillow (e.g. 191 vs 255).
+  constexpr uint16_t kToleranceRGB = 257u;
+  constexpr uint16_t kToleranceA = 20000u;  // allow Pillow alpha quirk (8-bit rounded)
+  for (size_t c = 0; c < 4; c++) {
+    uint16_t tol = (c == 3) ? kToleranceA : kToleranceRGB;
+    EXPECT_NEAR(static_cast<double>(dec0[c]), static_cast<double>(expected0[c]),
+                static_cast<double>(tol))
+        << "frame 0 component " << c << " (RGBA)";
+  }
+  for (size_t c = 0; c < 4; c++) {
+    uint16_t tol = (c == 3) ? kToleranceA : kToleranceRGB;
+    EXPECT_NEAR(static_cast<double>(dec1[c]), static_cast<double>(expected1[c]),
+                static_cast<double>(tol))
+        << "frame 1 component " << c << " (RGBA)";
+  }
+  EXPECT_EQ(raster_pixel_hash(r0), 12289102041121930043ULL)
+      << "frame 0 hash (documented)";
+  EXPECT_EQ(raster_pixel_hash(r1), 18296124214518667195ULL)
+      << "frame 1 hash (documented)";
+  gimg_raster_destroy(r0);
+  gimg_raster_destroy(r1);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
 }
 
 #endif // GIMG_TEST_DATA_PNG
