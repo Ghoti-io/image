@@ -3,6 +3,13 @@
  *
  * Exif (eXIf / TIFF-IFD) parse, strip GPS, and normalize.
  *
+ * - Parse: read orientation (and other tags) from IFD0 for metadata common.
+ * - STRIP_GPS: remove only the GPS IFD (tag 0x8825) and its payload; re-serialize
+ *   the rest so non-GPS Exif (orientation, datetime, etc.) is preserved. Used
+ *   by GIMG_META_STRIP_GPS on save.
+ * - NORMALIZE_EXIF: copy blob and set orientation tag to 1 (normal) if present;
+ *   used by GIMG_META_NORMALIZE_EXIF so saved eXIf has canonical orientation.
+ *
  * Copyright 2026 by Corey Pennycuff
  */
 

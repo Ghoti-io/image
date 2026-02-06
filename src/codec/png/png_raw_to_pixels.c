@@ -64,6 +64,11 @@ static uint32_t gimg_png_sample_at(
   return 0;
 }
 
+// Convert unfiltered raw rows (full image, possibly from Adam7 reassembly) to
+// output pixel format. color_type 0/2/3/4/6 map to GRAY8/16 or RGBA8/16; tRNS
+// is applied for grayscale/palette when present; palette uses PLTE + optional
+// tRNS. Sample depths 1/2/4 are scaled to 8-bit; 16-bit stays big-endian in
+// raster. Called once per frame from decode path after DEFLATE + unfilter.
 void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
     const gimg_png_ihdr_t * ihdr, const GIMG_Pixel_Format * format,
     const unsigned char * raw_full, uint32_t w, uint32_t h, size_t row_bytes,

@@ -17,7 +17,8 @@ The complete API reference is generated from the header files. Below is a catego
 
 ## Core and diagnostics
 
-- **Result and diagnostics:** `gimg_result_string`, `gimg_diagnostics_append`; **GIMG_Result**, **GIMG_Strictness**, **GIMG_Diagnostics**, **GIMG_Diagnostic** — see `ghoti.io/image/core.h`.
+- **Result and diagnostics:** `gimg_result_string`, **GIMG_Result**, **GIMG_Strictness**, **GIMG_Diagnostics**, **GIMG_Diagnostic** — see `ghoti.io/image/core.h`.
+- **Diagnostics lifecycle:** `gimg_diagnostics_init`, `gimg_diagnostics_append`, `gimg_diagnostics_clear`, `gimg_diagnostics_destroy` — see `ghoti.io/image/core.h` and \ref api_options_diagnostics_functions "Diagnostics API (lifecycle)".
 
 ## Raster copy and comparison
 

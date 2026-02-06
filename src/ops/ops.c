@@ -177,6 +177,10 @@ GIMG_API GIMG_Result gimg_alpha_unpremultiply(GIMG_Raster * raster) {
   return GIMG_OK;
 }
 
+// Equality: same dimensions, same pixel format (channel model/type/count and
+// bits per channel), and identical pixel data. Strides may differ (only
+// row_bytes are compared). Color info is not compared. Used by tests and
+// callers that need equivalence checks.
 GIMG_API bool gimg_ops_raster_equal(const GIMG_Raster * a, const GIMG_Raster * b) {
   if (!a || !b) {
     return false;

@@ -248,6 +248,12 @@ GIMG_API GIMG_Result gimg_doc_copy(const GIMG_Doc * src, GIMG_Doc ** out_doc) {
   return gimg_doc_copy_with_allocator(NULL, src, out_doc);
 }
 
+// Document copy: duplicate structure and attached rasters for save variants or
+// moving to another doc. Copied: item count; per-item frame_delay, dispose_op,
+// blend_op; attached rasters (via gimg_raster_copy); meta_common (deep);
+// meta_raw (deep). Not copied: loaded_by_codec, codec_private — the result is
+// a synthetic document. Items without an attached raster (e.g. loaded but not
+// decoded) yield items with no raster in the copy. Caller owns the new doc.
 GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
     const GIMG_Allocator * allocator, const GIMG_Doc * src,
     GIMG_Doc ** out_doc) {

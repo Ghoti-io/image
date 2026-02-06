@@ -23,7 +23,9 @@
 #include "png_internal.h"
 
 //
-// Adam7 (W3C §2.6)
+// Adam7 interlace (W3C PNG-DataRep §2.6). Seven passes with fixed x/y offset
+// and step; pass_dims computes pass width/height as ceil((image - offset) /
+// step) so decode and save use identical dimensions and row-byte counts.
 //
 const gimg_png_adam7_pass_t gimg_png_adam7_passes[7] = {
     {0, 0, 8, 8},
@@ -48,7 +50,9 @@ void gimg_png_adam7_pass_dims(uint32_t image_width, uint32_t image_height,
 }
 
 //
-// Row bytes (PNG §3.2: samples per row, bits per sample)
+// Row bytes (PNG §3.2): samples per row from color_type and width, then
+// bits per sample; result is (samples * bit_depth + 7) / 8. Used by both
+// decode (buffer sizing, raw layout) and save (IDAT row layout).
 //
 size_t gimg_png_row_bytes(
     uint8_t color_type, uint8_t bit_depth, uint32_t width) {
@@ -84,7 +88,10 @@ size_t gimg_png_row_bytes_from_ihdr(
 }
 
 //
-// DEFLATE decode options (shared by decode paths; limits handling consistent)
+// DEFLATE decode options: single helper so decode paths (single-frame and
+// APNG) use the same limit handling (max_output_bytes from raw size). Avoids
+// repeated create/set/destroy and ensures GCOMP_ERR_LIMIT is mapped
+// consistently to GIMG_ERR_LIMIT.
 //
 GIMG_Result gimg_png_deflate_options_for_decode(
     size_t max_output_bytes, gcomp_options_t ** out_opts) {

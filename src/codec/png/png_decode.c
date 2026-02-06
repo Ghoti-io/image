@@ -169,8 +169,14 @@ static bool gimg_png_fill_color_info_from_ancillary(
   return false;
 }
 
-/** Blend frame rectangle onto canvas at (fx,fy). SOURCE = replace; OVER = alpha
- * blend. */
+/** APNG frame compositing: blend frame rectangle onto canvas at (fx,fy).
+ * SOURCE (blend_op 0): replace canvas region with frame pixels.
+ * OVER (blend_op 1): Porter-Duff over operator (non-premultiplied). RGBA8 uses
+ * 8-bit alpha; RGBA16 uses 64-bit intermediates (sc*sa + dc*inv_sa) and
+ * divides by 65535 to avoid overflow. Grayscale/gray+alpha without alpha
+ * channel are treated as replace. Order: caller must apply dispose (NONE/
+ * BACKGROUND/PREVIOUS) to the canvas before calling this; then this blends
+ * the decoded frame. See APNG spec and format-references.md. */
 static void gimg_png_apng_blend_frame(unsigned char * canvas,
     size_t canvas_stride, const unsigned char * frame_pixels,
     size_t frame_stride, uint32_t fx, uint32_t fy, uint32_t fw, uint32_t fh,

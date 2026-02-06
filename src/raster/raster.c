@@ -233,6 +233,11 @@ GIMG_API GIMG_Result gimg_raster_copy(const GIMG_Raster * src,
   return gimg_raster_copy_with_allocator(NULL, src, out_raster);
 }
 
+// Copy raster: create new raster with same dimensions and format (same
+// validation as gimg_raster_create); copy pixels row-by-row so source stride
+// is respected and destination gets library stride. Color info (including ICC
+// if present) is deep-copied. Planar formats return GIMG_ERR_UNSUPPORTED
+// (bpp == 0). Caller owns the returned raster.
 GIMG_API GIMG_Result gimg_raster_copy_with_allocator(
     const GIMG_Allocator * allocator, const GIMG_Raster * src,
     GIMG_Raster ** out_raster) {

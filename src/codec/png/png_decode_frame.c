@@ -228,8 +228,10 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
     }
   }
   else {
-    // Adam7 reassembly: unfilter each pass and scatter pixels into full-size
-    // buffer using pass x/y step and offset (W3C §2.6 interlace order).
+    // Adam7 reassembly: unfilter each pass in order, then scatter samples into
+    // full-size buffer at (x_offset + i*x_step, y_offset + j*y_step) so that
+    // the final raw_full layout matches non-interlaced (row_bytes per row).
+    // Same pass table and dimensions as png_common.c so save round-trips match.
     size_t raw_off = 0;
     for (int pass = 0; pass < 7; pass++) {
       uint32_t pw = 0, ph = 0;

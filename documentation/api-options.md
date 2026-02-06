@@ -108,6 +108,15 @@ The compress library’s DEFLATE decoder may use a separate limit (e.g. `limits.
 - **GIMG_Result** — Result codes (e.g. `GIMG_OK`, `GIMG_ERR_FORMAT`, `GIMG_ERR_LIMIT`, `GIMG_ERR_CORRUPT`). See `ghoti.io/image/core.h`.
 - **GIMG_Diagnostics** — List of **GIMG_Diagnostic** items (codec name, offset, chunk/tag id, severity, recommended action). Filled when provided to load/save/decode. **Lifecycle:** Call `gimg_diagnostics_init(d, allocator)` to set an optional allocator (NULL = default). Append uses this allocator for realloc. When done, call `gimg_diagnostics_clear(d)` to free the list and reset count/capacity, or `gimg_diagnostics_destroy(d)` to free and zero the whole struct. Callers must call clear or destroy to avoid leaks; the same allocator is used for growth and for release.
 
+@section api_options_diagnostics_functions Diagnostics API (lifecycle)
+
+| Function | Description |
+|----------|-------------|
+| `gimg_diagnostics_init(d, allocator)` | Set allocator for list growth and for clear/destroy; NULL = default. Safe to call on zero-initialized or already-initialized struct. |
+| `gimg_diagnostics_append(d, ...)` | Append one diagnostic; grows list using d's allocator. Returns GIMG_OK or GIMG_ERR_OOM. |
+| `gimg_diagnostics_clear(d)` | Free the list, set count/capacity to 0. Idempotent if empty. Allocator unchanged so append can be used again. |
+| `gimg_diagnostics_destroy(d)` | Same as clear, then zero the whole struct (including allocator). Struct can be discarded or re-initialized with init. |
+
 @section api_options_error_handling Error handling
 
 When to return which result code, when to append diagnostics, and how output parameters behave on error.

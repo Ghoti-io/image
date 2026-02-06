@@ -258,6 +258,10 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
   return codec->decode_cb(codec, item, options, out_raster);
 }
 
+// Ensure the item has a decoded raster: if one is already attached, no-op;
+// otherwise decode via the document's codec and attach the raster to the
+// item (document owns it). Simplifies load -> modify -> save without
+// managing decode ownership. Options (e.g. limits) passed to decode.
 GIMG_API GIMG_Result gimg_item_ensure_decoded(GIMG_Item * item,
     const GIMG_Decode_Options * options) {
   if (!item) {
@@ -271,6 +275,6 @@ GIMG_API GIMG_Result gimg_item_ensure_decoded(GIMG_Item * item,
   if (r != GIMG_OK) {
     return r;
   }
-  gimg_item_set_raster(item, decoded); // Item takes ownership.
+  gimg_item_set_raster(item, decoded); // Item (doc) takes ownership.
   return GIMG_OK;
 }
