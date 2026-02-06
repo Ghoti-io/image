@@ -34,6 +34,7 @@ typedef struct GIMG_Codec GIMG_Codec;
 #define GIMG_CAP_PALETTE (1u << 3)
 #define GIMG_CAP_ICC (1u << 4)
 #define GIMG_CAP_16BPC (1u << 5)
+#define GIMG_CAP_CMYK (1u << 6)
 
 /**
  * @brief Probe result: likely format name and confidence.

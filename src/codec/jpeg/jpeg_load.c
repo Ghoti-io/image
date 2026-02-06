@@ -1,0 +1,655 @@
+/**
+ * @file
+ *
+ * JPEG load: verify SOI, parse segments (SOF0, DQT, DHT, SOS), enforce
+ * limits, build doc with one item and codec-private state.
+ *
+ * Segment format: 0xFF + marker + length (big-endian 2 bytes where present) +
+ * payload. Segment size limit (GIMG_Limits.max_chunk_size or internal default)
+ * applies to payload size for bomb protection.
+ *
+ * Copyright 2026 by Corey Pennycuff
+ */
+
+#include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/core.h>
+#include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/stream.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "../../container/doc_internal.h"
+#include "../../core/alloc_internal.h"
+#include "../../core/safe_math_internal.h"
+#include "../../meta/exif_internal.h"
+#include "../codec_internal.h"
+#include "jpeg_internal.h"
+
+/** Append diagnostic on load error (codec "jpeg", offset, marker). */
+static void jpeg_load_diag(GIMG_Diagnostics * d, size_t offset, uint8_t marker,
+    GIMG_Result r, const char * action) {
+  if (!d) {
+    return;
+  }
+  (void)gimg_diagnostics_append(
+      d, "jpeg", offset, (uint32_t)marker, GIMG_DIAG_ERROR, action);
+  (void)r;
+}
+
+/** Return 1 if marker has no length/payload (SOI, EOI, RST0..RST7). */
+static int jpeg_marker_has_no_length(uint8_t marker) {
+  if (marker == GIMG_JPEG_MARKER_SOI || marker == GIMG_JPEG_MARKER_EOI) {
+    return 1;
+  }
+  if (marker >= 0xD0 && marker <= 0xD7) {  // RST0..RST7
+    return 1;
+  }
+  return 0;
+}
+
+/** Get max segment payload from options or internal default. */
+static size_t jpeg_max_segment_payload(const GIMG_Limits * limits) {
+  if (limits && limits->max_chunk_size != 0) {
+    return limits->max_chunk_size;
+  }
+  return GIMG_JPEG_DEFAULT_MAX_SEGMENT_PAYLOAD;
+}
+
+GIMG_Result gimg_jpeg_verify_soi(GIMG_Stream * stream) {
+  unsigned char buf[GIMG_JPEG_SIGNATURE_LEN];
+  size_t n = 0;
+  GIMG_Result r = gimg_stream_read(stream, buf, GIMG_JPEG_SIGNATURE_LEN, &n);
+  if (r != GIMG_OK || n != GIMG_JPEG_SIGNATURE_LEN) {
+    return GIMG_ERR_FORMAT;
+  }
+  if (buf[0] != 0xFF || buf[1] != GIMG_JPEG_MARKER_SOI) {
+    return GIMG_ERR_FORMAT;
+  }
+  return GIMG_OK;
+}
+
+GIMG_Result gimg_jpeg_read_marker(GIMG_Stream * stream, uint8_t * out_marker) {
+  for (;;) {
+    unsigned char b;
+    size_t n = 0;
+    GIMG_Result r = gimg_stream_read(stream, &b, 1, &n);
+    if (r != GIMG_OK || n == 0) {
+      return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
+    }
+    if (b != 0xFF) {
+      continue;  // Skip until 0xFF.
+    }
+    r = gimg_stream_read(stream, &b, 1, &n);
+    if (r != GIMG_OK || n == 0) {
+      return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
+    }
+    if (b == 0x00) {
+      continue;  // Byte stuffing: 0xFF 0x00 is data.
+    }
+    *out_marker = b;
+    return GIMG_OK;
+  }
+}
+
+GIMG_Result gimg_jpeg_read_segment_length(
+    GIMG_Stream * stream, uint16_t * out_length) {
+  unsigned char buf[2];
+  size_t n = 0;
+  GIMG_Result r = gimg_stream_read(stream, buf, 2, &n);
+  if (r != GIMG_OK || n != 2) {
+    return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
+  }
+  *out_length = (uint16_t)((buf[0] << 8) | buf[1]);
+  return GIMG_OK;
+}
+
+/** Parse SOF0 (baseline) or SOF2 (progressive) payload. Length already read. */
+static GIMG_Result jpeg_parse_sof(
+    const unsigned char * payload, size_t len, gimg_jpeg_sof_t * sof) {
+  if (len < 8) {
+    return GIMG_ERR_FORMAT;
+  }
+  uint8_t precision = payload[0];
+  uint16_t height = (uint16_t)((payload[1] << 8) | payload[2]);
+  uint16_t width = (uint16_t)((payload[3] << 8) | payload[4]);
+  uint8_t num_components = payload[5];
+  if (precision != 8 || num_components == 0 ||
+      num_components > GIMG_JPEG_MAX_COMPONENTS) {
+    return GIMG_ERR_FORMAT;
+  }
+  if (height == 0 || width == 0) {
+    return GIMG_ERR_FORMAT;
+  }
+  if (height > GIMG_JPEG_MAX_DIMENSION || width > GIMG_JPEG_MAX_DIMENSION) {
+    return GIMG_ERR_LIMIT;
+  }
+  size_t need = 6 + (size_t)num_components * 3;
+  if (len < need) {
+    return GIMG_ERR_FORMAT;
+  }
+  memset(sof, 0, sizeof(*sof));
+  sof->precision = precision;
+  sof->height = height;
+  sof->width = width;
+  sof->num_components = num_components;
+  for (uint8_t i = 0; i < num_components; i++) {
+    sof->comp_id[i] = payload[6 + i * 3];
+    sof->h_samp[i] = (payload[7 + i * 3] >> 4) & 0x0Fu;
+    sof->v_samp[i] = payload[7 + i * 3] & 0x0Fu;
+    sof->quant_tbl_id[i] = payload[8 + i * 3];
+    if (sof->h_samp[i] == 0 || sof->v_samp[i] == 0) {
+      return GIMG_ERR_FORMAT;
+    }
+  }
+  return GIMG_OK;
+}
+
+/** Append to state->scan_data. */
+static GIMG_Result jpeg_append_scan_data(
+    gimg_jpeg_doc_state_t * state, const unsigned char * data, size_t len) {
+  const GIMG_Allocator * alloc = state->allocator;
+  alloc = gimg_alloc_or_default(alloc);
+  size_t new_size = state->scan_data_size + len;
+  unsigned char * new_buf =
+      (unsigned char *)gimg_realloc(alloc, state->scan_data, new_size);
+  if (!new_buf && new_size > 0) {
+    return GIMG_ERR_OOM;
+  }
+  state->scan_data = new_buf;
+  if (len > 0 && data) {
+    memcpy(state->scan_data + state->scan_data_size, data, len);
+  }
+  state->scan_data_size = new_size;
+  return GIMG_OK;
+}
+
+void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
+  (void)codec;
+  gimg_jpeg_doc_state_t * state = (gimg_jpeg_doc_state_t *)codec_private;
+  if (!state) {
+    return;
+  }
+  const GIMG_Allocator * alloc = state->allocator;
+  alloc = gimg_alloc_or_default(alloc);
+  for (int i = 0; i < 4; i++) {
+    gimg_free(alloc, state->huff_dc[i]);
+    gimg_free(alloc, state->huff_ac[i]);
+  }
+  gimg_free(alloc, state->scan_data);
+  gimg_free(alloc, state->app0_jfif);
+  gimg_free(alloc, state->app1_exif);
+  gimg_free(alloc, state->app1_xmp);
+  gimg_free(alloc, state->app2_icc);
+  gimg_free(alloc, state);
+}
+
+GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    GIMG_Doc ** out_doc) {
+  if (!codec || !stream || !out_doc) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_doc = NULL;
+
+  GIMG_Result r = gimg_jpeg_verify_soi(stream);
+  if (r != GIMG_OK) {
+    if (diagnostics) {
+      (void)gimg_diagnostics_append(diagnostics, "jpeg", 0u,
+          (uint32_t)GIMG_JPEG_MARKER_SOI, GIMG_DIAG_ERROR,
+          "missing or invalid SOI");
+    }
+    return r;
+  }
+
+  const GIMG_Allocator * alloc = codec->allocator;
+  alloc = gimg_alloc_or_default(alloc);
+  const GIMG_Limits * limits = options ? options->limits : NULL;
+  size_t max_seg_payload = jpeg_max_segment_payload(limits);
+
+  gimg_jpeg_doc_state_t * state = (gimg_jpeg_doc_state_t *)gimg_malloc(
+      alloc, sizeof(gimg_jpeg_doc_state_t));
+  if (!state) {
+    return GIMG_ERR_OOM;
+  }
+  memset(state, 0, sizeof(*state));
+  state->allocator = alloc;
+
+  int seen_sof = 0;
+
+  for (;;) {
+    size_t seg_start = gimg_stream_tell(stream);
+    uint8_t marker = 0;
+    r = gimg_jpeg_read_marker(stream, &marker);
+    if (r != GIMG_OK) {
+      jpeg_load_diag(diagnostics, seg_start, 0, r, "truncated before marker");
+      gimg_jpeg_free_doc_state(codec, state);
+      return r;
+    }
+
+    if (marker == GIMG_JPEG_MARKER_EOI) {
+      break;
+    }
+
+    if (jpeg_marker_has_no_length(marker)) {
+      if (marker >= 0xD0 && marker <= 0xD7) {
+        // RST: may appear in scan data; we already advanced past 0xFF M.
+      }
+      continue;
+    }
+
+    uint16_t length = 0;
+    r = gimg_jpeg_read_segment_length(stream, &length);
+    if (r != GIMG_OK) {
+      jpeg_load_diag(
+          diagnostics, seg_start, marker, r, "truncated segment length");
+      gimg_jpeg_free_doc_state(codec, state);
+      return r;
+    }
+    // Payload size = length - 2 (length field is 2 bytes).
+    size_t payload_size = (length >= 2) ? (size_t)(length - 2) : 0;
+    if (length < 2) {
+      jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+          "invalid segment length");
+      gimg_jpeg_free_doc_state(codec, state);
+      return GIMG_ERR_FORMAT;
+    }
+    if (payload_size > max_seg_payload) {
+      jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_LIMIT,
+          "segment exceeds max_chunk_size");
+      gimg_jpeg_free_doc_state(codec, state);
+      return GIMG_ERR_LIMIT;
+    }
+
+    unsigned char * payload_buf = NULL;
+    if (payload_size > 0) {
+      payload_buf = (unsigned char *)gimg_malloc(alloc, payload_size);
+      if (!payload_buf) {
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_OOM;
+      }
+      size_t n = 0;
+      r = gimg_stream_read(stream, payload_buf, payload_size, &n);
+      if (r != GIMG_OK || n != payload_size) {
+        gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_IO,
+            "truncated segment payload");
+        gimg_jpeg_free_doc_state(codec, state);
+        return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
+      }
+    }
+
+    switch (marker) {
+    case GIMG_JPEG_MARKER_SOF0: {
+      if (seen_sof) {
+        gimg_free(alloc, payload_buf);
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      r = jpeg_parse_sof(payload_buf, payload_size, &state->sof);
+      gimg_free(alloc, payload_buf);
+      if (r != GIMG_OK) {
+        jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF0");
+        gimg_jpeg_free_doc_state(codec, state);
+        return r;
+      }
+      state->is_progressive = 0;
+      seen_sof = 1;
+      break;
+    }
+    case GIMG_JPEG_MARKER_SOF2: {
+      if (seen_sof) {
+        gimg_free(alloc, payload_buf);
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      r = jpeg_parse_sof(payload_buf, payload_size, &state->sof);
+      gimg_free(alloc, payload_buf);
+      if (r != GIMG_OK) {
+        jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF2");
+        gimg_jpeg_free_doc_state(codec, state);
+        return r;
+      }
+      state->is_progressive = 1;
+      seen_sof = 1;
+      break;
+    }
+    case GIMG_JPEG_MARKER_DQT: {
+      // DQT: one or more tables. Each table: 1 byte (Pq<<4|Tq), then 64 or 128
+      // bytes.
+      const unsigned char * p = payload_buf;
+      size_t remain = payload_size;
+      while (remain >= 2) {
+        uint8_t pq_tq = p[0];
+        uint8_t tq = pq_tq & 0x0Fu;
+        int is_16bit = (pq_tq >> 4) != 0;
+        size_t entry_bytes = is_16bit ? 128u : 64u;
+        if (tq >= GIMG_JPEG_MAX_QUANT_TABLES || remain < 1 + entry_bytes) {
+          break;
+        }
+        p++;
+        remain--;
+        if (remain < entry_bytes) {
+          break;
+        }
+        state->quant_tbl_present[tq] = 1;
+        if (is_16bit) {
+          for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
+            state->quant_tbl[tq][i] =
+                (uint16_t)((p[i * 2] << 8) | p[i * 2 + 1]);
+          }
+        }
+        else {
+          for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
+            state->quant_tbl[tq][i] = (uint16_t)p[i];
+          }
+        }
+        p += entry_bytes;
+        remain -= entry_bytes;
+      }
+      gimg_free(alloc, payload_buf);
+      break;
+    }
+    case GIMG_JPEG_MARKER_DHT: {
+      // DHT: one or more tables. Each: 1 byte (Tc<<4|Th), then 16 bytes counts,
+      // then symbols.
+      const unsigned char * p = payload_buf;
+      size_t remain = payload_size;
+      while (remain >= 18) {
+        uint8_t tc_th = p[0];
+        uint8_t th = tc_th & 0x0Fu;
+        uint8_t tc = (tc_th >> 4) & 1;
+        size_t num_symbols = 0;
+        for (int i = 1; i <= 16; i++) {
+          num_symbols += p[i];
+        }
+        if (th >= 4 || remain < 17 + num_symbols) {
+          break;
+        }
+        size_t table_len = 17 + num_symbols;
+        unsigned char ** dest = tc ? &state->huff_ac[th] : &state->huff_dc[th];
+        size_t * dest_len =
+            tc ? &state->huff_ac_len[th] : &state->huff_dc_len[th];
+        if (*dest) {
+          gimg_free(alloc, *dest);
+        }
+        *dest = (unsigned char *)gimg_malloc(alloc, table_len);
+        if (*dest) {
+          memcpy(*dest, p, table_len);
+          *dest_len = table_len;
+        }
+        p += table_len;
+        remain -= table_len;
+      }
+      gimg_free(alloc, payload_buf);
+      break;
+    }
+    case GIMG_JPEG_MARKER_SOS: {
+      if (!seen_sof) {
+        if (payload_buf)
+          gimg_free(alloc, payload_buf);
+        jpeg_load_diag(
+            diagnostics, seg_start, marker, GIMG_ERR_FORMAT, "SOS before SOF");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      // Parse SOS header: Ns (1), then Ns x (Cs, Td|Ta), then Ss, Se, Ah, Al.
+      if (payload_size < 7 || !payload_buf) {
+        if (payload_buf)
+          gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "SOS payload too short");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      {
+        uint8_t ns = payload_buf[0];
+        if (ns == 0 || ns > state->sof.num_components ||
+            (size_t)(5 + ns * 2) > payload_size) {
+          if (payload_buf)
+            gimg_free(alloc, payload_buf);
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "invalid SOS Ns or payload length");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        state->scan_comp_count = ns;
+        for (uint8_t i = 0; i < ns; i++) {
+          state->scan_comp_id[i] = payload_buf[1 + i * 2];
+          state->scan_dc_tbl[i] = (payload_buf[2 + i * 2] >> 4) & 0x0Fu;
+          state->scan_ac_tbl[i] = payload_buf[2 + i * 2] & 0x0Fu;
+        }
+        state->scan_ss = payload_buf[1 + ns * 2];
+        state->scan_se = payload_buf[2 + ns * 2];
+        state->scan_ah = payload_buf[3 + ns * 2];
+        state->scan_al = payload_buf[4 + ns * 2];
+      }
+      gimg_free(alloc, payload_buf);
+      payload_buf = NULL;
+      // Read scan data until next marker (0xFF followed by non-0x00).
+      for (;;) {
+        unsigned char b;
+        size_t n = 0;
+        r = gimg_stream_read(stream, &b, 1, &n);
+        if (r != GIMG_OK || n == 0) {
+          break;
+        }
+        if (b != 0xFF) {
+          r = jpeg_append_scan_data(state, &b, 1);
+          if (r != GIMG_OK) {
+            gimg_jpeg_free_doc_state(codec, state);
+            return r;
+          }
+          continue;
+        }
+        r = gimg_stream_peek(stream, &b, 1, &n);
+        if (r != GIMG_OK || n == 0) {
+          r = jpeg_append_scan_data(state, (const unsigned char *)"\xFF", 1);
+          if (r != GIMG_OK) {
+            gimg_jpeg_free_doc_state(codec, state);
+            return r;
+          }
+          break;
+        }
+        if (b == 0x00) {
+          (void)gimg_stream_read(stream, &b, 1, &n);
+          r = jpeg_append_scan_data(
+              state, (const unsigned char *)"\xFF\x00", 2);
+          if (r != GIMG_OK) {
+            gimg_jpeg_free_doc_state(codec, state);
+            return r;
+          }
+          continue;
+        }
+          // Next byte is a real marker; put 0xFF back so outer loop sees it.
+        size_t pos = gimg_stream_tell(stream);
+        if (pos != (size_t)-1 && pos > 0) {
+          (void)gimg_stream_seek(stream, pos - 1);
+        }
+        break;
+      }
+      break;
+    }
+    case GIMG_JPEG_MARKER_APP0: {
+      if (payload_size >= 14 && payload_buf &&
+          memcmp(payload_buf, "JFIF\0", 5) == 0) {
+        if (state->app0_jfif) {
+          gimg_free(alloc, state->app0_jfif);
+        }
+        state->app0_jfif = payload_buf;
+        state->app0_jfif_len = payload_size;
+        payload_buf = NULL;
+      }
+      if (payload_buf) {
+        gimg_free(alloc, payload_buf);
+      }
+      break;
+    }
+    case GIMG_JPEG_MARKER_APP1: {
+      if (payload_size >= 6 && payload_buf &&
+          memcmp(payload_buf, "Exif\0\0", 6) == 0) {
+        if (state->app1_exif) {
+          gimg_free(alloc, state->app1_exif);
+        }
+        state->app1_exif = payload_buf;
+        state->app1_exif_len = payload_size;
+        payload_buf = NULL;
+      }
+      else if (payload_size >= 29 && payload_buf &&
+          memcmp(payload_buf, "http://ns.adobe.com/xap/1.0/\0", 29) == 0) {
+        if (state->app1_xmp) {
+          gimg_free(alloc, state->app1_xmp);
+        }
+        state->app1_xmp = payload_buf;
+        state->app1_xmp_len = payload_size;
+        payload_buf = NULL;
+      }
+      if (payload_buf) {
+        gimg_free(alloc, payload_buf);
+      }
+      break;
+    }
+    case GIMG_JPEG_MARKER_APP2: {
+      if (payload_size >= 12 && payload_buf &&
+          memcmp(payload_buf, "ICC_PROFILE\0", 12) == 0) {
+        if (state->app2_icc) {
+          gimg_free(alloc, state->app2_icc);
+        }
+        state->app2_icc = payload_buf;
+        state->app2_icc_len = payload_size;
+        payload_buf = NULL;
+      }
+      if (payload_buf) {
+        gimg_free(alloc, payload_buf);
+      }
+      break;
+    }
+    default:
+      if (payload_buf) {
+        gimg_free(alloc, payload_buf);
+      }
+      break;
+    }
+  }
+
+  if (!seen_sof) {
+    jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_FORMAT, "no SOF0/SOF2 found");
+    gimg_jpeg_free_doc_state(codec, state);
+    return GIMG_ERR_FORMAT;
+  }
+
+  // Overflow-safe pixel count and max_decoded_pixels check.
+  size_t pixel_count = 0;
+  r = gimg_safe_pixel_count(state->sof.width, state->sof.height, &pixel_count);
+  if (r != GIMG_OK) {
+    gimg_jpeg_free_doc_state(codec, state);
+    return GIMG_ERR_LIMIT;
+  }
+  if (limits && limits->max_decoded_pixels != 0 &&
+      pixel_count > limits->max_decoded_pixels) {
+    jpeg_load_diag(diagnostics, 0u, (uint32_t)GIMG_JPEG_MARKER_SOF0,
+        GIMG_ERR_LIMIT, "increase max_decoded_pixels");
+    gimg_jpeg_free_doc_state(codec, state);
+    return GIMG_ERR_LIMIT;
+  }
+
+  // Build document.
+  GIMG_Doc * doc = (GIMG_Doc *)gimg_malloc(alloc, sizeof(GIMG_Doc));
+  if (!doc) {
+    gimg_jpeg_free_doc_state(codec, state);
+    return GIMG_ERR_OOM;
+  }
+  doc->allocator = alloc;
+  doc->item_count = 1;
+  doc->items = (GIMG_Item *)gimg_malloc(alloc, sizeof(GIMG_Item));
+  if (!doc->items) {
+    gimg_free(alloc, doc);
+    gimg_jpeg_free_doc_state(codec, state);
+    return GIMG_ERR_OOM;
+  }
+  doc->loaded_by_codec = codec;
+  doc->codec_private = state;
+  doc->meta_raw = NULL;
+  doc->meta_common = NULL;
+  doc->items[0].index = 0;
+  doc->items[0].doc = doc;
+  doc->items[0].frame_delay_num = 0;
+  doc->items[0].frame_delay_den = 0;
+  doc->items[0].dispose_op = GIMG_DISPOSE_NONE;
+  doc->items[0].blend_op = GIMG_BLEND_SOURCE;
+  doc->items[0].raster = NULL;
+
+  // Attach APP segments to doc meta_raw for round-trip; populate meta_common.
+  GIMG_Meta_Raw * raw = NULL;
+  if ((state->app0_jfif && state->app0_jfif_len > 0) ||
+      (state->app1_exif && state->app1_exif_len > 0) ||
+      (state->app1_xmp && state->app1_xmp_len > 0) ||
+      (state->app2_icc && state->app2_icc_len > 0)) {
+    r = gimg_doc_ensure_meta_raw(doc, &raw);
+    if (r != GIMG_OK) {
+      gimg_doc_destroy(doc);
+      return r;
+    }
+    if (state->app0_jfif && state->app0_jfif_len > 0) {
+      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP0,
+          state->app0_jfif, state->app0_jfif_len);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+    }
+    if (state->app1_exif && state->app1_exif_len > 0) {
+      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP1_EXIF,
+          state->app1_exif, state->app1_exif_len);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+    }
+    if (state->app1_xmp && state->app1_xmp_len > 0) {
+      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP1_XMP,
+          state->app1_xmp, state->app1_xmp_len);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+    }
+    if (state->app2_icc && state->app2_icc_len > 0) {
+      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC,
+          state->app2_icc, state->app2_icc_len);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+    }
+  }
+
+  // Populate meta_common from EXIF (orientation) and JFIF (DPI).
+  GIMG_Meta_Common * meta_common = NULL;
+  if (state->app1_exif && state->app1_exif_len > 6) {
+    GIMG_Orientation orient = GIMG_ORIENTATION_UNKNOWN;
+    if (gimg_exif_parse_orientation(state->app1_exif + 6,
+            state->app1_exif_len - 6, &orient) == GIMG_OK &&
+        orient != GIMG_ORIENTATION_UNKNOWN) {
+      if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
+        gimg_meta_common_set_orientation(meta_common, orient);
+      }
+    }
+  }
+  if (state->app0_jfif && state->app0_jfif_len >= 14) {
+    uint8_t units = state->app0_jfif[7];
+    if (units == 1) {
+      uint32_t x_dpi = (uint32_t)((state->app0_jfif[8] << 8) |
+          (unsigned char)state->app0_jfif[9]);
+      uint32_t y_dpi = (uint32_t)((state->app0_jfif[10] << 8) |
+          (unsigned char)state->app0_jfif[11]);
+      if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
+        gimg_meta_common_set_dpi(meta_common, x_dpi, y_dpi);
+      }
+    }
+  }
+
+  *out_doc = doc;
+  return GIMG_OK;
+}

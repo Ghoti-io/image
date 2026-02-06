@@ -33,6 +33,20 @@ TEST(Codec, ProbeEmptyStream) {
   gimg_stream_destroy(s);
 }
 
+TEST(Codec, ProbeJpegReturnsJpeg) {
+  unsigned char buf[] = {0xFF, 0xD8};
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf, sizeof(buf), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(s, nullptr);
+  GIMG_Probe_Result result = {};
+  r = gimg_probe(s, &result);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_STREQ(result.format_name, "jpeg");
+  EXPECT_EQ(result.confidence, 100u);
+  gimg_stream_destroy(s);
+}
+
 TEST(Codec, DocLoadReturnsUnsupported) {
   unsigned char buf[1] = {0};
   GIMG_Stream * s = nullptr;
