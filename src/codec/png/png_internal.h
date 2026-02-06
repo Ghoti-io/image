@@ -28,6 +28,7 @@
 
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <ghoti.io/compress/options.h>
 #include <stddef.h>
@@ -98,6 +99,16 @@ typedef uint32_t gimg_png_chunk_type_t;
 /** Max IDAT/fdAT chunk size when writing (split zlib payload into chunks of
  * this size for decoder compatibility). */
 #define GIMG_PNG_IDAT_CHUNK_MAX 32768u
+
+/** Min zlib stream length: 2-byte header + 4-byte Adler-32 (RFC 1950).
+ * Payload (DEFLATE) may be empty; decoders skip header/trailer. */
+#define GIMG_PNG_ZLIB_MIN_BYTES 6u
+
+/** gAMA chunk stores gamma × this value (PNG §11.3.2.2). */
+#define GIMG_PNG_GAMA_SCALE 100000u
+
+/** PLTE max palette entries (PNG §11.2.2). */
+#define GIMG_PNG_PLTE_MAX_ENTRIES 256u
 
 /** Parsed fcTL fields (APNG frame control). */
 typedef struct {
@@ -282,6 +293,36 @@ GIMG_Result gimg_png_deflate_options_for_decode(size_t max_output_bytes,
 GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc);
+
+/**
+ * @brief Convert unfiltered raw PNG samples to output-format pixels.
+ * Used by both single-frame and APNG decode paths.
+ */
+void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
+    const gimg_png_ihdr_t * ihdr, const GIMG_Pixel_Format * format,
+    const unsigned char * raw_full, uint32_t w, uint32_t h, size_t row_bytes,
+    void * pixels, size_t stride);
+
+/**
+ * @brief Decode one frame's IDAT/fdAT (zlib) to pixels. DEFLATE + unfilter +
+ * Adam7 reassembly + raw_to_pixels. Caller frees *out_pixels.
+ */
+GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
+    const gimg_png_ihdr_t * ihdr, const unsigned char * idat_ptr,
+    size_t idat_len, uint32_t w, uint32_t h, const GIMG_Pixel_Format * format,
+    const GIMG_Allocator * alloc, const GIMG_Limits * limits,
+    void ** out_pixels, size_t * out_stride);
+
+/**
+ * @brief Decode one APNG frame (fcTL + fdAT) to pixels. Thin wrapper around
+ * gimg_png_decode_idat_to_pixels. Caller frees *out_pixels.
+ */
+GIMG_Result gimg_png_decode_one_apng_frame(
+    const gimg_png_doc_state_t * state, const gimg_png_ihdr_t * ihdr,
+    size_t frame_index, const GIMG_Pixel_Format * format,
+    const GIMG_Allocator * alloc, const GIMG_Limits * limits,
+    void ** out_pixels, size_t * out_stride, uint32_t * out_fw,
+    uint32_t * out_fh);
 
 /**
  * @brief PNG codec decode callback: decode item to raster (DEFLATE + filters).

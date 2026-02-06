@@ -412,7 +412,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT; // PLTE before IDAT, single PLTE.
       }
-      if (length % 3 != 0 || length == 0 || length > 256 * 3) {
+      if (length % 3 != 0 || length == 0 ||
+          length > (uint32_t)(GIMG_PNG_PLTE_MAX_ENTRIES * 3u)) {
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }

@@ -581,7 +581,13 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
   gimg_free(gimg_alloc_or_default(allocator), raw);
   if (gs != GCOMP_OK) {
     gimg_free(gimg_alloc_or_default(allocator), deflate_buf);
-    return gs == GCOMP_ERR_MEMORY ? GIMG_ERR_OOM : GIMG_ERR_FORMAT;
+    if (gs == GCOMP_ERR_MEMORY) {
+      return GIMG_ERR_OOM;
+    }
+    if (gs == GCOMP_ERR_LIMIT) {
+      return GIMG_ERR_LIMIT;
+    }
+    return GIMG_ERR_FORMAT;
   }
   size_t zlib_len = 2 + deflate_len + 4;
   unsigned char * zlib_buf =
