@@ -12,6 +12,7 @@
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/raster.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -27,6 +28,7 @@ struct GIMG_Item {
   uint16_t frame_delay_den;   ///< Frame delay denominator (fcTL delay_den).
   GIMG_Dispose_Op dispose_op; ///< Dispose op (fcTL dispose_op).
   GIMG_Blend_Op blend_op;     ///< Blend op (fcTL blend_op).
+  GIMG_Raster * raster;       ///< Attached raster for synthetic docs (owned).
 };
 
 /**

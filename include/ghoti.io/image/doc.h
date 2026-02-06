@@ -13,6 +13,7 @@
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/raster.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -110,6 +111,22 @@ GIMG_API GIMG_Blend_Op gimg_item_blend_op(const GIMG_Item * item);
  * @param op Blend op (GIMG_BLEND_SOURCE or GIMG_BLEND_OVER).
  */
 GIMG_API void gimg_item_set_blend_op(GIMG_Item * item, GIMG_Blend_Op op);
+
+/**
+ * @brief Get attached raster (for programmatically created documents).
+ * @param item Item.
+ * @return Attached raster or NULL. Caller does not take ownership.
+ */
+GIMG_API GIMG_Raster * gimg_item_raster(const GIMG_Item * item);
+
+/**
+ * @brief Attach a raster to an item (e.g. for saving a synthetic document).
+ * The item takes ownership of the raster; any previously attached raster is
+ * destroyed.
+ * @param item Item.
+ * @param raster Raster to attach (may be NULL to clear).
+ */
+GIMG_API void gimg_item_set_raster(GIMG_Item * item, GIMG_Raster * raster);
 
 /**
  * @brief Create a minimal document with one item (uses default allocator).

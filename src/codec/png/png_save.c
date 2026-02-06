@@ -624,10 +624,26 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   if (!item) {
     return GIMG_ERR_INTERNAL;
   }
+  // Prefer attached raster (e.g. load -> modify -> set_raster -> save); else decode
+  // or raster from synthetic doc. When attached, doc owns it; when from decode we own.
   GIMG_Raster * raster = NULL;
-  GIMG_Result r = gimg_item_decode(item, NULL, &raster);
-  if (r != GIMG_OK || !raster) {
-    return r != GIMG_OK ? r : GIMG_ERR_FORMAT;
+  int raster_owned = 0;
+  GIMG_Result r;
+  raster = gimg_item_raster(item);
+  if (raster) {
+    raster_owned = 0;
+  }
+  else {
+    r = gimg_item_decode(item, NULL, &raster);
+    if (r == GIMG_OK && raster) {
+      raster_owned = 1;
+    }
+    else if (r == GIMG_ERR_UNSUPPORTED) {
+      return GIMG_ERR_FORMAT;
+    }
+    else {
+      return r != GIMG_OK ? r : GIMG_ERR_FORMAT;
+    }
   }
   gimg_png_doc_state_t * state = (gimg_png_doc_state_t *)doc->codec_private;
   GIMG_Color_Info color_info_for_save;
@@ -657,7 +673,9 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   if (!use_palette &&
       !gimg_png_raster_to_ihdr(raster, state, &color_type, &bit_depth)) {
-    gimg_raster_destroy(raster);
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
     return GIMG_ERR_UNSUPPORTED;
   }
   uint32_t width = gimg_raster_width(raster);
@@ -672,7 +690,9 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   r = gimg_png_raster_to_zlib(raster, color_type, bit_depth,
       use_palette ? state : NULL, do_interlaced, codec->allocator, &zlib_buf,
       &zlib_len);
-  gimg_raster_destroy(raster);
+  if (raster_owned) {
+    gimg_raster_destroy(raster);
+  }
   raster = NULL;
   if (r != GIMG_OK) {
     return r;
@@ -986,9 +1006,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
   zlib_buf = NULL;
 
-  // APNG: fcTL + fdAT for frames 1 .. N-1. fdAT sequence numbers follow fcTL
-  // sequence numbers (0..N-1), so first fdAT has sequence N.
-  uint32_t fdat_sequence = (uint32_t)num_items;
+  // APNG: fcTL + fdAT for frames 1 .. N-1. Sequence numbers are a single
+  // increasing run: fcTL 0, fcTL 1, fdAT 2, fdAT 3, ... (see APNG spec).
   for (size_t frame_index = 1; frame_index < num_items && is_apng;
        frame_index++) {
     GIMG_Item * frame_item = gimg_doc_item((GIMG_Doc *)doc, frame_index);
@@ -996,13 +1015,28 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       return GIMG_ERR_INTERNAL;
     }
     GIMG_Raster * frame_raster = NULL;
-    r = gimg_item_decode(frame_item, NULL, &frame_raster);
-    if (r != GIMG_OK || !frame_raster) {
-      return r != GIMG_OK ? r : GIMG_ERR_FORMAT;
+    int frame_raster_owned = 0;
+    frame_raster = gimg_item_raster(frame_item);
+    if (frame_raster) {
+      frame_raster_owned = 0;
+    }
+    else {
+      r = gimg_item_decode(frame_item, NULL, &frame_raster);
+      if (r == GIMG_OK && frame_raster) {
+        frame_raster_owned = 1;
+      }
+      else if (r == GIMG_ERR_UNSUPPORTED) {
+        return GIMG_ERR_FORMAT;
+      }
+      else {
+        return r != GIMG_OK ? r : GIMG_ERR_FORMAT;
+      }
     }
     if (gimg_raster_width(frame_raster) != width ||
         gimg_raster_height(frame_raster) != height) {
-      gimg_raster_destroy(frame_raster);
+      if (frame_raster_owned) {
+        gimg_raster_destroy(frame_raster);
+      }
       return GIMG_ERR_FORMAT;
     }
     if (!use_palette) {
@@ -1010,7 +1044,9 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       uint8_t bd = 0;
       if (!gimg_png_raster_to_ihdr(frame_raster, state, &ct, &bd) ||
           ct != color_type || bd != bit_depth) {
-        gimg_raster_destroy(frame_raster);
+        if (frame_raster_owned) {
+          gimg_raster_destroy(frame_raster);
+        }
         return GIMG_ERR_FORMAT;
       }
     }
@@ -1021,12 +1057,17 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
     uint8_t dispose_op = (uint8_t)gimg_item_dispose_op(frame_item);
     uint8_t blend_op = (uint8_t)gimg_item_blend_op(frame_item);
+    // APNG: one global sequence (no duplicates). fcTL(0), fcTL(1), fdAT(2),
+    // fcTL(3), fdAT(4), ... so fcTL for frame_index has seq 2*frame_index-1.
+    uint32_t fctl_sequence = (uint32_t)(2u * frame_index - 1u);
     unsigned char fctl[GIMG_PNG_fcTL_LEN];
-    gimg_png_build_fctl(fctl, (uint32_t)frame_index, width, height, 0u, 0u,
+    gimg_png_build_fctl(fctl, fctl_sequence, width, height, 0u, 0u,
         delay_num, delay_den, dispose_op, blend_op);
     r = gimg_png_write_chunk(stream, GIMG_PNG_fcTL, fctl, sizeof(fctl));
     if (r != GIMG_OK) {
-      gimg_raster_destroy(frame_raster);
+      if (frame_raster_owned) {
+        gimg_raster_destroy(frame_raster);
+      }
       return r;
     }
     report->bytes_written += 8 + GIMG_PNG_fcTL_LEN + 4;
@@ -1036,11 +1077,14 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     r = gimg_png_raster_to_zlib(frame_raster, color_type, bit_depth,
         use_palette ? state : NULL, do_interlaced, codec->allocator,
         &frame_zlib, &frame_zlib_len);
-    gimg_raster_destroy(frame_raster);
+    if (frame_raster_owned) {
+      gimg_raster_destroy(frame_raster);
+    }
     if (r != GIMG_OK) {
       return r;
     }
-    // fdAT: 4-byte sequence number (BE) + zlib payload; may split like IDAT.
+    // fdAT: first chunk has sequence 2*frame_index, then increment (APNG).
+    uint32_t fdat_sequence = (uint32_t)(2u * frame_index);
     size_t fdat_chunk_max = GIMG_PNG_IDAT_CHUNK_MAX;
     size_t fdat_offset = 0;
     while (fdat_offset < frame_zlib_len) {

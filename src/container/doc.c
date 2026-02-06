@@ -10,6 +10,7 @@
 
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/raster.h>
 
 #include "../codec/codec_internal.h"
 #include "../core/alloc_internal.h"
@@ -46,6 +47,7 @@ GIMG_API GIMG_Result gimg_doc_create_with_allocator(
   doc->items[0].frame_delay_den = 0;
   doc->items[0].dispose_op = GIMG_DISPOSE_NONE;
   doc->items[0].blend_op = GIMG_BLEND_SOURCE;
+  doc->items[0].raster = NULL;
   *out_doc = doc;
   return GIMG_OK;
 }
@@ -66,6 +68,14 @@ GIMG_API void gimg_doc_destroy(GIMG_Doc * doc) {
     GIMG_Codec * c = (GIMG_Codec *)doc->loaded_by_codec;
     if (c->free_doc_private) {
       c->free_doc_private(c, doc->codec_private);
+    }
+  }
+  if (doc->items) {
+    for (size_t i = 0; i < doc->item_count; i++) {
+      if (doc->items[i].raster) {
+        gimg_raster_destroy(doc->items[i].raster);
+        doc->items[i].raster = NULL;
+      }
     }
   }
   const GIMG_Allocator * alloc = doc->allocator;
@@ -108,6 +118,14 @@ GIMG_API GIMG_Result gimg_doc_set_item_count(GIMG_Doc * doc, size_t count) {
     new_items[i].frame_delay_den = 0;
     new_items[i].dispose_op = GIMG_DISPOSE_NONE;
     new_items[i].blend_op = GIMG_BLEND_SOURCE;
+    new_items[i].raster = NULL;
+  }
+  if (count < doc->item_count) {
+    for (size_t i = count; i < doc->item_count; i++) {
+      if (doc->items[i].raster) {
+        gimg_raster_destroy(doc->items[i].raster);
+      }
+    }
   }
   for (size_t i = 0; i < count; i++) {
     new_items[i].doc = doc;
@@ -164,6 +182,20 @@ GIMG_API void gimg_item_set_blend_op(GIMG_Item * item, GIMG_Blend_Op op) {
   if (item && (unsigned)op < (unsigned)GIMG_BLEND_OP_COUNT) {
     item->blend_op = op;
   }
+}
+
+GIMG_API GIMG_Raster * gimg_item_raster(const GIMG_Item * item) {
+  return item ? item->raster : NULL;
+}
+
+GIMG_API void gimg_item_set_raster(GIMG_Item * item, GIMG_Raster * raster) {
+  if (!item) {
+    return;
+  }
+  if (item->raster) {
+    gimg_raster_destroy(item->raster);
+  }
+  item->raster = raster;
 }
 
 GIMG_API GIMG_Meta_Raw * gimg_doc_meta_raw(const GIMG_Doc * doc) {
