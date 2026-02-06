@@ -37,7 +37,44 @@ TEST(PngEncode, SaveNullDocReturnsInternal) {
   GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(nullptr, out_s, "png", &opts, &report);
-  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(r, GIMG_ERR_INTERNAL);
+  gimg_stream_destroy(out_s);
+}
+
+TEST(PngEncode, SaveNullStreamReturnsInternal) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  GIMG_Result r = gimg_doc_save(doc, nullptr, "png", &opts, &report);
+  EXPECT_EQ(r, GIMG_ERR_INTERNAL);
+  gimg_doc_destroy(doc);
+}
+
+TEST(PngEncode, SaveNullFormatReturnsInternal) {
+  GIMG_Doc * doc = nullptr;
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  GIMG_Result r = gimg_doc_save(doc, out_s, nullptr, &opts, &report);
+  EXPECT_EQ(r, GIMG_ERR_INTERNAL);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(out_s);
+}
+
+TEST(PngEncode, SaveUnsupportedFormatReturnsUnsupported) {
+  GIMG_Doc * doc = nullptr;
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  GIMG_Result r = gimg_doc_save(doc, out_s, "jpeg", &opts, &report);
+  EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+  gimg_doc_destroy(doc);
   gimg_stream_destroy(out_s);
 }
 

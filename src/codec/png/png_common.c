@@ -14,6 +14,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <ghoti.io/image/core.h>
+#include <ghoti.io/compress/compress.h>
+#include <ghoti.io/compress/options.h>
+
 #include "../../core/safe_math_internal.h"
 #include "png_internal.h"
 
@@ -76,6 +80,30 @@ size_t gimg_png_row_bytes_from_ihdr(const gimg_png_ihdr_t * ihdr,
     return 0;
   }
   return gimg_png_row_bytes(ihdr->color_type, ihdr->bit_depth, width);
+}
+
+//
+// DEFLATE decode options (shared by decode paths; limits handling consistent)
+//
+GIMG_Result gimg_png_deflate_options_for_decode(size_t max_output_bytes,
+    gcomp_options_t ** out_opts) {
+  if (!out_opts) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_opts = NULL;
+  gcomp_options_t * opts = NULL;
+  gcomp_status_t gs = gcomp_options_create(&opts);
+  if (gs != GCOMP_OK || !opts) {
+    return (gs == GCOMP_ERR_MEMORY) ? GIMG_ERR_OOM : GIMG_ERR_INTERNAL;
+  }
+  gs = gcomp_options_set_uint64(opts, "limits.max_output_bytes",
+      (uint64_t)max_output_bytes);
+  if (gs != GCOMP_OK) {
+    gcomp_options_destroy(opts);
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_opts = opts;
+  return GIMG_OK;
 }
 
 int gimg_png_adam7_raw_size(uint32_t width, uint32_t height,

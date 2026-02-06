@@ -146,20 +146,13 @@ static int gimg_png_fill_color_info_from_ancillary(
         }
         size_t out_len = 0;
         gcomp_options_t * gopts = NULL;
-        gcomp_status_t gs = gcomp_options_create(&gopts);
-        if (gs != GCOMP_OK || !gopts) {
+        if (gimg_png_deflate_options_for_decode(max_out, &gopts) != GIMG_OK) {
           gimg_free(alloc, decoded);
           return 0;
         }
-        gs =
-            gcomp_options_set_uint64(gopts, "limits.max_output_bytes", max_out);
-        if (gs != GCOMP_OK) {
-          gcomp_options_destroy(gopts);
-          gimg_free(alloc, decoded);
-          return 0;
-        }
-        gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate", gopts,
-            deflate_src, deflate_len, decoded, max_out, &out_len);
+        gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(),
+            "deflate", gopts, deflate_src, deflate_len, decoded, max_out,
+            &out_len);
         gcomp_options_destroy(gopts);
         if (gs != GCOMP_OK) {
           gimg_free(alloc, decoded);
@@ -551,14 +544,9 @@ static GIMG_Result gimg_png_decode_one_apng_frame(
     return GIMG_ERR_LIMIT;
   }
   gcomp_options_t * gopts = NULL;
-  gcomp_status_t gs = gcomp_options_create(&gopts);
-  if (gs != GCOMP_OK || !gopts) {
-    return gimg_png_result_from_gcomp(gs);
-  }
-  gs = gcomp_options_set_uint64(gopts, "limits.max_output_bytes", raw_size);
-  if (gs != GCOMP_OK) {
-    gcomp_options_destroy(gopts);
-    return GIMG_ERR_INTERNAL;
+  GIMG_Result gr = gimg_png_deflate_options_for_decode(raw_size, &gopts);
+  if (gr != GIMG_OK) {
+    return gr;
   }
   unsigned char * raw = (unsigned char *)gimg_malloc(alloc, raw_size);
   if (!raw) {
@@ -566,8 +554,8 @@ static GIMG_Result gimg_png_decode_one_apng_frame(
     return GIMG_ERR_OOM;
   }
   size_t out_len = 0;
-  gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate", gopts,
-      idat_ptr + 2, idat_len - 6, raw, raw_size, &out_len);
+  gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate",
+      gopts, idat_ptr + 2, idat_len - 6, raw, raw_size, &out_len);
   gcomp_options_destroy(gopts);
   if (gs != GCOMP_OK || out_len != raw_size) {
     gimg_free(alloc, raw);
@@ -1031,16 +1019,10 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   alloc = gimg_alloc_or_default(alloc);
 
   gcomp_options_t * gopts = NULL;
-  gcomp_status_t gs = gcomp_options_create(&gopts);
-  if (gs != GCOMP_OK || !gopts) {
-    return gimg_png_result_from_gcomp(gs);
+  GIMG_Result gr = gimg_png_deflate_options_for_decode(raw_size, &gopts);
+  if (gr != GIMG_OK) {
+    return gr;
   }
-  gs = gcomp_options_set_uint64(gopts, "limits.max_output_bytes", raw_size);
-  if (gs != GCOMP_OK) {
-    gcomp_options_destroy(gopts);
-    return GIMG_ERR_INTERNAL;
-  }
-
   // PNG IDAT/fdAT is zlib-wrapped (RFC 1950): 2-byte header + raw DEFLATE +
   // 4-byte Adler-32. The compress library "deflate" method expects raw DEFLATE.
   if (idat_len < 6) {
@@ -1055,10 +1037,9 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     gcomp_options_destroy(gopts);
     return GIMG_ERR_OOM;
   }
-
   size_t out_len = 0;
-  gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate", gopts,
-      deflate_src, deflate_len, raw, raw_size, &out_len);
+  gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate",
+      gopts, deflate_src, deflate_len, raw, raw_size, &out_len);
   gcomp_options_destroy(gopts);
   if (gs != GCOMP_OK) {
     gimg_free(alloc, raw);

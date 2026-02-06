@@ -73,6 +73,19 @@ def main() -> None:
     )
     write_png("png_1x1_gray.png", png_1x1_gray)
 
+    # ---- 2x2 grayscale 8-bit (for max_decoded_pixels limit test) ----
+    # Row format: filter (0) + 2 pixels; 2 rows = 6 bytes.
+    raw_2x2_gray = bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    idat_2x2_gray = idat_zlib(raw_2x2_gray)
+    ihdr_2x2_gray = struct.pack(">IIBBBBB", 2, 2, 8, 0, 0, 0, 0)
+    png_2x2_gray = (
+        signature
+        + png_chunk(b"IHDR", ihdr_2x2_gray)
+        + png_chunk(b"IDAT", idat_2x2_gray)
+        + iend
+    )
+    write_png("png_2x2_gray.png", png_2x2_gray)
+
     # ---- 1x1 palette + tRNS ----
     ihdr_palette = struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0)
     plte = bytes([0x11, 0x22, 0x33])

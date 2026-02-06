@@ -43,15 +43,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
 
-  // Decode first item to exercise full decode path.
+  // Decode every item/frame to exercise full decode path and avoid crashes on
+  // invalid or truncated multi-frame input.
   size_t n = gimg_doc_item_count(doc);
-  if (n > 0) {
+  for (size_t i = 0; i < n; i++) {
     GIMG_Raster * raster = nullptr;
-    GIMG_Result dr = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+    GIMG_Result dr =
+        gimg_item_decode(gimg_doc_item(doc, i), nullptr, &raster);
     if (raster != nullptr) {
       gimg_raster_destroy(raster);
     }
-    (void)dr;
+    (void)dr;  // GIMG_ERR_* expected for invalid/truncated frames
   }
 
   gimg_doc_destroy(doc);

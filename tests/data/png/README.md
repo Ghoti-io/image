@@ -12,6 +12,7 @@ Generated files:
 | File | Description |
 |------|-------------|
 | `png_1x1_gray.png` | 1×1 grayscale 8-bit (black) |
+| `png_2x2_gray.png` | 2×2 grayscale 8-bit (for max_decoded_pixels limit test) |
 | `png_1x1_palette.png` | 1×1 palette + tRNS (R=0x11 G=0x22 B=0x33 A=0x80) |
 | `png_16bit_gray.png` | 1×1 grayscale 16-bit (value 0x1234) |
 | `png_1x1_rgba.png` | 1×1 RGBA 8-bit (R=0x11 G=0x22 B=0x33 A=0x80) |

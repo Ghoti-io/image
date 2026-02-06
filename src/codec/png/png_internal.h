@@ -29,6 +29,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/stream.h>
+#include <ghoti.io/compress/options.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -264,6 +265,16 @@ GIMG_Result gimg_png_parse_fctl(
  */
 GIMG_Result gimg_png_append_frame_data(gimg_png_doc_state_t * state,
     size_t frame_index, const unsigned char * data, size_t len);
+
+/**
+ * @brief Create DEFLATE decode options with limits.max_output_bytes set.
+ * Caller must call gcomp_options_destroy() when done.
+ * @param max_output_bytes Maximum decompressed size (bomb protection).
+ * @param out_opts On success, set to new options; on failure, set to NULL.
+ * @return GIMG_OK or GIMG_ERR_OOM / GIMG_ERR_INTERNAL.
+ */
+GIMG_Result gimg_png_deflate_options_for_decode(size_t max_output_bytes,
+    gcomp_options_t ** out_opts);
 
 /**
  * @brief PNG codec load callback (used by png_register).

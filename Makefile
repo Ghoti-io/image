@@ -294,8 +294,10 @@ $(APP_DIR)/$2$(EXE_EXTENSION): \
 	$$(CXX) $$(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $$(TEST_HELPER_OBJ) $$(LDFLAGS) $$(TESTFLAGS) $(IMAGELIBRARY)
 endef
 
-# Generate build rules from TEST_PAIRS (one pair = source|name)
-$(foreach pair,$(TEST_PAIRS),$(eval $(call test-executable-rule,$(word 1,$(subst |, ,$(pair))),$(word 2,$(subst |, ,$(pair))))))
+# testPng_decode and testPng_encode use explicit rules below (link PNG_TEST_UTILS_OBJ).
+TEST_PAIRS_OTHER := $(filter-out tests/codec/png/test_png_decode.cpp|testPng_decode tests/codec/png/test_png_encode.cpp|testPng_encode,$(TEST_PAIRS))
+# Generate build rules for all other tests (one pair = source|name)
+$(foreach pair,$(TEST_PAIRS_OTHER),$(eval $(call test-executable-rule,$(word 1,$(subst |, ,$(pair))),$(word 2,$(subst |, ,$(pair))))))
 
 # PNG tests link the shared png_test_utils helper.
 $(APP_DIR)/testPng_decode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_decode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET)

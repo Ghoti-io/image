@@ -12,10 +12,12 @@
 #include <cstring>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/color.h>
+#include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
+#include <string>
 #include <gtest/gtest.h>
 #include <vector>
 
@@ -564,6 +566,63 @@ TEST(PngDecode, ApngMaxChunkSizeLimitEnforced) {
   EXPECT_EQ(r, GIMG_ERR_LIMIT) << "IHDR length 13 exceeds max_chunk_size=8";
   EXPECT_EQ(doc, nullptr);
 }
+
+#ifdef GIMG_TEST_DATA_PNG
+TEST(PngDecode, MaxDecodedPixelsLimitEnforced) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(png_test::load_png_file("png_2x2_gray.png", buf));
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(s, nullptr);
+
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+
+  GIMG_Limits limits = {};
+  limits.max_decoded_pixels = 1;  // 2x2 = 4 pixels
+  GIMG_Decode_Options decode_opts = {&limits, {0}};
+  GIMG_Raster * raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), &decode_opts, &raster);
+  gimg_doc_destroy(doc);
+  EXPECT_EQ(r, GIMG_ERR_LIMIT) << "2x2 pixel count exceeds max_decoded_pixels=1";
+  EXPECT_EQ(raster, nullptr);
+}
+
+TEST(PngDecode, LimitEnforcedMaxFrameCountFillsDiagnostics) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(png_test::load_png_file("png_apng_2frame.png", buf));
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(s, nullptr);
+
+  GIMG_Limits limits = {};
+  limits.max_frame_count = 1;
+  GIMG_Load_Options opts = {&limits, GIMG_NORMAL, {0}};
+
+  GIMG_Diagnostics diag = {nullptr, 0, 0, nullptr};
+  gimg_diagnostics_init(&diag, nullptr);
+
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, &opts, &diag, &doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(r, GIMG_ERR_LIMIT);
+  EXPECT_EQ(doc, nullptr);
+  EXPECT_GE(diag.count, 1u) << "diagnostics should report the limit";
+  if (diag.count >= 1u && diag.items[0].recommended_action) {
+    std::string action(diag.items[0].recommended_action);
+    EXPECT_NE(action.find("max_frame_count"), std::string::npos)
+        << "recommended_action should mention max_frame_count";
+  }
+  gimg_diagnostics_destroy(&diag);
+}
+#endif
 
 // ---- Golden-file decode tests: canonical pixel hash per reference file ----
 
