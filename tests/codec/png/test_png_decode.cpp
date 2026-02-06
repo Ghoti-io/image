@@ -534,7 +534,7 @@ TEST(PngDecode, ApngTruncatedReturnsErrorNoCrash) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(load_png_file("png_apng_2frame.png", buf));
 
-  /* Truncate before IEND (e.g. remove last 20 bytes). Load should fail. */
+  // Truncate before IEND (e.g. remove last 20 bytes). Load should fail.
   if (buf.size() > 20) {
     buf.resize(buf.size() - 20);
   }
@@ -551,7 +551,7 @@ TEST(PngDecode, ApngTruncatedReturnsErrorNoCrash) {
 }
 
 TEST(PngDecode, ApngInvalidSignatureRejected) {
-  /* Not a PNG signature: load should fail with FORMAT or similar. */
+  // Not a PNG signature: load should fail with FORMAT or similar.
   std::vector<uint8_t> buf = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -595,7 +595,7 @@ TEST(PngDecode, ApngMaxChunkSizeLimitEnforced) {
   ASSERT_NE(s, nullptr);
 
   GIMG_Limits limits = {};
-  limits.max_chunk_size = 8;  /* IHDR payload is 13 bytes */
+  limits.max_chunk_size = 8;  // IHDR payload is 13 bytes
   GIMG_Load_Options opts = {&limits, GIMG_NORMAL, {0}};
 
   GIMG_Doc * doc = nullptr;

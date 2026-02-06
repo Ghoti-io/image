@@ -32,6 +32,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /** PNG signature length (bytes). §5.2 PNG signature. */
 #define GIMG_PNG_SIGNATURE_LEN 8
 
@@ -81,6 +85,18 @@ typedef uint32_t gimg_png_chunk_type_t;
 /** fdAT minimum payload (4-byte sequence number + at least 0 bytes frame data).
  */
 #define GIMG_PNG_fdAT_SEQ_LEN 4
+
+/** Chunk read stack buffer size (payloads up to this use stack; larger use
+ * heap). Rationale: small chunks (IHDR, tEXt, etc.) are common; avoids
+ * alloc for typical case. */
+#define GIMG_PNG_CHUNK_READ_STACK_BUF 4096
+
+/** Max decoded ICC profile size (iCCP decompression). Bomb protection. */
+#define GIMG_PNG_ICC_MAX_DECODED (4u * 1024u * 1024u)
+
+/** Max IDAT/fdAT chunk size when writing (split zlib payload into chunks of
+ * this size for decoder compatibility). */
+#define GIMG_PNG_IDAT_CHUNK_MAX 32768u
 
 /** Parsed fcTL fields (APNG frame control). */
 typedef struct {
@@ -141,13 +157,43 @@ struct gimg_png_doc_state {
   size_t ancillary_count;
   size_t ancillary_capacity;
   const GIMG_Allocator * allocator;
-  /* APNG: animation control and per-frame data. */
+  // APNG: animation control and per-frame data.
   int is_apng;        ///< 1 if acTL was seen (before first IDAT).
   uint32_t num_plays; ///< 0 = loop forever.
   gimg_png_frame_t *
       frames;         ///< Array of length frame_count; NULL for non-APNG.
   size_t frame_count; ///< 1 for static PNG, acTL num_frames for APNG.
 };
+
+/** Adam7 pass parameters (W3C §2.6 Interlaced data order). Shared by decode
+ * and save. Defined in png_common.c. */
+typedef struct {
+  unsigned int x_offset;
+  unsigned int y_offset;
+  unsigned int x_step;
+  unsigned int y_step;
+} gimg_png_adam7_pass_t;
+
+extern const gimg_png_adam7_pass_t gimg_png_adam7_passes[7];
+
+/** Pass width/height for Adam7 (empty pass returns 0). W3C §2.6. */
+void gimg_png_adam7_pass_dims(uint32_t image_width, uint32_t image_height,
+    unsigned int pass_index, uint32_t * out_pass_width,
+    uint32_t * out_pass_height);
+
+/** Row bytes for a row of @a width pixels (excluding filter byte). Supports
+ * color_type 0, 2, 3, 4, 6. Returns 0 for invalid color_type. */
+size_t gimg_png_row_bytes(uint8_t color_type, uint8_t bit_depth,
+    uint32_t width);
+
+/** Row bytes from IHDR and width (convenience wrapper). */
+size_t gimg_png_row_bytes_from_ihdr(const gimg_png_ihdr_t * ihdr,
+    uint32_t width);
+
+/** Expected raw size for interlaced (Adam7) image: sum over passes of
+ * (1 + row_bytes) * pass_height. Returns 1 on success, 0 on overflow. */
+int gimg_png_adam7_raw_size(uint32_t width, uint32_t height,
+    uint8_t color_type, uint8_t bit_depth, size_t * out_size);
 
 /**
  * @brief Validate IHDR and parse into ihdr. Returns GIMG_ERR_FORMAT if invalid.
@@ -246,5 +292,9 @@ GIMG_Result gimg_png_write_chunk(GIMG_Stream * stream,
 GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // GHOTI_IO_GIMG_PNG_INTERNAL_H

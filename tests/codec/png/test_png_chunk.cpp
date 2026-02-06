@@ -231,7 +231,7 @@ TEST(PngChunk, BadCrcFillsDiagnostics) {
 
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
-  GIMG_Diagnostics diag = {nullptr, 0, 0};
+  GIMG_Diagnostics diag = {};
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_load(s, nullptr, &diag, &doc);
   gimg_stream_destroy(s);
@@ -243,7 +243,7 @@ TEST(PngChunk, BadCrcFillsDiagnostics) {
     EXPECT_EQ(diag.items[0].chunk_or_tag_id, 0x49454E44u) << "IEND chunk type";
     EXPECT_EQ(diag.items[0].severity, GIMG_DIAG_ERROR);
   }
-  // Caller owns items (allocated by gimg_diagnostics_append); no free API yet.
+  gimg_diagnostics_destroy(&diag);
 }
 
 TEST(PngChunk, PngCodecHasExpectedCapabilities) {

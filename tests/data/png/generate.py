@@ -119,6 +119,60 @@ def main() -> None:
     )
     write_png("png_16bit_rgba.png", png_16rgba)
 
+    # ---- 1x1 RGB 8-bit (color_type 2): R=0x11 G=0x22 B=0x33 ----
+    raw_rgb = bytes([0x00, 0x11, 0x22, 0x33])
+    idat_rgb = idat_zlib(raw_rgb)
+    ihdr_rgb = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    png_rgb = (
+        signature
+        + png_chunk(b"IHDR", ihdr_rgb)
+        + png_chunk(b"IDAT", idat_rgb)
+        + iend
+    )
+    write_png("png_1x1_rgb.png", png_rgb)
+
+    # ---- 1x1 RGB 16-bit (color_type 2): R=0x1234 G=0x5678 B=0x9ABC ----
+    raw_16rgb = bytes([
+        0x00,
+        0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+    ])
+    idat_16rgb = idat_zlib(raw_16rgb)
+    ihdr_16rgb = struct.pack(">IIBBBBB", 1, 1, 16, 2, 0, 0, 0)
+    png_16rgb = (
+        signature
+        + png_chunk(b"IHDR", ihdr_16rgb)
+        + png_chunk(b"IDAT", idat_16rgb)
+        + iend
+    )
+    write_png("png_16bit_rgb.png", png_16rgb)
+
+    # ---- 1x1 grayscale+alpha 8-bit (color_type 4): G=0x80 A=0xCC ----
+    raw_ga = bytes([0x00, 0x80, 0xCC])
+    idat_ga = idat_zlib(raw_ga)
+    ihdr_ga = struct.pack(">IIBBBBB", 1, 1, 8, 4, 0, 0, 0)
+    png_ga = (
+        signature
+        + png_chunk(b"IHDR", ihdr_ga)
+        + png_chunk(b"IDAT", idat_ga)
+        + iend
+    )
+    write_png("png_1x1_grayalpha.png", png_ga)
+
+    # ---- 1x1 grayscale+alpha 16-bit (color_type 4): G=0x1234 A=0xDEF0 ----
+    raw_16ga = bytes([
+        0x00,
+        0x12, 0x34, 0xDE, 0xF0,
+    ])
+    idat_16ga = idat_zlib(raw_16ga)
+    ihdr_16ga = struct.pack(">IIBBBBB", 1, 1, 16, 4, 0, 0, 0)
+    png_16ga = (
+        signature
+        + png_chunk(b"IHDR", ihdr_16ga)
+        + png_chunk(b"IDAT", idat_16ga)
+        + iend
+    )
+    write_png("png_16bit_grayalpha.png", png_16ga)
+
     # ---- 1x1 gray + sRGB chunk (rendering intent 0 = Perceptual) ----
     srgb_payload = bytes([0x00])
     png_srgb = (

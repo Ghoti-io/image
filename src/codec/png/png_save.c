@@ -56,6 +56,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/safe_math_internal.h"
 #include "../../raster/raster_internal.h"
 #include "../codec_internal.h"
 #include "png_internal.h"
@@ -77,10 +78,13 @@ static uint32_t gimg_png_adler32(const unsigned char * data, size_t len) {
 /**
  * Map raster format to PNG color_type and bit_depth.
  * Returns 1 on success, 0 on unsupported. Does not handle palette (caller uses
- * doc state for that).
+ * doc state for that). When @a state is non-NULL and state->ihdr.color_type is
+ * 2 (RGB) or 4 (grayscale+alpha), and the raster is RGBA with matching bit
+ * depth, that color_type is used so round-trip preserves format.
  */
 static int gimg_png_raster_to_ihdr(
-    const GIMG_Raster * raster, uint8_t * color_type, uint8_t * bit_depth) {
+    const GIMG_Raster * raster, const gimg_png_doc_state_t * state,
+    uint8_t * color_type, uint8_t * bit_depth) {
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   if (!fmt || fmt->layout != GIMG_LAYOUT_INTERLEAVED) {
     return 0;
@@ -99,17 +103,25 @@ static int gimg_png_raster_to_ihdr(
     return 0;
   }
   if (fmt->channel_model == GIMG_CHANNEL_RGBA && fmt->channel_count == 4) {
+    uint8_t bd = 0;
     if (fmt->bits_per_channel[0] == 8) {
-      *color_type = 6;
-      *bit_depth = 8;
+      bd = 8;
+    }
+    else if (fmt->bits_per_channel[0] == 16) {
+      bd = 16;
+    }
+    else {
+      return 0;
+    }
+    if (state && (state->ihdr.color_type == 2 || state->ihdr.color_type == 4) &&
+        state->ihdr.bit_depth == bd) {
+      *color_type = state->ihdr.color_type;
+      *bit_depth = bd;
       return 1;
     }
-    if (fmt->bits_per_channel[0] == 16) {
-      *color_type = 6;
-      *bit_depth = 16;
-      return 1;
-    }
-    return 0;
+    *color_type = 6;
+    *bit_depth = bd;
+    return 1;
   }
   return 0;
 }
@@ -179,73 +191,6 @@ static void gimg_png_build_fctl(unsigned char * out, uint32_t sequence_number,
   out[25] = blend_op;
 }
 
-/** Adam7 pass parameters (W3C §2.6). */
-typedef struct {
-  unsigned int x_offset;
-  unsigned int y_offset;
-  unsigned int x_step;
-  unsigned int y_step;
-} gimg_png_adam7_pass_t;
-
-static const gimg_png_adam7_pass_t gimg_png_adam7_passes[7] = {
-    {0, 0, 8, 8},
-    {4, 0, 8, 8},
-    {0, 4, 4, 8},
-    {2, 0, 4, 4},
-    {0, 2, 2, 4},
-    {1, 0, 2, 2},
-    {0, 1, 1, 2},
-};
-
-static void gimg_png_adam7_pass_dims(uint32_t image_width,
-    uint32_t image_height, unsigned int pass_index, uint32_t * out_pw,
-    uint32_t * out_ph) {
-  const gimg_png_adam7_pass_t * p = &gimg_png_adam7_passes[pass_index];
-  *out_pw = (image_width > p->x_offset)
-      ? (uint32_t)((image_width - p->x_offset + p->x_step - 1) / p->x_step)
-      : 0;
-  *out_ph = (image_height > p->y_offset)
-      ? (uint32_t)((image_height - p->y_offset + p->y_step - 1) / p->y_step)
-      : 0;
-}
-
-/** Row bytes for a given width (excluding filter byte). */
-static size_t gimg_png_row_bytes_for_ct_bd(
-    uint8_t color_type, uint8_t bit_depth, uint32_t w) {
-  size_t samples = 0;
-  switch (color_type) {
-  case 0:
-    samples = (size_t)w * (bit_depth == 16 ? 2u : 1u);
-    break;
-  case 3:
-    samples = (size_t)w;
-    break;
-  case 6:
-    samples = (size_t)w * (bit_depth == 16 ? 8u : 4u);
-    break;
-  default:
-    return 0;
-  }
-  return samples;
-}
-
-/** Expected raw size for Adam7 (filter byte + row per pass row). */
-static size_t gimg_png_adam7_raw_size(
-    uint32_t width, uint32_t height, uint8_t color_type, uint8_t bit_depth) {
-  size_t total = 0;
-  for (int pass = 0; pass < 7; pass++) {
-    uint32_t pw = 0;
-    uint32_t ph = 0;
-    gimg_png_adam7_pass_dims(width, height, (unsigned int)pass, &pw, &ph);
-    if (pw == 0 || ph == 0) {
-      continue;
-    }
-    size_t row_bytes = gimg_png_row_bytes_for_ct_bd(color_type, bit_depth, pw);
-    total += (size_t)ph * (1u + row_bytes);
-  }
-  return total;
-}
-
 /** Return 1 if chunk type is known semantic metadata (color, Exif, text). */
 static int gimg_png_chunk_is_known_semantic(gimg_png_chunk_type_t t) {
   return t == GIMG_PNG_iCCP || t == GIMG_PNG_sRGB || t == GIMG_PNG_gAMA ||
@@ -269,7 +214,7 @@ static int gimg_png_text_keyword_is_gps(
   if (kw_len == 0) {
     return 0;
   }
-  /* Case-insensitive: "GPS", "GPS ", "EXIF:GPS", "exif:gps", etc. */
+  // Case-insensitive: "GPS", "GPS ", "EXIF:GPS", "exif:gps", etc.
   if (kw_len >= 3) {
     unsigned char a = (unsigned char)tolower((unsigned char)payload[0]);
     unsigned char b = (unsigned char)tolower((unsigned char)payload[1]);
@@ -310,18 +255,8 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
     unsigned char * raw, size_t raw_size) {
   uint32_t w = gimg_raster_width(raster);
   uint32_t h = gimg_raster_height(raster);
-  size_t row_bytes = 0;
-  switch (color_type) {
-  case 0:
-    row_bytes = (size_t)w * (bit_depth == 16 ? 2u : 1u);
-    break;
-  case 3:
-    row_bytes = (size_t)w;
-    break;
-  case 6:
-    row_bytes = (size_t)w * (bit_depth == 16 ? 8u : 4u);
-    break;
-  default:
+  size_t row_bytes = gimg_png_row_bytes(color_type, bit_depth, w);
+  if (row_bytes == 0) {
     return GIMG_ERR_FORMAT;
   }
   if (raw_size < (size_t)h * (1u + row_bytes)) {
@@ -383,6 +318,45 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
         }
       }
     }
+    else if (color_type == 2) {
+      if (bit_depth == 8) {
+        for (uint32_t x = 0; x < w; x++) {
+          row[1u + (size_t)x * 3u + 0u] = src[0];
+          row[1u + (size_t)x * 3u + 1u] = src[1];
+          row[1u + (size_t)x * 3u + 2u] = src[2];
+          src += 4;
+        }
+      }
+      else {
+        for (uint32_t x = 0; x < w; x++) {
+          gimg_png_write_be16(row + 1 + 6u * (size_t)x + 0u,
+              (uint16_t)(src[0] | (src[1] << 8)));
+          gimg_png_write_be16(row + 1 + 6u * (size_t)x + 2u,
+              (uint16_t)(src[2] | (src[3] << 8)));
+          gimg_png_write_be16(row + 1 + 6u * (size_t)x + 4u,
+              (uint16_t)(src[4] | (src[5] << 8)));
+          src += 8;
+        }
+      }
+    }
+    else if (color_type == 4) {
+      if (bit_depth == 8) {
+        for (uint32_t x = 0; x < w; x++) {
+          row[1u + (size_t)x * 2u + 0u] = src[0];
+          row[1u + (size_t)x * 2u + 1u] = src[3];
+          src += 4;
+        }
+      }
+      else {
+        for (uint32_t x = 0; x < w; x++) {
+          gimg_png_write_be16(row + 1 + 4u * (size_t)x + 0u,
+              (uint16_t)(src[0] | (src[1] << 8)));
+          gimg_png_write_be16(row + 1 + 4u * (size_t)x + 2u,
+              (uint16_t)(src[6] | (src[7] << 8)));
+          src += 8;
+        }
+      }
+    }
     else if (color_type == 6) {
       if (bit_depth == 8) {
         memcpy(row + 1, src, row_bytes);
@@ -436,7 +410,7 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
       dest[0] = (unsigned char)i;
       return 1;
     }
-    return 0; /* no palette match */
+    return 0;  // no palette match
   }
 
   if (color_type == 0) {
@@ -447,6 +421,30 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
     uint16_t v = (uint16_t)(src[x * 2u] | (src[x * 2u + 1u] << 8));
     gimg_png_write_be16(dest, v);
     return 2;
+  }
+  if (color_type == 2) {
+    const unsigned char * p = src + (size_t)x * (bit_depth == 8 ? 4u : 8u);
+    if (bit_depth == 8) {
+      dest[0] = p[0];
+      dest[1] = p[1];
+      dest[2] = p[2];
+      return 3;
+    }
+    gimg_png_write_be16(dest + 0, (uint16_t)(p[0] | (p[1] << 8)));
+    gimg_png_write_be16(dest + 2, (uint16_t)(p[2] | (p[3] << 8)));
+    gimg_png_write_be16(dest + 4, (uint16_t)(p[4] | (p[5] << 8)));
+    return 6;
+  }
+  if (color_type == 4) {
+    const unsigned char * p = src + (size_t)x * (bit_depth == 8 ? 4u : 8u);
+    if (bit_depth == 8) {
+      dest[0] = p[0];
+      dest[1] = p[3];
+      return 2;
+    }
+    gimg_png_write_be16(dest + 0, (uint16_t)(p[0] | (p[1] << 8)));
+    gimg_png_write_be16(dest + 2, (uint16_t)(p[6] | (p[7] << 8)));
+    return 4;
   }
   if (color_type == 6) {
     if (bit_depth == 8) {
@@ -470,7 +468,10 @@ static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
     unsigned char * raw, size_t raw_size) {
   uint32_t w = gimg_raster_width(raster);
   uint32_t h = gimg_raster_height(raster);
-  size_t expected = gimg_png_adam7_raw_size(w, h, color_type, bit_depth);
+  size_t expected = 0;
+  if (!gimg_png_adam7_raw_size(w, h, color_type, bit_depth, &expected)) {
+    return GIMG_ERR_LIMIT;
+  }
   if (raw_size < expected) {
     return GIMG_ERR_INTERNAL;
   }
@@ -485,7 +486,7 @@ static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
     const gimg_png_adam7_pass_t * ap = &gimg_png_adam7_passes[pass];
 
     for (uint32_t j = 0; j < ph; j++) {
-      raw[raw_off++] = 0; /* filter byte */
+      raw[raw_off++] = 0;  // filter byte
       for (uint32_t i = 0; i < pw; i++) {
         uint32_t x = ap->x_offset + i * ap->x_step;
         uint32_t y = ap->y_offset + j * ap->y_step;
@@ -511,22 +512,22 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
     unsigned char ** out_zlib, size_t * out_zlib_len) {
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
-  size_t row_bytes;
-  if (color_type == 0) {
-    row_bytes = (size_t)width * (bit_depth == 16 ? 2u : 1u);
+  size_t row_bytes = gimg_png_row_bytes(color_type, bit_depth, width);
+  if (row_bytes == 0) {
+    return GIMG_ERR_FORMAT;
   }
-  else if (color_type == 3) {
-    row_bytes = (size_t)width;
-  }
-  else {
-    row_bytes = (size_t)width * (bit_depth == 16 ? 8u : 4u);
-  }
-  size_t raw_size;
+  size_t raw_size = 0;
   if (do_interlaced) {
-    raw_size = gimg_png_adam7_raw_size(width, height, color_type, bit_depth);
+    if (!gimg_png_adam7_raw_size(
+            width, height, color_type, bit_depth, &raw_size)) {
+      return GIMG_ERR_LIMIT;
+    }
   }
   else {
-    raw_size = (size_t)height * (1u + row_bytes);
+    size_t row_stride = 1u + row_bytes;
+    if (!gimg_safe_mul_size((size_t)height, row_stride, &raw_size)) {
+      return GIMG_ERR_LIMIT;
+    }
   }
   unsigned char * raw =
       (unsigned char *)gimg_malloc(gimg_alloc_or_default(allocator), raw_size);
@@ -648,7 +649,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
   if (!use_palette &&
-      !gimg_png_raster_to_ihdr(raster, &color_type, &bit_depth)) {
+      !gimg_png_raster_to_ihdr(raster, state, &color_type, &bit_depth)) {
     gimg_raster_destroy(raster);
     return GIMG_ERR_UNSUPPORTED;
   }
@@ -658,7 +659,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   size_t num_items = gimg_doc_item_count(doc);
   int is_apng = (num_items > 1);
 
-  /* Encode frame 0 raster to zlib (used for IDAT or first APNG frame). */
+  // Encode frame 0 raster to zlib (used for IDAT or first APNG frame).
   unsigned char * zlib_buf = NULL;
   size_t zlib_len = 0;
   r = gimg_png_raster_to_zlib(raster, color_type, bit_depth,
@@ -670,7 +671,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return r;
   }
 
-  /* Write signature. */
+  // Write signature.
   size_t n = 0;
   r = gimg_stream_write(stream, gimg_png_signature, GIMG_PNG_SIGNATURE_LEN, &n);
   if (r != GIMG_OK || n != GIMG_PNG_SIGNATURE_LEN) {
@@ -745,13 +746,13 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
                 (const unsigned char *)color_info_for_save.icc_bytes,
                 color_info_for_save.icc_size);
             size_t iccp_len =
-                19 + icc_len; /* "ICC Profile\0" + comp byte + zlib */
+                19 + icc_len;  // "ICC Profile\0" + comp byte + zlib
             unsigned char * iccp_buf = (unsigned char *)gimg_malloc(
                 gimg_alloc_or_default(codec->allocator), iccp_len);
             if (iccp_buf) {
               memcpy(iccp_buf, "ICC Profile", 11);
               iccp_buf[11] = 0;
-              iccp_buf[12] = 0; /* compression method */
+              iccp_buf[12] = 0;  // compression method
               iccp_buf[13] = 0x78;
               iccp_buf[14] = 0x9C;
               memcpy(iccp_buf + 15, icc_compressed, icc_len);
@@ -881,7 +882,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
 
-  /* APNG: acTL (num_frames, num_plays) before first fcTL per spec. */
+  // APNG: acTL (num_frames, num_plays) before first fcTL per spec.
   if (is_apng) {
     uint32_t num_plays = (state && state->is_apng) ? state->num_plays : 0u;
     unsigned char actl[GIMG_PNG_acTL_LEN];
@@ -894,7 +895,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += 8 + GIMG_PNG_acTL_LEN + 4;
   }
 
-  /* fcTL for frame 0 (APNG only). */
+  // fcTL for frame 0 (APNG only).
   if (is_apng) {
     GIMG_Item * frame_item = gimg_doc_item((GIMG_Doc *)doc, 0);
     uint16_t delay_num = 0, delay_den = 0;
@@ -915,9 +916,9 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += 8 + GIMG_PNG_fcTL_LEN + 4;
   }
 
-  /* IDAT (frame 0 image data; single or multiple chunks when > 32 KiB). */
+  // IDAT (frame 0 image data; single or multiple chunks when > 32 KiB).
   {
-    size_t idat_chunk_max = 32768u;
+    size_t idat_chunk_max = GIMG_PNG_IDAT_CHUNK_MAX;
     size_t idat_offset = 0;
     while (idat_offset < zlib_len) {
       size_t chunk_len = zlib_len - idat_offset;
@@ -937,8 +938,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
   zlib_buf = NULL;
 
-  /* APNG: fcTL + fdAT for frames 1 .. N-1. fdAT sequence numbers follow fcTL
-   * sequence numbers (0..N-1), so first fdAT has sequence N. */
+  // APNG: fcTL + fdAT for frames 1 .. N-1. fdAT sequence numbers follow fcTL
+  // sequence numbers (0..N-1), so first fdAT has sequence N.
   uint32_t fdat_sequence = (uint32_t)num_items;
   for (size_t frame_index = 1; frame_index < num_items && is_apng;
        frame_index++) {
@@ -959,7 +960,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (!use_palette) {
       uint8_t ct = 0;
       uint8_t bd = 0;
-      if (!gimg_png_raster_to_ihdr(frame_raster, &ct, &bd) ||
+      if (!gimg_png_raster_to_ihdr(frame_raster, state, &ct, &bd) ||
           ct != color_type || bd != bit_depth) {
         gimg_raster_destroy(frame_raster);
         return GIMG_ERR_FORMAT;
@@ -991,8 +992,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (r != GIMG_OK) {
       return r;
     }
-    /* fdAT: 4-byte sequence number (BE) + zlib payload; may split like IDAT. */
-    size_t fdat_chunk_max = 32768u;
+    // fdAT: 4-byte sequence number (BE) + zlib payload; may split like IDAT.
+    size_t fdat_chunk_max = GIMG_PNG_IDAT_CHUNK_MAX;
     size_t fdat_offset = 0;
     while (fdat_offset < frame_zlib_len) {
       size_t frag_len = frame_zlib_len - fdat_offset;
@@ -1025,7 +1026,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     gimg_free(gimg_alloc_or_default(codec->allocator), frame_zlib);
   }
 
-  /* IEND */
+  // IEND
   r = gimg_png_write_chunk(stream, GIMG_PNG_IEND, NULL, 0);
   if (r != GIMG_OK) {
     return r;

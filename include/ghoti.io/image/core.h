@@ -9,6 +9,7 @@
 #ifndef GHOTI_IO_IMAGE_CORE_H
 #define GHOTI_IO_IMAGE_CORE_H
 
+#include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/macros.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -56,11 +57,17 @@ typedef struct {
 
 /**
  * @brief Diagnostics payload (list of diagnostics; no silent truncation).
+ *
+ * Optional allocator: if non-NULL, used for growing the list and for clear/destroy.
+ * If NULL (e.g. zero-initialized or after destroy), the default allocator is used.
+ * Call gimg_diagnostics_init() to set an allocator; call gimg_diagnostics_clear()
+ * or gimg_diagnostics_destroy() when done to avoid leaks.
  */
 typedef struct {
   GIMG_Diagnostic * items;
   size_t count;
   size_t capacity;
+  const GIMG_Allocator * allocator;
 } GIMG_Diagnostics;
 
 /**
@@ -74,8 +81,18 @@ typedef enum {
 } GIMG_Strictness;
 
 /**
- * @brief Append one diagnostic (grows the list; uses default allocator).
- * @param diagnostics Diagnostics to append to (may be zero-initialized).
+ * @brief Initialize diagnostics with an optional allocator.
+ * @param d Diagnostics to initialize (may be zero-initialized).
+ * @param allocator Allocator for list growth and for clear/destroy; NULL = default.
+ * Append and clear/destroy use this allocator. Safe to call on already-initialized
+ * diagnostics (overwrites allocator only; does not clear existing items).
+ */
+GIMG_API void gimg_diagnostics_init(GIMG_Diagnostics * d,
+    const GIMG_Allocator * allocator);
+
+/**
+ * @brief Append one diagnostic (grows the list using the diagnostics' allocator).
+ * @param diagnostics Diagnostics to append to (may be zero-initialized; uses default allocator if init was not called).
  * @param codec_name Codec name (e.g. "png"); stored by reference.
  * @param offset Stream offset when relevant (e.g. chunk start).
  * @param chunk_or_tag_id Chunk type or tag (e.g. PNG 4-byte type as uint32_t).
@@ -87,6 +104,18 @@ typedef enum {
 GIMG_API GIMG_Result gimg_diagnostics_append(GIMG_Diagnostics * diagnostics,
     const char * codec_name, size_t offset, uint32_t chunk_or_tag_id,
     GIMG_Diag_Severity severity, const char * recommended_action);
+
+/**
+ * @brief Free the diagnostics list and set count/capacity to zero. Idempotent if already empty.
+ * Uses the allocator stored in d (or default if never initialized). After clear, append may be used again.
+ */
+GIMG_API void gimg_diagnostics_clear(GIMG_Diagnostics * d);
+
+/**
+ * @brief Free the diagnostics list and zero the whole struct. Same as clear plus zeroing allocator.
+ * After destroy, the struct may be discarded or reused (e.g. with gimg_diagnostics_init again).
+ */
+GIMG_API void gimg_diagnostics_destroy(GIMG_Diagnostics * d);
 
 /**
  * @brief Get a human-readable string for a result code.

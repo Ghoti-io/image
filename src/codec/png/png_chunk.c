@@ -17,7 +17,8 @@
  * reject chunks whose payload length exceeds it (bomb protection) before
  * reading any payload.
  *
- * Payload buffer: For small payloads (<= 4096 bytes) we use a stack buffer
+ * Payload buffer: For small payloads (<= GIMG_PNG_CHUNK_READ_STACK_BUF) we use
+ * a stack buffer
  * to avoid heap allocation when the caller does not provide a buffer; for
  * larger payloads we allocate so we can read in one shot and still verify
  * CRC. Caller-provided payload_buf is used when non-NULL.
@@ -93,8 +94,8 @@ GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
 
   if (length > 0) {
     unsigned char * read_buf = payload_buf;
-    unsigned char stack_buf[4096];
-    int use_stack = length <= sizeof(stack_buf);
+    unsigned char stack_buf[GIMG_PNG_CHUNK_READ_STACK_BUF];
+    int use_stack = length <= GIMG_PNG_CHUNK_READ_STACK_BUF;
     if (!payload_buf && !use_stack) {
       read_buf = (unsigned char *)gimg_malloc(gimg_allocator_default(), length);
       if (!read_buf) {
@@ -267,7 +268,7 @@ GIMG_Result gimg_png_parse_actl(const unsigned char * payload,
   uint32_t np = (uint32_t)payload[4] << 24 | (uint32_t)payload[5] << 16 |
       (uint32_t)payload[6] << 8 | (uint32_t)payload[7];
   if (nf == 0) {
-    return GIMG_ERR_FORMAT;  /* num_frames must not be 0. */
+    return GIMG_ERR_FORMAT;  // num_frames must not be 0.
   }
   *num_frames = nf;
   *num_plays = np;

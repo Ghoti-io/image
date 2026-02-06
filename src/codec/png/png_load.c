@@ -222,10 +222,10 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   int have_plte = 0;
   int have_trns = 0;
   int seen_idat = 0;
-  /* APNG state (only meaningful when state->is_apng). */
+  // APNG state (only meaningful when state->is_apng).
   int actl_seen = 0;
   int fcTL_before_first_idat =
-      0; /* 1 if frame 0 uses IDAT (fcTL(0) before IDAT). */
+      0;  // 1 if frame 0 uses IDAT (fcTL(0) before IDAT).
   uint32_t next_sequence = 0;
   size_t num_fcTL_seen = 0;
 
@@ -264,11 +264,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (type == GIMG_PNG_acTL) {
       if (seen_idat) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* acTL must appear before first IDAT. */
+        return GIMG_ERR_FORMAT;  // acTL must appear before first IDAT.
       }
       if (actl_seen) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* Duplicate acTL. */
+        return GIMG_ERR_FORMAT;  // Duplicate acTL.
       }
       if (length != GIMG_PNG_acTL_LEN) {
         gimg_png_free_doc_state(codec, state);
@@ -334,11 +334,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       if (fctl.sequence_number != next_sequence) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* Out-of-order sequence. */
+        return GIMG_ERR_FORMAT;  // Out-of-order sequence.
       }
       next_sequence++;
       if (num_fcTL_seen == 0 && !seen_idat) {
-        /* fcTL(0) before IDAT: default image is first frame. */
+        // fcTL(0) before IDAT: default image is first frame.
         if (fctl.width != state->ihdr.width ||
             fctl.height != state->ihdr.height || fctl.x_offset != 0 ||
             fctl.y_offset != 0) {
@@ -349,7 +349,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       if (num_fcTL_seen >= state->frame_count) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* More fcTL than acTL num_frames. */
+        return GIMG_ERR_FORMAT;  // More fcTL than acTL num_frames.
       }
       state->frames[num_fcTL_seen].fctl = fctl;
       num_fcTL_seen++;
@@ -359,11 +359,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (type == GIMG_PNG_fdAT) {
       if (!state->is_apng) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* fdAT only in APNG. */
+        return GIMG_ERR_FORMAT;  // fdAT only in APNG.
       }
       if (num_fcTL_seen == 0) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; /* fdAT must follow an fcTL. */
+        return GIMG_ERR_FORMAT;  // fdAT must follow an fcTL.
       }
       if (length < GIMG_PNG_fdAT_SEQ_LEN) {
         gimg_png_free_doc_state(codec, state);
@@ -561,7 +561,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
   }
 
-  /* APNG: validate we saw the right number of fcTL and each frame has data. */
+  // APNG: validate we saw the right number of fcTL and each frame has data.
   if (state->is_apng) {
     if (num_fcTL_seen != state->frame_count) {
       gimg_png_free_doc_state(codec, state);

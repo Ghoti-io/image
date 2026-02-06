@@ -46,6 +46,7 @@
  * frame. prev_rect is used only to restore for DISPOSE_PREVIOUS.
  */
 
+#include "../../core/safe_math_internal.h"
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/color.h>
 #include <ghoti.io/image/doc.h>
@@ -62,9 +63,6 @@
 #include "../../raster/raster_internal.h"
 #include "../codec_internal.h"
 #include "png_internal.h"
-
-/** Max decompressed ICC profile size (bomb protection). */
-#define GIMG_PNG_ICC_MAX_DECODED (4u * 1024u * 1024u)
 
 /** Map compress status to image result (for decode path). */
 static GIMG_Result gimg_png_result_from_gcomp(gcomp_status_t s) {
@@ -97,7 +95,8 @@ static int gimg_png_fill_color_info_from_ancillary(
   *out_icc_owned = NULL;
   *out_icc_size = 0;
 
-  size_t first_srgb = (size_t)-1, first_iccp = (size_t)-1, first_gama = (size_t)-1;
+  size_t first_srgb = (size_t)-1, first_iccp = (size_t)-1,
+         first_gama = (size_t)-1;
   for (size_t i = 0; i < state->ancillary_count; i++) {
     gimg_png_chunk_type_t t = state->ancillary[i].type;
     if (t == GIMG_PNG_sRGB && first_srgb == (size_t)-1) {
@@ -152,7 +151,8 @@ static int gimg_png_fill_color_info_from_ancillary(
           gimg_free(alloc, decoded);
           return 0;
         }
-        gs = gcomp_options_set_uint64(gopts, "limits.max_output_bytes", max_out);
+        gs =
+            gcomp_options_set_uint64(gopts, "limits.max_output_bytes", max_out);
         if (gs != GCOMP_OK) {
           gcomp_options_destroy(gopts);
           gimg_free(alloc, decoded);
@@ -192,65 +192,6 @@ static int gimg_png_fill_color_info_from_ancillary(
     }
   }
   return 0;
-}
-
-/** Bytes per row for a given pixel width (excluding filter byte). PNG §3.2. */
-static size_t gimg_png_row_bytes_for_width(
-    const gimg_png_ihdr_t * ihdr, uint32_t width) {
-  uint8_t depth = ihdr->bit_depth;
-  uint8_t ct = ihdr->color_type;
-  size_t samples_per_row = 0;
-  switch (ct) {
-  case 0:
-    samples_per_row = (size_t)width;
-    break;
-  case 2:
-    samples_per_row = (size_t)width * 3;
-    break;
-  case 3:
-    samples_per_row = (size_t)width;
-    break;
-  case 4:
-    samples_per_row = (size_t)width * 2;
-    break;
-  case 6:
-    samples_per_row = (size_t)width * 4;
-    break;
-  default:
-    return 0;
-  }
-  return (samples_per_row * (size_t)depth + 7) / 8;
-}
-
-/** Adam7 pass parameters (W3C §2.6 Interlaced data order). */
-typedef struct {
-  unsigned int x_offset;
-  unsigned int y_offset;
-  unsigned int x_step;
-  unsigned int y_step;
-} gimg_png_adam7_pass_t;
-
-static const gimg_png_adam7_pass_t gimg_png_adam7_passes[7] = {
-    {0, 0, 8, 8},
-    {4, 0, 8, 8},
-    {0, 4, 4, 8},
-    {2, 0, 4, 4},
-    {0, 2, 2, 4},
-    {1, 0, 2, 2},
-    {0, 1, 1, 2},
-};
-
-/** Pass width/height for Adam7 (empty pass returns 0). W3C §2.6. */
-static void gimg_png_adam7_pass_dims(uint32_t image_width,
-    uint32_t image_height, unsigned int pass_index, uint32_t * out_pass_width,
-    uint32_t * out_pass_height) {
-  const gimg_png_adam7_pass_t * p = &gimg_png_adam7_passes[pass_index];
-  *out_pass_width = (image_width > p->x_offset)
-      ? (uint32_t)((image_width - p->x_offset + p->x_step - 1) / p->x_step)
-      : 0;
-  *out_pass_height = (image_height > p->y_offset)
-      ? (uint32_t)((image_height - p->y_offset + p->y_step - 1) / p->y_step)
-      : 0;
 }
 
 /** Paeth predictor (W3C PNG-Filters §6.6). */
@@ -572,13 +513,16 @@ static GIMG_Result gimg_png_decode_one_apng_frame(
   if (!idat_ptr || idat_len < 6) {
     return GIMG_ERR_FORMAT;
   }
-  size_t row_bytes = gimg_png_row_bytes_for_width(ihdr, fw);
-  size_t raw_size;
+  size_t row_bytes = gimg_png_row_bytes_from_ihdr(ihdr, fw);
+  size_t raw_size = 0;
   if (ihdr->interlace_method == 0) {
     if (row_bytes == 0) {
       return GIMG_ERR_FORMAT;
     }
-    raw_size = (size_t)fh * (1 + row_bytes);
+    size_t row_stride = 1 + row_bytes;
+    if (!gimg_safe_mul_size((size_t)fh, row_stride, &raw_size)) {
+      return GIMG_ERR_LIMIT;
+    }
   }
   else {
     size_t total = 0;
@@ -588,13 +532,22 @@ static GIMG_Result gimg_png_decode_one_apng_frame(
       if (pw == 0 || ph == 0) {
         continue;
       }
-      size_t pass_row_bytes = gimg_png_row_bytes_for_width(ihdr, pw);
-      total += (size_t)ph * (1 + pass_row_bytes);
+      size_t pass_row_bytes = gimg_png_row_bytes_from_ihdr(ihdr, pw);
+      size_t pass_row_stride = 1 + pass_row_bytes;
+      size_t pass_size = 0;
+      if (!gimg_safe_mul_size((size_t)ph, pass_row_stride, &pass_size) ||
+          !gimg_safe_add_size(total, pass_size, &total)) {
+        return GIMG_ERR_LIMIT;
+      }
     }
     raw_size = total;
   }
+  size_t pixel_count = 0;
+  if (gimg_safe_pixel_count(fw, fh, &pixel_count) != GIMG_OK) {
+    return GIMG_ERR_LIMIT;
+  }
   if (limits && limits->max_decoded_pixels != 0 &&
-      (size_t)fw * (size_t)fh > limits->max_decoded_pixels) {
+      pixel_count > limits->max_decoded_pixels) {
     return GIMG_ERR_LIMIT;
   }
   gcomp_options_t * gopts = NULL;
@@ -621,7 +574,11 @@ static GIMG_Result gimg_png_decode_one_apng_frame(
     return (gs != GCOMP_OK) ? gimg_png_result_from_gcomp(gs) : GIMG_ERR_CORRUPT;
   }
   unsigned int bpp = gimg_png_bpp(ihdr);
-  size_t raw_full_size = (size_t)fh * row_bytes;
+  size_t raw_full_size = 0;
+  if (!gimg_safe_mul_size((size_t)fh, row_bytes, &raw_full_size)) {
+    gimg_free(alloc, raw);
+    return GIMG_ERR_LIMIT;
+  }
   unsigned char * raw_full = (unsigned char *)gimg_malloc(alloc, raw_full_size);
   if (!raw_full) {
     gimg_free(alloc, raw);
@@ -646,7 +603,7 @@ static GIMG_Result gimg_png_decode_one_apng_frame(
         continue;
       }
       const gimg_png_adam7_pass_t * ap = &gimg_png_adam7_passes[pass];
-      size_t pass_row_bytes = gimg_png_row_bytes_for_width(ihdr, pw);
+      size_t pass_row_bytes = gimg_png_row_bytes_from_ihdr(ihdr, pw);
       size_t pass_row_stride = 1 + pass_row_bytes;
       unsigned char * prev_row = NULL;
       for (uint32_t j = 0; j < ph; j++) {
@@ -676,8 +633,8 @@ static GIMG_Result gimg_png_decode_one_apng_frame(
     gimg_free(alloc, raw_full);
     return GIMG_ERR_OOM;
   }
-  gimg_png_raw_full_to_pixels(state, ihdr, format, raw_full, fw, fh, row_bytes,
-      pixels, stride);
+  gimg_png_raw_full_to_pixels(
+      state, ihdr, format, raw_full, fw, fh, row_bytes, pixels, stride);
   gimg_free(alloc, raw_full);
   *out_pixels = pixels;
   *out_stride = stride;
@@ -686,33 +643,37 @@ static GIMG_Result gimg_png_decode_one_apng_frame(
   return GIMG_OK;
 }
 
-/** Blend frame rectangle onto canvas at (fx,fy). SOURCE = replace; OVER = alpha blend. */
-static void gimg_png_apng_blend_frame(unsigned char * canvas, size_t canvas_stride,
-    const unsigned char * frame_pixels, size_t frame_stride,
-    uint32_t fx, uint32_t fy, uint32_t fw, uint32_t fh, size_t bpp,
-    int blend_over) {
+/** Blend frame rectangle onto canvas at (fx,fy). SOURCE = replace; OVER = alpha
+ * blend. */
+static void gimg_png_apng_blend_frame(unsigned char * canvas,
+    size_t canvas_stride, const unsigned char * frame_pixels,
+    size_t frame_stride, uint32_t fx, uint32_t fy, uint32_t fw, uint32_t fh,
+    size_t bpp, int blend_over) {
   if (bpp == 1) {
-    /* Grayscale: no alpha; treat Over as replace. */
+    // Grayscale: no alpha; treat Over as replace.
     for (uint32_t y = 0; y < fh; y++) {
-      unsigned char * dst = canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * bpp;
+      unsigned char * dst =
+          canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * bpp;
       const unsigned char * src = frame_pixels + (size_t)y * frame_stride;
       memcpy(dst, src, (size_t)fw * bpp);
     }
     return;
   }
   if (bpp == 2) {
-    /* Gray16: no alpha; replace. */
+    // Gray16: no alpha; replace.
     for (uint32_t y = 0; y < fh; y++) {
-      unsigned char * dst = canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * bpp;
+      unsigned char * dst =
+          canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * bpp;
       const unsigned char * src = frame_pixels + (size_t)y * frame_stride;
       memcpy(dst, src, (size_t)fw * bpp);
     }
     return;
   }
   if (bpp == 4) {
-    /* RGBA8 */
+    // RGBA8
     for (uint32_t y = 0; y < fh; y++) {
-      unsigned char * dst = canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * 4u;
+      unsigned char * dst =
+          canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * 4u;
       const unsigned char * src = frame_pixels + (size_t)y * frame_stride;
       for (uint32_t x = 0; x < fw; x++) {
         unsigned int sa = (unsigned int)src[3];
@@ -736,9 +697,11 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas, size_t canvas_stri
     return;
   }
   if (bpp == 8) {
-    /* RGBA16: blend component-wise (simplified: treat as replace for now to avoid 16-bit overflow details). */
+    // RGBA16: blend component-wise (simplified: treat as replace for now to
+    // avoid 16-bit overflow details).
     for (uint32_t y = 0; y < fh; y++) {
-      unsigned char * dst = canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * 8u;
+      unsigned char * dst =
+          canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * 8u;
       const unsigned char * src = frame_pixels + (size_t)y * frame_stride;
       if (!blend_over) {
         memcpy(dst, src, (size_t)fw * 8u);
@@ -752,8 +715,10 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas, size_t canvas_stri
           else if (sa != 0) {
             uint32_t inv_sa = 65535 - sa;
             for (int c = 0; c < 4; c++) {
-              uint16_t sc = (uint16_t)src[c*2] | ((uint16_t)src[c*2+1] << 8);
-              uint16_t dc = (uint16_t)dst[c*2] | ((uint16_t)dst[c*2+1] << 8);
+              uint16_t sc =
+                  (uint16_t)src[c * 2] | ((uint16_t)src[c * 2 + 1] << 8);
+              uint16_t dc =
+                  (uint16_t)dst[c * 2] | ((uint16_t)dst[c * 2 + 1] << 8);
               uint32_t v;
               if (c < 3) {
                 v = (uint32_t)sc * sa + (uint32_t)dc * inv_sa;
@@ -766,8 +731,8 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas, size_t canvas_stri
                   v = 65535u;
                 }
               }
-              dst[c*2] = (unsigned char)(v & 0xFFu);
-              dst[c*2+1] = (unsigned char)(v >> 8);
+              dst[c * 2] = (unsigned char)(v & 0xFFu);
+              dst[c * 2 + 1] = (unsigned char)(v >> 8);
             }
           }
           src += 8;
@@ -851,8 +816,9 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   const GIMG_Codec * doc_codec = doc->loaded_by_codec;
   if (!doc_codec ||
       (doc_codec != codec &&
-       (!gimg_codec_name(doc_codec) || !gimg_codec_name(codec) ||
-        strcmp(gimg_codec_name(doc_codec), gimg_codec_name(codec)) != 0))) {
+          (!gimg_codec_name(doc_codec) || !gimg_codec_name(codec) ||
+              strcmp(gimg_codec_name(doc_codec), gimg_codec_name(codec)) !=
+                  0))) {
     return GIMG_ERR_UNSUPPORTED;
   }
 
@@ -868,7 +834,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     if (item->index >= state->frame_count) {
       return GIMG_ERR_UNSUPPORTED;
     }
-    /* APNG: return full composited canvas (IHDR dimensions) with dispose/blend applied. */
+    // APNG: return full composited canvas (IHDR dimensions) with dispose/blend
+    // applied.
     {
       const GIMG_Allocator * a = gimg_alloc_or_default(codec->allocator);
       const GIMG_Limits * lim = options ? options->limits : NULL;
@@ -910,13 +877,15 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         canvas_stride = (canvas_stride + GIMG_DEFAULT_STRIDE_ALIGNMENT - 1) &
             ~(size_t)(GIMG_DEFAULT_STRIDE_ALIGNMENT - 1);
       }
-      unsigned char * canvas = (unsigned char *)gimg_malloc(a, canvas_stride * (size_t)canvas_h);
+      unsigned char * canvas =
+          (unsigned char *)gimg_malloc(a, canvas_stride * (size_t)canvas_h);
       if (!canvas) {
         return GIMG_ERR_OOM;
       }
       memset(canvas, 0, canvas_stride * (size_t)canvas_h);
-      /* prev_rect: for DISPOSE_PREVIOUS we save the frame rect before drawing. */
-      unsigned char * prev_rect = (unsigned char *)gimg_malloc(a, canvas_stride * (size_t)canvas_h);
+      // prev_rect: for DISPOSE_PREVIOUS we save the frame rect before drawing.
+      unsigned char * prev_rect =
+          (unsigned char *)gimg_malloc(a, canvas_stride * (size_t)canvas_h);
       if (!prev_rect) {
         gimg_free(a, canvas);
         return GIMG_ERR_OOM;
@@ -934,43 +903,47 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
           uint32_t pw = prev_fctl->width;
           uint32_t ph = prev_fctl->height;
           if (prev_fctl->dispose_op == 1) {
-            /* BACKGROUND: clear previous frame rect to transparent black. */
+            // BACKGROUND: clear previous frame rect to transparent black.
             for (uint32_t y = 0; y < ph; y++) {
-              unsigned char * row = canvas + (size_t)(py + y) * canvas_stride + (size_t)px * bpp_out;
+              unsigned char * row = canvas + (size_t)(py + y) * canvas_stride +
+                  (size_t)px * bpp_out;
               memset(row, 0, (size_t)pw * bpp_out);
             }
           }
           else if (prev_fctl->dispose_op == 2) {
-            /* PREVIOUS: restore previous frame rect from prev_rect. */
+            // PREVIOUS: restore previous frame rect from prev_rect.
             for (uint32_t y = 0; y < ph; y++) {
-              unsigned char * dst = canvas + (size_t)(py + y) * canvas_stride + (size_t)px * bpp_out;
-              const unsigned char * src = prev_rect + (size_t)(py + y) * canvas_stride + (size_t)px * bpp_out;
+              unsigned char * dst = canvas + (size_t)(py + y) * canvas_stride +
+                  (size_t)px * bpp_out;
+              const unsigned char * src = prev_rect +
+                  (size_t)(py + y) * canvas_stride + (size_t)px * bpp_out;
               memcpy(dst, src, (size_t)pw * bpp_out);
             }
           }
         }
         if (fctl->dispose_op == 2) {
-          /* Save current canvas content at this frame's rect before we draw. */
+          // Save current canvas content at this frame's rect before we draw.
           for (uint32_t y = 0; y < fh; y++) {
-            const unsigned char * src = canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * bpp_out;
-            unsigned char * dst = prev_rect + (size_t)(fy + y) * canvas_stride + (size_t)fx * bpp_out;
+            const unsigned char * src = canvas +
+                (size_t)(fy + y) * canvas_stride + (size_t)fx * bpp_out;
+            unsigned char * dst = prev_rect + (size_t)(fy + y) * canvas_stride +
+                (size_t)fx * bpp_out;
             memcpy(dst, src, (size_t)fw * bpp_out);
           }
         }
         void * frame_pixels = NULL;
         size_t frame_stride = 0;
         uint32_t dec_fw = 0, dec_fh = 0;
-        GIMG_Result dr = gimg_png_decode_one_apng_frame(state, ihdr, i, fmt, a, lim,
-            &frame_pixels, &frame_stride, &dec_fw, &dec_fh);
+        GIMG_Result dr = gimg_png_decode_one_apng_frame(state, ihdr, i, fmt, a,
+            lim, &frame_pixels, &frame_stride, &dec_fw, &dec_fh);
         if (dr != GIMG_OK) {
           gimg_free(a, prev_rect);
           gimg_free(a, canvas);
           return dr;
         }
         gimg_png_apng_blend_frame(canvas, canvas_stride,
-            (const unsigned char *)frame_pixels, frame_stride,
-            fx, fy, dec_fw, dec_fh, bpp_out,
-            (state->frames[i].fctl.blend_op == 1) ? 1 : 0);
+            (const unsigned char *)frame_pixels, frame_stride, fx, fy, dec_fw,
+            dec_fh, bpp_out, (state->frames[i].fctl.blend_op == 1) ? 1 : 0);
         gimg_free(a, frame_pixels);
       }
       gimg_free(a, prev_rect);
@@ -984,8 +957,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         GIMG_Color_Info color_info;
         void * icc_owned = NULL;
         size_t icc_size = 0;
-        if (gimg_png_fill_color_info_from_ancillary(state, a, &color_info,
-                &icc_owned, &icc_size)) {
+        if (gimg_png_fill_color_info_from_ancillary(
+                state, a, &color_info, &icc_owned, &icc_size)) {
           gimg_raster_set_color_info(*out_raster, &color_info);
           if (icc_owned) {
             gimg_free(a, icc_owned);
@@ -996,33 +969,41 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     }
   }
   else if (item->index >= 1) {
-    return GIMG_ERR_UNSUPPORTED;  /* Single-frame only for non-APNG. */
+    return GIMG_ERR_UNSUPPORTED;  // Single-frame only for non-APNG.
   }
 
   if (ihdr->interlace_method > 1) {
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  size_t row_bytes = gimg_png_row_bytes_for_width(ihdr, frame_width);
-  size_t raw_size;
+  size_t row_bytes = gimg_png_row_bytes_from_ihdr(ihdr, frame_width);
+  size_t raw_size = 0;
   if (ihdr->interlace_method == 0) {
     if (row_bytes == 0) {
       return GIMG_ERR_FORMAT;
     }
-    raw_size = (size_t)frame_height * (1 + row_bytes);
+    size_t row_stride = 1 + row_bytes;
+    if (!gimg_safe_mul_size((size_t)frame_height, row_stride, &raw_size)) {
+      return GIMG_ERR_LIMIT;
+    }
   }
   else {
     size_t total = 0;
     for (int pass = 0; pass < 7; pass++) {
       uint32_t pw = 0;
       uint32_t ph = 0;
-      gimg_png_adam7_pass_dims(frame_width, frame_height, (unsigned int)pass,
-          &pw, &ph);
+      gimg_png_adam7_pass_dims(
+          frame_width, frame_height, (unsigned int)pass, &pw, &ph);
       if (pw == 0 || ph == 0) {
         continue;
       }
-      size_t pass_row_bytes = gimg_png_row_bytes_for_width(ihdr, pw);
-      total += (size_t)ph * (1 + pass_row_bytes);
+      size_t pass_row_bytes = gimg_png_row_bytes_from_ihdr(ihdr, pw);
+      size_t pass_row_stride = 1 + pass_row_bytes;
+      size_t pass_size = 0;
+      if (!gimg_safe_mul_size((size_t)ph, pass_row_stride, &pass_size) ||
+          !gimg_safe_add_size(total, pass_size, &total)) {
+        return GIMG_ERR_LIMIT;
+      }
     }
     raw_size = total;
   }
@@ -1030,11 +1011,16 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_FORMAT;
   }
 
+  size_t pixel_count = 0;
+  if (gimg_safe_pixel_count(frame_width, frame_height, &pixel_count) !=
+      GIMG_OK) {
+    return GIMG_ERR_LIMIT;
+  }
   const GIMG_Limits * limits = options ? options->limits : NULL;
   size_t max_pixels = (limits && limits->max_decoded_pixels != 0)
       ? limits->max_decoded_pixels
-      : (size_t)frame_width * (size_t)frame_height;
-  if ((size_t)frame_width * (size_t)frame_height > max_pixels) {
+      : pixel_count;
+  if (pixel_count > max_pixels) {
     return GIMG_ERR_LIMIT;
   }
 
@@ -1052,8 +1038,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_INTERNAL;
   }
 
-  // PNG IDAT/fdAT is zlib-wrapped (RFC 1950): 2-byte header + raw DEFLATE + 4-byte
-  // Adler-32. The compress library "deflate" method expects raw DEFLATE.
+  // PNG IDAT/fdAT is zlib-wrapped (RFC 1950): 2-byte header + raw DEFLATE +
+  // 4-byte Adler-32. The compress library "deflate" method expects raw DEFLATE.
   if (idat_len < 6) {
     gcomp_options_destroy(gopts);
     return GIMG_ERR_CORRUPT;
@@ -1085,7 +1071,11 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   uint32_t h = frame_height;
 
   // Build unfiltered image in row-major form (no filter bytes) for raster copy.
-  size_t raw_full_size = (size_t)h * row_bytes;
+  size_t raw_full_size = 0;
+  if (!gimg_safe_mul_size((size_t)h, row_bytes, &raw_full_size)) {
+    gimg_free(alloc, raw);
+    return GIMG_ERR_LIMIT;
+  }
   unsigned char * raw_full = (unsigned char *)gimg_malloc(alloc, raw_full_size);
   if (!raw_full) {
     gimg_free(alloc, raw);
@@ -1113,7 +1103,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         continue;
       }
       const gimg_png_adam7_pass_t * ap = &gimg_png_adam7_passes[pass];
-      size_t pass_row_bytes = gimg_png_row_bytes_for_width(ihdr, pw);
+      size_t pass_row_bytes = gimg_png_row_bytes_from_ihdr(ihdr, pw);
       size_t pass_row_stride = 1 + pass_row_bytes;
       unsigned char * prev_row = NULL;
       for (uint32_t j = 0; j < ph; j++) {
@@ -1181,8 +1171,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_FORMAT;
   }
 
-  gimg_png_raw_full_to_pixels(state, ihdr, format, raw_full, w, h, row_bytes,
-      pixels, stride);
+  gimg_png_raw_full_to_pixels(
+      state, ihdr, format, raw_full, w, h, row_bytes, pixels, stride);
   gimg_free(alloc, raw_full);
 
   GIMG_Result r = gimg_raster_create_with_allocator(alloc, frame_width,
@@ -1197,8 +1187,8 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     GIMG_Color_Info color_info;
     void * icc_owned = NULL;
     size_t icc_size = 0;
-    if (gimg_png_fill_color_info_from_ancillary(state, alloc, &color_info,
-            &icc_owned, &icc_size)) {
+    if (gimg_png_fill_color_info_from_ancillary(
+            state, alloc, &color_info, &icc_owned, &icc_size)) {
       r = gimg_raster_set_color_info(*out_raster, &color_info);
       if (icc_owned) {
         gimg_free(alloc, icc_owned);

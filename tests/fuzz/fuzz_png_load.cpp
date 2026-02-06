@@ -35,7 +35,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   s = nullptr;
 
   if (r != GIMG_OK) {
-    /* Expected for invalid/truncated input: FORMAT, CORRUPT, LIMIT, etc. */
+    // Expected for invalid/truncated input: FORMAT, CORRUPT, LIMIT, etc.
     return 0;
   }
 
@@ -43,7 +43,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
 
-  /* Decode first item to exercise full decode path. */
+  // Decode first item to exercise full decode path.
   size_t n = gimg_doc_item_count(doc);
   if (n > 0) {
     GIMG_Raster * raster = nullptr;

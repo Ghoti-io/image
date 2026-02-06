@@ -241,7 +241,7 @@ TEST(PngEncode, RoundTrip1x1Gray) {
   write_png_output(
       "roundtrip_1x1_gray.png", saved_data.data(), saved_data.size());
 
-  /* Re-load from saved buffer */
+  // Re-load from saved buffer
   GIMG_Stream * s2 = nullptr;
   r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
   ASSERT_EQ(r, GIMG_OK);
@@ -251,7 +251,7 @@ TEST(PngEncode, RoundTrip1x1Gray) {
   ASSERT_NE(doc2, nullptr);
   gimg_stream_destroy(s2);
 
-  /* Decode both and compare */
+  // Decode both and compare
   GIMG_Raster * orig = nullptr;
   r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &orig);
   ASSERT_EQ(r, GIMG_OK);
@@ -265,7 +265,7 @@ TEST(PngEncode, RoundTrip1x1Gray) {
   EXPECT_TRUE(rasters_equal(orig, decoded))
       << "Round-trip pixel data must match";
 
-  /* Golden encode test: re-decoded pixels must match canonical decode hash. */
+  // Golden encode test: re-decoded pixels must match canonical decode hash.
   EXPECT_EQ(raster_pixel_hash(decoded), 12638153115695167455ULL)
       << "Round-trip decode hash must match golden 1x1 gray";
 
@@ -455,6 +455,246 @@ TEST(PngEncode, RoundTrip16BitRgba) {
   gimg_doc_destroy(doc);
 }
 
+TEST(PngEncode, RoundTrip1x1Rgb) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_1x1_rgb.png", buf))
+      << "Run tests/data/png/generate.py";
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK) << "save RGB (color_type 2) round-trip";
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+  out_s = nullptr;
+  write_png_output(
+      "roundtrip_1x1_rgb.png", saved_data.data(), saved_data.size());
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  gimg_stream_destroy(s2);
+
+  GIMG_Raster * orig = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &orig);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(orig, nullptr);
+  GIMG_Raster * decoded = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc2, 0), nullptr, &decoded);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(decoded, nullptr);
+
+  EXPECT_TRUE(rasters_equal(orig, decoded))
+      << "Round-trip RGB (color_type 2) pixel data must match";
+
+  gimg_raster_destroy(decoded);
+  gimg_raster_destroy(orig);
+  gimg_doc_destroy(doc2);
+  gimg_doc_destroy(doc);
+}
+
+TEST(PngEncode, RoundTrip16BitRgb) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_16bit_rgb.png", buf))
+      << "Run tests/data/png/generate.py";
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK) << "save 16-bit RGB round-trip";
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+  out_s = nullptr;
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  gimg_stream_destroy(s2);
+
+  GIMG_Raster * orig = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &orig);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(orig, nullptr);
+  GIMG_Raster * decoded = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc2, 0), nullptr, &decoded);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(decoded, nullptr);
+
+  EXPECT_TRUE(rasters_equal(orig, decoded))
+      << "Round-trip 16-bit RGB pixel data must match";
+
+  gimg_raster_destroy(decoded);
+  gimg_raster_destroy(orig);
+  gimg_doc_destroy(doc2);
+  gimg_doc_destroy(doc);
+}
+
+TEST(PngEncode, RoundTrip1x1Grayalpha) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_1x1_grayalpha.png", buf))
+      << "Run tests/data/png/generate.py";
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK) << "save grayscale+alpha (color_type 4) round-trip";
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+  out_s = nullptr;
+  write_png_output(
+      "roundtrip_1x1_grayalpha.png", saved_data.data(), saved_data.size());
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  gimg_stream_destroy(s2);
+
+  GIMG_Raster * orig = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &orig);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(orig, nullptr);
+  GIMG_Raster * decoded = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc2, 0), nullptr, &decoded);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(decoded, nullptr);
+
+  EXPECT_TRUE(rasters_equal(orig, decoded))
+      << "Round-trip grayscale+alpha (color_type 4) pixel data must match";
+
+  gimg_raster_destroy(decoded);
+  gimg_raster_destroy(orig);
+  gimg_doc_destroy(doc2);
+  gimg_doc_destroy(doc);
+}
+
+TEST(PngEncode, RoundTrip16BitGrayalpha) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_16bit_grayalpha.png", buf))
+      << "Run tests/data/png/generate.py";
+
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  s = nullptr;
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, {0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK) << "save 16-bit grayscale+alpha round-trip";
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * out_ptr = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+  std::vector<uint8_t> saved_data(static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + saved_size);
+  gimg_stream_destroy(out_s);
+  out_s = nullptr;
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc2, nullptr);
+  gimg_stream_destroy(s2);
+
+  GIMG_Raster * orig = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &orig);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(orig, nullptr);
+  GIMG_Raster * decoded = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc2, 0), nullptr, &decoded);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(decoded, nullptr);
+
+  EXPECT_TRUE(rasters_equal(orig, decoded))
+      << "Round-trip 16-bit grayscale+alpha pixel data must match";
+
+  gimg_raster_destroy(decoded);
+  gimg_raster_destroy(orig);
+  gimg_doc_destroy(doc2);
+  gimg_doc_destroy(doc);
+}
+
 TEST(PngEncode, RoundTripPalette) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(load_png_file("png_1x1_palette.png", buf))
@@ -549,7 +789,7 @@ TEST(PngEncode, SaveWithPreserveAllKeepsExif) {
   write_png_output("preserve_exif.png", saved_data.data(), saved_data.size());
   gimg_doc_destroy(doc);
 
-  /* Re-load and verify eXIf is present */
+  // Re-load and verify eXIf is present
   GIMG_Stream * s2 = nullptr;
   r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
   ASSERT_EQ(r, GIMG_OK);
@@ -600,7 +840,7 @@ TEST(PngEncode, SaveWithDropAllStripsMetadata) {
       static_cast<const uint8_t *>(out_ptr) + saved_size);
   gimg_stream_destroy(out_s);
 
-  /* Re-load: eXIf must not be present (stripped by DROP_ALL). */
+  // Re-load: eXIf must not be present (stripped by DROP_ALL).
   GIMG_Stream * s2 = nullptr;
   r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
   ASSERT_EQ(r, GIMG_OK);
@@ -611,7 +851,7 @@ TEST(PngEncode, SaveWithDropAllStripsMetadata) {
   gimg_stream_destroy(s2);
 
   GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc2);
-  /* With DROP_ALL, either no meta_raw or no eXIf in it. */
+  // With DROP_ALL, either no meta_raw or no eXIf in it.
   if (raw) {
     size_t exif_size = 0;
     r = gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &exif_size);
@@ -849,7 +1089,7 @@ TEST(PngEncode, SaveInterlacedRoundTrip) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 1, {0}};  /* interlaced=1 */
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 1, {0}};  // interlaced=1
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK);
@@ -919,7 +1159,7 @@ TEST(PngEncode, ApngRoundTrip) {
   gimg_stream_destroy(out_s);
   gimg_doc_destroy(doc);
 
-  /* Re-load and verify frame count, timing, dispose/blend, and pixels. */
+  // Re-load and verify frame count, timing, dispose/blend, and pixels.
   GIMG_Stream * s2 = nullptr;
   r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
   ASSERT_EQ(r, GIMG_OK);
