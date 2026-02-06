@@ -37,6 +37,10 @@ typedef struct GIMG_Codec GIMG_Codec;
 
 /**
  * @brief Probe result: likely format name and confidence.
+ *
+ * Lifetime: format_name is valid only until the next call that mutates the
+ * codec registry (e.g. gimg_codec_register()). Do not store the pointer
+ * long-term; copy the string if you need to keep it.
  */
 typedef struct {
   const char * format_name; ///< e.g. "png", "jpeg"; NULL if no match.

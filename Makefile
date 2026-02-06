@@ -327,7 +327,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c $(APP_DIR)/$(TARGET)
 # General commands
 .PHONY: clean cloc docs docs-pdf examples
 # Release build commands
-.PHONY: all install test test-quiet test-valgrind test-valgrind-quiet test-verify-png test-watch uninstall watch
+.PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-watch uninstall watch
 # Debug build commands
 .PHONY: all-debug install-debug test-debug test-valgrind-debug test-watch-debug uninstall-debug watch-debug
 
@@ -516,6 +516,118 @@ else
 	@printf "\033[0m\n"
 	@exit 1
 endif
+
+####################################################################
+# Sanitizer builds (ASan + UBSan): separate build dir, run test suite
+####################################################################
+ASAN_UBSAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -g
+ASAN_BUILD_DIR := ./build/$(BUILD)-asan
+ASAN_OBJ_DIR := $(ASAN_BUILD_DIR)/objects
+ASAN_APP_DIR := $(ASAN_BUILD_DIR)/apps
+
+ASAN_LIBOBJECTS := $(patsubst src/%.c,$(ASAN_OBJ_DIR)/%.o,$(SOURCES))
+ASAN_TARGET := $(BASE_NAME_PREFIX)-asan.$(LIB_EXTENSION)
+ASAN_IMAGELIBRARY := -L $(ASAN_APP_DIR) -l$(SUITE)-$(PROJECT)$(BRANCH)-asan
+
+ASAN_CFLAGS := $(CFLAGS) $(ASAN_UBSAN_FLAGS) -DGIMG_BUILD -DGIMG_TEST_BUILD
+ASAN_CXXFLAGS := $(CXXFLAGS) $(ASAN_UBSAN_FLAGS)
+ASAN_LDFLAGS := $(LDFLAGS) $(ASAN_UBSAN_FLAGS)
+ifeq ($(UNAME_S), Linux)
+	ASAN_CFLAGS += -fPIC
+endif
+
+$(ASAN_OBJ_DIR)/%.o: src/%.c
+	@printf "\n### Compiling (ASan+UBSan): $< ###\n"
+	@mkdir -p $(@D)
+	$(CC) $(ASAN_CFLAGS) $(INCLUDE) -c $< -o $@
+
+$(ASAN_APP_DIR)/$(ASAN_TARGET): $(ASAN_LIBOBJECTS)
+	@printf "\n### Linking ASan+UBSan Image Library ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) -shared -o $@ $^ $(ASAN_LDFLAGS) $(COMPRESS_LIBS)
+
+# ASan test helper (optional)
+ASAN_TEST_HELPER_OBJ := $(patsubst $(OBJ_DIR)/%,$(ASAN_OBJ_DIR)/%,$(TEST_HELPER_OBJ))
+ifneq ($(TEST_HELPER_SRC),)
+$(ASAN_TEST_HELPER_OBJ): $(TEST_HELPER_SRC)
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -o $@
+endif
+
+# ASan test objects: generic and PNG-specific
+$(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp
+	@printf "\n### Compiling ASan Test: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -o $@
+
+$(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp
+	@printf "\n### Compiling ASan Test: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -o $@
+
+$(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -o $@
+
+$(ASAN_OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -o $@
+
+$(ASAN_OBJ_DIR)/tests/test_png_encode.o: tests/codec/png/test_png_encode.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -o $@
+
+$(ASAN_OBJ_DIR)/tests/png_test_utils.o: tests/codec/png/png_test_utils.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -o $@
+
+define asan-test-executable-rule
+ASAN_TEST_OBJ_$1 := $(ASAN_OBJ_DIR)/tests/$(basename $(notdir $1)).o
+
+$(ASAN_APP_DIR)/$2$(EXE_EXTENSION): \
+		$$(ASAN_TEST_OBJ_$1) \
+		$(ASAN_TEST_HELPER_OBJ) \
+		| $(ASAN_APP_DIR)/$(ASAN_TARGET)
+	@printf "\n### Linking ASan %s Test ###\n" "$2"
+	@mkdir -p $$(@D)
+	$$(CXX) $$(ASAN_CXXFLAGS) -o $$@ $$(ASAN_TEST_OBJ_$1) $$(ASAN_TEST_HELPER_OBJ) $$(ASAN_LDFLAGS) $$(TESTFLAGS) $$(ASAN_IMAGELIBRARY)
+endef
+
+$(foreach pair,$(TEST_PAIRS_OTHER),$(eval $(call asan-test-executable-rule,$(word 1,$(subst |, ,$(pair))),$(word 2,$(subst |, ,$(pair))))))
+
+$(ASAN_APP_DIR)/testPng_decode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_png_decode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o | $(ASAN_APP_DIR)/$(ASAN_TARGET)
+	@printf "\n### Linking ASan testPng_decode ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_png_decode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY)
+
+$(ASAN_APP_DIR)/testPng_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_png_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o | $(ASAN_APP_DIR)/$(ASAN_TARGET)
+	@printf "\n### Linking ASan testPng_encode ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_png_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY)
+
+ASAN_TEST_EXECUTABLES := $(addprefix $(ASAN_APP_DIR)/,$(addsuffix $(EXE_EXTENSION),$(TEST_NAMES)))
+
+test-asan: ## Run all tests with AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)
+test-asan: $(ASAN_APP_DIR)/$(ASAN_TARGET) $(ASAN_TEST_EXECUTABLES)
+ifeq ($(OS_NAME), Linux)
+	@printf "\033[0;36m\n"
+	@printf "###########################################\n"
+	@printf "### Running tests with ASan + UBSan    ###\n"
+	@printf "###########################################\n"
+	@printf "\033[0m\n"
+	@for test_exe in $(ASAN_TEST_EXECUTABLES); do \
+		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
+		printf "\033[0;30;43m\n### Running %s (ASan+UBSan) ###\033[0m\n\n" "$$test_name"; \
+		LD_LIBRARY_PATH="$(ASAN_APP_DIR):$(TEST_LD_PATH)" ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 $$test_exe --gtest_brief=1 || exit 1; \
+	done
+	@printf "\033[0;32m\nAll tests passed with ASan + UBSan.\033[0m\n"
+else
+	@printf "\033[0;31mSanitizer builds are currently only supported on Linux.\033[0m\n"
+	@exit 1
+endif
+
+test-ubsan: ## Alias for test-asan (ASan+UBSan run together)
+test-ubsan: test-asan
 
 clean: ## Remove all contents of the build directories.
 	-@rm -rvf $(BUILD_DIR)

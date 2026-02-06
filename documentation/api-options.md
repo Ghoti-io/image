@@ -6,7 +6,7 @@ This page documents the main option structures and enumerations used by the code
 
 ## Probe and codec dispatch
 
-- **GIMG_Probe_Result** — Filled by `gimg_probe()`. Contains `format_name` (e.g. `"png"`) and `confidence` (0–100). Used to select the codec for `gimg_doc_load()` or to report format detection.
+- **GIMG_Probe_Result** — Filled by `gimg_probe()`. Contains `format_name` (e.g. `"png"`) and `confidence` (0–100). Used to select the codec for `gimg_doc_load()` or to report format detection. **Lifetime:** `format_name` is valid only until the next call that mutates the codec registry (e.g. `gimg_codec_register()`). Do not store the pointer long-term; copy the string if you need to keep it.
 - **GIMG_Codec** — Opaque codec descriptor. Create stubs with `gimg_codec_create_stub()` or `gimg_codec_create_stub_with_allocator()`, register with `gimg_codec_register()`. Look up by name with `gimg_codec_by_name()`.
 
 @section api_options_codec_capabilities Codec capabilities (GIMG_CAP_*)
@@ -107,6 +107,35 @@ The compress library’s DEFLATE decoder may use a separate limit (e.g. `limits.
 
 - **GIMG_Result** — Result codes (e.g. `GIMG_OK`, `GIMG_ERR_FORMAT`, `GIMG_ERR_LIMIT`, `GIMG_ERR_CORRUPT`). See `ghoti.io/image/core.h`.
 - **GIMG_Diagnostics** — List of **GIMG_Diagnostic** items (codec name, offset, chunk/tag id, severity, recommended action). Filled when provided to load/save/decode. **Lifecycle:** Call `gimg_diagnostics_init(d, allocator)` to set an optional allocator (NULL = default). Append uses this allocator for realloc. When done, call `gimg_diagnostics_clear(d)` to free the list and reset count/capacity, or `gimg_diagnostics_destroy(d)` to free and zero the whole struct. Callers must call clear or destroy to avoid leaks; the same allocator is used for growth and for release.
+
+@section api_options_error_handling Error handling
+
+When to return which result code, when to append diagnostics, and how output parameters behave on error.
+
+### Result codes (GIMG_Result)
+
+| Code | When to use |
+|------|-------------|
+| **GIMG_OK** | Operation succeeded. |
+| **GIMG_ERR_IO** | Stream read/write/seek failed; underlying I/O error. |
+| **GIMG_ERR_FORMAT** | Unrecognized format, invalid signature, or structurally invalid (e.g. invalid IHDR field combination). Use when the data is not the expected format or violates format structure. |
+| **GIMG_ERR_UNSUPPORTED** | Format recognized but feature not supported (e.g. compression method, bit depth, or option). Use when the format is valid but the library cannot handle this variant. |
+| **GIMG_ERR_LIMIT** | A configured limit was exceeded (e.g. max_chunk_size, max_decoded_pixels, max_frame_count). Use when the operation would exceed a safety or resource limit. |
+| **GIMG_ERR_CORRUPT** | Data is corrupt or invalid for the format (e.g. CRC mismatch, truncated chunk, invalid DEFLATE, invalid filter). Use when the format is correct but the payload is damaged or inconsistent. |
+| **GIMG_ERR_OOM** | Allocation failed. Use when malloc/realloc or allocator callback fails. |
+| **GIMG_ERR_INTERNAL** | Internal library error (assertion, unexpected state). Use only for bugs; prefer a specific code (e.g. GIMG_ERR_CORRUPT) when the cause is input or limits. |
+
+Guideline: Prefer the most specific code that fits (e.g. GIMG_ERR_CORRUPT for bad CRC, GIMG_ERR_LIMIT for pixel count overflow) so callers can handle errors appropriately.
+
+### Diagnostics
+
+- **When to append:** Append a diagnostic when the failure is recoverable or informative and the caller passed a non-NULL diagnostics pointer (e.g. chunk CRC error, limit exceeded, unsupported feature encountered). Load/save/decode may append zero or more items before returning an error.
+- **Severity:** Use GIMG_DIAG_ERROR for conditions that cause the function to return an error; use GIMG_DIAG_WARNING for recoverable or advisory conditions when the function still returns GIMG_OK (e.g. under strictness NORMAL/PERMISSIVE).
+- **recommended_action:** Optional string (e.g. "increase max_chunk_size") to suggest a remedy; stored by reference, may be NULL.
+
+### Output parameters on error
+
+On any error return, **output (out) parameters** (e.g. `GIMG_Doc ** out_doc`, `GIMG_Raster ** out_raster`) are left **unchanged** unless otherwise documented: the caller’s pointer is not written to, so any previous value remains. The implementation must not leak: if it allocated an object before failing later, it frees that object before returning. Callers should not rely on partial fills; on error they should treat all out parameters as unchanged and not use any partially filled state.
 
 @section api_options_animation Animation (item frame API)
 

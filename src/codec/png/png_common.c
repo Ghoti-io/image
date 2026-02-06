@@ -14,9 +14,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <ghoti.io/image/core.h>
 #include <ghoti.io/compress/compress.h>
 #include <ghoti.io/compress/options.h>
+#include <ghoti.io/image/core.h>
 
 #include "../../core/safe_math_internal.h"
 #include "png_internal.h"
@@ -49,8 +49,8 @@ void gimg_png_adam7_pass_dims(uint32_t image_width, uint32_t image_height,
 //
 // Row bytes (PNG §3.2: samples per row, bits per sample)
 //
-size_t gimg_png_row_bytes(uint8_t color_type, uint8_t bit_depth,
-    uint32_t width) {
+size_t gimg_png_row_bytes(
+    uint8_t color_type, uint8_t bit_depth, uint32_t width) {
   size_t samples_per_row = 0;
   switch (color_type) {
   case 0:
@@ -74,8 +74,8 @@ size_t gimg_png_row_bytes(uint8_t color_type, uint8_t bit_depth,
   return (samples_per_row * (size_t)bit_depth + 7u) / 8u;
 }
 
-size_t gimg_png_row_bytes_from_ihdr(const gimg_png_ihdr_t * ihdr,
-    uint32_t width) {
+size_t gimg_png_row_bytes_from_ihdr(
+    const gimg_png_ihdr_t * ihdr, uint32_t width) {
   if (!ihdr) {
     return 0;
   }
@@ -85,8 +85,8 @@ size_t gimg_png_row_bytes_from_ihdr(const gimg_png_ihdr_t * ihdr,
 //
 // DEFLATE decode options (shared by decode paths; limits handling consistent)
 //
-GIMG_Result gimg_png_deflate_options_for_decode(size_t max_output_bytes,
-    gcomp_options_t ** out_opts) {
+GIMG_Result gimg_png_deflate_options_for_decode(
+    size_t max_output_bytes, gcomp_options_t ** out_opts) {
   if (!out_opts) {
     return GIMG_ERR_INTERNAL;
   }
@@ -96,8 +96,8 @@ GIMG_Result gimg_png_deflate_options_for_decode(size_t max_output_bytes,
   if (gs != GCOMP_OK || !opts) {
     return (gs == GCOMP_ERR_MEMORY) ? GIMG_ERR_OOM : GIMG_ERR_INTERNAL;
   }
-  gs = gcomp_options_set_uint64(opts, "limits.max_output_bytes",
-      (uint64_t)max_output_bytes);
+  gs = gcomp_options_set_uint64(
+      opts, "limits.max_output_bytes", (uint64_t)max_output_bytes);
   if (gs != GCOMP_OK) {
     gcomp_options_destroy(opts);
     return GIMG_ERR_INTERNAL;
@@ -106,8 +106,8 @@ GIMG_Result gimg_png_deflate_options_for_decode(size_t max_output_bytes,
   return GIMG_OK;
 }
 
-int gimg_png_adam7_raw_size(uint32_t width, uint32_t height,
-    uint8_t color_type, uint8_t bit_depth, size_t * out_size) {
+int gimg_png_adam7_raw_size(uint32_t width, uint32_t height, uint8_t color_type,
+    uint8_t bit_depth, size_t * out_size) {
   size_t total = 0;
   for (int pass = 0; pass < 7; pass++) {
     uint32_t pw = 0;
