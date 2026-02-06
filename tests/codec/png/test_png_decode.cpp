@@ -367,6 +367,25 @@ TEST(PngDecode, DecodeExifAttachedToMetaRaw) {
   gimg_stream_destroy(s);
 }
 
+TEST(PngDecode, DecodeExifPopulatesMetaCommonOrientation) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(load_png_file("png_exif_orientation.png", buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_stream_destroy(s);
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
+  ASSERT_NE(meta, nullptr) << "eXIf with orientation should populate doc meta_common";
+  EXPECT_EQ(gimg_meta_common_orientation(meta), GIMG_ORIENTATION_ROTATE_90_CW)
+      << "png_exif_orientation.png has Orientation tag 6 (90 CW)";
+  gimg_doc_destroy(doc);
+}
+
 TEST(PngDecode, DecodeIccpSetsColorInfo) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(load_png_file("png_iccp.png", buf)) << "Run tests/data/png/generate.py";

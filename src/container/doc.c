@@ -39,6 +39,7 @@ GIMG_API GIMG_Result gimg_doc_create_with_allocator(
   doc->loaded_by_codec = NULL;
   doc->codec_private = NULL;
   doc->meta_raw = NULL;
+  doc->meta_common = NULL;
   doc->items[0].index = 0;
   doc->items[0].doc = doc;
   doc->items[0].frame_delay_num = 0;
@@ -52,6 +53,10 @@ GIMG_API GIMG_Result gimg_doc_create_with_allocator(
 GIMG_API void gimg_doc_destroy(GIMG_Doc * doc) {
   if (!doc) {
     return;
+  }
+  if (doc->meta_common) {
+    gimg_meta_common_destroy(doc->meta_common);
+    doc->meta_common = NULL;
   }
   if (doc->meta_raw) {
     gimg_meta_raw_destroy(doc->meta_raw);
@@ -181,5 +186,28 @@ GIMG_API GIMG_Result gimg_doc_ensure_meta_raw(
     return r;
   }
   *out_raw = doc->meta_raw;
+  return GIMG_OK;
+}
+
+GIMG_API GIMG_Meta_Common * gimg_doc_meta_common(const GIMG_Doc * doc) {
+  return doc ? doc->meta_common : NULL;
+}
+
+GIMG_API GIMG_Result gimg_doc_ensure_meta_common(
+    GIMG_Doc * doc, GIMG_Meta_Common ** out_meta) {
+  if (!doc || !out_meta) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_meta = NULL;
+  if (doc->meta_common) {
+    *out_meta = doc->meta_common;
+    return GIMG_OK;
+  }
+  GIMG_Result r = gimg_meta_common_create_with_allocator(
+      doc->allocator, &doc->meta_common);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  *out_meta = doc->meta_common;
   return GIMG_OK;
 }

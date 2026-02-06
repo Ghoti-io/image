@@ -57,6 +57,7 @@
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
 #include "../../core/safe_math_internal.h"
+#include "../../meta/exif_internal.h"
 #include "../../raster/raster_internal.h"
 #include "../codec_internal.h"
 #include "png_internal.h"
@@ -778,6 +779,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
   else if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_RAW_ONLY) {
+    const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
     // PRESERVE_ALL, STRIP_GPS, or NORMALIZE_EXIF: emit ancillary from state.
     if (state && state->ancillary) {
       for (size_t i = 0; i < state->ancillary_count; i++) {
@@ -786,9 +788,6 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           continue;
         }
         if (t == GIMG_PNG_IHDR || t == GIMG_PNG_IDAT || t == GIMG_PNG_IEND) {
-          continue;
-        }
-        if (policy == GIMG_META_STRIP_GPS && t == GIMG_PNG_eXIf) {
           continue;
         }
         if (policy == GIMG_META_STRIP_GPS &&
@@ -800,37 +799,80 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
             continue;
           }
         }
-        r = gimg_png_write_chunk(stream, state->ancillary[i].type,
-            state->ancillary[i].payload, state->ancillary[i].payload_size);
+        const void * chunk_payload = state->ancillary[i].payload;
+        size_t chunk_size = state->ancillary[i].payload_size;
+        void * modified = NULL;
+        size_t modified_size = 0;
+        if (t == GIMG_PNG_eXIf && chunk_payload && chunk_size > 0) {
+          if (policy == GIMG_META_STRIP_GPS) {
+            if (gimg_exif_strip_gps(codec->allocator, chunk_payload,
+                    chunk_size, &modified, &modified_size) == GIMG_OK) {
+              chunk_payload = modified;
+              chunk_size = modified_size;
+            }
+          }
+          else if (policy == GIMG_META_NORMALIZE_EXIF) {
+            if (gimg_exif_normalize(codec->allocator, chunk_payload,
+                    chunk_size, &modified, &modified_size) == GIMG_OK) {
+              chunk_payload = modified;
+              chunk_size = modified_size;
+            }
+          }
+        }
+        r = gimg_png_write_chunk(stream, t, chunk_payload, chunk_size);
+        if (modified) {
+          gimg_free(alloc, modified);
+        }
         if (r != GIMG_OK) {
-          gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+          gimg_free(alloc, zlib_buf);
           return r;
         }
-        report->bytes_written += 8 + state->ancillary[i].payload_size + 4;
+        report->bytes_written += 8 + chunk_size + 4;
       }
     }
     // eXIf from doc meta_raw when doc was not loaded from PNG (no state).
-    if (!state && policy != GIMG_META_STRIP_GPS) {
+    if (!state) {
       GIMG_Meta_Raw * meta_raw = gimg_doc_meta_raw(doc);
       if (meta_raw) {
         size_t exif_size = 0;
         r = gimg_meta_raw_get(
             meta_raw, "png", (uint32_t)GIMG_PNG_eXIf, NULL, &exif_size);
         if (r == GIMG_OK && exif_size > 0) {
-          unsigned char * exif_buf = (unsigned char *)gimg_malloc(
-              gimg_alloc_or_default(codec->allocator), exif_size);
+          unsigned char * exif_buf =
+              (unsigned char *)gimg_malloc(alloc, exif_size);
           if (exif_buf) {
             r = gimg_meta_raw_get(
                 meta_raw, "png", (uint32_t)GIMG_PNG_eXIf, exif_buf, &exif_size);
             if (r == GIMG_OK) {
+              void * to_write = exif_buf;
+              size_t to_write_size = exif_size;
+              void * modified = NULL;
+              size_t modified_size = 0;
+              if (policy == GIMG_META_STRIP_GPS) {
+                if (gimg_exif_strip_gps(codec->allocator, exif_buf, exif_size,
+                        &modified, &modified_size) == GIMG_OK) {
+                  to_write = modified;
+                  to_write_size = modified_size;
+                }
+              }
+              else if (policy == GIMG_META_NORMALIZE_EXIF) {
+                if (gimg_exif_normalize(codec->allocator, exif_buf, exif_size,
+                        &modified, &modified_size) == GIMG_OK) {
+                  to_write = modified;
+                  to_write_size = modified_size;
+                }
+              }
               r = gimg_png_write_chunk(
-                  stream, GIMG_PNG_eXIf, exif_buf, exif_size);
-              report->bytes_written += 8 + exif_size + 4;
+                  stream, GIMG_PNG_eXIf, to_write, to_write_size);
+              report->bytes_written += 8 + to_write_size + 4;
+              if (modified) {
+                gimg_free(alloc, modified);
+              }
             }
-            gimg_free(gimg_alloc_or_default(codec->allocator), exif_buf);
+            gimg_free(alloc, exif_buf);
           }
           if (r != GIMG_OK) {
-            gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+            gimg_free(alloc, zlib_buf);
             return r;
           }
         }

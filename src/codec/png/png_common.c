@@ -17,10 +17,9 @@
 #include "../../core/safe_math_internal.h"
 #include "png_internal.h"
 
-/* ----------------------------------------------------------------------------
- * Adam7 (W3C §2.6)
- * -------------------------------------------------------------------------- */
-
+//
+// Adam7 (W3C §2.6)
+//
 const gimg_png_adam7_pass_t gimg_png_adam7_passes[7] = {
     {0, 0, 8, 8},
     {4, 0, 8, 8},
@@ -43,10 +42,9 @@ void gimg_png_adam7_pass_dims(uint32_t image_width, uint32_t image_height,
       : 0;
 }
 
-/* ----------------------------------------------------------------------------
- * Row bytes (PNG §3.2: samples per row, bits per sample)
- * -------------------------------------------------------------------------- */
-
+//
+// Row bytes (PNG §3.2: samples per row, bits per sample)
+//
 size_t gimg_png_row_bytes(uint8_t color_type, uint8_t bit_depth,
     uint32_t width) {
   size_t samples_per_row = 0;

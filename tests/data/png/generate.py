@@ -205,6 +205,24 @@ def main() -> None:
     )
     write_png("png_exif.png", png_exif)
 
+    # ---- 1x1 gray + eXIf with orientation tag (for meta_common / apply_orientation test) ----
+    # Minimal valid TIFF/Exif: II, 42, IFD0 at 8; IFD0 has one entry: Orientation (0x0112) = 6 (90 CW).
+    # Layout: 8-byte header + 2 (num_entries) + 12 (one dir entry) + 4 (next IFD) = 26 bytes.
+    exif_orientation_payload = (
+        b"II\x2a\x00\x08\x00\x00\x00"  # little-endian, 42, first IFD at 8
+        b"\x01\x00"  # 1 entry
+        b"\x12\x01\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00"  # tag 0x0112, SHORT, 1, value 6
+        b"\x00\x00\x00\x00"  # next IFD
+    )
+    png_exif_orientation = (
+        signature
+        + png_chunk(b"IHDR", ihdr_1x1_gray)
+        + png_chunk(b"eXIf", exif_orientation_payload)
+        + png_chunk(b"IDAT", idat_1x1_gray)
+        + iend
+    )
+    write_png("png_exif_orientation.png", png_exif_orientation)
+
     # ---- 1x1 gray + iCCP chunk (tiny zlib-compressed "profile" for color info test) ----
     # iCCP: profile name (null-term) + compression method (0 = deflate) + zlib stream.
     profile_data = b"minimal_icc"

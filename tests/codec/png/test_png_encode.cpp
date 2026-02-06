@@ -861,7 +861,8 @@ TEST(PngEncode, SaveWithDropAllStripsMetadata) {
   gimg_doc_destroy(doc2);
 }
 
-TEST(PngEncode, SaveWithStripGpsOmitsExif) {
+TEST(PngEncode, SaveWithStripGpsStripsOnlyGps) {
+  // STRIP_GPS strips only GPS from eXIf; eXIf chunk is preserved (re-written without GPS IFD).
   std::vector<uint8_t> buf;
   ASSERT_TRUE(load_png_file("png_exif.png", buf))
       << "Run tests/data/png/generate.py";
@@ -902,13 +903,11 @@ TEST(PngEncode, SaveWithStripGpsOmitsExif) {
   gimg_stream_destroy(s2);
 
   GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc2);
-  if (raw) {
-    size_t exif_size = 0;
-    r = gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &exif_size);
-    EXPECT_NE(r, GIMG_OK);
-    EXPECT_EQ(exif_size, 0u)
-        << "eXIf must be stripped when saving with STRIP_GPS";
-  }
+  ASSERT_NE(raw, nullptr);
+  size_t exif_size = 0;
+  r = gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &exif_size);
+  EXPECT_EQ(r, GIMG_OK) << "eXIf must be present after STRIP_GPS (only GPS removed)";
+  EXPECT_GE(exif_size, 6u) << "eXIf preserved after save with STRIP_GPS";
   gimg_doc_destroy(doc2);
 }
 

@@ -144,6 +144,21 @@ GIMG_API GIMG_Meta_Raw * gimg_doc_meta_raw(const GIMG_Doc * doc);
 GIMG_API GIMG_Result gimg_doc_ensure_meta_raw(
     GIMG_Doc * doc, GIMG_Meta_Raw ** out_raw);
 
+/**
+ * @brief Get normalized common metadata (orientation, DPI). Returns NULL if not
+ * set.
+ */
+GIMG_API GIMG_Meta_Common * gimg_doc_meta_common(const GIMG_Doc * doc);
+
+/**
+ * @brief Ensure document has common metadata; create if missing.
+ * @param doc Document.
+ * @param out_meta On success, set to the document's meta_common.
+ * @return GIMG_OK or GIMG_ERR_OOM.
+ */
+GIMG_API GIMG_Result gimg_doc_ensure_meta_common(
+    GIMG_Doc * doc, GIMG_Meta_Common ** out_meta);
+
 #ifdef __cplusplus
 }
 #endif

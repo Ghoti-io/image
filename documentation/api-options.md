@@ -56,7 +56,7 @@ Controls which ancillary metadata is written on save. Defined in `ghoti.io/image
 |-------|--------|
 | **GIMG_META_PRESERVE_ALL** | Emit all ancillary from the loaded document (and eXIf from doc meta_raw when doc was not loaded from PNG). |
 | **GIMG_META_DROP_ALL**     | No ancillary; only signature, IHDR, PLTE/tRNS if palette, IDAT, IEND. |
-| **GIMG_META_STRIP_GPS**    | Like PRESERVE_ALL except eXIf is omitted and text chunks with GPS-related keywords are omitted. |
+| **GIMG_META_STRIP_GPS**    | Like PRESERVE_ALL except eXIf is parsed, GPS IFD (and tag 0x8825) are removed, and the remaining Exif is re-serialized and written as eXIf; text chunks with GPS-related keywords are omitted. |
 | **GIMG_META_NORMALIZE_EXIF** | Pass through ancillary; Exif normalization (orientation, duplicates) may be applied when Exif parsing exists. |
 | **GIMG_META_KEEP_RAW_ONLY**  | Emit only ancillary chunks that are *not* known semantic (no iCCP, sRGB, gAMA, cHRM, eXIf, tEXt, zTXt, iTXt). |
 | **GIMG_META_KEEP_COMMON_ONLY** | Emit only metadata that maps to common metadata (e.g. one color chunk from raster color info; no eXIf or text). |

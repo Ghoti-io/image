@@ -46,6 +46,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../meta/exif_internal.h"
 #include "../codec_internal.h"
 #include "png_internal.h"
 
@@ -593,6 +594,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   doc->loaded_by_codec = codec;
   doc->codec_private = state;
   doc->meta_raw = NULL;
+  doc->meta_common = NULL;
   for (size_t i = 0; i < item_count; i++) {
     doc->items[i].index = i;
     doc->items[i].doc = doc;
@@ -614,7 +616,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
   }
 
-  // Attach eXIf (and other raw metadata) to doc for round-trip.
+  // Attach eXIf (and other raw metadata) to doc for round-trip; populate meta_common from eXIf.
   for (size_t i = 0; i < state->ancillary_count; i++) {
     if (state->ancillary[i].type == GIMG_PNG_eXIf &&
         state->ancillary[i].payload && state->ancillary[i].payload_size > 0) {
@@ -629,6 +631,15 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       if (r != GIMG_OK) {
         gimg_doc_destroy(doc);
         return r;
+      }
+      GIMG_Orientation orient = GIMG_ORIENTATION_UNKNOWN;
+      if (gimg_exif_parse_orientation(state->ancillary[i].payload,
+              state->ancillary[i].payload_size, &orient) == GIMG_OK &&
+          orient != GIMG_ORIENTATION_UNKNOWN) {
+        GIMG_Meta_Common * meta_common = NULL;
+        if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
+          gimg_meta_common_set_orientation(meta_common, orient);
+        }
       }
       break; // First eXIf chunk only per spec.
     }

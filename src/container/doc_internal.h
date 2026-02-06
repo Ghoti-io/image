@@ -41,6 +41,8 @@ struct GIMG_Doc {
   void * codec_private; ///< Format-specific state; owned and freed by codec.
   GIMG_Meta_Raw *
       meta_raw; ///< Optional raw metadata (eXIf, etc.); owned by doc.
+  GIMG_Meta_Common * meta_common; ///< Optional normalized metadata
+                                  ///< (orientation, DPI); owned by doc.
 };
 
 #endif // GHOTI_IO_GIMG_DOC_INTERNAL_H

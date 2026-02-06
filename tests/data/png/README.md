@@ -18,6 +18,7 @@ Generated files:
 | `png_16bit_rgba.png` | 1×1 RGBA 16-bit (R=0x1234 G=0x5678 B=0x9ABC A=0xDEF0) |
 | `png_srgb.png` | 1×1 gray + sRGB chunk (rendering intent 0) |
 | `png_exif.png` | 1×1 gray + eXIf chunk (minimal payload) |
+| `png_exif_orientation.png` | 1×1 gray + eXIf with Orientation tag 6 (90° CW); used for meta_common test |
 | `png_iccp.png` | 1×1 gray + iCCP chunk (tiny zlib-compressed profile) |
 | `png_apng_2frame.png` | 2-frame APNG: default image is first frame (1×1 gray 0, then 0x80); frame 0 delay 50/100, dispose NONE, blend SOURCE; frame 1 delay 25/100, dispose BACKGROUND, blend OVER |
 | `png_apng_3frame.png` | 3-frame APNG: gray 0, 0x80, 0xC0; frame 0 delay 50/100 dispose NONE blend SOURCE; frame 1 delay 25/100 dispose BACKGROUND blend OVER; frame 2 delay 10/100 dispose PREVIOUS blend OVER |
