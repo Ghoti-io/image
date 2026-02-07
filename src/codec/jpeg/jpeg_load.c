@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * JPEG load: verify SOI, parse segments (SOF0, DQT, DHT, SOS), enforce
+ * JPEG load: verify SOI, parse segments (SOF0/SOF1/SOF2, DQT, DHT, SOS), enforce
  * limits, build doc with one item and codec-private state.
  *
  * Segment format: 0xFF + marker + length (big-endian 2 bytes where present) +
@@ -221,9 +221,10 @@ GIMG_Result gimg_jpeg_read_segment_length(
   return GIMG_OK;
 }
 
-/** Parse SOF0 (baseline) or SOF2 (progressive) payload. Length already read. */
-static GIMG_Result jpeg_parse_sof(
-    const unsigned char * payload, size_t len, gimg_jpeg_sof_t * sof) {
+/** Parse SOF0/SOF1/SOF2 payload. Length already read. sof_marker is 0xC0, 0xC1,
+ * or 0xC2. SOF0 = 8-bit only; SOF1 = 8 or 12-bit; SOF2 = 8, 12, or 16-bit. */
+static GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
+    uint8_t sof_marker, gimg_jpeg_sof_t * sof) {
   if (len < 8) {
     return GIMG_ERR_FORMAT;
   }
@@ -231,15 +232,26 @@ static GIMG_Result jpeg_parse_sof(
   uint16_t height = (uint16_t)((payload[1] << 8) | payload[2]);
   uint16_t width = (uint16_t)((payload[3] << 8) | payload[4]);
   uint8_t num_components = payload[5];
-  if (precision != 8 || num_components == 0 ||
-      num_components > GIMG_JPEG_MAX_COMPONENTS) {
+  if (num_components == 0 || num_components > GIMG_JPEG_MAX_COMPONENTS) {
     return GIMG_ERR_FORMAT;
+  }
+  if (sof_marker == GIMG_JPEG_MARKER_SOF0 && precision != 8) {
+    return GIMG_ERR_FORMAT; /* Baseline is 8-bit only per spec. */
+  }
+  if (sof_marker == GIMG_JPEG_MARKER_SOF1 &&
+      (precision != 8 && precision != 12)) {
+    return GIMG_ERR_UNSUPPORTED; /* Extended sequential: 8 or 12-bit. */
+  }
+  if (sof_marker == GIMG_JPEG_MARKER_SOF2 &&
+      (precision != 8 && precision != 12 && precision != 16)) {
+    return GIMG_ERR_UNSUPPORTED; /* Progressive: 8, 12, or 16-bit. */
+  }
+  if (precision != 8 && precision != 12 && precision != 16) {
+    return GIMG_ERR_UNSUPPORTED;
   }
   if (width == 0) {
     return GIMG_ERR_FORMAT;
   }
-  // Height may be 0 when DNL (Define Number of Lines) will supply it after the
-  // first scan; otherwise height must be non-zero.
   if (height > GIMG_JPEG_MAX_DIMENSION || width > GIMG_JPEG_MAX_DIMENSION) {
     return GIMG_ERR_LIMIT;
   }
@@ -426,16 +438,18 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
 
     switch (marker) {
-    case GIMG_JPEG_MARKER_SOF0: {
+    case GIMG_JPEG_MARKER_SOF0:
+    case GIMG_JPEG_MARKER_SOF1: {
       if (seen_sof) {
         gimg_free(alloc, payload_buf);
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
-      r = jpeg_parse_sof(payload_buf, payload_size, &state->sof);
+      r = jpeg_parse_sof(payload_buf, payload_size, marker, &state->sof);
       gimg_free(alloc, payload_buf);
       if (r != GIMG_OK) {
-        jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF0");
+        jpeg_load_diag(diagnostics, seg_start, marker, r,
+            marker == GIMG_JPEG_MARKER_SOF0 ? "invalid SOF0" : "invalid SOF1");
         gimg_jpeg_free_doc_state(codec, state);
         return r;
       }
@@ -449,7 +463,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
-      r = jpeg_parse_sof(payload_buf, payload_size, &state->sof);
+      r = jpeg_parse_sof(payload_buf, payload_size, marker, &state->sof);
       gimg_free(alloc, payload_buf);
       if (r != GIMG_OK) {
         jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF2");
@@ -979,7 +993,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   }
 
   if (!seen_sof) {
-    jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_FORMAT, "no SOF0/SOF2 found");
+    jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_FORMAT, "no SOF found");
     gimg_jpeg_free_doc_state(codec, state);
     return GIMG_ERR_FORMAT;
   }

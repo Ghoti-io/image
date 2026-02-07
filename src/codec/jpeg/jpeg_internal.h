@@ -27,11 +27,20 @@ extern "C" {
 #define GIMG_JPEG_SIGNATURE_LEN 2
 extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 
-/** Marker bytes (after 0xFF). */
+/** Marker bytes (after 0xFF). Per ISO/IEC 10918-1 (ITU-T T.81) Annex B, the only
+ * Start-of-Frame (SOF) marker bytes are 0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6,
+ * 0xC7, 0xC9, 0xCA, 0xCB (and 0xCD, 0xCE, 0xCF for SOF13–SOF15). 0xC4 is DHT,
+ * 0xC8 is reserved, 0xCC is DAC — not SOF. We support SOF0, SOF1, SOF2 only. */
 #define GIMG_JPEG_MARKER_SOI 0xD8
 #define GIMG_JPEG_MARKER_EOI 0xD9
-#define GIMG_JPEG_MARKER_SOF0 0xC0 // Baseline DCT
+#define GIMG_JPEG_MARKER_SOF0 0xC0 // Baseline DCT (8-bit only)
+#define GIMG_JPEG_MARKER_SOF1 0xC1 // Extended sequential DCT (8- or 12-bit)
 #define GIMG_JPEG_MARKER_SOF2 0xC2 // Progressive DCT
+#define GIMG_JPEG_MARKER_SOF3 0xC3 // Lossless (not yet supported)
+// 0xC4 = DHT (Define Huffman Tables), not SOF
+// 0xC5 = SOF5  differential sequential DCT; 0xC6 = SOF6; 0xC7 = SOF7 differential lossless
+// 0xC8 = reserved; 0xC9 = SOF9 arithmetic sequential; 0xCA = SOF10; 0xCB = SOF11
+// 0xCC = DAC; 0xCD = SOF13; 0xCE = SOF14; 0xCF = SOF15
 #define GIMG_JPEG_MARKER_DHT 0xC4
 #define GIMG_JPEG_MARKER_DQT 0xDB
 #define GIMG_JPEG_MARKER_SOS 0xDA

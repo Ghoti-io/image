@@ -13,7 +13,7 @@
 #include "jpeg_internal.h"
 
 #define JPEG_CAPABILITIES                                                      \
-  (GIMG_CAP_READ | GIMG_CAP_WRITE | GIMG_CAP_ICC | GIMG_CAP_CMYK)
+  (GIMG_CAP_READ | GIMG_CAP_WRITE | GIMG_CAP_ICC | GIMG_CAP_CMYK | GIMG_CAP_16BPC)
 
 #if defined(__GNUC__) || defined(__clang__)
 #define GIMG_CONSTRUCTOR __attribute__((constructor))

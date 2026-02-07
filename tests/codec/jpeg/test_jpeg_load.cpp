@@ -667,6 +667,58 @@ TEST(JpegLoad, NoSofReturnsFormat) {
   gimg_stream_destroy(s);
 }
 
+TEST(JpegLoad, Sof0Precision12Rejected) {
+  // SOF0 (baseline) allows only 8-bit; precision 12 must be rejected.
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF0: L=11, P=12 (0x0C), Y=8, X=8, Nf=1, C1=0 H=1 V=1 Tq=0
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x0C\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  EXPECT_EQ(r, GIMG_ERR_FORMAT);
+  EXPECT_EQ(doc, nullptr);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, Sof1AcceptedFor8bit) {
+  // SOF1 (extended sequential) with 8-bit: load succeeds (same as baseline).
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF1: L=11, P=8, Y=8, X=8, Nf=1, C1=0 H=1 V=1 Tq=0
+  append(buf,
+      (const unsigned char *)"\xFF\xC1\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
+      12);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  GIMG_Stream * stream = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &stream);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(stream, nullptr, nullptr, &doc);
+  EXPECT_EQ(r, GIMG_OK);
+  EXPECT_NE(doc, nullptr);
+  if (doc) {
+    EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(stream);
+}
+
 TEST(JpegLoad, SegmentOverLimitReturnsLimit) {
   // SOI, then a segment with huge length to exceed max_chunk_size.
   std::vector<uint8_t> buf;
