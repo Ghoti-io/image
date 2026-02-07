@@ -55,7 +55,9 @@ TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.bytes_written = 0;
@@ -135,7 +137,9 @@ TEST(JpegEncode, SaveRgbThenLoadDecode) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -188,7 +192,9 @@ TEST(JpegEncode, SameInputSameOutputDeterministic) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report1 = {};
   GIMG_Save_Report report2 = {};
@@ -236,7 +242,9 @@ TEST(JpegEncode, QualityOptionUsedWhenNonZero) {
       .quality = 50,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Stream * out_stream = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
@@ -342,7 +350,9 @@ TEST(JpegEncode, MetadataPreserveAllRoundTrip) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -401,7 +411,9 @@ TEST(JpegEncode, ComRoundTrip) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -462,7 +474,9 @@ TEST(JpegEncode, MetaCommonDescriptionWrittenAsCom) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -512,7 +526,9 @@ TEST(JpegEncode, MetadataDropAllStripsExif) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.bytes_written = 0;
@@ -559,7 +575,9 @@ TEST(JpegEncode, MetadataKeepCommonOnlyNoExif) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -603,7 +621,9 @@ TEST(JpegEncode, SaveNullDocReturnsError) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -625,7 +645,9 @@ TEST(JpegEncode, SaveUnsupportedFormatReturnsError) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -656,7 +678,9 @@ TEST(JpegEncode, SaveCmykRasterReturnsUnsupported) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -696,7 +720,9 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat6) {
       .quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_JPEG,
       .exif_thumbnail_quality = 85,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.bytes_written = 0;
@@ -772,7 +798,9 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat1) {
       .quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED,
       .exif_thumbnail_quality = 85,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.bytes_written = 0;
@@ -840,7 +868,9 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat7) {
       .quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG,
       .exif_thumbnail_quality = 85,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   report.bytes_written = 0;
@@ -905,7 +935,9 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat1) {
       .quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
@@ -984,7 +1016,9 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
       .quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG,
       .exif_thumbnail_quality = 85,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
@@ -1071,7 +1105,9 @@ TEST(JpegEncode, RoundTripExifThumbnailPreserved) {
       .quality = 0,
       .exif_thumbnail_format = 0,
       .exif_thumbnail_quality = 0,
-      ._reserved = {0, 0},
+      .jpeg_chroma_subsampling = 0,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
   };
   GIMG_Save_Report report = {};
   r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
@@ -1104,6 +1140,99 @@ TEST(JpegEncode, RoundTripExifThumbnailPreserved) {
     gimg_raster_destroy(thumb);
   }
   gimg_doc_destroy(doc);
+}
+
+TEST(JpegEncode, ChromaSubsamplingOption) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(32, 32, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                 NULL, 0, &raster),
+      GIMG_OK);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  unsigned char * pixels = (unsigned char *)gimg_raster_pixels(raster);
+  for (uint32_t y = 0; y < 32; y++) {
+    for (uint32_t x = 0; x < 32; x++) {
+      pixels[y * stride + x * 4 + 0] = (unsigned char)(x * 8);
+      pixels[y * stride + x * 4 + 1] = (unsigned char)(y * 8);
+      pixels[y * stride + x * 4 + 2] = 128;
+      pixels[y * stride + x * 4 + 3] = 255;
+    }
+  }
+  gimg_item_set_raster(item, raster);
+
+  auto save_and_size = [doc](unsigned chroma) {
+    GIMG_Save_Options opts = {
+        .metadata_policy = GIMG_META_PRESERVE_ALL,
+        .interlaced = 0,
+        .quality = 85,
+        .exif_thumbnail_format = 0,
+        .exif_thumbnail_quality = 0,
+        .jpeg_chroma_subsampling = (uint8_t)chroma,
+        .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
+    };
+    GIMG_Stream * out = nullptr;
+    if (gimg_stream_create_memory_output(&out) != GIMG_OK)
+      return (size_t)0;
+    GIMG_Save_Report report = {};
+    report.diagnostics = nullptr;
+    GIMG_Result r = gimg_doc_save(doc, out, "jpeg", &opts, &report);
+    size_t n = report.bytes_written;
+    gimg_stream_destroy(out);
+    return (r == GIMG_OK) ? n : (size_t)0;
+  };
+
+  size_t size_420 = save_and_size(GIMG_JPEG_CHROMA_420);
+  size_t size_422 = save_and_size(GIMG_JPEG_CHROMA_422);
+  size_t size_444 = save_and_size(GIMG_JPEG_CHROMA_444);
+  EXPECT_GT(size_420, 0u);
+  EXPECT_GT(size_422, 0u);
+  EXPECT_GT(size_444, 0u);
+  EXPECT_LE(size_420, size_422) << "4:2:0 should be <= 4:2:2 for same quality";
+  EXPECT_LE(size_422, size_444) << "4:2:2 should be <= 4:4:4 for same quality";
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 85,
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_420,
+      .jpeg_progressive = 0,
+      .jpeg_progressive_config = nullptr,
+  };
+  GIMG_Save_Report report = {};
+  report.diagnostics = nullptr;
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+  const void * jpeg_data = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(out, &jpeg_data, &jpeg_size);
+  std::vector<uint8_t> jpeg_copy(
+      (const uint8_t *)jpeg_data, (const uint8_t *)jpeg_data + jpeg_size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
+  doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(doc), 1u);
+  item = gimg_doc_item(doc, 0);
+  GIMG_Raster * decoded = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &decoded), GIMG_OK);
+  EXPECT_EQ(gimg_raster_width(decoded), 32u);
+  EXPECT_EQ(gimg_raster_height(decoded), 32u);
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
 }
 
 } // namespace

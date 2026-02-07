@@ -54,7 +54,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
 
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, 0, 0};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r != GIMG_OK) {

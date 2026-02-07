@@ -130,6 +130,34 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
 #define GIMG_EXIF_THUMB_FORMAT_JPEG 6
 #define GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG 7
 
+/** @brief JPEG chroma subsampling: 0 = 4:2:0 (default), 1 = 4:2:2, 2 = 4:4:4. */
+#define GIMG_JPEG_CHROMA_420 0
+#define GIMG_JPEG_CHROMA_422 1
+#define GIMG_JPEG_CHROMA_444 2
+
+/**
+ * @brief One scan in a progressive JPEG scan script (ISO/IEC 10918-1 Annex B).
+ * Ss, Se = spectral selection (coefficient indices 0–63, zigzag order).
+ * Ah, Al = successive approximation (Ah=0 for initial pass; refinement when Ah>0).
+ */
+typedef struct {
+  uint8_t Ss; ///< First coefficient index in this scan (0–63).
+  uint8_t Se; ///< Last coefficient index in this scan (0–63; must be >= Ss).
+  uint8_t Ah; ///< Successive approximation high (0 = initial encoding).
+  uint8_t Al; ///< Successive approximation low / bit position.
+} GIMG_JPEG_Progressive_Scan;
+
+/**
+ * @brief Progressive JPEG scan script. When saving with jpeg_progressive=1:
+ * - If NULL or scan_count==0: encoder uses default progression (e.g. DC + AC bands).
+ * - If non-NULL and scan_count>0: encoder uses this sequence of scans.
+ * Caller keeps the array valid for the duration of gimg_doc_save().
+ */
+typedef struct {
+  unsigned int scan_count;
+  const GIMG_JPEG_Progressive_Scan * scans;
+} GIMG_JPEG_Progressive_Config;
+
 /**
  * @brief Save options (metadata policy, interlace, quality, etc.).
  * @see api_options
@@ -142,7 +170,11 @@ typedef struct {
   uint8_t exif_thumbnail_format;  ///< IFD1 thumbnail: 0 = default (6), 1, 6, 7.
   uint8_t exif_thumbnail_quality; ///< Thumbnail JPEG quality 1–100 when
                                   ///< format 6 or 7; 0 = default (85).
-  uint8_t _reserved[2];
+  uint8_t jpeg_chroma_subsampling; ///< GIMG_JPEG_CHROMA_420 (default), 422, 444.
+  uint8_t jpeg_progressive;        ///< 0 = baseline (default), 1 = progressive.
+  /** When jpeg_progressive==1: NULL or scan_count 0 = default progression;
+   * otherwise use this scan script. Ignored for non-JPEG or baseline. */
+  const GIMG_JPEG_Progressive_Config * jpeg_progressive_config;
 } GIMG_Save_Options;
 
 /**

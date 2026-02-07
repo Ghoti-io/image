@@ -267,12 +267,15 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
 /**
  * Encode baseline scan: component buffers (Y or Y/Cb/Cr), produce scan data.
- * Caller frees *out_scan_data with document allocator.
+ * h_samp and v_samp may be NULL for 4:4:4 (all 1s). Otherwise h_samp[c],
+ * v_samp[c] for each component (1 or 2 for 4:2:0/4:2:2). Caller frees
+ * *out_scan_data with document allocator.
  */
 GIMG_Result gimg_jpeg_encode_baseline_scan(uint32_t width, uint32_t height,
     int num_components, const unsigned char * comp0,
     const unsigned char * comp1, const unsigned char * comp2, size_t stride0,
-    size_t stride1, size_t stride2, const uint16_t * quant_luma,
+    size_t stride1, size_t stride2, const uint8_t * h_samp,
+    const uint8_t * v_samp, const uint16_t * quant_luma,
     const uint16_t * quant_chroma, const GIMG_Allocator * alloc,
     unsigned char ** out_scan_data, size_t * out_scan_size);
 

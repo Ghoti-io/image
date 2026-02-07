@@ -45,7 +45,11 @@ Used by `gimg_doc_load()`.
 | `metadata_policy`  | **GIMG_Meta_Policy** — which metadata to write (see @ref api_options_meta_policy). |
 | `interlaced`       | For PNG: `0` = non-interlaced (default), `1` = Adam7 interlaced. |
 | `quality`          | For JPEG: `1`–`100` (100 = finest). `0` = unspecified, codec default (85). Ignored by other codecs. |
-| `_reserved`        | Reserved; set to zero. |
+| `jpeg_chroma_subsampling` | For JPEG: `GIMG_JPEG_CHROMA_420` (default), `GIMG_JPEG_CHROMA_422`, `GIMG_JPEG_CHROMA_444`. Ignored by other codecs. |
+| `jpeg_progressive` | For JPEG: `0` = baseline (default), `1` = progressive. Ignored by other codecs. |
+| `jpeg_progressive_config` | When `jpeg_progressive` is 1: `NULL` or `scan_count` 0 = use default progression (DC + AC scan(s)); otherwise pointer to **GIMG_JPEG_Progressive_Config** giving a custom scan script (array of Ss, Se, Ah, Al per scan). Ignored for non-JPEG or baseline. |
+
+**GIMG_JPEG_Progressive_Config** holds `scan_count` and `scans` (array of **GIMG_JPEG_Progressive_Scan**). Each scan has `Ss`, `Se` (spectral selection, 0–63), `Ah`, `Al` (successive approximation). Caller keeps the array valid for the duration of `gimg_doc_save()`.
 
 Used by `gimg_doc_save()`.
 
