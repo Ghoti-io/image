@@ -44,6 +44,7 @@ Used by `gimg_doc_load()`.
 |--------------------|-------------|
 | `metadata_policy`  | **GIMG_Meta_Policy** — which metadata to write (see @ref api_options_meta_policy). |
 | `interlaced`       | For PNG: `0` = non-interlaced (default), `1` = Adam7 interlaced. |
+| `quality`          | For JPEG: `1`–`100` (100 = finest). `0` = unspecified, codec default (85). Ignored by other codecs. |
 | `_reserved`        | Reserved; set to zero. |
 
 Used by `gimg_doc_save()`.

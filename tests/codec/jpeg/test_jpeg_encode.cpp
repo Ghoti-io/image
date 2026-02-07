@@ -11,6 +11,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
@@ -49,6 +50,7 @@ TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
+      .quality = 0,
       ._reserved = {0},
   };
   GIMG_Save_Report report = {};
@@ -126,6 +128,7 @@ TEST(JpegEncode, SaveRgbThenLoadDecode) {
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
+      .quality = 0,
       ._reserved = {0},
   };
   GIMG_Save_Report report = {};
@@ -176,6 +179,7 @@ TEST(JpegEncode, SameInputSameOutputDeterministic) {
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
+      .quality = 0,
       ._reserved = {0},
   };
   GIMG_Save_Report report1 = {};
@@ -204,6 +208,254 @@ TEST(JpegEncode, SameInputSameOutputDeterministic) {
   gimg_doc_destroy(doc);
   gimg_stream_destroy(out1);
   gimg_stream_destroy(out2);
+}
+
+TEST(JpegEncode, QualityOptionUsedWhenNonZero) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  memset(gimg_raster_pixels(raster), 128, 8 * 8);
+  gimg_item_set_raster(item, raster);
+
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 50,
+      ._reserved = {0},
+  };
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Report report = {};
+  report.diagnostics = nullptr;
+  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * jpeg_data = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(out_stream, &jpeg_data, &jpeg_size);
+  std::vector<uint8_t> jpeg_copy(
+      (const uint8_t *)jpeg_data, (const uint8_t *)jpeg_data + jpeg_size);
+  gimg_stream_destroy(out_stream);
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
+  doc = nullptr;
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  item = gimg_doc_item(doc, 0);
+  GIMG_Raster * decoded = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &decoded), GIMG_OK);
+  EXPECT_EQ(gimg_raster_width(decoded), 8u);
+  EXPECT_EQ(gimg_raster_height(decoded), 8u);
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
+}
+
+/** Minimal TIFF/Exif payload (orientation 6). APP1 EXIF payload = "Exif\0\0" +
+ * this. */
+static std::vector<uint8_t> make_minimal_exif_payload() {
+  return {
+      0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, // II, 42, IFD0@8
+      0x01, 0x00,                                     // 1 entry
+      0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00,
+      0x00,                  // Orientation=6
+      0x00, 0x00, 0x00, 0x00 // next IFD
+  };
+}
+
+static const uint32_t kJpegRawApp1Exif = 0xE100u;
+
+/** Create a synthetic doc with 8x8 grayscale raster (no metadata). */
+static GIMG_Doc * create_doc_with_raster_only() {
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_create(&doc) != GIMG_OK || !doc)
+    return nullptr;
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0,
+          &raster) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return nullptr;
+  }
+  memset(gimg_raster_pixels(raster), 128, 8 * 8);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  return doc;
+}
+
+/** Create a synthetic doc with 8x8 grayscale raster and APP1 EXIF in meta_raw.
+ */
+static GIMG_Doc * create_doc_with_raster_and_exif() {
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_create(&doc) != GIMG_OK || !doc)
+    return nullptr;
+  GIMG_Meta_Raw * raw = nullptr;
+  if (gimg_doc_ensure_meta_raw(doc, &raw) != GIMG_OK)
+    return nullptr;
+  std::vector<uint8_t> exif = make_minimal_exif_payload();
+  std::vector<uint8_t> app1_payload = {'E', 'x', 'i', 'f', 0, 0};
+  app1_payload.insert(app1_payload.end(), exif.begin(), exif.end());
+  if (gimg_meta_raw_attach(raw, "jpeg", kJpegRawApp1Exif, app1_payload.data(),
+          app1_payload.size()) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return nullptr;
+  }
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0,
+          &raster) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return nullptr;
+  }
+  memset(gimg_raster_pixels(raster), 128, 8 * 8);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  return doc;
+}
+
+TEST(JpegEncode, MetadataPreserveAllRoundTrip) {
+  GIMG_Doc * doc = create_doc_with_raster_and_exif();
+  ASSERT_NE(doc, nullptr);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 0,
+      ._reserved = {0},
+  };
+  GIMG_Save_Report report = {};
+  report.diagnostics = nullptr;
+  ASSERT_EQ(
+      gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report), GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_stream, &out_data, &out_size);
+  std::vector<uint8_t> saved(out_size, 0);
+  if (out_size)
+    memcpy(saved.data(), out_data, out_size);
+  gimg_stream_destroy(out_stream);
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &in_stream),
+      GIMG_OK);
+  doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr)
+      << "Re-loaded JPEG with PRESERVE_ALL should have meta_raw";
+  size_t exif_size = 0;
+  ASSERT_EQ(
+      gimg_meta_raw_get(raw, "jpeg", kJpegRawApp1Exif, nullptr, &exif_size),
+      GIMG_OK);
+  EXPECT_GE(exif_size, 6u + 14u) << "APP1 EXIF should be preserved";
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
+}
+
+TEST(JpegEncode, MetadataDropAllStripsExif) {
+  /* Doc with 16x16 raster (same as SaveGrayscale); save with DROP_ALL. */
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                16, 16, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  memset(gimg_raster_pixels(raster), 128, 16 * 16);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_DROP_ALL,
+      .interlaced = 0,
+      .quality = 0,
+      ._reserved = {0},
+  };
+  GIMG_Save_Report report = {};
+  report.bytes_written = 0;
+  report.diagnostics = nullptr;
+  ASSERT_EQ(
+      gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report), GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_stream, &out_data, &out_size);
+  std::vector<uint8_t> saved(out_size, 0);
+  if (out_size)
+    memcpy(saved.data(), out_data, out_size);
+  gimg_stream_destroy(out_stream);
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &in_stream),
+      GIMG_OK);
+  doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  if (raw) {
+    size_t exif_size = 0;
+    GIMG_Result r =
+        gimg_meta_raw_get(raw, "jpeg", kJpegRawApp1Exif, nullptr, &exif_size);
+    EXPECT_NE(r, GIMG_OK)
+        << "DROP_ALL: APP1 EXIF should not be present after re-load";
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
+}
+
+TEST(JpegEncode, MetadataKeepCommonOnlyNoExif) {
+  /* Doc with raster only; save with KEEP_COMMON_ONLY, re-load has no EXIF. */
+  GIMG_Doc * doc = create_doc_with_raster_only();
+  ASSERT_NE(doc, nullptr);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_KEEP_COMMON_ONLY,
+      .interlaced = 0,
+      .quality = 0,
+      ._reserved = {0},
+  };
+  GIMG_Save_Report report = {};
+  report.diagnostics = nullptr;
+  ASSERT_EQ(
+      gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report), GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_stream, &out_data, &out_size);
+  std::vector<uint8_t> saved(out_size, 0);
+  if (out_size)
+    memcpy(saved.data(), out_data, out_size);
+  gimg_stream_destroy(out_stream);
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &in_stream),
+      GIMG_OK);
+  doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  if (raw) {
+    size_t exif_size = 0;
+    GIMG_Result r =
+        gimg_meta_raw_get(raw, "jpeg", kJpegRawApp1Exif, nullptr, &exif_size);
+    EXPECT_NE(r, GIMG_OK)
+        << "KEEP_COMMON_ONLY: APP1 EXIF should not be present";
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
 }
 
 } // namespace

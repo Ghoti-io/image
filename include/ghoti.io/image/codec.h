@@ -123,12 +123,14 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
     GIMG_Doc ** out_doc);
 
 /**
- * @brief Save options (metadata policy, interlace, etc.).
+ * @brief Save options (metadata policy, interlace, quality, etc.).
  * @see api_options
  */
 typedef struct {
   GIMG_Meta_Policy metadata_policy;
   unsigned int interlaced; ///< 0 = non-interlaced (default), 1 = Adam7 (PNG).
+  unsigned int quality; ///< JPEG quality 1–100 (100 = finest). 0 = unspecified,
+                        ///< codec default (e.g. 85).
   uint8_t _reserved[4];
 } GIMG_Save_Options;
 
@@ -169,10 +171,11 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
  * The document owns the attached raster. Use for load -> modify -> save flows.
  * @param item Item (must belong to a document that was loaded with a codec).
  * @param options Decode options (limits, etc.); NULL for defaults.
- * @return GIMG_OK, GIMG_ERR_UNSUPPORTED (no codec / not loaded), or decode error.
+ * @return GIMG_OK, GIMG_ERR_UNSUPPORTED (no codec / not loaded), or decode
+ * error.
  */
-GIMG_API GIMG_Result gimg_item_ensure_decoded(GIMG_Item * item,
-    const GIMG_Decode_Options * options);
+GIMG_API GIMG_Result gimg_item_ensure_decoded(
+    GIMG_Item * item, const GIMG_Decode_Options * options);
 
 #ifdef __cplusplus
 }

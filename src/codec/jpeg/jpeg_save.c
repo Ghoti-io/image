@@ -12,6 +12,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/stream.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -20,6 +21,7 @@
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
 #include "../../core/safe_math_internal.h"
+#include "../../meta/exif_internal.h"
 #include "../../raster/raster_internal.h"
 #include "../codec_internal.h"
 #include "jpeg_internal.h"
@@ -50,6 +52,66 @@ static GIMG_Result jpeg_write_marker(
     *out_n += n;
   }
   return r;
+}
+
+/** Write APP segment: marker + length (2 + payload_len) + payload. */
+static GIMG_Result jpeg_write_app_segment(GIMG_Stream * stream, uint8_t marker,
+    const void * payload, size_t payload_len, size_t * out_n) {
+  if (payload_len > 65533u) {
+    return GIMG_ERR_LIMIT;
+  }
+  GIMG_Result r = jpeg_write_marker(stream, marker, out_n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_u16(stream, (uint16_t)(2 + payload_len), out_n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (payload_len > 0 && payload) {
+    size_t n = 0;
+    r = gimg_stream_write(stream, payload, payload_len, &n);
+    if (out_n) {
+      *out_n += n;
+    }
+    if (r != GIMG_OK) {
+      return r;
+    }
+  }
+  return GIMG_OK;
+}
+
+/** Build minimal APP0 JFIF (16 bytes). If x_dpi and y_dpi are both 0, use
+ * units=0 (no units) and density 1,1; else units=1 (dots per inch). */
+static void jpeg_build_minimal_app0(
+    unsigned char * buf, uint32_t x_dpi, uint32_t y_dpi) {
+  memcpy(buf, "JFIF\0", 5);
+  buf[5] = 0x01;
+  buf[6] = 0x01;
+  if (x_dpi == 0 && y_dpi == 0) {
+    buf[7] = 0; // no units
+    buf[8] = 0;
+    buf[9] = 1;
+    buf[10] = 0;
+    buf[11] = 1;
+  }
+  else {
+    if (x_dpi == 0) {
+      x_dpi = 1;
+    }
+    if (y_dpi == 0) {
+      y_dpi = 1;
+    }
+    buf[7] = 1; // dots per inch
+    buf[8] = (unsigned char)(x_dpi >> 8);
+    buf[9] = (unsigned char)(x_dpi & 0xFFu);
+    buf[10] = (unsigned char)(y_dpi >> 8);
+    buf[11] = (unsigned char)(y_dpi & 0xFFu);
+  }
+  buf[12] = 0;
+  buf[13] = 0; // no thumbnail
+  buf[14] = 0;
+  buf[15] = 0;
 }
 
 /** RGB to YCbCr (BT.601). R,G,B 0..255 -> Y,Cb,Cr 0..255. */
@@ -209,8 +271,12 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
 
   unsigned quality = GIMG_JPEG_DEFAULT_QUALITY;
-  // Save_Options has no quality field yet; could use reserved or extend later.
-  (void)options;
+  if (options && options->quality != 0) {
+    quality = options->quality;
+    if (quality > 100) {
+      quality = 100;
+    }
+  }
 
   uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES];
   uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES];
@@ -244,16 +310,145 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   report->bytes_written += written;
 
-  // Optional minimal APP0 JFIF
+  // APP segments per metadata policy (order: APP0, APP1 EXIF, APP1 XMP, APP2
+  // ICC).
   {
-    unsigned char app0[] = {0xFF, GIMG_JPEG_MARKER_APP0, 0x00, 0x10, 'J', 'F',
-        'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00};
-    r = gimg_stream_write(stream, app0, sizeof(app0), &written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
+    GIMG_Meta_Policy policy =
+        options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
+    uint32_t x_dpi = 0, y_dpi = 0;
+    GIMG_Meta_Common * meta_common = gimg_doc_meta_common(doc);
+    if (meta_common) {
+      gimg_meta_common_dpi(meta_common, &x_dpi, &y_dpi);
     }
-    report->bytes_written += written;
+    GIMG_Meta_Raw * meta_raw = gimg_doc_meta_raw(doc);
+
+    // APP0: from meta_raw when preserving and present, else minimal (JFIF).
+    size_t app0_len = 0;
+    int have_app0 = (policy != GIMG_META_DROP_ALL &&
+                        policy != GIMG_META_KEEP_COMMON_ONLY) &&
+        meta_raw &&
+        gimg_meta_raw_get(
+            meta_raw, "jpeg", GIMG_JPEG_RAW_APP0, NULL, &app0_len) == GIMG_OK &&
+        app0_len > 0;
+    if (have_app0) {
+      unsigned char * app0_buf = (unsigned char *)gimg_malloc(alloc, app0_len);
+      if (app0_buf) {
+        r = gimg_meta_raw_get(
+            meta_raw, "jpeg", GIMG_JPEG_RAW_APP0, app0_buf, &app0_len);
+        if (r == GIMG_OK) {
+          r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP0, app0_buf,
+              app0_len, &report->bytes_written);
+        }
+        gimg_free(alloc, app0_buf);
+      }
+      if (r != GIMG_OK) {
+        gimg_free(alloc, scan_data);
+        return r;
+      }
+    }
+    else {
+      unsigned char app0[16];
+      jpeg_build_minimal_app0(app0, x_dpi, y_dpi);
+      r = jpeg_write_app_segment(
+          stream, GIMG_JPEG_MARKER_APP0, app0, 16, &report->bytes_written);
+      if (r != GIMG_OK) {
+        gimg_free(alloc, scan_data);
+        return r;
+      }
+    }
+
+    // APP1 EXIF / XMP and APP2 ICC only when policy preserves metadata
+    if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_COMMON_ONLY) {
+      // APP1 EXIF (optionally STRIP_GPS or NORMALIZE_EXIF)
+      {
+        size_t exif_size = 0;
+        if (meta_raw &&
+            gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_EXIF, NULL,
+                &exif_size) == GIMG_OK &&
+            exif_size > 0) {
+          unsigned char * exif_buf =
+              (unsigned char *)gimg_malloc(alloc, exif_size);
+          if (exif_buf) {
+            r = gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_EXIF,
+                exif_buf, &exif_size);
+            if (r == GIMG_OK) {
+              const void * to_write = exif_buf;
+              size_t to_write_size = exif_size;
+              void * modified = NULL;
+              size_t modified_size = 0;
+              if (policy == GIMG_META_STRIP_GPS) {
+                if (gimg_exif_strip_gps(alloc, exif_buf, exif_size, &modified,
+                        &modified_size) == GIMG_OK) {
+                  to_write = modified;
+                  to_write_size = modified_size;
+                }
+              }
+              else if (policy == GIMG_META_NORMALIZE_EXIF) {
+                if (gimg_exif_normalize(alloc, exif_buf, exif_size, &modified,
+                        &modified_size) == GIMG_OK) {
+                  to_write = modified;
+                  to_write_size = modified_size;
+                }
+              }
+              r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP1,
+                  to_write, to_write_size, &report->bytes_written);
+              if (modified) {
+                gimg_free(alloc, modified);
+              }
+            }
+            gimg_free(alloc, exif_buf);
+          }
+          if (r != GIMG_OK) {
+            gimg_free(alloc, scan_data);
+            return r;
+          }
+        }
+      }
+
+      // APP1 XMP
+      size_t xmp_size = 0;
+      if (meta_raw &&
+          gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_XMP, NULL,
+              &xmp_size) == GIMG_OK &&
+          xmp_size > 0) {
+        unsigned char * xmp_buf = (unsigned char *)gimg_malloc(alloc, xmp_size);
+        if (xmp_buf) {
+          r = gimg_meta_raw_get(
+              meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_XMP, xmp_buf, &xmp_size);
+          if (r == GIMG_OK) {
+            r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP1, xmp_buf,
+                xmp_size, &report->bytes_written);
+          }
+          gimg_free(alloc, xmp_buf);
+        }
+        if (r != GIMG_OK) {
+          gimg_free(alloc, scan_data);
+          return r;
+        }
+      }
+
+      // APP2 ICC
+      size_t icc_size = 0;
+      if (meta_raw &&
+          gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC, NULL,
+              &icc_size) == GIMG_OK &&
+          icc_size > 0) {
+        unsigned char * icc_buf = (unsigned char *)gimg_malloc(alloc, icc_size);
+        if (icc_buf) {
+          r = gimg_meta_raw_get(
+              meta_raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC, icc_buf, &icc_size);
+          if (r == GIMG_OK) {
+            r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP2, icc_buf,
+                icc_size, &report->bytes_written);
+          }
+          gimg_free(alloc, icc_buf);
+        }
+        if (r != GIMG_OK) {
+          gimg_free(alloc, scan_data);
+          return r;
+        }
+      }
+    }
   }
 
   // DQT: table 0 (luma), table 1 (chroma). Lq = 2 + 1 + 64 = 67 for 8-bit.
