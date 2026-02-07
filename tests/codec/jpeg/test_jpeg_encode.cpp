@@ -1354,6 +1354,203 @@ TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
   gimg_stream_destroy(in_refine);
 }
 
+TEST(JpegEncode, SaveGray16ThenLoadDecode) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_GRAY16, GIMG_RASTER_OWNED,
+                NULL, 0, &raster),
+      GIMG_OK);
+  uint16_t * pixels = (uint16_t *)gimg_raster_pixels(raster);
+  size_t stride_el = gimg_raster_stride_bytes(raster) / 2;
+  for (uint32_t y = 0; y < 16; y++) {
+    for (uint32_t x = 0; x < 16; x++) {
+      pixels[y * stride_el + x] = (uint16_t)((x + y * 16) * 256);
+    }
+  }
+  gimg_item_set_raster(item, raster);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .quality = 85,
+  };
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+  EXPECT_GT(report.bytes_written, 0u);
+  const void * jpeg_data = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(out, &jpeg_data, &jpeg_size);
+  std::vector<uint8_t> jpeg_copy(
+      (const uint8_t *)jpeg_data, (const uint8_t *)jpeg_data + jpeg_size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
+  GIMG_Result load_r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  if (load_r != GIMG_OK) {
+    gimg_stream_destroy(in_stream);
+    FAIL() << "load failed with " << load_r;
+    return;
+  }
+  GIMG_Raster * decoded = nullptr;
+  GIMG_Result decode_r =
+      gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &decoded);
+  if (decode_r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in_stream);
+    FAIL() << "decode failed with " << decode_r;
+    return;
+  }
+  EXPECT_EQ(gimg_raster_width(decoded), 16u);
+  EXPECT_EQ(gimg_raster_height(decoded), 16u);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(decoded);
+  ASSERT_NE(fmt, nullptr);
+  EXPECT_EQ(fmt->bits_per_channel[0], 16);
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
+}
+
+TEST(JpegEncode, SaveRgb16ThenLoadDecode) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_RGBA16, GIMG_RASTER_OWNED,
+                NULL, 0, &raster),
+      GIMG_OK);
+  uint16_t * pixels = (uint16_t *)gimg_raster_pixels(raster);
+  size_t stride_el = gimg_raster_stride_bytes(raster) / 2;
+  for (uint32_t y = 0; y < 8; y++) {
+    for (uint32_t x = 0; x < 8; x++) {
+      pixels[y * stride_el + x * 4 + 0] = (uint16_t)(x * 8192);
+      pixels[y * stride_el + x * 4 + 1] = (uint16_t)(y * 8192);
+      pixels[y * stride_el + x * 4 + 2] = (uint16_t)((x + y) * 4096);
+      pixels[y * stride_el + x * 4 + 3] = 65535;
+    }
+  }
+  gimg_item_set_raster(item, raster);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .quality = 90,
+      .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
+  };
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+  EXPECT_GT(report.bytes_written, 0u);
+  const void * jpeg_data = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(out, &jpeg_data, &jpeg_size);
+  std::vector<uint8_t> jpeg_copy(
+      (const uint8_t *)jpeg_data, (const uint8_t *)jpeg_data + jpeg_size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
+  GIMG_Result load_r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  if (load_r != GIMG_OK) {
+    gimg_stream_destroy(in_stream);
+    FAIL() << "load failed with " << load_r;
+    return;
+  }
+  GIMG_Raster * decoded = nullptr;
+  GIMG_Result decode_r =
+      gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &decoded);
+  if (decode_r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in_stream);
+    FAIL() << "decode failed with " << decode_r;
+    return;
+  }
+  EXPECT_EQ(gimg_raster_width(decoded), 8u);
+  EXPECT_EQ(gimg_raster_height(decoded), 8u);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(decoded);
+  ASSERT_NE(fmt, nullptr);
+  EXPECT_EQ(fmt->bits_per_channel[0], 16);
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
+}
+
+TEST(JpegEncode, SaveGray16ProgressiveThenLoadDecode) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_GRAY16, GIMG_RASTER_OWNED,
+                NULL, 0, &raster),
+      GIMG_OK);
+  uint16_t * pixels = (uint16_t *)gimg_raster_pixels(raster);
+  size_t stride_el = gimg_raster_stride_bytes(raster) / 2;
+  for (uint32_t y = 0; y < 16; y++) {
+    for (uint32_t x = 0; x < 16; x++) {
+      pixels[y * stride_el + x] = (uint16_t)((x * 17 + y * 31) & 0xFFFF);
+    }
+  }
+  gimg_item_set_raster(item, raster);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .quality = 85,
+      .jpeg_progressive = 1,
+  };
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+  const void * jpeg_data = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(out, &jpeg_data, &jpeg_size);
+  std::vector<uint8_t> jpeg_copy(
+      (const uint8_t *)jpeg_data, (const uint8_t *)jpeg_data + jpeg_size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
+  GIMG_Result load_r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  if (load_r != GIMG_OK) {
+    gimg_stream_destroy(in_stream);
+    FAIL() << "load failed with " << load_r;
+    return;
+  }
+  GIMG_Raster * decoded = nullptr;
+  GIMG_Result decode_r =
+      gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &decoded);
+  if (decode_r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in_stream);
+    FAIL() << "decode failed with " << decode_r;
+    return;
+  }
+  EXPECT_EQ(gimg_raster_width(decoded), 16u);
+  EXPECT_EQ(gimg_raster_height(decoded), 16u);
+  EXPECT_EQ(gimg_raster_format(decoded)->bits_per_channel[0], 16);
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {

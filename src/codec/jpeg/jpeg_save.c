@@ -134,11 +134,22 @@ static void jpeg_rgb_to_ycbcr(
 #define CHROMA_422 1
 #define CHROMA_444 2
 
-/** Encode raster to scan data (baseline) or coefficient buffer (progressive).
- * When !progressive: allocates *out_scan_data; caller must free. When
- * progressive: allocates *out_coef_buffer (out_total_blocks * 64 int16_t);
- * caller must free. Supports GRAY8 and RGB 8-bit. */
-static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
+/** RGB 16-bit to YCbCr 16-bit (BT.601). R,G,B 0..65535 -> Y,Cb,Cr 0..65535. */
+static void jpeg_rgb16_to_ycbcr16(uint16_t r, uint16_t g, uint16_t b,
+    uint16_t * y, uint16_t * cb, uint16_t * cr) {
+  uint32_t ri = (uint32_t)(r >> 8);
+  uint32_t gi = (uint32_t)(g >> 8);
+  uint32_t bi = (uint32_t)(b >> 8);
+  int yv = (int)((77 * ri + 150 * gi + 29 * bi + 128) / 256);
+  int cbv = (int)((-43 * (int)ri - 84 * (int)gi + 127 * (int)bi + 128 * 256) / 256) + 128;
+  int crv = (int)((127 * (int)ri - 106 * (int)gi - 21 * (int)bi + 128 * 256) / 256) + 128;
+  *y = (uint16_t)(yv < 0 ? 0 : (yv > 255 ? 65535u : (uint32_t)yv << 8));
+  *cb = (uint16_t)(cbv < 0 ? 0 : (cbv > 255 ? 65535u : (uint32_t)cbv << 8));
+  *cr = (uint16_t)(crv < 0 ? 0 : (crv > 255 ? 65535u : (uint32_t)crv << 8));
+}
+
+/** 16-bit path: fill uint16_t comps, quant 16-bit, encode with extended precision. */
+static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
     bool progressive, unsigned char ** out_scan_data, size_t * out_scan_size,
     int16_t ** out_coef_buffer, size_t * out_total_blocks,
@@ -146,7 +157,326 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
     uint32_t * out_height, int * out_num_components,
     uint8_t out_h_samp[3], uint8_t out_v_samp[3]) {
-  if (!alloc || !raster || !out_width || !out_height || !out_num_components) {
+  (void)progressive;
+  (void)out_scan_data;
+  (void)out_scan_size;
+  /* 16-bit always uses coef buffer (SOF2 + two scans). */
+  uint32_t width = gimg_raster_width(raster);
+  uint32_t height = gimg_raster_height(raster);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  int num_components = (fmt->channel_model == GIMG_CHANNEL_GRAY) ? 1 : 3;
+  size_t comp_size = 0;
+  if (!gimg_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
+    return GIMG_ERR_LIMIT;
+  }
+  uint16_t * comp_y = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
+  if (!comp_y) {
+    return GIMG_ERR_OOM;
+  }
+  uint16_t * comp_cb = NULL;
+  uint16_t * comp_cr = NULL;
+  if (num_components == 3) {
+    comp_cb = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
+    comp_cr = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
+    if (!comp_cb || !comp_cr) {
+      gimg_free(alloc, comp_y);
+      if (comp_cb) {
+        gimg_free(alloc, comp_cb);
+      }
+      return GIMG_ERR_OOM;
+    }
+  }
+  size_t stride_bytes = gimg_raster_stride_bytes(raster);
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  if (!pixels) {
+    gimg_free(alloc, comp_y);
+    gimg_free(alloc, comp_cb);
+    gimg_free(alloc, comp_cr);
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (num_components == 1) {
+    for (uint32_t y = 0; y < height; y++) {
+      const uint16_t * row = (const uint16_t *)(pixels + y * stride_bytes);
+      for (uint32_t x = 0; x < width; x++) {
+        comp_y[y * (size_t)width + x] = row[x];
+      }
+    }
+  }
+  else {
+    int ch_count = (int)fmt->channel_count;
+    if (ch_count < 3) {
+      ch_count = 3;
+    }
+    for (uint32_t y = 0; y < height; y++) {
+      const uint16_t * row = (const uint16_t *)(pixels + y * stride_bytes);
+      for (uint32_t x = 0; x < width; x++) {
+        uint16_t r = row[x * (size_t)ch_count + 0];
+        uint16_t g = row[x * (size_t)ch_count + 1];
+        uint16_t b = row[x * (size_t)ch_count + 2];
+        uint16_t yv, cb, cr;
+        jpeg_rgb16_to_ycbcr16(r, g, b, &yv, &cb, &cr);
+        comp_y[y * (size_t)width + x] = yv;
+        comp_cb[y * (size_t)width + x] = cb;
+        comp_cr[y * (size_t)width + x] = cr;
+      }
+    }
+  }
+  uint8_t h_samp[3] = {1, 1, 1};
+  uint8_t v_samp[3] = {1, 1, 1};
+  size_t stride0 = (size_t)width;
+  size_t stride1 = (size_t)width;
+  size_t stride2 = (size_t)width;
+  uint16_t * use_cb = comp_cb;
+  uint16_t * use_cr = comp_cr;
+  if (num_components == 3 && chroma_subsampling != CHROMA_444) {
+    if (chroma_subsampling == CHROMA_420) {
+      uint32_t mcu_per_row = (width + 15u) / 16u;
+      uint32_t mcu_per_col = (height + 15u) / 16u;
+      uint32_t cw = 8u * mcu_per_row;
+      uint32_t ch = 8u * mcu_per_col;
+      h_samp[0] = 2;
+      h_samp[1] = 1;
+      h_samp[2] = 1;
+      v_samp[0] = 2;
+      v_samp[1] = 1;
+      v_samp[2] = 1;
+      size_t chroma_size = 0;
+      if (!gimg_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
+        gimg_free(alloc, comp_y);
+        gimg_free(alloc, comp_cb);
+        gimg_free(alloc, comp_cr);
+        return GIMG_ERR_LIMIT;
+      }
+      chroma_size *= sizeof(uint16_t);
+      use_cb = (uint16_t *)gimg_malloc(alloc, chroma_size);
+      use_cr = (uint16_t *)gimg_malloc(alloc, chroma_size);
+      if (!use_cb || !use_cr) {
+        gimg_free(alloc, comp_y);
+        gimg_free(alloc, comp_cb);
+        gimg_free(alloc, comp_cr);
+        if (use_cb) {
+          gimg_free(alloc, use_cb);
+        }
+        return GIMG_ERR_OOM;
+      }
+      for (uint32_t cb_y = 0; cb_y < ch; cb_y++) {
+        uint32_t mcu_y = cb_y / 8u;
+        uint32_t by = cb_y % 8u;
+        uint32_t y_lo = mcu_y * 16u + by * 2u;
+        uint32_t y1 = y_lo + 1u < height ? y_lo + 1u : y_lo;
+        if (y_lo >= height) {
+          y_lo = height - 1u;
+        }
+        if (y1 >= height) {
+          y1 = height - 1u;
+        }
+        for (uint32_t cb_x = 0; cb_x < cw; cb_x++) {
+          uint32_t mcu_x = cb_x / 8u;
+          uint32_t bx = cb_x % 8u;
+          uint32_t x_lo = mcu_x * 16u + bx * 2u;
+          uint32_t x1 = x_lo + 1u < width ? x_lo + 1u : x_lo;
+          if (x_lo >= width) {
+            x_lo = width - 1u;
+          }
+          if (x1 >= width) {
+            x1 = width - 1u;
+          }
+          uint32_t sum_cb = (uint32_t)comp_cb[y_lo * (size_t)width + x_lo] +
+              (uint32_t)comp_cb[y_lo * (size_t)width + x1] +
+              (uint32_t)comp_cb[y1 * (size_t)width + x_lo] +
+              (uint32_t)comp_cb[y1 * (size_t)width + x1];
+          uint32_t sum_cr = (uint32_t)comp_cr[y_lo * (size_t)width + x_lo] +
+              (uint32_t)comp_cr[y_lo * (size_t)width + x1] +
+              (uint32_t)comp_cr[y1 * (size_t)width + x_lo] +
+              (uint32_t)comp_cr[y1 * (size_t)width + x1];
+          use_cb[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cb + 2) / 4);
+          use_cr[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cr + 2) / 4);
+        }
+      }
+      stride1 = (size_t)cw;
+      stride2 = (size_t)cw;
+      gimg_free(alloc, comp_cb);
+      gimg_free(alloc, comp_cr);
+      comp_cb = NULL;
+      comp_cr = NULL;
+    }
+    else {
+      uint32_t mcu_per_row = (width + 15u) / 16u;
+      uint32_t mcu_per_col = (height + 7u) / 8u;
+      uint32_t cw = 8u * mcu_per_row;
+      uint32_t ch = 8u * mcu_per_col;
+      h_samp[0] = 2;
+      h_samp[1] = 1;
+      h_samp[2] = 1;
+      v_samp[0] = 1;
+      v_samp[1] = 1;
+      v_samp[2] = 1;
+      size_t chroma_size = 0;
+      if (!gimg_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
+        gimg_free(alloc, comp_y);
+        gimg_free(alloc, comp_cb);
+        gimg_free(alloc, comp_cr);
+        return GIMG_ERR_LIMIT;
+      }
+      chroma_size *= sizeof(uint16_t);
+      use_cb = (uint16_t *)gimg_malloc(alloc, chroma_size);
+      use_cr = (uint16_t *)gimg_malloc(alloc, chroma_size);
+      if (!use_cb || !use_cr) {
+        gimg_free(alloc, comp_y);
+        gimg_free(alloc, comp_cb);
+        gimg_free(alloc, comp_cr);
+        if (use_cb) {
+          gimg_free(alloc, use_cb);
+        }
+        return GIMG_ERR_OOM;
+      }
+      for (uint32_t cb_y = 0; cb_y < ch; cb_y++) {
+        uint32_t y_src = (cb_y * height) / ch;
+        if (y_src >= height) {
+          y_src = height - 1u;
+        }
+        size_t row_off = (size_t)y_src * (size_t)width;
+        for (uint32_t cb_x = 0; cb_x < cw; cb_x++) {
+          uint32_t x_lo = cb_x * 2u;
+          uint32_t x1 = x_lo + 1u < width ? x_lo + 1u : x_lo;
+          if (x_lo >= width) {
+            x_lo = width - 1u;
+          }
+          if (x1 >= width) {
+            x1 = width - 1u;
+          }
+          uint32_t sum_cb = (uint32_t)comp_cb[row_off + x_lo] +
+              (uint32_t)comp_cb[row_off + x1];
+          uint32_t sum_cr = (uint32_t)comp_cr[row_off + x_lo] +
+              (uint32_t)comp_cr[row_off + x1];
+          use_cb[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cb + 1) / 2);
+          use_cr[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cr + 1) / 2);
+        }
+      }
+      stride1 = (size_t)cw;
+      stride2 = (size_t)cw;
+      gimg_free(alloc, comp_cb);
+      gimg_free(alloc, comp_cr);
+      comp_cb = NULL;
+      comp_cr = NULL;
+    }
+  }
+  if (out_h_samp && out_v_samp && num_components >= 3) {
+    out_h_samp[0] = h_samp[0];
+    out_h_samp[1] = h_samp[1];
+    out_h_samp[2] = h_samp[2];
+    out_v_samp[0] = v_samp[0];
+    out_v_samp[1] = v_samp[1];
+    out_v_samp[2] = v_samp[2];
+  }
+  if (quality > 100) {
+    quality = 100;
+  }
+  gimg_jpeg_default_quant_scaled_16bit(quality, quant_luma, quant_chroma);
+  const uint8_t * h_ptr = (num_components == 3 && (h_samp[0] != 1 || h_samp[1] != 1))
+      ? h_samp
+      : NULL;
+  const uint8_t * v_ptr = (num_components == 3 && (v_samp[0] != 1 || v_samp[1] != 1))
+      ? v_samp
+      : NULL;
+  GIMG_Result r;
+  int precision = 16;
+  /* 16-bit must use SOF2 (progressive) with two scans (DC then AC) so the
+   * decoder can decode; always fill coef buffer and let the writer emit
+   * SOF2 + DC scan + AC scan. */
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  if (num_components >= 3) {
+    if (h_samp[1] > h_max) {
+      h_max = h_samp[1];
+    }
+    if (h_samp[2] > h_max) {
+      h_max = h_samp[2];
+    }
+    if (v_samp[1] > v_max) {
+      v_max = v_samp[1];
+    }
+    if (v_samp[2] > v_max) {
+      v_max = v_samp[2];
+    }
+  }
+  uint32_t mcu_w = (uint32_t)(8 * h_max);
+  uint32_t mcu_h = (uint32_t)(8 * v_max);
+  uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
+  uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
+  size_t blocks_per_mcu = 0;
+  for (int c = 0; c < num_components; c++) {
+    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
+  }
+  size_t total_blocks = 0;
+  if (!gimg_safe_mul_size((size_t)mcu_per_row, (size_t)mcu_per_col,
+          &total_blocks) ||
+      !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+    gimg_free(alloc, comp_y);
+    if (use_cb != comp_cb) {
+      gimg_free(alloc, use_cb);
+    }
+    if (use_cr != comp_cr) {
+      gimg_free(alloc, use_cr);
+    }
+    return GIMG_ERR_LIMIT;
+  }
+  int16_t * coef_buf = (int16_t *)gimg_malloc(alloc,
+      total_blocks * 64 * sizeof(int16_t));
+  if (!coef_buf) {
+    gimg_free(alloc, comp_y);
+    if (use_cb != comp_cb) {
+      gimg_free(alloc, use_cb);
+    }
+    if (use_cr != comp_cr) {
+      gimg_free(alloc, use_cr);
+    }
+    return GIMG_ERR_OOM;
+  }
+  size_t out_blocks = 0;
+  r = gimg_jpeg_progressive_fill_coef_buffer_16bit(width, height, num_components,
+      comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
+      quant_luma, quant_chroma, precision, coef_buf, &out_blocks);
+  gimg_free(alloc, comp_y);
+  if (use_cb != comp_cb) {
+    gimg_free(alloc, use_cb);
+  }
+  if (use_cr != comp_cr) {
+    gimg_free(alloc, use_cr);
+  }
+  if (num_components == 3) {
+    gimg_free(alloc, comp_cb);
+    gimg_free(alloc, comp_cr);
+  }
+  if (r != GIMG_OK) {
+    gimg_free(alloc, coef_buf);
+    return r;
+  }
+  *out_coef_buffer = coef_buf;
+  *out_total_blocks = out_blocks;
+  *out_width = width;
+  *out_height = height;
+  *out_num_components = num_components;
+  return GIMG_OK;
+}
+
+/** Encode raster to scan data (baseline) or coefficient buffer (progressive).
+ * When !progressive: allocates *out_scan_data; caller must free. When
+ * progressive: allocates *out_coef_buffer (out_total_blocks * 64 int16_t);
+ * caller must free. Supports GRAY8, RGB 8-bit, GRAY16, RGB 16-bit.
+ * *out_precision is set to 8 or 16. */
+static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
+    const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
+    bool progressive, uint16_t restart_interval,
+    unsigned char ** out_scan_data, size_t * out_scan_size,
+    int16_t ** out_coef_buffer, size_t * out_total_blocks,
+    uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
+    uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
+    uint32_t * out_height, int * out_num_components,
+    uint8_t out_h_samp[3], uint8_t out_v_samp[3], int * out_precision) {
+  if (!alloc || !raster || !out_width || !out_height || !out_num_components ||
+      !out_precision) {
     return GIMG_ERR_INTERNAL;
   }
   if (!progressive && (!out_scan_data || !out_scan_size)) {
@@ -167,6 +497,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   if (out_total_blocks) {
     *out_total_blocks = 0;
   }
+  *out_precision = 8;
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
@@ -175,6 +506,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     return GIMG_ERR_UNSUPPORTED;
   }
   int num_components = 0;
+  int precision = 8;
   if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count == 1 &&
       fmt->bits_per_channel[0] == 8) {
     num_components = 1;
@@ -185,8 +517,27 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
     num_components = 3;
   }
+  else if (fmt->channel_model == GIMG_CHANNEL_GRAY &&
+      fmt->channel_count == 1 && fmt->bits_per_channel[0] == 16) {
+    num_components = 1;
+    precision = 16;
+  }
+  else if ((fmt->channel_model == GIMG_CHANNEL_RGB ||
+               fmt->channel_model == GIMG_CHANNEL_RGBA) &&
+      fmt->channel_count >= 3 && fmt->bits_per_channel[0] == 16 &&
+      fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
+    num_components = 3;
+    precision = 16;
+  }
   else {
     return GIMG_ERR_UNSUPPORTED;
+  }
+  if (precision == 16) {
+    *out_precision = 16;
+    return jpeg_raster_to_scan_data_16bit(alloc, raster, quality,
+        chroma_subsampling, progressive, out_scan_data, out_scan_size,
+        out_coef_buffer, out_total_blocks, quant_luma, quant_chroma,
+        out_width, out_height, out_num_components, out_h_samp, out_v_samp);
   }
   size_t comp_size = 0;
   if (!gimg_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
@@ -494,7 +845,8 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     size_t scan_size = 0;
     r = gimg_jpeg_encode_baseline_scan(width, height, num_components,
         comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
-        quant_luma, quant_chroma, alloc, &scan_data, &scan_size);
+        quant_luma, quant_chroma, alloc, restart_interval,
+        &scan_data, &scan_size);
     gimg_free(alloc, comp_y);
     if (use_cb != comp_cb) {
       gimg_free(alloc, use_cb);
@@ -588,28 +940,50 @@ static GIMG_Result jpeg_raster_to_uncompressed_strip(const GIMG_Allocator * allo
   return GIMG_OK;
 }
 
-/** Write DQT, DHT, SOF0, SOS, scan data, EOI to stream. Does not free
- * scan_data. h_samp and v_samp may be NULL for 4:4:4 (all 1s). */
-static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
-    uint32_t height, int num_components,
-    const uint8_t * h_samp, const uint8_t * v_samp,
+/** Write DRI segment (restart interval in MCUs). Ri=0 means no restarts. */
+static GIMG_Result jpeg_write_dri(
+    GIMG_Stream * stream, uint16_t restart_interval, size_t * out_n) {
+  if (restart_interval == 0) {
+    return GIMG_OK;
+  }
+  size_t n = (out_n ? *out_n : 0);
+  GIMG_Result r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DRI, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_u16(stream, 4, &n); /* length: 2 + 2 payload */
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_u16(stream, restart_interval, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (out_n) {
+    *out_n = n;
+  }
+  return GIMG_OK;
+}
+
+/** Write 16-bit DQT (Pq=1): payload 1 + 64*2 = 129 bytes; segment length 131. */
+#define GIMG_JPEG_DQT_16BIT_PAYLOAD 129
+static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream, int num_components,
     const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
-    const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
-    const unsigned char * scan_data, size_t scan_size, size_t * out_n) {
+    const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
   size_t written = 0;
-  unsigned char dqt0[67];
-  memset(dqt0, 0, sizeof(dqt0));
-  dqt0[0] = 0x00;
+  unsigned char dqt0[GIMG_JPEG_DQT_16BIT_PAYLOAD];
+  dqt0[0] = 0x10; /* Pq=1, Tq=0 */
   for (int i = 0; i < 64; i++) {
-    dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
+    dqt0[1 + i * 2] = (unsigned char)(quant_luma[i] >> 8);
+    dqt0[2 + i * 2] = (unsigned char)(quant_luma[i] & 0xFF);
   }
   r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
   if (r != GIMG_OK) {
     return r;
   }
-  r = jpeg_write_u16(stream, 67, &n);
+  r = jpeg_write_u16(stream, 2 + GIMG_JPEG_DQT_16BIT_PAYLOAD, &n);
   if (r != GIMG_OK) {
     return r;
   }
@@ -619,18 +993,17 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
   }
   n += written;
   if (num_components == 3) {
-    unsigned char dqt1[67];
-    memset(dqt1, 0, sizeof(dqt1));
-    dqt1[0] = 0x01;
+    unsigned char dqt1[GIMG_JPEG_DQT_16BIT_PAYLOAD];
+    dqt1[0] = 0x11; /* Pq=1, Tq=1 */
     for (int i = 0; i < 64; i++) {
-      dqt1[1 + i] =
-          (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
+      dqt1[1 + i * 2] = (unsigned char)(quant_chroma[i] >> 8);
+      dqt1[2 + i * 2] = (unsigned char)(quant_chroma[i] & 0xFF);
     }
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
     if (r != GIMG_OK) {
       return r;
     }
-    r = jpeg_write_u16(stream, 67, &n);
+    r = jpeg_write_u16(stream, 2 + GIMG_JPEG_DQT_16BIT_PAYLOAD, &n);
     if (r != GIMG_OK) {
       return r;
     }
@@ -640,17 +1013,106 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     }
     n += written;
   }
-  {
-    size_t dht_written = 0;
-    r = gimg_jpeg_write_standard_dht(stream, &dht_written);
+  if (out_n) {
+    *out_n = n;
+  }
+  return GIMG_OK;
+}
+
+/** Write DQT, DHT, [DRI if restart_interval>0], SOF0/SOF1/SOF2, SOS, scan
+ * data, EOI to stream. Does not free scan_data. precision 8 = SOF0; 12 = SOF1;
+ * 16 = SOF2. */
+static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
+    uint32_t height, int num_components,
+    const uint8_t * h_samp, const uint8_t * v_samp,
+    const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
+    const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
+    const unsigned char * scan_data, size_t scan_size, int precision,
+    uint16_t restart_interval, size_t * out_n) {
+  size_t n = (out_n ? *out_n : 0);
+  GIMG_Result r;
+  size_t written = 0;
+  if (precision > 8) {
+    r = jpeg_write_dqt_16bit(stream, num_components, quant_luma, quant_chroma,
+        &n);
     if (r != GIMG_OK) {
       return r;
     }
-    n += dht_written;
+    {
+      size_t dht_written = 0;
+      r = gimg_jpeg_write_standard_dht_extended(stream, &dht_written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += dht_written;
+    }
+  }
+  else {
+    unsigned char dqt0[67];
+    memset(dqt0, 0, sizeof(dqt0));
+    dqt0[0] = 0x00;
+    for (int i = 0; i < 64; i++) {
+      dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
+    }
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, 67, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = gimg_stream_write(stream, dqt0, sizeof(dqt0), &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+    if (num_components == 3) {
+      unsigned char dqt1[67];
+      memset(dqt1, 0, sizeof(dqt1));
+      dqt1[0] = 0x01;
+      for (int i = 0; i < 64; i++) {
+        dqt1[1 + i] =
+            (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
+      }
+      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = jpeg_write_u16(stream, 67, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = gimg_stream_write(stream, dqt1, sizeof(dqt1), &written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += written;
+    }
+    {
+      size_t dht_written = 0;
+      r = gimg_jpeg_write_standard_dht(stream, &dht_written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += dht_written;
+    }
+  }
+  r = jpeg_write_dri(stream, restart_interval, &n);
+  if (r != GIMG_OK) {
+    return r;
   }
   {
+    uint8_t sof_marker = GIMG_JPEG_MARKER_SOF0;
+    if (precision == 12) {
+      sof_marker = GIMG_JPEG_MARKER_SOF1;
+    }
+    else if (precision == 16) {
+      sof_marker = GIMG_JPEG_MARKER_SOF2;
+    }
+    uint8_t prec_byte = (uint8_t)(precision < 8 ? 8 : precision);
     uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
-    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOF0, &n);
+    r = jpeg_write_marker(stream, sof_marker, &n);
     if (r != GIMG_OK) {
       return r;
     }
@@ -660,7 +1122,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     }
     unsigned char sof[8 + 3 * 4];
     memset(sof, 0, sizeof(sof));
-    sof[0] = 8;
+    sof[0] = prec_byte;
     sof[1] = (unsigned char)(height >> 8);
     sof[2] = (unsigned char)(height & 0xFF);
     sof[3] = (unsigned char)(width >> 8);
@@ -771,8 +1233,9 @@ static GIMG_Result jpeg_validate_progressive_config(
   return GIMG_OK;
 }
 
-/** Write DQT, DHT, SOF2, then for each scan: SOS (Ss,Se,Ah,Al) + scan data;
- * then EOI. Frees scan data after each write; does not free coef_buffer. */
+/** Write DQT, DHT, [DRI if restart_interval>0], SOF2, then for each scan: SOS
+ * (Ss,Se,Ah,Al) + scan data; then EOI. precision 8 or 16. Frees scan data
+ * after each write. */
 static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components,
     const uint8_t * h_samp, const uint8_t * v_samp,
@@ -780,37 +1243,32 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const int16_t * coef_buffer, size_t total_blocks,
     const GIMG_JPEG_Progressive_Scan * scans, unsigned scan_count,
-    const GIMG_Allocator * alloc, size_t * out_n) {
+    int precision, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
   size_t written = 0;
-  /* DQT same as baseline */
-  unsigned char dqt0[67];
-  memset(dqt0, 0, sizeof(dqt0));
-  dqt0[0] = 0x00;
-  for (int i = 0; i < 64; i++) {
-    dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
+  if (precision > 8) {
+    r = jpeg_write_dqt_16bit(stream, num_components, quant_luma, quant_chroma,
+        &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    {
+      size_t dht_written = 0;
+      r = gimg_jpeg_write_standard_dht_extended(stream, &dht_written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += dht_written;
+    }
   }
-  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
-  if (r != GIMG_OK) {
-    return r;
-  }
-  r = jpeg_write_u16(stream, 67, &n);
-  if (r != GIMG_OK) {
-    return r;
-  }
-  r = gimg_stream_write(stream, dqt0, sizeof(dqt0), &written);
-  if (r != GIMG_OK) {
-    return r;
-  }
-  n += written;
-  if (num_components == 3) {
-    unsigned char dqt1[67];
-    memset(dqt1, 0, sizeof(dqt1));
-    dqt1[0] = 0x01;
+  else {
+    unsigned char dqt0[67];
+    memset(dqt0, 0, sizeof(dqt0));
+    dqt0[0] = 0x00;
     for (int i = 0; i < 64; i++) {
-      dqt1[1 + i] =
-          (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
+      dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
     }
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
     if (r != GIMG_OK) {
@@ -820,21 +1278,42 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    r = gimg_stream_write(stream, dqt1, sizeof(dqt1), &written);
+    r = gimg_stream_write(stream, dqt0, sizeof(dqt0), &written);
     if (r != GIMG_OK) {
       return r;
     }
     n += written;
-  }
-  {
-    size_t dht_written = 0;
-    r = gimg_jpeg_write_standard_dht(stream, &dht_written);
-    if (r != GIMG_OK) {
-      return r;
+    if (num_components == 3) {
+      unsigned char dqt1[67];
+      memset(dqt1, 0, sizeof(dqt1));
+      dqt1[0] = 0x01;
+      for (int i = 0; i < 64; i++) {
+        dqt1[1 + i] =
+            (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
+      }
+      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = jpeg_write_u16(stream, 67, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = gimg_stream_write(stream, dqt1, sizeof(dqt1), &written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += written;
     }
-    n += dht_written;
+    {
+      size_t dht_written = 0;
+      r = gimg_jpeg_write_standard_dht(stream, &dht_written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += dht_written;
+    }
   }
-  /* AC refinement DHT (Th=2) when any scan is AC refinement (Ah>0, not DC). */
   {
     int need_refine_dht = 0;
     for (unsigned s = 0; s < scan_count && !need_refine_dht; s++) {
@@ -852,8 +1331,12 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       n += dht_written;
     }
   }
-  /* SOF2 (progressive DCT) */
+  r = jpeg_write_dri(stream, restart_interval, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
   {
+    uint8_t prec_byte = (uint8_t)(precision > 8 ? precision : 8);
     uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOF2, &n);
     if (r != GIMG_OK) {
@@ -865,7 +1348,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     }
     unsigned char sof[8 + 3 * 4];
     memset(sof, 0, sizeof(sof));
-    sof[0] = 8;
+    sof[0] = prec_byte;
     sof[1] = (unsigned char)(height >> 8);
     sof[2] = (unsigned char)(height & 0xFF);
     sof[3] = (unsigned char)(width >> 8);
@@ -894,9 +1377,18 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
   for (unsigned s = 0; s < scan_count; s++) {
     unsigned char * scan_data = NULL;
     size_t scan_size = 0;
-    r = gimg_jpeg_encode_progressive_scan(width, height, num_components,
-        coef_buffer, total_blocks, h_samp, v_samp, scans[s].Ss, scans[s].Se,
-        scans[s].Ah, scans[s].Al, alloc, &scan_data, &scan_size);
+    if (precision > 8) {
+      r = gimg_jpeg_encode_progressive_scan_16bit(width, height, num_components,
+          coef_buffer, total_blocks, h_samp, v_samp, scans[s].Ss, scans[s].Se,
+          scans[s].Ah, scans[s].Al, alloc, restart_interval,
+          &scan_data, &scan_size);
+    }
+    else {
+      r = gimg_jpeg_encode_progressive_scan(width, height, num_components,
+          coef_buffer, total_blocks, h_samp, v_samp, scans[s].Ss, scans[s].Se,
+          scans[s].Ah, scans[s].Al, alloc, restart_interval,
+          &scan_data, &scan_size);
+    }
     if (r != GIMG_OK) {
       return r;
     }
@@ -1014,6 +1506,10 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       return r;
     }
   }
+  uint16_t restart_interval =
+      (options && options->jpeg_restart_interval != 0)
+          ? options->jpeg_restart_interval
+          : 0;
   uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES];
   uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES];
   unsigned char * scan_data = NULL;
@@ -1024,17 +1520,20 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   int num_components = 0;
   uint8_t h_samp[3] = {1, 1, 1};
   uint8_t v_samp[3] = {1, 1, 1};
+  int precision = 8;
   r = jpeg_raster_to_scan_data(alloc, raster, quality,
-      chroma_subsampling, progressive, &scan_data, &scan_size, &coef_buffer,
-      &total_blocks, quant_luma, quant_chroma, &width, &height, &num_components,
-      h_samp, v_samp);
+      chroma_subsampling, progressive, restart_interval,
+      &scan_data, &scan_size, &coef_buffer, &total_blocks,
+      quant_luma, quant_chroma, &width, &height, &num_components,
+      h_samp, v_samp, &precision);
   if (raster_owned) {
     gimg_raster_destroy(raster);
   }
   if (r != GIMG_OK) {
     return r;
   }
-  if (progressive) {
+  bool use_progressive_body = progressive || (precision == 16);
+  if (use_progressive_body) {
     if (!coef_buffer) {
       return GIMG_ERR_OOM;
     }
@@ -1044,7 +1543,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       return GIMG_ERR_OOM;
     }
   }
-  void * to_free = progressive ? (void *)coef_buffer : (void *)scan_data;
+  void * to_free = use_progressive_body ? (void *)coef_buffer : (void *)scan_data;
 
   size_t written = 0;
   r = gimg_stream_write(
@@ -1311,9 +1810,10 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
               uint16_t tq_chroma[GIMG_JPEG_DQT_ENTRIES];
               uint32_t tw = 0, th = 0;
               int tnc = 0;
+              int thumb_prec = 8;
               r = jpeg_raster_to_scan_data(alloc, thumb_raster, thumb_quality,
-                  CHROMA_444, false, &thumb_scan, &thumb_scan_size, NULL, NULL,
-                  tq_luma, tq_chroma, &tw, &th, &tnc, NULL, NULL);
+                  CHROMA_444, false, 0, &thumb_scan, &thumb_scan_size, NULL, NULL,
+                  tq_luma, tq_chroma, &tw, &th, &tnc, NULL, NULL, &thumb_prec);
               if (thumb_raster_owned) {
                 gimg_raster_destroy(thumb_raster);
               }
@@ -1327,8 +1827,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
                       &mem_n);
                   if (r == GIMG_OK) {
                     r = jpeg_write_image_body(mem_stream, tw, th, tnc, NULL,
-                        NULL, tq_luma, tq_chroma, thumb_scan, thumb_scan_size,
-                        &mem_n);
+                        NULL, tq_luma, tq_chroma, thumb_scan, thumb_scan_size, 8,
+                        0, &mem_n);
                   }
                   if (r == GIMG_OK) {
                     const void * jpeg_buf = NULL;
@@ -1593,11 +2093,11 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
 
-  if (progressive) {
+  if (use_progressive_body) {
     const GIMG_JPEG_Progressive_Scan * scans =
         gimg_jpeg_default_progressive_scans;
     unsigned scan_count = gimg_jpeg_default_progressive_scan_count;
-    if (options && options->jpeg_progressive_config &&
+    if (progressive && options && options->jpeg_progressive_config &&
         options->jpeg_progressive_config->scan_count > 0) {
       scans = options->jpeg_progressive_config->scans;
       scan_count = options->jpeg_progressive_config->scan_count;
@@ -1605,13 +2105,14 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     r = jpeg_write_image_body_progressive(stream, width, height, num_components,
         num_components == 3 ? h_samp : NULL, num_components == 3 ? v_samp : NULL,
         quant_luma, quant_chroma, coef_buffer, total_blocks, scans, scan_count,
-        alloc, &report->bytes_written);
+        precision, alloc, restart_interval, &report->bytes_written);
     gimg_free(alloc, coef_buffer);
   }
   else {
     r = jpeg_write_image_body(stream, width, height, num_components,
         num_components == 3 ? h_samp : NULL, num_components == 3 ? v_samp : NULL,
-        quant_luma, quant_chroma, scan_data, scan_size, &report->bytes_written);
+        quant_luma, quant_chroma, scan_data, scan_size, precision,
+        restart_interval, &report->bytes_written);
     gimg_free(alloc, to_free);
   }
   if (r != GIMG_OK) {

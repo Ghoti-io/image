@@ -175,6 +175,9 @@ typedef struct {
   /** When jpeg_progressive==1: NULL or scan_count 0 = default progression;
    * otherwise use this scan script. Ignored for non-JPEG or baseline. */
   const GIMG_JPEG_Progressive_Config * jpeg_progressive_config;
+  /** Restart interval in MCUs (0 = none). When non-zero, DRI segment is
+   * written and RST markers (0xFF 0xD0..0xD7) are injected every N MCUs. */
+  uint16_t jpeg_restart_interval;
 } GIMG_Save_Options;
 
 /**
