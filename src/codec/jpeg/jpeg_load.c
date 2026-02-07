@@ -8,6 +8,11 @@
  * payload. Segment size limit (GIMG_Limits.max_chunk_size or internal default)
  * applies to payload size for bomb protection.
  *
+ * Stream contract: Load consumes segments strictly in order and does not
+ * require seek or tell. Non-seekable streams (e.g. pipes, socket, chunked
+ * HTTP) are supported; gimg_stream_seek and gimg_stream_tell may return
+ * GIMG_ERR_UNSUPPORTED / (size_t)-1.
+ *
  * Copyright 2026 by Corey Pennycuff
  */
 
@@ -43,7 +48,7 @@ static int jpeg_marker_has_no_length(uint8_t marker) {
   if (marker == GIMG_JPEG_MARKER_SOI || marker == GIMG_JPEG_MARKER_EOI) {
     return 1;
   }
-  if (marker >= 0xD0 && marker <= 0xD7) {  // RST0..RST7
+  if (marker >= 0xD0 && marker <= 0xD7) { // RST0..RST7
     return 1;
   }
   return 0;
@@ -59,9 +64,8 @@ static size_t jpeg_max_segment_payload(const GIMG_Limits * limits) {
 
 GIMG_Result gimg_jpeg_verify_soi(GIMG_Stream * stream) {
   unsigned char buf[GIMG_JPEG_SIGNATURE_LEN];
-  size_t n = 0;
-  GIMG_Result r = gimg_stream_read(stream, buf, GIMG_JPEG_SIGNATURE_LEN, &n);
-  if (r != GIMG_OK || n != GIMG_JPEG_SIGNATURE_LEN) {
+  GIMG_Result r = gimg_stream_read_exact(stream, buf, GIMG_JPEG_SIGNATURE_LEN);
+  if (r != GIMG_OK) {
     return GIMG_ERR_FORMAT;
   }
   if (buf[0] != 0xFF || buf[1] != GIMG_JPEG_MARKER_SOI) {
@@ -72,21 +76,21 @@ GIMG_Result gimg_jpeg_verify_soi(GIMG_Stream * stream) {
 
 GIMG_Result gimg_jpeg_read_marker(GIMG_Stream * stream, uint8_t * out_marker) {
   for (;;) {
-    unsigned char b;
+    unsigned char b = 0;
     size_t n = 0;
     GIMG_Result r = gimg_stream_read(stream, &b, 1, &n);
     if (r != GIMG_OK || n == 0) {
       return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
     }
     if (b != 0xFF) {
-      continue;  // Skip until 0xFF.
+      continue; // Skip until 0xFF.
     }
     r = gimg_stream_read(stream, &b, 1, &n);
     if (r != GIMG_OK || n == 0) {
       return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
     }
     if (b == 0x00) {
-      continue;  // Byte stuffing: 0xFF 0x00 is data.
+      continue; // Byte stuffing: 0xFF 0x00 is data.
     }
     *out_marker = b;
     return GIMG_OK;
@@ -96,10 +100,9 @@ GIMG_Result gimg_jpeg_read_marker(GIMG_Stream * stream, uint8_t * out_marker) {
 GIMG_Result gimg_jpeg_read_segment_length(
     GIMG_Stream * stream, uint16_t * out_length) {
   unsigned char buf[2];
-  size_t n = 0;
-  GIMG_Result r = gimg_stream_read(stream, buf, 2, &n);
-  if (r != GIMG_OK || n != 2) {
-    return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
+  GIMG_Result r = gimg_stream_read_exact(stream, buf, 2);
+  if (r != GIMG_OK) {
+    return GIMG_ERR_FORMAT;
   }
   *out_length = (uint16_t)((buf[0] << 8) | buf[1]);
   return GIMG_OK;
@@ -223,11 +226,24 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   state->allocator = alloc;
 
   int seen_sof = 0;
+  int have_pending_marker = 0;
+  uint8_t pending_marker = 0;
 
   for (;;) {
-    size_t seg_start = gimg_stream_tell(stream);
+    size_t seg_start = 0;
     uint8_t marker = 0;
-    r = gimg_jpeg_read_marker(stream, &marker);
+    if (have_pending_marker) {
+      marker = pending_marker;
+      have_pending_marker = 0;
+      r = GIMG_OK;
+    }
+    else {
+      size_t pos = gimg_stream_tell(stream);
+      if (pos != (size_t)-1) {
+        seg_start = pos;
+      }
+      r = gimg_jpeg_read_marker(stream, &marker);
+    }
     if (r != GIMG_OK) {
       jpeg_load_diag(diagnostics, seg_start, 0, r, "truncated before marker");
       gimg_jpeg_free_doc_state(codec, state);
@@ -275,9 +291,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_OOM;
       }
-      size_t n = 0;
-      r = gimg_stream_read(stream, payload_buf, payload_size, &n);
-      if (r != GIMG_OK || n != payload_size) {
+      r = gimg_stream_read_exact(stream, payload_buf, payload_size);
+      if (r != GIMG_OK) {
         gimg_free(alloc, payload_buf);
         jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_IO,
             "truncated segment payload");
@@ -411,8 +426,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       if (state->num_scans >= GIMG_JPEG_MAX_SCANS) {
         if (payload_buf)
           gimg_free(alloc, payload_buf);
-        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_LIMIT,
-            "too many scans");
+        jpeg_load_diag(
+            diagnostics, seg_start, marker, GIMG_ERR_LIMIT, "too many scans");
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_LIMIT;
       }
@@ -487,11 +502,12 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           }
           continue;
         }
-          // Next byte is a real marker; put 0xFF back so outer loop sees it.
-        size_t pos = gimg_stream_tell(stream);
-        if (pos != (size_t)-1 && pos > 0) {
-          (void)gimg_stream_seek(stream, pos - 1);
-        }
+        // Next byte is a real marker; consume it and store for next iteration
+        // so the main loop can process it without seeking (non-seekable
+        // support).
+        (void)gimg_stream_read(stream, &b, 1, &n);
+        pending_marker = b;
+        have_pending_marker = 1;
         break;
       }
       break;

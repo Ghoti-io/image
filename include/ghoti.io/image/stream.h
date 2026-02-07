@@ -34,6 +34,14 @@ GIMG_API GIMG_Result gimg_stream_read(
     GIMG_Stream * stream, void * buffer, size_t size, size_t * out_bytes_read);
 
 /**
+ * @brief Read exactly size bytes, looping on short reads until all bytes are
+ * read or an error/EOF occurs. Use with chunked or non-seekable streams.
+ * @return GIMG_OK if size bytes read, GIMG_ERR_IO or GIMG_ERR_FORMAT on error/EOF.
+ */
+GIMG_API GIMG_Result gimg_stream_read_exact(
+    GIMG_Stream * stream, void * buffer, size_t size);
+
+/**
  * @brief Write size bytes from buffer to stream.
  * @param stream Stream (must support write, e.g. memory output stream).
  * @param buffer Input buffer.
@@ -101,6 +109,51 @@ GIMG_API GIMG_Result gimg_stream_create_memory(
 GIMG_API GIMG_Result gimg_stream_create_memory_with_allocator(
     const GIMG_Allocator * allocator, const void * data, size_t size,
     GIMG_Stream ** out_stream);
+
+/**
+ * @brief Create a read-only memory stream that does not support seek/tell.
+ * Use for non-seekable sources (e.g. pipes); gimg_stream_tell returns
+ * (size_t)-1 and gimg_stream_seek returns GIMG_ERR_UNSUPPORTED.
+ */
+GIMG_API GIMG_Result gimg_stream_create_memory_no_seek(
+    const void * data, size_t size, GIMG_Stream ** out_stream);
+
+/**
+ * @brief Create a non-seekable memory stream with a specific allocator.
+ */
+GIMG_API GIMG_Result gimg_stream_create_memory_no_seek_with_allocator(
+    const GIMG_Allocator * allocator, const void * data, size_t size,
+    GIMG_Stream ** out_stream);
+
+/**
+ * @brief Create a read-only memory stream that limits each read to at most
+ * max_bytes_per_read bytes (e.g. 1 for byte-at-a-time). Use to exercise
+ * partial read handling; seek/tell supported.
+ */
+GIMG_API GIMG_Result gimg_stream_create_memory_chunked(
+    const void * data, size_t size, size_t max_bytes_per_read,
+    GIMG_Stream ** out_stream);
+
+/**
+ * @brief Create a chunked memory stream with a specific allocator.
+ */
+GIMG_API GIMG_Result gimg_stream_create_memory_chunked_with_allocator(
+    const GIMG_Allocator * allocator, const void * data, size_t size,
+    size_t max_bytes_per_read, GIMG_Stream ** out_stream);
+
+/**
+ * @brief Create a non-seekable, chunked memory stream (short reads, no seek).
+ */
+GIMG_API GIMG_Result gimg_stream_create_memory_no_seek_chunked(
+    const void * data, size_t size, size_t max_bytes_per_read,
+    GIMG_Stream ** out_stream);
+
+/**
+ * @brief Create a non-seekable chunked memory stream with a specific allocator.
+ */
+GIMG_API GIMG_Result gimg_stream_create_memory_no_seek_chunked_with_allocator(
+    const GIMG_Allocator * allocator, const void * data, size_t size,
+    size_t max_bytes_per_read, GIMG_Stream ** out_stream);
 
 /**
  * @brief Create a writable memory stream (for save/output).

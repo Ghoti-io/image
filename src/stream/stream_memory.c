@@ -20,6 +20,12 @@ GIMG_API GIMG_Result gimg_stream_create_memory(
       out_stream);
 }
 
+GIMG_API GIMG_Result gimg_stream_create_memory_no_seek(
+    const void * data, size_t size, GIMG_Stream ** out_stream) {
+  return gimg_stream_create_memory_no_seek_with_allocator(NULL, data, size,
+      out_stream);
+}
+
 GIMG_API GIMG_Result gimg_stream_create_memory_with_allocator(
     const GIMG_Allocator * allocator, const void * data, size_t size,
     GIMG_Stream ** out_stream) {
@@ -42,6 +48,102 @@ GIMG_API GIMG_Result gimg_stream_create_memory_with_allocator(
   s->error = GIMG_OK;
   s->can_seek = true;
   s->writable = false;
+  s->max_read_chunk = 0;
+  *out_stream = s;
+  return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_stream_create_memory_no_seek_with_allocator(
+    const GIMG_Allocator * allocator, const void * data, size_t size,
+    GIMG_Stream ** out_stream) {
+  if (!out_stream) {
+    return GIMG_ERR_INTERNAL;
+  }
+  if (data == NULL && size != 0) {
+    return GIMG_ERR_INTERNAL;
+  }
+  allocator = gimg_alloc_or_default(allocator);
+  GIMG_Stream * s =
+      (GIMG_Stream *)gimg_malloc(allocator, sizeof(GIMG_Stream));
+  if (!s) {
+    return GIMG_ERR_OOM;
+  }
+  s->allocator = allocator;
+  s->data = (unsigned char *)data;
+  s->size = size;
+  s->position = 0;
+  s->error = GIMG_OK;
+  s->can_seek = false;
+  s->writable = false;
+  s->max_read_chunk = 0;
+  *out_stream = s;
+  return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_stream_create_memory_chunked(
+    const void * data, size_t size, size_t max_bytes_per_read,
+    GIMG_Stream ** out_stream) {
+  return gimg_stream_create_memory_chunked_with_allocator(
+      NULL, data, size, max_bytes_per_read, out_stream);
+}
+
+GIMG_API GIMG_Result gimg_stream_create_memory_chunked_with_allocator(
+    const GIMG_Allocator * allocator, const void * data, size_t size,
+    size_t max_bytes_per_read, GIMG_Stream ** out_stream) {
+  if (!out_stream) {
+    return GIMG_ERR_INTERNAL;
+  }
+  if (data == NULL && size != 0) {
+    return GIMG_ERR_INTERNAL;
+  }
+  allocator = gimg_alloc_or_default(allocator);
+  GIMG_Stream * s =
+      (GIMG_Stream *)gimg_malloc(allocator, sizeof(GIMG_Stream));
+  if (!s) {
+    return GIMG_ERR_OOM;
+  }
+  s->allocator = allocator;
+  s->data = (unsigned char *)data;
+  s->size = size;
+  s->position = 0;
+  s->error = GIMG_OK;
+  s->can_seek = true;
+  s->writable = false;
+  s->max_read_chunk = max_bytes_per_read;
+  *out_stream = s;
+  return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_stream_create_memory_no_seek_chunked(
+    const void * data, size_t size, size_t max_bytes_per_read,
+    GIMG_Stream ** out_stream) {
+  return gimg_stream_create_memory_no_seek_chunked_with_allocator(
+      NULL, data, size, max_bytes_per_read, out_stream);
+}
+
+GIMG_API GIMG_Result gimg_stream_create_memory_no_seek_chunked_with_allocator(
+    const GIMG_Allocator * allocator, const void * data, size_t size,
+    size_t max_bytes_per_read, GIMG_Stream ** out_stream) {
+  if (!out_stream) {
+    return GIMG_ERR_INTERNAL;
+  }
+  if (data == NULL && size != 0) {
+    return GIMG_ERR_INTERNAL;
+  }
+  allocator = gimg_alloc_or_default(allocator);
+  GIMG_Stream * s =
+      (GIMG_Stream *)gimg_malloc(allocator, sizeof(GIMG_Stream));
+  if (!s) {
+    return GIMG_ERR_OOM;
+  }
+  s->allocator = allocator;
+  s->data = (unsigned char *)data;
+  s->size = size;
+  s->position = 0;
+  s->error = GIMG_OK;
+  s->can_seek = false;
+  s->writable = false;
+  s->max_read_chunk = max_bytes_per_read;
   *out_stream = s;
   return GIMG_OK;
 }
@@ -87,6 +189,7 @@ GIMG_API GIMG_Result gimg_stream_create_memory_output_with_allocator(
   s->error = GIMG_OK;
   s->can_seek = true;
   s->writable = true;
+  s->max_read_chunk = 0;
   *out_stream = s;
   return GIMG_OK;
 }
@@ -156,6 +259,9 @@ GIMG_API GIMG_Result gimg_stream_read(
     *out_bytes_read = 0;
     return GIMG_OK;
   }
+  if (stream->max_read_chunk > 0 && size > stream->max_read_chunk) {
+    size = stream->max_read_chunk;
+  }
   size_t avail = stream->size - stream->position;
   if (size > avail) {
     size = avail;
@@ -165,6 +271,28 @@ GIMG_API GIMG_Result gimg_stream_read(
   }
   stream->position += size;
   *out_bytes_read = size;
+  return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_stream_read_exact(
+    GIMG_Stream * stream, void * buffer, size_t size) {
+  if (!stream || !buffer) {
+    return GIMG_ERR_INTERNAL;
+  }
+  unsigned char * p = (unsigned char *)buffer;
+  size_t total = 0;
+  while (total < size) {
+    size_t n = 0;
+    GIMG_Result r =
+        gimg_stream_read(stream, p + total, size - total, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    if (n == 0) {
+      return GIMG_ERR_FORMAT;
+    }
+    total += n;
+  }
   return GIMG_OK;
 }
 
@@ -222,7 +350,10 @@ GIMG_API GIMG_Result gimg_stream_seek(GIMG_Stream * stream, size_t offset) {
 }
 
 GIMG_API size_t gimg_stream_tell(const GIMG_Stream * stream) {
-  return stream ? stream->position : (size_t)-1;
+  if (!stream || !stream->can_seek) {
+    return (size_t)-1;
+  }
+  return stream->position;
 }
 
 GIMG_API size_t gimg_stream_size(const GIMG_Stream * stream) {

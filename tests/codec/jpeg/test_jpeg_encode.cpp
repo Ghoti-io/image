@@ -71,11 +71,13 @@ TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
   EXPECT_EQ(p[0], 0xFF);
   EXPECT_EQ(p[1], 0xD8);
 
-  GIMG_Stream * in_stream = nullptr;
-  r = gimg_stream_create_memory(jpeg_data, jpeg_size, &in_stream);
-  ASSERT_EQ(r, GIMG_OK);
+  std::vector<uint8_t> jpeg_copy(p, p + jpeg_size);
   gimg_stream_destroy(out_stream);
   out_stream = nullptr;
+
+  GIMG_Stream * in_stream = nullptr;
+  r = gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream);
+  ASSERT_EQ(r, GIMG_OK);
 
   doc = nullptr;
   r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
@@ -136,13 +138,20 @@ TEST(JpegEncode, SaveRgbThenLoadDecode) {
   const void * jpeg_data = nullptr;
   size_t jpeg_size = 0;
   gimg_stream_output_buffer(out_stream, &jpeg_data, &jpeg_size);
-  GIMG_Stream * in_stream = nullptr;
-  ASSERT_EQ(
-      gimg_stream_create_memory(jpeg_data, jpeg_size, &in_stream), GIMG_OK);
+  const unsigned char * jpeg_bytes = (const unsigned char *)jpeg_data;
+  std::vector<uint8_t> jpeg_copy(jpeg_bytes, jpeg_bytes + jpeg_size);
   gimg_stream_destroy(out_stream);
 
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
   doc = nullptr;
-  ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(in_stream);
+    ASSERT_EQ(r, GIMG_OK) << "Encoded JPEG should load";
+  }
   item = gimg_doc_item(doc, 0);
   GIMG_Raster * decoded = nullptr;
   ASSERT_EQ(gimg_item_decode(item, nullptr, &decoded), GIMG_OK);

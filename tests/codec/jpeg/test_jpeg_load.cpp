@@ -359,6 +359,89 @@ TEST(JpegLoad, ProgressiveLoadAndDecodeAttempt) {
   gimg_stream_destroy(s);
 }
 
+TEST(JpegLoad, LoadBaselineFromNonSeekableStream) {
+  std::vector<uint8_t> jpeg = make_minimal_jpeg();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory_no_seek(jpeg.data(), jpeg.size(), &s),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK)
+      << "baseline JPEG load must work from non-seekable stream";
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, LoadProgressiveFromNonSeekableStream) {
+  std::vector<uint8_t> jpeg = make_minimal_progressive_jpeg();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory_no_seek(jpeg.data(), jpeg.size(), &s),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK)
+      << "progressive JPEG load must work from non-seekable stream";
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, LoadBaselineFromChunkedStream) {
+  std::vector<uint8_t> jpeg = make_minimal_jpeg();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory_chunked(
+          jpeg.data(), jpeg.size(), 1u, &s),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK)
+      << "baseline JPEG load must work with 1-byte-at-a-time (chunked) reads";
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, LoadProgressiveFromChunkedStream) {
+  std::vector<uint8_t> jpeg = make_minimal_progressive_jpeg();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory_chunked(
+          jpeg.data(), jpeg.size(), 1u, &s),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK)
+      << "progressive JPEG load must work with 1-byte-at-a-time (chunked) reads";
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, LoadBaselineFromChunkedNonSeekableStream) {
+  std::vector<uint8_t> jpeg = make_minimal_jpeg();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory_no_seek_chunked(
+          jpeg.data(), jpeg.size(), 1u, &s),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK)
+      << "baseline JPEG load must work with chunked non-seekable stream";
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

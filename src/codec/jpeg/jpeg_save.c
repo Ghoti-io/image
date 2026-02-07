@@ -75,26 +75,26 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   report->bytes_written = 0;
   if (gimg_doc_item_count(doc) == 0) {
-    return GIMG_ERR_FORMAT;
+    return GIMG_ERR_UNSUPPORTED; // No image to save.
   }
   GIMG_Item * item = gimg_doc_item((GIMG_Doc *)doc, 0);
   if (!item) {
     return GIMG_ERR_INTERNAL;
   }
 
-  /* Synthetic document support: use raster if present; else decode only when
-   * doc was loaded by this codec. */
+  // Synthetic document support: use raster if present; else decode only when
+  // doc was loaded by this codec.
   GIMG_Raster * raster = gimg_item_raster(item);
   int raster_owned = 0;
   if (!raster && doc->loaded_by_codec == (struct GIMG_Codec *)codec) {
     GIMG_Result r = gimg_item_decode(item, NULL, &raster);
     if (r != GIMG_OK || !raster) {
-      return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
+      return (r != GIMG_OK) ? r : GIMG_ERR_UNSUPPORTED;
     }
     raster_owned = 1;
   }
   if (!raster) {
-    return GIMG_ERR_FORMAT; /* No raster and not loaded by us. */
+    return GIMG_ERR_UNSUPPORTED; // No raster and not loaded by us.
   }
 
   uint32_t width = gimg_raster_width(raster);
@@ -104,7 +104,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
-    return GIMG_ERR_FORMAT;
+    return GIMG_ERR_UNSUPPORTED;
   }
   if (width > GIMG_JPEG_MAX_DIMENSION || height > GIMG_JPEG_MAX_DIMENSION) {
     if (raster_owned) {
@@ -148,10 +148,10 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
-    return GIMG_ERR_FORMAT;
+    return GIMG_ERR_UNSUPPORTED;
   }
 
-  /* Allocate component buffers (Y only or Y, Cb, Cr). 4:4:4 so same size. */
+  // Allocate component buffers (Y only or Y, Cb, Cr). 4:4:4 so same size.
   size_t comp_size = 0;
   if (!gimg_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
     if (raster_owned) {
@@ -209,8 +209,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
 
   unsigned quality = GIMG_JPEG_DEFAULT_QUALITY;
-  /* Save_Options has no quality field yet; could use reserved or extend later.
-   */
+  // Save_Options has no quality field yet; could use reserved or extend later.
   (void)options;
 
   uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES];
@@ -245,7 +244,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   report->bytes_written += written;
 
-  /* Optional minimal APP0 JFIF */
+  // Optional minimal APP0 JFIF
   {
     unsigned char app0[] = {0xFF, GIMG_JPEG_MARKER_APP0, 0x00, 0x10, 'J', 'F',
         'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00};
@@ -257,10 +256,11 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += written;
   }
 
-  /* DQT: table 0 (luma), table 1 (chroma). Lq = 2 + 1 + 64 = 67 for 8-bit. */
+  // DQT: table 0 (luma), table 1 (chroma). Lq = 2 + 1 + 64 = 67 for 8-bit.
   {
     unsigned char dqt0[67];
-    dqt0[0] = 0x00; /* Pq=0 (8-bit), Tq=0 */
+    memset(dqt0, 0, sizeof(dqt0));
+    dqt0[0] = 0x00; // Pq=0 (8-bit), Tq=0
     for (int i = 0; i < 64; i++) {
       dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
     }
@@ -283,7 +283,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
     if (num_components == 3) {
       unsigned char dqt1[67];
-      dqt1[0] = 0x01; /* Tq=1 */
+      memset(dqt1, 0, sizeof(dqt1));
+      dqt1[0] = 0x01; // Tq=1
       for (int i = 0; i < 64; i++) {
         dqt1[1 + i] =
             (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
@@ -308,7 +309,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
 
-  /* DHT: standard tables */
+  // DHT: standard tables
   {
     size_t dht_written = 0;
     r = gimg_jpeg_write_standard_dht(stream, &dht_written);
@@ -319,7 +320,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += dht_written;
   }
 
-  /* SOF0 */
+  // SOF0
   {
     uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
     r = jpeg_write_marker(
@@ -334,16 +335,17 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       return r;
     }
     unsigned char sof[8 + 3 * 4];
-    sof[0] = 8; /* precision */
+    memset(sof, 0, sizeof(sof));
+    sof[0] = 8; // precision
     sof[1] = (unsigned char)(height >> 8);
     sof[2] = (unsigned char)(height & 0xFF);
     sof[3] = (unsigned char)(width >> 8);
     sof[4] = (unsigned char)(width & 0xFF);
     sof[5] = (unsigned char)num_components;
     if (num_components == 1) {
-      sof[6] = 0x01; /* C1=1 */
-      sof[7] = 0x11; /* H=1, V=1 */
-      sof[8] = 0x00; /* Tq=0 */
+      sof[6] = 0x01; // C1=1
+      sof[7] = 0x11; // H=1, V=1
+      sof[8] = 0x00; // Tq=0
     }
     else {
       sof[6] = 0x01;
@@ -365,7 +367,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += written;
   }
 
-  /* SOS: Ls = 2 + 1 + 2*Ns + 4 = 7 + 2*Ns */
+  // SOS: Ls = 2 + 1 + 2*Ns + 4 = 7 + 2*Ns
   {
     uint16_t sos_len = (uint16_t)(7 + 2 * (uint16_t)num_components);
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &report->bytes_written);
@@ -379,23 +381,24 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       return r;
     }
     unsigned char sos[13];
+    memset(sos, 0, sizeof(sos));
     sos[0] = (unsigned char)num_components;
     if (num_components == 1) {
-      sos[1] = 0x01; /* Cs=1 */
-      sos[2] = 0x00; /* Td=0, Ta=0 */
+      sos[1] = 0x01; // Cs=1
+      sos[2] = 0x00; // Td=0, Ta=0
     }
     else {
       sos[1] = 0x01;
-      sos[2] = 0x00; /* Td=0, Ta=0 */
+      sos[2] = 0x00; // Td=0, Ta=0
       sos[3] = 0x02;
-      sos[4] = 0x11; /* Td=1, Ta=1 */
+      sos[4] = 0x11; // Td=1, Ta=1
       sos[5] = 0x03;
       sos[6] = 0x11;
     }
-    sos[1 + 2 * (size_t)num_components] = 0x00; /* Ss */
-    sos[2 + 2 * (size_t)num_components] = 0x3F; /* Se */
-    sos[3 + 2 * (size_t)num_components] = 0x00; /* Ah */
-    sos[4 + 2 * (size_t)num_components] = 0x00; /* Al */
+    sos[1 + 2 * (size_t)num_components] = 0x00; // Ss
+    sos[2 + 2 * (size_t)num_components] = 0x3F; // Se
+    sos[3 + 2 * (size_t)num_components] = 0x00; // Ah
+    sos[4 + 2 * (size_t)num_components] = 0x00; // Al
     r = gimg_stream_write(
         stream, sos, 1 + 2 * (size_t)num_components + 4, &written);
     if (r != GIMG_OK) {
@@ -405,7 +408,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += written;
   }
 
-  /* Scan data (already byte-stuffed in encoder) */
+  // Scan data (already byte-stuffed in encoder)
   r = gimg_stream_write(stream, scan_data, scan_size, &written);
   gimg_free(alloc, scan_data);
   if (r != GIMG_OK) {
