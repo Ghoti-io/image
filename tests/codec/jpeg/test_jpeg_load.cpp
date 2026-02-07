@@ -102,7 +102,7 @@ std::vector<uint8_t> make_minimal_jpeg_with_rst_in_scan() {
       (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
       12);
   buf.push_back(0x00);
-  append(buf, (const unsigned char *)"\xFF\xD5", 2);  // RST5: consumed
+  append(buf, (const unsigned char *)"\xFF\xD5", 2); // RST5: consumed
   buf.push_back(0x00);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
@@ -160,7 +160,7 @@ std::vector<uint8_t> make_jpeg_with_app1_exif() {
   std::vector<uint8_t> buf;
   append(buf, (const unsigned char *)"\xFF\xD8", 2);
   std::vector<uint8_t> exif = make_minimal_exif_orientation_6();
-  uint16_t app1_len = (uint16_t)(6 + exif.size() + 2);  // 2 for length field
+  uint16_t app1_len = (uint16_t)(6 + exif.size() + 2); // 2 for length field
   append(buf, (const unsigned char *)"\xFF\xE1", 2);
   buf.push_back((uint8_t)(app1_len >> 8));
   buf.push_back((uint8_t)(app1_len & 0xFF));
@@ -247,9 +247,75 @@ std::vector<uint8_t> make_jpeg_with_app0_jfif() {
   return buf;
 }
 
+/** JPEG with SOI, one COM segment (comment text), then minimal baseline. */
+std::vector<uint8_t> make_jpeg_with_com(const char * comment) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  size_t clen = strlen(comment);
+  if (clen > 65533u)
+    clen = 65533u;
+  uint16_t seg_len = (uint16_t)(2 + clen); // length field includes 2
+  append(buf, (const unsigned char *)"\xFF\xFE", 2);
+  buf.push_back((uint8_t)(seg_len >> 8));
+  buf.push_back((uint8_t)(seg_len & 0xFF));
+  append(buf, (const unsigned char *)comment, clen);
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
+      12);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+/** JPEG with SOI, two COM segments, then minimal baseline (order preserved).
+ * Use byte arrays for segments containing 0x00 to avoid C string truncation. */
+std::vector<uint8_t> make_jpeg_with_two_com() {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // COM "First"  (marker 0xFE, len=7, payload "First")
+  static const unsigned char com_first[] = {
+      0xFF, 0xFE, 0x00, 0x07, 'F', 'i', 'r', 's', 't'};
+  append(buf, com_first, sizeof(com_first));
+  // COM "Second" (marker 0xFE, len=8, payload "Second")
+  static const unsigned char com_second[] = {
+      0xFF, 0xFE, 0x00, 0x08, 'S', 'e', 'c', 'o', 'n', 'd'};
+  append(buf, com_second, sizeof(com_second));
+  // SOF0
+  static const unsigned char sof0[] = {0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x08,
+      0x00, 0x08, 0x01, 0x00, 0x11, 0x00};
+  append(buf, sof0, sizeof(sof0));
+  static const unsigned char dqt[] = {0xFF, 0xDB, 0x00, 0x43, 0x00};
+  append(buf, dqt, sizeof(dqt));
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  static const unsigned char dht[] = {0xFF, 0xC4, 0x00, 0x14, 0x00};
+  append(buf, dht, sizeof(dht));
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  static const unsigned char sos[] = {
+      0xFF, 0xDA, 0x00, 0x0A, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  append(buf, sos, sizeof(sos));
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
 // meta_raw tag for JPEG APP1 EXIF (must match jpeg_internal.h)
 static const uint32_t kJpegRawApp1Exif = 0xE100u;
 static const uint32_t kJpegRawApp0 = 0xE0u;
+static const uint32_t kJpegRawCom = 0xFEu;
 
 } // namespace
 
@@ -315,7 +381,7 @@ TEST(JpegLoad, SegmentOverLimitReturnsLimit) {
 TEST(JpegLoad, InvalidMarkerDiagnostics) {
   // SOI then invalid/corrupt: e.g. segment length too short.
   unsigned char buf[] = {
-      0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x02  // DQT with L=2 (payload 0), invalid
+      0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x02 // DQT with L=2 (payload 0), invalid
   };
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf, sizeof(buf), &s);
@@ -421,6 +487,66 @@ TEST(JpegLoad, App0JfifPopulatesMetaCommonDpi) {
   GIMG_Result r = gimg_meta_raw_get(raw, "jpeg", kJpegRawApp0, nullptr, &size);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(size, 14u) << "JFIF payload (no length field)";
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, ComAttachedToMetaRaw) {
+  std::vector<uint8_t> jpeg = make_jpeg_with_com("Hello");
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr) << "COM should attach doc meta_raw";
+  size_t size = 0;
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, nullptr, &size);
+  ASSERT_EQ(r, GIMG_OK);
+  // Stored as (2-byte BE length + payload): 00 05 "Hello" = 7 bytes
+  EXPECT_EQ(size, 7u);
+  std::vector<uint8_t> com_data(size);
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, com_data.data(), &size);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(com_data[0], 0x00);
+  EXPECT_EQ(com_data[1], 0x05);
+  EXPECT_EQ(com_data[2], 'H');
+  EXPECT_EQ(com_data[3], 'e');
+  EXPECT_EQ(com_data[4], 'l');
+  EXPECT_EQ(com_data[5], 'l');
+  EXPECT_EQ(com_data[6], 'o');
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, MultipleComPreserveOrderAndContent) {
+  std::vector<uint8_t> jpeg = make_jpeg_with_two_com();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+  }
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr);
+  size_t size = 0;
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, nullptr, &size);
+  ASSERT_EQ(r, GIMG_OK);
+  // (2+5) + (2+6) = 7 + 8 = 15 bytes
+  EXPECT_EQ(size, 15u);
+  std::vector<uint8_t> com_data(size);
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, com_data.data(), &size);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(com_data[0], 0x00);
+  EXPECT_EQ(com_data[1], 0x05);
+  EXPECT_EQ(memcmp(com_data.data() + 2, "First", 5), 0);
+  EXPECT_EQ(com_data[7], 0x00);
+  EXPECT_EQ(com_data[8], 0x06);
+  EXPECT_EQ(memcmp(com_data.data() + 9, "Second", 6), 0);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }
@@ -634,7 +760,8 @@ TEST(JpegLoad, GoldenBaselineGray) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 17944301196088248357ULL) << "canonical pixel hash baseline 8x8 gray";
+  EXPECT_EQ(hash, 17944301196088248357ULL)
+      << "canonical pixel hash baseline 8x8 gray";
 }
 
 TEST(JpegLoad, GoldenBaselineYcbcr) {
@@ -654,7 +781,8 @@ TEST(JpegLoad, GoldenBaselineYcbcr) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 3293244748321644837ULL) << "canonical pixel hash baseline 16x16 YCbCr";
+  EXPECT_EQ(hash, 3293244748321644837ULL)
+      << "canonical pixel hash baseline 16x16 YCbCr";
 }
 
 TEST(JpegLoad, GoldenProgressive) {
@@ -672,14 +800,16 @@ TEST(JpegLoad, GoldenProgressive) {
   if (dr != GIMG_OK) {
     gimg_doc_destroy(doc);
     gimg_stream_destroy(s);
-    GTEST_SKIP() << "progressive decode not supported for this file (Pillow progressive format may differ)";
+    GTEST_SKIP() << "progressive decode not supported for this file (Pillow "
+                    "progressive format may differ)";
   }
   ASSERT_NE(raster, nullptr);
   uint64_t hash = jpeg_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 3293244748321644837ULL) << "canonical pixel hash progressive (same content as 16x16 gray)";
+  EXPECT_EQ(hash, 3293244748321644837ULL)
+      << "canonical pixel hash progressive (same content as 16x16 gray)";
 }
 
 TEST(JpegLoad, GoldenExifOrientation) {
@@ -704,7 +834,8 @@ TEST(JpegLoad, GoldenExifOrientation) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 9569108661638188517ULL) << "canonical pixel hash jpeg_exif_orientation";
+  EXPECT_EQ(hash, 9569108661638188517ULL)
+      << "canonical pixel hash jpeg_exif_orientation";
 }
 
 TEST(JpegLoad, GoldenWithIcc) {
@@ -724,7 +855,8 @@ TEST(JpegLoad, GoldenWithIcc) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 774238021366803749ULL) << "canonical pixel hash jpeg_with_icc";
+  EXPECT_EQ(hash, 774238021366803749ULL)
+      << "canonical pixel hash jpeg_with_icc";
 }
 
 TEST(JpegLoad, GoldenCmyk) {
@@ -750,7 +882,8 @@ TEST(JpegLoad, GoldenCmyk) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 2706856015390867493ULL) << "canonical pixel hash cmyk_sample (8x8 black)";
+  EXPECT_EQ(hash, 2706856015390867493ULL)
+      << "canonical pixel hash cmyk_sample (8x8 black)";
 }
 #endif
 

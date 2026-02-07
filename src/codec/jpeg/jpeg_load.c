@@ -191,6 +191,7 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   gimg_free(alloc, state->app1_exif);
   gimg_free(alloc, state->app1_xmp);
   gimg_free(alloc, state->app2_icc);
+  gimg_free(alloc, state->com_combined);
   gimg_free(alloc, state);
 }
 
@@ -595,6 +596,39 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       break;
     }
+    case GIMG_JPEG_MARKER_COM: {
+      // COM: length (2) + comment payload (any bytes). Append to com_combined
+      // as (2-byte BE length + payload) for round-trip and multiple COM.
+      if (payload_size > 65535u) {
+        if (payload_buf)
+          gimg_free(alloc, payload_buf);
+        break;
+      }
+      size_t need = state->com_combined_size + 2 + payload_size;
+      unsigned char * new_buf =
+          (unsigned char *)gimg_realloc(alloc, state->com_combined, need);
+      if (!new_buf && need > 0) {
+        if (payload_buf)
+          gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_OOM,
+            "COM append OOM");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_OOM;
+      }
+      state->com_combined = new_buf;
+      state->com_combined[state->com_combined_size] =
+          (unsigned char)(payload_size >> 8);
+      state->com_combined[state->com_combined_size + 1] =
+          (unsigned char)(payload_size & 0xFFu);
+      if (payload_size > 0 && payload_buf) {
+        memcpy(state->com_combined + state->com_combined_size + 2,
+            payload_buf, payload_size);
+        gimg_free(alloc, payload_buf);
+      }
+      state->com_combined_size = need;
+      payload_buf = NULL;
+      break;
+    }
     default:
       if (payload_buf) {
         gimg_free(alloc, payload_buf);
@@ -650,12 +684,14 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   doc->items[0].blend_op = GIMG_BLEND_SOURCE;
   doc->items[0].raster = NULL;
 
-  // Attach APP segments to doc meta_raw for round-trip; populate meta_common.
+  // Attach APP segments and COM to doc meta_raw for round-trip; populate
+  // meta_common.
   GIMG_Meta_Raw * raw = NULL;
   if ((state->app0_jfif && state->app0_jfif_len > 0) ||
       (state->app1_exif && state->app1_exif_len > 0) ||
       (state->app1_xmp && state->app1_xmp_len > 0) ||
-      (state->app2_icc && state->app2_icc_len > 0)) {
+      (state->app2_icc && state->app2_icc_len > 0) ||
+      (state->com_combined && state->com_combined_size > 0)) {
     r = gimg_doc_ensure_meta_raw(doc, &raw);
     if (r != GIMG_OK) {
       gimg_doc_destroy(doc);
@@ -688,6 +724,14 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (state->app2_icc && state->app2_icc_len > 0) {
       r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC,
           state->app2_icc, state->app2_icc_len);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+    }
+    if (state->com_combined && state->com_combined_size > 0) {
+      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_COM,
+          state->com_combined, state->com_combined_size);
       if (r != GIMG_OK) {
         gimg_doc_destroy(doc);
         return r;

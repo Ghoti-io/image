@@ -46,6 +46,9 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_RAW_APP1_EXIF 0xE100u
 #define GIMG_JPEG_RAW_APP1_XMP 0xE101u
 #define GIMG_JPEG_RAW_APP2_ICC 0xE2u
+/** COM (Comment) segment(s). Stored as concatenated (2-byte BE length +
+ * payload)* for each COM, to preserve order and support multiple. */
+#define GIMG_JPEG_RAW_COM 0xFEu
 // RST0..RST7 0xD0..0xD7 have no length/payload.
 
 /**
@@ -139,6 +142,10 @@ typedef struct gimg_jpeg_doc_state {
   size_t app1_xmp_len;
   unsigned char * app2_icc;
   size_t app2_icc_len;
+  /** COM segment(s) for round-trip: concatenated (2-byte BE length + payload)
+   * per COM, in read order. */
+  unsigned char * com_combined;
+  size_t com_combined_size;
 } gimg_jpeg_doc_state_t;
 
 /**

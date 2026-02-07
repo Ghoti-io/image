@@ -310,8 +310,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   report->bytes_written += written;
 
-  // APP segments per metadata policy (order: APP0, APP1 EXIF, APP1 XMP, APP2
-  // ICC).
+  // APP segments per metadata policy (order: COM, APP0, APP1 EXIF, APP1 XMP,
+  // APP2 ICC). COM and APP segments before SOF.
   {
     GIMG_Meta_Policy policy =
         options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
@@ -321,6 +321,47 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       gimg_meta_common_dpi(meta_common, &x_dpi, &y_dpi);
     }
     GIMG_Meta_Raw * meta_raw = gimg_doc_meta_raw(doc);
+
+    // COM segment(s): when policy preserves metadata, write in same order as
+    // load (stored as concatenated 2-byte BE length + payload per COM).
+    if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_COMMON_ONLY &&
+        meta_raw) {
+      size_t com_size = 0;
+      if (gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_COM, NULL,
+              &com_size) == GIMG_OK &&
+          com_size > 0) {
+        unsigned char * com_buf =
+            (unsigned char *)gimg_malloc(alloc, com_size);
+        if (com_buf) {
+          r = gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_COM, com_buf,
+              &com_size);
+          if (r == GIMG_OK) {
+            size_t offset = 0;
+            while (offset + 2 <= com_size) {
+              uint16_t plen =
+                  (uint16_t)((com_buf[offset] << 8) | com_buf[offset + 1]);
+              offset += 2;
+              if (offset + plen > com_size) {
+                break;
+              }
+              r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_COM,
+                  com_buf + offset, plen, &report->bytes_written);
+              if (r != GIMG_OK) {
+                gimg_free(alloc, com_buf);
+                gimg_free(alloc, scan_data);
+                return r;
+              }
+              offset += plen;
+            }
+          }
+          gimg_free(alloc, com_buf);
+        }
+        if (r != GIMG_OK) {
+          gimg_free(alloc, scan_data);
+          return r;
+        }
+      }
+    }
 
     // APP0: from meta_raw when preserving and present, else minimal (JFIF).
     size_t app0_len = 0;

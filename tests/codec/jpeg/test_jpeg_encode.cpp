@@ -274,6 +274,7 @@ static std::vector<uint8_t> make_minimal_exif_payload() {
 }
 
 static const uint32_t kJpegRawApp1Exif = 0xE100u;
+static const uint32_t kJpegRawCom = 0xFEu;
 
 /** Create a synthetic doc with 8x8 grayscale raster (no metadata). */
 static GIMG_Doc * create_doc_with_raster_only() {
@@ -358,6 +359,69 @@ TEST(JpegEncode, MetadataPreserveAllRoundTrip) {
       gimg_meta_raw_get(raw, "jpeg", kJpegRawApp1Exif, nullptr, &exif_size),
       GIMG_OK);
   EXPECT_GE(exif_size, 6u + 14u) << "APP1 EXIF should be preserved";
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
+}
+
+TEST(JpegEncode, ComRoundTrip) {
+  /* Doc with 8x8 raster and COM in meta_raw (combined format: 2-byte BE length
+   * + payload). One COM "Hello" = 00 05 48 65 6C 6C 6F. */
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Meta_Raw * raw = nullptr;
+  ASSERT_EQ(gimg_doc_ensure_meta_raw(doc, &raw), GIMG_OK);
+  const uint8_t com_combined[] = {0x00, 0x05, 'H', 'e', 'l', 'l', 'o'};
+  ASSERT_EQ(gimg_meta_raw_attach(raw, "jpeg", kJpegRawCom, com_combined,
+              sizeof(com_combined)),
+      GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
+                  NULL, 0, &raster),
+      GIMG_OK);
+  memset(gimg_raster_pixels(raster), 128, 8 * 8);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 0,
+      ._reserved = {0},
+  };
+  GIMG_Save_Report report = {};
+  report.diagnostics = nullptr;
+  ASSERT_EQ(
+      gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report), GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_stream, &out_data, &out_size);
+  std::vector<uint8_t> saved(out_size, 0);
+  if (out_size)
+    memcpy(saved.data(), out_data, out_size);
+  gimg_stream_destroy(out_stream);
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &in_stream),
+      GIMG_OK);
+  doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+  raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr);
+  size_t com_size = 0;
+  ASSERT_EQ(
+      gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, nullptr, &com_size),
+      GIMG_OK);
+  EXPECT_EQ(com_size, 7u);
+  std::vector<uint8_t> com_data(com_size);
+  ASSERT_EQ(gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, com_data.data(),
+              &com_size),
+      GIMG_OK);
+  EXPECT_EQ(com_data[0], 0x00);
+  EXPECT_EQ(com_data[1], 0x05);
+  EXPECT_EQ(memcmp(com_data.data() + 2, "Hello", 5), 0);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(in_stream);
 }
