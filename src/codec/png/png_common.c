@@ -14,13 +14,18 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <ghoti.io/compress/compress.h>
 #include <ghoti.io/compress/options.h>
 #include <ghoti.io/image/core.h>
 
+#include "../../core/alloc_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "png_internal.h"
+
+/** Max decoded text size for zTXt/iTXt (bomb protection). */
+#define GIMG_PNG_TEXT_MAX_DECODED (1024u * 1024u)
 
 //
 // Adam7 interlace (W3C PNG-DataRep §2.6). Seven passes with fixed x/y offset
@@ -134,4 +139,160 @@ bool gimg_png_adam7_raw_size(uint32_t width, uint32_t height, uint8_t color_type
   }
   *out_size = total;
   return true;
+}
+
+//
+// Text chunk decode (tEXt/zTXt/iTXt) for meta_common description.
+//
+GIMG_Result gimg_png_text_chunk_decode(gimg_png_chunk_type_t type,
+    const unsigned char * payload, size_t payload_size,
+    const GIMG_Allocator * alloc, size_t * out_keyword_len, char ** out_text) {
+  if (!payload || payload_size == 0 || !alloc || !out_keyword_len ||
+      !out_text) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_keyword_len = 0;
+  *out_text = NULL;
+  size_t kw_len = 0;
+  while (kw_len < payload_size && payload[kw_len] != 0) {
+    kw_len++;
+  }
+  if (kw_len >= payload_size) {
+    return GIMG_ERR_FORMAT;
+  }
+  *out_keyword_len = kw_len;
+
+  if (type == GIMG_PNG_tEXt) {
+    size_t text_len = payload_size - kw_len - 1u;
+    if (text_len > GIMG_PNG_TEXT_MAX_DECODED) {
+      return GIMG_ERR_LIMIT;
+    }
+    char * text = (char *)gimg_malloc(alloc, text_len + 1u);
+    if (!text) {
+      return GIMG_ERR_OOM;
+    }
+    memcpy(text, payload + kw_len + 1u, text_len);
+    text[text_len] = '\0';
+    *out_text = text;
+    return GIMG_OK;
+  }
+
+  if (type == GIMG_PNG_zTXt) {
+    if (payload_size < kw_len + 3u) {
+      return GIMG_ERR_FORMAT;
+    }
+    uint8_t comp = payload[kw_len + 1u];
+    if (comp != 0) {
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    const unsigned char * zlib_src = payload + kw_len + 2u;
+    size_t zlib_len = payload_size - kw_len - 2u;
+    if (zlib_len <= 6u) {
+      return GIMG_ERR_FORMAT;
+    }
+    const unsigned char * deflate_src = zlib_src + 2;
+    size_t deflate_len = zlib_len - 6u;
+    size_t max_out = GIMG_PNG_TEXT_MAX_DECODED;
+    void * decoded = gimg_malloc(alloc, max_out);
+    if (!decoded) {
+      return GIMG_ERR_OOM;
+    }
+    size_t out_len = 0;
+    gcomp_options_t * gopts = NULL;
+    GIMG_Result r = gimg_png_deflate_options_for_decode(max_out, &gopts);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, decoded);
+      return r;
+    }
+    gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate",
+        gopts, deflate_src, deflate_len, decoded, max_out, &out_len);
+    gcomp_options_destroy(gopts);
+    if (gs != GCOMP_OK) {
+      gimg_free(alloc, decoded);
+      return (gs == GCOMP_ERR_MEMORY) ? GIMG_ERR_OOM
+          : (gs == GCOMP_ERR_LIMIT) ? GIMG_ERR_LIMIT
+          : GIMG_ERR_CORRUPT;
+    }
+    char * text = (char *)gimg_realloc(alloc, decoded, out_len + 1u);
+    if (!text) {
+      gimg_free(alloc, decoded);
+      return GIMG_ERR_OOM;
+    }
+    text[out_len] = '\0';
+    *out_text = text;
+    return GIMG_OK;
+  }
+
+  if (type == GIMG_PNG_iTXt) {
+    if (payload_size < kw_len + 5u) {
+      return GIMG_ERR_FORMAT;
+    }
+    uint8_t comp_flag = payload[kw_len + 1u];
+    uint8_t comp_method = payload[kw_len + 2u];
+    size_t pos = kw_len + 3u;
+    while (pos < payload_size && payload[pos] != 0) {
+      pos++;
+    }
+    if (pos >= payload_size) {
+      return GIMG_ERR_FORMAT;
+    }
+    pos++;
+    while (pos < payload_size && payload[pos] != 0) {
+      pos++;
+    }
+    if (pos >= payload_size) {
+      return GIMG_ERR_FORMAT;
+    }
+    pos++;
+    size_t text_src_len = payload_size - pos;
+    if (comp_flag == 0) {
+      if (text_src_len > GIMG_PNG_TEXT_MAX_DECODED) {
+        return GIMG_ERR_LIMIT;
+      }
+      char * text = (char *)gimg_malloc(alloc, text_src_len + 1u);
+      if (!text) {
+        return GIMG_ERR_OOM;
+      }
+      memcpy(text, payload + pos, text_src_len);
+      text[text_src_len] = '\0';
+      *out_text = text;
+      return GIMG_OK;
+    }
+    if (comp_method != 0 || text_src_len <= 6u) {
+      return GIMG_ERR_FORMAT;
+    }
+    const unsigned char * deflate_src = payload + pos + 2;
+    size_t deflate_len = text_src_len - 6u;
+    size_t max_out = GIMG_PNG_TEXT_MAX_DECODED;
+    void * decoded = gimg_malloc(alloc, max_out);
+    if (!decoded) {
+      return GIMG_ERR_OOM;
+    }
+    size_t out_len = 0;
+    gcomp_options_t * gopts = NULL;
+    GIMG_Result r = gimg_png_deflate_options_for_decode(max_out, &gopts);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, decoded);
+      return r;
+    }
+    gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate",
+        gopts, deflate_src, deflate_len, decoded, max_out, &out_len);
+    gcomp_options_destroy(gopts);
+    if (gs != GCOMP_OK) {
+      gimg_free(alloc, decoded);
+      return (gs == GCOMP_ERR_MEMORY) ? GIMG_ERR_OOM
+          : (gs == GCOMP_ERR_LIMIT) ? GIMG_ERR_LIMIT
+          : GIMG_ERR_CORRUPT;
+    }
+    char * text = (char *)gimg_realloc(alloc, decoded, out_len + 1u);
+    if (!text) {
+      gimg_free(alloc, decoded);
+      return GIMG_ERR_OOM;
+    }
+    text[out_len] = '\0';
+    *out_text = text;
+    return GIMG_OK;
+  }
+
+  return GIMG_ERR_INTERNAL;
 }

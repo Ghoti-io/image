@@ -311,6 +311,15 @@ GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
     uint32_t x = 0, y = 0;
     gimg_meta_common_dpi(src->meta_common, &x, &y);
     gimg_meta_common_set_dpi(doc->meta_common, x, y);
+    const char * desc = gimg_meta_common_description(src->meta_common);
+    if (desc) {
+      r = gimg_meta_common_set_description(doc->meta_common, desc);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        *out_doc = NULL;
+        return r;
+      }
+    }
   }
   if (src->meta_raw) {
     r = gimg_meta_raw_copy_with_allocator(doc->allocator, src->meta_raw,

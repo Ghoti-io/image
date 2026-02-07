@@ -73,7 +73,7 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
     const gimg_png_ihdr_t * ihdr, const GIMG_Pixel_Format * format,
     const unsigned char * raw_full, uint32_t w, uint32_t h, size_t row_bytes,
     void * pixels, size_t stride) {
-  int use_trns = (state->trns && state->trns_size > 0) ? 1 : 0;
+  bool use_trns = (state->trns && state->trns_size > 0);
   uint8_t depth = ihdr->bit_depth;
 
   if (ihdr->color_type == 0) {
@@ -104,7 +104,6 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
       }
     }
     else {
-      int has_trns = use_trns && state->trns_size >= 2;
       for (uint32_t y = 0; y < h; y++) {
         const unsigned char * src = raw_full + (size_t)y * row_bytes;
         unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
@@ -114,7 +113,7 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
               ? gimg_png_scale_to_8((unsigned int)v, depth)
               : (unsigned char)((v >> 8) & 0xFFu);
           uint16_t v16 = (uint16_t)v;
-          int match = has_trns && (v16 == trns_gray);
+          bool match = use_trns && (v16 == trns_gray);
           if (format == &GIMG_PIXEL_RGBA8) {
             dst[0] = g8;
             dst[1] = g8;
@@ -140,12 +139,12 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
   }
   else if (ihdr->color_type == 2) {
     uint16_t trns_r = 0, trns_g = 0, trns_b = 0;
-    int has_trns = 0;
+    bool has_trns = false;
     if (use_trns && state->trns_size >= 6) {
       trns_r = gimg_png_read_be16(state->trns);
       trns_g = gimg_png_read_be16(state->trns + 2);
       trns_b = gimg_png_read_be16(state->trns + 4);
-      has_trns = 1;
+      has_trns = true;
     }
     if (depth == 8) {
       for (uint32_t y = 0; y < h; y++) {
@@ -153,7 +152,7 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
         unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
         for (uint32_t x = 0; x < w; x++) {
           unsigned char r = src[0], g = src[1], b = src[2];
-          int match = has_trns &&
+          bool match = has_trns &&
               (r == (trns_r & 0xFF) && g == (trns_g & 0xFF) &&
                   b == (trns_b & 0xFF));
           dst[0] = r;
@@ -172,7 +171,7 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
         for (uint32_t x = 0; x < w; x++) {
           uint16_t r = gimg_png_read_be16(src), g = gimg_png_read_be16(src + 2),
                    b = gimg_png_read_be16(src + 4);
-          int match = has_trns && (r == trns_r && g == trns_g && b == trns_b);
+          bool match = has_trns && (r == trns_r && g == trns_g && b == trns_b);
           dst[0] = (unsigned char)(r & 0xFFu);
           dst[1] = (unsigned char)(r >> 8);
           dst[2] = (unsigned char)(g & 0xFFu);

@@ -1,27 +1,23 @@
 /**
  * @file
  *
- * Shared JPEG test helpers implementation. Compile with -DGIMG_TEST_DATA_JPEG
- * when linking into test_jpeg_load and test_jpeg_encode.
+ * Shared JPEG test helpers implementation.
  *
  * Copyright 2026 by Corey Pennycuff
  */
 
-#include "jpeg_test_utils.h"
 #include <cstring>
-#include <ghoti.io/image/raster.h>
-
-#ifdef GIMG_TEST_DATA_JPEG
 #include <fstream>
 #include <string>
-#endif
+#include <ghoti.io/image/raster.h>
+
+#include "jpeg_test_utils.h"
 
 namespace jpeg_test {
 
 static constexpr uint64_t kFnv1aOffsetBasis = 0xcbf29ce484222325ULL;
 static constexpr uint64_t kFnv1aPrime = 0x100000001b3ULL;
 
-#ifdef GIMG_TEST_DATA_JPEG
 bool load_jpeg_file(const char * filename, std::vector<uint8_t> & out) {
   std::string path = std::string(GIMG_TEST_DATA_JPEG) + "/" + filename;
   std::ifstream f(path, std::ios::binary | std::ios::ate);
@@ -62,7 +58,6 @@ void write_jpeg_output(
         static_cast<std::streamsize>(size));
   }
 }
-#endif
 
 uint64_t raster_pixel_hash(const GIMG_Raster * raster) {
   if (!raster) {

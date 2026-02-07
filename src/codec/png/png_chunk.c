@@ -95,7 +95,7 @@ GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
   if (length > 0) {
     unsigned char * read_buf = payload_buf;
     unsigned char stack_buf[GIMG_PNG_CHUNK_READ_STACK_BUF];
-    int use_stack = length <= GIMG_PNG_CHUNK_READ_STACK_BUF;
+    bool use_stack = length <= GIMG_PNG_CHUNK_READ_STACK_BUF;
     if (!payload_buf && !use_stack) {
       read_buf = (unsigned char *)gimg_malloc(gimg_allocator_default(), length);
       if (!read_buf) {

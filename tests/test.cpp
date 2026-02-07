@@ -1,7 +1,15 @@
+/**
+ * @file
+ *
+ * Basic test to ensure the image library can be linked.
+ *
+ * Copyright 2026 by Corey Pennycuff
+ */
+
 #include <ghoti.io/image/image.h>
 #include <gtest/gtest.h>
 
-// Basic test to ensure the library can be linked
+// Basic test to ensure the library can be linked.
 TEST(ImageLibrary, BasicTest) {
   EXPECT_TRUE(true);
 }

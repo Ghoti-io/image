@@ -2,9 +2,8 @@
  * @file
  *
  * PNG encode/save tests: round-trip, save to stream, metadata policy.
- * When GIMG_TEST_DATA_PNG is defined, loads reference files from that
- * directory and writes encoded PNGs to tests/out/png/ for verification
- * (e.g. by tests/data/png/verify_png_output.py).
+ * Loads reference files from tests/data/png/ and writes encoded PNGs to
+ * tests/out/png/ for verification (e.g. by tests/data/png/verify_png_output.py).
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -20,12 +19,9 @@
 #include <gtest/gtest.h>
 #include <vector>
 
-#ifdef GIMG_TEST_DATA_PNG
 #include "png_test_utils.h"
 #include <fstream>
 #include <string>
-#endif
-
 
 TEST(PngEncode, SaveNullDocReturnsInternal) {
   GIMG_Stream * out_s = nullptr;
@@ -76,7 +72,54 @@ TEST(PngEncode, SaveUnsupportedFormatReturnsUnsupported) {
   gimg_stream_destroy(out_s);
 }
 
-#ifdef GIMG_TEST_DATA_PNG
+TEST(PngEncode, MetaCommonDescriptionWrittenAndReadAsText) {
+  // Programmatic doc: set meta_common description, save as PNG, re-load and
+  // verify description (written as tEXt "Description" when not in ancillary).
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, nullptr, 0, &raster),
+      GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  memset(gimg_raster_pixels(raster), 128, 8 * 8);
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  gimg_raster_destroy(raster);
+  raster = nullptr;
+  GIMG_Meta_Common * meta = nullptr;
+  ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &meta), GIMG_OK);
+  ASSERT_EQ(gimg_meta_common_set_description(meta, "Image caption"), GIMG_OK);
+
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
+  GIMG_Save_Report report = {0, nullptr, {0}};
+  ASSERT_EQ(gimg_doc_save(doc, out_s, "png", &opts, &report), GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_s, &out_data, &out_size);
+  std::vector<uint8_t> saved(out_size, 0);
+  if (out_size)
+    memcpy(saved.data(), out_data, out_size);
+  gimg_stream_destroy(out_s);
+
+  GIMG_Stream * in_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &in_s),
+      GIMG_OK);
+  doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_s, nullptr, nullptr, &doc), GIMG_OK);
+  meta = gimg_doc_meta_common(doc);
+  ASSERT_NE(meta, nullptr);
+  const char * desc = gimg_meta_common_description(meta);
+  ASSERT_NE(desc, nullptr);
+  EXPECT_STREQ(desc, "Image caption");
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_s);
+}
+
 TEST(PngEncode, SaveToMemoryOutputSucceeds) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(png_test::load_png_file("png_1x1_gray.png", buf))
@@ -119,9 +162,7 @@ TEST(PngEncode, SaveToMemoryOutputSucceeds) {
   }
   gimg_stream_destroy(out_s);
 }
-#endif
 
-#ifdef GIMG_TEST_DATA_PNG
 TEST(PngEncode, RoundTrip1x1Gray) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(png_test::load_png_file("png_1x1_gray.png", buf))
@@ -1126,8 +1167,6 @@ TEST(PngEncode, ApngRoundTrip) {
   png_test::write_png_output(
       "apng_2frame_roundtrip.png", saved_data.data(), saved_data.size());
 }
-
-#endif // GIMG_TEST_DATA_PNG
 
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);

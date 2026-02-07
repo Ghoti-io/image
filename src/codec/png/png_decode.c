@@ -326,7 +326,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
       if (canvas_pixels > max_px) {
         return GIMG_ERR_LIMIT;
       }
-      int use_trns = (state->trns && state->trns_size > 0) ? 1 : 0;
+      bool use_trns = (state->trns && state->trns_size > 0);
       const GIMG_Pixel_Format * fmt = NULL;
       switch (ihdr->color_type) {
       case 0:
@@ -466,7 +466,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
   const GIMG_Limits * limits = options ? options->limits : NULL;
 
   // Select output format and whether we need alpha from tRNS.
-  int use_trns = (state->trns && state->trns_size > 0) ? 1 : 0;
+  bool use_trns = (state->trns && state->trns_size > 0);
   const GIMG_Pixel_Format * format = NULL;
   switch (ihdr->color_type) {
   case 0:

@@ -220,8 +220,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     return r;
   }
 
-  int have_plte = 0;
-  int have_trns = 0;
+  bool have_plte = false;
+  bool have_trns = false;
   int seen_idat = 0;
   // APNG state (only meaningful when state->is_apng).
   int actl_seen = 0;
@@ -432,7 +432,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_png_free_doc_state(codec, state);
         return r;
       }
-      have_plte = 1;
+      have_plte = true;
       continue;
     }
 
@@ -460,7 +460,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_png_free_doc_state(codec, state);
         return r;
       }
-      have_trns = 1;
+      have_trns = true;
       continue;
     }
 
@@ -645,6 +645,42 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       break; // First eXIf chunk only per spec.
     }
+  }
+
+  // Populate meta_common description from first tEXt/zTXt/iTXt with keyword
+  // "Description" or "Comment".
+  for (size_t i = 0; i < state->ancillary_count; i++) {
+    gimg_png_chunk_type_t t = state->ancillary[i].type;
+    if (t != GIMG_PNG_tEXt && t != GIMG_PNG_zTXt && t != GIMG_PNG_iTXt) {
+      continue;
+    }
+    if (!state->ancillary[i].payload || state->ancillary[i].payload_size == 0) {
+      continue;
+    }
+    size_t kw_len = 0;
+    char * text = NULL;
+    r = gimg_png_text_chunk_decode(t, state->ancillary[i].payload,
+        state->ancillary[i].payload_size, alloc, &kw_len, &text);
+    if (r != GIMG_OK || !text) {
+      continue;
+    }
+    const unsigned char * kw = state->ancillary[i].payload;
+    bool match = false;
+    if (kw_len == 11 && memcmp(kw, "Description", 11) == 0) {
+      match = true;
+    }
+    else if (kw_len == 7 && memcmp(kw, "Comment", 7) == 0) {
+      match = true;
+    }
+    if (match) {
+      GIMG_Meta_Common * meta_common = NULL;
+      if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
+        (void)gimg_meta_common_set_description(meta_common, text);
+      }
+      gimg_free(alloc, text);
+      break;
+    }
+    gimg_free(alloc, text);
   }
 
   *out_doc = doc;

@@ -59,6 +59,16 @@ GIMG_API void gimg_meta_common_dpi(
     const GIMG_Meta_Common * meta, uint32_t * out_x, uint32_t * out_y);
 
 /**
+ * @brief Normalized description/comment (populated from format-native storage
+ * on load, e.g. JPEG COM or PNG tEXt "Description"/"Comment"; written on save
+ * when set and policy allows). UTF-8, null-terminated; storage is internal.
+ */
+GIMG_API GIMG_Result gimg_meta_common_set_description(
+    GIMG_Meta_Common * meta, const char * description);
+GIMG_API const char * gimg_meta_common_description(
+    const GIMG_Meta_Common * meta);
+
+/**
  * @brief Create/destroy common metadata block (create uses default allocator).
  */
 GIMG_API GIMG_Result gimg_meta_common_create(GIMG_Meta_Common ** out_meta);

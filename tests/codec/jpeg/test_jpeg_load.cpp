@@ -6,7 +6,6 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#include "jpeg_test_utils.h"
 #include <cstdint>
 #include <cstring>
 #include <ghoti.io/image/codec.h>
@@ -17,6 +16,8 @@
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
 #include <vector>
+
+#include "jpeg_test_utils.h"
 
 namespace {
 
@@ -226,7 +227,8 @@ std::vector<uint8_t> make_exif_with_uncompressed_thumbnail(void) {
   exif.push_back((uint8_t)(strip_off >> 8));
   exif.push_back((uint8_t)(strip_off >> 16));
   exif.push_back((uint8_t)(strip_off >> 24));
-  append(exif, (const unsigned char *)"\x17\x01\x04\x00\x01\x00\x00\x00\x04\x00\x00\x00",
+  append(exif,
+      (const unsigned char *)"\x17\x01\x04\x00\x01\x00\x00\x00\x04\x00\x00\x00",
       12);
   append(exif,
       (const unsigned char *)"\x06\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00",
@@ -808,6 +810,23 @@ TEST(JpegLoad, ComAttachedToMetaRaw) {
   gimg_stream_destroy(s);
 }
 
+TEST(JpegLoad, ComPopulatesMetaCommonDescription) {
+  std::vector<uint8_t> jpeg = make_jpeg_with_com("Hello");
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
+  ASSERT_NE(meta, nullptr) << "COM (7-bit ASCII) should ensure meta_common";
+  const char * desc = gimg_meta_common_description(meta);
+  ASSERT_NE(desc, nullptr) << "First COM should populate description";
+  EXPECT_STREQ(desc, "Hello");
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
 TEST(JpegLoad, MultipleComPreserveOrderAndContent) {
   std::vector<uint8_t> jpeg = make_jpeg_with_two_com();
   GIMG_Stream * s = nullptr;
@@ -996,14 +1015,12 @@ TEST(JpegLoad, LoadFourComponentCmykStructure) {
   gimg_stream_destroy(s);
 }
 
-#ifdef GIMG_TEST_DATA_JPEG
 TEST(JpegLoad, DecodeCmykFileWhenPresent) {
-  // If tests/data/jpeg/cmyk_sample.jpg exists, load and decode; verify CMYK
-  // raster format and color info preserved.
+  // Load tests/data/jpeg/cmyk_sample.jpg and decode; verify CMYK raster
+  // format and color info preserved.
   std::vector<uint8_t> jpeg;
-  if (!jpeg_test::load_jpeg_file("cmyk_sample.jpg", jpeg)) {
-    GTEST_SKIP() << "cmyk_sample.jpg not in GIMG_TEST_DATA_JPEG";
-  }
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("cmyk_sample.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
   GIMG_Stream * s = nullptr;
   ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
   GIMG_Doc * doc = nullptr;
@@ -1173,7 +1190,6 @@ TEST(JpegLoad, GoldenCmyk) {
   EXPECT_EQ(hash, 2706856015390867493ULL)
       << "canonical pixel hash cmyk_sample (8x8 black)";
 }
-#endif
 
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);

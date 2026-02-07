@@ -22,7 +22,7 @@
 namespace {
 
 TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
-  /* Create synthetic doc with 16x16 grayscale raster. */
+  // Create synthetic doc with 16x16 grayscale raster.
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_create(&doc);
   ASSERT_EQ(r, GIMG_OK);
@@ -201,7 +201,7 @@ TEST(JpegEncode, SameInputSameOutputDeterministic) {
 
   GIMG_Stream * out2 = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out2), GIMG_OK);
-  /* Save again (same doc, same options) to second stream. */
+  // Save again (same doc, same options) to second stream.
   ASSERT_EQ(gimg_doc_save(doc, out2, "jpeg", &save_opts, &report2), GIMG_OK);
 
   const void *d1 = nullptr, *d2 = nullptr;
@@ -376,8 +376,8 @@ TEST(JpegEncode, MetadataPreserveAllRoundTrip) {
 }
 
 TEST(JpegEncode, ComRoundTrip) {
-  /* Doc with 8x8 raster and COM in meta_raw (combined format: 2-byte BE length
-   * + payload). One COM "Hello" = 00 05 48 65 6C 6C 6F. */
+  // Doc with 8x8 raster and COM in meta_raw (combined format: 2-byte BE length
+  // + payload). One COM "Hello" = 00 05 48 65 6C 6C 6F.
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
   GIMG_Meta_Raw * raw = nullptr;
@@ -439,8 +439,61 @@ TEST(JpegEncode, ComRoundTrip) {
   gimg_stream_destroy(in_stream);
 }
 
+TEST(JpegEncode, MetaCommonDescriptionWrittenAsCom) {
+  // Programmatic doc: set meta_common description, save as JPEG, re-load and
+  // verify description (written as COM when no COM in meta_raw).
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Meta_Common * meta = nullptr;
+  ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &meta), GIMG_OK);
+  ASSERT_EQ(gimg_meta_common_set_description(meta, "My caption"), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  memset(gimg_raster_pixels(raster), 128, 8 * 8);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 0,
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
+  };
+  GIMG_Save_Report report = {};
+  report.diagnostics = nullptr;
+  ASSERT_EQ(
+      gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report), GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_stream, &out_data, &out_size);
+  std::vector<uint8_t> saved(out_size, 0);
+  if (out_size)
+    memcpy(saved.data(), out_data, out_size);
+  gimg_stream_destroy(out_stream);
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &in_stream),
+      GIMG_OK);
+  doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+  meta = gimg_doc_meta_common(doc);
+  ASSERT_NE(meta, nullptr);
+  const char * desc = gimg_meta_common_description(meta);
+  ASSERT_NE(desc, nullptr);
+  EXPECT_STREQ(desc, "My caption");
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
+}
+
 TEST(JpegEncode, MetadataDropAllStripsExif) {
-  /* Doc with 16x16 raster (same as SaveGrayscale); save with DROP_ALL. */
+  // Doc with 16x16 raster (same as SaveGrayscale); save with DROP_ALL.
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
   ASSERT_NE(doc, nullptr);
@@ -494,7 +547,7 @@ TEST(JpegEncode, MetadataDropAllStripsExif) {
 }
 
 TEST(JpegEncode, MetadataKeepCommonOnlyNoExif) {
-  /* Doc with raster only; save with KEEP_COMMON_ONLY, re-load has no EXIF. */
+  // Doc with raster only; save with KEEP_COMMON_ONLY, re-load has no EXIF.
   GIMG_Doc * doc = create_doc_with_raster_only();
   ASSERT_NE(doc, nullptr);
 
@@ -585,8 +638,8 @@ TEST(JpegEncode, SaveUnsupportedFormatReturnsError) {
 }
 
 TEST(JpegEncode, SaveCmykRasterReturnsUnsupported) {
-  /* JPEG encoder supports only grayscale and RGB/RGBA; CMYK returns
-   * GIMG_ERR_UNSUPPORTED. */
+  // JPEG encoder supports only grayscale and RGB/RGBA; CMYK returns
+  // GIMG_ERR_UNSUPPORTED.
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
   GIMG_Raster * raster = nullptr;
@@ -615,9 +668,9 @@ TEST(JpegEncode, SaveCmykRasterReturnsUnsupported) {
 }
 
 TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat6) {
-  /* Doc with main image and thumbnail. Save with exif_thumbnail_format=6;
-   * re-load and verify we get 2 items, main (item 0) has correct size, item 1
-   * decodes. */
+  // Doc with main image and thumbnail. Save with exif_thumbnail_format=6;
+  // re-load and verify we get 2 items, main (item 0) has correct size, item 1
+  // decodes.
   constexpr uint32_t kMainW = 16u, kMainH = 16u, kThumbW = 8u, kThumbH = 8u;
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
@@ -691,9 +744,9 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat6) {
 }
 
 TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat1) {
-  /* Doc with main image and thumbnail. Save with exif_thumbnail_format=1
-   * (uncompressed); re-load and verify second item decodes and dimensions
-   * match. */
+  // Doc with main image and thumbnail. Save with exif_thumbnail_format=1
+  // (uncompressed); re-load and verify second item decodes and dimensions
+  // match.
   constexpr uint32_t kMainW = 16u, kMainH = 16u, kThumbW = 8u, kThumbH = 8u;
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
@@ -759,9 +812,9 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat1) {
 }
 
 TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat7) {
-  /* Doc with main image and thumbnail. Save with exif_thumbnail_format=7
-   * (TIFF TechNote 2 JPEG); re-load and verify second item decodes and
-   * dimensions match. */
+  // Doc with main image and thumbnail. Save with exif_thumbnail_format=7
+  // (TIFF TechNote 2 JPEG); re-load and verify second item decodes and
+  // dimensions match.
   constexpr uint32_t kMainW = 16u, kMainH = 16u, kThumbW = 8u, kThumbH = 8u;
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
@@ -827,8 +880,8 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat7) {
 }
 
 TEST(JpegEncode, RoundTripExifThumbnailFormat1) {
-  /* Save doc with two items and format 1 → load → save again with format 1 →
-   * load; thumbnail decodes and dimensions unchanged. */
+  // Save doc with two items and format 1 → load → save again with format 1 →
+  // load; thumbnail decodes and dimensions unchanged.
   constexpr uint32_t kThumbW = 6u, kThumbH = 4u;
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
@@ -906,8 +959,8 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat1) {
 }
 
 TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
-  /* Save doc with two items and format 7 → load → save again with format 7 →
-   * load; thumbnail decodes and dimensions unchanged. */
+  // Save doc with two items and format 7 → load → save again with format 7 →
+  // load; thumbnail decodes and dimensions unchanged.
   constexpr uint32_t kThumbW = 6u, kThumbH = 4u;
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
@@ -985,8 +1038,8 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
 }
 
 TEST(JpegEncode, RoundTripExifThumbnailPreserved) {
-  /* Load JPEG with EXIF thumbnail, save (preserve), load again; thumbnail still
-   * present. */
+  // Load JPEG with EXIF thumbnail, save (preserve), load again; thumbnail
+  // still present.
   std::vector<uint8_t> jpeg;
   if (!jpeg_test::load_jpeg_file("jpeg_exif_orientation.jpg", jpeg)) {
     GTEST_SKIP() << "Need tests/data/jpeg/jpeg_exif_orientation.jpg";

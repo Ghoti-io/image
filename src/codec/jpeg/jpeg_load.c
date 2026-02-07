@@ -22,6 +22,7 @@
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -44,15 +45,15 @@ static void jpeg_load_diag(GIMG_Diagnostics * d, size_t offset, uint8_t marker,
   (void)r;
 }
 
-/** Return 1 if marker has no length/payload (SOI, EOI, RST0..RST7). */
-static int jpeg_marker_has_no_length(uint8_t marker) {
+/** Return true if marker has no length/payload (SOI, EOI, RST0..RST7). */
+static bool jpeg_marker_has_no_length(uint8_t marker) {
   if (marker == GIMG_JPEG_MARKER_SOI || marker == GIMG_JPEG_MARKER_EOI) {
-    return 1;
+    return true;
   }
   if (marker >= 0xD0 && marker <= 0xD7) { // RST0..RST7
-    return 1;
+    return true;
   }
-  return 0;
+  return false;
 }
 
 /** Get max segment payload from options or internal default. */
@@ -61,6 +62,36 @@ static size_t jpeg_max_segment_payload(const GIMG_Limits * limits) {
     return limits->max_chunk_size;
   }
   return GIMG_JPEG_DEFAULT_MAX_SEGMENT_PAYLOAD;
+}
+
+/** Return true if first COM payload looks like 7-bit ASCII text; set *out_ptr
+ * and *out_len to the text (up to first null). */
+static bool jpeg_first_com_looks_like_text(const unsigned char * com_combined,
+    size_t com_size, const unsigned char ** out_ptr, size_t * out_len) {
+  if (!com_combined || com_size < 2 || !out_ptr || !out_len) {
+    return false;
+  }
+  size_t plen = (size_t)((com_combined[0] << 8) | com_combined[1]);
+  if (plen > com_size - 2) {
+    return false;
+  }
+  const unsigned char * payload = com_combined + 2;
+  size_t len = plen;
+  for (size_t i = 0; i < plen; i++) {
+    if (payload[i] == 0) {
+      len = i;
+      break;
+    }
+  }
+  for (size_t i = 0; i < len; i++) {
+    unsigned char c = payload[i];
+    if (c != 0x09 && c != 0x0A && c != 0x0D && (c < 0x20 || c > 0x7E)) {
+      return false;
+    }
+  }
+  *out_ptr = payload;
+  *out_len = len;
+  return true;
 }
 
 GIMG_Result gimg_jpeg_verify_soi(GIMG_Stream * stream) {
@@ -227,8 +258,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   memset(state, 0, sizeof(*state));
   state->allocator = alloc;
 
-  int seen_sof = 0;
-  int have_pending_marker = 0;
+  bool seen_sof = false;
+  bool have_pending_marker = false;
   uint8_t pending_marker = 0;
 
   for (;;) {
@@ -236,7 +267,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     uint8_t marker = 0;
     if (have_pending_marker) {
       marker = pending_marker;
-      have_pending_marker = 0;
+      have_pending_marker = false;
       r = GIMG_OK;
     }
     else {
@@ -319,7 +350,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return r;
       }
       state->is_progressive = 0;
-      seen_sof = 1;
+      seen_sof = true;
       break;
     }
     case GIMG_JPEG_MARKER_SOF2: {
@@ -336,7 +367,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return r;
       }
       state->is_progressive = 1;
-      seen_sof = 1;
+      seen_sof = true;
       break;
     }
     case GIMG_JPEG_MARKER_DQT: {
@@ -540,7 +571,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         // support).
         (void)gimg_stream_read(stream, &b, 1, &n);
         pending_marker = b;
-        have_pending_marker = 1;
+        have_pending_marker = true;
         break;
       }
       break;
@@ -763,6 +794,23 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           (unsigned char)state->app0_jfif[11]);
       if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
         gimg_meta_common_set_dpi(meta_common, x_dpi, y_dpi);
+      }
+    }
+  }
+  // Populate meta_common description from first COM when 7-bit ASCII text.
+  if (state->com_combined && state->com_combined_size >= 2) {
+    const unsigned char * text_ptr = NULL;
+    size_t text_len = 0;
+    if (jpeg_first_com_looks_like_text(state->com_combined,
+            state->com_combined_size, &text_ptr, &text_len)) {
+      if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
+        char * buf = (char *)gimg_malloc(alloc, text_len + 1u);
+        if (buf) {
+          memcpy(buf, text_ptr, text_len);
+          buf[text_len] = '\0';
+          (void)gimg_meta_common_set_description(meta_common, buf);
+          gimg_free(alloc, buf);
+        }
       }
     }
   }

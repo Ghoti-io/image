@@ -19,6 +19,7 @@ struct GIMG_Meta_Common {
   GIMG_Orientation orientation;
   uint32_t x_dpi;
   uint32_t y_dpi;
+  char * description; ///< Optional; UTF-8 null-terminated; used as comment/description.
 };
 
 typedef struct gimg_meta_raw_block {

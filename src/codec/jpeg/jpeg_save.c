@@ -14,6 +14,7 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/stream.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -539,14 +540,15 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
     GIMG_Meta_Raw * meta_raw = gimg_doc_meta_raw(doc);
 
-    // COM segment(s): when policy preserves metadata, write in same order as
-    // load (stored as concatenated 2-byte BE length + payload per COM).
-    if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_COMMON_ONLY &&
-        meta_raw) {
+    // COM segment(s): when policy preserves metadata, write from meta_raw if
+    // present; else from meta_common description if set (programmatic case).
+    if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_COMMON_ONLY) {
       size_t com_size = 0;
-      if (gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_COM, NULL,
+      bool have_com_raw = meta_raw &&
+          gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_COM, NULL,
               &com_size) == GIMG_OK &&
-          com_size > 0) {
+          com_size > 0;
+      if (have_com_raw) {
         unsigned char * com_buf = (unsigned char *)gimg_malloc(alloc, com_size);
         if (com_buf) {
           r = gimg_meta_raw_get(
@@ -577,12 +579,26 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           return r;
         }
       }
+      else if (meta_common) {
+        const char * desc = gimg_meta_common_description(meta_common);
+        if (desc) {
+          size_t dlen = strlen(desc);
+          if (dlen <= 65535u) {
+            r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_COM,
+                (const unsigned char *)desc, dlen, &report->bytes_written);
+            if (r != GIMG_OK) {
+              gimg_free(alloc, scan_data);
+              return r;
+            }
+          }
+        }
+      }
     }
 
     // APP0: from meta_raw when preserving and present, else minimal (JFIF).
     size_t app0_len = 0;
-    int have_app0 = (policy != GIMG_META_DROP_ALL &&
-                        policy != GIMG_META_KEEP_COMMON_ONLY) &&
+    bool have_app0 = (policy != GIMG_META_DROP_ALL &&
+                         policy != GIMG_META_KEEP_COMMON_ONLY) &&
         meta_raw &&
         gimg_meta_raw_get(
             meta_raw, "jpeg", GIMG_JPEG_RAW_APP0, NULL, &app0_len) == GIMG_OK &&
@@ -634,7 +650,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           thumb_quality = 100;
         }
 
-        int wrote_exif = 0;
+        bool wrote_exif = false;
         if (item_count >= 2 &&
             (thumb_fmt == GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED ||
                 thumb_fmt == GIMG_EXIF_THUMB_FORMAT_JPEG ||
@@ -642,13 +658,13 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           GIMG_Item * thumb_item = gimg_doc_item((GIMG_Doc *)doc, 1);
           GIMG_Raster * thumb_raster =
               thumb_item ? gimg_item_raster(thumb_item) : NULL;
-          int thumb_raster_owned = 0;
+          bool thumb_raster_owned = false;
           if (!thumb_raster &&
               doc->loaded_by_codec == (struct GIMG_Codec *)codec &&
               thumb_item) {
             r = gimg_item_decode(thumb_item, NULL, &thumb_raster);
             if (r == GIMG_OK && thumb_raster) {
-              thumb_raster_owned = 1;
+              thumb_raster_owned = true;
             }
           }
           if (thumb_raster) {

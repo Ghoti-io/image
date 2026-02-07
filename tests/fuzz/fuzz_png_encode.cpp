@@ -37,7 +37,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
 
-  /* Decode every item to exercise decode path before save. */
+  // Decode every item to exercise decode path before save.
   size_t n = gimg_doc_item_count(doc);
   for (size_t i = 0; i < n; i++) {
     GIMG_Raster * raster = nullptr;
@@ -72,8 +72,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
 
-  /* Re-load from encoded output. Keep out_s alive until s2 is destroyed
-   * (memory stream does not copy; s2 points into out_s buffer). */
+  // Re-load from encoded output. Keep out_s alive until s2 is destroyed
+  // (memory stream does not copy; s2 points into out_s buffer).
   GIMG_Stream * s2 = nullptr;
   r = gimg_stream_create_memory(out_data, out_size, &s2);
   if (r != GIMG_OK || s2 == nullptr) {

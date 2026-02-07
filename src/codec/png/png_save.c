@@ -200,6 +200,31 @@ static bool gimg_png_chunk_is_known_semantic(gimg_png_chunk_type_t t) {
 }
 
 /**
+ * Return true if the text chunk payload has keyword "Description" or "Comment"
+ * (case-sensitive; keyword is the first null-terminated string).
+ */
+static bool gimg_png_text_keyword_is_description_or_comment(
+    const unsigned char * payload, size_t payload_size) {
+  if (!payload || payload_size == 0) {
+    return false;
+  }
+  size_t kw_len = 0;
+  while (kw_len < payload_size && payload[kw_len] != 0) {
+    kw_len++;
+  }
+  if (kw_len >= payload_size) {
+    return false;
+  }
+  if (kw_len == 11 && memcmp(payload, "Description", 11) == 0) {
+    return true;
+  }
+  if (kw_len == 7 && memcmp(payload, "Comment", 7) == 0) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Return true if the text chunk payload has a GPS-related keyword (tEXt/zTXt/iTXt:
  * keyword is the first null-terminated string). STRIP_GPS skips such chunks.
  */
@@ -656,13 +681,13 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   uint8_t color_type = 0;
   uint8_t bit_depth = 0;
-  int use_palette = 0;
+  bool use_palette = false;
   if (state && state->plte && state->plte_size > 0 &&
       state->ihdr.color_type == 3) {
     const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
     if (fmt && fmt->channel_model == GIMG_CHANNEL_RGBA &&
         fmt->channel_count == 4 && fmt->bits_per_channel[0] == 8) {
-      use_palette = 1;
+      use_palette = true;
       color_type = 3;
       bit_depth = state->ihdr.bit_depth;
       if (bit_depth != 1 && bit_depth != 2 && bit_depth != 4 &&
@@ -806,6 +831,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   else if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_RAW_ONLY) {
     const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
+    GIMG_Meta_Common * meta_common = gimg_doc_meta_common(doc);
+    bool have_description_or_comment_from_ancillary = false;
     // PRESERVE_ALL, STRIP_GPS, or NORMALIZE_EXIF: emit ancillary from state.
     if (state && state->ancillary) {
       for (size_t i = 0; i < state->ancillary_count; i++) {
@@ -824,6 +851,12 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
                   state->ancillary[i].payload_size)) {
             continue;
           }
+        }
+        if ((t == GIMG_PNG_tEXt || t == GIMG_PNG_zTXt || t == GIMG_PNG_iTXt) &&
+            state->ancillary[i].payload && state->ancillary[i].payload_size > 0 &&
+            gimg_png_text_keyword_is_description_or_comment(
+                state->ancillary[i].payload, state->ancillary[i].payload_size)) {
+          have_description_or_comment_from_ancillary = true;
         }
         const void * chunk_payload = state->ancillary[i].payload;
         size_t chunk_size = state->ancillary[i].payload_size;
@@ -854,6 +887,35 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           return r;
         }
         report->bytes_written += 8 + chunk_size + 4;
+      }
+    }
+    // If meta_common has description and we did not write one from ancillary,
+    // emit one tEXt "Description\0" + description.
+    if (!have_description_or_comment_from_ancillary && meta_common) {
+      const char * desc = gimg_meta_common_description(meta_common);
+      if (desc) {
+        size_t dlen = strlen(desc);
+        size_t kw_len = 11;  // "Description"
+        if (dlen <= 0x7FFFFFFFu - kw_len - 1u) {
+          size_t total = kw_len + 1u + dlen;
+          unsigned char * tEXt_payload =
+              (unsigned char *)gimg_malloc(alloc, total);
+          if (tEXt_payload) {
+            memcpy(tEXt_payload, "Description", 11);
+            tEXt_payload[11] = 0;
+            memcpy(tEXt_payload + 12, desc, dlen);
+            r = gimg_png_write_chunk(
+                stream, GIMG_PNG_tEXt, tEXt_payload, total);
+            gimg_free(alloc, tEXt_payload);
+            if (r == GIMG_OK) {
+              report->bytes_written += 8 + total + 4;
+            }
+            else {
+              gimg_free(alloc, zlib_buf);
+              return r;
+            }
+          }
+        }
       }
     }
     // eXIf from doc meta_raw when doc was not loaded from PNG (no state).

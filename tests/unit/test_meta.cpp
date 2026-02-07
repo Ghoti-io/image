@@ -32,6 +32,23 @@ TEST(MetaCommon, SetGetDpi) {
   gimg_meta_common_destroy(m);
 }
 
+TEST(MetaCommon, SetGetDescription) {
+  GIMG_Meta_Common * m = nullptr;
+  GIMG_Result r = gimg_meta_common_create(&m);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(m, nullptr);
+  EXPECT_EQ(gimg_meta_common_description(m), nullptr);
+  r = gimg_meta_common_set_description(m, "Hello");
+  ASSERT_EQ(r, GIMG_OK);
+  const char * desc = gimg_meta_common_description(m);
+  ASSERT_NE(desc, nullptr);
+  EXPECT_STREQ(desc, "Hello");
+  r = gimg_meta_common_set_description(m, nullptr);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(gimg_meta_common_description(m), nullptr);
+  gimg_meta_common_destroy(m);
+}
+
 TEST(MetaRaw, AttachAndGet) {
   GIMG_Meta_Raw * raw = nullptr;
   GIMG_Result r = gimg_meta_raw_create(&raw);

@@ -289,6 +289,15 @@ GIMG_Result gimg_png_deflate_options_for_decode(size_t max_output_bytes,
     gcomp_options_t ** out_opts);
 
 /**
+ * @brief Decode one tEXt/zTXt/iTXt chunk to keyword length and text string.
+ * Keyword is payload[0..keyword_len-1] (no null). *out_text is alloc'd,
+ * null-terminated; caller frees. Returns GIMG_OK on success.
+ */
+GIMG_Result gimg_png_text_chunk_decode(gimg_png_chunk_type_t type,
+    const unsigned char * payload, size_t payload_size,
+    const GIMG_Allocator * alloc, size_t * out_keyword_len, char ** out_text);
+
+/**
  * @brief PNG codec load callback (used by png_register).
  */
 GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
