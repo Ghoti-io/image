@@ -941,6 +941,50 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         }
       }
 
+      // APP13 (IPTC/Photoshop) and APP14 (Adobe) in read order after APP2.
+      size_t app13_size = 0;
+      if (meta_raw &&
+          gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP13, NULL,
+              &app13_size) == GIMG_OK &&
+          app13_size > 0) {
+        unsigned char * app13_buf =
+            (unsigned char *)gimg_malloc(alloc, app13_size);
+        if (app13_buf) {
+          r = gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP13,
+              app13_buf, &app13_size);
+          if (r == GIMG_OK) {
+            r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP13,
+                app13_buf, app13_size, &report->bytes_written);
+          }
+          gimg_free(alloc, app13_buf);
+        }
+        if (r != GIMG_OK) {
+          gimg_free(alloc, scan_data);
+          return r;
+        }
+      }
+      size_t app14_size = 0;
+      if (meta_raw &&
+          gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP14, NULL,
+              &app14_size) == GIMG_OK &&
+          app14_size > 0) {
+        unsigned char * app14_buf =
+            (unsigned char *)gimg_malloc(alloc, app14_size);
+        if (app14_buf) {
+          r = gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP14,
+              app14_buf, &app14_size);
+          if (r == GIMG_OK) {
+            r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP14,
+                app14_buf, app14_size, &report->bytes_written);
+          }
+          gimg_free(alloc, app14_buf);
+        }
+        if (r != GIMG_OK) {
+          gimg_free(alloc, scan_data);
+          return r;
+        }
+      }
+
       // Unknown APP segments (APP3–APP15 and unhandled APP0/1/2) in read order.
       if (policy == GIMG_META_PRESERVE_ALL || policy == GIMG_META_KEEP_RAW_ONLY) {
         size_t unknown_size = 0;

@@ -511,6 +511,8 @@ std::vector<uint8_t> make_jpeg_with_two_com() {
 static const uint32_t kJpegRawApp1Exif = 0xE100u;
 static const uint32_t kJpegRawApp0 = 0xE0u;
 static const uint32_t kJpegRawApp0Jfxx = 0xE001u;
+static const uint32_t kJpegRawApp13 = 0xEDu;
+static const uint32_t kJpegRawApp14 = 0xEEu;
 static const uint32_t kJpegRawAppUnknown = 0xE0FFu;
 static const uint32_t kJpegRawCom = 0xFEu;
 
@@ -1120,6 +1122,216 @@ TEST(JpegLoad, UnknownAppOrderPreserved) {
   EXPECT_EQ(blob[7], 'B');
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, App13PhotoshopRoundTrip) {
+  // APP13 with "Photoshop 3.0\0" is stored as GIMG_JPEG_RAW_APP13, not unknown.
+  std::vector<uint8_t> file_buf;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", file_buf));
+  ASSERT_GE(file_buf.size(), 4u);
+  ASSERT_EQ(file_buf[0], 0xFF);
+  ASSERT_EQ(file_buf[1], 0xD8);
+  static const unsigned char payload[] = "Photoshop 3.0\0\x00\x01\x02";
+  const size_t payload_len = sizeof(payload);
+  std::vector<uint8_t> jpeg;
+  jpeg.push_back(0xFF);
+  jpeg.push_back(0xD8);
+  jpeg.push_back(0xFF);
+  jpeg.push_back(0xED);
+  jpeg.push_back(static_cast<uint8_t>((2 + payload_len) >> 8));
+  jpeg.push_back(static_cast<uint8_t>((2 + payload_len) & 0xFF));
+  jpeg.insert(jpeg.end(), payload, payload + payload_len);
+  jpeg.insert(jpeg.end(), file_buf.begin() + 2, file_buf.end());
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_stream_destroy(s);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr);
+  size_t app13_size = 0;
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawApp13, nullptr, &app13_size);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(app13_size, payload_len);
+  std::vector<uint8_t> app13_data(app13_size);
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawApp13, app13_data.data(),
+      &app13_size);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(memcmp(app13_data.data(), payload, payload_len), 0);
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options save_opts = {};
+  save_opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_s, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  ASSERT_EQ(r, GIMG_OK);
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_s, &out_data, &out_size);
+  std::vector<uint8_t> out_buf(
+      static_cast<const uint8_t *>(out_data),
+      static_cast<const uint8_t *>(out_data) + out_size);
+  gimg_stream_destroy(out_s);
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(out_buf.data(), out_buf.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_stream_destroy(s2);
+  GIMG_Meta_Raw * raw2 = gimg_doc_meta_raw(doc2);
+  ASSERT_NE(raw2, nullptr);
+  size_t app13_size2 = 0;
+  r = gimg_meta_raw_get(raw2, "jpeg", kJpegRawApp13, nullptr, &app13_size2);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(app13_size2, payload_len);
+  std::vector<uint8_t> app13_data2(app13_size2);
+  r = gimg_meta_raw_get(raw2, "jpeg", kJpegRawApp13, app13_data2.data(),
+      &app13_size2);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(memcmp(app13_data2.data(), payload, payload_len), 0);
+  gimg_doc_destroy(doc2);
+}
+
+TEST(JpegLoad, App14AdobeRoundTrip) {
+  // APP14 "Adobe\0" stored as GIMG_JPEG_RAW_APP14; transform at byte 14.
+  std::vector<uint8_t> file_buf;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", file_buf));
+  ASSERT_GE(file_buf.size(), 4u);
+  static const unsigned char payload[] = {
+      'A', 'd', 'o', 'b', 'e', 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+  const size_t payload_len = sizeof(payload);
+  std::vector<uint8_t> jpeg;
+  jpeg.push_back(0xFF);
+  jpeg.push_back(0xD8);
+  jpeg.push_back(0xFF);
+  jpeg.push_back(0xEE);
+  jpeg.push_back(static_cast<uint8_t>((2 + payload_len) >> 8));
+  jpeg.push_back(static_cast<uint8_t>((2 + payload_len) & 0xFF));
+  jpeg.insert(jpeg.end(), payload, payload + payload_len);
+  jpeg.insert(jpeg.end(), file_buf.begin() + 2, file_buf.end());
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_stream_destroy(s);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr);
+  size_t app14_size = 0;
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawApp14, nullptr, &app14_size);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(app14_size, payload_len);
+  std::vector<uint8_t> app14_data(app14_size);
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawApp14, app14_data.data(),
+      &app14_size);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(memcmp(app14_data.data(), payload, payload_len), 0);
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options save_opts = {};
+  save_opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_s, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  ASSERT_EQ(r, GIMG_OK);
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_s, &out_data, &out_size);
+  std::vector<uint8_t> out_buf(
+      static_cast<const uint8_t *>(out_data),
+      static_cast<const uint8_t *>(out_data) + out_size);
+  gimg_stream_destroy(out_s);
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(out_buf.data(), out_buf.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_stream_destroy(s2);
+  GIMG_Meta_Raw * raw2 = gimg_doc_meta_raw(doc2);
+  ASSERT_NE(raw2, nullptr);
+  size_t app14_size2 = 0;
+  r = gimg_meta_raw_get(raw2, "jpeg", kJpegRawApp14, nullptr, &app14_size2);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(app14_size2, payload_len);
+  std::vector<uint8_t> app14_data2(app14_size2);
+  r = gimg_meta_raw_get(raw2, "jpeg", kJpegRawApp14, app14_data2.data(),
+      &app14_size2);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(memcmp(app14_data2.data(), payload, payload_len), 0);
+  gimg_doc_destroy(doc2);
+}
+
+TEST(JpegLoad, App13AndApp14BothPresentRoundTrip) {
+  // Load JPEG with both APP13 (Photoshop) and APP14; save; re-load; both present.
+  std::vector<uint8_t> file_buf;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", file_buf));
+  ASSERT_GE(file_buf.size(), 4u);
+  static const unsigned char app13_pl[] = "Photoshop 3.0\0\xab";
+  static const unsigned char app14_pl[] = {
+      'A', 'd', 'o', 'b', 'e', 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+  std::vector<uint8_t> jpeg = {0xFF, 0xD8};
+  auto append_app = [&jpeg](uint8_t marker, const unsigned char * pl,
+      size_t pl_len) {
+    jpeg.push_back(0xFF);
+    jpeg.push_back(marker);
+    uint16_t len = static_cast<uint16_t>(2 + pl_len);
+    jpeg.push_back(static_cast<uint8_t>(len >> 8));
+    jpeg.push_back(static_cast<uint8_t>(len & 0xFF));
+    jpeg.insert(jpeg.end(), pl, pl + pl_len);
+  };
+  append_app(0xED, app13_pl, sizeof(app13_pl));
+  append_app(0xEE, app14_pl, sizeof(app14_pl));
+  jpeg.insert(jpeg.end(), file_buf.begin() + 2, file_buf.end());
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr);
+  size_t sz13 = 0, sz14 = 0;
+  ASSERT_EQ(gimg_meta_raw_get(raw, "jpeg", kJpegRawApp13, nullptr, &sz13),
+      GIMG_OK);
+  ASSERT_EQ(gimg_meta_raw_get(raw, "jpeg", kJpegRawApp14, nullptr, &sz14),
+      GIMG_OK);
+  EXPECT_EQ(sz13, sizeof(app13_pl));
+  EXPECT_EQ(sz14, sizeof(app14_pl));
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options save_opts = {};
+  save_opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out_s, "jpeg", &save_opts, &report), GIMG_OK);
+  gimg_doc_destroy(doc);
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_s, &out_data, &out_size);
+  std::vector<uint8_t> out_buf(
+      static_cast<const uint8_t *>(out_data),
+      static_cast<const uint8_t *>(out_data) + out_size);
+  gimg_stream_destroy(out_s);
+  GIMG_Stream * s2 = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(out_buf.data(), out_buf.size(), &s2),
+      GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  ASSERT_EQ(gimg_doc_load(s2, nullptr, nullptr, &doc2), GIMG_OK);
+  gimg_stream_destroy(s2);
+  GIMG_Meta_Raw * raw2 = gimg_doc_meta_raw(doc2);
+  ASSERT_NE(raw2, nullptr);
+  size_t sz13_2 = 0, sz14_2 = 0;
+  ASSERT_EQ(gimg_meta_raw_get(raw2, "jpeg", kJpegRawApp13, nullptr, &sz13_2),
+      GIMG_OK);
+  ASSERT_EQ(gimg_meta_raw_get(raw2, "jpeg", kJpegRawApp14, nullptr, &sz14_2),
+      GIMG_OK);
+  EXPECT_EQ(sz13_2, sizeof(app13_pl));
+  EXPECT_EQ(sz14_2, sizeof(app14_pl));
+  gimg_doc_destroy(doc2);
 }
 
 TEST(JpegLoad, ProgressiveLoadAndDecodeAttempt) {

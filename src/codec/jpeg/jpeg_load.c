@@ -87,6 +87,56 @@ static GIMG_Result jpeg_append_unknown_app(gimg_jpeg_doc_state_t * state,
   return GIMG_OK;
 }
 
+/** Extract IPTC Caption/Abstract (record 2, dataset 80) from APP13 Photoshop 3.0
+ * payload. APP13 starts with "Photoshop 3.0\0"; then 8BIM blocks: 4B "8BIM",
+ * 2B id BE, 1B name_len, name_len bytes (pad to even), 4B data size BE, data.
+ * IPTC is resource id 0x0404. IPTC tag: 0x1C, record, dataset, 2B length BE.
+ * On success set *out_ptr and *out_len to caption bytes; return true. */
+static bool jpeg_app13_iptc_caption(const unsigned char * app13, size_t app13_len,
+    const unsigned char ** out_ptr, size_t * out_len) {
+  if (!app13 || app13_len < 14 || !out_ptr || !out_len) {
+    return false;
+  }
+  if (memcmp(app13, "Photoshop 3.0\0", 14) != 0) {
+    return false;
+  }
+  size_t off = 14;
+  while (off + 10 <= app13_len && memcmp(app13 + off, "8BIM", 4) == 0) {
+    uint16_t id = (uint16_t)((app13[off + 4] << 8) | app13[off + 5]);
+    size_t name_len = (size_t)app13[off + 6];
+    size_t name_total = 1 + name_len + (name_len & 1u ? 1u : 0u);
+    if (off + 6 + name_total + 4 > app13_len) {
+      break;
+    }
+    uint32_t data_size = (uint32_t)((app13[off + 6 + name_total] << 24) |
+        (app13[off + 6 + name_total + 1] << 16) |
+        (app13[off + 6 + name_total + 2] << 8) |
+        app13[off + 6 + name_total + 3]);
+    size_t data_off = off + 6 + name_total + 4;
+    if (data_off + data_size > app13_len) {
+      break;
+    }
+    if (id == 0x0404 && data_size > 0) {
+      const unsigned char * iptc = app13 + data_off;
+      size_t iptc_len = data_size;
+      size_t i = 0;
+      while (i + 5 <= iptc_len) {
+        uint16_t tag_len = (uint16_t)((iptc[i + 3] << 8) | iptc[i + 4]);
+        if (iptc[i] == 0x1C && iptc[i + 1] == 0x02 && iptc[i + 2] == 0x50 &&
+            i + 5 + tag_len <= iptc_len && tag_len > 0) {
+          *out_ptr = iptc + i + 5;
+          *out_len = (size_t)tag_len;
+          return true;
+        }
+        i += 5 + (size_t)tag_len;
+      }
+      break;
+    }
+    off = data_off + data_size;
+  }
+  return false;
+}
+
 /** Get max segment payload from options or internal default. */
 static size_t jpeg_max_segment_payload(const GIMG_Limits * limits) {
   if (limits && limits->max_chunk_size != 0) {
@@ -255,6 +305,8 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   gimg_free(alloc, state->app1_exif);
   gimg_free(alloc, state->app1_xmp);
   gimg_free(alloc, state->app2_icc);
+  gimg_free(alloc, state->app13);
+  gimg_free(alloc, state->app14);
   gimg_free(alloc, state->com_combined);
   gimg_free(alloc, state->unknown_app_combined);
   gimg_free(alloc, state);
@@ -693,6 +745,53 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       break;
     }
+    case GIMG_JPEG_MARKER_APP13: {
+      // APP13 (0xED): Photoshop 3.0 / IPTC; store raw when "Photoshop 3.0\0".
+      if (payload_size >= 14 && payload_buf &&
+          memcmp(payload_buf, "Photoshop 3.0\0", 14) == 0) {
+        if (state->app13) {
+          gimg_free(alloc, state->app13);
+        }
+        state->app13 = payload_buf;
+        state->app13_len = payload_size;
+        payload_buf = NULL;
+      }
+      if (payload_buf) {
+        r = jpeg_append_unknown_app(state, GIMG_JPEG_MARKER_APP13, payload_buf,
+            payload_size, alloc, diagnostics, seg_start);
+        gimg_free(alloc, payload_buf);
+        payload_buf = NULL;
+        if (r != GIMG_OK) {
+          gimg_jpeg_free_doc_state(codec, state);
+          return r;
+        }
+      }
+      break;
+    }
+    case GIMG_JPEG_MARKER_APP14: {
+      // APP14 (0xEE): Adobe; byte 14 = transform (0=unknown, 1=YCbCr, 2=YCCK).
+      if (payload_size >= 15 && payload_buf &&
+          memcmp(payload_buf, "Adobe\0", 6) == 0) {
+        if (state->app14) {
+          gimg_free(alloc, state->app14);
+        }
+        state->app14 = payload_buf;
+        state->app14_len = payload_size;
+        state->adobe_transform = payload_buf[14];
+        payload_buf = NULL;
+      }
+      if (payload_buf) {
+        r = jpeg_append_unknown_app(state, GIMG_JPEG_MARKER_APP14, payload_buf,
+            payload_size, alloc, diagnostics, seg_start);
+        gimg_free(alloc, payload_buf);
+        payload_buf = NULL;
+        if (r != GIMG_OK) {
+          gimg_jpeg_free_doc_state(codec, state);
+          return r;
+        }
+      }
+      break;
+    }
     case 0xE3:
     case 0xE4:
     case 0xE5:
@@ -703,10 +802,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     case 0xEA:
     case 0xEB:
     case 0xEC:
-    case 0xED:
-    case 0xEE:
     case 0xEF: {
-      // APP3..APP15: store for round-trip (APP14 Adobe handled in 2.5.5 later).
+      // APP3..APP15 (excluding APP13/APP14 when recognized): store for round-trip.
       r = jpeg_append_unknown_app(state, marker, payload_buf, payload_size,
           alloc, diagnostics, seg_start);
       gimg_free(alloc, payload_buf);
@@ -813,6 +910,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       (state->app1_exif && state->app1_exif_len > 0) ||
       (state->app1_xmp && state->app1_xmp_len > 0) ||
       (state->app2_icc && state->app2_icc_len > 0) ||
+      (state->app13 && state->app13_len > 0) ||
+      (state->app14 && state->app14_len > 0) ||
       (state->com_combined && state->com_combined_size > 0) ||
       (state->unknown_app_combined && state->unknown_app_combined_size > 0)) {
     r = gimg_doc_ensure_meta_raw(doc, &raw);
@@ -855,6 +954,22 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (state->app2_icc && state->app2_icc_len > 0) {
       r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC,
           state->app2_icc, state->app2_icc_len);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+    }
+    if (state->app13 && state->app13_len > 0) {
+      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP13,
+          state->app13, state->app13_len);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+    }
+    if (state->app14 && state->app14_len > 0) {
+      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP14,
+          state->app14, state->app14_len);
       if (r != GIMG_OK) {
         gimg_doc_destroy(doc);
         return r;
@@ -913,6 +1028,26 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         if (buf) {
           memcpy(buf, text_ptr, text_len);
           buf[text_len] = '\0';
+          (void)gimg_meta_common_set_description(meta_common, buf);
+          gimg_free(alloc, buf);
+        }
+      }
+    }
+  }
+  // Populate meta_common description from APP13 IPTC Caption (2:80) when not set.
+  if (state->app13 && state->app13_len >= 14) {
+    if (!meta_common && gimg_doc_ensure_meta_common(doc, &meta_common) != GIMG_OK) {
+      meta_common = NULL;
+    }
+    if (meta_common && !gimg_meta_common_description(meta_common)) {
+      const unsigned char * cap_ptr = NULL;
+      size_t cap_len = 0;
+      if (jpeg_app13_iptc_caption(state->app13, state->app13_len,
+              &cap_ptr, &cap_len) && cap_len > 0) {
+        char * buf = (char *)gimg_malloc(alloc, cap_len + 1u);
+        if (buf) {
+          memcpy(buf, cap_ptr, cap_len);
+          buf[cap_len] = '\0';
           (void)gimg_meta_common_set_description(meta_common, buf);
           gimg_free(alloc, buf);
         }

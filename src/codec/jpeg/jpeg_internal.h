@@ -39,6 +39,7 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MARKER_APP0 0xE0
 #define GIMG_JPEG_MARKER_APP1 0xE1
 #define GIMG_JPEG_MARKER_APP2 0xE2
+#define GIMG_JPEG_MARKER_APP13 0xED
 #define GIMG_JPEG_MARKER_APP14 0xEE
 #define GIMG_JPEG_MARKER_COM 0xFE
 
@@ -49,6 +50,8 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_RAW_APP1_EXIF 0xE100u
 #define GIMG_JPEG_RAW_APP1_XMP 0xE101u
 #define GIMG_JPEG_RAW_APP2_ICC 0xE2u
+#define GIMG_JPEG_RAW_APP13 0xEDu   /**< APP13 IPTC/Photoshop (Photoshop 3.0). */
+#define GIMG_JPEG_RAW_APP14 0xEEu   /**< APP14 Adobe (transform: YCbCr/YCCK). */
 /** Unknown APP segments (APPn not handled as JFIF/EXIF/XMP/ICC/Adobe). Stored
  * as concatenated (1-byte marker + 2-byte BE payload length + payload) in read
  * order for round-trip. */
@@ -158,6 +161,12 @@ typedef struct gimg_jpeg_doc_state {
   size_t app1_xmp_len;
   unsigned char * app2_icc;
   size_t app2_icc_len;
+  unsigned char * app13;   ///< APP13 IPTC/Photoshop payload when "Photoshop 3.0\0"; else in unknown.
+  size_t app13_len;
+  unsigned char * app14;  ///< APP14 Adobe payload when "Adobe\0"; else in unknown.
+  size_t app14_len;
+  /** APP14 Adobe transform: 0=unknown, 1=YCbCr, 2=YCCK. Used for 4-component decode. */
+  uint8_t adobe_transform;
   /** COM segment(s) for round-trip: concatenated (2-byte BE length + payload)
    * per COM, in read order. */
   unsigned char * com_combined;

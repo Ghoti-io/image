@@ -656,39 +656,98 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     }
   }
   else if (num_comp == 4) {
-    // CMYK: decode to CMYK raster; tag color info (ICC if present).
-    r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
-        (uint32_t)height, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0,
-        out_raster);
-    if (r != GIMG_OK) {
-      goto fail_decode;
-    }
-    unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
-    size_t stride = gimg_raster_stride_bytes(*out_raster);
     uint32_t cw[4] = {comp_w[0], comp_w[1], comp_w[2], comp_w[3]};
     uint32_t ch[4] = {comp_h[0], comp_h[1], comp_h[2], comp_h[3]};
-    for (uint32_t y = 0; y < height; y++) {
-      uint32_t cy[4];
-      for (int i = 0; i < 4; i++) {
-        cy[i] = (ch[i] > 1 && height > 1)
-            ? (y * (ch[i] - 1) / (height - 1))
-            : 0;
+    // APP14 Adobe transform 2 = YCCK: Y,Cb,Cr,K -> convert to RGB.
+    if (state->adobe_transform == 2) {
+      r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
+          (uint32_t)height, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0,
+          out_raster);
+      if (r != GIMG_OK) {
+        goto fail_decode;
       }
-      for (uint32_t x = 0; x < width; x++) {
-        uint32_t cx[4];
+      unsigned char * pixels =
+          (unsigned char *)gimg_raster_pixels(*out_raster);
+      size_t stride = gimg_raster_stride_bytes(*out_raster);
+      for (uint32_t y = 0; y < height; y++) {
+        uint32_t cy[4];
         for (int i = 0; i < 4; i++) {
-          cx[i] = (cw[i] > 1 && width > 1)
-              ? (x * (cw[i] - 1) / (width - 1))
+          cy[i] = (ch[i] > 1 && height > 1)
+              ? (y * (ch[i] - 1) / (height - 1))
               : 0;
         }
-        pixels[y * stride + x * 4 + 0] =
-            comp_buf[0][cy[0] * comp_stride[0] + cx[0]];
-        pixels[y * stride + x * 4 + 1] =
-            comp_buf[1][cy[1] * comp_stride[1] + cx[1]];
-        pixels[y * stride + x * 4 + 2] =
-            comp_buf[2][cy[2] * comp_stride[2] + cx[2]];
-        pixels[y * stride + x * 4 + 3] =
-            comp_buf[3][cy[3] * comp_stride[3] + cx[3]];
+        for (uint32_t x = 0; x < width; x++) {
+          uint32_t cx[4];
+          for (int i = 0; i < 4; i++) {
+            cx[i] = (cw[i] > 1 && width > 1)
+                ? (x * (cw[i] - 1) / (width - 1))
+                : 0;
+          }
+          int yy = comp_buf[0][cy[0] * comp_stride[0] + cx[0]];
+          int cb = comp_buf[1][cy[1] * comp_stride[1] + cx[1]];
+          int cr = comp_buf[2][cy[2] * comp_stride[2] + cx[2]];
+          int k = comp_buf[3][cy[3] * comp_stride[3] + cx[3]];
+          int r_val = yy + (int)(1.402 * (cr - 128) + 0.5);
+          int g_val =
+              yy - (int)(0.344 * (cb - 128) + 0.714 * (cr - 128) + 0.5);
+          int b_val = yy + (int)(1.772 * (cb - 128) + 0.5);
+          if (r_val < 0)
+            r_val = 0;
+          if (r_val > 255)
+            r_val = 255;
+          if (g_val < 0)
+            g_val = 0;
+          if (g_val > 255)
+            g_val = 255;
+          if (b_val < 0)
+            b_val = 0;
+          if (b_val > 255)
+            b_val = 255;
+          int inv_k = 255 - k;
+          pixels[y * stride + x * 4 + 0] =
+              (unsigned char)((r_val * inv_k) / 255);
+          pixels[y * stride + x * 4 + 1] =
+              (unsigned char)((g_val * inv_k) / 255);
+          pixels[y * stride + x * 4 + 2] =
+              (unsigned char)((b_val * inv_k) / 255);
+          pixels[y * stride + x * 4 + 3] = 255;
+        }
+      }
+    }
+    else {
+      // CMYK: decode to CMYK raster; tag color info (ICC if present).
+      r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
+          (uint32_t)height, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0,
+          out_raster);
+      if (r != GIMG_OK) {
+        goto fail_decode;
+      }
+      unsigned char * pixels =
+          (unsigned char *)gimg_raster_pixels(*out_raster);
+      size_t stride = gimg_raster_stride_bytes(*out_raster);
+      for (uint32_t y = 0; y < height; y++) {
+        uint32_t cy[4];
+        for (int i = 0; i < 4; i++) {
+          cy[i] = (ch[i] > 1 && height > 1)
+              ? (y * (ch[i] - 1) / (height - 1))
+              : 0;
+        }
+        for (uint32_t x = 0; x < width; x++) {
+          uint32_t cx[4];
+          for (int i = 0; i < 4; i++) {
+            cx[i] = (cw[i] > 1 && width > 1)
+                ? (x * (cw[i] - 1) / (width - 1))
+                : 0;
+          }
+          pixels[y * stride + x * 4 + 0] =
+              comp_buf[0][cy[0] * comp_stride[0] + cx[0]];
+          pixels[y * stride + x * 4 + 1] =
+              comp_buf[1][cy[1] * comp_stride[1] + cx[1]];
+          pixels[y * stride + x * 4 + 2] =
+              comp_buf[2][cy[2] * comp_stride[2] + cx[2]];
+          pixels[y * stride + x * 4 + 3] =
+              comp_buf[3][cy[3] * comp_stride[3] + cx[3]];
+        }
       }
     }
   }
@@ -1045,39 +1104,90 @@ GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
     }
   }
   else if (num_comp == 4) {
-    // CMYK: same as baseline.
-    r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
-        (uint32_t)height, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0,
-        out_raster);
-    if (r != GIMG_OK) {
-      goto fail_prog_buf;
-    }
-    unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
-    size_t stride = gimg_raster_stride_bytes(*out_raster);
     uint32_t cw[4] = {comp_w[0], comp_w[1], comp_w[2], comp_w[3]};
     uint32_t ch[4] = {comp_h[0], comp_h[1], comp_h[2], comp_h[3]};
-    for (uint32_t y = 0; y < height; y++) {
-      uint32_t cy[4];
-      for (int i = 0; i < 4; i++) {
-        cy[i] = (ch[i] > 1 && height > 1)
-            ? (y * (ch[i] - 1) / (height - 1))
-            : 0;
+    if (state->adobe_transform == 2) {
+      r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
+          (uint32_t)height, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0,
+          out_raster);
+      if (r != GIMG_OK) {
+        goto fail_prog_buf;
       }
-      for (uint32_t x = 0; x < width; x++) {
-        uint32_t cx[4];
+      unsigned char * pixels =
+          (unsigned char *)gimg_raster_pixels(*out_raster);
+      size_t stride = gimg_raster_stride_bytes(*out_raster);
+      for (uint32_t y = 0; y < height; y++) {
+        uint32_t cy[4];
         for (int i = 0; i < 4; i++) {
-          cx[i] = (cw[i] > 1 && width > 1)
-              ? (x * (cw[i] - 1) / (width - 1))
+          cy[i] = (ch[i] > 1 && height > 1)
+              ? (y * (ch[i] - 1) / (height - 1))
               : 0;
         }
-        pixels[y * stride + x * 4 + 0] =
-            comp_buf[0][cy[0] * comp_stride[0] + cx[0]];
-        pixels[y * stride + x * 4 + 1] =
-            comp_buf[1][cy[1] * comp_stride[1] + cx[1]];
-        pixels[y * stride + x * 4 + 2] =
-            comp_buf[2][cy[2] * comp_stride[2] + cx[2]];
-        pixels[y * stride + x * 4 + 3] =
-            comp_buf[3][cy[3] * comp_stride[3] + cx[3]];
+        for (uint32_t x = 0; x < width; x++) {
+          uint32_t cx[4];
+          for (int i = 0; i < 4; i++) {
+            cx[i] = (cw[i] > 1 && width > 1)
+                ? (x * (cw[i] - 1) / (width - 1))
+                : 0;
+          }
+          int yy = comp_buf[0][cy[0] * comp_stride[0] + cx[0]];
+          int cb = comp_buf[1][cy[1] * comp_stride[1] + cx[1]];
+          int cr = comp_buf[2][cy[2] * comp_stride[2] + cx[2]];
+          int k = comp_buf[3][cy[3] * comp_stride[3] + cx[3]];
+          int r_val = yy + (int)(1.402 * (cr - 128) + 0.5);
+          int g_val =
+              yy - (int)(0.344 * (cb - 128) + 0.714 * (cr - 128) + 0.5);
+          int b_val = yy + (int)(1.772 * (cb - 128) + 0.5);
+          if (r_val < 0) r_val = 0;
+          if (r_val > 255) r_val = 255;
+          if (g_val < 0) g_val = 0;
+          if (g_val > 255) g_val = 255;
+          if (b_val < 0) b_val = 0;
+          if (b_val > 255) b_val = 255;
+          int inv_k = 255 - k;
+          pixels[y * stride + x * 4 + 0] =
+              (unsigned char)((r_val * inv_k) / 255);
+          pixels[y * stride + x * 4 + 1] =
+              (unsigned char)((g_val * inv_k) / 255);
+          pixels[y * stride + x * 4 + 2] =
+              (unsigned char)((b_val * inv_k) / 255);
+          pixels[y * stride + x * 4 + 3] = 255;
+        }
+      }
+    }
+    else {
+      r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
+          (uint32_t)height, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0,
+          out_raster);
+      if (r != GIMG_OK) {
+        goto fail_prog_buf;
+      }
+      unsigned char * pixels =
+          (unsigned char *)gimg_raster_pixels(*out_raster);
+      size_t stride = gimg_raster_stride_bytes(*out_raster);
+      for (uint32_t y = 0; y < height; y++) {
+        uint32_t cy[4];
+        for (int i = 0; i < 4; i++) {
+          cy[i] = (ch[i] > 1 && height > 1)
+              ? (y * (ch[i] - 1) / (height - 1))
+              : 0;
+        }
+        for (uint32_t x = 0; x < width; x++) {
+          uint32_t cx[4];
+          for (int i = 0; i < 4; i++) {
+            cx[i] = (cw[i] > 1 && width > 1)
+                ? (x * (cw[i] - 1) / (width - 1))
+                : 0;
+          }
+          pixels[y * stride + x * 4 + 0] =
+              comp_buf[0][cy[0] * comp_stride[0] + cx[0]];
+          pixels[y * stride + x * 4 + 1] =
+              comp_buf[1][cy[1] * comp_stride[1] + cx[1]];
+          pixels[y * stride + x * 4 + 2] =
+              comp_buf[2][cy[2] * comp_stride[2] + cx[2]];
+          pixels[y * stride + x * 4 + 3] =
+              comp_buf[3][cy[3] * comp_stride[3] + cx[3]];
+        }
       }
     }
   }
