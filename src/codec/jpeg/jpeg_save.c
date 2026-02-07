@@ -940,6 +940,47 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           return r;
         }
       }
+
+      // Unknown APP segments (APP3–APP15 and unhandled APP0/1/2) in read order.
+      if (policy == GIMG_META_PRESERVE_ALL || policy == GIMG_META_KEEP_RAW_ONLY) {
+        size_t unknown_size = 0;
+        if (meta_raw &&
+            gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP_UNKNOWN, NULL,
+                &unknown_size) == GIMG_OK &&
+            unknown_size > 0) {
+          unsigned char * unknown_buf =
+              (unsigned char *)gimg_malloc(alloc, unknown_size);
+          if (unknown_buf) {
+            r = gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP_UNKNOWN,
+                unknown_buf, &unknown_size);
+            if (r == GIMG_OK) {
+              size_t off = 0;
+              while (off + 3 <= unknown_size) {
+                uint8_t app_marker = unknown_buf[off];
+                size_t plen = (size_t)((unknown_buf[off + 1] << 8) |
+                    unknown_buf[off + 2]);
+                off += 3;
+                if (off + plen > unknown_size) {
+                  break;
+                }
+                r = jpeg_write_app_segment(stream, app_marker,
+                    unknown_buf + off, plen, &report->bytes_written);
+                if (r != GIMG_OK) {
+                  gimg_free(alloc, unknown_buf);
+                  gimg_free(alloc, scan_data);
+                  return r;
+                }
+                off += plen;
+              }
+            }
+            gimg_free(alloc, unknown_buf);
+          }
+        }
+        if (r != GIMG_OK) {
+          gimg_free(alloc, scan_data);
+          return r;
+        }
+      }
     }
   }
 

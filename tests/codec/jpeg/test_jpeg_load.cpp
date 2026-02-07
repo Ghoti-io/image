@@ -507,10 +507,11 @@ std::vector<uint8_t> make_jpeg_with_two_com() {
   return buf;
 }
 
-// meta_raw tag for JPEG APP1 EXIF (must match jpeg_internal.h)
+// meta_raw tag for JPEG (must match jpeg_internal.h)
 static const uint32_t kJpegRawApp1Exif = 0xE100u;
 static const uint32_t kJpegRawApp0 = 0xE0u;
 static const uint32_t kJpegRawApp0Jfxx = 0xE001u;
+static const uint32_t kJpegRawAppUnknown = 0xE0FFu;
 static const uint32_t kJpegRawCom = 0xFEu;
 
 /** JPEG with APP0 JFIF containing a 2x2 RGB thumbnail (28-byte payload).
@@ -987,6 +988,136 @@ TEST(JpegLoad, MultipleComPreserveOrderAndContent) {
   EXPECT_EQ(com_data[7], 0x00);
   EXPECT_EQ(com_data[8], 0x06);
   EXPECT_EQ(memcmp(com_data.data() + 9, "Second", 6), 0);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, UnknownApp13RoundTrip) {
+  // APP13 (0xED) e.g. IPTC/Photoshop: store in unknown-app blob, round-trip.
+  // Use a decodable baseline JPEG (reference file) and inject APP13 after SOI
+  // so save can encode and we can re-load.
+  std::vector<uint8_t> file_buf;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", file_buf))
+      << "need tests/data/jpeg/baseline_8x8_gray.jpg";
+  ASSERT_GE(file_buf.size(), 4u);
+  ASSERT_EQ(file_buf[0], 0xFF);
+  ASSERT_EQ(file_buf[1], 0xD8);
+  const char payload[] = "IPTC\0test";
+  const size_t payload_len = sizeof(payload) - 1;
+  std::vector<uint8_t> jpeg;
+  jpeg.push_back(0xFF);
+  jpeg.push_back(0xD8);
+  jpeg.push_back(0xFF);
+  jpeg.push_back(0xED);
+  jpeg.push_back((uint8_t)((2 + payload_len) >> 8));
+  jpeg.push_back((uint8_t)((2 + payload_len) & 0xFF));
+  jpeg.insert(jpeg.end(), payload, payload + payload_len);
+  jpeg.insert(jpeg.end(), file_buf.begin() + 2, file_buf.end());
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr);
+  size_t size = 0;
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawAppUnknown, nullptr, &size);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(size, 1u + 2u + payload_len);
+  std::vector<uint8_t> unknown_data(size);
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawAppUnknown, unknown_data.data(),
+      &size);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(unknown_data[0], 0xED) << "APP13 marker";
+  EXPECT_EQ(unknown_data[1], 0x00);
+  EXPECT_EQ(unknown_data[2], (uint8_t)payload_len);
+  EXPECT_EQ(memcmp(unknown_data.data() + 3, payload, payload_len), 0);
+
+  GIMG_Stream * out_s = nullptr;
+  r = gimg_stream_create_memory_output(&out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Save_Options save_opts = {};
+  save_opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_s, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  ASSERT_EQ(r, GIMG_OK) << "save with unknown APP must succeed";
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_s, &out_data, &out_size);
+  std::vector<uint8_t> out_buf(
+      (const uint8_t *)out_data, (const uint8_t *)out_data + out_size);
+  gimg_stream_destroy(out_s);
+
+  GIMG_Stream * s2 = nullptr;
+  r = gimg_stream_create_memory(out_buf.data(), out_buf.size(), &s2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  ASSERT_EQ(r, GIMG_OK) << "re-load saved JPEG (with unknown APP) must succeed";
+  ASSERT_NE(doc2, nullptr);
+  GIMG_Meta_Raw * raw2 = gimg_doc_meta_raw(doc2);
+  ASSERT_NE(raw2, nullptr);
+  size_t size2 = 0;
+  r = gimg_meta_raw_get(raw2, "jpeg", kJpegRawAppUnknown, nullptr, &size2);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(size2, size);
+  std::vector<uint8_t> unknown_data2(size2);
+  r = gimg_meta_raw_get(raw2, "jpeg", kJpegRawAppUnknown, unknown_data2.data(),
+      &size2);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(memcmp(unknown_data2.data(), unknown_data.data(), size), 0)
+      << "unknown APP blob unchanged after round-trip";
+  gimg_doc_destroy(doc2);
+  gimg_stream_destroy(s2);
+}
+
+TEST(JpegLoad, UnknownAppOrderPreserved) {
+  // Two unknown APP segments (APP13 then APP5); order must be preserved.
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // APP13: payload "A" (1 byte), length 2+1=3
+  append(buf, (const unsigned char *)"\xFF\xED\x00\x03\x41", 5);
+  // APP5: payload "B" (1 byte)
+  append(buf, (const unsigned char *)"\xFF\xE5\x00\x03\x42", 5);
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
+      12);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr);
+  size_t size = 0;
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawAppUnknown, nullptr, &size);
+  ASSERT_EQ(r, GIMG_OK);
+  // (0xED, 0, 1, 'A') + (0xE5, 0, 1, 'B') = 4 + 4 = 8
+  EXPECT_EQ(size, 8u);
+  std::vector<uint8_t> blob(size);
+  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawAppUnknown, blob.data(), &size);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(blob[0], 0xED);
+  EXPECT_EQ(blob[3], 'A');
+  EXPECT_EQ(blob[4], 0xE5);
+  EXPECT_EQ(blob[7], 'B');
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }

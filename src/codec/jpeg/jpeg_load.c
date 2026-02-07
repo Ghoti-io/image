@@ -56,6 +56,37 @@ static bool jpeg_marker_has_no_length(uint8_t marker) {
   return false;
 }
 
+/** Append one unknown APP segment to state (marker + 2-byte BE length + payload).
+ * Caller must not free payload_buf on success (it is copied or consumed). */
+static GIMG_Result jpeg_append_unknown_app(gimg_jpeg_doc_state_t * state,
+    uint8_t marker, const unsigned char * payload, size_t payload_size,
+    const GIMG_Allocator * alloc, GIMG_Diagnostics * diagnostics,
+    size_t seg_start) {
+  if (payload_size > 65535u) {
+    return GIMG_OK; // Skip oversized; do not fail load
+  }
+  size_t need = state->unknown_app_combined_size + 1u + 2u + payload_size;
+  unsigned char * new_buf = (unsigned char *)gimg_realloc(alloc,
+      state->unknown_app_combined, need);
+  if (!new_buf && need > 0) {
+    if (diagnostics) {
+      jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_OOM,
+          "unknown APP append OOM");
+    }
+    return GIMG_ERR_OOM;
+  }
+  state->unknown_app_combined = new_buf;
+  size_t off = state->unknown_app_combined_size;
+  state->unknown_app_combined[off] = marker;
+  state->unknown_app_combined[off + 1] = (unsigned char)(payload_size >> 8);
+  state->unknown_app_combined[off + 2] = (unsigned char)(payload_size & 0xFFu);
+  if (payload_size > 0 && payload) {
+    memcpy(state->unknown_app_combined + off + 3, payload, payload_size);
+  }
+  state->unknown_app_combined_size = need;
+  return GIMG_OK;
+}
+
 /** Get max segment payload from options or internal default. */
 static size_t jpeg_max_segment_payload(const GIMG_Limits * limits) {
   if (limits && limits->max_chunk_size != 0) {
@@ -225,6 +256,7 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   gimg_free(alloc, state->app1_xmp);
   gimg_free(alloc, state->app2_icc);
   gimg_free(alloc, state->com_combined);
+  gimg_free(alloc, state->unknown_app_combined);
   gimg_free(alloc, state);
 }
 
@@ -597,7 +629,14 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         payload_buf = NULL;
       }
       if (payload_buf) {
+        r = jpeg_append_unknown_app(state, GIMG_JPEG_MARKER_APP0, payload_buf,
+            payload_size, alloc, diagnostics, seg_start);
         gimg_free(alloc, payload_buf);
+        payload_buf = NULL;
+        if (r != GIMG_OK) {
+          gimg_jpeg_free_doc_state(codec, state);
+          return r;
+        }
       }
       break;
     }
@@ -621,7 +660,14 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         payload_buf = NULL;
       }
       if (payload_buf) {
+        r = jpeg_append_unknown_app(state, GIMG_JPEG_MARKER_APP1, payload_buf,
+            payload_size, alloc, diagnostics, seg_start);
         gimg_free(alloc, payload_buf);
+        payload_buf = NULL;
+        if (r != GIMG_OK) {
+          gimg_jpeg_free_doc_state(codec, state);
+          return r;
+        }
       }
       break;
     }
@@ -636,7 +682,38 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         payload_buf = NULL;
       }
       if (payload_buf) {
+        r = jpeg_append_unknown_app(state, GIMG_JPEG_MARKER_APP2, payload_buf,
+            payload_size, alloc, diagnostics, seg_start);
         gimg_free(alloc, payload_buf);
+        payload_buf = NULL;
+        if (r != GIMG_OK) {
+          gimg_jpeg_free_doc_state(codec, state);
+          return r;
+        }
+      }
+      break;
+    }
+    case 0xE3:
+    case 0xE4:
+    case 0xE5:
+    case 0xE6:
+    case 0xE7:
+    case 0xE8:
+    case 0xE9:
+    case 0xEA:
+    case 0xEB:
+    case 0xEC:
+    case 0xED:
+    case 0xEE:
+    case 0xEF: {
+      // APP3..APP15: store for round-trip (APP14 Adobe handled in 2.5.5 later).
+      r = jpeg_append_unknown_app(state, marker, payload_buf, payload_size,
+          alloc, diagnostics, seg_start);
+      gimg_free(alloc, payload_buf);
+      payload_buf = NULL;
+      if (r != GIMG_OK) {
+        gimg_jpeg_free_doc_state(codec, state);
+        return r;
       }
       break;
     }
@@ -736,7 +813,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       (state->app1_exif && state->app1_exif_len > 0) ||
       (state->app1_xmp && state->app1_xmp_len > 0) ||
       (state->app2_icc && state->app2_icc_len > 0) ||
-      (state->com_combined && state->com_combined_size > 0)) {
+      (state->com_combined && state->com_combined_size > 0) ||
+      (state->unknown_app_combined && state->unknown_app_combined_size > 0)) {
     r = gimg_doc_ensure_meta_raw(doc, &raw);
     if (r != GIMG_OK) {
       gimg_doc_destroy(doc);
@@ -785,6 +863,14 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (state->com_combined && state->com_combined_size > 0) {
       r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_COM,
           state->com_combined, state->com_combined_size);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+    }
+    if (state->unknown_app_combined && state->unknown_app_combined_size > 0) {
+      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP_UNKNOWN,
+          state->unknown_app_combined, state->unknown_app_combined_size);
       if (r != GIMG_OK) {
         gimg_doc_destroy(doc);
         return r;

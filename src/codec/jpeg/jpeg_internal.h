@@ -39,6 +39,7 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MARKER_APP0 0xE0
 #define GIMG_JPEG_MARKER_APP1 0xE1
 #define GIMG_JPEG_MARKER_APP2 0xE2
+#define GIMG_JPEG_MARKER_APP14 0xEE
 #define GIMG_JPEG_MARKER_COM 0xFE
 
 /** Meta_raw tag IDs for round-trip (format_id "jpeg"). */
@@ -48,6 +49,10 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_RAW_APP1_EXIF 0xE100u
 #define GIMG_JPEG_RAW_APP1_XMP 0xE101u
 #define GIMG_JPEG_RAW_APP2_ICC 0xE2u
+/** Unknown APP segments (APPn not handled as JFIF/EXIF/XMP/ICC/Adobe). Stored
+ * as concatenated (1-byte marker + 2-byte BE payload length + payload) in read
+ * order for round-trip. */
+#define GIMG_JPEG_RAW_APP_UNKNOWN 0xE0FFu
 /** COM (Comment) segment(s). Stored as concatenated (2-byte BE length +
  * payload)* for each COM, to preserve order and support multiple. */
 #define GIMG_JPEG_RAW_COM 0xFEu
@@ -157,6 +162,10 @@ typedef struct gimg_jpeg_doc_state {
    * per COM, in read order. */
   unsigned char * com_combined;
   size_t com_combined_size;
+  /** Unknown APP segments (APP3–APP15 and unhandled APP0/1/2): (marker + 2-byte
+   * BE length + payload) per segment, in read order. */
+  unsigned char * unknown_app_combined;
+  size_t unknown_app_combined_size;
 } gimg_jpeg_doc_state_t;
 
 /**
