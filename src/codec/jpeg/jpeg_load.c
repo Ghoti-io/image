@@ -146,22 +146,26 @@ static GIMG_Result jpeg_parse_sof(
   return GIMG_OK;
 }
 
-/** Append to state->scan_data. */
+/** Append to the current scan's data (state->scans[num_scans - 1]). */
 static GIMG_Result jpeg_append_scan_data(
     gimg_jpeg_doc_state_t * state, const unsigned char * data, size_t len) {
+  if (state->num_scans == 0) {
+    return GIMG_ERR_FORMAT;
+  }
+  gimg_jpeg_scan_t * scan = &state->scans[state->num_scans - 1];
   const GIMG_Allocator * alloc = state->allocator;
   alloc = gimg_alloc_or_default(alloc);
-  size_t new_size = state->scan_data_size + len;
+  size_t new_size = scan->data_size + len;
   unsigned char * new_buf =
-      (unsigned char *)gimg_realloc(alloc, state->scan_data, new_size);
+      (unsigned char *)gimg_realloc(alloc, scan->data, new_size);
   if (!new_buf && new_size > 0) {
     return GIMG_ERR_OOM;
   }
-  state->scan_data = new_buf;
+  scan->data = new_buf;
   if (len > 0 && data) {
-    memcpy(state->scan_data + state->scan_data_size, data, len);
+    memcpy(scan->data + scan->data_size, data, len);
   }
-  state->scan_data_size = new_size;
+  scan->data_size = new_size;
   return GIMG_OK;
 }
 
@@ -177,7 +181,9 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
     gimg_free(alloc, state->huff_dc[i]);
     gimg_free(alloc, state->huff_ac[i]);
   }
-  gimg_free(alloc, state->scan_data);
+  for (unsigned i = 0; i < state->num_scans; i++) {
+    gimg_free(alloc, state->scans[i].data);
+  }
   gimg_free(alloc, state->app0_jfif);
   gimg_free(alloc, state->app1_exif);
   gimg_free(alloc, state->app1_xmp);
@@ -394,6 +400,22 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
+      if (!state->is_progressive && state->num_scans > 0) {
+        if (payload_buf)
+          gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "multiple SOS in baseline");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      if (state->num_scans >= GIMG_JPEG_MAX_SCANS) {
+        if (payload_buf)
+          gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_LIMIT,
+            "too many scans");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_LIMIT;
+      }
       // Parse SOS header: Ns (1), then Ns x (Cs, Td|Ta), then Ss, Se, Ah, Al.
       if (payload_size < 7 || !payload_buf) {
         if (payload_buf)
@@ -414,16 +436,19 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           gimg_jpeg_free_doc_state(codec, state);
           return GIMG_ERR_FORMAT;
         }
-        state->scan_comp_count = ns;
+        gimg_jpeg_scan_t * scan = &state->scans[state->num_scans];
+        memset(scan, 0, sizeof(*scan));
+        scan->comp_count = ns;
         for (uint8_t i = 0; i < ns; i++) {
-          state->scan_comp_id[i] = payload_buf[1 + i * 2];
-          state->scan_dc_tbl[i] = (payload_buf[2 + i * 2] >> 4) & 0x0Fu;
-          state->scan_ac_tbl[i] = payload_buf[2 + i * 2] & 0x0Fu;
+          scan->comp_id[i] = payload_buf[1 + i * 2];
+          scan->dc_tbl[i] = (payload_buf[2 + i * 2] >> 4) & 0x0Fu;
+          scan->ac_tbl[i] = payload_buf[2 + i * 2] & 0x0Fu;
         }
-        state->scan_ss = payload_buf[1 + ns * 2];
-        state->scan_se = payload_buf[2 + ns * 2];
-        state->scan_ah = payload_buf[3 + ns * 2];
-        state->scan_al = payload_buf[4 + ns * 2];
+        scan->ss = payload_buf[1 + ns * 2];
+        scan->se = payload_buf[2 + ns * 2];
+        scan->ah = payload_buf[3 + ns * 2];
+        scan->al = payload_buf[4 + ns * 2];
+        state->num_scans++;
       }
       gimg_free(alloc, payload_buf);
       payload_buf = NULL;

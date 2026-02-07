@@ -52,6 +52,37 @@ std::vector<uint8_t> make_minimal_jpeg() {
   return buf;
 }
 
+/** Minimal progressive JPEG: SOF2 (8x8 grayscale), DQT, DHT, two SOS (DC then
+ * AC band). Scan data empty so decode will fail; load and structure are tested.
+ */
+std::vector<uint8_t> make_minimal_progressive_jpeg() {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  /* SOF2: same layout as SOF0 */
+  append(buf,
+      (const unsigned char *)"\xFF\xC2\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  /* First SOS: DC only (Ss=0, Se=0) */
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
+      12);
+  /* Second SOS: AC band (Ss=1, Se=63, Ah=0, Al=0) */
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x01\x00\x3F\x00\x00",
+      12);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
 /** Minimal TIFF/Exif with IFD0 and Orientation tag only (value 6 = 90 CW). */
 std::vector<uint8_t> make_minimal_exif_orientation_6() {
   std::vector<uint8_t> exif;
@@ -303,6 +334,27 @@ TEST(JpegLoad, App0JfifPopulatesMetaCommonDpi) {
   GIMG_Result r = gimg_meta_raw_get(raw, "jpeg", kJpegRawApp0, nullptr, &size);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(size, 14u) << "JFIF payload (no length field)";
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, ProgressiveLoadAndDecodeAttempt) {
+  std::vector<uint8_t> jpeg = make_minimal_progressive_jpeg();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK) << "minimal progressive (SOF2 + 2 SOS) should load";
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  GIMG_Decode_Options opts = {};
+  r = gimg_item_decode(item, &opts, &raster);
+  /* Minimal progressive has no real scan data; decode is expected to fail */
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(raster, nullptr);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }

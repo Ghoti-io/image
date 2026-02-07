@@ -28,8 +28,8 @@ TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
   ASSERT_NE(item, nullptr);
 
   GIMG_Raster * raster = nullptr;
-  r = gimg_raster_create(16, 16, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0,
-      &raster);
+  r = gimg_raster_create(
+      16, 16, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0, &raster);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(raster, nullptr);
   size_t stride = gimg_raster_stride_bytes(raster);
@@ -104,8 +104,8 @@ TEST(JpegEncode, SaveRgbThenLoadDecode) {
   ASSERT_NE(item, nullptr);
 
   GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL,
-            0, &raster),
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0, &raster),
       GIMG_OK);
   size_t stride = gimg_raster_stride_bytes(raster);
   unsigned char * pixels = (unsigned char *)gimg_raster_pixels(raster);
@@ -137,8 +137,8 @@ TEST(JpegEncode, SaveRgbThenLoadDecode) {
   size_t jpeg_size = 0;
   gimg_stream_output_buffer(out_stream, &jpeg_data, &jpeg_size);
   GIMG_Stream * in_stream = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory(jpeg_data, jpeg_size, &in_stream),
-      GIMG_OK);
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_data, jpeg_size, &in_stream), GIMG_OK);
   gimg_stream_destroy(out_stream);
 
   doc = nullptr;
@@ -158,8 +158,8 @@ TEST(JpegEncode, SameInputSameOutputDeterministic) {
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
   GIMG_Item * item = gimg_doc_item(doc, 0);
   GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL,
-            0, &raster),
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0, &raster),
       GIMG_OK);
   memset(gimg_raster_pixels(raster), 128, 8 * 8);
   gimg_item_set_raster(item, raster);
@@ -183,7 +183,7 @@ TEST(JpegEncode, SameInputSameOutputDeterministic) {
   /* Save again (same doc, same options) to second stream. */
   ASSERT_EQ(gimg_doc_save(doc, out2, "jpeg", &save_opts, &report2), GIMG_OK);
 
-  const void * d1 = nullptr, * d2 = nullptr;
+  const void *d1 = nullptr, *d2 = nullptr;
   size_t s1 = 0, s2 = 0;
   gimg_stream_output_buffer(out1, &d1, &s1);
   gimg_stream_output_buffer(out2, &d2, &s2);
@@ -197,7 +197,7 @@ TEST(JpegEncode, SameInputSameOutputDeterministic) {
   gimg_stream_destroy(out2);
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);

@@ -25,7 +25,7 @@ GIMG_Result gimg_jpeg_decode(GIMG_Codec * codec, const GIMG_Item * item,
   gimg_jpeg_doc_state_t * state =
       (gimg_jpeg_doc_state_t *)doc->codec_private;
   if (state->is_progressive) {
-    return GIMG_ERR_UNSUPPORTED;
+    return gimg_jpeg_decode_progressive(state, options, out_raster);
   }
   return gimg_jpeg_decode_baseline(state, options, out_raster);
 }

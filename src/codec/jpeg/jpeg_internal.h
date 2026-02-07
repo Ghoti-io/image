@@ -74,6 +74,25 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MAX_HUFF_TABLES 8u
 
 /**
+ * Max number of scans (progressive JPEG). Rationale: bomb protection; typical
+ * progressive has on the order of 10–20 scans.
+ */
+#define GIMG_JPEG_MAX_SCANS 128u
+
+/**
+ * One scan (SOS) for baseline (single scan) or progressive (multiple scans).
+ */
+typedef struct {
+  uint8_t comp_count;
+  uint8_t comp_id[GIMG_JPEG_MAX_COMPONENTS];
+  uint8_t dc_tbl[GIMG_JPEG_MAX_COMPONENTS];
+  uint8_t ac_tbl[GIMG_JPEG_MAX_COMPONENTS];
+  uint8_t ss, se, ah, al; ///< Spectral selection and successive approximation.
+  unsigned char * data;
+  size_t data_size;
+} gimg_jpeg_scan_t;
+
+/**
  * Parsed SOF0 (baseline) / SOF2 (progressive) fields.
  */
 typedef struct {
@@ -105,16 +124,9 @@ typedef struct gimg_jpeg_doc_state {
   unsigned char * huff_ac[4]; ///< AC 0..3
   size_t huff_ac_len[4];
 
-  // Scan parameters (from first SOS for baseline).
-  uint8_t scan_comp_count; ///< Ns: number of components in scan.
-  uint8_t scan_comp_id[GIMG_JPEG_MAX_COMPONENTS]; ///< Cs: component selector.
-  uint8_t scan_dc_tbl[GIMG_JPEG_MAX_COMPONENTS];  ///< Td: DC Huffman table sel.
-  uint8_t scan_ac_tbl[GIMG_JPEG_MAX_COMPONENTS];  ///< Ta: AC Huffman table sel.
-  uint8_t scan_ss, scan_se, scan_ah, scan_al; ///< Spectral selection / approx.
-
-  // Scan data: concatenated entropy-coded segments (baseline: one SOS).
-  unsigned char * scan_data;
-  size_t scan_data_size;
+  // Scans: one for baseline, multiple for progressive.
+  unsigned num_scans;
+  gimg_jpeg_scan_t scans[GIMG_JPEG_MAX_SCANS];
 
   // APP segments for metadata (round-trip).
   unsigned char * app0_jfif;
@@ -175,6 +187,13 @@ GIMG_Result gimg_jpeg_decode(GIMG_Codec * codec, const GIMG_Item * item,
  * Used by gimg_jpeg_decode when !is_progressive. Internal.
  */
 GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
+    const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
+
+/**
+ * Progressive decode: multiple scans (DC then AC spectral/approximation),
+ * then dequant, IDCT, upsample, color convert. Internal.
+ */
+GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
 /**
