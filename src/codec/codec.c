@@ -28,8 +28,8 @@ static const GIMG_Allocator * gimg_codec_registry_allocator(void) {
 
 GIMG_API GIMG_Result gimg_codec_create_stub(const char * name,
     const void * magic_bytes, size_t magic_len, GIMG_Codec ** out_codec) {
-  return gimg_codec_create_stub_with_allocator(NULL, name, magic_bytes,
-      magic_len, out_codec);
+  return gimg_codec_create_stub_with_allocator(
+      NULL, name, magic_bytes, magic_len, out_codec);
 }
 
 GIMG_API GIMG_Result gimg_codec_create_stub_with_allocator(
@@ -53,15 +53,14 @@ GIMG_API GIMG_Result gimg_codec_create_stub_with_allocator(
   c->magic_count = (magic_bytes && magic_len > 0) ? 1 : 0;
   c->magics = NULL;
   if (c->magic_count > 0) {
-    c->magics = (gimg_codec_magic_t *)gimg_malloc(allocator,
-        sizeof(gimg_codec_magic_t));
+    c->magics = (gimg_codec_magic_t *)gimg_malloc(
+        allocator, sizeof(gimg_codec_magic_t));
     if (!c->magics) {
       gimg_free(allocator, c->name);
       gimg_free(allocator, c);
       return GIMG_ERR_OOM;
     }
-    unsigned char * copy =
-        (unsigned char *)gimg_malloc(allocator, magic_len);
+    unsigned char * copy = (unsigned char *)gimg_malloc(allocator, magic_len);
     if (!copy) {
       gimg_free(allocator, c->magics);
       gimg_free(allocator, c->name);
@@ -82,8 +81,8 @@ GIMG_API GIMG_Result gimg_codec_create_stub_with_allocator(
   return GIMG_OK;
 }
 
-void gimg_codec_set_free_doc_private(GIMG_Codec * codec,
-    gimg_codec_free_doc_private_fn fn) {
+void gimg_codec_set_free_doc_private(
+    GIMG_Codec * codec, gimg_codec_free_doc_private_fn fn) {
   if (codec) {
     codec->free_doc_private = fn;
   }
@@ -114,15 +113,15 @@ GIMG_API GIMG_Result gimg_codec_register(GIMG_Codec * codec) {
   const GIMG_Allocator * alloc = gimg_codec_registry_allocator();
   for (size_t i = 0; i < gimg_codec_registry_count; i++) {
     if (strcmp(gimg_codec_registry[i]->name, codec->name) == 0) {
-      return GIMG_ERR_INTERNAL;  // Duplicate
+      return GIMG_ERR_INTERNAL; // Duplicate
     }
   }
   if (gimg_codec_registry_count >= gimg_codec_registry_capacity) {
     size_t new_cap = gimg_codec_registry_capacity
         ? gimg_codec_registry_capacity * 2
         : REGISTRY_INITIAL;
-    GIMG_Codec ** new_reg = (GIMG_Codec **)gimg_realloc(alloc,
-        gimg_codec_registry, new_cap * sizeof(GIMG_Codec *));
+    GIMG_Codec ** new_reg = (GIMG_Codec **)gimg_realloc(
+        alloc, gimg_codec_registry, new_cap * sizeof(GIMG_Codec *));
     if (!new_reg) {
       return GIMG_ERR_OOM;
     }
@@ -219,6 +218,17 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
     return GIMG_ERR_UNSUPPORTED;
   }
 
+  // Probe uses peek and does not advance the stream; rewind only if seekable
+  // so that codecs that assume position 0 see the start. Non-seekable streams
+  // are already at 0 after peek.
+  r = gimg_stream_seek(stream, 0);
+  if (r == GIMG_ERR_UNSUPPORTED) {
+    r = GIMG_OK;  // Non-seekable; probe used peek, position unchanged.
+  }
+  if (r != GIMG_OK) {
+    return r;
+  }
+
   return codec->load_cb(codec, stream, options, diagnostics, out_doc);
 }
 
@@ -234,8 +244,8 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  return codec->save_cb((GIMG_Codec *)codec, doc, stream, format_name,
-      options, report);
+  return codec->save_cb(
+      (GIMG_Codec *)codec, doc, stream, format_name, options, report);
 }
 
 GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
@@ -262,8 +272,8 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
 // otherwise decode via the document's codec and attach the raster to the
 // item (document owns it). Simplifies load -> modify -> save without
 // managing decode ownership. Options (e.g. limits) passed to decode.
-GIMG_API GIMG_Result gimg_item_ensure_decoded(GIMG_Item * item,
-    const GIMG_Decode_Options * options) {
+GIMG_API GIMG_Result gimg_item_ensure_decoded(
+    GIMG_Item * item, const GIMG_Decode_Options * options) {
   if (!item) {
     return GIMG_ERR_INTERNAL;
   }

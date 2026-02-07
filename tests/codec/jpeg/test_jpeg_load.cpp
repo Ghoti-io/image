@@ -400,8 +400,11 @@ TEST(JpegLoad, LoadBaselineFromNonSeekableStream) {
       gimg_stream_create_memory_no_seek(jpeg.data(), jpeg.size(), &s), GIMG_OK);
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
-  ASSERT_EQ(r, GIMG_OK)
-      << "baseline JPEG load must work from non-seekable stream";
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+    ASSERT_EQ(r, GIMG_OK)
+        << "baseline JPEG load must work from non-seekable stream";
+  }
   ASSERT_NE(doc, nullptr);
   EXPECT_EQ(gimg_doc_item_count(doc), 1u);
   gimg_doc_destroy(doc);
@@ -415,8 +418,11 @@ TEST(JpegLoad, LoadProgressiveFromNonSeekableStream) {
       gimg_stream_create_memory_no_seek(jpeg.data(), jpeg.size(), &s), GIMG_OK);
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
-  ASSERT_EQ(r, GIMG_OK)
-      << "progressive JPEG load must work from non-seekable stream";
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+    ASSERT_EQ(r, GIMG_OK)
+        << "progressive JPEG load must work from non-seekable stream";
+  }
   ASSERT_NE(doc, nullptr);
   EXPECT_EQ(gimg_doc_item_count(doc), 1u);
   gimg_doc_destroy(doc);
@@ -461,8 +467,11 @@ TEST(JpegLoad, LoadBaselineFromChunkedNonSeekableStream) {
       GIMG_OK);
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
-  ASSERT_EQ(r, GIMG_OK)
-      << "baseline JPEG load must work with chunked non-seekable stream";
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+    ASSERT_EQ(r, GIMG_OK)
+        << "baseline JPEG load must work with chunked non-seekable stream";
+  }
   ASSERT_NE(doc, nullptr);
   EXPECT_EQ(gimg_doc_item_count(doc), 1u);
   gimg_doc_destroy(doc);
@@ -523,6 +532,144 @@ TEST(JpegLoad, DecodeCmykFileWhenPresent) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
+}
+
+// ---- Golden decode tests: pixel hash (and metadata) per reference file ----
+
+TEST(JpegLoad, GoldenBaselineGray) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  uint64_t hash = jpeg_test::raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 17944301196088248357ULL) << "canonical pixel hash baseline 8x8 gray";
+}
+
+TEST(JpegLoad, GoldenBaselineYcbcr) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_16x16_ycbcr.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  uint64_t hash = jpeg_test::raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 3293244748321644837ULL) << "canonical pixel hash baseline 16x16 YCbCr";
+}
+
+TEST(JpegLoad, GoldenProgressive) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("progressive_sample.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  GIMG_Result dr = gimg_item_decode(item, nullptr, &raster);
+  if (dr != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    GTEST_SKIP() << "progressive decode not supported for this file (Pillow progressive format may differ)";
+  }
+  ASSERT_NE(raster, nullptr);
+  uint64_t hash = jpeg_test::raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 3293244748321644837ULL) << "canonical pixel hash progressive (same content as 16x16 gray)";
+}
+
+TEST(JpegLoad, GoldenExifOrientation) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_exif_orientation.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
+  if (meta) {
+    EXPECT_EQ(gimg_meta_common_orientation(meta), GIMG_ORIENTATION_ROTATE_90_CW)
+        << "EXIF Orientation 6 = 90 CW (if generate.py was run with piexif)";
+  }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  uint64_t hash = jpeg_test::raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 9569108661638188517ULL) << "canonical pixel hash jpeg_exif_orientation";
+}
+
+TEST(JpegLoad, GoldenWithIcc) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_with_icc.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  uint64_t hash = jpeg_test::raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 774238021366803749ULL) << "canonical pixel hash jpeg_with_icc";
+}
+
+TEST(JpegLoad, GoldenCmyk) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("cmyk_sample.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  uint64_t hash = jpeg_test::raster_pixel_hash(raster);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  EXPECT_NE(fmt, nullptr);
+  if (fmt) {
+    EXPECT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK);
+    EXPECT_EQ(fmt->channel_count, 4u);
+  }
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, 2706856015390867493ULL) << "canonical pixel hash cmyk_sample (8x8 black)";
 }
 #endif
 

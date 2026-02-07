@@ -1,32 +1,26 @@
 # JPEG test data
 
-Reference JPEG files for Phase 2 codec tests.
+Reference JPEG files for Phase 2 codec and golden tests. Generate them with:
 
-## Intended contents
+```bash
+# From repo root (Pillow required; piexif optional for EXIF orientation)
+python3 tests/data/jpeg/generate.py
+```
+
+Generated files:
 
 | File | Description |
 |------|-------------|
-| Baseline (grayscale) | Small 8×8 or 16×16 grayscale baseline JPEG |
-| Baseline (YCbCr) | Small RGB/YCbCr baseline JPEG |
-| Progressive | Progressive DCT JPEG (for 2.2 tests) |
-| With EXIF/ICC | JPEG with APP1 EXIF and/or APP2 ICC (for 2.1.3, 2.3.2) |
-| CMYK sample | 4-component CMYK JPEG (for 2.4.1) |
+| `baseline_8x8_gray.jpg` | 8×8 grayscale baseline JPEG |
+| `baseline_16x16_ycbcr.jpg` | 16×16 RGB baseline (stored as YCbCr) |
+| `progressive_sample.jpg` | 16×16 progressive DCT JPEG |
+| `jpeg_exif_orientation.jpg` | 8×8 gray with APP1 EXIF Orientation=6 (90° CW); requires `pip install piexif` when generating |
+| `jpeg_with_icc.jpg` | 8×8 RGB with APP2 ICC profile (minimal) |
+| `cmyk_sample.jpg` | 8×8 CMYK baseline JPEG |
 
-## Generating test files
-
-You can create minimal reference files with ImageMagick or Python (PIL/Pillow), for example:
-
-```bash
-# 8×8 grayscale
-convert -size 8x8 xc:gray -quality 85 baseline_8x8_gray.jpg
-
-# With EXIF orientation
-exiftool -Orientation=6 -n baseline_8x8_gray.jpg
-```
-
-Or use `tests/codec/jpeg/test_jpeg_load.cpp` which builds a minimal in-memory baseline JPEG (SOI, SOF0, DQT, DHT, SOS, EOI) for parse/load tests without external files.
+Tests in `tests/codec/jpeg/test_jpeg_load.cpp` load these files when built with `GIMG_TEST_DATA_JPEG` (the Makefile sets this to the path of this directory). Golden decode tests compare FNV-1a 64-bit pixel hashes to stored expected values.
 
 ## Golden and fuzz
 
-- **Golden decode tests:** Compare pixel hash and metadata after load/decode to reference decoder output when available.
-- **Fuzz:** Corpus and harness under `tests/fuzz/`; JPEG parser/decoder should return `GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, or `GIMG_ERR_LIMIT` on invalid input without crashing.
+- **Golden decode tests:** Load each reference file, decode, compute `raster_pixel_hash`; compare to expected hash and verify metadata (orientation, DPI, color info) where applicable.
+- **Fuzz:** Corpus and harness under `tests/fuzz/`; JPEG parser/decoder should return `GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, or `GIMG_ERR_LIMIT` on invalid input without crashing. Seed corpus with these JPEGs: `cp tests/data/jpeg/*.jpg tests/fuzz/corpus/`.

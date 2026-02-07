@@ -562,9 +562,10 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += written;
   }
 
-  // SOS: Ls = 2 + 1 + 2*Ns + 4 = 7 + 2*Ns
+  // SOS per T.81 Annex B: Ls = 2 + (1 + 2*Ns + 3) = 6 + 2*Ns; payload ends with
+  // Ss (1), Se (1), and one byte Ah (high 4 bits) | Al (low 4 bits).
   {
-    uint16_t sos_len = (uint16_t)(7 + 2 * (uint16_t)num_components);
+    uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)num_components);
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &report->bytes_written);
     if (r != GIMG_OK) {
       gimg_free(alloc, scan_data);
@@ -575,27 +576,26 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       gimg_free(alloc, scan_data);
       return r;
     }
-    unsigned char sos[13];
+    unsigned char sos[12];
     memset(sos, 0, sizeof(sos));
     sos[0] = (unsigned char)num_components;
     if (num_components == 1) {
-      sos[1] = 0x01; // Cs=1
-      sos[2] = 0x00; // Td=0, Ta=0
+      sos[1] = 0x01;  // Cs=1
+      sos[2] = 0x00;  // Td=0, Ta=0
     }
     else {
       sos[1] = 0x01;
-      sos[2] = 0x00; // Td=0, Ta=0
+      sos[2] = 0x00;  // Td=0, Ta=0
       sos[3] = 0x02;
-      sos[4] = 0x11; // Td=1, Ta=1
+      sos[4] = 0x11;  // Td=1, Ta=1
       sos[5] = 0x03;
       sos[6] = 0x11;
     }
-    sos[1 + 2 * (size_t)num_components] = 0x00; // Ss
-    sos[2 + 2 * (size_t)num_components] = 0x3F; // Se
-    sos[3 + 2 * (size_t)num_components] = 0x00; // Ah
-    sos[4 + 2 * (size_t)num_components] = 0x00; // Al
-    r = gimg_stream_write(
-        stream, sos, 1 + 2 * (size_t)num_components + 4, &written);
+    size_t tail = 1 + 2 * (size_t)num_components;
+    sos[tail] = 0x00;      // Ss
+    sos[tail + 1] = 0x3F;  // Se
+    sos[tail + 2] = 0x00;  // Ah (high nibble) | Al (low nibble) = 0 for baseline
+    r = gimg_stream_write(stream, sos, tail + 3, &written);
     if (r != GIMG_OK) {
       gimg_free(alloc, scan_data);
       return r;

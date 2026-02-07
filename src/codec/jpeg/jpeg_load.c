@@ -431,8 +431,11 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_LIMIT;
       }
-      // Parse SOS header: Ns (1), then Ns x (Cs, Td|Ta), then Ss, Se, Ah, Al.
-      if (payload_size < 7 || !payload_buf) {
+      // Parse SOS header per ITU-T T.81 / ISO/IEC 10918-1 Annex B: Ns (1), then
+      // Ns x (Cs, Td|Ta), then Ss (1), Se (1), and one byte with Ah (high 4 bits)
+      // and Al (low 4 bits). So payload length is 6 + 2*Ns - 2 = 4 + 2*Ns bytes.
+      const size_t min_sos_payload = 6u;  // Ns=1: 1 + 2 + 3 = 6
+      if (payload_size < min_sos_payload || !payload_buf) {
         if (payload_buf)
           gimg_free(alloc, payload_buf);
         jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
@@ -443,7 +446,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       {
         uint8_t ns = payload_buf[0];
         if (ns == 0 || ns > state->sof.num_components ||
-            (size_t)(5 + ns * 2) > payload_size) {
+            (size_t)(4 + ns * 2) > payload_size) {
           if (payload_buf)
             gimg_free(alloc, payload_buf);
           jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
@@ -461,8 +464,11 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         }
         scan->ss = payload_buf[1 + ns * 2];
         scan->se = payload_buf[2 + ns * 2];
-        scan->ah = payload_buf[3 + ns * 2];
-        scan->al = payload_buf[4 + ns * 2];
+        {
+          uint8_t ah_al = payload_buf[3 + ns * 2];  // T.81: Ah high nibble, Al low
+          scan->ah = (ah_al >> 4) & 0x0Fu;
+          scan->al = ah_al & 0x0Fu;
+        }
         state->num_scans++;
       }
       gimg_free(alloc, payload_buf);
