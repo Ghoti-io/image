@@ -630,12 +630,56 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
 
+    // APP0 JFXX (JFIF 1.02 extension): write when preserved in meta_raw.
+    if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_COMMON_ONLY &&
+        meta_raw) {
+      size_t jfxx_len = 0;
+      if (gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP0_JFXX, NULL,
+              &jfxx_len) == GIMG_OK &&
+          jfxx_len > 0) {
+        unsigned char * jfxx_buf =
+            (unsigned char *)gimg_malloc(alloc, jfxx_len);
+        if (jfxx_buf) {
+          r = gimg_meta_raw_get(
+              meta_raw, "jpeg", GIMG_JPEG_RAW_APP0_JFXX, jfxx_buf, &jfxx_len);
+          if (r == GIMG_OK) {
+            r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP0,
+                jfxx_buf, jfxx_len, &report->bytes_written);
+          }
+          gimg_free(alloc, jfxx_buf);
+        }
+        if (r != GIMG_OK) {
+          gimg_free(alloc, scan_data);
+          return r;
+        }
+      }
+    }
+
     // APP1 EXIF / XMP and APP2 ICC only when policy preserves metadata
     if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_COMMON_ONLY) {
-      // APP1 EXIF: build with thumbnail when doc has second item; else preserve
-      // from meta_raw (optionally STRIP_GPS or NORMALIZE_EXIF).
+    // Build EXIF with thumbnail when we are writing APP1 EXIF and doc has a
+    // second item. The spec does not say when to synthesize APP1
+    // EXIF for docs that have no EXIF; we use (have_exif_raw || !have_app0_only)
+    // so that:
+    //   - JFIF-only docs (APP0 thumbnail, no EXIF): we do not synthesize APP1
+    //     EXIF; the thumbnail stays in APP0 and round-trip is correct.
+    //   - Synthetic 2-item docs (no EXIF, no APP0): we do build APP1 EXIF and
+    //     encode item 1 into IFD1 so save-from-programmatic-doc works.
+    // have_app0_only = we have APP0 in meta_raw and no APP1 EXIF.
       {
         size_t item_count = gimg_doc_item_count(doc);
+        size_t raw_exif_size = 0;
+        bool have_exif_raw = meta_raw &&
+            gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_EXIF, NULL,
+                &raw_exif_size) == GIMG_OK &&
+            raw_exif_size > 6;
+        size_t app0_len_check = 0;
+        bool have_app0_only =
+            meta_raw &&
+            gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP0, NULL,
+                &app0_len_check) == GIMG_OK &&
+            app0_len_check > 0 &&
+            !have_exif_raw;
         unsigned int thumb_fmt = options
             ? options->exif_thumbnail_format
             : (unsigned int)GIMG_EXIF_THUMB_FORMAT_DEFAULT;
@@ -651,7 +695,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         }
 
         bool wrote_exif = false;
-        if (item_count >= 2 &&
+        if ((have_exif_raw || !have_app0_only) && item_count >= 2 &&
             (thumb_fmt == GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED ||
                 thumb_fmt == GIMG_EXIF_THUMB_FORMAT_JPEG ||
                 thumb_fmt == GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG)) {

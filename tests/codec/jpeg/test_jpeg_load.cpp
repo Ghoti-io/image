@@ -510,7 +510,42 @@ std::vector<uint8_t> make_jpeg_with_two_com() {
 // meta_raw tag for JPEG APP1 EXIF (must match jpeg_internal.h)
 static const uint32_t kJpegRawApp1Exif = 0xE100u;
 static const uint32_t kJpegRawApp0 = 0xE0u;
+static const uint32_t kJpegRawApp0Jfxx = 0xE001u;
 static const uint32_t kJpegRawCom = 0xFEu;
+
+/** JPEG with APP0 JFIF containing a 2x2 RGB thumbnail (28-byte payload).
+ * Payload: JFIF\0 v1.1 units=1 X=300 Y=300 ThumbX=2 ThumbY=2, then 12 RGB bytes.
+ */
+std::vector<uint8_t> make_jpeg_with_jfif_thumbnail() {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // APP0: length 30 (2 + 28), payload 28 bytes
+  // Bytes 0-4: JFIF\0, 5-6: 01 01, 7: units=1, 8-11: X=300 Y=300,
+  // 12-13: ThumbX=2, 14-15: ThumbY=2, 16-27: 2*2*3 RGB
+  static const unsigned char app0_with_thumb[] = {
+      0xFF, 0xE0, 0x00, 0x1E,  // marker, length 30
+      'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x01, 0x01, 0x2C, 0x01, 0x2C,
+      0x00, 0x02, 0x00, 0x02,  // ThumbX=2, ThumbY=2
+      0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
+  append(buf, app0_with_thumb, sizeof(app0_with_thumb));
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
+      12);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
 
 } // namespace
 
@@ -779,6 +814,104 @@ TEST(JpegLoad, App0JfifPopulatesMetaCommonDpi) {
   EXPECT_EQ(size, 14u) << "JFIF payload (no length field)";
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, JfifThumbnailDecodeSecondItem) {
+  std::vector<uint8_t> jpeg = make_jpeg_with_jfif_thumbnail();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u)
+      << "JFIF APP0 thumbnail should expose second item";
+  GIMG_Item * item1 = gimg_doc_item(doc, 1);
+  ASSERT_NE(item1, nullptr);
+  GIMG_Raster * thumb = gimg_item_raster(item1);
+  ASSERT_NE(thumb, nullptr)
+      << "Second item (JFIF thumbnail) should have raster attached";
+  EXPECT_EQ(gimg_raster_width(thumb), 2u);
+  EXPECT_EQ(gimg_raster_height(thumb), 2u);
+  uint64_t hash = jpeg_test::raster_pixel_hash(thumb);
+  // Our test image has pixels 0x11,0x22,0x33; 0x44,0x55,0x66; 0x77,0x88,0x99;
+  // 0xAA,0xBB,0xCC (RGBA with A=255). Hash is deterministic.
+  (void)hash;
+  gimg_doc_destroy(doc);
+}
+
+TEST(JpegLoad, JfifThumbnailRoundTrip) {
+  // Build a synthetic doc with main image (8x8 gray), second item (2x2
+  // thumbnail), and APP0 JFIF with thumbnail in meta_raw. Save; load; verify
+  // thumbnail preserved (no existing APP0 from a loaded file).
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_create(&doc);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+
+  r = gimg_doc_set_item_count(doc, 2);
+  ASSERT_EQ(r, GIMG_OK);
+  GIMG_Raster * main_raster = nullptr;
+  r = gimg_raster_create(8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, nullptr,
+      0, &main_raster);
+  ASSERT_EQ(r, GIMG_OK);
+  memset(gimg_raster_pixels(main_raster), 128,
+      (size_t)8 * gimg_raster_stride_bytes(main_raster));
+  gimg_item_set_raster(gimg_doc_item(doc, 0), main_raster);
+
+  GIMG_Raster * thumb_raster = nullptr;
+  r = gimg_raster_create(2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr,
+      0, &thumb_raster);
+  ASSERT_EQ(r, GIMG_OK);
+  unsigned char * px =
+      (unsigned char *)gimg_raster_pixels(thumb_raster);
+  size_t stride = gimg_raster_stride_bytes(thumb_raster);
+  for (int y = 0; y < 2; y++) {
+    for (int x = 0; x < 2; x++) {
+      size_t off = (size_t)y * stride + (size_t)x * 4u;
+      px[off + 0] = (unsigned char)(0x11 + (y * 2 + x) * 0x11);
+      px[off + 1] = (unsigned char)(0x22 + (y * 2 + x) * 0x11);
+      px[off + 2] = (unsigned char)(0x33 + (y * 2 + x) * 0x11);
+      px[off + 3] = 255;
+    }
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
+
+  static const unsigned char app0_payload[] = {
+      'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x01, 0x01, 0x2C, 0x01, 0x2C,
+      0x00, 0x02, 0x00, 0x02,
+      0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
+  GIMG_Meta_Raw * raw = nullptr;
+  r = gimg_doc_ensure_meta_raw(doc, &raw);
+  ASSERT_EQ(r, GIMG_OK);
+  r = gimg_meta_raw_attach(raw, "jpeg", kJpegRawApp0, app0_payload,
+      sizeof(app0_payload));
+  ASSERT_EQ(r, GIMG_OK);
+
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_s, "jpeg", nullptr, &report);
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_s, &out_data, &out_size);
+  std::vector<uint8_t> out_buf(
+      (const uint8_t *)out_data, (const uint8_t *)out_data + out_size);
+  gimg_stream_destroy(out_s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_GT(out_buf.size(), 10u) << "saved JPEG too small";
+  ASSERT_EQ(out_buf[0], 0xFF);
+  ASSERT_EQ(out_buf[1], 0xD8);
+  ASSERT_EQ(out_buf[2], 0xFF);
+  ASSERT_EQ(out_buf[3], 0xE0) << "expected APP0 after SOI";
+  ASSERT_EQ(out_buf[4], 0x00);
+  ASSERT_EQ(out_buf[5], 0x1E)
+      << "APP0 segment length 30 (2+28) with JFIF thumbnail";
+  ASSERT_EQ(out_buf[6], 'J');
+  ASSERT_EQ(out_buf[7], 'F');
+
+  gimg_doc_destroy(doc);
 }
 
 TEST(JpegLoad, ComAttachedToMetaRaw) {

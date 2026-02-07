@@ -220,6 +220,7 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
     gimg_free(alloc, state->scans[i].data);
   }
   gimg_free(alloc, state->app0_jfif);
+  gimg_free(alloc, state->app0_jfxx);
   gimg_free(alloc, state->app1_exif);
   gimg_free(alloc, state->app1_xmp);
   gimg_free(alloc, state->app2_icc);
@@ -586,6 +587,15 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         state->app0_jfif_len = payload_size;
         payload_buf = NULL;
       }
+      else if (payload_size >= 6 && payload_buf &&
+          memcmp(payload_buf, "JFXX\0", 5) == 0) {
+        if (state->app0_jfxx) {
+          gimg_free(alloc, state->app0_jfxx);
+        }
+        state->app0_jfxx = payload_buf;
+        state->app0_jfxx_len = payload_size;
+        payload_buf = NULL;
+      }
       if (payload_buf) {
         gimg_free(alloc, payload_buf);
       }
@@ -722,6 +732,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // meta_common.
   GIMG_Meta_Raw * raw = NULL;
   if ((state->app0_jfif && state->app0_jfif_len > 0) ||
+      (state->app0_jfxx && state->app0_jfxx_len > 0) ||
       (state->app1_exif && state->app1_exif_len > 0) ||
       (state->app1_xmp && state->app1_xmp_len > 0) ||
       (state->app2_icc && state->app2_icc_len > 0) ||
@@ -734,6 +745,14 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (state->app0_jfif && state->app0_jfif_len > 0) {
       r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP0,
           state->app0_jfif, state->app0_jfif_len);
+      if (r != GIMG_OK) {
+        gimg_doc_destroy(doc);
+        return r;
+      }
+    }
+    if (state->app0_jfxx && state->app0_jfxx_len > 0) {
+      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP0_JFXX,
+          state->app0_jfxx, state->app0_jfxx_len);
       if (r != GIMG_OK) {
         gimg_doc_destroy(doc);
         return r;
@@ -974,6 +993,211 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         }
         if (tiff_jpeg_buf) {
           gimg_free(alloc, tiff_jpeg_buf);
+        }
+      }
+    }
+  }
+
+  // JFIF embedded thumbnail (APP0 bytes 12-15 = X,Y; offset 16 = pixels).
+  // Only add second item if EXIF did not already provide a thumbnail.
+  if (gimg_doc_item_count(doc) == 1 && state->app0_jfif &&
+      state->app0_jfif_len >= 16) {
+    uint16_t tx = (uint16_t)((state->app0_jfif[12] << 8) |
+        (unsigned char)state->app0_jfif[13]);
+    uint16_t ty = (uint16_t)((state->app0_jfif[14] << 8) |
+        (unsigned char)state->app0_jfif[15]);
+    if (tx > 0 && ty > 0) {
+      size_t thumb_pixels = 0;
+      if (gimg_safe_pixel_count((uint32_t)tx, (uint32_t)ty,
+              &thumb_pixels) == GIMG_OK &&
+          thumb_pixels <= GIMG_JPEG_MAX_THUMB_PIXELS) {
+        size_t need_rgb = 0;
+        size_t need_gray = 0;
+        int use_rgb = -1; // 0 = grayscale, 1 = RGB
+        if (gimg_safe_mul_size(thumb_pixels, 3u, &need_rgb) &&
+            gimg_safe_add_size(16u, need_rgb, &need_rgb) &&
+            state->app0_jfif_len >= need_rgb) {
+          use_rgb = 1;
+        }
+        else if (gimg_safe_add_size(16u, thumb_pixels, &need_gray) &&
+            state->app0_jfif_len >= need_gray) {
+          use_rgb = 0;
+        }
+        if (use_rgb == 0 || use_rgb == 1) {
+          const GIMG_Pixel_Format * fmt =
+              use_rgb ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_GRAY8;
+          GIMG_Raster * thumb_raster = NULL;
+          r = gimg_raster_create_with_allocator(
+              alloc, (uint32_t)tx, (uint32_t)ty, fmt, GIMG_RASTER_OWNED, NULL,
+              0, &thumb_raster);
+          if (r == GIMG_OK && thumb_raster) {
+            void * pixels = gimg_raster_pixels(thumb_raster);
+            size_t stride = gimg_raster_stride_bytes(thumb_raster);
+            const unsigned char * src =
+                state->app0_jfif + 16;
+            if (use_rgb) {
+              for (uint32_t y = 0; y < (uint32_t)ty; y++) {
+                for (uint32_t x = 0; x < (uint32_t)tx; x++) {
+                  size_t src_off = (size_t)(y * (uint32_t)tx + x) * 3u;
+                  size_t dst_off = (size_t)y * stride + (size_t)x * 4u;
+                  ((unsigned char *)pixels)[dst_off + 0] = src[src_off + 0];
+                  ((unsigned char *)pixels)[dst_off + 1] = src[src_off + 1];
+                  ((unsigned char *)pixels)[dst_off + 2] = src[src_off + 2];
+                  ((unsigned char *)pixels)[dst_off + 3] = 255;
+                }
+              }
+            }
+            else {
+              size_t row_bytes = (size_t)tx;
+              for (uint32_t y = 0; y < (uint32_t)ty; y++) {
+                memcpy((unsigned char *)pixels + (size_t)y * stride,
+                    src + (size_t)y * row_bytes, row_bytes);
+              }
+            }
+            r = gimg_doc_set_item_count(doc, 2);
+            if (r == GIMG_OK) {
+              gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
+            }
+            else {
+              gimg_raster_destroy(thumb_raster);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // JFXX (JFIF 1.02 extension): 0x10 = JPEG thumbnail, 0x11 = 1 BPP, 0x13 = 3 BPP.
+  // Only add second item if we do not already have one (EXIF or JFIF embedded).
+  if (gimg_doc_item_count(doc) == 1 && state->app0_jfxx &&
+      state->app0_jfxx_len >= 6) {
+    uint8_t ext_code = state->app0_jfxx[5];
+    const unsigned char * jfxx_data = state->app0_jfxx + 6;
+    size_t jfxx_data_len = state->app0_jfxx_len - 6;
+
+    if (ext_code == 0x10 && jfxx_data_len > 0) {
+      // JPEG thumbnail: decode as full JPEG stream.
+      GIMG_Stream * thumb_stream = NULL;
+      r = gimg_stream_create_memory_with_allocator(
+          alloc, jfxx_data, jfxx_data_len, &thumb_stream);
+      if (r == GIMG_OK && thumb_stream) {
+        GIMG_Doc * thumb_doc = NULL;
+        r = gimg_doc_load(thumb_stream, options, diagnostics, &thumb_doc);
+        gimg_stream_destroy(thumb_stream);
+        if (r == GIMG_OK && thumb_doc && gimg_doc_item_count(thumb_doc) >= 1) {
+          GIMG_Raster * thumb_raster = NULL;
+          r = gimg_item_decode(
+              gimg_doc_item(thumb_doc, 0), NULL, &thumb_raster);
+          if (r == GIMG_OK && thumb_raster) {
+            GIMG_Raster * copy_raster = NULL;
+            r = gimg_raster_copy_with_allocator(
+                alloc, thumb_raster, &copy_raster);
+            gimg_raster_destroy(thumb_raster);
+            if (r == GIMG_OK && copy_raster) {
+              r = gimg_doc_set_item_count(doc, 2);
+              if (r == GIMG_OK) {
+                gimg_item_set_raster(
+                    gimg_doc_item(doc, 1), copy_raster);
+              }
+              else {
+                gimg_raster_destroy(copy_raster);
+              }
+            }
+          }
+          gimg_doc_destroy(thumb_doc);
+        }
+        else if (thumb_doc) {
+          gimg_doc_destroy(thumb_doc);
+        }
+      }
+    }
+    else if ((ext_code == 0x11 || ext_code == 0x13) && state->app0_jfif &&
+        state->app0_jfif_len >= 16 && jfxx_data_len > 0) {
+      uint16_t tx = (uint16_t)((state->app0_jfif[12] << 8) |
+          (unsigned char)state->app0_jfif[13]);
+      uint16_t ty = (uint16_t)((state->app0_jfif[14] << 8) |
+          (unsigned char)state->app0_jfif[15]);
+      if (tx > 0 && ty > 0) {
+        size_t thumb_pixels = 0;
+        if (gimg_safe_pixel_count((uint32_t)tx, (uint32_t)ty,
+                &thumb_pixels) == GIMG_OK &&
+            thumb_pixels <= GIMG_JPEG_MAX_THUMB_PIXELS) {
+          if (ext_code == 0x11) {
+            // 1 BPP: 256*3 palette then tx*ty indices.
+            size_t palette_size = 768u;
+            size_t indices_size = 0;
+            if (gimg_safe_add_size(palette_size, thumb_pixels,
+                    &indices_size) &&
+                jfxx_data_len >= indices_size) {
+              GIMG_Raster * thumb_raster = NULL;
+              r = gimg_raster_create_with_allocator(
+                  alloc, (uint32_t)tx, (uint32_t)ty, &GIMG_PIXEL_RGBA8,
+                  GIMG_RASTER_OWNED, NULL, 0, &thumb_raster);
+              if (r == GIMG_OK && thumb_raster) {
+                void * pixels = gimg_raster_pixels(thumb_raster);
+                size_t stride = gimg_raster_stride_bytes(thumb_raster);
+                const unsigned char * pal = jfxx_data;
+                const unsigned char * idx = jfxx_data + 768;
+                for (uint32_t y = 0; y < (uint32_t)ty; y++) {
+                  for (uint32_t x = 0; x < (uint32_t)tx; x++) {
+                    unsigned char i = idx[(size_t)y * (uint32_t)tx + x];
+                    size_t dst_off =
+                        (size_t)y * stride + (size_t)x * 4u;
+                    ((unsigned char *)pixels)[dst_off + 0] = pal[(size_t)i * 3];
+                    ((unsigned char *)pixels)[dst_off + 1] =
+                        pal[(size_t)i * 3 + 1];
+                    ((unsigned char *)pixels)[dst_off + 2] =
+                        pal[(size_t)i * 3 + 2];
+                    ((unsigned char *)pixels)[dst_off + 3] = 255;
+                  }
+                }
+                r = gimg_doc_set_item_count(doc, 2);
+                if (r == GIMG_OK) {
+                  gimg_item_set_raster(
+                      gimg_doc_item(doc, 1), thumb_raster);
+                }
+                else {
+                  gimg_raster_destroy(thumb_raster);
+                }
+              }
+            }
+          }
+          else {
+            // 0x13: 3 BPP RGB.
+            size_t need = 0;
+            if (gimg_safe_mul_size(thumb_pixels, 3u, &need) &&
+                jfxx_data_len >= need) {
+              GIMG_Raster * thumb_raster = NULL;
+              r = gimg_raster_create_with_allocator(
+                  alloc, (uint32_t)tx, (uint32_t)ty, &GIMG_PIXEL_RGBA8,
+                  GIMG_RASTER_OWNED, NULL, 0, &thumb_raster);
+              if (r == GIMG_OK && thumb_raster) {
+                void * pixels = gimg_raster_pixels(thumb_raster);
+                size_t stride = gimg_raster_stride_bytes(thumb_raster);
+                const unsigned char * src = jfxx_data;
+                for (uint32_t y = 0; y < (uint32_t)ty; y++) {
+                  for (uint32_t x = 0; x < (uint32_t)tx; x++) {
+                    size_t src_off =
+                        (size_t)(y * (uint32_t)tx + x) * 3u;
+                    size_t dst_off =
+                        (size_t)y * stride + (size_t)x * 4u;
+                    ((unsigned char *)pixels)[dst_off + 0] = src[src_off + 0];
+                    ((unsigned char *)pixels)[dst_off + 1] = src[src_off + 1];
+                    ((unsigned char *)pixels)[dst_off + 2] = src[src_off + 2];
+                    ((unsigned char *)pixels)[dst_off + 3] = 255;
+                  }
+                }
+                r = gimg_doc_set_item_count(doc, 2);
+                if (r == GIMG_OK) {
+                  gimg_item_set_raster(
+                      gimg_doc_item(doc, 1), thumb_raster);
+                }
+                else {
+                  gimg_raster_destroy(thumb_raster);
+                }
+              }
+            }
+          }
         }
       }
     }

@@ -43,6 +43,8 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 
 /** Meta_raw tag IDs for round-trip (format_id "jpeg"). */
 #define GIMG_JPEG_RAW_APP0 0xE0u
+/** APP0 JFXX (JFIF 1.02 extension) segment; written after main APP0 when present. */
+#define GIMG_JPEG_RAW_APP0_JFXX 0xE001u
 #define GIMG_JPEG_RAW_APP1_EXIF 0xE100u
 #define GIMG_JPEG_RAW_APP1_XMP 0xE101u
 #define GIMG_JPEG_RAW_APP2_ICC 0xE2u
@@ -81,6 +83,12 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
  * progressive has on the order of 10–20 scans.
  */
 #define GIMG_JPEG_MAX_SCANS 128u
+
+/**
+ * Max thumbnail pixels (JFIF embedded or JFXX) for bomb protection.
+ * Rationale: 256×256 is a common thumbnail cap; avoids overflow in size checks.
+ */
+#define GIMG_JPEG_MAX_THUMB_PIXELS (256u * 256u)
 
 /**
  * One scan (SOS) for baseline (single scan) or progressive (multiple scans).
@@ -136,6 +144,9 @@ typedef struct gimg_jpeg_doc_state {
   // APP segments for metadata (round-trip).
   unsigned char * app0_jfif;
   size_t app0_jfif_len;
+  /** APP0 JFXX (JFIF 1.02 extension) when present; preserved for round-trip. */
+  unsigned char * app0_jfxx;
+  size_t app0_jfxx_len;
   unsigned char * app1_exif;
   size_t app1_exif_len;
   unsigned char * app1_xmp;
