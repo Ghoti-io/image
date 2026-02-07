@@ -36,6 +36,7 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MARKER_DQT 0xDB
 #define GIMG_JPEG_MARKER_SOS 0xDA
 #define GIMG_JPEG_MARKER_DRI 0xDD
+#define GIMG_JPEG_MARKER_DNL 0xDC ///< Define Number of Lines; after first scan.
 #define GIMG_JPEG_MARKER_APP0 0xE0
 #define GIMG_JPEG_MARKER_APP1 0xE1
 #define GIMG_JPEG_MARKER_APP2 0xE2
@@ -53,8 +54,8 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 /** Multi-segment APP2 ICC round-trip: serialized [2B N][2B len1][payload1]...
  * Used when ICC profile was split across multiple APP2 segments. */
 #define GIMG_JPEG_RAW_APP2_ICC_CHUNKS 0xE201u
-#define GIMG_JPEG_RAW_APP13 0xEDu   /**< APP13 IPTC/Photoshop (Photoshop 3.0). */
-#define GIMG_JPEG_RAW_APP14 0xEEu   /**< APP14 Adobe (transform: YCbCr/YCCK). */
+#define GIMG_JPEG_RAW_APP13 0xEDu   ///< APP13 IPTC/Photoshop (Photoshop 3.0).
+#define GIMG_JPEG_RAW_APP14 0xEEu   ///< APP14 Adobe (transform: YCbCr/YCCK).
 /** Unknown APP segments (APPn not handled as JFIF/EXIF/XMP/ICC/Adobe). Stored
  * as concatenated (1-byte marker + 2-byte BE payload length + payload) in read
  * order for round-trip. */

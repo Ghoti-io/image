@@ -235,9 +235,11 @@ static GIMG_Result jpeg_parse_sof(
       num_components > GIMG_JPEG_MAX_COMPONENTS) {
     return GIMG_ERR_FORMAT;
   }
-  if (height == 0 || width == 0) {
+  if (width == 0) {
     return GIMG_ERR_FORMAT;
   }
+  // Height may be 0 when DNL (Define Number of Lines) will supply it after the
+  // first scan; otherwise height must be non-zero.
   if (height > GIMG_JPEG_MAX_DIMENSION || width > GIMG_JPEG_MAX_DIMENSION) {
     return GIMG_ERR_LIMIT;
   }
@@ -508,6 +510,47 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       state->restart_interval =
           (uint16_t)((payload_buf[0] << 8) | payload_buf[1]);
       gimg_free(alloc, payload_buf);
+      break;
+    }
+    case GIMG_JPEG_MARKER_DNL: {
+      // DNL (Define Number of Lines): valid only after the first scan. Payload
+      // is 2 bytes (number of lines, big-endian). Validates or sets height.
+      if (state->num_scans < 1) {
+        if (payload_buf)
+          gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "DNL before first scan");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      if (payload_size != 2 || !payload_buf) {
+        if (payload_buf)
+          gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "DNL payload must be 2 bytes");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      uint16_t dnl_lines =
+          (uint16_t)((payload_buf[0] << 8) | payload_buf[1]);
+      gimg_free(alloc, payload_buf);
+      if (dnl_lines == 0 || dnl_lines > GIMG_JPEG_MAX_DIMENSION) {
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "DNL number of lines out of range");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      if (state->sof.height != 0 && state->sof.height == dnl_lines) {
+        // DNL matches SOF height; accept.
+        break;
+      }
+      if (state->sof.height != 0) {
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "DNL number of lines does not match SOF height");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      state->sof.height = dnl_lines;
       break;
     }
     case GIMG_JPEG_MARKER_DHT: {
@@ -937,6 +980,12 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   if (!seen_sof) {
     jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_FORMAT, "no SOF0/SOF2 found");
+    gimg_jpeg_free_doc_state(codec, state);
+    return GIMG_ERR_FORMAT;
+  }
+  if (state->sof.height == 0) {
+    jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_FORMAT,
+        "image height not specified (SOF height 0 requires DNL after first scan)");
     gimg_jpeg_free_doc_state(codec, state);
     return GIMG_ERR_FORMAT;
   }
