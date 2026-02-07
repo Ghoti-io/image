@@ -6,12 +6,14 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include "jpeg_test_utils.h"
 #include <cstdint>
 #include <cstring>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
 #include <vector>
@@ -126,6 +128,38 @@ std::vector<uint8_t> make_jpeg_with_app1_exif() {
   append(buf,
       (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
       12);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+/** Minimal 4-component (CMYK-style) SOF0: 8x8, Nf=4, Cid 1,2,3,4, H=V=1, Tq=0.
+ * DQT one table (all components use Tq=0), DHT one empty, SOS Ns=4. Scan data
+ * empty so decode will fail; load and structure are tested. */
+std::vector<uint8_t> make_minimal_four_component_jpeg() {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  /* SOF0: L=20 (2 + 18). Payload 18 bytes: P=8, Y=8, X=8, Nf=4, then
+   * 4×(C,HV,Tq) = 01 11 00, 02 11 00, 03 11 00, 04 11 00. */
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x14\x08\x00\x08\x00\x08\x04"
+                             "\x01\x11\x00\x02\x11\x00\x03\x11\x00\x04\x11\x00",
+      22);
+  /* DQT: L=67, Pq=0 Tq=0, 64 bytes */
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  /* DHT: DC table 0, 16 counts (all 0), 0 symbols. L=19. */
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  /* SOS: L=15 (2 + 13 payload). Payload: Ns=4, then 4×(Cs,TdTa): 01 00, 02 00,
+   * 03 00, 04 00; then Ss=0 Se=0 Ah=0 Al=0. Total 1+8+4=13 bytes. */
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0F\x04\x01\x00\x02\x00\x03\x00\x04"
+                             "\x00\x00\x00\x00\x00",
+      17);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -363,8 +397,7 @@ TEST(JpegLoad, LoadBaselineFromNonSeekableStream) {
   std::vector<uint8_t> jpeg = make_minimal_jpeg();
   GIMG_Stream * s = nullptr;
   ASSERT_EQ(
-      gimg_stream_create_memory_no_seek(jpeg.data(), jpeg.size(), &s),
-      GIMG_OK);
+      gimg_stream_create_memory_no_seek(jpeg.data(), jpeg.size(), &s), GIMG_OK);
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
   ASSERT_EQ(r, GIMG_OK)
@@ -379,8 +412,7 @@ TEST(JpegLoad, LoadProgressiveFromNonSeekableStream) {
   std::vector<uint8_t> jpeg = make_minimal_progressive_jpeg();
   GIMG_Stream * s = nullptr;
   ASSERT_EQ(
-      gimg_stream_create_memory_no_seek(jpeg.data(), jpeg.size(), &s),
-      GIMG_OK);
+      gimg_stream_create_memory_no_seek(jpeg.data(), jpeg.size(), &s), GIMG_OK);
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
   ASSERT_EQ(r, GIMG_OK)
@@ -394,9 +426,7 @@ TEST(JpegLoad, LoadProgressiveFromNonSeekableStream) {
 TEST(JpegLoad, LoadBaselineFromChunkedStream) {
   std::vector<uint8_t> jpeg = make_minimal_jpeg();
   GIMG_Stream * s = nullptr;
-  ASSERT_EQ(
-      gimg_stream_create_memory_chunked(
-          jpeg.data(), jpeg.size(), 1u, &s),
+  ASSERT_EQ(gimg_stream_create_memory_chunked(jpeg.data(), jpeg.size(), 1u, &s),
       GIMG_OK);
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
@@ -411,14 +441,12 @@ TEST(JpegLoad, LoadBaselineFromChunkedStream) {
 TEST(JpegLoad, LoadProgressiveFromChunkedStream) {
   std::vector<uint8_t> jpeg = make_minimal_progressive_jpeg();
   GIMG_Stream * s = nullptr;
-  ASSERT_EQ(
-      gimg_stream_create_memory_chunked(
-          jpeg.data(), jpeg.size(), 1u, &s),
+  ASSERT_EQ(gimg_stream_create_memory_chunked(jpeg.data(), jpeg.size(), 1u, &s),
       GIMG_OK);
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
-  ASSERT_EQ(r, GIMG_OK)
-      << "progressive JPEG load must work with 1-byte-at-a-time (chunked) reads";
+  ASSERT_EQ(r, GIMG_OK) << "progressive JPEG load must work with "
+                           "1-byte-at-a-time (chunked) reads";
   ASSERT_NE(doc, nullptr);
   EXPECT_EQ(gimg_doc_item_count(doc), 1u);
   gimg_doc_destroy(doc);
@@ -428,9 +456,8 @@ TEST(JpegLoad, LoadProgressiveFromChunkedStream) {
 TEST(JpegLoad, LoadBaselineFromChunkedNonSeekableStream) {
   std::vector<uint8_t> jpeg = make_minimal_jpeg();
   GIMG_Stream * s = nullptr;
-  ASSERT_EQ(
-      gimg_stream_create_memory_no_seek_chunked(
-          jpeg.data(), jpeg.size(), 1u, &s),
+  ASSERT_EQ(gimg_stream_create_memory_no_seek_chunked(
+                jpeg.data(), jpeg.size(), 1u, &s),
       GIMG_OK);
   GIMG_Doc * doc = nullptr;
   GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
@@ -441,6 +468,63 @@ TEST(JpegLoad, LoadBaselineFromChunkedNonSeekableStream) {
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }
+
+TEST(JpegLoad, LoadFourComponentCmykStructure) {
+  /* Minimal 4-component SOF0 (CMYK-style): load must succeed. */
+  std::vector<uint8_t> jpeg = make_minimal_four_component_jpeg();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK) << "4-component SOF0 JPEG should load";
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  /* Decode will fail (no valid scan data); we only verify load accepts 4 comp.
+   */
+  GIMG_Raster * raster = nullptr;
+  GIMG_Decode_Options opts = {};
+  r = gimg_item_decode(item, &opts, &raster);
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(raster, nullptr);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+#ifdef GIMG_TEST_DATA_JPEG
+TEST(JpegLoad, DecodeCmykFileWhenPresent) {
+  /* If tests/data/jpeg/cmyk_sample.jpg exists, load and decode; verify CMYK
+   * raster format and color info preserved. */
+  std::vector<uint8_t> jpeg;
+  if (!jpeg_test::load_jpeg_file("cmyk_sample.jpg", jpeg)) {
+    GTEST_SKIP() << "cmyk_sample.jpg not in GIMG_TEST_DATA_JPEG";
+  }
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK) << "CMYK JPEG file should load";
+  ASSERT_NE(doc, nullptr);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  GIMG_Decode_Options opts = {};
+  r = gimg_item_decode(item, &opts, &raster);
+  ASSERT_EQ(r, GIMG_OK) << "CMYK JPEG should decode";
+  ASSERT_NE(raster, nullptr);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  ASSERT_NE(fmt, nullptr);
+  EXPECT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK)
+      << "Decoded 4-component JPEG should be tagged as CMYK";
+  EXPECT_EQ(fmt->channel_count, 4u);
+  EXPECT_GT(gimg_raster_width(raster), 0u);
+  EXPECT_GT(gimg_raster_height(raster), 0u);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+#endif
 
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);

@@ -54,10 +54,21 @@ static const GIMG_Pixel_Format gimg_pixel_gray16 = {
     ._reserved = {0},
 };
 
+static const GIMG_Pixel_Format gimg_pixel_cmyk8 = {
+    .channel_model = GIMG_CHANNEL_CMYK,
+    .channel_type = GIMG_CHANNEL_UNORM,
+    .layout = GIMG_LAYOUT_INTERLEAVED,
+    .channel_count = 4,
+    .bits_per_channel = {8, 8, 8, 8, 0, 0, 0, 0},
+    .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    ._reserved = {0},
+};
+
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA8 = gimg_pixel_rgba8;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA16 = gimg_pixel_rgba16;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY8 = gimg_pixel_gray8;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY16 = gimg_pixel_gray16;
+GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK8 = gimg_pixel_cmyk8;
 
 GIMG_API size_t gimg_raster_bytes_per_pixel(const GIMG_Pixel_Format * format) {
   if (!format || format->channel_count == 0) {

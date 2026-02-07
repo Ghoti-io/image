@@ -458,6 +458,75 @@ TEST(JpegEncode, MetadataKeepCommonOnlyNoExif) {
   gimg_stream_destroy(in_stream);
 }
 
+// Save failure paths: NULL doc, invalid/unsupported format, unsupported raster.
+
+TEST(JpegEncode, SaveNullDocReturnsError) {
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 0,
+      ._reserved = {0},
+  };
+  GIMG_Save_Report report = {};
+  report.diagnostics = nullptr;
+  GIMG_Result r =
+      gimg_doc_save(nullptr, out_stream, "jpeg", &save_opts, &report);
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(r, GIMG_ERR_INTERNAL);
+  gimg_stream_destroy(out_stream);
+}
+
+TEST(JpegEncode, SaveUnsupportedFormatReturnsError) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 0,
+      ._reserved = {0},
+  };
+  GIMG_Save_Report report = {};
+  report.diagnostics = nullptr;
+  GIMG_Result r =
+      gimg_doc_save(doc, out_stream, "nosuchformat", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(out_stream);
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+}
+
+TEST(JpegEncode, SaveCmykRasterReturnsUnsupported) {
+  /* JPEG encoder supports only grayscale and RGB/RGBA; CMYK returns
+   * GIMG_ERR_UNSUPPORTED. */
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 0,
+      ._reserved = {0},
+  };
+  GIMG_Save_Report report = {};
+  report.diagnostics = nullptr;
+  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(out_stream);
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {

@@ -185,10 +185,12 @@ all: $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET) ## Build shared + static l
 
 # PNG test helper (shared by test_png_decode and test_png_encode).
 PNG_TEST_UTILS_OBJ := $(OBJ_DIR)/tests/png_test_utils.o
+# JPEG test helper (shared by test_jpeg_load, optional for test_jpeg_encode).
+JPEG_TEST_UTILS_OBJ := $(OBJ_DIR)/tests/jpeg_test_utils.o
 
 # Explicit list of dependency files (no wildcard: same set on all platforms, faster make startup).
 TEST_DEPFILES := $(foreach pair,$(TEST_PAIRS),$(OBJ_DIR)/tests/$(basename $(notdir $(word 1,$(subst |, ,$(pair))))).d)
-DEPFILES := $(LIBOBJECTS:.o=.d) $(TEST_HELPER_OBJ:.o=.d) $(TEST_DEPFILES) $(PNG_TEST_UTILS_OBJ:.o=.d)
+DEPFILES := $(LIBOBJECTS:.o=.d) $(TEST_HELPER_OBJ:.o=.d) $(TEST_DEPFILES) $(PNG_TEST_UTILS_OBJ:.o=.d) $(JPEG_TEST_UTILS_OBJ:.o=.d)
 -include $(DEPFILES)
 
 
@@ -264,7 +266,7 @@ $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
 $(OBJ_DIR)/tests/test_jpeg_load.o: tests/codec/jpeg/test_jpeg_load.cpp
 	@printf "\n### Compiling Test Object: test_jpeg_load ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp
 	@printf "\n### Compiling Test Object: test_jpeg_encode ###\n"
@@ -273,6 +275,8 @@ $(OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp
 
 # Test data path for PNG tests (reference files from tests/data/png/generate.py).
 TEST_DATA_PNG := $(CURDIR)/tests/data/png
+# Test data path for JPEG tests (optional cmyk_sample.jpg etc.).
+TEST_DATA_JPEG := $(CURDIR)/tests/data/jpeg
 # Output directory for PNG encode test output (add to .gitignore); verifier reads this.
 TEST_OUT_PNG := $(CURDIR)/tests/out/png
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
@@ -290,6 +294,11 @@ $(PNG_TEST_UTILS_OBJ): tests/codec/png/png_test_utils.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
+$(JPEG_TEST_UTILS_OBJ): tests/codec/jpeg/jpeg_test_utils.cpp
+	@printf "\n### Compiling Test Helper: jpeg_test_utils ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
 # Pattern rule for building test executables. Args: $1 = source path, $2 = executable name (from TEST_PAIRS).
 # Tests are compiled to .o files first, then linked separately (relink only when library changes).
 define test-executable-rule
@@ -304,10 +313,16 @@ $(APP_DIR)/$2$(EXE_EXTENSION): \
 	$$(CXX) $$(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $$(TEST_HELPER_OBJ) $$(LDFLAGS) $$(TESTFLAGS) $(IMAGELIBRARY)
 endef
 
-# testPng_decode and testPng_encode use explicit rules below (link PNG_TEST_UTILS_OBJ).
-TEST_PAIRS_OTHER := $(filter-out tests/codec/png/test_png_decode.cpp|testPng_decode tests/codec/png/test_png_encode.cpp|testPng_encode,$(TEST_PAIRS))
+# testPng_decode, testPng_encode, test_jpeg_load use explicit rules (link test utils).
+TEST_PAIRS_OTHER := $(filter-out tests/codec/png/test_png_decode.cpp|testPng_decode tests/codec/png/test_png_encode.cpp|testPng_encode tests/codec/jpeg/test_jpeg_load.cpp|testJpeg_load,$(TEST_PAIRS))
 # Generate build rules for all other tests (one pair = source|name)
 $(foreach pair,$(TEST_PAIRS_OTHER),$(eval $(call test-executable-rule,$(word 1,$(subst |, ,$(pair))),$(word 2,$(subst |, ,$(pair))))))
+
+# JPEG load test links jpeg_test_utils (load_jpeg_file, raster_pixel_hash, rasters_equal).
+$(APP_DIR)/testJpeg_load$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET)
+	@printf "\n### Linking testJpeg_load Test ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY)
 
 # PNG tests link the shared png_test_utils helper.
 $(APP_DIR)/testPng_decode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_decode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET)

@@ -80,6 +80,8 @@ extern const GIMG_Pixel_Format GIMG_PIXEL_RGBA16;
 extern const GIMG_Pixel_Format GIMG_PIXEL_GRAY8;
 /** @brief Canonical grayscale 16-bit. */
 extern const GIMG_Pixel_Format GIMG_PIXEL_GRAY16;
+/** @brief Canonical CMYK 8-bit per channel (C, M, Y, K interleaved). */
+extern const GIMG_Pixel_Format GIMG_PIXEL_CMYK8;
 
 /**
  * @brief Ownership of the pixel buffer.
