@@ -124,6 +124,8 @@ typedef struct gimg_jpeg_doc_state {
   unsigned char * huff_ac[4]; ///< AC 0..3
   size_t huff_ac_len[4];
 
+  uint16_t restart_interval; ///< DRI restart interval in MCUs (0 = none).
+
   // Scans: one for baseline, multiple for progressive.
   unsigned num_scans;
   gimg_jpeg_scan_t scans[GIMG_JPEG_MAX_SCANS];

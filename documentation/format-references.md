@@ -45,7 +45,7 @@ On PNG save, `GIMG_Save_Options.metadata_policy` controls which ancillary chunks
 ## JPEG
 
 - **Specification:** ISO/IEC 10918-1 (ITU-T T.81) — Information technology – Digital compression and coding of continuous-tone still images: Requirements and guidelines.
-- **Scope implemented:** Baseline DCT (SOF0) and progressive DCT (SOF2); 8-bit sample precision. 12-bit and 16-bit precision are optional or deferred.
+- **Scope:** Baseline DCT (SOF0), progressive DCT (SOF2), lossless (SOF3), and hierarchical (SOF4–SOF7 as implemented); 8-, 12-, and 16-bit sample precision; **Huffman (DHT) and arithmetic (DAC, QM-coder) entropy coding**; COM and APP0–APP15 preservation; DRI/RST; JFIF thumbnail; chroma subsampling and progressive encode. See `image/tasks/image-phase-2-jpeg.md` for full task list; scope is updated as milestones 2.5–2.9 are completed.
 - **Segment structure:** SOI (0xFF 0xD8), EOI (0xFF 0xD9); segments: 0xFF + marker + length (big-endian, length includes the 2 length bytes) + payload. Parsing enforces max segment size (bomb protection) and overflow-safe pixel count; returns `GIMG_ERR_LIMIT` when exceeded.
 - **APP segments:** APP0 (JFIF), APP1 (EXIF, XMP), APP2 (ICC profile). EXIF is parsed via the shared Exif module; metadata common (orientation, DPI, etc.) is populated. Raw APP payloads are preserved for round-trip. Save policies (PRESERVE_ALL, DROP_ALL, STRIP_GPS, NORMALIZE_EXIF, KEEP_RAW_ONLY, KEEP_COMMON_ONLY) are honored.
 - **Color:** Grayscale (1 component), YCbCr (4:2:0, 4:2:2, 4:4:4, 4:1:1), CMYK (4 components with tagging). Output is stored in `GIMG_RASTER` with appropriate color info.

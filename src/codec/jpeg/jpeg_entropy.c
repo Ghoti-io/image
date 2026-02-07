@@ -512,9 +512,17 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   memset(block_rz, 0, sizeof(block_rz));
   memset(block_q, 0, sizeof(block_q));
 
-  // Decode MCU by MCU.
+  // Decode MCU by MCU. At each restart boundary (DRI), reset DC predictors.
+  uint16_t restart_interval = state->restart_interval;
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
     for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
+      if (restart_interval > 0) {
+        uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
+        if (mcu_index > 0 &&
+            (mcu_index % (uint32_t)restart_interval) == 0) {
+          memset(dc_pred, 0, sizeof(dc_pred));
+        }
+      }
       size_t block_idx = 0;
       for (uint8_t s = 0; s < scan0->comp_count; s++) {
         uint8_t comp_idx = 0;
@@ -843,6 +851,7 @@ GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
     gimg_jpeg_bitstream_t bs;
     jpeg_bitstream_init(&bs, scan->data, scan->data_size);
 
+    uint16_t restart_interval = state->restart_interval;
     int is_dc = (scan->ss == 0 && scan->se == 0);
     int ss = (int)scan->ss;
     int se = (int)scan->se;
@@ -851,6 +860,13 @@ GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
 
     for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
       for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
+        if (restart_interval > 0) {
+          uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
+          if (mcu_index > 0 &&
+              (mcu_index % (uint32_t)restart_interval) == 0) {
+            memset(dc_pred, 0, sizeof(dc_pred));
+          }
+        }
         for (uint8_t s = 0; s < scan->comp_count; s++) {
           uint8_t comp_idx = 0;
           for (; comp_idx < num_comp; comp_idx++) {

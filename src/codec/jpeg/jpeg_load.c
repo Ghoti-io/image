@@ -256,7 +256,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     if (jpeg_marker_has_no_length(marker)) {
       if (marker >= 0xD0 && marker <= 0xD7) {
-        // RST: may appear in scan data; we already advanced past 0xFF M.
+        // RST: may appear in scan data; we already advanced past 0xFF and
+        // marker byte.
       }
       continue;
     }
@@ -369,6 +370,22 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         p += entry_bytes;
         remain -= entry_bytes;
       }
+      gimg_free(alloc, payload_buf);
+      break;
+    }
+    case GIMG_JPEG_MARKER_DRI: {
+      // DRI: length 2 + 2-byte payload (restart interval in MCUs,
+      // big-endian).
+      if (payload_size != 2 || !payload_buf) {
+        if (payload_buf)
+          gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "DRI payload must be 2 bytes");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      state->restart_interval =
+          (uint16_t)((payload_buf[0] << 8) | payload_buf[1]);
       gimg_free(alloc, payload_buf);
       break;
     }
@@ -506,6 +523,12 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             gimg_jpeg_free_doc_state(codec, state);
             return r;
           }
+          continue;
+        }
+        if (b >= 0xD0 && b <= 0xD7) {
+          // RST0..RST7: part of scan data; consume and continue same scan
+          // (do not start a new segment).
+          (void)gimg_stream_read(stream, &b, 1, &n);
           continue;
         }
         // Next byte is a real marker; consume it and store for next iteration
