@@ -220,7 +220,7 @@ static GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
   return GIMG_OK;
 }
 
-/** Progressive: decode DC only (Ss=0, Se=0). */
+/** Progressive: decode DC only (Ss=0, Se=0). Ah=0: initial (size + bits). */
 static GIMG_Result jpeg_decode_block_progressive_dc(
     gimg_jpeg_bitstream_t * bs, const gimg_jpeg_huff_table_t * dc_tbl,
     int16_t * block, int16_t * dc_predictor) {
@@ -239,6 +239,18 @@ static GIMG_Result jpeg_decode_block_progressive_dc(
   }
   *dc_predictor += diff;
   block[0] = *dc_predictor;
+  return GIMG_OK;
+}
+
+/** Progressive DC refinement (Ss=0, Se=0, Ah>0): one bit per block. */
+static GIMG_Result jpeg_decode_block_progressive_dc_refine(
+    gimg_jpeg_bitstream_t * bs, int16_t * block, int16_t * dc_predictor) {
+  int b = jpeg_bitstream_read_bit(bs);
+  if (b < 0) {
+    return GIMG_ERR_CORRUPT;
+  }
+  block[0] = (int16_t)((block[0] << 1) | b);
+  *dc_predictor = block[0];
   return GIMG_OK;
 }
 
@@ -956,9 +968,16 @@ GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
               int16_t * block = coef_blocks[comp_idx] + block_idx * 64;
 
               if (is_dc) {
-                GIMG_Result r = jpeg_decode_block_progressive_dc(&bs,
-                    &dc_tables[scan->dc_tbl[s]], block,
-                    &dc_pred[comp_idx]);
+                GIMG_Result r;
+                if (ah == 0) {
+                  r = jpeg_decode_block_progressive_dc(&bs,
+                      &dc_tables[scan->dc_tbl[s]], block,
+                      &dc_pred[comp_idx]);
+                }
+                else {
+                  r = jpeg_decode_block_progressive_dc_refine(&bs, block,
+                      &dc_pred[comp_idx]);
+                }
                 if (r != GIMG_OK) {
                   goto fail_prog;
                 }
@@ -1615,18 +1634,31 @@ static void jpeg_encode_block_dc_only(gimg_jpeg_bitstream_write_t * w,
   }
 }
 
-/** Encode AC only (progressive second scan; Ss=1, Se=63, Ah=0, Al=0). */
-static void jpeg_encode_block_ac_only(gimg_jpeg_bitstream_write_t * w,
-    const int16_t * block_zz, const gimg_jpeg_huff_enc_t * ac_enc,
-    const GIMG_Allocator * alloc) {
-  int k = 1;
-  while (k < 64) {
+/** Encode DC refinement (Ss=0, Se=0, Ah>0): one bit per block (Ah-th bit of
+ * DC coefficient value). Decoder refines block[0] as (block[0]<<1)|b. */
+static void jpeg_encode_block_dc_refine(gimg_jpeg_bitstream_write_t * w,
+    int16_t dc_val, uint8_t Ah, const GIMG_Allocator * alloc) {
+  int32_t v = (int32_t)dc_val;
+  if (v < 0) {
+    v = -v;
+  }
+  unsigned bit = (unsigned)((v >> Ah) & 1u);
+  jpeg_bitstream_write_bits(w, bit, 1, alloc);
+}
+
+/** Encode AC band only (progressive scan; Ss..Se inclusive). Ah=0 initial pass
+ * only; refinement (Ah>0) uses jpeg_encode_block_ac_band_refine. */
+static void jpeg_encode_block_ac_band(gimg_jpeg_bitstream_write_t * w,
+    const int16_t * block_zz, int ss, int se,
+    const gimg_jpeg_huff_enc_t * ac_enc, const GIMG_Allocator * alloc) {
+  int k = ss;
+  while (k <= se) {
     int run = 0;
-    while (k < 64 && block_zz[k] == 0) {
+    while (k <= se && block_zz[k] == 0) {
       run++;
       k++;
     }
-    if (k >= 64) {
+    if (k > se) {
       break;
     }
     int ac = block_zz[k];
@@ -1646,6 +1678,48 @@ static void jpeg_encode_block_ac_only(gimg_jpeg_bitstream_write_t * w,
     k++;
   }
   jpeg_bitstream_write_bits(w, ac_enc->code[0], ac_enc->len[0], alloc);
+}
+
+/** Encode AC refinement (Ah>0): run of zeros then one bit per non-zero in band
+ * [ss, se]. Uses refinement table (symbol = (run<<4)|0); run capped at 15. */
+static void jpeg_encode_block_ac_band_refine(gimg_jpeg_bitstream_write_t * w,
+    const int16_t * block_zz, int ss, int se, uint8_t Ah,
+    const gimg_jpeg_huff_enc_t * ac_refine_enc,
+    const GIMG_Allocator * alloc) {
+  int k = ss;
+  while (k <= se) {
+    int run = 0;
+    while (k <= se && block_zz[k] == 0) {
+      run++;
+      k++;
+    }
+    if (k > se) {
+      break;
+    }
+    while (run > 15) {
+      uint8_t sym = 0xf0;
+      jpeg_bitstream_write_bits(w, ac_refine_enc->code[sym],
+          ac_refine_enc->len[sym], alloc);
+      run -= 15;
+    }
+    /* run 0 -> 0x01 (decoder gets run=0); run 1..15 -> 0x10..0xF0 */
+    uint8_t sym = run == 0 ? 0x01u : (uint8_t)((run << 4) | 0);
+    if (ac_refine_enc->len[sym] > 0) {
+      jpeg_bitstream_write_bits(w, ac_refine_enc->code[sym],
+          ac_refine_enc->len[sym], alloc);
+    }
+    int ac = block_zz[k];
+    int32_t v = (int32_t)ac;
+    if (v < 0) {
+      v = -v;
+    }
+    unsigned bit = (unsigned)((v >> Ah) & 1u);
+    jpeg_bitstream_write_bits(w, bit, 1, alloc);
+    run = 0;
+    k++;
+  }
+  jpeg_bitstream_write_bits(w, ac_refine_enc->code[0], ac_refine_enc->len[0],
+      alloc);
 }
 
 // Standard Huffman: DC luminance (Table K.3), 12 symbols, lengths
@@ -2085,6 +2159,18 @@ static const unsigned char jpeg_std_vals_ac_chrom[162] = {
     0xfa,
 };
 
+/** AC refinement (successive approximation): 17 symbols — EOB (0x00), run 0
+ * (0x01), and (run, 0) for run 1..15. Valid prefix: 1 at len 2, 2 at len 4,
+ * 14 at len 5. */
+static const unsigned char jpeg_std_bits_ac_refine[16] = {
+    0, 0, 1, 0, 2, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
+static const unsigned char jpeg_std_vals_ac_refine[17] = {
+    0x00, 0x01, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60,
+    0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0,
+    0xf0,
+};
+
 GIMG_Result gimg_jpeg_encode_baseline_scan(uint32_t width, uint32_t height,
     int num_components, const unsigned char * comp0,
     const unsigned char * comp1, const unsigned char * comp2, size_t stride0,
@@ -2189,10 +2275,15 @@ GIMG_Result gimg_jpeg_encode_baseline_scan(uint32_t width, uint32_t height,
                   row_ptr + (size_t)dy * strides[c] + (size_t)blk_x;
               for (int dx = 0; dx < 8; dx++) {
                 uint32_t x = blk_x + (uint32_t)dx;
-                int16_t s =
-                    (x < comp_width && y < comp_height)
-                        ? (int16_t)((int)p[dx] - 128)
-                        : 0;
+                int16_t s;
+                if (x < comp_width && y < comp_height &&
+                    (blk_y + (uint32_t)dy) < height &&
+                    (size_t)(blk_x + (uint32_t)dx) < strides[c]) {
+                  s = (int16_t)((int)p[dx] - 128);
+                }
+                else {
+                  s = 0;
+                }
                 block_rm[dy * 8 + dx] = s;
               }
             }
@@ -2203,6 +2294,241 @@ GIMG_Result gimg_jpeg_encode_baseline_scan(uint32_t width, uint32_t height,
                 &w, block_zz, dc_tbls[c], ac_tbls[c], &dc_pred[c], a);
           }
         }
+      }
+    }
+  }
+
+  jpeg_bitstream_write_flush(&w, a);
+  *out_scan_data = w.data;
+  *out_scan_size = w.size;
+  return GIMG_OK;
+}
+
+/** Fill coefficient buffer for progressive encode: DCT, quantise, zigzag; store
+ * blocks in MCU order (same as baseline). Caller allocates coef_buffer for
+ * total_blocks * 64 int16_t; total_blocks is returned in *out_total_blocks. */
+GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
+    uint32_t height, int num_components, const unsigned char * comp0,
+    const unsigned char * comp1, const unsigned char * comp2, size_t stride0,
+    size_t stride1, size_t stride2, const uint8_t * h_samp,
+    const uint8_t * v_samp, const uint16_t * quant_luma,
+    const uint16_t * quant_chroma, int16_t * coef_buffer,
+    size_t * out_total_blocks) {
+  if (!coef_buffer || !out_total_blocks || width == 0 || height == 0) {
+    return GIMG_ERR_INTERNAL;
+  }
+  if (num_components != 1 && num_components != 3) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  uint8_t hs[3] = {1, 1, 1};
+  uint8_t vs[3] = {1, 1, 1};
+  if (h_samp && v_samp) {
+    for (int i = 0; i < num_components; i++) {
+      hs[i] = h_samp[i] ? h_samp[i] : 1;
+      vs[i] = v_samp[i] ? v_samp[i] : 1;
+    }
+  }
+  uint8_t h_max = hs[0];
+  uint8_t v_max = vs[0];
+  if (num_components >= 3) {
+    if (hs[1] > h_max) {
+      h_max = hs[1];
+    }
+    if (hs[2] > h_max) {
+      h_max = hs[2];
+    }
+    if (vs[1] > v_max) {
+      v_max = vs[1];
+    }
+    if (vs[2] > v_max) {
+      v_max = vs[2];
+    }
+  }
+  uint32_t mcu_w = (uint32_t)(8 * h_max);
+  uint32_t mcu_h = (uint32_t)(8 * v_max);
+  uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
+  uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
+  size_t blocks_per_mcu = 0;
+  for (int c = 0; c < num_components; c++) {
+    blocks_per_mcu += (size_t)hs[c] * (size_t)vs[c];
+  }
+  size_t total_blocks = 0;
+  if (!gimg_safe_mul_size((size_t)mcu_per_row, (size_t)mcu_per_col,
+          &total_blocks) ||
+      !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+    return GIMG_ERR_LIMIT;
+  }
+  *out_total_blocks = total_blocks;
+
+  int16_t block_rm[64];
+  int16_t block_zz[64];
+  const unsigned char * comps[3] = {comp0, comp1, comp2};
+  size_t strides[3] = {stride0, stride1, stride2};
+  const uint16_t * quants[3] = {quant_luma, quant_chroma, quant_chroma};
+  size_t block_offset = 0;
+
+  for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
+    for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
+      for (int c = 0; c < num_components; c++) {
+        uint8_t hc = hs[c];
+        uint8_t vc = vs[c];
+        uint32_t comp_width =
+            8 * ((width * (uint32_t)hc + mcu_w - 1) / mcu_w);
+        if (comp_width == 0) {
+          comp_width = 8;
+        }
+        uint32_t comp_height =
+            8 * ((height * (uint32_t)vc + mcu_h - 1) / mcu_h);
+        if (comp_height == 0) {
+          comp_height = 8;
+        }
+        for (uint8_t by = 0; by < vc; by++) {
+          for (uint8_t bx = 0; bx < hc; bx++) {
+            uint32_t blk_x = mcu_x * 8 * (uint32_t)hc + (uint32_t)bx * 8;
+            uint32_t blk_y = mcu_y * 8 * (uint32_t)vc + (uint32_t)by * 8;
+            const unsigned char * row_ptr =
+                comps[c] + (size_t)blk_y * strides[c];
+            const uint16_t * q = quants[c];
+            for (int dy = 0; dy < 8; dy++) {
+              uint32_t y = blk_y + (uint32_t)dy;
+              if (y >= comp_height) {
+                for (int dx = 0; dx < 8; dx++) {
+                  block_rm[dy * 8 + dx] = 0;
+                }
+                continue;
+              }
+              const unsigned char * p =
+                  row_ptr + (size_t)dy * strides[c] + (size_t)blk_x;
+              for (int dx = 0; dx < 8; dx++) {
+                uint32_t x = blk_x + (uint32_t)dx;
+                int16_t s;
+                if (x < comp_width && y < comp_height &&
+                    (blk_y + (uint32_t)dy) < height &&
+                    (size_t)(blk_x + (uint32_t)dx) < strides[c]) {
+                  s = (int16_t)((int)p[dx] - 128);
+                }
+                else {
+                  s = 0;
+                }
+                block_rm[dy * 8 + dx] = s;
+              }
+            }
+            jpeg_fdct_8x8(block_rm);
+            jpeg_quantise(block_rm, q);
+            jpeg_zigzag_encode(block_rm, block_zz);
+            memcpy(coef_buffer + block_offset * 64, block_zz,
+                64 * sizeof(int16_t));
+            block_offset++;
+          }
+        }
+      }
+    }
+  }
+  return GIMG_OK;
+}
+
+/** Encode one progressive scan from coefficient buffer. Block order must match
+ * gimg_jpeg_progressive_fill_coef_buffer. Supports Ah>0 (refinement) for DC
+ * and AC. */
+GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
+    int num_components, const int16_t * coef_buffer, size_t total_blocks,
+    const uint8_t * h_samp, const uint8_t * v_samp, uint8_t Ss, uint8_t Se,
+    uint8_t Ah, uint8_t Al, const GIMG_Allocator * alloc,
+    unsigned char ** out_scan_data, size_t * out_scan_size) {
+  if (!out_scan_data || !out_scan_size || !coef_buffer) {
+    return GIMG_ERR_INTERNAL;
+  }
+  (void)width;
+  (void)height;
+  (void)Al;
+  uint8_t hs[3] = {1, 1, 1};
+  uint8_t vs[3] = {1, 1, 1};
+  if (h_samp && v_samp) {
+    for (int i = 0; i < num_components; i++) {
+      hs[i] = h_samp[i] ? h_samp[i] : 1;
+      vs[i] = v_samp[i] ? v_samp[i] : 1;
+    }
+  }
+  uint8_t h_max = hs[0];
+  uint8_t v_max = vs[0];
+  if (num_components >= 3) {
+    if (hs[1] > h_max) {
+      h_max = hs[1];
+    }
+    if (hs[2] > h_max) {
+      h_max = hs[2];
+    }
+    if (vs[1] > v_max) {
+      v_max = vs[1];
+    }
+    if (vs[2] > v_max) {
+      v_max = vs[2];
+    }
+  }
+  const GIMG_Allocator * a = gimg_alloc_or_default(alloc);
+  gimg_jpeg_huff_enc_t dc_lum, dc_chrom, ac_lum, ac_chrom, ac_refine;
+  memset(&dc_lum, 0, sizeof(dc_lum));
+  memset(&dc_chrom, 0, sizeof(dc_chrom));
+  memset(&ac_lum, 0, sizeof(ac_lum));
+  memset(&ac_chrom, 0, sizeof(ac_chrom));
+  memset(&ac_refine, 0, sizeof(ac_refine));
+  jpeg_build_huff_enc(jpeg_std_bits_dc_lum, jpeg_std_vals_dc_lum, 12, &dc_lum);
+  jpeg_build_huff_enc(jpeg_std_bits_ac_lum, jpeg_std_vals_ac_lum, 162, &ac_lum);
+  jpeg_build_huff_enc(
+      jpeg_std_bits_dc_chrom, jpeg_std_vals_dc_chrom, 12, &dc_chrom);
+  jpeg_build_huff_enc(
+      jpeg_std_bits_ac_chrom, jpeg_std_vals_ac_chrom, 162, &ac_chrom);
+  jpeg_build_huff_enc(
+      jpeg_std_bits_ac_refine, jpeg_std_vals_ac_refine, 17, &ac_refine);
+
+  gimg_jpeg_bitstream_write_t w;
+  jpeg_bitstream_write_init(&w, a);
+  if (!w.data) {
+    return GIMG_ERR_OOM;
+  }
+
+  int32_t dc_pred[3] = {0, 0, 0};
+  const gimg_jpeg_huff_enc_t * dc_tbls[3] = {&dc_lum, &dc_chrom, &dc_chrom};
+  const gimg_jpeg_huff_enc_t * ac_tbls[3] = {&ac_lum, &ac_chrom, &ac_chrom};
+  int is_dc = (Ss == 0 && Se == 0);
+  int ss = (int)Ss;
+  int se = (int)Se;
+  int is_refine = (Ah != 0);
+
+  for (size_t block_idx = 0; block_idx < total_blocks; block_idx++) {
+    const int16_t * block_zz = coef_buffer + block_idx * 64;
+    /* Block order matches fill: MCU order, comp 0 then 1 then 2. */
+    int c = 0;
+    if (num_components == 3) {
+      size_t blocks_per_mcu = (size_t)hs[0] * (size_t)vs[0] +
+          (size_t)hs[1] * (size_t)vs[1] + (size_t)hs[2] * (size_t)vs[2];
+      size_t in_mcu = block_idx % blocks_per_mcu;
+      size_t acc = 0;
+      for (c = 0; c < 3; c++) {
+        size_t n = (size_t)hs[c] * (size_t)vs[c];
+        if (in_mcu < acc + n) {
+          break;
+        }
+        acc += n;
+      }
+    }
+    if (is_dc) {
+      if (is_refine) {
+        jpeg_encode_block_dc_refine(&w, block_zz[0], Ah, a);
+      }
+      else {
+        jpeg_encode_block_dc_only(
+            &w, block_zz, dc_tbls[c], &dc_pred[c], a);
+      }
+    }
+    else {
+      if (is_refine) {
+        jpeg_encode_block_ac_band_refine(
+            &w, block_zz, ss, se, Ah, &ac_refine, a);
+      }
+      else {
+        jpeg_encode_block_ac_band(
+            &w, block_zz, ss, se, ac_tbls[c], a);
       }
     }
   }
@@ -2314,6 +2640,43 @@ GIMG_Result gimg_jpeg_write_standard_dht(
   }
   total += n;
   r = gimg_stream_write(stream, dht_ac1, sizeof(dht_ac1), &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  if (out_bytes_written) {
+    *out_bytes_written = total;
+  }
+  return GIMG_OK;
+}
+
+/** Write one DHT segment for AC refinement (Table K.6 style, Th=2). Used when
+ * progressive scan script includes AC refinement (Ah>0, Ss..Se not DC). */
+GIMG_Result gimg_jpeg_write_ac_refine_dht(
+    GIMG_Stream * stream, size_t * out_bytes_written) {
+  size_t total = 0;
+  size_t n = 0;
+  GIMG_Result r;
+  unsigned char seg[2];
+  unsigned char dht[1 + 16 + 17];
+  size_t dht_len = sizeof(dht);
+  uint16_t len_u16 = (uint16_t)(2 + dht_len);
+  dht[0] = 0x12; /* Tc=1 (AC), Th=2 */
+  memcpy(dht + 1, jpeg_std_bits_ac_refine, 16);
+  memcpy(dht + 17, jpeg_std_vals_ac_refine, 17);
+  r = gimg_stream_write(stream, (const unsigned char *)"\xFF\xC4", 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  seg[0] = (unsigned char)(len_u16 >> 8);
+  seg[1] = (unsigned char)(len_u16 & 0xFF);
+  r = gimg_stream_write(stream, seg, 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  r = gimg_stream_write(stream, dht, dht_len, &n);
   if (r != GIMG_OK) {
     return r;
   }

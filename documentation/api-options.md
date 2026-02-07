@@ -49,7 +49,7 @@ Used by `gimg_doc_load()`.
 | `jpeg_progressive` | For JPEG: `0` = baseline (default), `1` = progressive. Ignored by other codecs. |
 | `jpeg_progressive_config` | When `jpeg_progressive` is 1: `NULL` or `scan_count` 0 = use default progression (DC + AC scan(s)); otherwise pointer to **GIMG_JPEG_Progressive_Config** giving a custom scan script (array of Ss, Se, Ah, Al per scan). Ignored for non-JPEG or baseline. |
 
-**GIMG_JPEG_Progressive_Config** holds `scan_count` and `scans` (array of **GIMG_JPEG_Progressive_Scan**). Each scan has `Ss`, `Se` (spectral selection, 0–63), `Ah`, `Al` (successive approximation). Caller keeps the array valid for the duration of `gimg_doc_save()`.
+**GIMG_JPEG_Progressive_Config** holds `scan_count` and `scans` (array of **GIMG_JPEG_Progressive_Scan**). Each scan has `Ss`, `Se` (spectral selection, 0–63), `Ah`, `Al` (successive approximation). Caller keeps the array valid for the duration of `gimg_doc_save()`. Default progression when NULL or `scan_count` 0: one DC scan (Ss=0, Se=0) then one AC scan (Ss=1, Se=63, Ah=0, Al=0). Refinement passes (Ah>0) are supported: DC refinement (Ss=0, Se=0, Ah>0) and AC refinement (Ah>0 for band Ss..Se) with successive-approximation encoding and optional refinement DHT (Th=2).
 
 Used by `gimg_doc_save()`.
 

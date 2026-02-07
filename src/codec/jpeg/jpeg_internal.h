@@ -279,12 +279,34 @@ GIMG_Result gimg_jpeg_encode_baseline_scan(uint32_t width, uint32_t height,
     const uint16_t * quant_chroma, const GIMG_Allocator * alloc,
     unsigned char ** out_scan_data, size_t * out_scan_size);
 
+/** Fill coefficient buffer for progressive encode (DCT, quant, zigzag; MCU
+ * order). Caller allocates coef_buffer for *out_total_blocks * 64 int16_t. */
+GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
+    uint32_t height, int num_components, const unsigned char * comp0,
+    const unsigned char * comp1, const unsigned char * comp2, size_t stride0,
+    size_t stride1, size_t stride2, const uint8_t * h_samp,
+    const uint8_t * v_samp, const uint16_t * quant_luma,
+    const uint16_t * quant_chroma, int16_t * coef_buffer,
+    size_t * out_total_blocks);
+
+/** Encode one progressive scan from coefficient buffer. Supports Ah>0
+ * (refinement). Caller frees *out_scan_data. */
+GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
+    int num_components, const int16_t * coef_buffer, size_t total_blocks,
+    const uint8_t * h_samp, const uint8_t * v_samp, uint8_t Ss, uint8_t Se,
+    uint8_t Ah, uint8_t Al, const GIMG_Allocator * alloc,
+    unsigned char ** out_scan_data, size_t * out_scan_size);
+
 /** Fill scaled default quant tables (quality 1..100). */
 void gimg_jpeg_default_quant_scaled(
     unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma);
 
 /** Write standard DHT segments (DC0, AC0, DC1, AC1) to stream. */
 GIMG_Result gimg_jpeg_write_standard_dht(
+    GIMG_Stream * stream, size_t * out_bytes_written);
+
+/** Write AC refinement DHT (Th=2) for progressive scans with Ah>0. */
+GIMG_Result gimg_jpeg_write_ac_refine_dht(
     GIMG_Stream * stream, size_t * out_bytes_written);
 
 #ifdef __cplusplus

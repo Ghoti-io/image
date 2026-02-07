@@ -134,24 +134,39 @@ static void jpeg_rgb_to_ycbcr(
 #define CHROMA_422 1
 #define CHROMA_444 2
 
-/** Encode raster to scan data and quant tables. Allocates *out_scan_data;
- * caller must free. Supports GRAY8 and RGB 8-bit like main save.
- * chroma_subsampling: CHROMA_420 (default), CHROMA_422, or CHROMA_444 (grayscale
- * ignored). out_h_samp/out_v_samp filled for 3 components (SOF); caller may pass
- * NULL to use 4:4:4. */
+/** Encode raster to scan data (baseline) or coefficient buffer (progressive).
+ * When !progressive: allocates *out_scan_data; caller must free. When
+ * progressive: allocates *out_coef_buffer (out_total_blocks * 64 int16_t);
+ * caller must free. Supports GRAY8 and RGB 8-bit. */
 static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
-    unsigned char ** out_scan_data, size_t * out_scan_size,
+    bool progressive, unsigned char ** out_scan_data, size_t * out_scan_size,
+    int16_t ** out_coef_buffer, size_t * out_total_blocks,
     uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
     uint32_t * out_height, int * out_num_components,
     uint8_t out_h_samp[3], uint8_t out_v_samp[3]) {
-  if (!alloc || !raster || !out_scan_data || !out_scan_size || !out_width ||
-      !out_height || !out_num_components) {
+  if (!alloc || !raster || !out_width || !out_height || !out_num_components) {
     return GIMG_ERR_INTERNAL;
   }
-  *out_scan_data = NULL;
-  *out_scan_size = 0;
+  if (!progressive && (!out_scan_data || !out_scan_size)) {
+    return GIMG_ERR_INTERNAL;
+  }
+  if (progressive && (!out_coef_buffer || !out_total_blocks)) {
+    return GIMG_ERR_INTERNAL;
+  }
+  if (out_scan_data) {
+    *out_scan_data = NULL;
+  }
+  if (out_scan_size) {
+    *out_scan_size = 0;
+  }
+  if (out_coef_buffer) {
+    *out_coef_buffer = NULL;
+  }
+  if (out_total_blocks) {
+    *out_total_blocks = 0;
+  }
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
@@ -270,12 +285,24 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
         uint32_t mcu_y = cb_y / 8u;
         uint32_t by = cb_y % 8u;
         uint32_t y_lo = mcu_y * 16u + by * 2u;
+        uint32_t y1 = y_lo + 1u < height ? y_lo + 1u : y_lo;
+        if (y_lo >= height) {
+          y_lo = height - 1u;
+        }
+        if (y1 >= height) {
+          y1 = height - 1u;
+        }
         for (uint32_t cb_x = 0; cb_x < cw; cb_x++) {
           uint32_t mcu_x = cb_x / 8u;
           uint32_t bx = cb_x % 8u;
           uint32_t x_lo = mcu_x * 16u + bx * 2u;
-          uint32_t y1 = y_lo + 1u < height ? y_lo + 1u : y_lo;
           uint32_t x1 = x_lo + 1u < width ? x_lo + 1u : x_lo;
+          if (x_lo >= width) {
+            x_lo = width - 1u;
+          }
+          if (x1 >= width) {
+            x1 = width - 1u;
+          }
           unsigned sum_cb = (unsigned)comp_cb[y_lo * (size_t)width + x_lo] +
               (unsigned)comp_cb[y_lo * (size_t)width + x1] +
               (unsigned)comp_cb[y1 * (size_t)width + x_lo] +
@@ -334,6 +361,12 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
         for (uint32_t cb_x = 0; cb_x < cw; cb_x++) {
           uint32_t x_lo = cb_x * 2u;
           uint32_t x1 = x_lo + 1u < width ? x_lo + 1u : x_lo;
+          if (x_lo >= width) {
+            x_lo = width - 1u;
+          }
+          if (x1 >= width) {
+            x1 = width - 1u;
+          }
           unsigned sum_cb = (unsigned)comp_cb[row_off + x_lo] +
               (unsigned)comp_cb[row_off + x1];
           unsigned sum_cr = (unsigned)comp_cr[row_off + x_lo] +
@@ -370,29 +403,117 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   const uint8_t * v_ptr = (num_components == 3 && (v_samp[0] != 1 || v_samp[1] != 1))
       ? v_samp
       : NULL;
-  unsigned char * scan_data = NULL;
-  size_t scan_size = 0;
-  GIMG_Result r = gimg_jpeg_encode_baseline_scan(width, height, num_components,
-      comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
-      quant_luma, quant_chroma, alloc, &scan_data, &scan_size);
-  gimg_free(alloc, comp_y);
-  if (use_cb != comp_cb) {
-    gimg_free(alloc, use_cb);
+  GIMG_Result r;
+  if (progressive) {
+    uint8_t h_max = h_samp[0];
+    uint8_t v_max = v_samp[0];
+    if (num_components >= 3) {
+      if (h_samp[1] > h_max) {
+        h_max = h_samp[1];
+      }
+      if (h_samp[2] > h_max) {
+        h_max = h_samp[2];
+      }
+      if (v_samp[1] > v_max) {
+        v_max = v_samp[1];
+      }
+      if (v_samp[2] > v_max) {
+        v_max = v_samp[2];
+      }
+    }
+    uint32_t mcu_w = (uint32_t)(8 * h_max);
+    uint32_t mcu_h = (uint32_t)(8 * v_max);
+    uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
+    uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
+    size_t blocks_per_mcu = 0;
+    for (int c = 0; c < num_components; c++) {
+      blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
+    }
+    size_t total_blocks = 0;
+    if (!gimg_safe_mul_size((size_t)mcu_per_row, (size_t)mcu_per_col,
+            &total_blocks) ||
+        !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+      gimg_free(alloc, comp_y);
+      if (use_cb != comp_cb) {
+        gimg_free(alloc, use_cb);
+      }
+      else if (comp_cb) {
+        gimg_free(alloc, comp_cb);
+      }
+      if (use_cr != comp_cr) {
+        gimg_free(alloc, use_cr);
+      }
+      else if (comp_cr) {
+        gimg_free(alloc, comp_cr);
+      }
+      return GIMG_ERR_LIMIT;
+    }
+    int16_t * coef_buf = (int16_t *)gimg_malloc(alloc,
+        total_blocks * 64 * sizeof(int16_t));
+    if (!coef_buf) {
+      gimg_free(alloc, comp_y);
+      if (use_cb != comp_cb) {
+        gimg_free(alloc, use_cb);
+      }
+      else if (comp_cb) {
+        gimg_free(alloc, comp_cb);
+      }
+      if (use_cr != comp_cr) {
+        gimg_free(alloc, use_cr);
+      }
+      else if (comp_cr) {
+        gimg_free(alloc, comp_cr);
+      }
+      return GIMG_ERR_OOM;
+    }
+    r = gimg_jpeg_progressive_fill_coef_buffer(width, height, num_components,
+        comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
+        quant_luma, quant_chroma, coef_buf, out_total_blocks);
+    gimg_free(alloc, comp_y);
+    if (use_cb != comp_cb) {
+      gimg_free(alloc, use_cb);
+    }
+    else if (comp_cb) {
+      gimg_free(alloc, comp_cb);
+    }
+    if (use_cr != comp_cr) {
+      gimg_free(alloc, use_cr);
+    }
+    else if (comp_cr) {
+      gimg_free(alloc, comp_cr);
+    }
+    if (r != GIMG_OK) {
+      gimg_free(alloc, coef_buf);
+      return r;
+    }
+    *out_coef_buffer = coef_buf;
+    *out_total_blocks = total_blocks;
   }
-  else if (comp_cb) {
-    gimg_free(alloc, comp_cb);
+  else {
+    unsigned char * scan_data = NULL;
+    size_t scan_size = 0;
+    r = gimg_jpeg_encode_baseline_scan(width, height, num_components,
+        comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
+        quant_luma, quant_chroma, alloc, &scan_data, &scan_size);
+    gimg_free(alloc, comp_y);
+    if (use_cb != comp_cb) {
+      gimg_free(alloc, use_cb);
+    }
+    else if (comp_cb) {
+      gimg_free(alloc, comp_cb);
+    }
+    if (use_cr != comp_cr) {
+      gimg_free(alloc, use_cr);
+    }
+    else if (comp_cr) {
+      gimg_free(alloc, comp_cr);
+    }
+    if (r != GIMG_OK || !scan_data) {
+      return (r != GIMG_OK) ? r : GIMG_ERR_OOM;
+    }
+    *out_scan_data = scan_data;
+    *out_scan_size = scan_size;
   }
-  if (use_cr != comp_cr) {
-    gimg_free(alloc, use_cr);
-  }
-  else if (comp_cr) {
-    gimg_free(alloc, comp_cr);
-  }
-  if (r != GIMG_OK || !scan_data) {
-    return (r != GIMG_OK) ? r : GIMG_ERR_OOM;
-  }
-  *out_scan_data = scan_data;
-  *out_scan_size = scan_size;
   *out_width = width;
   *out_height = height;
   *out_num_components = num_components;
@@ -615,6 +736,226 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
   return GIMG_OK;
 }
 
+/** Default progressive scan script: one DC scan then one AC scan (Ss=1..63). */
+static const GIMG_JPEG_Progressive_Scan gimg_jpeg_default_progressive_scans[] = {
+    {0, 0, 0, 0},
+    {1, 63, 0, 0},
+};
+static const unsigned gimg_jpeg_default_progressive_scan_count = 2;
+
+/** Validate progressive config: Ss, Se in 0..63, Ss<=Se; Ah, Al in 0..15;
+ * scan_count in limit. */
+static GIMG_Result jpeg_validate_progressive_config(
+    const GIMG_JPEG_Progressive_Config * config) {
+  if (!config || config->scan_count == 0) {
+    return GIMG_OK;
+  }
+  if (config->scan_count > GIMG_JPEG_MAX_SCANS) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (!config->scans) {
+    return GIMG_ERR_FORMAT;
+  }
+  for (unsigned i = 0; i < config->scan_count; i++) {
+    uint8_t Ss = config->scans[i].Ss;
+    uint8_t Se = config->scans[i].Se;
+    uint8_t Ah = config->scans[i].Ah;
+    uint8_t Al = config->scans[i].Al;
+    if (Ss > 63 || Se > 63 || Ss > Se) {
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (Ah > 15 || Al > 15) {
+      return GIMG_ERR_UNSUPPORTED;
+    }
+  }
+  return GIMG_OK;
+}
+
+/** Write DQT, DHT, SOF2, then for each scan: SOS (Ss,Se,Ah,Al) + scan data;
+ * then EOI. Frees scan data after each write; does not free coef_buffer. */
+static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
+    uint32_t width, uint32_t height, int num_components,
+    const uint8_t * h_samp, const uint8_t * v_samp,
+    const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
+    const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
+    const int16_t * coef_buffer, size_t total_blocks,
+    const GIMG_JPEG_Progressive_Scan * scans, unsigned scan_count,
+    const GIMG_Allocator * alloc, size_t * out_n) {
+  size_t n = (out_n ? *out_n : 0);
+  GIMG_Result r;
+  size_t written = 0;
+  /* DQT same as baseline */
+  unsigned char dqt0[67];
+  memset(dqt0, 0, sizeof(dqt0));
+  dqt0[0] = 0x00;
+  for (int i = 0; i < 64; i++) {
+    dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
+  }
+  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_u16(stream, 67, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = gimg_stream_write(stream, dqt0, sizeof(dqt0), &written);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  n += written;
+  if (num_components == 3) {
+    unsigned char dqt1[67];
+    memset(dqt1, 0, sizeof(dqt1));
+    dqt1[0] = 0x01;
+    for (int i = 0; i < 64; i++) {
+      dqt1[1 + i] =
+          (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
+    }
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, 67, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = gimg_stream_write(stream, dqt1, sizeof(dqt1), &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+  {
+    size_t dht_written = 0;
+    r = gimg_jpeg_write_standard_dht(stream, &dht_written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += dht_written;
+  }
+  /* AC refinement DHT (Th=2) when any scan is AC refinement (Ah>0, not DC). */
+  {
+    int need_refine_dht = 0;
+    for (unsigned s = 0; s < scan_count && !need_refine_dht; s++) {
+      if (scans[s].Ah != 0 &&
+          !(scans[s].Ss == 0 && scans[s].Se == 0)) {
+        need_refine_dht = 1;
+      }
+    }
+    if (need_refine_dht) {
+      size_t dht_written = 0;
+      r = gimg_jpeg_write_ac_refine_dht(stream, &dht_written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += dht_written;
+    }
+  }
+  /* SOF2 (progressive DCT) */
+  {
+    uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOF2, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, sof_len, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    unsigned char sof[8 + 3 * 4];
+    memset(sof, 0, sizeof(sof));
+    sof[0] = 8;
+    sof[1] = (unsigned char)(height >> 8);
+    sof[2] = (unsigned char)(height & 0xFF);
+    sof[3] = (unsigned char)(width >> 8);
+    sof[4] = (unsigned char)(width & 0xFF);
+    sof[5] = (unsigned char)num_components;
+    for (int c = 0; c < num_components; c++) {
+      uint8_t h = (h_samp && c < 3) ? h_samp[c] : 1;
+      uint8_t v = (v_samp && c < 3) ? v_samp[c] : 1;
+      if (h == 0) {
+        h = 1;
+      }
+      if (v == 0) {
+        v = 1;
+      }
+      sof[6 + c * 3] = (unsigned char)(c + 1);
+      sof[7 + c * 3] = (unsigned char)((h << 4) | v);
+      sof[8 + c * 3] = (unsigned char)(c == 0 ? 0 : 1);
+    }
+    r = gimg_stream_write(
+        stream, sof, 8 + 3 * (size_t)num_components, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+  for (unsigned s = 0; s < scan_count; s++) {
+    unsigned char * scan_data = NULL;
+    size_t scan_size = 0;
+    r = gimg_jpeg_encode_progressive_scan(width, height, num_components,
+        coef_buffer, total_blocks, h_samp, v_samp, scans[s].Ss, scans[s].Se,
+        scans[s].Ah, scans[s].Al, alloc, &scan_data, &scan_size);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)num_components);
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, scan_data);
+      return r;
+    }
+    r = jpeg_write_u16(stream, sos_len, &n);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, scan_data);
+      return r;
+    }
+    unsigned char sos[12];
+    memset(sos, 0, sizeof(sos));
+    sos[0] = (unsigned char)num_components;
+    /* AC refinement scans use Ta=2 (refinement table); else Ta=0/1. */
+    int ac_refine = (scans[s].Ah != 0 &&
+        !(scans[s].Ss == 0 && scans[s].Se == 0));
+    if (num_components == 1) {
+      sos[1] = 0x01;
+      sos[2] = (unsigned char)(ac_refine ? 0x02 : 0x00);
+    }
+    else {
+      sos[1] = 0x01;
+      sos[2] = (unsigned char)(ac_refine ? 0x02 : 0x00);
+      sos[3] = 0x02;
+      sos[4] = (unsigned char)(ac_refine ? 0x12 : 0x11);
+      sos[5] = 0x03;
+      sos[6] = (unsigned char)(ac_refine ? 0x12 : 0x11);
+    }
+    size_t tail = 1 + 2 * (size_t)num_components;
+    sos[tail] = scans[s].Ss;
+    sos[tail + 1] = scans[s].Se;
+    sos[tail + 2] = (unsigned char)((scans[s].Ah << 4) | (scans[s].Al & 0x0F));
+    r = gimg_stream_write(stream, sos, tail + 3, &written);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, scan_data);
+      return r;
+    }
+    n += written;
+    r = gimg_stream_write(stream, scan_data, scan_size, &written);
+    gimg_free(alloc, scan_data);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (out_n) {
+    *out_n = n;
+  }
+  return GIMG_OK;
+}
+
 GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report) {
@@ -660,32 +1001,56 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   unsigned chroma_subsampling = (options && options->jpeg_chroma_subsampling <= 2)
       ? options->jpeg_chroma_subsampling
       : (unsigned)CHROMA_420;
+  bool progressive =
+      (options && options->jpeg_progressive) ? true : false;
+  GIMG_Result r;
+  if (progressive) {
+    r = jpeg_validate_progressive_config(
+        options ? options->jpeg_progressive_config : NULL);
+    if (r != GIMG_OK) {
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      return r;
+    }
+  }
   uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES];
   uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES];
   unsigned char * scan_data = NULL;
   size_t scan_size = 0;
+  int16_t * coef_buffer = NULL;
+  size_t total_blocks = 0;
   uint32_t width = 0, height = 0;
   int num_components = 0;
   uint8_t h_samp[3] = {1, 1, 1};
   uint8_t v_samp[3] = {1, 1, 1};
-  GIMG_Result r = jpeg_raster_to_scan_data(alloc, raster, quality,
-      chroma_subsampling, &scan_data, &scan_size, quant_luma, quant_chroma,
-      &width, &height, &num_components, h_samp, v_samp);
+  r = jpeg_raster_to_scan_data(alloc, raster, quality,
+      chroma_subsampling, progressive, &scan_data, &scan_size, &coef_buffer,
+      &total_blocks, quant_luma, quant_chroma, &width, &height, &num_components,
+      h_samp, v_samp);
   if (raster_owned) {
     gimg_raster_destroy(raster);
   }
   if (r != GIMG_OK) {
     return r;
   }
-  if (!scan_data) {
-    return GIMG_ERR_OOM;
+  if (progressive) {
+    if (!coef_buffer) {
+      return GIMG_ERR_OOM;
+    }
   }
+  else {
+    if (!scan_data) {
+      return GIMG_ERR_OOM;
+    }
+  }
+  void * to_free = progressive ? (void *)coef_buffer : (void *)scan_data;
 
   size_t written = 0;
   r = gimg_stream_write(
       stream, gimg_jpeg_signature, GIMG_JPEG_SIGNATURE_LEN, &written);
   if (r != GIMG_OK) {
-    gimg_free(alloc, scan_data);
+    gimg_free(alloc, to_free);
     return r;
   }
   report->bytes_written += written;
@@ -728,7 +1093,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
                   com_buf + offset, plen, &report->bytes_written);
               if (r != GIMG_OK) {
                 gimg_free(alloc, com_buf);
-                gimg_free(alloc, scan_data);
+                gimg_free(alloc, to_free);
                 return r;
               }
               offset += plen;
@@ -737,7 +1102,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           gimg_free(alloc, com_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, scan_data);
+          gimg_free(alloc, to_free);
           return r;
         }
       }
@@ -749,7 +1114,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
             r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_COM,
                 (const unsigned char *)desc, dlen, &report->bytes_written);
             if (r != GIMG_OK) {
-              gimg_free(alloc, scan_data);
+              gimg_free(alloc, to_free);
               return r;
             }
           }
@@ -777,7 +1142,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         gimg_free(alloc, app0_buf);
       }
       if (r != GIMG_OK) {
-        gimg_free(alloc, scan_data);
+        gimg_free(alloc, to_free);
         return r;
       }
     }
@@ -787,7 +1152,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       r = jpeg_write_app_segment(
           stream, GIMG_JPEG_MARKER_APP0, app0, 16, &report->bytes_written);
       if (r != GIMG_OK) {
-        gimg_free(alloc, scan_data);
+        gimg_free(alloc, to_free);
         return r;
       }
     }
@@ -811,7 +1176,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           gimg_free(alloc, jfxx_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, scan_data);
+          gimg_free(alloc, to_free);
           return r;
         }
       }
@@ -947,8 +1312,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
               uint32_t tw = 0, th = 0;
               int tnc = 0;
               r = jpeg_raster_to_scan_data(alloc, thumb_raster, thumb_quality,
-                  CHROMA_444, &thumb_scan, &thumb_scan_size, tq_luma, tq_chroma,
-                  &tw, &th, &tnc, NULL, NULL);
+                  CHROMA_444, false, &thumb_scan, &thumb_scan_size, NULL, NULL,
+                  tq_luma, tq_chroma, &tw, &th, &tnc, NULL, NULL);
               if (thumb_raster_owned) {
                 gimg_raster_destroy(thumb_raster);
               }
@@ -1054,7 +1419,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           }
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, scan_data);
+          gimg_free(alloc, to_free);
           return r;
         }
       }
@@ -1076,7 +1441,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           gimg_free(alloc, xmp_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, scan_data);
+          gimg_free(alloc, to_free);
           return r;
         }
       }
@@ -1114,7 +1479,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           gimg_free(alloc, chunks_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, scan_data);
+          gimg_free(alloc, to_free);
           return r;
         }
       }
@@ -1135,7 +1500,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
             gimg_free(alloc, icc_buf);
           }
           if (r != GIMG_OK) {
-            gimg_free(alloc, scan_data);
+            gimg_free(alloc, to_free);
             return r;
           }
         }
@@ -1159,7 +1524,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           gimg_free(alloc, app13_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, scan_data);
+          gimg_free(alloc, to_free);
           return r;
         }
       }
@@ -1180,7 +1545,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           gimg_free(alloc, app14_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, scan_data);
+          gimg_free(alloc, to_free);
           return r;
         }
       }
@@ -1211,7 +1576,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
                     unknown_buf + off, plen, &report->bytes_written);
                 if (r != GIMG_OK) {
                   gimg_free(alloc, unknown_buf);
-                  gimg_free(alloc, scan_data);
+                  gimg_free(alloc, to_free);
                   return r;
                 }
                 off += plen;
@@ -1221,17 +1586,34 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           }
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, scan_data);
+          gimg_free(alloc, to_free);
           return r;
         }
       }
     }
   }
 
-  r = jpeg_write_image_body(stream, width, height, num_components,
-      num_components == 3 ? h_samp : NULL, num_components == 3 ? v_samp : NULL,
-      quant_luma, quant_chroma, scan_data, scan_size, &report->bytes_written);
-  gimg_free(alloc, scan_data);
+  if (progressive) {
+    const GIMG_JPEG_Progressive_Scan * scans =
+        gimg_jpeg_default_progressive_scans;
+    unsigned scan_count = gimg_jpeg_default_progressive_scan_count;
+    if (options && options->jpeg_progressive_config &&
+        options->jpeg_progressive_config->scan_count > 0) {
+      scans = options->jpeg_progressive_config->scans;
+      scan_count = options->jpeg_progressive_config->scan_count;
+    }
+    r = jpeg_write_image_body_progressive(stream, width, height, num_components,
+        num_components == 3 ? h_samp : NULL, num_components == 3 ? v_samp : NULL,
+        quant_luma, quant_chroma, coef_buffer, total_blocks, scans, scan_count,
+        alloc, &report->bytes_written);
+    gimg_free(alloc, coef_buffer);
+  }
+  else {
+    r = jpeg_write_image_body(stream, width, height, num_components,
+        num_components == 3 ? h_samp : NULL, num_components == 3 ? v_samp : NULL,
+        quant_luma, quant_chroma, scan_data, scan_size, &report->bytes_written);
+    gimg_free(alloc, to_free);
+  }
   if (r != GIMG_OK) {
     return r;
   }
