@@ -154,6 +154,161 @@ std::vector<uint8_t> make_minimal_exif_orientation_6() {
   return exif;
 }
 
+/** TIFF/Exif with IFD0 (orientation 6) and IFD1 (JPEG thumbnail). Thumbnail
+ * bytes start at offset 68 in the TIFF; length = thumb_jpeg.size(). */
+std::vector<uint8_t> make_exif_with_jpeg_thumbnail(
+    const std::vector<uint8_t> & thumb_jpeg) {
+  std::vector<uint8_t> exif;
+  // TIFF header: II, 42, IFD0 at 8
+  append(exif, (const unsigned char *)"\x49\x49\x2A\x00\x08\x00\x00\x00", 8);
+  // IFD0: 1 entry (orientation), next IFD = 26
+  append(exif, (const unsigned char *)"\x01\x00", 2);
+  append(exif,
+      (const unsigned char *)"\x12\x01\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00",
+      12);
+  append(exif, (const unsigned char *)"\x1A\x00\x00\x00", 4); // next IFD
+  // IFD1 at 26: 3 entries (Compression=6, 0x0201=68, 0x0202=length)
+  const uint32_t thumb_off = 68u;
+  const uint32_t thumb_len = (uint32_t)thumb_jpeg.size();
+  append(exif, (const unsigned char *)"\x03\x00", 2);
+  // Tag 0x0103 Compression, SHORT, 1, value 6
+  append(exif,
+      (const unsigned char *)"\x03\x01\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00",
+      12);
+  // Tag 0x0201 JPEGInterchangeFormat, LONG, 1, value thumb_off (68)
+  append(exif, (const unsigned char *)"\x01\x02\x04\x00\x01\x00\x00\x00", 8);
+  exif.push_back((uint8_t)(thumb_off));
+  exif.push_back((uint8_t)(thumb_off >> 8));
+  exif.push_back((uint8_t)(thumb_off >> 16));
+  exif.push_back((uint8_t)(thumb_off >> 24));
+  // Tag 0x0202 JPEGInterchangeFormatLength, LONG, 1, value thumb_len
+  append(exif, (const unsigned char *)"\x02\x02\x04\x00\x01\x00\x00\x00", 8);
+  exif.push_back((uint8_t)(thumb_len));
+  exif.push_back((uint8_t)(thumb_len >> 8));
+  exif.push_back((uint8_t)(thumb_len >> 16));
+  exif.push_back((uint8_t)(thumb_len >> 24));
+  append(exif, (const unsigned char *)"\x00\x00\x00\x00", 4); // no next IFD
+  // Pad to offset 68 (26 + 2 + 36 + 4 = 68)
+  while (exif.size() < thumb_off) {
+    exif.push_back(0);
+  }
+  exif.insert(exif.end(), thumb_jpeg.begin(), thumb_jpeg.end());
+  return exif;
+}
+
+/** TIFF/Exif with IFD0 (1 entry) and IFD1 Compression=1 (uncompressed)
+ * thumbnail: 2x2 grayscale, strip at offset 116, 4 bytes. */
+std::vector<uint8_t> make_exif_with_uncompressed_thumbnail(void) {
+  std::vector<uint8_t> exif;
+  append(exif, (const unsigned char *)"\x49\x49\x2A\x00\x08\x00\x00\x00", 8);
+  append(exif, (const unsigned char *)"\x01\x00", 2);
+  append(exif,
+      (const unsigned char *)"\x12\x01\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00",
+      12);
+  append(exif, (const unsigned char *)"\x1A\x00\x00\x00", 4);
+  // IFD1 at 26: 7 entries
+  const uint32_t strip_off = 116u;
+  append(exif, (const unsigned char *)"\x07\x00", 2);
+  append(exif,
+      (const unsigned char *)"\x03\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00",
+      12);
+  append(exif,
+      (const unsigned char *)"\x00\x01\x04\x00\x01\x00\x00\x00\x02\x00\x00\x00",
+      12);
+  append(exif,
+      (const unsigned char *)"\x01\x01\x04\x00\x01\x00\x00\x00\x02\x00\x00\x00",
+      12);
+  append(exif,
+      (const unsigned char *)"\x02\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00",
+      12);
+  append(exif, (const unsigned char *)"\x11\x01\x04\x00\x01\x00\x00\x00", 8);
+  exif.push_back((uint8_t)(strip_off));
+  exif.push_back((uint8_t)(strip_off >> 8));
+  exif.push_back((uint8_t)(strip_off >> 16));
+  exif.push_back((uint8_t)(strip_off >> 24));
+  append(exif, (const unsigned char *)"\x17\x01\x04\x00\x01\x00\x00\x00\x04\x00\x00\x00",
+      12);
+  append(exif,
+      (const unsigned char *)"\x06\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00",
+      12);
+  append(exif, (const unsigned char *)"\x00\x00\x00\x00", 4);
+  while (exif.size() < strip_off) {
+    exif.push_back(0);
+  }
+  append(exif, (const unsigned char *)"\x00\x40\x80\xC0", 4);
+  return exif;
+}
+
+/** TIFF/Exif with IFD1 Compression=7 (TIFF TechNote 2 JPEG). Single strip
+ * at offset 68 containing complete JPEG (no JPEGTables). */
+std::vector<uint8_t> make_exif_with_tiff_jpeg_thumbnail(
+    const std::vector<uint8_t> & strip_jpeg) {
+  std::vector<uint8_t> exif;
+  append(exif, (const unsigned char *)"\x49\x49\x2A\x00\x08\x00\x00\x00", 8);
+  append(exif, (const unsigned char *)"\x01\x00", 2);
+  append(exif,
+      (const unsigned char *)"\x12\x01\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00",
+      12);
+  append(exif, (const unsigned char *)"\x1A\x00\x00\x00", 4);
+  const uint32_t strip_off = 68u;
+  const uint32_t strip_len = (uint32_t)strip_jpeg.size();
+  append(exif, (const unsigned char *)"\x03\x00", 2);
+  append(exif,
+      (const unsigned char *)"\x03\x01\x03\x00\x01\x00\x00\x00\x07\x00\x00\x00",
+      12);
+  append(exif, (const unsigned char *)"\x11\x01\x04\x00\x01\x00\x00\x00", 8);
+  exif.push_back((uint8_t)(strip_off));
+  exif.push_back((uint8_t)(strip_off >> 8));
+  exif.push_back((uint8_t)(strip_off >> 16));
+  exif.push_back((uint8_t)(strip_off >> 24));
+  append(exif, (const unsigned char *)"\x17\x01\x04\x00\x01\x00\x00\x00", 8);
+  exif.push_back((uint8_t)(strip_len));
+  exif.push_back((uint8_t)(strip_len >> 8));
+  exif.push_back((uint8_t)(strip_len >> 16));
+  exif.push_back((uint8_t)(strip_len >> 24));
+  append(exif, (const unsigned char *)"\x00\x00\x00\x00", 4);
+  while (exif.size() < strip_off) {
+    exif.push_back(0);
+  }
+  exif.insert(exif.end(), strip_jpeg.begin(), strip_jpeg.end());
+  return exif;
+}
+
+/** JPEG with APP1 EXIF containing IFD1 uncompressed (Compression=1) thumbnail;
+ * main image minimal baseline, second item = 2x2 grayscale thumbnail. */
+std::vector<uint8_t> make_jpeg_with_exif_uncompressed_thumbnail(void) {
+  std::vector<uint8_t> exif = make_exif_with_uncompressed_thumbnail();
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  size_t app1_payload = 6 + exif.size();
+  uint16_t app1_len = (uint16_t)(2 + app1_payload);
+  if (app1_len < 2 + app1_payload) {
+    return buf;
+  }
+  append(buf, (const unsigned char *)"\xFF\xE1", 2);
+  buf.push_back((uint8_t)(app1_len >> 8));
+  buf.push_back((uint8_t)(app1_len & 0xFF));
+  append(buf, (const unsigned char *)"Exif\0\0", 6);
+  buf.insert(buf.end(), exif.begin(), exif.end());
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
+      12);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
 /** JPEG with SOI, APP1 Exif (orientation 6), then minimal baseline (no decode).
  */
 std::vector<uint8_t> make_jpeg_with_app1_exif() {
@@ -167,6 +322,44 @@ std::vector<uint8_t> make_jpeg_with_app1_exif() {
   append(buf, (const unsigned char *)"Exif\0\0", 6);
   buf.insert(buf.end(), exif.begin(), exif.end());
   // SOF0, DQT, DHT, SOS, EOI from minimal
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
+      12);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+/** JPEG with APP1 EXIF containing IFD1 JPEG thumbnail; main image + thumbnail
+ * exposed as item 0 and item 1. Uses provided thumb_jpeg (must be decodable).
+ */
+std::vector<uint8_t> make_jpeg_with_exif_thumbnail(
+    const std::vector<uint8_t> & thumb_jpeg) {
+  std::vector<uint8_t> exif = make_exif_with_jpeg_thumbnail(thumb_jpeg);
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  size_t app1_payload = 6 + exif.size();
+  uint16_t app1_len =
+      (uint16_t)(2 + app1_payload); // length field = 2 + payload
+  if (app1_len < 2 + app1_payload) {
+    return buf; // overflow
+  }
+  append(buf, (const unsigned char *)"\xFF\xE1", 2);
+  buf.push_back((uint8_t)(app1_len >> 8));
+  buf.push_back((uint8_t)(app1_len & 0xFF));
+  append(buf, (const unsigned char *)"Exif\0\0", 6);
+  buf.insert(buf.end(), exif.begin(), exif.end());
   append(buf,
       (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
                              "\x00",
@@ -466,6 +659,101 @@ TEST(JpegLoad, App1ExifAttachedToMetaRaw) {
   EXPECT_GE(size, 6u + 14u) << "Exif\\0\\0 + minimal TIFF";
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, ExifEmbeddedThumbnailDecodedAsSecondItem) {
+  std::vector<uint8_t> thumb_bytes;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", thumb_bytes))
+      << "need decodable thumbnail (baseline_8x8_gray.jpg)";
+  std::vector<uint8_t> jpeg = make_jpeg_with_exif_thumbnail(thumb_bytes);
+  ASSERT_GE(jpeg.size(), 2u) << "build EXIF thumbnail JPEG";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u)
+      << "EXIF IFD1 JPEG thumbnail exposed as second item";
+  GIMG_Item * item1 = gimg_doc_item(doc, 1);
+  ASSERT_NE(item1, nullptr);
+  // Thumbnail is decoded during load and attached as item 1's raster.
+  GIMG_Raster * thumb_raster = gimg_item_raster(item1);
+  ASSERT_NE(thumb_raster, nullptr) << "thumbnail raster attached";
+  EXPECT_EQ(gimg_raster_width(thumb_raster), 8u);
+  EXPECT_EQ(gimg_raster_height(thumb_raster), 8u);
+  gimg_doc_destroy(doc);
+}
+
+TEST(JpegLoad, ExifEmbeddedThumbnailUncompressedSecondItem) {
+  std::vector<uint8_t> jpeg = make_jpeg_with_exif_uncompressed_thumbnail();
+  ASSERT_GE(jpeg.size(), 2u);
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u)
+      << "EXIF IFD1 Compression=1 thumbnail exposed as second item";
+  GIMG_Item * item1 = gimg_doc_item(doc, 1);
+  ASSERT_NE(item1, nullptr);
+  GIMG_Raster * thumb_raster = gimg_item_raster(item1);
+  ASSERT_NE(thumb_raster, nullptr);
+  EXPECT_EQ(gimg_raster_width(thumb_raster), 2u);
+  EXPECT_EQ(gimg_raster_height(thumb_raster), 2u);
+  gimg_doc_destroy(doc);
+}
+
+TEST(JpegLoad, ExifEmbeddedThumbnailTiffJpegSecondItem) {
+  std::vector<uint8_t> strip_bytes;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", strip_bytes))
+      << "need decodable strip for Compression=7 thumbnail";
+  std::vector<uint8_t> exif = make_exif_with_tiff_jpeg_thumbnail(strip_bytes);
+  std::vector<uint8_t> jpeg;
+  append(jpeg, (const unsigned char *)"\xFF\xD8", 2);
+  size_t app1_payload = 6 + exif.size();
+  uint16_t app1_len = (uint16_t)(2 + app1_payload);
+  ASSERT_LT(2u + app1_payload, 65536u);
+  append(jpeg, (const unsigned char *)"\xFF\xE1", 2);
+  jpeg.push_back((uint8_t)(app1_len >> 8));
+  jpeg.push_back((uint8_t)(app1_len & 0xFF));
+  append(jpeg, (const unsigned char *)"Exif\0\0", 6);
+  jpeg.insert(jpeg.end(), exif.begin(), exif.end());
+  append(jpeg,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(jpeg, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    jpeg.push_back(1);
+  }
+  append(jpeg, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    jpeg.push_back(0);
+  }
+  append(jpeg,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
+      12);
+  append(jpeg, (const unsigned char *)"\xFF\xD9", 2);
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u)
+      << "EXIF IFD1 Compression=7 thumbnail exposed as second item";
+  GIMG_Item * item1 = gimg_doc_item(doc, 1);
+  ASSERT_NE(item1, nullptr);
+  GIMG_Raster * thumb_raster = gimg_item_raster(item1);
+  ASSERT_NE(thumb_raster, nullptr);
+  EXPECT_EQ(gimg_raster_width(thumb_raster), 8u);
+  EXPECT_EQ(gimg_raster_height(thumb_raster), 8u);
+  gimg_doc_destroy(doc);
 }
 
 TEST(JpegLoad, App0JfifPopulatesMetaCommonDpi) {

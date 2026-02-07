@@ -4,9 +4,9 @@
  * Exif (eXIf / TIFF-IFD) parse, strip GPS, and normalize.
  *
  * - Parse: read orientation (and other tags) from IFD0 for metadata common.
- * - STRIP_GPS: remove only the GPS IFD (tag 0x8825) and its payload; re-serialize
- *   the rest so non-GPS Exif (orientation, datetime, etc.) is preserved. Used
- *   by GIMG_META_STRIP_GPS on save.
+ * - STRIP_GPS: remove only the GPS IFD (tag 0x8825) and its payload;
+ * re-serialize the rest so non-GPS Exif (orientation, datetime, etc.) is
+ * preserved. Used by GIMG_META_STRIP_GPS on save.
  * - NORMALIZE_EXIF: copy blob and set orientation tag to 1 (normal) if present;
  *   used by GIMG_META_NORMALIZE_EXIF so saved eXIf has canonical orientation.
  *
@@ -23,7 +23,7 @@
 #define GIMG_EXIF_MIN_SIZE 14u
 
 static bool is_little_endian(const unsigned char * h) {
-  return h[0] == 0x49u && h[1] == 0x49u;  // "II"
+  return h[0] == 0x49u && h[1] == 0x49u; // "II"
 }
 
 static uint16_t read_u16(const unsigned char * p, int little) {
@@ -248,5 +248,426 @@ GIMG_Result gimg_exif_normalize(const GIMG_Allocator * allocator,
   }
   *out = dst;
   *out_size = size;
+  return GIMG_OK;
+}
+
+GIMG_Result gimg_exif_embedded_thumbnail_jpeg(
+    const void * tiff, size_t size, const void ** out_data, size_t * out_size) {
+  if (!tiff || !out_data || !out_size) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_data = NULL;
+  *out_size = 0;
+  if (size < GIMG_EXIF_MIN_SIZE) {
+    return GIMG_OK;
+  }
+  const unsigned char * buf = (const unsigned char *)tiff;
+  if (buf[2] != 42 || buf[3] != 0) {
+    return GIMG_ERR_CORRUPT;
+  }
+  int le = is_little_endian(buf);
+  uint32_t ifd0 = read_u32(buf + 4, le);
+  if (ifd0 + 2 > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  uint16_t num0 = read_u16(buf + ifd0, le);
+  if (ifd0 + 2u + (uint32_t)num0 * 12u + 4u > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  uint32_t ifd1 = read_u32(buf + ifd0 + 2 + (size_t)num0 * 12, le);
+  if (ifd1 == 0) {
+    return GIMG_OK;
+  }
+  if (ifd1 + 2 > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  uint16_t num1 = read_u16(buf + ifd1, le);
+  if (ifd1 + 2u + (uint32_t)num1 * 12u > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  int has_compression_jpeg = 0;
+  uint32_t jpeg_offset = 0;
+  uint32_t jpeg_length = 0;
+  for (uint16_t i = 0; i < num1; i++) {
+    size_t off = ifd1 + 2 + (size_t)i * 12;
+    uint16_t tag = read_u16(buf + off, le);
+    uint16_t type = read_u16(buf + off + 2, le);
+    uint32_t count = read_u32(buf + off + 4, le);
+    if (tag == GIMG_EXIF_TAG_COMPRESSION) {
+      if (type == GIMG_EXIF_TYPE_SHORT && count == 1) {
+        uint16_t val = read_u16(buf + off + 8, le);
+        if (val == 6) {
+          has_compression_jpeg = 1;
+        }
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_JPEG_INTERCHANGE_FORMAT) {
+      if (type == GIMG_EXIF_TYPE_LONG && count == 1) {
+        jpeg_offset = read_u32(buf + off + 8, le);
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_JPEG_INTERCHANGE_FORMAT_LENGTH) {
+      if (type == GIMG_EXIF_TYPE_LONG && count == 1) {
+        jpeg_length = read_u32(buf + off + 8, le);
+      }
+    }
+  }
+  if (!has_compression_jpeg || jpeg_length == 0) {
+    return GIMG_OK;
+  }
+  if (jpeg_offset > size || jpeg_length > size ||
+      jpeg_offset + jpeg_length > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  *out_data = (const void *)(buf + jpeg_offset);
+  *out_size = (size_t)jpeg_length;
+  return GIMG_OK;
+}
+
+// Resolve TIFF tag value: for count*type_size <= 4, value is inline at off+8;
+// otherwise value at off+8 is offset to data.
+static uint32_t tag_value_or_offset(const unsigned char * buf,
+    GIMG_MAYBE_UNUSED(size_t size), size_t ent_off, int le, uint16_t type,
+    uint32_t count) {
+  size_t type_size = (type == GIMG_EXIF_TYPE_SHORT) ? 2u : 4u;
+  if (type == GIMG_EXIF_TYPE_UNDEFINED) {
+    type_size = 1u;
+  }
+  if (count * type_size <= 4) {
+    if (type == GIMG_EXIF_TYPE_SHORT && count >= 1) {
+      return (uint32_t)read_u16(buf + ent_off + 8, le);
+    }
+    if (type == GIMG_EXIF_TYPE_LONG && count >= 1) {
+      return read_u32(buf + ent_off + 8, le);
+    }
+    return 0;
+  }
+  return read_u32(buf + ent_off + 8, le);
+}
+
+// Get pointer to tag data: if inline, return buf+ent_off+8; else return buf+offset.
+static const unsigned char * tag_data_ptr(const unsigned char * buf,
+    size_t ent_off, int le, uint16_t type, uint32_t count) {
+  size_t type_size = (type == GIMG_EXIF_TYPE_SHORT) ? 2u : 4u;
+  if (type == GIMG_EXIF_TYPE_UNDEFINED) {
+    type_size = 1u;
+  }
+  if (count * type_size <= 4) {
+    return buf + ent_off + 8;
+  }
+  uint32_t off = read_u32(buf + ent_off + 8, le);
+  return buf + off;
+}
+
+GIMG_Result gimg_exif_embedded_thumbnail_uncompressed(
+    const GIMG_Allocator * allocator, const void * tiff, size_t size,
+    uint32_t * out_width, uint32_t * out_height, uint8_t * out_bits_per_sample,
+    uint16_t * out_photometric, void ** out_data, size_t * out_size) {
+  if (!tiff || size < GIMG_EXIF_MIN_SIZE || !out_width || !out_height ||
+      !out_bits_per_sample || !out_photometric || !out_data || !out_size) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_width = 0;
+  *out_height = 0;
+  *out_bits_per_sample = 0;
+  *out_photometric = 0xFFFF;
+  *out_data = NULL;
+  *out_size = 0;
+  const unsigned char * buf = (const unsigned char *)tiff;
+  if (buf[2] != 42 || buf[3] != 0) {
+    return GIMG_ERR_CORRUPT;
+  }
+  int le = is_little_endian(buf);
+  uint32_t ifd0 = read_u32(buf + 4, le);
+  if (ifd0 + 2 > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  uint16_t num0 = read_u16(buf + ifd0, le);
+  if (ifd0 + 2u + (uint32_t)num0 * 12u + 4u > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  uint32_t ifd1 = read_u32(buf + ifd0 + 2 + (size_t)num0 * 12, le);
+  if (ifd1 == 0 || ifd1 + 2 > size) {
+    return GIMG_OK;
+  }
+  uint16_t num1 = read_u16(buf + ifd1, le);
+  if (ifd1 + 2u + (uint32_t)num1 * 12u > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  int compression_1 = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint16_t bits_per_sample = 0;
+  uint32_t strip_offsets_val = 0;   // inline value or offset to array
+  uint32_t strip_byte_counts_val = 0;
+  uint16_t strip_count = 0;
+  int strip_offsets_long = 0;
+  int strip_counts_long = 0;
+  uint16_t photometric = 0xFFFF;
+  for (uint16_t i = 0; i < num1; i++) {
+    size_t off = ifd1 + 2 + (size_t)i * 12;
+    uint16_t tag = read_u16(buf + off, le);
+    uint16_t type = read_u16(buf + off + 2, le);
+    uint32_t count = read_u32(buf + off + 4, le);
+    if (tag == GIMG_EXIF_TAG_COMPRESSION) {
+      if (type == GIMG_EXIF_TYPE_SHORT && count == 1) {
+        if (read_u16(buf + off + 8, le) == 1) {
+          compression_1 = 1;
+        }
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_IMAGE_WIDTH) {
+      if ((type == GIMG_EXIF_TYPE_LONG || type == GIMG_EXIF_TYPE_SHORT) &&
+          count == 1) {
+        width = tag_value_or_offset(buf, size, off, le, type, count);
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_IMAGE_LENGTH) {
+      if ((type == GIMG_EXIF_TYPE_LONG || type == GIMG_EXIF_TYPE_SHORT) &&
+          count == 1) {
+        height = tag_value_or_offset(buf, size, off, le, type, count);
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_BITS_PER_SAMPLE) {
+      if (type == GIMG_EXIF_TYPE_SHORT && count >= 1) {
+        bits_per_sample = (uint16_t)read_u16(
+            tag_data_ptr(buf, off, le, type, count), le);
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_STRIP_OFFSETS) {
+      if ((type == GIMG_EXIF_TYPE_LONG || type == GIMG_EXIF_TYPE_SHORT) &&
+          count >= 1 && count <= 65535u) {
+        strip_count = (uint16_t)count;
+        strip_offsets_long = (type == GIMG_EXIF_TYPE_LONG);
+        strip_offsets_val = tag_value_or_offset(buf, size, off, le, type, count);
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_STRIP_BYTE_COUNTS) {
+      if ((type == GIMG_EXIF_TYPE_LONG || type == GIMG_EXIF_TYPE_SHORT) &&
+          count >= 1 && count <= 65535u) {
+        if (count == strip_count) {
+          strip_counts_long = (type == GIMG_EXIF_TYPE_LONG);
+          strip_byte_counts_val =
+              tag_value_or_offset(buf, size, off, le, type, count);
+        }
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_PHOTOMETRIC_INTERPRETATION) {
+      if (type == GIMG_EXIF_TYPE_SHORT && count == 1) {
+        photometric = read_u16(buf + off + 8, le);
+      }
+    }
+  }
+  if (!compression_1 || width == 0 || height == 0 || strip_count == 0 ||
+      bits_per_sample == 0 || bits_per_sample > 16) {
+    return GIMG_OK;
+  }
+  if (photometric > 2) {
+    return GIMG_OK;
+  }
+  size_t total_bytes = 0;
+  for (uint16_t s = 0; s < strip_count; s++) {
+    uint32_t so, sc;
+    if (strip_count == 1) {
+      so = strip_offsets_val;
+      sc = strip_byte_counts_val;
+    }
+    else {
+      if (strip_offsets_long) {
+        if (strip_offsets_val + 4u * (s + 1) > size) {
+          return GIMG_ERR_CORRUPT;
+        }
+        so = read_u32(buf + strip_offsets_val + (size_t)s * 4, le);
+      }
+      else {
+        if (strip_offsets_val + 2u * (s + 1) > size) {
+          return GIMG_ERR_CORRUPT;
+        }
+        so = (uint32_t)read_u16(buf + strip_offsets_val + (size_t)s * 2, le);
+      }
+      if (strip_counts_long) {
+        if (strip_byte_counts_val + 4u * (s + 1) > size) {
+          return GIMG_ERR_CORRUPT;
+        }
+        sc = read_u32(buf + strip_byte_counts_val + (size_t)s * 4, le);
+      }
+      else {
+        if (strip_byte_counts_val + 2u * (s + 1) > size) {
+          return GIMG_ERR_CORRUPT;
+        }
+        sc = (uint32_t)read_u16(
+            buf + strip_byte_counts_val + (size_t)s * 2, le);
+      }
+    }
+    if (so > size || sc > size || so + sc > size) {
+      return GIMG_ERR_CORRUPT;
+    }
+    total_bytes += sc;
+  }
+  allocator = gimg_alloc_or_default(allocator);
+  unsigned char * out = (unsigned char *)gimg_malloc(allocator, total_bytes);
+  if (!out) {
+    return GIMG_ERR_OOM;
+  }
+  size_t written = 0;
+  for (uint16_t s = 0; s < strip_count; s++) {
+    uint32_t so, sc;
+    if (strip_count == 1) {
+      so = strip_offsets_val;
+      sc = strip_byte_counts_val;
+    }
+    else {
+      if (strip_offsets_long) {
+        so = read_u32(buf + strip_offsets_val + (size_t)s * 4, le);
+        sc = read_u32(buf + strip_byte_counts_val + (size_t)s * 4, le);
+      }
+      else {
+        so = (uint32_t)read_u16(buf + strip_offsets_val + (size_t)s * 2, le);
+        sc = (uint32_t)read_u16(
+            buf + strip_byte_counts_val + (size_t)s * 2, le);
+      }
+    }
+    memcpy(out + written, buf + so, sc);
+    written += sc;
+  }
+  *out_width = width;
+  *out_height = height;
+  *out_bits_per_sample = (uint8_t)bits_per_sample;
+  *out_photometric = photometric;
+  *out_data = out;
+  *out_size = total_bytes;
+  return GIMG_OK;
+}
+
+GIMG_Result gimg_exif_embedded_thumbnail_tiff_jpeg(
+    const GIMG_Allocator * allocator, const void * tiff, size_t size,
+    void ** out_data, size_t * out_size) {
+  if (!tiff || !out_data || !out_size) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_data = NULL;
+  *out_size = 0;
+  if (size < GIMG_EXIF_MIN_SIZE) {
+    return GIMG_OK;
+  }
+  const unsigned char * buf = (const unsigned char *)tiff;
+  if (buf[2] != 42 || buf[3] != 0) {
+    return GIMG_ERR_CORRUPT;
+  }
+  int le = is_little_endian(buf);
+  uint32_t ifd0 = read_u32(buf + 4, le);
+  if (ifd0 + 2 > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  uint16_t num0 = read_u16(buf + ifd0, le);
+  if (ifd0 + 2u + (uint32_t)num0 * 12u + 4u > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  uint32_t ifd1 = read_u32(buf + ifd0 + 2 + (size_t)num0 * 12, le);
+  if (ifd1 == 0 || ifd1 + 2 > size) {
+    return GIMG_OK;
+  }
+  uint16_t num1 = read_u16(buf + ifd1, le);
+  if (ifd1 + 2u + (uint32_t)num1 * 12u > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  int compression_7 = 0;
+  uint32_t strip_offset = 0;
+  uint32_t strip_length = 0;
+  const unsigned char * jpeg_tables = NULL;
+  size_t jpeg_tables_len = 0;
+  for (uint16_t i = 0; i < num1; i++) {
+    size_t off = ifd1 + 2 + (size_t)i * 12;
+    uint16_t tag = read_u16(buf + off, le);
+    uint16_t type = read_u16(buf + off + 2, le);
+    uint32_t count = read_u32(buf + off + 4, le);
+    if (tag == GIMG_EXIF_TAG_COMPRESSION) {
+      if (type == GIMG_EXIF_TYPE_SHORT && count == 1) {
+        if (read_u16(buf + off + 8, le) == 7) {
+          compression_7 = 1;
+        }
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_STRIP_OFFSETS) {
+      if ((type == GIMG_EXIF_TYPE_LONG || type == GIMG_EXIF_TYPE_SHORT) &&
+          count == 1) {
+        strip_offset = tag_value_or_offset(buf, size, off, le, type, count);
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_STRIP_BYTE_COUNTS) {
+      if ((type == GIMG_EXIF_TYPE_LONG || type == GIMG_EXIF_TYPE_SHORT) &&
+          count == 1) {
+        strip_length = tag_value_or_offset(buf, size, off, le, type, count);
+      }
+    }
+    else if (tag == GIMG_EXIF_TAG_JPEG_TABLES) {
+      if (type == GIMG_EXIF_TYPE_UNDEFINED && count > 0) {
+        if (count <= 4) {
+          jpeg_tables = buf + off + 8;
+          jpeg_tables_len = count;
+        }
+        else {
+          uint32_t tab_off = read_u32(buf + off + 8, le);
+          if (tab_off > size || count > size || tab_off + count > size) {
+            return GIMG_ERR_CORRUPT;
+          }
+          jpeg_tables = buf + tab_off;
+          jpeg_tables_len = count;
+        }
+      }
+    }
+  }
+  if (!compression_7 || strip_length == 0) {
+    return GIMG_OK;
+  }
+  if (strip_offset > size || strip_length > size ||
+      strip_offset + strip_length > size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  allocator = gimg_alloc_or_default(allocator);
+  if (jpeg_tables && jpeg_tables_len >= 2) {
+    // Reassemble: SOI + (JPEGTables without leading SOI and trailing EOI) + strip.
+    // If strip starts with SOI (0xFF 0xD8), skip it so we don't duplicate SOI.
+    size_t tables_skip_lead = (jpeg_tables[0] == 0xFF && jpeg_tables[1] == 0xD8)
+                                 ? 2u
+                                 : 0u;
+    size_t tables_skip_tail = 0u;
+    if (jpeg_tables_len >= 4 &&
+        jpeg_tables[jpeg_tables_len - 2] == 0xFF &&
+        jpeg_tables[jpeg_tables_len - 1] == 0xD9) {
+      tables_skip_tail = 2u;
+    }
+    size_t tables_body = jpeg_tables_len - tables_skip_lead - tables_skip_tail;
+    if (tables_body > jpeg_tables_len) {
+      return GIMG_ERR_CORRUPT;
+    }
+    const unsigned char * strip_start = buf + strip_offset;
+    size_t strip_use = strip_length;
+    if (strip_length >= 2 && strip_start[0] == 0xFF && strip_start[1] == 0xD8) {
+      strip_start += 2;
+      strip_use -= 2;
+    }
+    size_t out_len = 2 + tables_body + strip_use;
+    unsigned char * out_buf = (unsigned char *)gimg_malloc(allocator, out_len);
+    if (!out_buf) {
+      return GIMG_ERR_OOM;
+    }
+    out_buf[0] = 0xFF;
+    out_buf[1] = 0xD8;
+    memcpy(out_buf + 2, jpeg_tables + tables_skip_lead, tables_body);
+    memcpy(out_buf + 2 + tables_body, strip_start, strip_use);
+    *out_data = out_buf;
+    *out_size = out_len;
+  }
+  else {
+    unsigned char * out_buf =
+        (unsigned char *)gimg_malloc(allocator, strip_length);
+    if (!out_buf) {
+      return GIMG_ERR_OOM;
+    }
+    memcpy(out_buf, buf + strip_offset, strip_length);
+    *out_data = out_buf;
+    *out_size = strip_length;
+  }
   return GIMG_OK;
 }

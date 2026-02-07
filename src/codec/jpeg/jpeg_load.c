@@ -20,6 +20,7 @@
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -450,9 +451,10 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return GIMG_ERR_LIMIT;
       }
       // Parse SOS header per ITU-T T.81 / ISO/IEC 10918-1 Annex B: Ns (1), then
-      // Ns x (Cs, Td|Ta), then Ss (1), Se (1), and one byte with Ah (high 4 bits)
-      // and Al (low 4 bits). So payload length is 6 + 2*Ns - 2 = 4 + 2*Ns bytes.
-      const size_t min_sos_payload = 6u;  // Ns=1: 1 + 2 + 3 = 6
+      // Ns x (Cs, Td|Ta), then Ss (1), Se (1), and one byte with Ah (high 4
+      // bits) and Al (low 4 bits). So payload length is 6 + 2*Ns - 2 = 4 + 2*Ns
+      // bytes.
+      const size_t min_sos_payload = 6u; // Ns=1: 1 + 2 + 3 = 6
       if (payload_size < min_sos_payload || !payload_buf) {
         if (payload_buf)
           gimg_free(alloc, payload_buf);
@@ -483,7 +485,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         scan->ss = payload_buf[1 + ns * 2];
         scan->se = payload_buf[2 + ns * 2];
         {
-          uint8_t ah_al = payload_buf[3 + ns * 2];  // T.81: Ah high nibble, Al low
+          uint8_t ah_al =
+              payload_buf[3 + ns * 2]; // T.81: Ah high nibble, Al low
           scan->ah = (ah_al >> 4) & 0x0Fu;
           scan->al = ah_al & 0x0Fu;
         }
@@ -610,8 +613,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       if (!new_buf && need > 0) {
         if (payload_buf)
           gimg_free(alloc, payload_buf);
-        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_OOM,
-            "COM append OOM");
+        jpeg_load_diag(
+            diagnostics, seg_start, marker, GIMG_ERR_OOM, "COM append OOM");
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_OOM;
       }
@@ -621,8 +624,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       state->com_combined[state->com_combined_size + 1] =
           (unsigned char)(payload_size & 0xFFu);
       if (payload_size > 0 && payload_buf) {
-        memcpy(state->com_combined + state->com_combined_size + 2,
-            payload_buf, payload_size);
+        memcpy(state->com_combined + state->com_combined_size + 2, payload_buf,
+            payload_size);
         gimg_free(alloc, payload_buf);
       }
       state->com_combined_size = need;
@@ -760,6 +763,170 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           (unsigned char)state->app0_jfif[11]);
       if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
         gimg_meta_common_set_dpi(meta_common, x_dpi, y_dpi);
+      }
+    }
+  }
+
+  // EXIF embedded thumbnail (IFD1): try Compression=6 (JPEG), then 1 (uncompressed), then 7 (TIFF JPEG).
+  if (state->app1_exif && state->app1_exif_len > 6) {
+    const void * exif_tiff = state->app1_exif + 6;
+    size_t exif_tiff_len = state->app1_exif_len - 6;
+    int thumb_added = 0;
+
+    // 1) Compression=6: JPEG thumbnail
+    const void * thumb_data = NULL;
+    size_t thumb_len = 0;
+    if (!thumb_added &&
+        gimg_exif_embedded_thumbnail_jpeg(
+            exif_tiff, exif_tiff_len, &thumb_data, &thumb_len) == GIMG_OK &&
+        thumb_len > 0) {
+      GIMG_Stream * thumb_stream = NULL;
+      r = gimg_stream_create_memory_with_allocator(
+          alloc, thumb_data, thumb_len, &thumb_stream);
+      if (r == GIMG_OK && thumb_stream) {
+        GIMG_Doc * thumb_doc = NULL;
+        r = gimg_doc_load(thumb_stream, options, diagnostics, &thumb_doc);
+        gimg_stream_destroy(thumb_stream);
+        if (r == GIMG_OK && thumb_doc && gimg_doc_item_count(thumb_doc) >= 1) {
+          GIMG_Raster * thumb_raster = NULL;
+          r = gimg_item_decode(
+              gimg_doc_item(thumb_doc, 0), NULL, &thumb_raster);
+          if (r == GIMG_OK && thumb_raster) {
+            GIMG_Raster * copy_raster = NULL;
+            r = gimg_raster_copy_with_allocator(
+                alloc, thumb_raster, &copy_raster);
+            gimg_raster_destroy(thumb_raster);
+            if (r == GIMG_OK && copy_raster) {
+              r = gimg_doc_set_item_count(doc, 2);
+              if (r == GIMG_OK) {
+                gimg_item_set_raster(gimg_doc_item(doc, 1), copy_raster);
+                thumb_added = 1;
+              }
+              else {
+                gimg_raster_destroy(copy_raster);
+              }
+            }
+          }
+          gimg_doc_destroy(thumb_doc);
+        }
+        else if (thumb_doc) {
+          gimg_doc_destroy(thumb_doc);
+        }
+      }
+    }
+
+    // 2) Compression=1: Uncompressed (strip data -> raster)
+    if (!thumb_added) {
+      uint32_t tw = 0;
+      uint32_t th = 0;
+      uint8_t tbits = 0;
+      uint16_t tphoto = 0xFFFF;
+      void * strip_data = NULL;
+      size_t strip_size = 0;
+      if (gimg_exif_embedded_thumbnail_uncompressed(alloc, exif_tiff,
+              exif_tiff_len, &tw, &th, &tbits, &tphoto, &strip_data,
+              &strip_size) == GIMG_OK &&
+          strip_size > 0 && tw > 0 && th > 0) {
+        const GIMG_Pixel_Format * fmt = NULL;
+        if (tphoto <= 1) {
+          fmt = (tbits <= 8) ? &GIMG_PIXEL_GRAY8 : &GIMG_PIXEL_GRAY16;
+        }
+        else if (tphoto == 2 && tbits == 8) {
+          fmt = &GIMG_PIXEL_RGBA8;
+        }
+        if (fmt) {
+          GIMG_Raster * thumb_raster = NULL;
+          r = gimg_raster_create_with_allocator(
+              alloc, tw, th, fmt, GIMG_RASTER_OWNED, NULL, 0, &thumb_raster);
+          if (r == GIMG_OK && thumb_raster) {
+            void * pixels = gimg_raster_pixels(thumb_raster);
+            size_t stride = gimg_raster_stride_bytes(thumb_raster);
+            const unsigned char * src = (const unsigned char *)strip_data;
+            if (tphoto <= 1) {
+              size_t row_bytes =
+                  (tbits <= 8) ? (size_t)tw : (size_t)tw * 2u;
+              for (uint32_t y = 0; y < th; y++) {
+                memcpy((unsigned char *)pixels + (size_t)y * stride,
+                    src + (size_t)y * row_bytes, row_bytes);
+              }
+            }
+            else {
+              for (uint32_t y = 0; y < th; y++) {
+                for (uint32_t x = 0; x < tw; x++) {
+                  size_t src_off = (size_t)(y * tw + x) * 3u;
+                  size_t dst_off = (size_t)y * stride + (size_t)x * 4u;
+                  ((unsigned char *)pixels)[dst_off + 0] = src[src_off + 0];
+                  ((unsigned char *)pixels)[dst_off + 1] = src[src_off + 1];
+                  ((unsigned char *)pixels)[dst_off + 2] = src[src_off + 2];
+                  ((unsigned char *)pixels)[dst_off + 3] = 255;
+                }
+              }
+            }
+            gimg_free(alloc, strip_data);
+            strip_data = NULL;
+            r = gimg_doc_set_item_count(doc, 2);
+            if (r == GIMG_OK) {
+              gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
+              thumb_added = 1;
+            }
+            else {
+              gimg_raster_destroy(thumb_raster);
+            }
+          }
+        }
+        if (strip_data) {
+          gimg_free(alloc, strip_data);
+        }
+      }
+    }
+
+    // 3) Compression=7: TIFF TechNote 2 JPEG (reassembled or single strip)
+    if (!thumb_added) {
+      void * tiff_jpeg_buf = NULL;
+      size_t tiff_jpeg_len = 0;
+      if (gimg_exif_embedded_thumbnail_tiff_jpeg(alloc, exif_tiff,
+              exif_tiff_len, &tiff_jpeg_buf, &tiff_jpeg_len) == GIMG_OK &&
+          tiff_jpeg_len > 0) {
+        GIMG_Stream * thumb_stream = NULL;
+        r = gimg_stream_create_memory_with_allocator(
+            alloc, tiff_jpeg_buf, tiff_jpeg_len, &thumb_stream);
+        if (r == GIMG_OK && thumb_stream) {
+          GIMG_Doc * thumb_doc = NULL;
+          r = gimg_doc_load(thumb_stream, options, diagnostics, &thumb_doc);
+          gimg_stream_destroy(thumb_stream);
+          gimg_free(alloc, tiff_jpeg_buf);
+          tiff_jpeg_buf = NULL;
+          if (r == GIMG_OK && thumb_doc &&
+              gimg_doc_item_count(thumb_doc) >= 1) {
+            GIMG_Raster * thumb_raster = NULL;
+            r = gimg_item_decode(
+                gimg_doc_item(thumb_doc, 0), NULL, &thumb_raster);
+            if (r == GIMG_OK && thumb_raster) {
+              GIMG_Raster * copy_raster = NULL;
+              r = gimg_raster_copy_with_allocator(
+                  alloc, thumb_raster, &copy_raster);
+              gimg_raster_destroy(thumb_raster);
+              if (r == GIMG_OK && copy_raster) {
+                r = gimg_doc_set_item_count(doc, 2);
+                if (r == GIMG_OK) {
+                  gimg_item_set_raster(
+                      gimg_doc_item(doc, 1), copy_raster);
+                  thumb_added = 1;
+                }
+                else {
+                  gimg_raster_destroy(copy_raster);
+                }
+              }
+            }
+            gimg_doc_destroy(thumb_doc);
+          }
+          else if (thumb_doc) {
+            gimg_doc_destroy(thumb_doc);
+          }
+        }
+        if (tiff_jpeg_buf) {
+          gimg_free(alloc, tiff_jpeg_buf);
+        }
       }
     }
   }

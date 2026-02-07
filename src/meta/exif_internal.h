@@ -21,10 +21,33 @@
  * IFD. */
 #define GIMG_EXIF_TAG_GPS_IFD UINT16_C(0x8825)
 
+/** Compression (IFD1 thumbnail). Type SHORT; 1 = none, 6 = JPEG, 7 = TIFF TechNote 2 JPEG. */
+#define GIMG_EXIF_TAG_COMPRESSION UINT16_C(0x0103)
+/** JPEG thumbnail offset (IFD1). Type LONG; offset from start of TIFF. */
+#define GIMG_EXIF_TAG_JPEG_INTERCHANGE_FORMAT UINT16_C(0x0201)
+/** JPEG thumbnail length (IFD1). Type LONG. */
+#define GIMG_EXIF_TAG_JPEG_INTERCHANGE_FORMAT_LENGTH UINT16_C(0x0202)
+/** Image width (IFD1 uncompressed). Type LONG or SHORT. */
+#define GIMG_EXIF_TAG_IMAGE_WIDTH UINT16_C(0x0100)
+/** Image length / height (IFD1 uncompressed). Type LONG or SHORT. */
+#define GIMG_EXIF_TAG_IMAGE_LENGTH UINT16_C(0x0101)
+/** Bits per sample (IFD1). Type SHORT; count = samples per pixel. */
+#define GIMG_EXIF_TAG_BITS_PER_SAMPLE UINT16_C(0x0102)
+/** Photometric interpretation (IFD1). Type SHORT; 0=WhiteIsZero, 1=BlackIsZero, 2=RGB. */
+#define GIMG_EXIF_TAG_PHOTOMETRIC_INTERPRETATION UINT16_C(0x0106)
+/** Strip offsets (IFD1 uncompressed / Compress 7). Type LONG or SHORT array. */
+#define GIMG_EXIF_TAG_STRIP_OFFSETS UINT16_C(0x0111)
+/** Strip byte counts (IFD1 uncompressed / Compress 7). Type LONG or SHORT array. */
+#define GIMG_EXIF_TAG_STRIP_BYTE_COUNTS UINT16_C(0x0117)
+/** JPEG tables (IFD1 Compression=7). Type UNDEFINED; optional. */
+#define GIMG_EXIF_TAG_JPEG_TABLES UINT16_C(0x015B)
+
 /** TIFF type SHORT (16-bit). */
 #define GIMG_EXIF_TYPE_SHORT 3
 /** TIFF type LONG (32-bit). */
 #define GIMG_EXIF_TYPE_LONG 4
+/** TIFF type UNDEFINED (opaque bytes). */
+#define GIMG_EXIF_TYPE_UNDEFINED 7
 
 /**
  * Parse orientation from an Exif (eXIf) blob.
@@ -62,5 +85,57 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
  */
 GIMG_Result gimg_exif_normalize(const GIMG_Allocator * allocator,
     const void * exif, size_t size, void ** out, size_t * out_size);
+
+/**
+ * Get embedded JPEG thumbnail from Exif (IFD1) if present.
+ * @param tiff TIFF blob (e.g. Exif APP1 payload after "Exif\\0\\0", so first
+ *   byte is II/MM).
+ * @param size Size of tiff.
+ * @param out_data On success, set to pointer into tiff to JPEG bytes (caller
+ *   must keep tiff valid while using).
+ * @param out_size On success, set to JPEG byte count.
+ * @return GIMG_OK if IFD1 has Compression=6 and valid 0x0201/0x0202;
+ *   GIMG_ERR_CORRUPT if invalid; no thumbnail is not an error (caller checks
+ *   out_size).
+ */
+GIMG_Result gimg_exif_embedded_thumbnail_jpeg(const void * tiff, size_t size,
+    const void ** out_data, size_t * out_size);
+
+/**
+ * Get embedded uncompressed thumbnail from Exif (IFD1 Compression=1) if present.
+ * Parses ImageWidth, ImageLength, BitsPerSample, StripOffsets, StripByteCounts,
+ * PhotometricInterpretation; concatenates strip(s) into one buffer.
+ * @param allocator Allocator for concatenated strip buffer (NULL = default).
+ * @param tiff TIFF blob (Exif APP1 payload after "Exif\\0\\0").
+ * @param size Size of tiff.
+ * @param out_width On success, thumbnail width.
+ * @param out_height On success, thumbnail height.
+ * @param out_bits_per_sample On success, 8 or 16.
+ * @param out_photometric On success, 0=WhiteIsZero, 1=BlackIsZero, 2=RGB.
+ * @param out_data On success, allocated strip data (caller frees with allocator).
+ * @param out_size On success, byte count of out_data.
+ * @return GIMG_OK if IFD1 has Compression=1 and valid tags; GIMG_ERR_CORRUPT if invalid;
+ *   no thumbnail is not an error (caller checks out_size).
+ */
+GIMG_Result gimg_exif_embedded_thumbnail_uncompressed(
+    const GIMG_Allocator * allocator, const void * tiff, size_t size,
+    uint32_t * out_width, uint32_t * out_height, uint8_t * out_bits_per_sample,
+    uint16_t * out_photometric, void ** out_data, size_t * out_size);
+
+/**
+ * Get embedded TIFF TechNote 2 JPEG thumbnail (IFD1 Compression=7) if present.
+ * When JPEGTables (tag 347) is present, reassembles one stream (SOI + tables + strip)
+ * and allocates; otherwise copies strip to allocated buffer so caller always frees.
+ * @param allocator Allocator for output buffer (NULL = default).
+ * @param tiff TIFF blob (Exif APP1 payload after "Exif\\0\\0").
+ * @param size Size of tiff.
+ * @param out_data On success, allocated JPEG bytes (caller frees with allocator).
+ * @param out_size On success, byte count.
+ * @return GIMG_OK if IFD1 has Compression=7 and valid strip data; GIMG_ERR_CORRUPT if invalid;
+ *   no thumbnail is not an error.
+ */
+GIMG_Result gimg_exif_embedded_thumbnail_tiff_jpeg(
+    const GIMG_Allocator * allocator, const void * tiff, size_t size,
+    void ** out_data, size_t * out_size);
 
 #endif  // GHOTI_IO_GIMG_EXIF_INTERNAL_H
