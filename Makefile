@@ -266,6 +266,11 @@ $(OBJ_DIR)/tests/test_jpeg_load.o: tests/codec/jpeg/test_jpeg_load.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
+$(OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp
+	@printf "\n### Compiling Test Object: test_jpeg_encode ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
 # Test data path for PNG tests (reference files from tests/data/png/generate.py).
 TEST_DATA_PNG := $(CURDIR)/tests/data/png
 # Output directory for PNG encode test output (add to .gitignore); verifier reads this.

@@ -30,8 +30,8 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 /** Marker bytes (after 0xFF). */
 #define GIMG_JPEG_MARKER_SOI 0xD8
 #define GIMG_JPEG_MARKER_EOI 0xD9
-#define GIMG_JPEG_MARKER_SOF0 0xC0  // Baseline DCT
-#define GIMG_JPEG_MARKER_SOF2 0xC2  // Progressive DCT
+#define GIMG_JPEG_MARKER_SOF0 0xC0 // Baseline DCT
+#define GIMG_JPEG_MARKER_SOF2 0xC2 // Progressive DCT
 #define GIMG_JPEG_MARKER_DHT 0xC4
 #define GIMG_JPEG_MARKER_DQT 0xDB
 #define GIMG_JPEG_MARKER_SOS 0xDA
@@ -77,7 +77,7 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
  * Parsed SOF0 (baseline) / SOF2 (progressive) fields.
  */
 typedef struct {
-  uint8_t precision;  ///< Sample precision (8 for baseline).
+  uint8_t precision; ///< Sample precision (8 for baseline).
   uint16_t height;
   uint16_t width;
   uint8_t num_components;
@@ -93,24 +93,24 @@ typedef struct {
 typedef struct gimg_jpeg_doc_state {
   const GIMG_Allocator * allocator;
   gimg_jpeg_sof_t sof;
-  int is_progressive;  ///< SOF2 vs SOF0.
+  int is_progressive; ///< SOF2 vs SOF0.
 
   // Quantization tables: 64 entries each; -1 = not present.
   int quant_tbl_present[GIMG_JPEG_MAX_QUANT_TABLES];
   uint16_t quant_tbl[GIMG_JPEG_MAX_QUANT_TABLES][GIMG_JPEG_DQT_ENTRIES];
 
   // Huffman tables (simplified: we store raw DHT payloads for decode later).
-  unsigned char * huff_dc[4];  ///< DC 0..3
+  unsigned char * huff_dc[4]; ///< DC 0..3
   size_t huff_dc_len[4];
-  unsigned char * huff_ac[4];  ///< AC 0..3
+  unsigned char * huff_ac[4]; ///< AC 0..3
   size_t huff_ac_len[4];
 
   // Scan parameters (from first SOS for baseline).
-  uint8_t scan_comp_count;  ///< Ns: number of components in scan.
-  uint8_t scan_comp_id[GIMG_JPEG_MAX_COMPONENTS];  ///< Cs: component selector.
+  uint8_t scan_comp_count; ///< Ns: number of components in scan.
+  uint8_t scan_comp_id[GIMG_JPEG_MAX_COMPONENTS]; ///< Cs: component selector.
   uint8_t scan_dc_tbl[GIMG_JPEG_MAX_COMPONENTS];  ///< Td: DC Huffman table sel.
   uint8_t scan_ac_tbl[GIMG_JPEG_MAX_COMPONENTS];  ///< Ta: AC Huffman table sel.
-  uint8_t scan_ss, scan_se, scan_ah, scan_al;    ///< Spectral selection / approx.
+  uint8_t scan_ss, scan_se, scan_ah, scan_al; ///< Spectral selection / approx.
 
   // Scan data: concatenated entropy-coded segments (baseline: one SOS).
   unsigned char * scan_data;
@@ -178,15 +178,33 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
 /**
- * Save document to JPEG stream. Stub: returns GIMG_ERR_UNSUPPORTED until
- * baseline encode is implemented.
+ * Save document to JPEG stream.
  */
 GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report);
 
+/**
+ * Encode baseline scan: component buffers (Y or Y/Cb/Cr), produce scan data.
+ * Caller frees *out_scan_data with document allocator.
+ */
+GIMG_Result gimg_jpeg_encode_baseline_scan(uint32_t width, uint32_t height,
+    int num_components, const unsigned char * comp0,
+    const unsigned char * comp1, const unsigned char * comp2, size_t stride0,
+    size_t stride1, size_t stride2, const uint16_t * quant_luma,
+    const uint16_t * quant_chroma, const GIMG_Allocator * alloc,
+    unsigned char ** out_scan_data, size_t * out_scan_size);
+
+/** Fill scaled default quant tables (quality 1..100). */
+void gimg_jpeg_default_quant_scaled(
+    unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma);
+
+/** Write standard DHT segments (DC0, AC0, DC1, AC1) to stream. */
+GIMG_Result gimg_jpeg_write_standard_dht(
+    GIMG_Stream * stream, size_t * out_bytes_written);
+
 #ifdef __cplusplus
 }
 #endif
 
-#endif  // GHOTI_IO_GIMG_JPEG_INTERNAL_H
+#endif // GHOTI_IO_GIMG_JPEG_INTERNAL_H

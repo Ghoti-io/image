@@ -11,6 +11,7 @@
 #include <ghoti.io/image/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/raster.h>
+#include <ghoti.io/image/stream.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -574,4 +575,993 @@ fail_comp:
     gimg_free(alloc, comp_buf[i]);
   }
   return GIMG_ERR_FORMAT;
+}
+
+/* -------------------------------------------------------------------------
+ * Encode: default quant tables, forward DCT, bitstream write, Huffman encode.
+ * ------------------------------------------------------------------------- */
+
+/** Default luminance quantisation table (ITU-T T.81 Annex K.1), row-major. */
+static const uint8_t gimg_jpeg_default_quant_luma[64] = {
+    16,
+    11,
+    10,
+    16,
+    24,
+    40,
+    51,
+    61,
+    12,
+    12,
+    14,
+    19,
+    26,
+    58,
+    60,
+    55,
+    14,
+    13,
+    16,
+    24,
+    40,
+    57,
+    69,
+    56,
+    14,
+    17,
+    22,
+    29,
+    51,
+    87,
+    80,
+    62,
+    18,
+    22,
+    37,
+    56,
+    68,
+    109,
+    103,
+    77,
+    24,
+    35,
+    55,
+    64,
+    81,
+    104,
+    113,
+    92,
+    49,
+    64,
+    78,
+    87,
+    103,
+    121,
+    120,
+    101,
+    72,
+    92,
+    95,
+    98,
+    112,
+    100,
+    103,
+    99,
+};
+
+/** Default chrominance quantisation table (ITU-T T.81 Annex K.2), row-major. */
+static const uint8_t gimg_jpeg_default_quant_chroma[64] = {
+    17,
+    18,
+    24,
+    47,
+    99,
+    99,
+    99,
+    99,
+    18,
+    21,
+    26,
+    66,
+    99,
+    99,
+    99,
+    99,
+    24,
+    26,
+    56,
+    99,
+    99,
+    99,
+    99,
+    99,
+    47,
+    66,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+    99,
+};
+
+/** Scale default quant by quality (1..100; 100 = finest). Clamp to 1..255. */
+static void jpeg_scale_quant(
+    unsigned quality, const uint8_t * in, uint16_t * out) {
+  if (quality < 1) {
+    quality = 1;
+  }
+  if (quality > 100) {
+    quality = 100;
+  }
+  /* scale 1 at quality 100, ~50 at quality 50, 100 at quality 1 */
+  unsigned scale = 101 - quality;
+  for (int i = 0; i < 64; i++) {
+    unsigned v = (in[i] * scale + 50) / 100;
+    out[i] = (uint16_t)(v < 1 ? 1 : (v > 255 ? 255 : v));
+  }
+}
+
+/** Forward 1D DCT for 8 points (samples in, coefficients out). */
+static void jpeg_fdct_1d(const int16_t * in, int16_t * out) {
+  for (int u = 0; u < 8; u++) {
+    int32_t sum = 0;
+    int32_t c = (u == 0) ? 181 : 256; /* 256/sqrt(2) for u=0 */
+    for (int x = 0; x < 8; x++) {
+      double angle = (2 * x + 1) * u * 3.14159265358979323846 / 16.0;
+      sum += (int32_t)((double)in[x] * (double)c * cos(angle) + 0.5);
+    }
+    out[u] = (int16_t)(sum / 256);
+  }
+}
+
+/** Forward 2D 8x8 DCT (level-shifted samples -128..127 in, coeffs out). */
+static void jpeg_fdct_8x8(int16_t * block) {
+  int16_t row[8];
+  int16_t tmp[64];
+  for (int y = 0; y < 8; y++) {
+    jpeg_fdct_1d(block + y * 8, row);
+    for (int x = 0; x < 8; x++) {
+      tmp[x * 8 + y] = row[x];
+    }
+  }
+  for (int x = 0; x < 8; x++) {
+    jpeg_fdct_1d(tmp + x * 8, row);
+    for (int y = 0; y < 8; y++) {
+      block[y * 8 + x] = row[y];
+    }
+  }
+}
+
+/** Quantise block in place: block[i] = round(block[i] / quant[i]). */
+static void jpeg_quantise(int16_t * block, const uint16_t * quant) {
+  for (int i = 0; i < 64; i++) {
+    int32_t v = (int32_t)block[i] * 256 / (int32_t)quant[i];
+    block[i] = (int16_t)(v < -32768 ? -32768 : (v > 32767 ? 32767 : v));
+  }
+}
+
+/** Reorder block from row-major to zigzag stream order. */
+static void jpeg_zigzag_encode(const int16_t * block_rm, int16_t * block_zz) {
+  for (int i = 0; i < 64; i++) {
+    block_zz[i] = block_rm[gimg_jpeg_zigzag[i]];
+  }
+}
+
+/** Bitstream writer: append bits (MSB first), flush with 0xFF stuffing. */
+typedef struct {
+  unsigned char * data;
+  size_t alloc_size;
+  size_t size;
+  int bit_off;   /* 0..7; next bit goes at data[size] >> (7 - bit_off) */
+  uint8_t cache; /* current byte being filled */
+} gimg_jpeg_bitstream_write_t;
+
+static void jpeg_bitstream_write_init(
+    gimg_jpeg_bitstream_write_t * w, const GIMG_Allocator * alloc) {
+  w->alloc_size = 4096;
+  w->data =
+      (unsigned char *)gimg_malloc(gimg_alloc_or_default(alloc), w->alloc_size);
+  w->size = 0;
+  w->bit_off = 0;
+  w->cache = 0;
+}
+
+static void jpeg_bitstream_write_byte(
+    gimg_jpeg_bitstream_write_t * w, uint8_t b, const GIMG_Allocator * alloc) {
+  if (w->size >= w->alloc_size) {
+    size_t new_size = w->alloc_size * 2;
+    unsigned char * p = (unsigned char *)gimg_realloc(
+        gimg_alloc_or_default(alloc), w->data, new_size);
+    if (!p) {
+      return;
+    }
+    w->data = p;
+    w->alloc_size = new_size;
+  }
+  w->data[w->size++] = b;
+  if (b == 0xFF) {
+    /* Byte stuffing */
+    if (w->size >= w->alloc_size) {
+      size_t new_size = w->alloc_size * 2;
+      unsigned char * p = (unsigned char *)gimg_realloc(
+          gimg_alloc_or_default(alloc), w->data, new_size);
+      if (!p) {
+        return;
+      }
+      w->data = p;
+      w->alloc_size = new_size;
+    }
+    w->data[w->size++] = 0x00;
+  }
+}
+
+static void jpeg_bitstream_write_bits(gimg_jpeg_bitstream_write_t * w,
+    unsigned code, int num_bits, const GIMG_Allocator * alloc) {
+  while (num_bits > 0) {
+    int shift = num_bits - 1;
+    int bit = (code >> shift) & 1;
+    w->cache = (uint8_t)((w->cache << 1) | bit);
+    w->bit_off++;
+    if (w->bit_off == 8) {
+      jpeg_bitstream_write_byte(w, w->cache, alloc);
+      w->bit_off = 0;
+      w->cache = 0;
+    }
+    num_bits--;
+  }
+}
+
+static void jpeg_bitstream_write_flush(
+    gimg_jpeg_bitstream_write_t * w, const GIMG_Allocator * alloc) {
+  if (w->bit_off > 0) {
+    while (w->bit_off < 8) {
+      w->cache = (uint8_t)(w->cache << 1);
+      w->bit_off++;
+    }
+    jpeg_bitstream_write_byte(w, w->cache, alloc);
+  }
+}
+
+/** Encode table: symbol -> (code, length). */
+typedef struct {
+  uint16_t code[256];
+  uint8_t len[256];
+} gimg_jpeg_huff_enc_t;
+
+/** Build encode table from DHT-style bits (16 counts) and values. */
+static void jpeg_build_huff_enc(const unsigned char * bits,
+    const unsigned char * values, int num_values, gimg_jpeg_huff_enc_t * enc) {
+  uint16_t code = 0;
+  int idx = 0;
+  for (int len = 1; len <= 16; len++) {
+    uint8_t count = bits[len - 1];
+    for (int k = 0; k < count && idx < num_values; k++) {
+      uint8_t sym = values[idx++];
+      enc->code[sym] = (uint16_t)code;
+      enc->len[sym] = (uint8_t)len;
+      code++;
+    }
+    code = (uint16_t)(code << 1);
+  }
+}
+
+/** Number of bits for signed value (Table K.2 extend). */
+static int jpeg_nbits(int val) {
+  if (val < 0) {
+    val = -val;
+  }
+  int n = 0;
+  while (val > 0) {
+    n++;
+    val >>= 1;
+  }
+  return n;
+}
+
+/** Encode one 8x8 block (DC + AC). DC predictor updated. */
+static GIMG_Result jpeg_encode_block(gimg_jpeg_bitstream_write_t * w,
+    const int16_t * block_zz, const gimg_jpeg_huff_enc_t * dc_enc,
+    const gimg_jpeg_huff_enc_t * ac_enc, int32_t * dc_pred,
+    const GIMG_Allocator * alloc) {
+  int32_t dc_val = block_zz[0];
+  int32_t diff = dc_val - *dc_pred;
+  *dc_pred = dc_val;
+  int cat = jpeg_nbits(diff);
+  if (cat > 11) {
+    cat = 11;
+  }
+  jpeg_bitstream_write_bits(w, dc_enc->code[cat], dc_enc->len[cat], alloc);
+  if (cat > 0) {
+    unsigned extra =
+        (diff < 0) ? (unsigned)(diff + (int)(1u << cat) - 1) : (unsigned)diff;
+    jpeg_bitstream_write_bits(w, extra, cat, alloc);
+  }
+  int k = 1;
+  while (k < 64) {
+    int run = 0;
+    while (k < 64 && block_zz[k] == 0) {
+      run++;
+      k++;
+    }
+    if (k >= 64) {
+      break;
+    }
+    int ac = block_zz[k];
+    int size = jpeg_nbits(ac);
+    if (size > 10) {
+      size = 10;
+    }
+    uint8_t sym = (uint8_t)((run << 4) | size);
+    if (ac_enc->len[sym] > 0) {
+      jpeg_bitstream_write_bits(w, ac_enc->code[sym], ac_enc->len[sym], alloc);
+      if (size > 0) {
+        unsigned extra =
+            (ac < 0) ? (unsigned)(ac + (int)(1u << size) - 1) : (unsigned)ac;
+        jpeg_bitstream_write_bits(w, extra, size, alloc);
+      }
+    }
+    k++;
+  }
+  /* EOB: (0,0) */
+  jpeg_bitstream_write_bits(w, ac_enc->code[0], ac_enc->len[0], alloc);
+  return GIMG_OK;
+}
+
+/* Standard Huffman: DC luminance (Table K.3), 12 symbols, lengths
+ * 2,3,3,3,3,3,4,5,6,7,8,9. */
+static const unsigned char jpeg_std_bits_dc_lum[16] = {
+    0,
+    0,
+    1,
+    5,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+};
+static const unsigned char jpeg_std_vals_dc_lum[12] = {
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+};
+
+/* AC luminance (Table K.4): 162 symbols. */
+static const unsigned char jpeg_std_bits_ac_lum[16] = {
+    0,
+    0,
+    2,
+    1,
+    3,
+    3,
+    2,
+    4,
+    3,
+    5,
+    5,
+    4,
+    4,
+    0,
+    0,
+    1,
+};
+static const unsigned char jpeg_std_vals_ac_lum[162] = {
+    0x01,
+    0x02,
+    0x03,
+    0x00,
+    0x04,
+    0x11,
+    0x05,
+    0x12,
+    0x21,
+    0x31,
+    0x41,
+    0x06,
+    0x13,
+    0x51,
+    0x61,
+    0x07,
+    0x22,
+    0x71,
+    0x14,
+    0x32,
+    0x81,
+    0x91,
+    0xa1,
+    0x08,
+    0x23,
+    0x42,
+    0xb1,
+    0xc1,
+    0x15,
+    0x52,
+    0xd1,
+    0xf0,
+    0x24,
+    0x33,
+    0x62,
+    0x72,
+    0x82,
+    0x09,
+    0x0a,
+    0x16,
+    0x17,
+    0x18,
+    0x19,
+    0x1a,
+    0x25,
+    0x26,
+    0x27,
+    0x28,
+    0x29,
+    0x2a,
+    0x34,
+    0x35,
+    0x36,
+    0x37,
+    0x38,
+    0x39,
+    0x3a,
+    0x43,
+    0x44,
+    0x45,
+    0x46,
+    0x47,
+    0x48,
+    0x49,
+    0x4a,
+    0x53,
+    0x54,
+    0x55,
+    0x56,
+    0x57,
+    0x58,
+    0x59,
+    0x5a,
+    0x63,
+    0x64,
+    0x65,
+    0x66,
+    0x67,
+    0x68,
+    0x69,
+    0x6a,
+    0x73,
+    0x74,
+    0x75,
+    0x76,
+    0x77,
+    0x78,
+    0x79,
+    0x7a,
+    0x83,
+    0x84,
+    0x85,
+    0x86,
+    0x87,
+    0x88,
+    0x89,
+    0x8a,
+    0x92,
+    0x93,
+    0x94,
+    0x95,
+    0x96,
+    0x97,
+    0x98,
+    0x99,
+    0x9a,
+    0xa2,
+    0xa3,
+    0xa4,
+    0xa5,
+    0xa6,
+    0xa7,
+    0xa8,
+    0xa9,
+    0xaa,
+    0xb2,
+    0xb3,
+    0xb4,
+    0xb5,
+    0xb6,
+    0xb7,
+    0xb8,
+    0xb9,
+    0xba,
+    0xc2,
+    0xc3,
+    0xc4,
+    0xc5,
+    0xc6,
+    0xc7,
+    0xc8,
+    0xc9,
+    0xca,
+    0xd2,
+    0xd3,
+    0xd4,
+    0xd5,
+    0xd6,
+    0xd7,
+    0xd8,
+    0xd9,
+    0xda,
+    0xe1,
+    0xe2,
+    0xe3,
+    0xe4,
+    0xe5,
+    0xe6,
+    0xe7,
+    0xe8,
+    0xe9,
+    0xea,
+    0xf1,
+    0xf2,
+    0xf3,
+    0xf4,
+    0xf5,
+    0xf6,
+    0xf7,
+    0xf8,
+    0xf9,
+    0xfa,
+};
+
+/* DC chrominance (Table K.5) - same structure as lum for baseline. */
+static const unsigned char jpeg_std_bits_dc_chrom[16] = {
+    0,
+    0,
+    3,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    0,
+    0,
+    0,
+    0,
+};
+static const unsigned char jpeg_std_vals_dc_chrom[12] = {
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+};
+
+/* AC chrominance (Table K.6). */
+static const unsigned char jpeg_std_bits_ac_chrom[16] = {
+    0,
+    0,
+    2,
+    1,
+    2,
+    4,
+    4,
+    3,
+    4,
+    7,
+    5,
+    4,
+    4,
+    0,
+    1,
+    2,
+};
+static const unsigned char jpeg_std_vals_ac_chrom[162] = {
+    0x00,
+    0x01,
+    0x02,
+    0x03,
+    0x11,
+    0x04,
+    0x05,
+    0x21,
+    0x31,
+    0x06,
+    0x12,
+    0x41,
+    0x51,
+    0x07,
+    0x61,
+    0x71,
+    0x13,
+    0x22,
+    0x32,
+    0x81,
+    0x08,
+    0x14,
+    0x42,
+    0x91,
+    0xa1,
+    0xb1,
+    0xc1,
+    0x09,
+    0x23,
+    0x33,
+    0x52,
+    0xf0,
+    0x15,
+    0x62,
+    0x72,
+    0xd1,
+    0x0a,
+    0x16,
+    0x24,
+    0x34,
+    0xe1,
+    0x25,
+    0xf1,
+    0x17,
+    0x18,
+    0x19,
+    0x1a,
+    0x26,
+    0x27,
+    0x28,
+    0x29,
+    0x2a,
+    0x35,
+    0x36,
+    0x37,
+    0x38,
+    0x39,
+    0x3a,
+    0x43,
+    0x44,
+    0x45,
+    0x46,
+    0x47,
+    0x48,
+    0x49,
+    0x4a,
+    0x53,
+    0x54,
+    0x55,
+    0x56,
+    0x57,
+    0x58,
+    0x59,
+    0x5a,
+    0x63,
+    0x64,
+    0x65,
+    0x66,
+    0x67,
+    0x68,
+    0x69,
+    0x6a,
+    0x73,
+    0x74,
+    0x75,
+    0x76,
+    0x77,
+    0x78,
+    0x79,
+    0x7a,
+    0x82,
+    0x83,
+    0x84,
+    0x85,
+    0x86,
+    0x87,
+    0x88,
+    0x89,
+    0x8a,
+    0x92,
+    0x93,
+    0x94,
+    0x95,
+    0x96,
+    0x97,
+    0x98,
+    0x99,
+    0x9a,
+    0xa2,
+    0xa3,
+    0xa4,
+    0xa5,
+    0xa6,
+    0xa7,
+    0xa8,
+    0xa9,
+    0xaa,
+    0xb2,
+    0xb3,
+    0xb4,
+    0xb5,
+    0xb6,
+    0xb7,
+    0xb8,
+    0xb9,
+    0xba,
+    0xc2,
+    0xc3,
+    0xc4,
+    0xc5,
+    0xc6,
+    0xc7,
+    0xc8,
+    0xc9,
+    0xca,
+    0xd2,
+    0xd3,
+    0xd4,
+    0xd5,
+    0xd6,
+    0xd7,
+    0xd8,
+    0xd9,
+    0xda,
+    0xe2,
+    0xe3,
+    0xe4,
+    0xe5,
+    0xe6,
+    0xe7,
+    0xe8,
+    0xe9,
+    0xea,
+    0xf2,
+    0xf3,
+    0xf4,
+    0xf5,
+    0xf6,
+    0xf7,
+    0xf8,
+    0xf9,
+    0xfa,
+};
+
+GIMG_Result gimg_jpeg_encode_baseline_scan(uint32_t width, uint32_t height,
+    int num_components, const unsigned char * comp0,
+    const unsigned char * comp1, const unsigned char * comp2, size_t stride0,
+    size_t stride1, size_t stride2, const uint16_t * quant_luma,
+    const uint16_t * quant_chroma, const GIMG_Allocator * alloc,
+    unsigned char ** out_scan_data, size_t * out_scan_size) {
+  if (!out_scan_data || !out_scan_size || width == 0 || height == 0) {
+    return GIMG_ERR_INTERNAL;
+  }
+  if (num_components != 1 && num_components != 3) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  const GIMG_Allocator * a = gimg_alloc_or_default(alloc);
+
+  gimg_jpeg_huff_enc_t dc_lum, dc_chrom, ac_lum, ac_chrom;
+  memset(&dc_lum, 0, sizeof(dc_lum));
+  memset(&dc_chrom, 0, sizeof(dc_chrom));
+  memset(&ac_lum, 0, sizeof(ac_lum));
+  memset(&ac_chrom, 0, sizeof(ac_chrom));
+  jpeg_build_huff_enc(jpeg_std_bits_dc_lum, jpeg_std_vals_dc_lum, 12, &dc_lum);
+  jpeg_build_huff_enc(jpeg_std_bits_ac_lum, jpeg_std_vals_ac_lum, 162, &ac_lum);
+  jpeg_build_huff_enc(
+      jpeg_std_bits_dc_chrom, jpeg_std_vals_dc_chrom, 12, &dc_chrom);
+  jpeg_build_huff_enc(
+      jpeg_std_bits_ac_chrom, jpeg_std_vals_ac_chrom, 162, &ac_chrom);
+
+  gimg_jpeg_bitstream_write_t w;
+  jpeg_bitstream_write_init(&w, a);
+  if (!w.data) {
+    return GIMG_ERR_OOM;
+  }
+
+  uint32_t mcu_per_row = (width + 7) / 8;
+  uint32_t mcu_per_col = (height + 7) / 8;
+  int32_t dc_pred[3] = {0, 0, 0};
+  int16_t block_rm[64];
+  int16_t block_zz[64];
+  const unsigned char * comps[3] = {comp0, comp1, comp2};
+  size_t strides[3] = {stride0, stride1, stride2};
+  const uint16_t * quants[3] = {quant_luma, quant_chroma, quant_chroma};
+  const gimg_jpeg_huff_enc_t * dc_tbls[3] = {&dc_lum, &dc_chrom, &dc_chrom};
+  const gimg_jpeg_huff_enc_t * ac_tbls[3] = {&ac_lum, &ac_chrom, &ac_chrom};
+
+  for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
+    for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
+      for (int c = 0; c < num_components; c++) {
+        const unsigned char * row_ptr = comps[c] + mcu_y * 8 * strides[c];
+        const uint16_t * q = quants[c];
+        for (int by = 0; by < 8; by++) {
+          uint32_t y = mcu_y * 8 + (uint32_t)by;
+          if (y >= height) {
+            for (int dx = 0; dx < 8; dx++) {
+              block_rm[by * 8 + dx] = 0;
+            }
+            continue;
+          }
+          const unsigned char * p =
+              row_ptr + (size_t)by * strides[c] + (size_t)(mcu_x * 8);
+          for (int bx = 0; bx < 8; bx++) {
+            uint32_t x = mcu_x * 8 + (uint32_t)bx;
+            int16_t s = (x < width) ? (int16_t)((int)p[bx] - 128) : 0;
+            block_rm[by * 8 + bx] = s;
+          }
+        }
+        jpeg_fdct_8x8(block_rm);
+        jpeg_quantise(block_rm, q);
+        jpeg_zigzag_encode(block_rm, block_zz);
+        jpeg_encode_block(&w, block_zz, dc_tbls[c], ac_tbls[c], &dc_pred[c], a);
+      }
+    }
+  }
+
+  jpeg_bitstream_write_flush(&w, a);
+  *out_scan_data = w.data;
+  *out_scan_size = w.size;
+  return GIMG_OK;
+}
+
+void gimg_jpeg_default_quant_scaled(
+    unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma) {
+  jpeg_scale_quant(quality, gimg_jpeg_default_quant_luma, quant_luma);
+  jpeg_scale_quant(quality, gimg_jpeg_default_quant_chroma, quant_chroma);
+}
+
+/** Write the four standard DHT segments (DC0, AC0, DC1, AC1) to stream. */
+GIMG_Result gimg_jpeg_write_standard_dht(
+    GIMG_Stream * stream, size_t * out_bytes_written) {
+  size_t total = 0;
+  size_t n = 0;
+  GIMG_Result r;
+  unsigned char seg[2];
+  /* DHT DC0: payload = TcTh(1) + 16 bits + 12 vals = 29; Lh = 31 */
+  unsigned char dht_dc0[29];
+  dht_dc0[0] = 0x00; /* Tc=0, Th=0 */
+  memcpy(dht_dc0 + 1, jpeg_std_bits_dc_lum, 16);
+  memcpy(dht_dc0 + 17, jpeg_std_vals_dc_lum, 12);
+  uint16_t len_dc0 = 31; /* 2 + 29 */
+  r = gimg_stream_write(stream, (const unsigned char *)"\xFF\xC4", 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  seg[0] = (unsigned char)(len_dc0 >> 8);
+  seg[1] = (unsigned char)(len_dc0 & 0xFF);
+  r = gimg_stream_write(stream, seg, 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  r = gimg_stream_write(stream, dht_dc0, sizeof(dht_dc0), &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  /* DHT AC0: payload = 1 + 16 + 162 = 179; Lh = 181 */
+  unsigned char dht_ac0[179];
+  dht_ac0[0] = 0x10; /* Tc=1, Th=0 */
+  memcpy(dht_ac0 + 1, jpeg_std_bits_ac_lum, 16);
+  memcpy(dht_ac0 + 17, jpeg_std_vals_ac_lum, 162);
+  uint16_t len_ac0 = 181;
+  r = gimg_stream_write(stream, (const unsigned char *)"\xFF\xC4", 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  seg[0] = (unsigned char)(len_ac0 >> 8);
+  seg[1] = (unsigned char)(len_ac0 & 0xFF);
+  r = gimg_stream_write(stream, seg, 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  r = gimg_stream_write(stream, dht_ac0, sizeof(dht_ac0), &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  /* DHT DC1 chrominance */
+  unsigned char dht_dc1[29];
+  dht_dc1[0] = 0x01; /* Tc=0, Th=1 */
+  memcpy(dht_dc1 + 1, jpeg_std_bits_dc_chrom, 16);
+  memcpy(dht_dc1 + 17, jpeg_std_vals_dc_chrom, 12);
+  uint16_t len_dc1 = 31;
+  r = gimg_stream_write(stream, (const unsigned char *)"\xFF\xC4", 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  seg[0] = (unsigned char)(len_dc1 >> 8);
+  seg[1] = (unsigned char)(len_dc1 & 0xFF);
+  r = gimg_stream_write(stream, seg, 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  r = gimg_stream_write(stream, dht_dc1, sizeof(dht_dc1), &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  /* DHT AC1 chrominance */
+  unsigned char dht_ac1[179];
+  dht_ac1[0] = 0x11; /* Tc=1, Th=1 */
+  memcpy(dht_ac1 + 1, jpeg_std_bits_ac_chrom, 16);
+  memcpy(dht_ac1 + 17, jpeg_std_vals_ac_chrom, 162);
+  uint16_t len_ac1 = 181;
+  r = gimg_stream_write(stream, (const unsigned char *)"\xFF\xC4", 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  seg[0] = (unsigned char)(len_ac1 >> 8);
+  seg[1] = (unsigned char)(len_ac1 & 0xFF);
+  r = gimg_stream_write(stream, seg, 2, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  r = gimg_stream_write(stream, dht_ac1, sizeof(dht_ac1), &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  total += n;
+  if (out_bytes_written) {
+    *out_bytes_written = total;
+  }
+  return GIMG_OK;
 }
