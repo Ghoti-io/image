@@ -756,12 +756,18 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     goto fail_decode;
   }
 
-  // Attach ICC profile from APP2 to raster color info (single-segment only).
-  if (state->app2_icc && state->app2_icc_len > 14u) {
+  // Attach ICC profile from APP2 to raster color info (single or multi-segment).
+  if (state->app2_icc && state->app2_icc_len > 0u) {
     GIMG_Color_Info color_info;
     gimg_color_info_default(&color_info);
-    color_info.icc_bytes = state->app2_icc + 14;
-    color_info.icc_size = state->app2_icc_len - 14u;
+    if (state->app2_icc_num_chunks > 0) {
+      color_info.icc_bytes = state->app2_icc;
+      color_info.icc_size = state->app2_icc_len;
+    }
+    else {
+      color_info.icc_bytes = state->app2_icc + 14;
+      color_info.icc_size = state->app2_icc_len - 14u;
+    }
     (void)gimg_raster_set_color_info(*out_raster, &color_info);
   }
 
@@ -1196,11 +1202,17 @@ GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
     goto fail_prog_buf;
   }
 
-  if (state->app2_icc && state->app2_icc_len > 14u) {
+  if (state->app2_icc && state->app2_icc_len > 0u) {
     GIMG_Color_Info color_info;
     gimg_color_info_default(&color_info);
-    color_info.icc_bytes = state->app2_icc + 14;
-    color_info.icc_size = state->app2_icc_len - 14u;
+    if (state->app2_icc_num_chunks > 0) {
+      color_info.icc_bytes = state->app2_icc;
+      color_info.icc_size = state->app2_icc_len;
+    }
+    else {
+      color_info.icc_bytes = state->app2_icc + 14;
+      color_info.icc_size = state->app2_icc_len - 14u;
+    }
     (void)gimg_raster_set_color_info(*out_raster, &color_info);
   }
 

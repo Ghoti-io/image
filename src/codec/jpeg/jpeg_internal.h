@@ -50,6 +50,9 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_RAW_APP1_EXIF 0xE100u
 #define GIMG_JPEG_RAW_APP1_XMP 0xE101u
 #define GIMG_JPEG_RAW_APP2_ICC 0xE2u
+/** Multi-segment APP2 ICC round-trip: serialized [2B N][2B len1][payload1]...
+ * Used when ICC profile was split across multiple APP2 segments. */
+#define GIMG_JPEG_RAW_APP2_ICC_CHUNKS 0xE201u
 #define GIMG_JPEG_RAW_APP13 0xEDu   /**< APP13 IPTC/Photoshop (Photoshop 3.0). */
 #define GIMG_JPEG_RAW_APP14 0xEEu   /**< APP14 Adobe (transform: YCbCr/YCCK). */
 /** Unknown APP segments (APPn not handled as JFIF/EXIF/XMP/ICC/Adobe). Stored
@@ -97,6 +100,15 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
  * Rationale: 256×256 is a common thumbnail cap; avoids overflow in size checks.
  */
 #define GIMG_JPEG_MAX_THUMB_PIXELS (256u * 256u)
+
+/** Max APP2 ICC_PROFILE chunks (1-based index in spec; 255 max). */
+#define GIMG_JPEG_MAX_ICC_CHUNKS 255u
+
+/**
+ * Max assembled ICC profile size (bytes). Rationale: bomb protection; match
+ * PNG iCCP limit (4 MiB).
+ */
+#define GIMG_JPEG_MAX_ICC_PROFILE_SIZE (4u * 1024u * 1024u)
 
 /**
  * One scan (SOS) for baseline (single scan) or progressive (multiple scans).
@@ -161,6 +173,17 @@ typedef struct gimg_jpeg_doc_state {
   size_t app1_xmp_len;
   unsigned char * app2_icc;
   size_t app2_icc_len;
+  /** For multi-segment ICC: number of chunks (0 = single segment or none).
+   * When > 0, app2_icc points to assembled profile only; chunk payloads stored
+   * for round-trip in app2_icc_chunk_* and in meta_raw APP2_ICC_CHUNKS. */
+  unsigned app2_icc_num_chunks;
+  /** Expected total chunks (multi-segment); 0 until first multi-segment seen. */
+  unsigned app2_icc_total_chunks;
+  /** Chunks received so far (multi-segment). */
+  unsigned app2_icc_chunks_received;
+  /** Full segment payload (ICC_PROFILE\0 + index + total + data) per chunk. */
+  unsigned char * app2_icc_chunk_payload[GIMG_JPEG_MAX_ICC_CHUNKS];
+  size_t app2_icc_chunk_len[GIMG_JPEG_MAX_ICC_CHUNKS];
   unsigned char * app13;   ///< APP13 IPTC/Photoshop payload when "Photoshop 3.0\0"; else in unknown.
   size_t app13_len;
   unsigned char * app14;  ///< APP14 Adobe payload when "Adobe\0"; else in unknown.

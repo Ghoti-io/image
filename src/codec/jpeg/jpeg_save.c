@@ -919,25 +919,63 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         }
       }
 
-      // APP2 ICC
-      size_t icc_size = 0;
+      // APP2 ICC: multi-segment (CHUNKS) or single segment (APP2_ICC).
+      size_t icc_chunks_size = 0;
       if (meta_raw &&
-          gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC, NULL,
-              &icc_size) == GIMG_OK &&
-          icc_size > 0) {
-        unsigned char * icc_buf = (unsigned char *)gimg_malloc(alloc, icc_size);
-        if (icc_buf) {
-          r = gimg_meta_raw_get(
-              meta_raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC, icc_buf, &icc_size);
+          gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC_CHUNKS,
+              NULL, &icc_chunks_size) == GIMG_OK &&
+          icc_chunks_size >= 2) {
+        unsigned char * chunks_buf =
+            (unsigned char *)gimg_malloc(alloc, icc_chunks_size);
+        if (chunks_buf) {
+          r = gimg_meta_raw_get(meta_raw, "jpeg",
+              GIMG_JPEG_RAW_APP2_ICC_CHUNKS, chunks_buf, &icc_chunks_size);
           if (r == GIMG_OK) {
-            r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP2, icc_buf,
-                icc_size, &report->bytes_written);
+            uint16_t n = (uint16_t)((chunks_buf[0] << 8) | chunks_buf[1]);
+            size_t off = 2;
+            for (uint16_t i = 0; i < n && off + 2 <= icc_chunks_size; i++) {
+              uint16_t plen =
+                  (uint16_t)((chunks_buf[off] << 8) | chunks_buf[off + 1]);
+              off += 2;
+              if (off + plen > icc_chunks_size) {
+                r = GIMG_ERR_CORRUPT;
+                break;
+              }
+              r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP2,
+                  chunks_buf + off, plen, &report->bytes_written);
+              off += plen;
+              if (r != GIMG_OK) {
+                break;
+              }
+            }
           }
-          gimg_free(alloc, icc_buf);
+          gimg_free(alloc, chunks_buf);
         }
         if (r != GIMG_OK) {
           gimg_free(alloc, scan_data);
           return r;
+        }
+      }
+      else if (meta_raw) {
+        size_t icc_size = 0;
+        if (gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC, NULL,
+                &icc_size) == GIMG_OK &&
+            icc_size > 0) {
+          unsigned char * icc_buf =
+              (unsigned char *)gimg_malloc(alloc, icc_size);
+          if (icc_buf) {
+            r = gimg_meta_raw_get(
+                meta_raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC, icc_buf, &icc_size);
+            if (r == GIMG_OK) {
+              r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP2,
+                  icc_buf, icc_size, &report->bytes_written);
+            }
+            gimg_free(alloc, icc_buf);
+          }
+          if (r != GIMG_OK) {
+            gimg_free(alloc, scan_data);
+            return r;
+          }
         }
       }
 

@@ -511,6 +511,8 @@ std::vector<uint8_t> make_jpeg_with_two_com() {
 static const uint32_t kJpegRawApp1Exif = 0xE100u;
 static const uint32_t kJpegRawApp0 = 0xE0u;
 static const uint32_t kJpegRawApp0Jfxx = 0xE001u;
+static const uint32_t kJpegRawApp2Icc = 0xE2u;
+static const uint32_t kJpegRawApp2IccChunks = 0xE201u;
 static const uint32_t kJpegRawApp13 = 0xEDu;
 static const uint32_t kJpegRawApp14 = 0xEEu;
 static const uint32_t kJpegRawAppUnknown = 0xE0FFu;
@@ -1638,6 +1640,133 @@ TEST(JpegLoad, GoldenWithIcc) {
   gimg_stream_destroy(s);
   EXPECT_EQ(hash, 774238021366803749ULL)
       << "canonical pixel hash jpeg_with_icc";
+}
+
+/** Build a JPEG buffer with the first APP2 ICC_PROFILE split into two chunks.
+ * Returns true and sets out + out_size if found and built; otherwise false. */
+static bool jpeg_split_app2_icc_into_two_chunks(const uint8_t * jpeg,
+    size_t jpeg_size, std::vector<uint8_t> & out) {
+  out.clear();
+  if (jpeg_size < 4) {
+    return false;
+  }
+  size_t i = 0;
+  while (i + 4 <= jpeg_size) {
+    if (jpeg[i] != 0xFF) {
+      i++;
+      continue;
+    }
+    if (jpeg[i + 1] == 0x00) {
+      i += 2;
+      continue;
+    }
+    if (jpeg[i + 1] != 0xE2) {
+      i += 2;
+      continue;
+    }
+    uint16_t len = (uint16_t)((jpeg[i + 2] << 8) | jpeg[i + 3]);
+    if (len < 2 || i + 2 + len > jpeg_size) {
+      return false;
+    }
+    size_t payload_size = (size_t)(len - 2);
+    const uint8_t * payload = jpeg + i + 4;
+    if (payload_size < 14 || std::memcmp(payload, "ICC_PROFILE\0", 12) != 0) {
+      i += 2 + len;
+      continue;
+    }
+    size_t profile_size = payload_size - 14;
+    size_t half = profile_size / 2;
+    size_t len1 = 14 + half;
+    size_t len2 = 14 + (profile_size - half);
+    out.insert(out.end(), jpeg, jpeg + i);
+    uint8_t hdr1[16];
+    std::memcpy(hdr1, "ICC_PROFILE\0", 12);
+    hdr1[12] = 1;
+    hdr1[13] = 2;
+    out.push_back(0xFF);
+    out.push_back(0xE2);
+    out.push_back(static_cast<uint8_t>((len1 + 2) >> 8));
+    out.push_back(static_cast<uint8_t>((len1 + 2) & 0xFF));
+    out.insert(out.end(), hdr1, hdr1 + 14);
+    out.insert(out.end(), payload + 14, payload + 14 + half);
+    uint8_t hdr2[16];
+    std::memcpy(hdr2, "ICC_PROFILE\0", 12);
+    hdr2[12] = 2;
+    hdr2[13] = 2;
+    out.push_back(0xFF);
+    out.push_back(0xE2);
+    out.push_back(static_cast<uint8_t>((len2 + 2) >> 8));
+    out.push_back(static_cast<uint8_t>((len2 + 2) & 0xFF));
+    out.insert(out.end(), hdr2, hdr2 + 14);
+    out.insert(out.end(), payload + 14 + half, payload + 14 + profile_size);
+    out.insert(out.end(), jpeg + i + 2 + len, jpeg + jpeg_size);
+    return true;
+  }
+  return false;
+}
+
+TEST(JpegLoad, MultiSegmentIccDecodeAndRoundTrip) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_with_icc.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  std::vector<uint8_t> multi;
+  ASSERT_TRUE(jpeg_split_app2_icc_into_two_chunks(
+      jpeg.data(), jpeg.size(), multi))
+      << "jpeg_with_icc must contain one APP2 ICC_PROFILE segment";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(multi.data(), multi.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  ASSERT_NE(ci, nullptr);
+  size_t icc_size = ci->icc_size;
+  ASSERT_GT(icc_size, 0u) << "multi-segment ICC should yield assembled profile";
+  gimg_raster_destroy(raster);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr);
+  size_t chunks_size = 0;
+  ASSERT_EQ(gimg_meta_raw_get(raw, "jpeg", kJpegRawApp2IccChunks, nullptr,
+                 &chunks_size),
+      GIMG_OK)
+      << "multi-segment ICC should store APP2_ICC_CHUNKS for round-trip";
+  EXPECT_GE(chunks_size, 2u + 2u + 14u + 14u)
+      << "CHUNKS blob: 2B N + at least two segment payloads";
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out_s, "jpeg", nullptr, &report), GIMG_OK);
+  const void * out_data = nullptr;
+  size_t out_len = 0;
+  gimg_stream_output_buffer(out_s, &out_data, &out_len);
+  std::vector<uint8_t> saved(
+      static_cast<const uint8_t *>(out_data),
+      static_cast<const uint8_t *>(out_data) + out_len);
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+  s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &s), GIMG_OK);
+  doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+  ASSERT_NE(doc, nullptr);
+  item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  ci = gimg_raster_color_info_const(raster);
+  ASSERT_NE(ci, nullptr);
+  EXPECT_EQ(ci->icc_size, icc_size)
+      << "round-trip multi-segment ICC: profile size unchanged";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
 }
 
 TEST(JpegLoad, GoldenCmyk) {

@@ -305,6 +305,9 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   gimg_free(alloc, state->app1_exif);
   gimg_free(alloc, state->app1_xmp);
   gimg_free(alloc, state->app2_icc);
+  for (unsigned i = 0; i < GIMG_JPEG_MAX_ICC_CHUNKS; i++) {
+    gimg_free(alloc, state->app2_icc_chunk_payload[i]);
+  }
   gimg_free(alloc, state->app13);
   gimg_free(alloc, state->app14);
   gimg_free(alloc, state->com_combined);
@@ -724,14 +727,91 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       break;
     }
     case GIMG_JPEG_MARKER_APP2: {
-      if (payload_size >= 12 && payload_buf &&
+      if (payload_size >= 14 && payload_buf &&
           memcmp(payload_buf, "ICC_PROFILE\0", 12) == 0) {
-        if (state->app2_icc) {
-          gimg_free(alloc, state->app2_icc);
+        unsigned chunk_index = (unsigned)payload_buf[12];
+        unsigned total_chunks = (unsigned)payload_buf[13];
+        if (total_chunks == 0 || total_chunks > GIMG_JPEG_MAX_ICC_CHUNKS ||
+            chunk_index < 1 || chunk_index > total_chunks) {
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "APP2 ICC_PROFILE invalid chunk index/total");
+          gimg_free(alloc, payload_buf);
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
         }
-        state->app2_icc = payload_buf;
-        state->app2_icc_len = payload_size;
-        payload_buf = NULL;
+        if (total_chunks == 1) {
+          // Single-segment: keep full payload for round-trip; decode uses +14.
+          if (state->app2_icc) {
+            gimg_free(alloc, state->app2_icc);
+          }
+          state->app2_icc = payload_buf;
+          state->app2_icc_len = payload_size;
+          state->app2_icc_num_chunks = 0;
+          payload_buf = NULL;
+        }
+        else {
+          // Multi-segment: accumulate chunks by index.
+          if (state->app2_icc_total_chunks == 0) {
+            state->app2_icc_total_chunks = total_chunks;
+          }
+          else if (state->app2_icc_total_chunks != total_chunks) {
+            jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+                "APP2 ICC_PROFILE total chunks mismatch");
+            gimg_free(alloc, payload_buf);
+            gimg_jpeg_free_doc_state(codec, state);
+            return GIMG_ERR_FORMAT;
+          }
+          if (state->app2_icc_chunk_payload[chunk_index - 1] != NULL) {
+            jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+                "APP2 ICC_PROFILE duplicate chunk index");
+            gimg_free(alloc, payload_buf);
+            gimg_jpeg_free_doc_state(codec, state);
+            return GIMG_ERR_FORMAT;
+          }
+          state->app2_icc_chunk_payload[chunk_index - 1] = payload_buf;
+          state->app2_icc_chunk_len[chunk_index - 1] = payload_size;
+          payload_buf = NULL;
+          state->app2_icc_chunks_received++;
+          if (state->app2_icc_chunks_received == total_chunks) {
+            // Assemble: total profile size = sum of (chunk_len - 14).
+            size_t total_profile = 0;
+            for (unsigned i = 0; i < total_chunks; i++) {
+              size_t data_len =
+                  state->app2_icc_chunk_len[i] -
+                  (state->app2_icc_chunk_len[i] >= 14u ? 14u : 0u);
+              if (total_profile + data_len < total_profile ||
+                  total_profile + data_len > GIMG_JPEG_MAX_ICC_PROFILE_SIZE) {
+                jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_LIMIT,
+                    "APP2 ICC_PROFILE assembled size over limit");
+                gimg_jpeg_free_doc_state(codec, state);
+                return GIMG_ERR_LIMIT;
+              }
+              total_profile += data_len;
+            }
+            unsigned char * assembled =
+                (unsigned char *)gimg_malloc(alloc, total_profile);
+            if (!assembled && total_profile > 0) {
+              jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_OOM,
+                  "APP2 ICC_PROFILE assemble OOM");
+              gimg_jpeg_free_doc_state(codec, state);
+              return GIMG_ERR_OOM;
+            }
+            size_t off = 0;
+            for (unsigned i = 0; i < total_chunks; i++) {
+              size_t data_len = state->app2_icc_chunk_len[i] >= 14u
+                  ? state->app2_icc_chunk_len[i] - 14u
+                  : 0u;
+              if (data_len > 0) {
+                memcpy(assembled + off,
+                    state->app2_icc_chunk_payload[i] + 14, data_len);
+                off += data_len;
+              }
+            }
+            state->app2_icc = assembled;
+            state->app2_icc_len = total_profile;
+            state->app2_icc_num_chunks = total_chunks;
+          }
+        }
       }
       if (payload_buf) {
         r = jpeg_append_unknown_app(state, GIMG_JPEG_MARKER_APP2, payload_buf,
@@ -957,6 +1037,38 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       if (r != GIMG_OK) {
         gimg_doc_destroy(doc);
         return r;
+      }
+      if (state->app2_icc_num_chunks > 0) {
+        size_t chunks_blob_size = 2;
+        for (unsigned i = 0; i < state->app2_icc_num_chunks; i++) {
+          chunks_blob_size += 2 + state->app2_icc_chunk_len[i];
+        }
+        unsigned char * chunks_blob =
+            (unsigned char *)gimg_malloc(alloc, chunks_blob_size);
+        if (chunks_blob) {
+          chunks_blob[0] = (unsigned char)(state->app2_icc_num_chunks >> 8);
+          chunks_blob[1] =
+              (unsigned char)(state->app2_icc_num_chunks & 0xFFu);
+          size_t off = 2;
+          for (unsigned i = 0; i < state->app2_icc_num_chunks; i++) {
+            size_t plen = state->app2_icc_chunk_len[i];
+            chunks_blob[off] = (unsigned char)(plen >> 8);
+            chunks_blob[off + 1] = (unsigned char)(plen & 0xFFu);
+            off += 2;
+            if (plen > 0 && state->app2_icc_chunk_payload[i]) {
+              memcpy(chunks_blob + off,
+                  state->app2_icc_chunk_payload[i], plen);
+              off += plen;
+            }
+          }
+          r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC_CHUNKS,
+              chunks_blob, chunks_blob_size);
+          gimg_free(alloc, chunks_blob);
+          if (r != GIMG_OK) {
+            gimg_doc_destroy(doc);
+            return r;
+          }
+        }
       }
     }
     if (state->app13 && state->app13_len > 0) {
