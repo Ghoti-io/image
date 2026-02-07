@@ -11,11 +11,11 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <cstddef>
+#include <cstdint>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/stream.h>
-#include <cstddef>
-#include <cstdint>
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   if (data == nullptr || size == 0) {
@@ -54,7 +54,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
 
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r != GIMG_OK) {

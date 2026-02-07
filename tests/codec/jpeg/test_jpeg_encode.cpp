@@ -17,6 +17,8 @@
 #include <gtest/gtest.h>
 #include <vector>
 
+#include "jpeg_test_utils.h"
+
 namespace {
 
 TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
@@ -51,7 +53,9 @@ TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report = {};
   report.bytes_written = 0;
@@ -129,7 +133,9 @@ TEST(JpegEncode, SaveRgbThenLoadDecode) {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -180,7 +186,9 @@ TEST(JpegEncode, SameInputSameOutputDeterministic) {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report1 = {};
   GIMG_Save_Report report2 = {};
@@ -226,7 +234,9 @@ TEST(JpegEncode, QualityOptionUsedWhenNonZero) {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
       .quality = 50,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Stream * out_stream = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
@@ -330,7 +340,9 @@ TEST(JpegEncode, MetadataPreserveAllRoundTrip) {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -371,12 +383,12 @@ TEST(JpegEncode, ComRoundTrip) {
   GIMG_Meta_Raw * raw = nullptr;
   ASSERT_EQ(gimg_doc_ensure_meta_raw(doc, &raw), GIMG_OK);
   const uint8_t com_combined[] = {0x00, 0x05, 'H', 'e', 'l', 'l', 'o'};
-  ASSERT_EQ(gimg_meta_raw_attach(raw, "jpeg", kJpegRawCom, com_combined,
-              sizeof(com_combined)),
+  ASSERT_EQ(gimg_meta_raw_attach(
+                raw, "jpeg", kJpegRawCom, com_combined, sizeof(com_combined)),
       GIMG_OK);
   GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
-                  NULL, 0, &raster),
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0, &raster),
       GIMG_OK);
   memset(gimg_raster_pixels(raster), 128, 8 * 8);
   gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
@@ -387,7 +399,9 @@ TEST(JpegEncode, ComRoundTrip) {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -412,12 +426,11 @@ TEST(JpegEncode, ComRoundTrip) {
   ASSERT_NE(raw, nullptr);
   size_t com_size = 0;
   ASSERT_EQ(
-      gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, nullptr, &com_size),
-      GIMG_OK);
+      gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, nullptr, &com_size), GIMG_OK);
   EXPECT_EQ(com_size, 7u);
   std::vector<uint8_t> com_data(com_size);
-  ASSERT_EQ(gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, com_data.data(),
-              &com_size),
+  ASSERT_EQ(
+      gimg_meta_raw_get(raw, "jpeg", kJpegRawCom, com_data.data(), &com_size),
       GIMG_OK);
   EXPECT_EQ(com_data[0], 0x00);
   EXPECT_EQ(com_data[1], 0x05);
@@ -444,7 +457,9 @@ TEST(JpegEncode, MetadataDropAllStripsExif) {
       .metadata_policy = GIMG_META_DROP_ALL,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report = {};
   report.bytes_written = 0;
@@ -489,7 +504,9 @@ TEST(JpegEncode, MetadataKeepCommonOnlyNoExif) {
       .metadata_policy = GIMG_META_KEEP_COMMON_ONLY,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -531,7 +548,9 @@ TEST(JpegEncode, SaveNullDocReturnsError) {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -551,7 +570,9 @@ TEST(JpegEncode, SaveUnsupportedFormatReturnsError) {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -580,7 +601,9 @@ TEST(JpegEncode, SaveCmykRasterReturnsUnsupported) {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
       .interlaced = 0,
       .quality = 0,
-      ._reserved = {0},
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
   };
   GIMG_Save_Report report = {};
   report.diagnostics = nullptr;
@@ -589,6 +612,445 @@ TEST(JpegEncode, SaveCmykRasterReturnsUnsupported) {
   gimg_stream_destroy(out_stream);
   EXPECT_NE(r, GIMG_OK);
   EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+}
+
+TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat6) {
+  /* Doc with main image and thumbnail. Save with exif_thumbnail_format=6;
+   * re-load and verify we get 2 items, main (item 0) has correct size, item 1
+   * decodes. */
+  constexpr uint32_t kMainW = 16u, kMainH = 16u, kThumbW = 8u, kThumbH = 8u;
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+
+  GIMG_Raster * main_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(kMainW, kMainH, &GIMG_PIXEL_RGBA8,
+                GIMG_RASTER_OWNED, NULL, 0, &main_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), main_raster);
+
+  GIMG_Raster * thumb_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(kThumbW, kThumbH, &GIMG_PIXEL_GRAY8,
+                GIMG_RASTER_OWNED, NULL, 0, &thumb_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 85,
+      .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_JPEG,
+      .exif_thumbnail_quality = 85,
+      ._reserved = {0, 0},
+  };
+  GIMG_Save_Report report = {};
+  report.bytes_written = 0;
+  report.diagnostics = nullptr;
+  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * jpeg_data = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(out_stream, &jpeg_data, &jpeg_size);
+  std::vector<uint8_t> jpeg_copy(static_cast<const uint8_t *>(jpeg_data),
+      static_cast<const uint8_t *>(jpeg_data) + jpeg_size);
+  gimg_stream_destroy(out_stream);
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in_stream);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u)
+      << "Saved two-item doc should load with two items";
+
+  GIMG_Raster * decoded_main = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &decoded_main);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(decoded_main, nullptr);
+  EXPECT_EQ(gimg_raster_width(decoded_main), kMainW);
+  EXPECT_EQ(gimg_raster_height(decoded_main), kMainH);
+  gimg_raster_destroy(decoded_main);
+
+  GIMG_Raster * decoded_thumb = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &decoded_thumb);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(decoded_thumb, nullptr);
+  EXPECT_GT(gimg_raster_width(decoded_thumb), 0u);
+  EXPECT_GT(gimg_raster_height(decoded_thumb), 0u);
+  gimg_raster_destroy(decoded_thumb);
+  gimg_doc_destroy(doc);
+}
+
+TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat1) {
+  /* Doc with main image and thumbnail. Save with exif_thumbnail_format=1
+   * (uncompressed); re-load and verify second item decodes and dimensions
+   * match. */
+  constexpr uint32_t kMainW = 16u, kMainH = 16u, kThumbW = 8u, kThumbH = 8u;
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+
+  GIMG_Raster * main_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(kMainW, kMainH, &GIMG_PIXEL_RGBA8,
+                GIMG_RASTER_OWNED, NULL, 0, &main_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), main_raster);
+
+  GIMG_Raster * thumb_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(kThumbW, kThumbH, &GIMG_PIXEL_GRAY8,
+                GIMG_RASTER_OWNED, NULL, 0, &thumb_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 85,
+      .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED,
+      .exif_thumbnail_quality = 85,
+      ._reserved = {0, 0},
+  };
+  GIMG_Save_Report report = {};
+  report.bytes_written = 0;
+  report.diagnostics = nullptr;
+  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * jpeg_data = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(out_stream, &jpeg_data, &jpeg_size);
+  std::vector<uint8_t> jpeg_copy(static_cast<const uint8_t *>(jpeg_data),
+      static_cast<const uint8_t *>(jpeg_data) + jpeg_size);
+  gimg_stream_destroy(out_stream);
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in_stream);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u)
+      << "Saved two-item doc with format 1 should load with two items";
+
+  GIMG_Raster * decoded_thumb = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &decoded_thumb);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(decoded_thumb, nullptr);
+  EXPECT_EQ(gimg_raster_width(decoded_thumb), kThumbW);
+  EXPECT_EQ(gimg_raster_height(decoded_thumb), kThumbH);
+  gimg_raster_destroy(decoded_thumb);
+  gimg_doc_destroy(doc);
+}
+
+TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat7) {
+  /* Doc with main image and thumbnail. Save with exif_thumbnail_format=7
+   * (TIFF TechNote 2 JPEG); re-load and verify second item decodes and
+   * dimensions match. */
+  constexpr uint32_t kMainW = 16u, kMainH = 16u, kThumbW = 8u, kThumbH = 8u;
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+
+  GIMG_Raster * main_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(kMainW, kMainH, &GIMG_PIXEL_RGBA8,
+                GIMG_RASTER_OWNED, NULL, 0, &main_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), main_raster);
+
+  GIMG_Raster * thumb_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(kThumbW, kThumbH, &GIMG_PIXEL_GRAY8,
+                GIMG_RASTER_OWNED, NULL, 0, &thumb_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 85,
+      .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG,
+      .exif_thumbnail_quality = 85,
+      ._reserved = {0, 0},
+  };
+  GIMG_Save_Report report = {};
+  report.bytes_written = 0;
+  report.diagnostics = nullptr;
+  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * jpeg_data = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(out_stream, &jpeg_data, &jpeg_size);
+  std::vector<uint8_t> jpeg_copy(static_cast<const uint8_t *>(jpeg_data),
+      static_cast<const uint8_t *>(jpeg_data) + jpeg_size);
+  gimg_stream_destroy(out_stream);
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in_stream);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u)
+      << "Saved two-item doc with format 7 should load with two items";
+
+  GIMG_Raster * decoded_thumb = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &decoded_thumb);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(decoded_thumb, nullptr);
+  EXPECT_EQ(gimg_raster_width(decoded_thumb), kThumbW);
+  EXPECT_EQ(gimg_raster_height(decoded_thumb), kThumbH);
+  gimg_raster_destroy(decoded_thumb);
+  gimg_doc_destroy(doc);
+}
+
+TEST(JpegEncode, RoundTripExifThumbnailFormat1) {
+  /* Save doc with two items and format 1 → load → save again with format 1 →
+   * load; thumbnail decodes and dimensions unchanged. */
+  constexpr uint32_t kThumbW = 6u, kThumbH = 4u;
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  GIMG_Raster * main_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL,
+                0, &main_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), main_raster);
+  GIMG_Raster * thumb_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(kThumbW, kThumbH, &GIMG_PIXEL_GRAY8,
+                GIMG_RASTER_OWNED, NULL, 0, &thumb_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 85,
+      .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
+  };
+  GIMG_Save_Report report = {};
+  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  ASSERT_EQ(r, GIMG_OK);
+  const void * buf1 = nullptr;
+  size_t size1 = 0;
+  gimg_stream_output_buffer(out_stream, &buf1, &size1);
+  std::vector<uint8_t> jpeg1(static_cast<const uint8_t *>(buf1),
+      static_cast<const uint8_t *>(buf1) + size1);
+  gimg_stream_destroy(out_stream);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg1.data(), jpeg1.size(), &in_stream),
+      GIMG_OK);
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in_stream);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_GE(gimg_doc_item_count(doc), 2u);
+
+  out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+  ASSERT_EQ(r, GIMG_OK);
+  const void * buf2 = nullptr;
+  size_t size2 = 0;
+  gimg_stream_output_buffer(out_stream, &buf2, &size2);
+  std::vector<uint8_t> jpeg2(static_cast<const uint8_t *>(buf2),
+      static_cast<const uint8_t *>(buf2) + size2);
+  gimg_stream_destroy(out_stream);
+
+  ASSERT_EQ(gimg_stream_create_memory(jpeg2.data(), jpeg2.size(), &in_stream),
+      GIMG_OK);
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in_stream);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u);
+  GIMG_Raster * thumb = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &thumb);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(thumb, nullptr);
+  EXPECT_EQ(gimg_raster_width(thumb), kThumbW);
+  EXPECT_EQ(gimg_raster_height(thumb), kThumbH);
+  gimg_raster_destroy(thumb);
+  gimg_doc_destroy(doc);
+}
+
+TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
+  /* Save doc with two items and format 7 → load → save again with format 7 →
+   * load; thumbnail decodes and dimensions unchanged. */
+  constexpr uint32_t kThumbW = 6u, kThumbH = 4u;
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  GIMG_Raster * main_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL,
+                0, &main_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), main_raster);
+  GIMG_Raster * thumb_raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(kThumbW, kThumbH, &GIMG_PIXEL_GRAY8,
+                GIMG_RASTER_OWNED, NULL, 0, &thumb_raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 85,
+      .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG,
+      .exif_thumbnail_quality = 85,
+      ._reserved = {0, 0},
+  };
+  GIMG_Save_Report report = {};
+  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  ASSERT_EQ(r, GIMG_OK);
+  const void * buf1 = nullptr;
+  size_t size1 = 0;
+  gimg_stream_output_buffer(out_stream, &buf1, &size1);
+  std::vector<uint8_t> jpeg1(static_cast<const uint8_t *>(buf1),
+      static_cast<const uint8_t *>(buf1) + size1);
+  gimg_stream_destroy(out_stream);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg1.data(), jpeg1.size(), &in_stream),
+      GIMG_OK);
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in_stream);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_GE(gimg_doc_item_count(doc), 2u);
+
+  out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+  ASSERT_EQ(r, GIMG_OK);
+  const void * buf2 = nullptr;
+  size_t size2 = 0;
+  gimg_stream_output_buffer(out_stream, &buf2, &size2);
+  std::vector<uint8_t> jpeg2(static_cast<const uint8_t *>(buf2),
+      static_cast<const uint8_t *>(buf2) + size2);
+  gimg_stream_destroy(out_stream);
+
+  ASSERT_EQ(gimg_stream_create_memory(jpeg2.data(), jpeg2.size(), &in_stream),
+      GIMG_OK);
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in_stream);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u);
+  GIMG_Raster * thumb = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &thumb);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(thumb, nullptr);
+  EXPECT_EQ(gimg_raster_width(thumb), kThumbW);
+  EXPECT_EQ(gimg_raster_height(thumb), kThumbH);
+  gimg_raster_destroy(thumb);
+  gimg_doc_destroy(doc);
+}
+
+TEST(JpegEncode, RoundTripExifThumbnailPreserved) {
+  /* Load JPEG with EXIF thumbnail, save (preserve), load again; thumbnail still
+   * present. */
+  std::vector<uint8_t> jpeg;
+  if (!jpeg_test::load_jpeg_file("jpeg_exif_orientation.jpg", jpeg)) {
+    GTEST_SKIP() << "Need tests/data/jpeg/jpeg_exif_orientation.jpg";
+  }
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in_stream), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in_stream);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  size_t item_count_before = gimg_doc_item_count(doc);
+  uint64_t thumb_hash_before = 0;
+  if (item_count_before >= 2) {
+    GIMG_Raster * thumb = nullptr;
+    if (gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &thumb) == GIMG_OK &&
+        thumb) {
+      thumb_hash_before = jpeg_test::raster_pixel_hash(thumb);
+      gimg_raster_destroy(thumb);
+    }
+  }
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .interlaced = 0,
+      .quality = 0,
+      .exif_thumbnail_format = 0,
+      .exif_thumbnail_quality = 0,
+      ._reserved = {0, 0},
+  };
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+  ASSERT_EQ(r, GIMG_OK);
+
+  const void * out_buf = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_stream, &out_buf, &out_size);
+  std::vector<uint8_t> saved(out_size);
+  memcpy(saved.data(), out_buf, out_size);
+  gimg_stream_destroy(out_stream);
+
+  in_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &in_stream),
+      GIMG_OK);
+  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in_stream);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_GE(gimg_doc_item_count(doc), item_count_before);
+  if (item_count_before >= 2 && gimg_doc_item_count(doc) >= 2) {
+    GIMG_Raster * thumb = nullptr;
+    r = gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &thumb);
+    ASSERT_EQ(r, GIMG_OK);
+    ASSERT_NE(thumb, nullptr);
+    EXPECT_EQ(jpeg_test::raster_pixel_hash(thumb), thumb_hash_before)
+        << "Thumbnail pixels should match after round-trip";
+    gimg_raster_destroy(thumb);
+  }
+  gimg_doc_destroy(doc);
 }
 
 } // namespace

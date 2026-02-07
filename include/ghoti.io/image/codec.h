@@ -122,6 +122,14 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc);
 
+/** @brief EXIF IFD1 thumbnail format: 0 = default (6), 1 = uncompressed,
+ * 6 = JPEG, 7 = TIFF TechNote 2 JPEG. Used when saving with a second doc item.
+ */
+#define GIMG_EXIF_THUMB_FORMAT_DEFAULT 0
+#define GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED 1
+#define GIMG_EXIF_THUMB_FORMAT_JPEG 6
+#define GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG 7
+
 /**
  * @brief Save options (metadata policy, interlace, quality, etc.).
  * @see api_options
@@ -131,7 +139,10 @@ typedef struct {
   unsigned int interlaced; ///< 0 = non-interlaced (default), 1 = Adam7 (PNG).
   unsigned int quality; ///< JPEG quality 1–100 (100 = finest). 0 = unspecified,
                         ///< codec default (e.g. 85).
-  uint8_t _reserved[4];
+  uint8_t exif_thumbnail_format;  ///< IFD1 thumbnail: 0 = default (6), 1, 6, 7.
+  uint8_t exif_thumbnail_quality; ///< Thumbnail JPEG quality 1–100 when
+                                  ///< format 6 or 7; 0 = default (85).
+  uint8_t _reserved[2];
 } GIMG_Save_Options;
 
 /**

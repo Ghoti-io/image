@@ -128,6 +128,336 @@ static void jpeg_rgb_to_ycbcr(
   *cr = (uint8_t)(crv < 0 ? 0 : (crv > 255 ? 255 : crv));
 }
 
+/** Encode raster to scan data and quant tables. Allocates *out_scan_data;
+ * caller must free. Supports GRAY8 and RGB 8-bit like main save. */
+static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
+    const GIMG_Raster * raster, unsigned quality,
+    unsigned char ** out_scan_data, size_t * out_scan_size,
+    uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
+    uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
+    uint32_t * out_height, int * out_num_components) {
+  if (!alloc || !raster || !out_scan_data || !out_scan_size || !out_width ||
+      !out_height || !out_num_components) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+  uint32_t width = gimg_raster_width(raster);
+  uint32_t height = gimg_raster_height(raster);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  if (!fmt || width == 0 || height == 0 || width > GIMG_JPEG_MAX_DIMENSION ||
+      height > GIMG_JPEG_MAX_DIMENSION) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  int num_components = 0;
+  if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count == 1 &&
+      fmt->bits_per_channel[0] == 8) {
+    num_components = 1;
+  }
+  else if ((fmt->channel_model == GIMG_CHANNEL_RGB ||
+               fmt->channel_model == GIMG_CHANNEL_RGBA) &&
+      fmt->channel_count >= 3 && fmt->bits_per_channel[0] == 8 &&
+      fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
+    num_components = 3;
+  }
+  else {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  size_t comp_size = 0;
+  if (!gimg_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
+    return GIMG_ERR_LIMIT;
+  }
+  unsigned char * comp_y = (unsigned char *)gimg_malloc(alloc, comp_size);
+  if (!comp_y) {
+    return GIMG_ERR_OOM;
+  }
+  unsigned char * comp_cb = NULL;
+  unsigned char * comp_cr = NULL;
+  if (num_components == 3) {
+    comp_cb = (unsigned char *)gimg_malloc(alloc, comp_size);
+    comp_cr = (unsigned char *)gimg_malloc(alloc, comp_size);
+    if (!comp_cb || !comp_cr) {
+      gimg_free(alloc, comp_y);
+      if (comp_cb) {
+        gimg_free(alloc, comp_cb);
+      }
+      return GIMG_ERR_OOM;
+    }
+  }
+  size_t stride_bytes = gimg_raster_stride_bytes(raster);
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  if (!pixels) {
+    gimg_free(alloc, comp_y);
+    gimg_free(alloc, comp_cb);
+    gimg_free(alloc, comp_cr);
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+  if (num_components == 1) {
+    for (uint32_t y = 0; y < height; y++) {
+      const unsigned char * row = pixels + y * stride_bytes;
+      for (uint32_t x = 0; x < width; x++) {
+        comp_y[y * (size_t)width + x] = row[x * bpp];
+      }
+    }
+  }
+  else {
+    for (uint32_t y = 0; y < height; y++) {
+      const unsigned char * row = pixels + y * stride_bytes;
+      for (uint32_t x = 0; x < width; x++) {
+        uint8_t r = row[x * bpp + 0];
+        uint8_t g = row[x * bpp + 1];
+        uint8_t b = row[x * bpp + 2];
+        uint8_t yv, cb, cr;
+        jpeg_rgb_to_ycbcr(r, g, b, &yv, &cb, &cr);
+        comp_y[y * (size_t)width + x] = yv;
+        comp_cb[y * (size_t)width + x] = cb;
+        comp_cr[y * (size_t)width + x] = cr;
+      }
+    }
+  }
+  if (quality > 100) {
+    quality = 100;
+  }
+  gimg_jpeg_default_quant_scaled(quality, quant_luma, quant_chroma);
+  unsigned char * scan_data = NULL;
+  size_t scan_size = 0;
+  GIMG_Result r = gimg_jpeg_encode_baseline_scan(width, height, num_components,
+      comp_y, comp_cb, comp_cr, (size_t)width, (size_t)width, (size_t)width,
+      quant_luma, quant_chroma, alloc, &scan_data, &scan_size);
+  gimg_free(alloc, comp_y);
+  gimg_free(alloc, comp_cb);
+  gimg_free(alloc, comp_cr);
+  if (r != GIMG_OK || !scan_data) {
+    return (r != GIMG_OK) ? r : GIMG_ERR_OOM;
+  }
+  *out_scan_data = scan_data;
+  *out_scan_size = scan_size;
+  *out_width = width;
+  *out_height = height;
+  *out_num_components = num_components;
+  return GIMG_OK;
+}
+
+/** Copy raster to a contiguous strip for EXIF uncompressed thumbnail (format 1).
+ * Supports GRAY8 and RGB/RGBA 8-bit; output is 1 or 3 bytes per pixel. Caller
+ * frees *out_strip. */
+static GIMG_Result jpeg_raster_to_uncompressed_strip(const GIMG_Allocator * alloc,
+    const GIMG_Raster * raster, unsigned char ** out_strip, size_t * out_size,
+    uint32_t * out_width, uint32_t * out_height,
+    uint16_t * out_samples_per_pixel) {
+  if (!alloc || !raster || !out_strip || !out_size || !out_width ||
+      !out_height || !out_samples_per_pixel) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_strip = NULL;
+  *out_size = 0;
+  uint32_t width = gimg_raster_width(raster);
+  uint32_t height = gimg_raster_height(raster);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  if (!fmt || width == 0 || height == 0) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  int samples = 0;
+  if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count == 1 &&
+      fmt->bits_per_channel[0] == 8) {
+    samples = 1;
+  }
+  else if ((fmt->channel_model == GIMG_CHANNEL_RGB ||
+               fmt->channel_model == GIMG_CHANNEL_RGBA) &&
+      fmt->channel_count >= 3 && fmt->bits_per_channel[0] == 8 &&
+      fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
+    samples = 3;
+  }
+  else {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  size_t strip_size;
+  if (!gimg_safe_mul_size((size_t)width, (size_t)height, &strip_size) ||
+      !gimg_safe_mul_size(strip_size, (size_t)samples, &strip_size)) {
+    return GIMG_ERR_LIMIT;
+  }
+  unsigned char * strip = (unsigned char *)gimg_malloc(alloc, strip_size);
+  if (!strip) {
+    return GIMG_ERR_OOM;
+  }
+  size_t stride_bytes = gimg_raster_stride_bytes(raster);
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  if (!pixels) {
+    gimg_free(alloc, strip);
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+  size_t out_bpp = (size_t)samples;
+  for (uint32_t y = 0; y < height; y++) {
+    const unsigned char * row = pixels + y * stride_bytes;
+    for (uint32_t x = 0; x < width; x++) {
+      for (int c = 0; c < samples; c++) {
+        strip[(y * (size_t)width + x) * out_bpp + (size_t)c] =
+            row[x * bpp + (size_t)c];
+      }
+    }
+  }
+  *out_strip = strip;
+  *out_size = strip_size;
+  *out_width = width;
+  *out_height = height;
+  *out_samples_per_pixel = (uint16_t)samples;
+  return GIMG_OK;
+}
+
+/** Write DQT, DHT, SOF0, SOS, scan data, EOI to stream. Does not free
+ * scan_data. */
+static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
+    uint32_t height, int num_components,
+    const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
+    const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
+    const unsigned char * scan_data, size_t scan_size, size_t * out_n) {
+  size_t n = (out_n ? *out_n : 0);
+  GIMG_Result r;
+  size_t written = 0;
+  unsigned char dqt0[67];
+  memset(dqt0, 0, sizeof(dqt0));
+  dqt0[0] = 0x00;
+  for (int i = 0; i < 64; i++) {
+    dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
+  }
+  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_u16(stream, 67, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = gimg_stream_write(stream, dqt0, sizeof(dqt0), &written);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  n += written;
+  if (num_components == 3) {
+    unsigned char dqt1[67];
+    memset(dqt1, 0, sizeof(dqt1));
+    dqt1[0] = 0x01;
+    for (int i = 0; i < 64; i++) {
+      dqt1[1 + i] =
+          (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
+    }
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, 67, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = gimg_stream_write(stream, dqt1, sizeof(dqt1), &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+  {
+    size_t dht_written = 0;
+    r = gimg_jpeg_write_standard_dht(stream, &dht_written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += dht_written;
+  }
+  {
+    uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOF0, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, sof_len, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    unsigned char sof[8 + 3 * 4];
+    memset(sof, 0, sizeof(sof));
+    sof[0] = 8;
+    sof[1] = (unsigned char)(height >> 8);
+    sof[2] = (unsigned char)(height & 0xFF);
+    sof[3] = (unsigned char)(width >> 8);
+    sof[4] = (unsigned char)(width & 0xFF);
+    sof[5] = (unsigned char)num_components;
+    if (num_components == 1) {
+      sof[6] = 0x01;
+      sof[7] = 0x11;
+      sof[8] = 0x00;
+    }
+    else {
+      sof[6] = 0x01;
+      sof[7] = 0x11;
+      sof[8] = 0x00;
+      sof[9] = 0x02;
+      sof[10] = 0x11;
+      sof[11] = 0x01;
+      sof[12] = 0x03;
+      sof[13] = 0x11;
+      sof[14] = 0x01;
+    }
+    r = gimg_stream_write(
+        stream, sof, 8 + 3 * (size_t)num_components, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+  {
+    uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)num_components);
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, sos_len, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    unsigned char sos[12];
+    memset(sos, 0, sizeof(sos));
+    sos[0] = (unsigned char)num_components;
+    if (num_components == 1) {
+      sos[1] = 0x01;
+      sos[2] = 0x00;
+    }
+    else {
+      sos[1] = 0x01;
+      sos[2] = 0x00;
+      sos[3] = 0x02;
+      sos[4] = 0x11;
+      sos[5] = 0x03;
+      sos[6] = 0x11;
+    }
+    size_t tail = 1 + 2 * (size_t)num_components;
+    sos[tail] = 0x00;
+    sos[tail + 1] = 0x3F;
+    sos[tail + 2] = 0x00;
+    r = gimg_stream_write(stream, sos, tail + 3, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+  r = gimg_stream_write(stream, scan_data, scan_size, &written);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  n += written;
+  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (out_n) {
+    *out_n = n;
+  }
+  return GIMG_OK;
+}
+
 GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report) {
@@ -159,116 +489,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return GIMG_ERR_UNSUPPORTED; // No raster and not loaded by us.
   }
 
-  uint32_t width = gimg_raster_width(raster);
-  uint32_t height = gimg_raster_height(raster);
-  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
-  if (!fmt || width == 0 || height == 0) {
-    if (raster_owned) {
-      gimg_raster_destroy(raster);
-    }
-    return GIMG_ERR_UNSUPPORTED;
-  }
-  if (width > GIMG_JPEG_MAX_DIMENSION || height > GIMG_JPEG_MAX_DIMENSION) {
-    if (raster_owned) {
-      gimg_raster_destroy(raster);
-    }
-    return GIMG_ERR_LIMIT;
-  }
-
-  size_t pixel_count = 0;
-  if (gimg_safe_pixel_count(width, height, &pixel_count) != GIMG_OK) {
-    if (raster_owned) {
-      gimg_raster_destroy(raster);
-    }
-    return GIMG_ERR_LIMIT;
-  }
-
-  int num_components = 0;
-  if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count == 1 &&
-      fmt->bits_per_channel[0] == 8) {
-    num_components = 1;
-  }
-  else if ((fmt->channel_model == GIMG_CHANNEL_RGB ||
-               fmt->channel_model == GIMG_CHANNEL_RGBA) &&
-      fmt->channel_count >= 3 && fmt->bits_per_channel[0] == 8 &&
-      fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
-    num_components = 3;
-  }
-  else {
-    if (raster_owned) {
-      gimg_raster_destroy(raster);
-    }
-    return GIMG_ERR_UNSUPPORTED;
-  }
-
   const GIMG_Allocator * alloc = codec->allocator;
   alloc = gimg_alloc_or_default(alloc);
-  size_t stride_bytes = gimg_raster_stride_bytes(raster);
-  const unsigned char * pixels =
-      (const unsigned char *)gimg_raster_pixels_const(raster);
-  if (!pixels) {
-    if (raster_owned) {
-      gimg_raster_destroy(raster);
-    }
-    return GIMG_ERR_UNSUPPORTED;
-  }
-
-  // Allocate component buffers (Y only or Y, Cb, Cr). 4:4:4 so same size.
-  size_t comp_size = 0;
-  if (!gimg_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
-    if (raster_owned) {
-      gimg_raster_destroy(raster);
-    }
-    return GIMG_ERR_LIMIT;
-  }
-  unsigned char * comp_y = (unsigned char *)gimg_malloc(alloc, comp_size);
-  if (!comp_y) {
-    if (raster_owned) {
-      gimg_raster_destroy(raster);
-    }
-    return GIMG_ERR_OOM;
-  }
-  unsigned char * comp_cb = NULL;
-  unsigned char * comp_cr = NULL;
-  if (num_components == 3) {
-    comp_cb = (unsigned char *)gimg_malloc(alloc, comp_size);
-    comp_cr = (unsigned char *)gimg_malloc(alloc, comp_size);
-    if (!comp_cb || !comp_cr) {
-      gimg_free(alloc, comp_y);
-      if (comp_cb) {
-        gimg_free(alloc, comp_cb);
-      }
-      if (raster_owned) {
-        gimg_raster_destroy(raster);
-      }
-      return GIMG_ERR_OOM;
-    }
-  }
-
-  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
-  if (num_components == 1) {
-    for (uint32_t y = 0; y < height; y++) {
-      const unsigned char * row = pixels + y * stride_bytes;
-      for (uint32_t x = 0; x < width; x++) {
-        comp_y[y * (size_t)width + x] = row[x * bpp];
-      }
-    }
-  }
-  else {
-    for (uint32_t y = 0; y < height; y++) {
-      const unsigned char * row = pixels + y * stride_bytes;
-      for (uint32_t x = 0; x < width; x++) {
-        uint8_t r = row[x * bpp + 0];
-        uint8_t g = row[x * bpp + 1];
-        uint8_t b = row[x * bpp + 2];
-        uint8_t yv, cb, cr;
-        jpeg_rgb_to_ycbcr(r, g, b, &yv, &cb, &cr);
-        comp_y[y * (size_t)width + x] = yv;
-        comp_cb[y * (size_t)width + x] = cb;
-        comp_cr[y * (size_t)width + x] = cr;
-      }
-    }
-  }
 
   unsigned quality = GIMG_JPEG_DEFAULT_QUALITY;
   if (options && options->quality != 0) {
@@ -280,17 +502,12 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
   uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES];
   uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES];
-  gimg_jpeg_default_quant_scaled(quality, quant_luma, quant_chroma);
-
   unsigned char * scan_data = NULL;
   size_t scan_size = 0;
-  GIMG_Result r = gimg_jpeg_encode_baseline_scan(width, height, num_components,
-      comp_y, comp_cb, comp_cr, (size_t)width, (size_t)width, (size_t)width,
-      quant_luma, quant_chroma, alloc, &scan_data, &scan_size);
-
-  gimg_free(alloc, comp_y);
-  gimg_free(alloc, comp_cb);
-  gimg_free(alloc, comp_cr);
+  uint32_t width = 0, height = 0;
+  int num_components = 0;
+  GIMG_Result r = jpeg_raster_to_scan_data(alloc, raster, quality, &scan_data,
+      &scan_size, quant_luma, quant_chroma, &width, &height, &num_components);
   if (raster_owned) {
     gimg_raster_destroy(raster);
   }
@@ -330,11 +547,10 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       if (gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_COM, NULL,
               &com_size) == GIMG_OK &&
           com_size > 0) {
-        unsigned char * com_buf =
-            (unsigned char *)gimg_malloc(alloc, com_size);
+        unsigned char * com_buf = (unsigned char *)gimg_malloc(alloc, com_size);
         if (com_buf) {
-          r = gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_COM, com_buf,
-              &com_size);
+          r = gimg_meta_raw_get(
+              meta_raw, "jpeg", GIMG_JPEG_RAW_COM, com_buf, &com_size);
           if (r == GIMG_OK) {
             size_t offset = 0;
             while (offset + 2 <= com_size) {
@@ -400,49 +616,224 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
     // APP1 EXIF / XMP and APP2 ICC only when policy preserves metadata
     if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_COMMON_ONLY) {
-      // APP1 EXIF (optionally STRIP_GPS or NORMALIZE_EXIF)
+      // APP1 EXIF: build with thumbnail when doc has second item; else preserve
+      // from meta_raw (optionally STRIP_GPS or NORMALIZE_EXIF).
       {
-        size_t exif_size = 0;
-        if (meta_raw &&
-            gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_EXIF, NULL,
-                &exif_size) == GIMG_OK &&
-            exif_size > 0) {
-          unsigned char * exif_buf =
-              (unsigned char *)gimg_malloc(alloc, exif_size);
-          if (exif_buf) {
-            r = gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_EXIF,
-                exif_buf, &exif_size);
-            if (r == GIMG_OK) {
-              const void * to_write = exif_buf;
-              size_t to_write_size = exif_size;
-              void * modified = NULL;
-              size_t modified_size = 0;
-              if (policy == GIMG_META_STRIP_GPS) {
-                if (gimg_exif_strip_gps(alloc, exif_buf, exif_size, &modified,
-                        &modified_size) == GIMG_OK) {
-                  to_write = modified;
-                  to_write_size = modified_size;
+        size_t item_count = gimg_doc_item_count(doc);
+        unsigned int thumb_fmt = options
+            ? options->exif_thumbnail_format
+            : (unsigned int)GIMG_EXIF_THUMB_FORMAT_DEFAULT;
+        if (thumb_fmt == 0) {
+          thumb_fmt = GIMG_EXIF_THUMB_FORMAT_JPEG;
+        }
+        unsigned int thumb_quality =
+            (options && options->exif_thumbnail_quality != 0)
+            ? options->exif_thumbnail_quality
+            : GIMG_JPEG_DEFAULT_QUALITY;
+        if (thumb_quality > 100) {
+          thumb_quality = 100;
+        }
+
+        int wrote_exif = 0;
+        if (item_count >= 2 &&
+            (thumb_fmt == GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED ||
+                thumb_fmt == GIMG_EXIF_THUMB_FORMAT_JPEG ||
+                thumb_fmt == GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG)) {
+          GIMG_Item * thumb_item = gimg_doc_item((GIMG_Doc *)doc, 1);
+          GIMG_Raster * thumb_raster =
+              thumb_item ? gimg_item_raster(thumb_item) : NULL;
+          int thumb_raster_owned = 0;
+          if (!thumb_raster &&
+              doc->loaded_by_codec == (struct GIMG_Codec *)codec &&
+              thumb_item) {
+            r = gimg_item_decode(thumb_item, NULL, &thumb_raster);
+            if (r == GIMG_OK && thumb_raster) {
+              thumb_raster_owned = 1;
+            }
+          }
+          if (thumb_raster) {
+            const void * base_exif = NULL;
+            size_t base_size = 0;
+            unsigned char * base_exif_owned = NULL;
+            if (meta_raw) {
+              size_t raw_exif_size = 0;
+              if (gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_EXIF,
+                      NULL, &raw_exif_size) == GIMG_OK &&
+                  raw_exif_size > 6) {
+                unsigned char * raw_buf =
+                    (unsigned char *)gimg_malloc(alloc, raw_exif_size);
+                if (raw_buf &&
+                    gimg_meta_raw_get(meta_raw, "jpeg",
+                        GIMG_JPEG_RAW_APP1_EXIF, raw_buf,
+                        &raw_exif_size) == GIMG_OK &&
+                    raw_buf[0] == 'E' && raw_buf[1] == 'x' &&
+                    raw_buf[2] == 'i' && raw_buf[3] == 'f' &&
+                    raw_buf[4] == 0 && raw_buf[5] == 0) {
+                  base_exif = raw_buf + 6;
+                  base_size = raw_exif_size - 6;
+                  base_exif_owned = raw_buf;
                 }
-              }
-              else if (policy == GIMG_META_NORMALIZE_EXIF) {
-                if (gimg_exif_normalize(alloc, exif_buf, exif_size, &modified,
-                        &modified_size) == GIMG_OK) {
-                  to_write = modified;
-                  to_write_size = modified_size;
+                else if (raw_buf) {
+                  gimg_free(alloc, raw_buf);
                 }
-              }
-              r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP1,
-                  to_write, to_write_size, &report->bytes_written);
-              if (modified) {
-                gimg_free(alloc, modified);
               }
             }
-            gimg_free(alloc, exif_buf);
+
+            if (thumb_fmt == GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED) {
+              unsigned char * thumb_strip = NULL;
+              size_t thumb_strip_size = 0;
+              uint32_t tw = 0, th = 0;
+              uint16_t samples = 0;
+              r = jpeg_raster_to_uncompressed_strip(alloc, thumb_raster,
+                  &thumb_strip, &thumb_strip_size, &tw, &th, &samples);
+              if (thumb_raster_owned) {
+                gimg_raster_destroy(thumb_raster);
+              }
+              if (r == GIMG_OK && thumb_strip) {
+                void * exif_tiff = NULL;
+                size_t exif_tiff_size = 0;
+                r = gimg_exif_build_with_thumbnail_uncompressed(alloc,
+                    base_exif, base_size, thumb_strip, thumb_strip_size, tw, th,
+                    samples, 8, &exif_tiff, &exif_tiff_size);
+                if (r == GIMG_OK && exif_tiff) {
+                  static const unsigned char exif_prefix[] = {
+                      'E', 'x', 'i', 'f', 0, 0};
+                  size_t app1_len = 6 + exif_tiff_size;
+                  unsigned char * app1_payload =
+                      (unsigned char *)gimg_malloc(alloc, app1_len);
+                  if (app1_payload) {
+                    memcpy(app1_payload, exif_prefix, 6);
+                    memcpy(app1_payload + 6, exif_tiff, exif_tiff_size);
+                    r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP1,
+                        app1_payload, app1_len, &report->bytes_written);
+                    gimg_free(alloc, app1_payload);
+                    wrote_exif = (r == GIMG_OK);
+                  }
+                  gimg_free(alloc, exif_tiff);
+                }
+                gimg_free(alloc, thumb_strip);
+              }
+              if (base_exif_owned) {
+                gimg_free(alloc, base_exif_owned);
+              }
+            }
+            else {
+              unsigned char * thumb_scan = NULL;
+              size_t thumb_scan_size = 0;
+              uint16_t tq_luma[GIMG_JPEG_DQT_ENTRIES];
+              uint16_t tq_chroma[GIMG_JPEG_DQT_ENTRIES];
+              uint32_t tw = 0, th = 0;
+              int tnc = 0;
+              r = jpeg_raster_to_scan_data(alloc, thumb_raster, thumb_quality,
+                  &thumb_scan, &thumb_scan_size, tq_luma, tq_chroma, &tw, &th,
+                  &tnc);
+              if (thumb_raster_owned) {
+                gimg_raster_destroy(thumb_raster);
+              }
+              if (r == GIMG_OK && thumb_scan) {
+                GIMG_Stream * mem_stream = NULL;
+                r = gimg_stream_create_memory_output_with_allocator(
+                    alloc, &mem_stream);
+                if (r == GIMG_OK && mem_stream) {
+                  size_t mem_n = 0;
+                  r = jpeg_write_marker(mem_stream, GIMG_JPEG_MARKER_SOI,
+                      &mem_n);
+                  if (r == GIMG_OK) {
+                    r = jpeg_write_image_body(mem_stream, tw, th, tnc,
+                        tq_luma, tq_chroma, thumb_scan, thumb_scan_size,
+                        &mem_n);
+                  }
+                  if (r == GIMG_OK) {
+                    const void * jpeg_buf = NULL;
+                    size_t jpeg_buf_size = 0;
+                    gimg_stream_output_buffer(
+                        mem_stream, &jpeg_buf, &jpeg_buf_size);
+                    void * exif_tiff = NULL;
+                    size_t exif_tiff_size = 0;
+                    if (thumb_fmt == GIMG_EXIF_THUMB_FORMAT_JPEG) {
+                      r = gimg_exif_build_with_thumbnail_jpeg(alloc, base_exif,
+                          base_size, jpeg_buf, jpeg_buf_size, &exif_tiff,
+                          &exif_tiff_size);
+                    }
+                    else {
+                      r = gimg_exif_build_with_thumbnail_tiff_jpeg(alloc,
+                          base_exif, base_size, jpeg_buf, jpeg_buf_size,
+                          &exif_tiff, &exif_tiff_size);
+                    }
+                    if (r == GIMG_OK && exif_tiff) {
+                      static const unsigned char exif_prefix[] = {
+                          'E', 'x', 'i', 'f', 0, 0};
+                      size_t app1_len = 6 + exif_tiff_size;
+                      unsigned char * app1_payload =
+                          (unsigned char *)gimg_malloc(alloc, app1_len);
+                      if (app1_payload) {
+                        memcpy(app1_payload, exif_prefix, 6);
+                        memcpy(app1_payload + 6, exif_tiff, exif_tiff_size);
+                        r = jpeg_write_app_segment(stream,
+                            GIMG_JPEG_MARKER_APP1, app1_payload, app1_len,
+                            &report->bytes_written);
+                        gimg_free(alloc, app1_payload);
+                        wrote_exif = (r == GIMG_OK);
+                      }
+                      gimg_free(alloc, exif_tiff);
+                    }
+                  }
+                  gimg_stream_destroy(mem_stream);
+                }
+              }
+              if (thumb_scan) {
+                gimg_free(alloc, thumb_scan);
+              }
+              if (base_exif_owned) {
+                gimg_free(alloc, base_exif_owned);
+              }
+            }
           }
-          if (r != GIMG_OK) {
-            gimg_free(alloc, scan_data);
-            return r;
+        }
+
+        if (!wrote_exif) {
+          size_t exif_size = 0;
+          if (meta_raw &&
+              gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_EXIF, NULL,
+                  &exif_size) == GIMG_OK &&
+              exif_size > 0) {
+            unsigned char * exif_buf =
+                (unsigned char *)gimg_malloc(alloc, exif_size);
+            if (exif_buf) {
+              r = gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_EXIF,
+                  exif_buf, &exif_size);
+              if (r == GIMG_OK) {
+                const void * to_write = exif_buf;
+                size_t to_write_size = exif_size;
+                void * modified = NULL;
+                size_t modified_size = 0;
+                if (policy == GIMG_META_STRIP_GPS) {
+                  if (gimg_exif_strip_gps(alloc, exif_buf, exif_size, &modified,
+                          &modified_size) == GIMG_OK) {
+                    to_write = modified;
+                    to_write_size = modified_size;
+                  }
+                }
+                else if (policy == GIMG_META_NORMALIZE_EXIF) {
+                  if (gimg_exif_normalize(alloc, exif_buf, exif_size, &modified,
+                          &modified_size) == GIMG_OK) {
+                    to_write = modified;
+                    to_write_size = modified_size;
+                  }
+                }
+                r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP1,
+                    to_write, to_write_size, &report->bytes_written);
+                if (modified) {
+                  gimg_free(alloc, modified);
+                }
+              }
+              gimg_free(alloc, exif_buf);
+            }
           }
+        }
+        if (r != GIMG_OK) {
+          gimg_free(alloc, scan_data);
+          return r;
         }
       }
 
@@ -492,167 +883,9 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
 
-  // DQT: table 0 (luma), table 1 (chroma). Lq = 2 + 1 + 64 = 67 for 8-bit.
-  {
-    unsigned char dqt0[67];
-    memset(dqt0, 0, sizeof(dqt0));
-    dqt0[0] = 0x00; // Pq=0 (8-bit), Tq=0
-    for (int i = 0; i < 64; i++) {
-      dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
-    }
-    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &report->bytes_written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    r = jpeg_write_u16(stream, 67, &report->bytes_written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    r = gimg_stream_write(stream, dqt0, sizeof(dqt0), &written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    report->bytes_written += written;
-
-    if (num_components == 3) {
-      unsigned char dqt1[67];
-      memset(dqt1, 0, sizeof(dqt1));
-      dqt1[0] = 0x01; // Tq=1
-      for (int i = 0; i < 64; i++) {
-        dqt1[1 + i] =
-            (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
-      }
-      r = jpeg_write_marker(
-          stream, GIMG_JPEG_MARKER_DQT, &report->bytes_written);
-      if (r != GIMG_OK) {
-        gimg_free(alloc, scan_data);
-        return r;
-      }
-      r = jpeg_write_u16(stream, 67, &report->bytes_written);
-      if (r != GIMG_OK) {
-        gimg_free(alloc, scan_data);
-        return r;
-      }
-      r = gimg_stream_write(stream, dqt1, sizeof(dqt1), &written);
-      if (r != GIMG_OK) {
-        gimg_free(alloc, scan_data);
-        return r;
-      }
-      report->bytes_written += written;
-    }
-  }
-
-  // DHT: standard tables
-  {
-    size_t dht_written = 0;
-    r = gimg_jpeg_write_standard_dht(stream, &dht_written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    report->bytes_written += dht_written;
-  }
-
-  // SOF0
-  {
-    uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
-    r = jpeg_write_marker(
-        stream, GIMG_JPEG_MARKER_SOF0, &report->bytes_written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    r = jpeg_write_u16(stream, sof_len, &report->bytes_written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    unsigned char sof[8 + 3 * 4];
-    memset(sof, 0, sizeof(sof));
-    sof[0] = 8; // precision
-    sof[1] = (unsigned char)(height >> 8);
-    sof[2] = (unsigned char)(height & 0xFF);
-    sof[3] = (unsigned char)(width >> 8);
-    sof[4] = (unsigned char)(width & 0xFF);
-    sof[5] = (unsigned char)num_components;
-    if (num_components == 1) {
-      sof[6] = 0x01; // C1=1
-      sof[7] = 0x11; // H=1, V=1
-      sof[8] = 0x00; // Tq=0
-    }
-    else {
-      sof[6] = 0x01;
-      sof[7] = 0x11;
-      sof[8] = 0x00;
-      sof[9] = 0x02;
-      sof[10] = 0x11;
-      sof[11] = 0x01;
-      sof[12] = 0x03;
-      sof[13] = 0x11;
-      sof[14] = 0x01;
-    }
-    r = gimg_stream_write(
-        stream, sof, 8 + 3 * (size_t)num_components, &written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    report->bytes_written += written;
-  }
-
-  // SOS per T.81 Annex B: Ls = 2 + (1 + 2*Ns + 3) = 6 + 2*Ns; payload ends with
-  // Ss (1), Se (1), and one byte Ah (high 4 bits) | Al (low 4 bits).
-  {
-    uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)num_components);
-    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &report->bytes_written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    r = jpeg_write_u16(stream, sos_len, &report->bytes_written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    unsigned char sos[12];
-    memset(sos, 0, sizeof(sos));
-    sos[0] = (unsigned char)num_components;
-    if (num_components == 1) {
-      sos[1] = 0x01;  // Cs=1
-      sos[2] = 0x00;  // Td=0, Ta=0
-    }
-    else {
-      sos[1] = 0x01;
-      sos[2] = 0x00;  // Td=0, Ta=0
-      sos[3] = 0x02;
-      sos[4] = 0x11;  // Td=1, Ta=1
-      sos[5] = 0x03;
-      sos[6] = 0x11;
-    }
-    size_t tail = 1 + 2 * (size_t)num_components;
-    sos[tail] = 0x00;      // Ss
-    sos[tail + 1] = 0x3F;  // Se
-    sos[tail + 2] = 0x00;  // Ah (high nibble) | Al (low nibble) = 0 for baseline
-    r = gimg_stream_write(stream, sos, tail + 3, &written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    report->bytes_written += written;
-  }
-
-  // Scan data (already byte-stuffed in encoder)
-  r = gimg_stream_write(stream, scan_data, scan_size, &written);
+  r = jpeg_write_image_body(stream, width, height, num_components, quant_luma,
+      quant_chroma, scan_data, scan_size, &report->bytes_written);
   gimg_free(alloc, scan_data);
-  if (r != GIMG_OK) {
-    return r;
-  }
-  report->bytes_written += written;
-
-  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &report->bytes_written);
   if (r != GIMG_OK) {
     return r;
   }

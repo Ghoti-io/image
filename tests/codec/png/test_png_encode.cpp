@@ -32,7 +32,7 @@ TEST(PngEncode, SaveNullDocReturnsInternal) {
   GIMG_Result r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(out_s, nullptr);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(nullptr, out_s, "png", &opts, &report);
   EXPECT_EQ(r, GIMG_ERR_INTERNAL);
@@ -43,7 +43,7 @@ TEST(PngEncode, SaveNullStreamReturnsInternal) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
   ASSERT_NE(doc, nullptr);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   GIMG_Result r = gimg_doc_save(doc, nullptr, "png", &opts, &report);
   EXPECT_EQ(r, GIMG_ERR_INTERNAL);
@@ -55,7 +55,7 @@ TEST(PngEncode, SaveNullFormatReturnsInternal) {
   GIMG_Stream * out_s = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
   ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   GIMG_Result r = gimg_doc_save(doc, out_s, nullptr, &opts, &report);
   EXPECT_EQ(r, GIMG_ERR_INTERNAL);
@@ -68,7 +68,7 @@ TEST(PngEncode, SaveUnsupportedFormatReturnsUnsupported) {
   GIMG_Stream * out_s = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
   ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   GIMG_Result r = gimg_doc_save(doc, out_s, "jpeg", &opts, &report);
   EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
@@ -98,7 +98,7 @@ TEST(PngEncode, SaveToMemoryOutputSucceeds) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(out_s, nullptr);
 
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save (1x1 gray)";
@@ -140,7 +140,7 @@ TEST(PngEncode, RoundTrip1x1Gray) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r != GIMG_OK) {
@@ -210,7 +210,7 @@ TEST(PngEncode, RoundTrip1x1Rgba) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r != GIMG_OK) {
@@ -272,7 +272,7 @@ TEST(PngEncode, RoundTrip16BitGray) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save 16-bit grayscale";
@@ -331,7 +331,7 @@ TEST(PngEncode, RoundTrip16BitRgba) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save 16-bit RGBA";
@@ -390,7 +390,7 @@ TEST(PngEncode, RoundTrip1x1Rgb) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save RGB (color_type 2) round-trip";
@@ -451,7 +451,7 @@ TEST(PngEncode, RoundTrip16BitRgb) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save 16-bit RGB round-trip";
@@ -510,7 +510,7 @@ TEST(PngEncode, RoundTrip1x1Grayalpha) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save grayscale+alpha (color_type 4) round-trip";
@@ -571,7 +571,7 @@ TEST(PngEncode, RoundTrip16BitGrayalpha) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save 16-bit grayscale+alpha round-trip";
@@ -630,7 +630,7 @@ TEST(PngEncode, RoundTripPalette) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "save palette (PLTE + tRNS)";
@@ -689,7 +689,7 @@ TEST(PngEncode, SaveWithPreserveAllKeepsExif) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r != GIMG_OK) {
@@ -745,7 +745,7 @@ TEST(PngEncode, SaveWithDropAllStripsMetadata) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_DROP_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_DROP_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK);
@@ -799,7 +799,7 @@ TEST(PngEncode, SaveWithStripGpsStripsOnlyGps) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_STRIP_GPS, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_STRIP_GPS, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK);
@@ -848,7 +848,7 @@ TEST(PngEncode, SaveWithNormalizeExifPreservesExif) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_NORMALIZE_EXIF, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_NORMALIZE_EXIF, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK);
@@ -896,7 +896,7 @@ TEST(PngEncode, SaveWithKeepRawOnlyOmitsKnownSemantic) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_KEEP_RAW_ONLY, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_KEEP_RAW_ONLY, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK);
@@ -946,7 +946,7 @@ TEST(PngEncode, SaveWithKeepCommonOnlyRoundTripsColorOnly) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_KEEP_COMMON_ONLY, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_KEEP_COMMON_ONLY, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK);
@@ -1004,7 +1004,8 @@ TEST(PngEncode, SaveInterlacedRoundTrip) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 1, 0, {0}}; // interlaced=1
+  GIMG_Save_Options opts = {
+      GIMG_META_PRESERVE_ALL, 1, 0, 0, 0, {0, 0}}; // interlaced=1
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK);
@@ -1058,7 +1059,7 @@ TEST(PngEncode, ApngRoundTrip) {
   GIMG_Stream * out_s = nullptr;
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, {0}};
+  GIMG_Save_Options opts = {GIMG_META_PRESERVE_ALL, 0, 0, 0, 0, {0, 0}};
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK) << "APNG save";

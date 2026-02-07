@@ -18,9 +18,16 @@ GIMG_Result gimg_jpeg_decode(GIMG_Codec * codec, const GIMG_Item * item,
   if (!codec || !item || !out_raster) {
     return GIMG_ERR_INTERNAL;
   }
+  *out_raster = NULL;
   GIMG_Doc * doc = item->doc;
   if (!doc || doc->loaded_by_codec != codec || !doc->codec_private) {
     return GIMG_ERR_UNSUPPORTED;
+  }
+  // Non-primary items (e.g. EXIF thumbnail at index 1) have their raster
+  // attached at load; return a copy so decode yields the thumbnail.
+  if (item->index != 0 && item->raster) {
+    return gimg_raster_copy_with_allocator(
+        doc->allocator, item->raster, out_raster);
   }
   gimg_jpeg_doc_state_t * state =
       (gimg_jpeg_doc_state_t *)doc->codec_private;
