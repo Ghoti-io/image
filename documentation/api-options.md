@@ -75,6 +75,7 @@ Format-specific behavior (e.g. PNG chunk emission) is described in \ref format_r
 | Field     | Description |
 |-----------|-------------|
 | `limits`  | Pointer to **GIMG_Limits**; `NULL` = use defaults. Enforced during decode (e.g. max decoded pixels). |
+| `jpeg_chroma_upsampling` | JPEG only: chroma upsampling for 4:2:0/4:2:2. **GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE** (0) = box/replicate; **GIMG_JPEG_CHROMA_UPSAMPLE_FANCY** (1) = triangle filter (libjpeg default). Default 0 until fancy is made the default. Ignored for non-JPEG. |
 | `_reserved` | Reserved; set to zero. |
 
 Used by `gimg_item_decode()`.

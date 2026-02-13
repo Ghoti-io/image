@@ -55,6 +55,34 @@ static GIMG_Result jpeg_write_marker(
   return r;
 }
 
+/** Write entropy-coded segment with 0xFF stuffing (T.81 B.2.2: 0xFF in scan
+ * data must be followed by a stuffed 0x00 so the next 0xFF is not misread). */
+static GIMG_Result jpeg_write_scan_data_with_stuffing(GIMG_Stream * stream,
+    const unsigned char * scan_data, size_t scan_size, size_t * out_n) {
+  size_t total = 0;
+  for (size_t i = 0; i < scan_size; i++) {
+    unsigned char b = scan_data[i];
+    size_t n = 0;
+    GIMG_Result r = gimg_stream_write(stream, &b, 1, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    total += n;
+    if (b == 0xFF) {
+      const unsigned char stuff = 0x00;
+      r = gimg_stream_write(stream, &stuff, 1, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      total += n;
+    }
+  }
+  if (out_n) {
+    *out_n += total;
+  }
+  return GIMG_OK;
+}
+
 /** Write APP segment: marker + length (2 + payload_len) + payload. */
 static GIMG_Result jpeg_write_app_segment(GIMG_Stream * stream, uint8_t marker,
     const void * payload, size_t payload_len, size_t * out_n) {
@@ -82,8 +110,9 @@ static GIMG_Result jpeg_write_app_segment(GIMG_Stream * stream, uint8_t marker,
   return GIMG_OK;
 }
 
-/** Build minimal APP0 JFIF (16 bytes). If x_dpi and y_dpi are both 0, use
- * units=0 (no units) and density 1,1; else units=1 (dots per inch). */
+/** Build minimal APP0 JFIF (14 bytes), per JFIF 1.01. Lh=16 so segment is
+ * 2+16 bytes. If x_dpi and y_dpi are both 0, use units=0 and density 1,1;
+ * else units=1 (dots per inch). No thumbnail (Xthumbnail=0, Ythumbnail=0). */
 static void jpeg_build_minimal_app0(
     unsigned char * buf, uint32_t x_dpi, uint32_t y_dpi) {
   memcpy(buf, "JFIF\0", 5);
@@ -109,10 +138,8 @@ static void jpeg_build_minimal_app0(
     buf[10] = (unsigned char)(y_dpi >> 8);
     buf[11] = (unsigned char)(y_dpi & 0xFFu);
   }
-  buf[12] = 0;
-  buf[13] = 0; // no thumbnail
-  buf[14] = 0;
-  buf[15] = 0;
+  buf[12] = 0; // Xthumbnail
+  buf[13] = 0; // Ythumbnail
 }
 
 /** RGB to YCbCr (BT.601). R,G,B 0..255 -> Y,Cb,Cr 0..255. */
@@ -160,7 +187,7 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
   (void)progressive;
   (void)out_scan_data;
   (void)out_scan_size;
-  /* 16-bit always uses coef buffer (SOF2 + two scans). */
+  // 16-bit always uses coef buffer (SOF2 + two scans).
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
@@ -382,9 +409,9 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
       : NULL;
   GIMG_Result r;
   int precision = 16;
-  /* 16-bit must use SOF2 (progressive) with two scans (DC then AC) so the
-   * decoder can decode; always fill coef buffer and let the writer emit
-   * SOF2 + DC scan + AC scan. */
+  // 16-bit must use SOF2 (progressive) with two scans (DC then AC) so the
+  // decoder can decode; always fill coef buffer and let the writer emit
+  // SOF2 + DC scan + AC scan.
   uint8_t h_max = h_samp[0];
   uint8_t v_max = v_samp[0];
   if (num_components >= 3) {
@@ -674,7 +701,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       comp_cr = NULL;
     }
     else {
-      /* 4:2:2: 2x1 horizontal, 8x1 vertical (one Cb 8x8 block per 16x8 MCU). */
+      // 4:2:2: 2x1 horizontal, 8x1 vertical (one Cb 8x8 block per 16x8 MCU).
       uint32_t mcu_per_row = (width + 15u) / 16u;
       uint32_t mcu_per_col = (height + 7u) / 8u;
       uint32_t cw = 8u * mcu_per_row;
@@ -841,12 +868,72 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     *out_total_blocks = total_blocks;
   }
   else {
-    unsigned char * scan_data = NULL;
-    size_t scan_size = 0;
-    r = gimg_jpeg_encode_baseline_scan(width, height, num_components,
+    // Use same coefficient buffer path as progressive so baseline and
+    // progressive decode to identical pixels (only scan order differs).
+    uint8_t h_max = h_samp[0];
+    uint8_t v_max = v_samp[0];
+    if (num_components >= 3) {
+      if (h_samp[1] > h_max) {
+        h_max = h_samp[1];
+      }
+      if (h_samp[2] > h_max) {
+        h_max = h_samp[2];
+      }
+      if (v_samp[1] > v_max) {
+        v_max = v_samp[1];
+      }
+      if (v_samp[2] > v_max) {
+        v_max = v_samp[2];
+      }
+    }
+    uint32_t mcu_w = (uint32_t)(8 * h_max);
+    uint32_t mcu_h = (uint32_t)(8 * v_max);
+    uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
+    uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
+    size_t blocks_per_mcu = 0;
+    for (int c = 0; c < num_components; c++) {
+      blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
+    }
+    size_t total_blocks = 0;
+    if (!gimg_safe_mul_size((size_t)mcu_per_row, (size_t)mcu_per_col,
+            &total_blocks) ||
+        !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+      gimg_free(alloc, comp_y);
+      if (use_cb != comp_cb) {
+        gimg_free(alloc, use_cb);
+      }
+      else if (comp_cb) {
+        gimg_free(alloc, comp_cb);
+      }
+      if (use_cr != comp_cr) {
+        gimg_free(alloc, use_cr);
+      }
+      else if (comp_cr) {
+        gimg_free(alloc, comp_cr);
+      }
+      return GIMG_ERR_LIMIT;
+    }
+    int16_t * coef_buf = (int16_t *)gimg_malloc(alloc,
+        total_blocks * 64 * sizeof(int16_t));
+    if (!coef_buf) {
+      gimg_free(alloc, comp_y);
+      if (use_cb != comp_cb) {
+        gimg_free(alloc, use_cb);
+      }
+      else if (comp_cb) {
+        gimg_free(alloc, comp_cb);
+      }
+      if (use_cr != comp_cr) {
+        gimg_free(alloc, use_cr);
+      }
+      else if (comp_cr) {
+        gimg_free(alloc, comp_cr);
+      }
+      return GIMG_ERR_OOM;
+    }
+    r = gimg_jpeg_progressive_fill_coef_buffer(width, height, num_components,
         comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
-        quant_luma, quant_chroma, alloc, restart_interval,
-        &scan_data, &scan_size);
+        quant_luma, quant_chroma, coef_buf, &total_blocks);
     gimg_free(alloc, comp_y);
     if (use_cb != comp_cb) {
       gimg_free(alloc, use_cb);
@@ -860,6 +947,16 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     else if (comp_cr) {
       gimg_free(alloc, comp_cr);
     }
+    if (r != GIMG_OK) {
+      gimg_free(alloc, coef_buf);
+      return r;
+    }
+    unsigned char * scan_data = NULL;
+    size_t scan_size = 0;
+    r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(width, height,
+        num_components, coef_buf, total_blocks, h_ptr, v_ptr, alloc,
+        restart_interval, &scan_data, &scan_size);
+    gimg_free(alloc, coef_buf);
     if (r != GIMG_OK || !scan_data) {
       return (r != GIMG_OK) ? r : GIMG_ERR_OOM;
     }
@@ -951,7 +1048,7 @@ static GIMG_Result jpeg_write_dri(
   if (r != GIMG_OK) {
     return r;
   }
-  r = jpeg_write_u16(stream, 4, &n); /* length: 2 + 2 payload */
+  r = jpeg_write_u16(stream, 4, &n); // length: 2 + 2 payload
   if (r != GIMG_OK) {
     return r;
   }
@@ -965,8 +1062,32 @@ static GIMG_Result jpeg_write_dri(
   return GIMG_OK;
 }
 
+/** 8-bit DQT payload: 1 byte (Pq<<4|Tq) + 64 bytes = 65 (T.81 B.2.4.1). */
+#define GIMG_JPEG_DQT_8BIT_PAYLOAD 65
 /** Write 16-bit DQT (Pq=1): payload 1 + 64*2 = 129 bytes; segment length 131. */
 #define GIMG_JPEG_DQT_16BIT_PAYLOAD 129
+
+/** Write one 8-bit DQT segment: marker, length (2+65), then exactly 65 payload
+ * bytes. Ensures correct order and size for libjpeg compatibility. */
+static GIMG_Result jpeg_write_dqt_8bit_segment(GIMG_Stream * stream,
+    const unsigned char payload[GIMG_JPEG_DQT_8BIT_PAYLOAD], size_t * out_n) {
+  GIMG_Result r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, out_n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_u16(stream,
+      (uint16_t)(2 + GIMG_JPEG_DQT_8BIT_PAYLOAD), out_n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  size_t written = 0;
+  r = gimg_stream_write(stream, payload, GIMG_JPEG_DQT_8BIT_PAYLOAD, &written);
+  if (out_n) {
+    *out_n += written;
+  }
+  return r;
+}
+
 static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream, int num_components,
     const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], size_t * out_n) {
@@ -974,10 +1095,11 @@ static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream, int num_components
   GIMG_Result r;
   size_t written = 0;
   unsigned char dqt0[GIMG_JPEG_DQT_16BIT_PAYLOAD];
-  dqt0[0] = 0x10; /* Pq=1, Tq=0 */
-  for (int i = 0; i < 64; i++) {
-    dqt0[1 + i * 2] = (unsigned char)(quant_luma[i] >> 8);
-    dqt0[2 + i * 2] = (unsigned char)(quant_luma[i] & 0xFF);
+  dqt0[0] = 0x10; // Pq=1, Tq=0
+  for (int z = 0; z < 64; z++) {
+    uint16_t v = quant_luma[gimg_jpeg_zigzag[z]];
+    dqt0[1 + z * 2] = (unsigned char)(v >> 8);
+    dqt0[2 + z * 2] = (unsigned char)(v & 0xFF);
   }
   r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
   if (r != GIMG_OK) {
@@ -994,10 +1116,11 @@ static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream, int num_components
   n += written;
   if (num_components == 3) {
     unsigned char dqt1[GIMG_JPEG_DQT_16BIT_PAYLOAD];
-    dqt1[0] = 0x11; /* Pq=1, Tq=1 */
-    for (int i = 0; i < 64; i++) {
-      dqt1[1 + i * 2] = (unsigned char)(quant_chroma[i] >> 8);
-      dqt1[2 + i * 2] = (unsigned char)(quant_chroma[i] & 0xFF);
+    dqt1[0] = 0x11; // Pq=1, Tq=1
+    for (int z = 0; z < 64; z++) {
+      uint16_t v = quant_chroma[gimg_jpeg_zigzag[z]];
+      dqt1[1 + z * 2] = (unsigned char)(v >> 8);
+      dqt1[2 + z * 2] = (unsigned char)(v & 0xFF);
     }
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
     if (r != GIMG_OK) {
@@ -1048,46 +1171,29 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     }
   }
   else {
-    unsigned char dqt0[67];
+    unsigned char dqt0[GIMG_JPEG_DQT_8BIT_PAYLOAD];
     memset(dqt0, 0, sizeof(dqt0));
     dqt0[0] = 0x00;
-    for (int i = 0; i < 64; i++) {
-      dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
+    for (int z = 0; z < 64; z++) {
+      uint16_t v = quant_luma[gimg_jpeg_zigzag[z]];
+      dqt0[1 + z] = (unsigned char)(v > 255 ? 255 : v);
     }
-    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+    r = jpeg_write_dqt_8bit_segment(stream, dqt0, &n);
     if (r != GIMG_OK) {
       return r;
     }
-    r = jpeg_write_u16(stream, 67, &n);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    r = gimg_stream_write(stream, dqt0, sizeof(dqt0), &written);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    n += written;
     if (num_components == 3) {
-      unsigned char dqt1[67];
+      unsigned char dqt1[GIMG_JPEG_DQT_8BIT_PAYLOAD];
       memset(dqt1, 0, sizeof(dqt1));
       dqt1[0] = 0x01;
-      for (int i = 0; i < 64; i++) {
-        dqt1[1 + i] =
-            (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
+      for (int z = 0; z < 64; z++) {
+        uint16_t v = quant_chroma[gimg_jpeg_zigzag[z]];
+        dqt1[1 + z] = (unsigned char)(v > 255 ? 255 : v);
       }
-      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+      r = jpeg_write_dqt_8bit_segment(stream, dqt1, &n);
       if (r != GIMG_OK) {
         return r;
       }
-      r = jpeg_write_u16(stream, 67, &n);
-      if (r != GIMG_OK) {
-        return r;
-      }
-      r = gimg_stream_write(stream, dqt1, sizeof(dqt1), &written);
-      if (r != GIMG_OK) {
-        return r;
-      }
-      n += written;
     }
     {
       size_t dht_written = 0;
@@ -1111,7 +1217,9 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
       sof_marker = GIMG_JPEG_MARKER_SOF2;
     }
     uint8_t prec_byte = (uint8_t)(precision < 8 ? 8 : precision);
+    /* SOF Lf = 8 + 3*Nc (T.81 B.2.2); payload = Lf - 2 = 6 + 3*Nc bytes. */
     uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
+    size_t sof_payload = 6 + 3 * (size_t)num_components;
     r = jpeg_write_marker(stream, sof_marker, &n);
     if (r != GIMG_OK) {
       return r;
@@ -1141,8 +1249,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
       sof[7 + c * 3] = (unsigned char)((h << 4) | v);
       sof[8 + c * 3] = (unsigned char)(c == 0 ? 0 : 1);
     }
-    r = gimg_stream_write(
-        stream, sof, 8 + 3 * (size_t)num_components, &written);
+    r = gimg_stream_write(stream, sof, sof_payload, &written);
     if (r != GIMG_OK) {
       return r;
     }
@@ -1183,11 +1290,10 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     }
     n += written;
   }
-  r = gimg_stream_write(stream, scan_data, scan_size, &written);
+  r = jpeg_write_scan_data_with_stuffing(stream, scan_data, scan_size, &n);
   if (r != GIMG_OK) {
     return r;
   }
-  n += written;
   r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
   if (r != GIMG_OK) {
     return r;
@@ -1264,46 +1370,29 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     }
   }
   else {
-    unsigned char dqt0[67];
+    unsigned char dqt0[GIMG_JPEG_DQT_8BIT_PAYLOAD];
     memset(dqt0, 0, sizeof(dqt0));
     dqt0[0] = 0x00;
-    for (int i = 0; i < 64; i++) {
-      dqt0[1 + i] = (unsigned char)(quant_luma[i] > 255 ? 255 : quant_luma[i]);
+    for (int z = 0; z < 64; z++) {
+      uint16_t v = quant_luma[gimg_jpeg_zigzag[z]];
+      dqt0[1 + z] = (unsigned char)(v > 255 ? 255 : v);
     }
-    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+    r = jpeg_write_dqt_8bit_segment(stream, dqt0, &n);
     if (r != GIMG_OK) {
       return r;
     }
-    r = jpeg_write_u16(stream, 67, &n);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    r = gimg_stream_write(stream, dqt0, sizeof(dqt0), &written);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    n += written;
     if (num_components == 3) {
-      unsigned char dqt1[67];
+      unsigned char dqt1[GIMG_JPEG_DQT_8BIT_PAYLOAD];
       memset(dqt1, 0, sizeof(dqt1));
       dqt1[0] = 0x01;
-      for (int i = 0; i < 64; i++) {
-        dqt1[1 + i] =
-            (unsigned char)(quant_chroma[i] > 255 ? 255 : quant_chroma[i]);
+      for (int z = 0; z < 64; z++) {
+        uint16_t v = quant_chroma[gimg_jpeg_zigzag[z]];
+        dqt1[1 + z] = (unsigned char)(v > 255 ? 255 : v);
       }
-      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, &n);
+      r = jpeg_write_dqt_8bit_segment(stream, dqt1, &n);
       if (r != GIMG_OK) {
         return r;
       }
-      r = jpeg_write_u16(stream, 67, &n);
-      if (r != GIMG_OK) {
-        return r;
-      }
-      r = gimg_stream_write(stream, dqt1, sizeof(dqt1), &written);
-      if (r != GIMG_OK) {
-        return r;
-      }
-      n += written;
     }
     {
       size_t dht_written = 0;
@@ -1338,6 +1427,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
   {
     uint8_t prec_byte = (uint8_t)(precision > 8 ? precision : 8);
     uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
+    size_t sof_payload = 6 + 3 * (size_t)num_components;
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOF2, &n);
     if (r != GIMG_OK) {
       return r;
@@ -1367,8 +1457,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       sof[7 + c * 3] = (unsigned char)((h << 4) | v);
       sof[8 + c * 3] = (unsigned char)(c == 0 ? 0 : 1);
     }
-    r = gimg_stream_write(
-        stream, sof, 8 + 3 * (size_t)num_components, &written);
+    r = gimg_stream_write(stream, sof, sof_payload, &written);
     if (r != GIMG_OK) {
       return r;
     }
@@ -1406,7 +1495,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     unsigned char sos[12];
     memset(sos, 0, sizeof(sos));
     sos[0] = (unsigned char)num_components;
-    /* AC refinement scans use Ta=2 (refinement table); else Ta=0/1. */
+    // AC refinement scans use Ta=2 (refinement table); else Ta=0/1.
     int ac_refine = (scans[s].Ah != 0 &&
         !(scans[s].Ss == 0 && scans[s].Se == 0));
     if (num_components == 1) {
@@ -1431,12 +1520,11 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       return r;
     }
     n += written;
-    r = gimg_stream_write(stream, scan_data, scan_size, &written);
+    r = jpeg_write_scan_data_with_stuffing(stream, scan_data, scan_size, &n);
     gimg_free(alloc, scan_data);
     if (r != GIMG_OK) {
       return r;
     }
-    n += written;
   }
   r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
   if (r != GIMG_OK) {
@@ -1646,10 +1734,10 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
     else {
-      unsigned char app0[16];
+      unsigned char app0[14];
       jpeg_build_minimal_app0(app0, x_dpi, y_dpi);
       r = jpeg_write_app_segment(
-          stream, GIMG_JPEG_MARKER_APP0, app0, 16, &report->bytes_written);
+          stream, GIMG_JPEG_MARKER_APP0, app0, 14, &report->bytes_written);
       if (r != GIMG_OK) {
         gimg_free(alloc, to_free);
         return r;

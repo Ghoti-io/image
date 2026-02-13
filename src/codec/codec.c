@@ -9,6 +9,8 @@
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/stream.h>
 #include <string.h>
 
@@ -265,7 +267,30 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  return codec->decode_cb(codec, item, options, out_raster);
+  GIMG_Result r = codec->decode_cb(codec, item, options, out_raster);
+  if (r != GIMG_OK || !*out_raster) {
+    if (*out_raster) {
+      gimg_raster_destroy(*out_raster);
+      *out_raster = NULL;
+    }
+    return r;
+  }
+
+  // Apply EXIF (or other) orientation so decoded pixels match display image
+  // (CIPA DC-008 / EXIF 2.32 orientation convention).
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
+  if (meta) {
+    GIMG_Orientation orient = gimg_meta_common_orientation(meta);
+    if (orient != GIMG_ORIENTATION_UNKNOWN && orient != GIMG_ORIENTATION_NORMAL) {
+      r = gimg_ops_apply_orientation(*out_raster, orient);
+      if (r != GIMG_OK) {
+        gimg_raster_destroy(*out_raster);
+        *out_raster = NULL;
+        return r;
+      }
+    }
+  }
+  return GIMG_OK;
 }
 
 // Ensure the item has a decoded raster: if one is already attached, no-op;

@@ -133,6 +133,8 @@ COMPRESS_NEED_FALLBACK := $(or $(findstring $(COMPRESS_PLACEHOLDER),$(COMPRESS_C
 ifneq ($(COMPRESS_NEED_FALLBACK),)
 COMPRESS_CFLAGS := -I../compress/include
 COMPRESS_LIBS := -L../compress/build/$(BUILD)/apps -lghoti.io-compress$(BRANCH)
+# Let linker resolve image .so's dependency on compress when linking tests.
+LDFLAGS += -Wl,-rpath-link,../compress/build/$(BUILD)/apps
 endif
 INCLUDE += $(COMPRESS_CFLAGS)
 
@@ -277,8 +279,13 @@ $(OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp
 TEST_DATA_PNG := $(CURDIR)/tests/data/png
 # Test data path for JPEG tests (optional cmyk_sample.jpg etc.).
 TEST_DATA_JPEG := $(CURDIR)/tests/data/jpeg
+# libjpeg for decode oracle tools (dump_jpeg_pixels_ref, dump_jpeg_coef_ref).
+LIBJPEG_CFLAGS := $(shell pkg-config --cflags libjpeg 2>/dev/null)
+LIBJPEG_LIBS := $(shell pkg-config --libs libjpeg 2>/dev/null)
 # Output directory for PNG encode test output (add to .gitignore); verifier reads this.
 TEST_OUT_PNG := $(CURDIR)/tests/out/png
+# Output directory for JPEG encode test output; verifier reads this.
+TEST_OUT_JPEG := $(CURDIR)/tests/out/jpeg
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
 	@mkdir -p $(@D)
@@ -330,6 +337,64 @@ $(APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_encode.o 
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY)
 
+# Dump JPEG raster to stdout (for compare_pillow_ours.py).
+$(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp
+	@printf "\n### Compiling dump_jpeg_raster ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+$(APP_DIR)/dump_jpeg_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_raster.o | $(APP_DIR)/$(TARGET)
+	@printf "\n### Linking dump_jpeg_raster ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_raster.o $(LDFLAGS) $(IMAGELIBRARY)
+
+# Dump JPEG file structure: segments in order with offset, size, hex dump (no library dependency).
+$(OBJ_DIR)/tests/dump_jpeg_structure.o: tests/codec/jpeg/dump_jpeg_structure.cpp
+	@printf "\n### Compiling dump_jpeg_structure ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+$(APP_DIR)/dump_jpeg_structure$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_structure.o
+	@printf "\n### Linking dump_jpeg_structure ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_structure.o $(LDFLAGS)
+
+jpeg-dump-structure: $(APP_DIR)/dump_jpeg_structure$(EXE_EXTENSION) ## Build dump_jpeg_structure; run: build/.../dump_jpeg_structure <file.jpg>
+
+# libjpeg-based decode oracle tools (required for Decode*PillowOracle tests).
+jpeg-oracle-tools: ## Build dump_jpeg_pixels_ref and dump_jpeg_coef_ref in tests/data/jpeg (requires libjpeg)
+	@if [ -z "$(LIBJPEG_LIBS)" ]; then \
+		echo "libjpeg not found. Install libjpeg-turbo (e.g. pkg-config libjpeg). See tests/data/jpeg/README.md."; \
+		exit 1; \
+	fi
+	$(CC) $(CFLAGS) $(LIBJPEG_CFLAGS) -o $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref.c $(LIBJPEG_LIBS)
+	$(CC) $(CFLAGS) $(LIBJPEG_CFLAGS) -o $(TEST_DATA_JPEG)/dump_jpeg_coef_ref$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_coef_ref.c $(LIBJPEG_LIBS)
+	@echo "Oracle tools built in $(TEST_DATA_JPEG)/"
+
+# Build oracle tools against instrumented libjpeg (for debugging). Two options:
+#
+# 1) Link against build tree (no install): make jpeg-oracle-tools-debug-build
+#    Requires: cd third_party/libjpeg-turbo && mkdir build-debug && cd build-debug && cmake .. && make
+# 2) Link against installed lib: make jpeg-oracle-tools-debug
+#    Requires: same then make install (prefix ../../libjpeg-debug)
+jpeg-oracle-tools-debug-build: ## Build dump_jpeg_coef_ref_debug and dump_jpeg_pixels_ref_debug (link third_party/libjpeg-turbo/build-debug)
+	@JPEG_BD=$(CURDIR)/third_party/libjpeg-turbo/build-debug; \
+	JPEG_SRC=$(CURDIR)/third_party/libjpeg-turbo/src; \
+	if [ ! -f "$$JPEG_BD/libjpeg.a" ]; then \
+		echo "Build libjpeg-turbo first: cd third_party/libjpeg-turbo && mkdir -p build-debug && cd build-debug && cmake .. && make"; \
+		exit 1; \
+	fi; \
+	$(CC) $(CFLAGS) -I$$JPEG_SRC -I$$JPEG_BD -o $(TEST_DATA_JPEG)/dump_jpeg_coef_ref_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_coef_ref.c $$JPEG_BD/libjpeg.a; \
+	$(CC) $(CFLAGS) -I$$JPEG_SRC -I$$JPEG_BD -o $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref.c $$JPEG_BD/libjpeg.a; \
+	echo "Oracle debug tools built (linked against build-debug) in $(TEST_DATA_JPEG)/"
+
+jpeg-oracle-tools-debug: ## Build dump_jpeg_coef_ref_debug against installed third_party/libjpeg-debug
+	@JPEG_DEBUG=third_party/libjpeg-debug; \
+	if [ ! -f "$$JPEG_DEBUG/lib/libjpeg.a" ] && [ ! -f "$$JPEG_DEBUG/lib/libjpeg.so" ]; then \
+		echo "Build libjpeg-turbo and install to $$JPEG_DEBUG first, or use: make jpeg-oracle-tools-debug-build"; \
+		exit 1; \
+	fi; \
+	$(CC) $(CFLAGS) -I$$JPEG_DEBUG/include -o $(TEST_DATA_JPEG)/dump_jpeg_coef_ref_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_coef_ref.c -L$$JPEG_DEBUG/lib -ljpeg -Wl,-rpath,$$(pwd)/$$JPEG_DEBUG/lib; \
+	echo "Oracle debug tools built in $(TEST_DATA_JPEG)/"
+
 # PNG tests link the shared png_test_utils helper.
 $(APP_DIR)/testPng_decode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_decode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testPng_decode Test ###\n"
@@ -356,9 +421,9 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c $(APP_DIR)/$(TARGET)
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples
+.PHONY: clean cloc docs docs-pdf examples jpeg-oracle-tools jpeg-oracle-tools-debug jpeg-oracle-tools-debug-build
 # Release build commands
-.PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-watch uninstall watch
+.PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-watch uninstall watch
 # Debug build commands
 .PHONY: all-debug install-debug test-debug test-valgrind-debug test-watch-debug uninstall-debug watch-debug
 
@@ -421,11 +486,11 @@ endif
 # So tests can load image lib and its dependency (e.g. compress for PNG).
 TEST_LD_PATH := $(APP_DIR):../compress/build/$(BUILD)/apps
 
-test: ## Make and run the Unit tests, then verify PNG output with PIL
+test: ## Make and run the Unit tests, then verify PNG and JPEG output with PIL
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
-	@mkdir -p $(TEST_OUT_PNG)
+	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG)
 	@for test_exe in $(TEST_EXECUTABLES); do \
-		test_name=$$(basename $$test_exe $(EXE_EXTENSION) | sed 's/test/\\u&/'); \
+		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
 		printf "\033[0;30;43m\n"; \
 		printf "############################\n"; \
 		printf "### Running %s tests ###\n" "$$test_name"; \
@@ -435,10 +500,14 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 	done
 	@printf "\033[0;30;43m\n############################\n### Verifying PNG output (PIL) ###\n############################\033[0m\n\n"; \
 	python3 $(CURDIR)/tests/data/png/verify_png_output.py $(TEST_OUT_PNG) && \
-	printf "\033[0;32mPNG output verification passed.\033[0m\n"
+	printf "\033[0;32mPNG output verification passed.\033[0m\n"; \
+	printf "\033[0;30;43m\n############################\n### Verifying JPEG output (PIL) ###\n############################\033[0m\n\n"; \
+	python3 $(CURDIR)/tests/data/jpeg/verify_jpeg_output.py $(TEST_OUT_JPEG) && \
+	printf "\033[0;32mJPEG output verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
 test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
+	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;36m%-30s %8s %10s %s\033[0m\n" "Test Suite" "Tests" "Time" "Status"; \
 	printf "\033[1;36m%-30s %8s %10s %s\033[0m\n" "------------------------------" "--------" "----------" "------"; \
@@ -468,7 +537,8 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 	if [ $$total_failed -eq 0 ]; then \
 		printf "\033[0;32m%-30s %8d %6dms PASS\033[0m\n\n" "TOTAL" "$$total_tests" "$$total_time"; \
 		python3 $(CURDIR)/tests/data/png/verify_png_output.py $(TEST_OUT_PNG) && \
-		printf "\033[0;32mPNG output verification passed.\033[0m\n"; \
+		python3 $(CURDIR)/tests/data/jpeg/verify_jpeg_output.py $(TEST_OUT_JPEG) && \
+		printf "\033[0;32mPNG and JPEG output verification passed.\033[0m\n"; \
 	else \
 		printf "\033[0;31m%-30s %8d %6dms FAIL (%d failed)\033[0m\n" "TOTAL" "$$total_tests" "$$total_time" "$$total_failed"; \
 		printf "$$failed_suites\n"; \
@@ -480,11 +550,16 @@ test-verify-png: ## Run only PNG output verification (run 'make test' for full t
 	@python3 $(CURDIR)/tests/data/png/verify_png_output.py $(TEST_OUT_PNG) && \
 		printf "\033[0;32mPNG output verification passed.\033[0m\n"
 
+test-verify-jpeg: ## Run only JPEG output verification (run 'make test' for full test + verify)
+	@mkdir -p $(TEST_OUT_JPEG)
+	@python3 $(CURDIR)/tests/data/jpeg/verify_jpeg_output.py $(TEST_OUT_JPEG) && \
+		printf "\033[0;32mJPEG output verification passed.\033[0m\n"
+
 test-valgrind: ## Run all tests under valgrind (Linux only)
 test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 ifeq ($(OS_NAME), Linux)
 	@for test_exe in $(TEST_EXECUTABLES); do \
-		test_name=$$(basename $$test_exe $(EXE_EXTENSION) | sed 's/test/\\u&/'); \
+		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
 		printf "\033[0;30;43m\n"; \
 		printf "############################\n"; \
 		printf "### Running %s tests under Valgrind ###\n" "$$test_name"; \
@@ -499,6 +574,10 @@ else
 	@exit 1
 endif
 
+# test-valgrind-quiet: PASS only when BOTH (1) all tests pass AND (2) no leaks.
+# So "FAIL" here can mean test assertion failures (e.g. decode returns error 5)
+# even when Valgrind reports 0 errors and 0 leaks. Use test-valgrind-noleak to
+# pass when Valgrind is clean regardless of test results.
 test-valgrind-quiet: ## Run tests under valgrind with minimal output (Linux only)
 test-valgrind-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 ifeq ($(OS_NAME), Linux)
@@ -635,6 +714,21 @@ $(ASAN_APP_DIR)/testPng_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_png_e
 	@printf "\n### Linking ASan testPng_encode ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_png_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY)
+
+$(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp
+	@printf "\n### Compiling ASan Test: test_jpeg_encode ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -o $@
+
+$(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o: tests/codec/jpeg/jpeg_test_utils.cpp
+	@printf "\n### Compiling ASan Test Helper: jpeg_test_utils ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -o $@
+
+$(ASAN_APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o | $(ASAN_APP_DIR)/$(ASAN_TARGET)
+	@printf "\n### Linking ASan testJpeg_encode ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY)
 
 ASAN_TEST_EXECUTABLES := $(addprefix $(ASAN_APP_DIR)/,$(addsuffix $(EXE_EXTENSION),$(TEST_NAMES)))
 

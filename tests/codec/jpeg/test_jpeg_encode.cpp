@@ -21,6 +21,24 @@
 
 namespace {
 
+/** RAII: frees doc then stream on scope exit so load+decode tests don't leak on ASSERT. */
+struct DocStreamGuard {
+  GIMG_Doc * d = nullptr;
+  GIMG_Stream * s = nullptr;
+  ~DocStreamGuard() {
+    if (d) gimg_doc_destroy(d);
+    if (s) gimg_stream_destroy(s);
+  }
+};
+
+/** RAII: frees raster on scope exit so tests don't leak on ASSERT after decode. */
+struct RasterGuard {
+  GIMG_Raster * r = nullptr;
+  ~RasterGuard() {
+    if (r) gimg_raster_destroy(r);
+  }
+};
+
 TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
   // Create synthetic doc with 16x16 grayscale raster.
   GIMG_Doc * doc = nullptr;
@@ -91,6 +109,9 @@ TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
   EXPECT_EQ(gimg_raster_width(decoded), 16u);
   EXPECT_EQ(gimg_raster_height(decoded), 16u);
 
+  jpeg_test::write_jpeg_output(
+      "baseline_grayscale.jpg", jpeg_copy.data(), jpeg_copy.size());
+
   gimg_raster_destroy(decoded);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(in_stream);
@@ -134,6 +155,9 @@ TEST(JpegEncode, SaveRgbThenLoadDecode) {
   std::vector<uint8_t> jpeg_copy(jpeg_bytes, jpeg_bytes + jpeg_size);
   gimg_stream_destroy(out_stream);
 
+  jpeg_test::write_jpeg_output(
+      "baseline_rgb.jpg", jpeg_copy.data(), jpeg_copy.size());
+
   GIMG_Stream * in_stream = nullptr;
   ASSERT_EQ(
       gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
@@ -144,11 +168,72 @@ TEST(JpegEncode, SaveRgbThenLoadDecode) {
     gimg_stream_destroy(in_stream);
     ASSERT_EQ(r, GIMG_OK) << "Encoded JPEG should load";
   }
+  DocStreamGuard guard;
+  guard.d = doc;
+  guard.s = in_stream;
   item = gimg_doc_item(doc, 0);
   GIMG_Raster * decoded = nullptr;
   ASSERT_EQ(gimg_item_decode(item, nullptr, &decoded), GIMG_OK);
   EXPECT_EQ(gimg_raster_width(decoded), 8u);
   EXPECT_EQ(gimg_raster_height(decoded), 8u);
+  gimg_raster_destroy(decoded);
+  guard.d = nullptr;
+  guard.s = nullptr;
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_stream);
+}
+
+/** Minimal 1x1 RGB: 3 blocks (Y,Cb,Cr), each DC+EOB only. Use 4:4:4 so
+ * blocks_per_mcu=3 and component index matches block index. */
+TEST(JpegEncode, SaveRgb1x1ThenLoadDecode) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                1, 1, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+  px[0] = px[1] = px[2] = 128;
+  px[3] = 255;
+  gimg_item_set_raster(item, raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
+  };
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report),
+      GIMG_OK);
+  gimg_doc_destroy(doc);
+
+  const void * jpeg_data = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(out_stream, &jpeg_data, &jpeg_size);
+  std::vector<uint8_t> jpeg_copy(
+      static_cast<const uint8_t *>(jpeg_data),
+      static_cast<const uint8_t *>(jpeg_data) + jpeg_size);
+  gimg_stream_destroy(out_stream);
+  jpeg_test::write_jpeg_output(
+      "baseline_1x1.jpg", jpeg_copy.data(), jpeg_copy.size());
+
+  GIMG_Stream * in_stream = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
+      GIMG_OK);
+  doc = nullptr;
+  GIMG_Result r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK);
+  item = gimg_doc_item(doc, 0);
+  GIMG_Raster * decoded = nullptr;
+  r = gimg_item_decode(item, nullptr, &decoded);
+  ASSERT_EQ(r, GIMG_OK) << "1x1 encode→decode round-trip (see baseline_1x1.jpg)";
+  ASSERT_NE(decoded, nullptr);
+  EXPECT_EQ(gimg_raster_width(decoded), 1u);
+  EXPECT_EQ(gimg_raster_height(decoded), 1u);
   gimg_raster_destroy(decoded);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(in_stream);
@@ -220,6 +305,9 @@ TEST(JpegEncode, QualityOptionUsedWhenNonZero) {
   std::vector<uint8_t> jpeg_copy(
       (const uint8_t *)jpeg_data, (const uint8_t *)jpeg_data + jpeg_size);
   gimg_stream_destroy(out_stream);
+
+  jpeg_test::write_jpeg_output(
+      "quality_low.jpg", jpeg_copy.data(), jpeg_copy.size());
 
   GIMG_Stream * in_stream = nullptr;
   ASSERT_EQ(
@@ -620,6 +708,9 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat6) {
   gimg_stream_destroy(in_stream);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(doc, nullptr);
+  DocStreamGuard guard;
+  guard.d = doc;
+  guard.s = nullptr;
   EXPECT_EQ(gimg_doc_item_count(doc), 2u)
       << "Saved two-item doc should load with two items";
 
@@ -638,6 +729,7 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat6) {
   EXPECT_GT(gimg_raster_width(decoded_thumb), 0u);
   EXPECT_GT(gimg_raster_height(decoded_thumb), 0u);
   gimg_raster_destroy(decoded_thumb);
+  guard.d = nullptr;
   gimg_doc_destroy(doc);
 }
 
@@ -692,6 +784,9 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat1) {
   gimg_stream_destroy(in_stream);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(doc, nullptr);
+  DocStreamGuard guard1;
+  guard1.d = doc;
+  guard1.s = nullptr;
   EXPECT_EQ(gimg_doc_item_count(doc), 2u)
       << "Saved two-item doc with format 1 should load with two items";
 
@@ -702,6 +797,7 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat1) {
   EXPECT_EQ(gimg_raster_width(decoded_thumb), kThumbW);
   EXPECT_EQ(gimg_raster_height(decoded_thumb), kThumbH);
   gimg_raster_destroy(decoded_thumb);
+  guard1.d = nullptr;
   gimg_doc_destroy(doc);
 }
 
@@ -756,6 +852,9 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat7) {
   gimg_stream_destroy(in_stream);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(doc, nullptr);
+  DocStreamGuard guard7;
+  guard7.d = doc;
+  guard7.s = nullptr;
   EXPECT_EQ(gimg_doc_item_count(doc), 2u)
       << "Saved two-item doc with format 7 should load with two items";
 
@@ -766,6 +865,7 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat7) {
   EXPECT_EQ(gimg_raster_width(decoded_thumb), kThumbW);
   EXPECT_EQ(gimg_raster_height(decoded_thumb), kThumbH);
   gimg_raster_destroy(decoded_thumb);
+  guard7.d = nullptr;
   gimg_doc_destroy(doc);
 }
 
@@ -814,11 +914,16 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat1) {
   gimg_stream_destroy(in_stream);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(doc, nullptr);
+  DocStreamGuard guard_rt1_first;
+  guard_rt1_first.d = doc;
+  guard_rt1_first.s = nullptr;
   ASSERT_GE(gimg_doc_item_count(doc), 2u);
 
   out_stream = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  guard_rt1_first.s = out_stream;
   r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  guard_rt1_first.d = nullptr;
   gimg_doc_destroy(doc);
   doc = nullptr;
   ASSERT_EQ(r, GIMG_OK);
@@ -827,6 +932,7 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat1) {
   gimg_stream_output_buffer(out_stream, &buf2, &size2);
   std::vector<uint8_t> jpeg2(static_cast<const uint8_t *>(buf2),
       static_cast<const uint8_t *>(buf2) + size2);
+  guard_rt1_first.s = nullptr;
   gimg_stream_destroy(out_stream);
 
   ASSERT_EQ(gimg_stream_create_memory(jpeg2.data(), jpeg2.size(), &in_stream),
@@ -835,6 +941,9 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat1) {
   gimg_stream_destroy(in_stream);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(doc, nullptr);
+  DocStreamGuard guard_rt1;
+  guard_rt1.d = doc;
+  guard_rt1.s = nullptr;
   EXPECT_EQ(gimg_doc_item_count(doc), 2u);
   GIMG_Raster * thumb = nullptr;
   r = gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &thumb);
@@ -843,6 +952,7 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat1) {
   EXPECT_EQ(gimg_raster_width(thumb), kThumbW);
   EXPECT_EQ(gimg_raster_height(thumb), kThumbH);
   gimg_raster_destroy(thumb);
+  guard_rt1.d = nullptr;
   gimg_doc_destroy(doc);
 }
 
@@ -891,11 +1001,16 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
   gimg_stream_destroy(in_stream);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(doc, nullptr);
+  DocStreamGuard guard_rt7_first;
+  guard_rt7_first.d = doc;
+  guard_rt7_first.s = nullptr;
   ASSERT_GE(gimg_doc_item_count(doc), 2u);
 
   out_stream = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  guard_rt7_first.s = out_stream;
   r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  guard_rt7_first.d = nullptr;
   gimg_doc_destroy(doc);
   doc = nullptr;
   ASSERT_EQ(r, GIMG_OK);
@@ -904,6 +1019,7 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
   gimg_stream_output_buffer(out_stream, &buf2, &size2);
   std::vector<uint8_t> jpeg2(static_cast<const uint8_t *>(buf2),
       static_cast<const uint8_t *>(buf2) + size2);
+  guard_rt7_first.s = nullptr;
   gimg_stream_destroy(out_stream);
 
   ASSERT_EQ(gimg_stream_create_memory(jpeg2.data(), jpeg2.size(), &in_stream),
@@ -912,6 +1028,9 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
   gimg_stream_destroy(in_stream);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(doc, nullptr);
+  DocStreamGuard guard_rt7;
+  guard_rt7.d = doc;
+  guard_rt7.s = nullptr;
   EXPECT_EQ(gimg_doc_item_count(doc), 2u);
   GIMG_Raster * thumb = nullptr;
   r = gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &thumb);
@@ -920,6 +1039,7 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
   EXPECT_EQ(gimg_raster_width(thumb), kThumbW);
   EXPECT_EQ(gimg_raster_height(thumb), kThumbH);
   gimg_raster_destroy(thumb);
+  guard_rt7.d = nullptr;
   gimg_doc_destroy(doc);
 }
 
@@ -972,6 +1092,9 @@ TEST(JpegEncode, RoundTripExifThumbnailPreserved) {
   gimg_stream_destroy(in_stream);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(doc, nullptr);
+  DocStreamGuard guard_preserved;
+  guard_preserved.d = doc;
+  guard_preserved.s = nullptr;
   EXPECT_GE(gimg_doc_item_count(doc), item_count_before);
   if (item_count_before >= 2 && gimg_doc_item_count(doc) >= 2) {
     GIMG_Raster * thumb = nullptr;
@@ -982,6 +1105,7 @@ TEST(JpegEncode, RoundTripExifThumbnailPreserved) {
         << "Thumbnail pixels should match after round-trip";
     gimg_raster_destroy(thumb);
   }
+  guard_preserved.d = nullptr;
   gimg_doc_destroy(doc);
 }
 
@@ -1049,12 +1173,18 @@ TEST(JpegEncode, ChromaSubsamplingOption) {
   gimg_doc_destroy(doc);
   doc = nullptr;
 
+  jpeg_test::write_jpeg_output(
+      "chroma_420.jpg", jpeg_copy.data(), jpeg_copy.size());
+
   GIMG_Stream * in_stream = nullptr;
   ASSERT_EQ(
       gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
       GIMG_OK);
   doc = nullptr;
   ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+  DocStreamGuard guard_chroma;
+  guard_chroma.d = doc;
+  guard_chroma.s = in_stream;
   ASSERT_EQ(gimg_doc_item_count(doc), 1u);
   item = gimg_doc_item(doc, 0);
   GIMG_Raster * decoded = nullptr;
@@ -1062,6 +1192,8 @@ TEST(JpegEncode, ChromaSubsamplingOption) {
   EXPECT_EQ(gimg_raster_width(decoded), 32u);
   EXPECT_EQ(gimg_raster_height(decoded), 32u);
   gimg_raster_destroy(decoded);
+  guard_chroma.d = nullptr;
+  guard_chroma.s = nullptr;
   gimg_doc_destroy(doc);
   gimg_stream_destroy(in_stream);
 }
@@ -1129,10 +1261,15 @@ TEST(JpegEncode, ProgressiveDefaultConfigDecodeMatchesBaseline) {
   GIMG_Doc * doc_baseline = nullptr;
   ASSERT_EQ(
       gimg_doc_load(in_baseline, nullptr, nullptr, &doc_baseline), GIMG_OK);
+  DocStreamGuard guard_base;
+  guard_base.d = doc_baseline;
+  guard_base.s = in_baseline;
   GIMG_Raster * decoded_baseline = nullptr;
   ASSERT_EQ(gimg_item_decode(
                 gimg_doc_item(doc_baseline, 0), nullptr, &decoded_baseline),
       GIMG_OK);
+  RasterGuard guard_decoded_base;
+  guard_decoded_base.r = decoded_baseline;
   uint64_t hash_baseline = jpeg_test::raster_pixel_hash(decoded_baseline);
 
   GIMG_Stream * in_prog = nullptr;
@@ -1141,19 +1278,31 @@ TEST(JpegEncode, ProgressiveDefaultConfigDecodeMatchesBaseline) {
       GIMG_OK);
   GIMG_Doc * doc_prog = nullptr;
   ASSERT_EQ(gimg_doc_load(in_prog, nullptr, nullptr, &doc_prog), GIMG_OK);
+  DocStreamGuard guard_prog;
+  guard_prog.d = doc_prog;
+  guard_prog.s = in_prog;
   GIMG_Raster * decoded_prog = nullptr;
   ASSERT_EQ(
       gimg_item_decode(gimg_doc_item(doc_prog, 0), nullptr, &decoded_prog),
       GIMG_OK);
   uint64_t hash_prog = jpeg_test::raster_pixel_hash(decoded_prog);
 
+  std::string diff_msg = jpeg_test::raster_first_diff(
+      decoded_baseline, decoded_prog);
   EXPECT_EQ(hash_prog, hash_baseline)
-      << "Progressive decode should match baseline decode (same image)";
+      << "Progressive decode must match baseline exactly (same image, same "
+         "quantized coefficients; only scan order differs). "
+      << (diff_msg.empty() ? "" : diff_msg);
 
+  guard_decoded_base.r = nullptr;
   gimg_raster_destroy(decoded_baseline);
+  guard_base.d = nullptr;
+  guard_base.s = nullptr;
   gimg_doc_destroy(doc_baseline);
   gimg_stream_destroy(in_baseline);
   gimg_raster_destroy(decoded_prog);
+  guard_prog.d = nullptr;
+  guard_prog.s = nullptr;
   gimg_doc_destroy(doc_prog);
   gimg_stream_destroy(in_prog);
 }
@@ -1204,18 +1353,26 @@ TEST(JpegEncode, ProgressiveCustomScanScriptDecodeMatches) {
   gimg_doc_destroy(doc);
   doc = nullptr;
 
+  jpeg_test::write_jpeg_output(
+      "progressive_custom.jpg", jpeg_copy.data(), jpeg_copy.size());
+
   GIMG_Stream * in_stream = nullptr;
   ASSERT_EQ(
       gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
       GIMG_OK);
   doc = nullptr;
   ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+  DocStreamGuard guard_custom;
+  guard_custom.d = doc;
+  guard_custom.s = in_stream;
   item = gimg_doc_item(doc, 0);
   GIMG_Raster * decoded = nullptr;
   ASSERT_EQ(gimg_item_decode(item, nullptr, &decoded), GIMG_OK);
   EXPECT_EQ(gimg_raster_width(decoded), 8u);
   EXPECT_EQ(gimg_raster_height(decoded), 8u);
   gimg_raster_destroy(decoded);
+  guard_custom.d = nullptr;
+  guard_custom.s = nullptr;
   gimg_doc_destroy(doc);
   gimg_stream_destroy(in_stream);
 }
@@ -1290,9 +1447,9 @@ TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
   gimg_stream_destroy(out_baseline);
 
   static const GIMG_JPEG_Progressive_Scan refine_scans[] = {
-      {0, 0, 0, 0},  /* DC initial */
-      {1, 63, 0, 0}, /* AC initial Ss=1..63 */
-      {1, 63, 1, 0}, /* AC refinement same band */
+      {0, 0, 0, 0},  // DC initial
+      {1, 63, 0, 0}, // AC initial Ss=1..63
+      {1, 63, 1, 0}, // AC refinement same band
   };
   GIMG_JPEG_Progressive_Config refine_config = {
       .scan_count = 3,
@@ -1318,6 +1475,9 @@ TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
   gimg_doc_destroy(doc);
   doc = nullptr;
 
+  jpeg_test::write_jpeg_output(
+      "progressive_refinement.jpg", refine_copy.data(), refine_copy.size());
+
   GIMG_Stream * in_baseline = nullptr;
   ASSERT_EQ(gimg_stream_create_memory(
                 baseline_copy.data(), baseline_copy.size(), &in_baseline),
@@ -1325,10 +1485,15 @@ TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
   GIMG_Doc * doc_baseline = nullptr;
   ASSERT_EQ(
       gimg_doc_load(in_baseline, nullptr, nullptr, &doc_baseline), GIMG_OK);
+  DocStreamGuard guard_ref_base;
+  guard_ref_base.d = doc_baseline;
+  guard_ref_base.s = in_baseline;
   GIMG_Raster * decoded_baseline = nullptr;
   ASSERT_EQ(gimg_item_decode(
                 gimg_doc_item(doc_baseline, 0), nullptr, &decoded_baseline),
       GIMG_OK);
+  RasterGuard guard_decoded_base;
+  guard_decoded_base.r = decoded_baseline;
   uint64_t hash_baseline = jpeg_test::raster_pixel_hash(decoded_baseline);
 
   GIMG_Stream * in_refine = nullptr;
@@ -1337,6 +1502,9 @@ TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
       GIMG_OK);
   GIMG_Doc * doc_refine = nullptr;
   ASSERT_EQ(gimg_doc_load(in_refine, nullptr, nullptr, &doc_refine), GIMG_OK);
+  DocStreamGuard guard_ref_refine;
+  guard_ref_refine.d = doc_refine;
+  guard_ref_refine.s = in_refine;
   GIMG_Raster * decoded_refine = nullptr;
   ASSERT_EQ(
       gimg_item_decode(gimg_doc_item(doc_refine, 0), nullptr, &decoded_refine),
@@ -1346,10 +1514,15 @@ TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
   EXPECT_EQ(hash_refine, hash_baseline) << "Progressive with refinement decode "
                                            "should match baseline (same image)";
 
+  guard_decoded_base.r = nullptr;
   gimg_raster_destroy(decoded_baseline);
+  guard_ref_base.d = nullptr;
+  guard_ref_base.s = nullptr;
   gimg_doc_destroy(doc_baseline);
   gimg_stream_destroy(in_baseline);
   gimg_raster_destroy(decoded_refine);
+  guard_ref_refine.d = nullptr;
+  guard_ref_refine.s = nullptr;
   gimg_doc_destroy(doc_refine);
   gimg_stream_destroy(in_refine);
 }
@@ -1390,6 +1563,9 @@ TEST(JpegEncode, SaveGray16ThenLoadDecode) {
   gimg_doc_destroy(doc);
   doc = nullptr;
 
+  jpeg_test::write_jpeg_output(
+      "baseline_gray16.jpg", jpeg_copy.data(), jpeg_copy.size());
+
   GIMG_Stream * in_stream = nullptr;
   ASSERT_EQ(
       gimg_stream_create_memory(jpeg_copy.data(), jpeg_copy.size(), &in_stream),
@@ -1425,8 +1601,8 @@ TEST(JpegEncode, SaveRgb16ThenLoadDecode) {
   GIMG_Item * item = gimg_doc_item(doc, 0);
   ASSERT_NE(item, nullptr);
   GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_RGBA16, GIMG_RASTER_OWNED,
-                NULL, 0, &raster),
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_RGBA16, GIMG_RASTER_OWNED, NULL, 0, &raster),
       GIMG_OK);
   uint16_t * pixels = (uint16_t *)gimg_raster_pixels(raster);
   size_t stride_el = gimg_raster_stride_bytes(raster) / 2;
@@ -1458,6 +1634,9 @@ TEST(JpegEncode, SaveRgb16ThenLoadDecode) {
   gimg_stream_destroy(out);
   gimg_doc_destroy(doc);
   doc = nullptr;
+
+  jpeg_test::write_jpeg_output(
+      "baseline_rgb16.jpg", jpeg_copy.data(), jpeg_copy.size());
 
   GIMG_Stream * in_stream = nullptr;
   ASSERT_EQ(
@@ -1523,6 +1702,9 @@ TEST(JpegEncode, SaveGray16ProgressiveThenLoadDecode) {
   gimg_stream_destroy(out);
   gimg_doc_destroy(doc);
   doc = nullptr;
+
+  jpeg_test::write_jpeg_output(
+      "progressive_gray16.jpg", jpeg_copy.data(), jpeg_copy.size());
 
   GIMG_Stream * in_stream = nullptr;
   ASSERT_EQ(

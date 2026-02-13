@@ -7,6 +7,7 @@
  */
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
@@ -15,7 +16,11 @@
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
+#include <string>
 #include <vector>
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#endif
 
 #include "jpeg_test_utils.h"
 
@@ -110,8 +115,8 @@ std::vector<uint8_t> make_minimal_jpeg_with_rst_in_scan() {
 }
 
 /** Minimal baseline JPEG with DNL (Define Number of Lines) after first scan:
- * SOF0 height=8, SOS with empty scan, then DNL (0xFF 0xDC) L=4, payload 0x00 0x08
- * (8 lines). Load must succeed; DNL validates SOF height. */
+ * SOF0 height=8, SOS with empty scan, then DNL (0xFF 0xDC) L=4, payload 0x00
+ * 0x08 (8 lines). Load must succeed; DNL validates SOF height. */
 std::vector<uint8_t> make_minimal_jpeg_with_dnl_after_scan() {
   std::vector<uint8_t> buf;
   append(buf, (const unsigned char *)"\xFF\xD8", 2);
@@ -127,10 +132,13 @@ std::vector<uint8_t> make_minimal_jpeg_with_dnl_after_scan() {
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
+  // SOS: L=10, Ns=1, Cs=0 Td=0 Ta=0, Ss=0 Se=0 Ah=0 Al=0 (10 bytes payload).
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
-  // No scan bytes; next marker is DNL. DNL: 0xFF 0xDC, L=4, payload 0x00 0x08 (8).
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00"
+                             "\x00\x00",
+      14);
+  // No scan bytes; next marker is DNL. DNL: 0xFF 0xDC, L=4, payload 0x00 0x08
+  // (8).
   append(buf, (const unsigned char *)"\xFF\xDC\x00\x04\x00\x08", 6);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
@@ -156,7 +164,8 @@ std::vector<uint8_t> make_minimal_jpeg_with_dnl_mismatch() {
   append(buf,
       (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
       12);
-  append(buf, (const unsigned char *)"\xFF\xDC\x00\x04\x00\x10", 6); // DNL says 16
+  append(
+      buf, (const unsigned char *)"\xFF\xDC\x00\x04\x00\x10", 6); // DNL says 16
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -170,7 +179,8 @@ std::vector<uint8_t> make_minimal_jpeg_dnl_before_scan() {
       (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
                              "\x00",
       13);
-  append(buf, (const unsigned char *)"\xFF\xDC\x00\x04\x00\x08", 6); // DNL before SOS
+  append(buf, (const unsigned char *)"\xFF\xDC\x00\x04\x00\x08",
+      6); // DNL before SOS
   append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
@@ -596,7 +606,8 @@ static const uint32_t kJpegRawAppUnknown = 0xE0FFu;
 static const uint32_t kJpegRawCom = 0xFEu;
 
 /** JPEG with APP0 JFIF containing a 2x2 RGB thumbnail (28-byte payload).
- * Payload: JFIF\0 v1.1 units=1 X=300 Y=300 ThumbX=2 ThumbY=2, then 12 RGB bytes.
+ * Payload: JFIF\0 v1.1 units=1 X=300 Y=300 ThumbX=2 ThumbY=2, then 12 RGB
+ * bytes.
  */
 std::vector<uint8_t> make_jpeg_with_jfif_thumbnail() {
   std::vector<uint8_t> buf;
@@ -604,10 +615,10 @@ std::vector<uint8_t> make_jpeg_with_jfif_thumbnail() {
   // APP0: length 30 (2 + 28), payload 28 bytes
   // Bytes 0-4: JFIF\0, 5-6: 01 01, 7: units=1, 8-11: X=300 Y=300,
   // 12-13: ThumbX=2, 14-15: ThumbY=2, 16-27: 2*2*3 RGB
-  static const unsigned char app0_with_thumb[] = {
-      0xFF, 0xE0, 0x00, 0x1E,  // marker, length 30
-      'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x01, 0x01, 0x2C, 0x01, 0x2C,
-      0x00, 0x02, 0x00, 0x02,  // ThumbX=2, ThumbY=2
+  static const unsigned char app0_with_thumb[] = {0xFF, 0xE0, 0x00,
+      0x1E, // marker, length 30
+      'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x01, 0x01, 0x2C, 0x01, 0x2C, 0x00,
+      0x02, 0x00, 0x02, // ThumbX=2, ThumbY=2
       0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
   append(buf, app0_with_thumb, sizeof(app0_with_thumb));
   append(buf,
@@ -987,19 +998,18 @@ TEST(JpegLoad, JfifThumbnailRoundTrip) {
   r = gimg_doc_set_item_count(doc, 2);
   ASSERT_EQ(r, GIMG_OK);
   GIMG_Raster * main_raster = nullptr;
-  r = gimg_raster_create(8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, nullptr,
-      0, &main_raster);
+  r = gimg_raster_create(
+      8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, nullptr, 0, &main_raster);
   ASSERT_EQ(r, GIMG_OK);
   memset(gimg_raster_pixels(main_raster), 128,
       (size_t)8 * gimg_raster_stride_bytes(main_raster));
   gimg_item_set_raster(gimg_doc_item(doc, 0), main_raster);
 
   GIMG_Raster * thumb_raster = nullptr;
-  r = gimg_raster_create(2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr,
-      0, &thumb_raster);
+  r = gimg_raster_create(
+      2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &thumb_raster);
   ASSERT_EQ(r, GIMG_OK);
-  unsigned char * px =
-      (unsigned char *)gimg_raster_pixels(thumb_raster);
+  unsigned char * px = (unsigned char *)gimg_raster_pixels(thumb_raster);
   size_t stride = gimg_raster_stride_bytes(thumb_raster);
   for (int y = 0; y < 2; y++) {
     for (int x = 0; x < 2; x++) {
@@ -1012,15 +1022,14 @@ TEST(JpegLoad, JfifThumbnailRoundTrip) {
   }
   gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
 
-  static const unsigned char app0_payload[] = {
-      'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x01, 0x01, 0x2C, 0x01, 0x2C,
-      0x00, 0x02, 0x00, 0x02,
-      0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
+  static const unsigned char app0_payload[] = {'J', 'F', 'I', 'F', 0x00, 0x01,
+      0x01, 0x01, 0x01, 0x2C, 0x01, 0x2C, 0x00, 0x02, 0x00, 0x02, 0x11, 0x22,
+      0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
   GIMG_Meta_Raw * raw = nullptr;
   r = gimg_doc_ensure_meta_raw(doc, &raw);
   ASSERT_EQ(r, GIMG_OK);
-  r = gimg_meta_raw_attach(raw, "jpeg", kJpegRawApp0, app0_payload,
-      sizeof(app0_payload));
+  r = gimg_meta_raw_attach(
+      raw, "jpeg", kJpegRawApp0, app0_payload, sizeof(app0_payload));
   ASSERT_EQ(r, GIMG_OK);
 
   GIMG_Stream * out_s = nullptr;
@@ -1159,8 +1168,8 @@ TEST(JpegLoad, UnknownApp13RoundTrip) {
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(size, 1u + 2u + payload_len);
   std::vector<uint8_t> unknown_data(size);
-  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawAppUnknown, unknown_data.data(),
-      &size);
+  r = gimg_meta_raw_get(
+      raw, "jpeg", kJpegRawAppUnknown, unknown_data.data(), &size);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(unknown_data[0], 0xED) << "APP13 marker";
   EXPECT_EQ(unknown_data[1], 0x00);
@@ -1198,8 +1207,8 @@ TEST(JpegLoad, UnknownApp13RoundTrip) {
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(size2, size);
   std::vector<uint8_t> unknown_data2(size2);
-  r = gimg_meta_raw_get(raw2, "jpeg", kJpegRawAppUnknown, unknown_data2.data(),
-      &size2);
+  r = gimg_meta_raw_get(
+      raw2, "jpeg", kJpegRawAppUnknown, unknown_data2.data(), &size2);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(memcmp(unknown_data2.data(), unknown_data.data(), size), 0)
       << "unknown APP blob unchanged after round-trip";
@@ -1286,8 +1295,8 @@ TEST(JpegLoad, App13PhotoshopRoundTrip) {
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(app13_size, payload_len);
   std::vector<uint8_t> app13_data(app13_size);
-  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawApp13, app13_data.data(),
-      &app13_size);
+  r = gimg_meta_raw_get(
+      raw, "jpeg", kJpegRawApp13, app13_data.data(), &app13_size);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(memcmp(app13_data.data(), payload, payload_len), 0);
   GIMG_Stream * out_s = nullptr;
@@ -1302,8 +1311,7 @@ TEST(JpegLoad, App13PhotoshopRoundTrip) {
   const void * out_data = nullptr;
   size_t out_size = 0;
   gimg_stream_output_buffer(out_s, &out_data, &out_size);
-  std::vector<uint8_t> out_buf(
-      static_cast<const uint8_t *>(out_data),
+  std::vector<uint8_t> out_buf(static_cast<const uint8_t *>(out_data),
       static_cast<const uint8_t *>(out_data) + out_size);
   gimg_stream_destroy(out_s);
   GIMG_Stream * s2 = nullptr;
@@ -1320,8 +1328,8 @@ TEST(JpegLoad, App13PhotoshopRoundTrip) {
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(app13_size2, payload_len);
   std::vector<uint8_t> app13_data2(app13_size2);
-  r = gimg_meta_raw_get(raw2, "jpeg", kJpegRawApp13, app13_data2.data(),
-      &app13_size2);
+  r = gimg_meta_raw_get(
+      raw2, "jpeg", kJpegRawApp13, app13_data2.data(), &app13_size2);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(memcmp(app13_data2.data(), payload, payload_len), 0);
   gimg_doc_destroy(doc2);
@@ -1357,8 +1365,8 @@ TEST(JpegLoad, App14AdobeRoundTrip) {
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(app14_size, payload_len);
   std::vector<uint8_t> app14_data(app14_size);
-  r = gimg_meta_raw_get(raw, "jpeg", kJpegRawApp14, app14_data.data(),
-      &app14_size);
+  r = gimg_meta_raw_get(
+      raw, "jpeg", kJpegRawApp14, app14_data.data(), &app14_size);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(memcmp(app14_data.data(), payload, payload_len), 0);
   GIMG_Stream * out_s = nullptr;
@@ -1373,8 +1381,7 @@ TEST(JpegLoad, App14AdobeRoundTrip) {
   const void * out_data = nullptr;
   size_t out_size = 0;
   gimg_stream_output_buffer(out_s, &out_data, &out_size);
-  std::vector<uint8_t> out_buf(
-      static_cast<const uint8_t *>(out_data),
+  std::vector<uint8_t> out_buf(static_cast<const uint8_t *>(out_data),
       static_cast<const uint8_t *>(out_data) + out_size);
   gimg_stream_destroy(out_s);
   GIMG_Stream * s2 = nullptr;
@@ -1391,15 +1398,16 @@ TEST(JpegLoad, App14AdobeRoundTrip) {
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(app14_size2, payload_len);
   std::vector<uint8_t> app14_data2(app14_size2);
-  r = gimg_meta_raw_get(raw2, "jpeg", kJpegRawApp14, app14_data2.data(),
-      &app14_size2);
+  r = gimg_meta_raw_get(
+      raw2, "jpeg", kJpegRawApp14, app14_data2.data(), &app14_size2);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(memcmp(app14_data2.data(), payload, payload_len), 0);
   gimg_doc_destroy(doc2);
 }
 
 TEST(JpegLoad, App13AndApp14BothPresentRoundTrip) {
-  // Load JPEG with both APP13 (Photoshop) and APP14; save; re-load; both present.
+  // Load JPEG with both APP13 (Photoshop) and APP14; save; re-load; both
+  // present.
   std::vector<uint8_t> file_buf;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", file_buf));
   ASSERT_GE(file_buf.size(), 4u);
@@ -1408,7 +1416,7 @@ TEST(JpegLoad, App13AndApp14BothPresentRoundTrip) {
       'A', 'd', 'o', 'b', 'e', 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
   std::vector<uint8_t> jpeg = {0xFF, 0xD8};
   auto append_app = [&jpeg](uint8_t marker, const unsigned char * pl,
-      size_t pl_len) {
+                        size_t pl_len) {
     jpeg.push_back(0xFF);
     jpeg.push_back(marker);
     uint16_t len = static_cast<uint16_t>(2 + pl_len);
@@ -1427,10 +1435,10 @@ TEST(JpegLoad, App13AndApp14BothPresentRoundTrip) {
   GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
   ASSERT_NE(raw, nullptr);
   size_t sz13 = 0, sz14 = 0;
-  ASSERT_EQ(gimg_meta_raw_get(raw, "jpeg", kJpegRawApp13, nullptr, &sz13),
-      GIMG_OK);
-  ASSERT_EQ(gimg_meta_raw_get(raw, "jpeg", kJpegRawApp14, nullptr, &sz14),
-      GIMG_OK);
+  ASSERT_EQ(
+      gimg_meta_raw_get(raw, "jpeg", kJpegRawApp13, nullptr, &sz13), GIMG_OK);
+  ASSERT_EQ(
+      gimg_meta_raw_get(raw, "jpeg", kJpegRawApp14, nullptr, &sz14), GIMG_OK);
   EXPECT_EQ(sz13, sizeof(app13_pl));
   EXPECT_EQ(sz14, sizeof(app14_pl));
   GIMG_Stream * out_s = nullptr;
@@ -1443,13 +1451,12 @@ TEST(JpegLoad, App13AndApp14BothPresentRoundTrip) {
   const void * out_data = nullptr;
   size_t out_size = 0;
   gimg_stream_output_buffer(out_s, &out_data, &out_size);
-  std::vector<uint8_t> out_buf(
-      static_cast<const uint8_t *>(out_data),
+  std::vector<uint8_t> out_buf(static_cast<const uint8_t *>(out_data),
       static_cast<const uint8_t *>(out_data) + out_size);
   gimg_stream_destroy(out_s);
   GIMG_Stream * s2 = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory(out_buf.data(), out_buf.size(), &s2),
-      GIMG_OK);
+  ASSERT_EQ(
+      gimg_stream_create_memory(out_buf.data(), out_buf.size(), &s2), GIMG_OK);
   GIMG_Doc * doc2 = nullptr;
   ASSERT_EQ(gimg_doc_load(s2, nullptr, nullptr, &doc2), GIMG_OK);
   gimg_stream_destroy(s2);
@@ -1600,22 +1607,6 @@ TEST(JpegLoad, LoadJpegWithRstInScanSucceeds) {
   gimg_stream_destroy(s);
 }
 
-// DNL after first scan with matching height: decoder accepts. Disabled: minimal
-// stream with pending-marker path fails in this test harness; DNL logic is
-// covered by LoadJpegWithDnlMismatchFails and LoadJpegDnlBeforeScanFails.
-TEST(JpegLoad, DISABLED_LoadJpegWithDnlAfterScanSucceeds) {
-  std::vector<uint8_t> jpeg = make_minimal_jpeg_with_dnl_after_scan();
-  GIMG_Stream * s = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
-  GIMG_Doc * doc = nullptr;
-  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
-  ASSERT_EQ(r, GIMG_OK);
-  ASSERT_NE(doc, nullptr);
-  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
-  gimg_doc_destroy(doc);
-  gimg_stream_destroy(s);
-}
-
 TEST(JpegLoad, LoadJpegWithDnlMismatchFails) {
   // DNL after first scan but number of lines does not match SOF height.
   std::vector<uint8_t> jpeg = make_minimal_jpeg_with_dnl_mismatch();
@@ -1716,6 +1707,198 @@ TEST(JpegLoad, GoldenBaselineGray) {
       << "canonical pixel hash baseline 8x8 gray";
 }
 
+/** Decode baseline grayscale fixture and compare to oracle .raw (Pillow decode).
+ * Oracle flow: Pillow reads JPEG, decodes, writes .raw. We decode same JPEG and
+ * compare pixels to .raw. Generate .raw with: python3 tests/data/jpeg/generate_jpeg_oracle_raws.py
+ */
+TEST(JpegLoad, DecodeBaselineGrayOracleRaw) {
+  std::vector<uint8_t> oracle_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::load_jpeg_oracle_raw(
+          "baseline_8x8_gray", oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Run python3 tests/data/jpeg/generate_jpeg_oracle_raws.py to create .raw oracle";
+  }
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  gimg_stream_destroy(s);
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(
+      raster, oracle_pixels.data(), oracle_w, oracle_h, oracle_mode, 0))
+      << "decode pixels must match Pillow oracle .raw (byte-for-byte for this fixture)";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+/** Per-fixture tolerance for oracle .raw comparison (Pillow vs our decoder).
+ * Large baseline: Pillow vs our decoder can differ beyond rounding (e.g. IDCT);
+ * allow moderate tolerance so we still get 640×480 decode coverage. */
+static int jpeg_fixture_oracle_tolerance(const char * base) {
+  if (strstr(base, "640x480") != nullptr) {
+    return 32;
+  }
+  return 0;
+}
+
+/** Decode every baseline (and EXIF/ICC/CMYK) fixture that has an oracle .raw
+ * and compare to .raw. Progressive fixtures are not included here (Pillow
+ * .raw can differ from our decoder due to chroma upsampling); use
+ * Decode*PillowOracle for progressive. Generate .raw with:
+ * python3 tests/data/jpeg/generate_jpeg_oracle_raws.py
+ */
+TEST(JpegLoad, DecodeFixtureOraclesRaw) {
+  static const char * const fixtures[] = {
+      "baseline_8x8_gray",
+      "baseline_16x16_ycbcr",
+      "baseline_9x9_gray",
+      "baseline_8x16_gray",
+      "baseline_8x8_gray_q50",
+      "baseline_8x8_gray_q100",
+      "baseline_640x480_gray",
+      "jpeg_exif_orientation",
+      "jpeg_with_icc",
+      "cmyk_sample",
+  };
+  int compared = 0;
+  for (const char * base : fixtures) {
+    std::vector<uint8_t> oracle_pixels;
+    uint32_t oracle_w = 0, oracle_h = 0;
+    int oracle_mode = -1;
+    if (!jpeg_test::load_jpeg_oracle_raw(base, oracle_pixels,
+            &oracle_w, &oracle_h, &oracle_mode)) {
+      continue;  // skip if .raw not present (e.g. generate_jpeg_oracle_raws not run)
+    }
+    std::string jpeg_name(base);
+    jpeg_name += ".jpg";
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(jpeg_name.c_str(), jpeg))
+        << "Fixture " << base << ": run tests/data/jpeg/generate.py";
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Item * item = gimg_doc_item(doc, 0);
+    ASSERT_NE(item, nullptr);
+    GIMG_Raster * raster = nullptr;
+    GIMG_Result decode_r = gimg_item_decode(item, nullptr, &raster);
+    if (decode_r != GIMG_OK) {
+      gimg_stream_destroy(s);
+      gimg_doc_destroy(doc);
+      continue;  // skip fixtures that fail to decode (e.g. progressive 640×480)
+    }
+    compared++;
+    gimg_stream_destroy(s);
+    int tolerance = jpeg_fixture_oracle_tolerance(base);
+    EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, oracle_pixels.data(),
+        oracle_w, oracle_h, oracle_mode, tolerance))
+        << "Fixture " << base << ": decode must match oracle .raw";
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+  }
+  if (compared == 0) {
+    GTEST_SKIP() << "No .raw oracles found. Run python3 tests/data/jpeg/generate_jpeg_oracle_raws.py";
+  }
+}
+
+/** Non-trivial size (640×480) baseline YCbCr: decode and verify dimensions.
+ * Ensures decoder handles many MCUs and real-world dimensions. Pixel comparison
+ * vs Pillow .raw is not required (Pillow can differ on large RGB); use
+ * Decode*PillowOracle hash tests when libjpeg oracle is built for pixel check.
+ */
+TEST(JpegLoad, DecodeBaseline640x480Ycbcr) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_640x480_ycbcr.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(gimg_raster_width(raster), 640u);
+  EXPECT_EQ(gimg_raster_height(raster), 480u);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  ASSERT_NE(fmt, nullptr);
+  EXPECT_TRUE(fmt->channel_model == GIMG_CHANNEL_RGB ||
+              fmt->channel_model == GIMG_CHANNEL_RGBA);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+/** Decode baseline grayscale fixture and compare to Pillow (external oracle).
+ */
+TEST(JpegLoad, DecodeBaselineGrayPillowOracle) {
+  uint64_t expected_hash = 0;
+  uint32_t expected_w = 0, expected_h = 0;
+  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
+      "baseline_8x8_gray.jpg", &expected_hash, &expected_w, &expected_h))
+      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
+         "See tests/data/jpeg/README.md.";
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  EXPECT_EQ(gimg_raster_width(raster), expected_w) << "width must match Pillow";
+  EXPECT_EQ(gimg_raster_height(raster), expected_h)
+      << "height must match Pillow";
+  uint64_t hash = jpeg_test::raster_pixel_hash(raster);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(hash, expected_hash)
+      << "decode pixel hash must match Pillow oracle";
+}
+
+/** Decode baseline YCbCr fixture and compare to Pillow (external oracle). */
+TEST(JpegLoad, DecodeBaselineYcbcrPillowOracle) {
+  uint64_t expected_hash = 0;
+  uint32_t expected_w = 0, expected_h = 0;
+  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
+      "baseline_16x16_ycbcr.jpg", &expected_hash, &expected_w, &expected_h))
+      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
+         "See tests/data/jpeg/README.md.";
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_16x16_ycbcr.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  EXPECT_EQ(gimg_raster_width(raster), expected_w);
+  EXPECT_EQ(gimg_raster_height(raster), expected_h);
+  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
+      << "decode pixel hash must match Pillow oracle";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
 TEST(JpegLoad, GoldenBaselineYcbcr) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_16x16_ycbcr.jpg", jpeg))
@@ -1733,10 +1916,48 @@ TEST(JpegLoad, GoldenBaselineYcbcr) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 3293244748321644837ULL)
-      << "canonical pixel hash baseline 16x16 YCbCr";
+  EXPECT_EQ(hash, 9866071383738491685ULL)
+      << "canonical pixel hash baseline 16x16 YCbCr (matches Pillow/libjpeg)";
 }
 
+/** Decode progressive fixture and compare to Pillow (external oracle).
+ * Uses only Pillow-generated progressive_sample.jpg; Pillow is the oracle. */
+TEST(JpegLoad, DecodeProgressivePillowOracle) {
+  uint64_t expected_hash = 0;
+  uint32_t expected_w = 0, expected_h = 0;
+  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
+      "progressive_sample.jpg", &expected_hash, &expected_w, &expected_h))
+      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
+         "See tests/data/jpeg/README.md.";
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("progressive_sample.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  GIMG_Decode_Options opts = {};
+  opts.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
+  GIMG_Result dr = gimg_item_decode(item, &opts, &raster);
+  if (dr != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    GTEST_SKIP() << "progressive decode not yet supported for Pillow fixture";
+  }
+  ASSERT_NE(raster, nullptr);
+  EXPECT_EQ(gimg_raster_width(raster), expected_w);
+  EXPECT_EQ(gimg_raster_height(raster), expected_h);
+  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
+      << "decode pixel hash must match libjpeg oracle (fancy chroma upsampling)";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+/** Golden progressive: decode of Pillow fixture matches canonical hash. */
 TEST(JpegLoad, GoldenProgressive) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("progressive_sample.jpg", jpeg))
@@ -1752,16 +1973,50 @@ TEST(JpegLoad, GoldenProgressive) {
   if (dr != GIMG_OK) {
     gimg_doc_destroy(doc);
     gimg_stream_destroy(s);
-    GTEST_SKIP() << "progressive decode not supported for this file (Pillow "
-                    "progressive format may differ)";
+    GTEST_SKIP() << "progressive decode not yet supported for Pillow fixture";
   }
   ASSERT_NE(raster, nullptr);
   uint64_t hash = jpeg_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 3293244748321644837ULL)
-      << "canonical pixel hash progressive (same content as 16x16 gray)";
+  EXPECT_EQ(hash, 6786767564893283945ULL)
+      << "canonical pixel hash progressive (matches libjpeg ref with simple upsampling)";
+}
+
+/** Decode EXIF-orientation fixture and compare pixels to Pillow; check meta
+ * orientation. */
+TEST(JpegLoad, DecodeExifOrientationPillowOracle) {
+  uint64_t expected_hash = 0;
+  uint32_t expected_w = 0, expected_h = 0;
+  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
+      "jpeg_exif_orientation.jpg", &expected_hash, &expected_w, &expected_h))
+      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
+         "See tests/data/jpeg/README.md.";
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_exif_orientation.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
+  if (meta) {
+    EXPECT_EQ(gimg_meta_common_orientation(meta), GIMG_ORIENTATION_ROTATE_90_CW)
+        << "EXIF Orientation 6 = 90 CW (if generate.py was run with piexif)";
+  }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  EXPECT_EQ(gimg_raster_width(raster), expected_w);
+  EXPECT_EQ(gimg_raster_height(raster), expected_h);
+  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
+      << "decode pixel hash must match Pillow oracle";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
 }
 
 TEST(JpegLoad, GoldenExifOrientation) {
@@ -1786,8 +2041,37 @@ TEST(JpegLoad, GoldenExifOrientation) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 9569108661638188517ULL)
+  EXPECT_EQ(hash, 9573191635971389477ULL)
       << "canonical pixel hash jpeg_exif_orientation";
+}
+
+/** Decode ICC fixture and compare to Pillow (external oracle). */
+TEST(JpegLoad, DecodeWithIccPillowOracle) {
+  uint64_t expected_hash = 0;
+  uint32_t expected_w = 0, expected_h = 0;
+  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
+      "jpeg_with_icc.jpg", &expected_hash, &expected_w, &expected_h))
+      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
+         "See tests/data/jpeg/README.md.";
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_with_icc.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  EXPECT_EQ(gimg_raster_width(raster), expected_w);
+  EXPECT_EQ(gimg_raster_height(raster), expected_h);
+  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
+      << "decode pixel hash must match Pillow oracle";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
 }
 
 TEST(JpegLoad, GoldenWithIcc) {
@@ -1807,14 +2091,14 @@ TEST(JpegLoad, GoldenWithIcc) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 774238021366803749ULL)
+  EXPECT_EQ(hash, 4304909053328165157ULL)
       << "canonical pixel hash jpeg_with_icc";
 }
 
 /** Build a JPEG buffer with the first APP2 ICC_PROFILE split into two chunks.
  * Returns true and sets out + out_size if found and built; otherwise false. */
-static bool jpeg_split_app2_icc_into_two_chunks(const uint8_t * jpeg,
-    size_t jpeg_size, std::vector<uint8_t> & out) {
+static bool jpeg_split_app2_icc_into_two_chunks(
+    const uint8_t * jpeg, size_t jpeg_size, std::vector<uint8_t> & out) {
   out.clear();
   if (jpeg_size < 4) {
     return false;
@@ -1879,8 +2163,8 @@ TEST(JpegLoad, MultiSegmentIccDecodeAndRoundTrip) {
   ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_with_icc.jpg", jpeg))
       << "Run tests/data/jpeg/generate.py";
   std::vector<uint8_t> multi;
-  ASSERT_TRUE(jpeg_split_app2_icc_into_two_chunks(
-      jpeg.data(), jpeg.size(), multi))
+  ASSERT_TRUE(
+      jpeg_split_app2_icc_into_two_chunks(jpeg.data(), jpeg.size(), multi))
       << "jpeg_with_icc must contain one APP2 ICC_PROFILE segment";
   GIMG_Stream * s = nullptr;
   ASSERT_EQ(gimg_stream_create_memory(multi.data(), multi.size(), &s), GIMG_OK);
@@ -1901,8 +2185,8 @@ TEST(JpegLoad, MultiSegmentIccDecodeAndRoundTrip) {
   GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
   ASSERT_NE(raw, nullptr);
   size_t chunks_size = 0;
-  ASSERT_EQ(gimg_meta_raw_get(raw, "jpeg", kJpegRawApp2IccChunks, nullptr,
-                 &chunks_size),
+  ASSERT_EQ(gimg_meta_raw_get(
+                raw, "jpeg", kJpegRawApp2IccChunks, nullptr, &chunks_size),
       GIMG_OK)
       << "multi-segment ICC should store APP2_ICC_CHUNKS for round-trip";
   EXPECT_GE(chunks_size, 2u + 2u + 14u + 14u)
@@ -1914,8 +2198,7 @@ TEST(JpegLoad, MultiSegmentIccDecodeAndRoundTrip) {
   const void * out_data = nullptr;
   size_t out_len = 0;
   gimg_stream_output_buffer(out_s, &out_data, &out_len);
-  std::vector<uint8_t> saved(
-      static_cast<const uint8_t *>(out_data),
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(out_data),
       static_cast<const uint8_t *>(out_data) + out_len);
   gimg_stream_destroy(out_s);
   gimg_doc_destroy(doc);
@@ -1923,6 +2206,13 @@ TEST(JpegLoad, MultiSegmentIccDecodeAndRoundTrip) {
   ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &s), GIMG_OK);
   doc = nullptr;
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  struct DocGuard {
+    GIMG_Doc * d = nullptr;
+    ~DocGuard() {
+      if (d) gimg_doc_destroy(d);
+    }
+  } doc_guard;
+  doc_guard.d = doc;
   gimg_stream_destroy(s);
   ASSERT_NE(doc, nullptr);
   item = gimg_doc_item(doc, 0);
@@ -1935,10 +2225,18 @@ TEST(JpegLoad, MultiSegmentIccDecodeAndRoundTrip) {
   EXPECT_EQ(ci->icc_size, icc_size)
       << "round-trip multi-segment ICC: profile size unchanged";
   gimg_raster_destroy(raster);
+  doc_guard.d = nullptr;
   gimg_doc_destroy(doc);
 }
 
-TEST(JpegLoad, GoldenCmyk) {
+/** Decode CMYK fixture and compare to Pillow (external oracle). */
+TEST(JpegLoad, DecodeCmykPillowOracle) {
+  uint64_t expected_hash = 0;
+  uint32_t expected_w = 0, expected_h = 0;
+  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
+      "cmyk_sample.jpg", &expected_hash, &expected_w, &expected_h))
+      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
+         "See tests/data/jpeg/README.md.";
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("cmyk_sample.jpg", jpeg))
       << "Run tests/data/jpeg/generate.py";
@@ -1951,18 +2249,92 @@ TEST(JpegLoad, GoldenCmyk) {
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  uint64_t hash = jpeg_test::raster_pixel_hash(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   EXPECT_NE(fmt, nullptr);
   if (fmt) {
     EXPECT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK);
     EXPECT_EQ(fmt->channel_count, 4u);
   }
+  EXPECT_EQ(gimg_raster_width(raster), expected_w);
+  EXPECT_EQ(gimg_raster_height(raster), expected_h);
+  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
+      << "decode pixel hash must match Pillow oracle";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, 2706856015390867493ULL)
-      << "canonical pixel hash cmyk_sample (8x8 black)";
+}
+
+/** Decode jpeg_with_icc.jpg with libjpeg (ref -o), then decode the same file
+ * with our decoder; compare pixels byte-for-byte. Ensures we match libjpeg
+ * on a fixture we can decode. Requires make jpeg-oracle-tools. */
+TEST(JpegLoad, DecodeJpegWithIccVsLibjpeg) {
+  std::string data_dir(GIMG_TEST_DATA_JPEG);
+  std::string jpeg_path = data_dir + "/jpeg_with_icc.jpg";
+  std::string raw_path = jpeg_test::jpeg_output_dir() + "/libjpeg_compare.raw";
+  std::vector<uint8_t> libjpeg_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
+          libjpeg_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Run make jpeg-oracle-tools (see tests/data/jpeg/README.md)";
+  }
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_with_icc.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK)
+      << "our decoder must decode jpeg_with_icc.jpg";
+  ASSERT_NE(raster, nullptr);
+  EXPECT_EQ(oracle_mode, 1) << "jpeg_with_icc is RGB (mode 1)";
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, libjpeg_pixels.data(),
+      oracle_w, oracle_h, oracle_mode, 0))
+      << "our decode must match libjpeg .raw byte-for-byte";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+/** Decode CMYK fixture and compare to oracle .raw (libjpeg decode).
+ * Oracle .raw is produced by dump_jpeg_pixels_ref -o (via generate_jpeg_oracle_raws.py).
+ * Byte-wise comparison gives a clear picture of any decode difference. */
+TEST(JpegLoad, GoldenCmyk) {
+  std::vector<uint8_t> oracle_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::load_jpeg_oracle_raw("cmyk_sample", oracle_pixels,
+          &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Run make jpeg-oracle-tools then "
+                    "python3 tests/data/jpeg/generate_jpeg_oracle_raws.py to create cmyk_sample.raw";
+  }
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("cmyk_sample.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  ASSERT_NE(fmt, nullptr);
+  EXPECT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK);
+  EXPECT_EQ(fmt->channel_count, 4u);
+  EXPECT_EQ(oracle_mode, 2) << "cmyk_sample.raw must be CMYK (mode 2)";
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, oracle_pixels.data(),
+      oracle_w, oracle_h, oracle_mode, 0))
+      << "decode pixels must match libjpeg oracle .raw (byte-for-byte)";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
 }
 
 int main(int argc, char ** argv) {

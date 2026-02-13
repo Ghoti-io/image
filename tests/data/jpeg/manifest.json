@@ -1,0 +1,152 @@
+[
+  {
+    "file": "baseline_8x8_gray.jpg",
+    "width": 8,
+    "height": 8,
+    "mode": "L",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "baseline_16x16_ycbcr.jpg",
+    "width": 16,
+    "height": 16,
+    "mode": "RGB",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "baseline_9x9_gray.jpg",
+    "width": 9,
+    "height": 9,
+    "mode": "L",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "baseline_8x16_gray.jpg",
+    "width": 8,
+    "height": 16,
+    "mode": "L",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "baseline_8x8_gray_q50.jpg",
+    "width": 8,
+    "height": 8,
+    "mode": "L",
+    "progressive": false,
+    "quality": 50,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "baseline_8x8_gray_q100.jpg",
+    "width": 8,
+    "height": 8,
+    "mode": "L",
+    "progressive": false,
+    "quality": 100,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "progressive_sample.jpg",
+    "width": 16,
+    "height": 16,
+    "mode": "RGB",
+    "progressive": true,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "progressive_32x32.jpg",
+    "width": 32,
+    "height": 32,
+    "mode": "RGB",
+    "progressive": true,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "progressive_8x8_gray.jpg",
+    "width": 8,
+    "height": 8,
+    "mode": "L",
+    "progressive": true,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "baseline_640x480_gray.jpg",
+    "width": 640,
+    "height": 480,
+    "mode": "L",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "baseline_640x480_ycbcr.jpg",
+    "width": 640,
+    "height": 480,
+    "mode": "RGB",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "progressive_640x480_ycbcr.jpg",
+    "width": 640,
+    "height": 480,
+    "mode": "RGB",
+    "progressive": true,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "jpeg_exif_orientation.jpg",
+    "width": 8,
+    "height": 8,
+    "mode": "L",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
+    "file": "jpeg_with_icc.jpg",
+    "width": 8,
+    "height": 8,
+    "mode": "RGB",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": true
+  },
+  {
+    "file": "cmyk_sample.jpg",
+    "width": 8,
+    "height": 8,
+    "mode": "CMYK",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  }
+]

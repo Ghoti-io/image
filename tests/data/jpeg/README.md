@@ -1,26 +1,73 @@
 # JPEG test data
 
-Reference JPEG files for Phase 2 codec and golden tests. Generate them with:
+Reference JPEG files for Phase 2 codec and golden tests.
+
+**Fixture generation:** Run `python3 tests/data/jpeg/generate.py` from the repo root. Pillow is required for generation; `piexif` is optional for EXIF orientation. See `documentation/development.md` (Prerequisites).
+
+**Decode oracle (libjpeg):** The `Decode*PillowOracle` tests compare our decoder output to **libjpeg** (stock, unmodified), not Pillow. Build the oracle tools with:
 
 ```bash
-# From repo root (Pillow required; piexif optional for EXIF orientation)
-python3 tests/data/jpeg/generate.py
+make jpeg-oracle-tools
 ```
 
-Generated files:
+This builds `dump_jpeg_pixels_ref` and `dump_jpeg_coef_ref` in this directory using system libjpeg (pkg-config libjpeg). If the tools are not built, the oracle tests fail with a message to run `make jpeg-oracle-tools`. The library does **not** link to libjpeg; the ref tools are used only by tests. **DecodeProgressivePillowOracle** prefers `dump_jpeg_pixels_ref_debug` when present (from `make jpeg-oracle-tools-debug-build`) for bit-exact match with our fancy chroma upsampling; with third_party libjpeg built with `-DWITH_SIMD=0` the C upsampling path matches our implementation.
+
+**Encode verification:** After unit tests, `make test` runs `verify_jpeg_output.py`, which uses PIL to verify that JPEGs written to `tests/out/jpeg/` are valid (SOI, structure, optional dimension/SOF expectations). JPEG is lossy; we do not compare encode output to pre-encode source. Run verification only: `make test-verify-jpeg`.
+
+**Decoder oracle (.raw):** To test that our decoder matches an external oracle: (1) Oracle decodes a fixture JPEG and writes raw pixels to a `.raw` file. (2) Our decoder reads the same JPEG and decodes. (3) The test compares our decode to the `.raw` byte-for-byte. Generate oracle `.raw` files with:
+
+```bash
+make jpeg-oracle-tools   # required for CMYK .raw
+python3 tests/data/jpeg/generate_jpeg_oracle_raws.py
+```
+
+Grayscale and RGB fixtures use Pillow to produce `.raw`; CMYK fixtures use libjpeg (`dump_jpeg_pixels_ref -o <base>.raw <file.jpg>`). `.raw` format: 1 byte mode (0=L, 1=RGB, 2=CMYK), 4 bytes width LE, 4 height LE, then pixels. Tests such as `DecodeBaselineGrayOracleRaw` and `GoldenCmyk` load the corresponding `.raw` and compare with zero tolerance for a clear picture of any difference. **Direct libjpeg comparison:** `DecodeJpegWithIccVsLibjpeg` runs `dump_jpeg_pixels_ref -o <path> jpeg_with_icc.jpg` at test time and compares our decoder output to that `.raw` byte-for-byte, so you can compare what libjpeg decodes vs what we decode on the same file.
+
+## Generated fixtures (feature matrix)
+
+Each combination below has a sample `.jpg`; generate matching `.raw` oracles with `generate_jpeg_oracle_raws.py` so decode tests can compare byte-for-byte.
 
 | File | Description |
 |------|-------------|
 | `baseline_8x8_gray.jpg` | 8×8 grayscale baseline JPEG |
 | `baseline_16x16_ycbcr.jpg` | 16×16 RGB baseline (stored as YCbCr) |
+| `baseline_9x9_gray.jpg` | 9×9 grayscale (edge dimensions) |
+| `baseline_8x16_gray.jpg` | 8×16 grayscale (edge dimensions) |
+| `baseline_8x8_gray_q50.jpg` | 8×8 gray quality 50 |
+| `baseline_8x8_gray_q100.jpg` | 8×8 gray quality 100 |
 | `progressive_sample.jpg` | 16×16 progressive DCT JPEG |
+| `progressive_32x32.jpg` | 32×32 progressive (multi-MCU) |
+| `progressive_8x8_gray.jpg` | 8×8 grayscale progressive |
+| **`baseline_640x480_gray.jpg`** | **640×480 grayscale baseline (non-trivial size)** |
+| **`baseline_640x480_ycbcr.jpg`** | **640×480 RGB baseline (non-trivial size)** |
+| **`progressive_640x480_ycbcr.jpg`** | **640×480 progressive RGB** |
 | `jpeg_exif_orientation.jpg` | 8×8 gray with APP1 EXIF Orientation=6 (90° CW); requires `pip install piexif` when generating |
 | `jpeg_with_icc.jpg` | 8×8 RGB with APP2 ICC profile (minimal) |
 | `cmyk_sample.jpg` | 8×8 CMYK baseline JPEG |
 
-Tests in `tests/codec/jpeg/test_jpeg_load.cpp` load these files when built with `GIMG_TEST_DATA_JPEG` (the Makefile sets this to the path of this directory). Golden decode tests compare FNV-1a 64-bit pixel hashes to stored expected values.
+**Decode coverage:** `DecodeFixtureOraclesRaw` decodes every **baseline** (and EXIF/ICC/CMYK) fixture and compares to its `.raw`; progressive fixtures are covered by `Decode*PillowOracle` (libjpeg hash). `DecodeBaseline640x480Ycbcr` asserts successful decode and 640×480 dimensions for non-trivial size coverage (no Pillow .raw pixel comparison for that fixture).
 
-## Golden and fuzz
+**manifest.json** — Written by `generate.py`; lists each fixture with `file`, `width`, `height`, `mode`, `progressive`, `quality`, `has_exif`, `has_icc`.
 
-- **Golden decode tests:** Load each reference file, decode, compute `raster_pixel_hash`; compare to expected hash and verify metadata (orientation, DPI, color info) where applicable.
-- **Fuzz:** Corpus and harness under `tests/fuzz/`; JPEG parser/decoder should return `GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, or `GIMG_ERR_LIMIT` on invalid input without crashing. Seed corpus with these JPEGs: `cp tests/data/jpeg/*.jpg tests/fuzz/corpus/`.
+**Generated by scripts (gitignored):** Running compare_progressive_bits.py or trace comparisons produces `trace_ours.txt` / `trace_ref.txt`. `create_libjpeg_progressive_fixture.py` produces `progressive_8x8_libjpeg.ppm` and `progressive_8x8_libjpeg.jpg`. These are listed in `.gitignore` and should not be committed.
+
+## Scripts kept for verification
+
+- **compare_coef_hash.py** — Compare our decoder’s final coefficient hash to `dump_jpeg_coef_ref`.
+- **compare_progressive_pixels.py** — Compare decoded **pixels** (libjpeg ref vs our decoder). Reports first differing pixel (x,y), ref vs ours (R,G,B), and total differing count / max_abs_diff. Use `--verbose` to print the first row of ref and ours. Prefer this over hash-only comparison to see actual values and how far off we are. Usage: `python3 compare_progressive_pixels.py [--verbose] <file.jpg> [dump_jpeg_raster] [dump_jpeg_pixels_ref]`.
+- **compare_progressive_bits.py** — Bit-level comparison for a given (scan, comp, block): HUFF_BIT + refinement + correction bits from our trace vs ref (when ref emits REF_HUFF_BIT / REF_AC_REFINE_*).
+- **compare_progressive_trace.py** — Compare our AC_INITIAL trace to libjpeg's (ref) with `TRACE_REF_AC=1`.
+- **compare_progressive_trace_all.py** — Compare full trace (`GIMG_JPEG_TRACE_ALL=1`) to libjpeg: AC_INITIAL lines and first-MCU block coefficients after each scan (ref needs `TRACE_REF_AC=1`, `DUMP_JPEG_COEF_AFTER_SCAN=1`, `DUMP_JPEG_COEF_BLOCKS_AFTER_SCAN=1`). Requires `dump_jpeg_coef_ref_debug` (instrumented libjpeg).
+- **compare_blocks_after_scans.py** — Per-scan block comparison (bitstream vs decoder).
+- **compare_progressive_blocks.py** — First-MCU coefficient blocks (OUR vs REF) after each scan.
+- **compare_first_mcu_after_scans.py**, **compare_first_mcu_coef.py** — First-MCU / coefficient comparison (truncated scans, bisect).
+- **trace_scan_ac_initial_block.py**, **trace_scan1_bitstream_positions.py** — Bitstream position traces for AC-initial (used by run_scan_ac_initial_trace_compare.py).
+- **compare_ref_ours_components.py** — Compare libjpeg ref Y/Cb/Cr dumps (DUMP_JPEG_COMPONENTS_REF) to our decoder dumps (DUMP_JPEG_COMPONENTS). Usage: `python3 compare_ref_ours_components.py <ref_dir> <ours_dir>`.
+- **compare_first_block_natural.py**, **compare_ycbcr_components.py** — Debug/regression.
+- **verify_first_scan_dc.py**, **verify_dc_refine_first_mcu.py**, **verify_first_ac_initial.py**, **verify_second_ac_initial_first_block.py**, **verify_ac_refine_first_block.py** — Bitstream/decode checks.
+- **run_*_verification.py** — Runners that compare script output to decoder trace.
+- **verify_dc_only_pipeline.py**, **verify_script_vs_libjpeg.py** — Pipeline and script-vs-ref checks.
+- **dump_scan_bytes.py** — Dump raw scan bytes (loader vs script).
+- **create_libjpeg_progressive_fixture.py** — Optional: create progressive fixture with cjpeg.
+
+Reference or third-party source trees used for debugging (e.g. a copy of libjpeg) belong in the repo root’s **third_party/** directory, which is gitignored. The decode oracle uses **system libjpeg** via the ref tools above, not anything in third_party. To debug with an instrumented libjpeg (e.g. TRACE_REF_AC, DUMP_JPEG_COEF_AFTER_SCAN): (1) **Link against build tree (no install):** from `image/third_party/libjpeg-turbo`, `mkdir -p build-debug && cd build-debug && cmake .. && make`; then from `image`, `make jpeg-oracle-tools-debug-build`. (2) **Or install then link:** same build, then `make install` (e.g. prefix `../../libjpeg-debug`) and from `image` run `make jpeg-oracle-tools-debug`. Our decoder: `DUMP_JPEG_QUANT_IDS=1` logs per-component quant table ID and first values (SOF Tqi); `DUMP_JPEG_COMPONENTS=<dir>` writes Y/Cb/Cr raw (see compare_ycbcr_components.py). **Ref component dump:** Build instrumented libjpeg (`make jpeg-oracle-tools-debug-build`), then run `dump_jpeg_pixels_ref_debug` with `DUMP_JPEG_COMPONENTS_REF=<dir>`; this writes `ref_Y.raw`, `ref_Cb.raw`, `ref_Cr.raw` (same format: 4b w LE, 4b h LE, raw). **compare_ref_ours_components.py** compares ref vs ours component dumps (e.g. `python3 compare_ref_ours_components.py /tmp/ref /tmp/ours`). Result for progressive_sample.jpg: Y/Cb/Cr component buffers **match** ref; any pixel hash difference is due to **chroma upsampling** (libjpeg default = fancy, ours = simple replication; both spec-valid). Ref: run with `TRACE_REF_AC=1`, `LIBJPEG_DEBUG_DHT=1`, `LIBJPEG_DEBUG_AC_TABLE=1`, `LIBJPEG_TRACE_HUFF_BITS=1`, or `LIBJPEG_DUMP_BLOCK0_BYTES=1` (dump actual bytes consumed for first AC refine block 0) as needed. With `LIBJPEG_TRACE_HUFF_BITS=1`, the ref emits `REF_HUFF_BIT` and `REF_HUFF_MATCH` lines (same idea as our `HUFF_BIT`/`HUFF_MATCH`) so you can compare bit-level Huffman decode; **compare_progressive_trace_all.py** sets this when running the ref. To compare our full decode trace to libjpeg, run our decoder with `GIMG_JPEG_TRACE_ALL=1` and use **compare_progressive_trace_all.py** against ref with the env vars above; the script compares AC_INITIAL lines and first-MCU block coefficients per scan.

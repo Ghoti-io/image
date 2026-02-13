@@ -578,7 +578,8 @@ TEST(PngDecode, MaxDecodedPixelsLimitEnforced) {
 
   GIMG_Limits limits = {};
   limits.max_decoded_pixels = 1;  // 2x2 = 4 pixels
-  GIMG_Decode_Options decode_opts = {&limits, {0}};
+  GIMG_Decode_Options decode_opts = {};
+  decode_opts.limits = &limits;
   GIMG_Raster * raster = nullptr;
   r = gimg_item_decode(gimg_doc_item(doc, 0), &decode_opts, &raster);
   gimg_doc_destroy(doc);

@@ -1,8 +1,8 @@
 /**
  * @file
  *
- * JPEG load: verify SOI, parse segments (SOF0/SOF1/SOF2, DQT, DHT, SOS), enforce
- * limits, build doc with one item and codec-private state.
+ * JPEG load: verify SOI, parse segments (SOF0/SOF1/SOF2, DQT, DHT, SOS),
+ * enforce limits, build doc with one item and codec-private state.
  *
  * Segment format: 0xFF + marker + length (big-endian 2 bytes where present) +
  * payload. Segment size limit (GIMG_Limits.max_chunk_size or internal default)
@@ -25,6 +25,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../../container/doc_internal.h"
@@ -34,9 +36,20 @@
 #include "../codec_internal.h"
 #include "jpeg_internal.h"
 
+/** If GIMG_JPEG_DEBUG_LOAD is set, log why we're returning FORMAT. */
+static void jpeg_load_fmt_debug(const char * action, size_t offset,
+    uint8_t marker) {
+  if (getenv("GIMG_JPEG_DEBUG_LOAD") == NULL) {
+    return;
+  }
+  (void)fprintf(stderr, "JPEG_LOAD_FORMAT: %s (offset=%zu marker=0x%02x)\n",
+      action ? action : "?", offset, (unsigned)marker);
+}
+
 /** Append diagnostic on load error (codec "jpeg", offset, marker). */
 static void jpeg_load_diag(GIMG_Diagnostics * d, size_t offset, uint8_t marker,
     GIMG_Result r, const char * action) {
+  jpeg_load_fmt_debug(action, offset, marker);
   if (!d) {
     return;
   }
@@ -56,8 +69,110 @@ static bool jpeg_marker_has_no_length(uint8_t marker) {
   return false;
 }
 
-/** Append one unknown APP segment to state (marker + 2-byte BE length + payload).
- * Caller must not free payload_buf on success (it is copied or consumed). */
+/** Apply DHT segment payload to state (Huffman tables). Caller owns payload. */
+static void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload_buf, size_t payload_size,
+    const GIMG_Allocator * alloc) {
+  const unsigned char * p = payload_buf;
+  size_t remain = payload_size;
+  while (remain >= 18) {
+    uint8_t tc_th = p[0];
+    uint8_t th = tc_th & 0x0Fu;
+    uint8_t tc = (tc_th >> 4) & 1;
+    size_t num_symbols = 0;
+    for (int i = 1; i <= 16; i++) {
+      num_symbols += p[i];
+    }
+    if (th >= 4 || remain < 17 + num_symbols) {
+      break;
+    }
+    size_t table_len = 17 + num_symbols;
+    if (tc) {
+      // AC: 17-symbol DHT is refinement (Ah!=0); store separately so initial
+      // table (162 symbols) is not overwritten. T.81 Table K.6.
+      if (num_symbols == 17) {
+        unsigned char ** dest = &state->huff_ac_refine[th];
+        size_t * dest_len = &state->huff_ac_refine_len[th];
+        if (*dest) {
+          gimg_free(alloc, *dest);
+        }
+        *dest = (unsigned char *)gimg_malloc(alloc, table_len);
+        if (*dest) {
+          memcpy(*dest, p, table_len);
+          *dest_len = table_len;
+        }
+      }
+      else {
+        unsigned char ** dest = &state->huff_ac[th];
+        size_t * dest_len = &state->huff_ac_len[th];
+        if (*dest) {
+          gimg_free(alloc, *dest);
+        }
+        *dest = (unsigned char *)gimg_malloc(alloc, table_len);
+        if (*dest) {
+          memcpy(*dest, p, table_len);
+          *dest_len = table_len;
+        }
+      }
+    }
+    else {
+      unsigned char ** dest = &state->huff_dc[th];
+      size_t * dest_len = &state->huff_dc_len[th];
+      if (*dest) {
+        gimg_free(alloc, *dest);
+      }
+      *dest = (unsigned char *)gimg_malloc(alloc, table_len);
+      if (*dest) {
+        memcpy(*dest, p, table_len);
+        *dest_len = table_len;
+      }
+    }
+    p += table_len;
+    remain -= table_len;
+  }
+}
+
+/** Record each DHT table from payload into state->dht_entries (for "first DHT
+ * after previous scan's data" snapshot rule). Call after jpeg_apply_dht_payload.
+ * Stops recording if GIMG_JPEG_MAX_DHT_ENTRIES reached. */
+static void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload_buf, size_t payload_size,
+    const GIMG_Allocator * alloc) {
+  const unsigned char * p = payload_buf;
+  size_t remain = payload_size;
+  while (remain >= 18 &&
+      state->num_dht_entries < GIMG_JPEG_MAX_DHT_ENTRIES) {
+    uint8_t tc_th = p[0];
+    uint8_t th = tc_th & 0x0Fu;
+    uint8_t tc = (tc_th >> 4) & 1;
+    size_t num_symbols = 0;
+    for (int i = 1; i <= 16; i++) {
+      num_symbols += p[i];
+    }
+    if (th >= 4 || remain < 17 + num_symbols) {
+      break;
+    }
+    size_t table_len = 17 + num_symbols;
+    unsigned char is_ac_refine = (tc && num_symbols == 17) ? 1 : 0;
+    unsigned char * copy = (unsigned char *)gimg_malloc(alloc, table_len);
+    if (!copy) {
+      break;
+    }
+    memcpy(copy, p, table_len);
+    state->dht_entries[state->num_dht_entries].tc = (uint8_t)tc;
+    state->dht_entries[state->num_dht_entries].th = th;
+    state->dht_entries[state->num_dht_entries].is_ac_refine = is_ac_refine;
+    state->dht_entries[state->num_dht_entries].payload = copy;
+    state->dht_entries[state->num_dht_entries].len = table_len;
+    state->num_dht_entries++;
+    p += table_len;
+    remain -= table_len;
+  }
+}
+
+/** Append one unknown APP segment to state (marker + 2-byte BE length +
+ * payload). Caller must not free payload_buf on success (it is copied or
+ * consumed). */
 static GIMG_Result jpeg_append_unknown_app(gimg_jpeg_doc_state_t * state,
     uint8_t marker, const unsigned char * payload, size_t payload_size,
     const GIMG_Allocator * alloc, GIMG_Diagnostics * diagnostics,
@@ -66,8 +181,8 @@ static GIMG_Result jpeg_append_unknown_app(gimg_jpeg_doc_state_t * state,
     return GIMG_OK; // Skip oversized; do not fail load
   }
   size_t need = state->unknown_app_combined_size + 1u + 2u + payload_size;
-  unsigned char * new_buf = (unsigned char *)gimg_realloc(alloc,
-      state->unknown_app_combined, need);
+  unsigned char * new_buf =
+      (unsigned char *)gimg_realloc(alloc, state->unknown_app_combined, need);
   if (!new_buf && need > 0) {
     if (diagnostics) {
       jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_OOM,
@@ -87,13 +202,14 @@ static GIMG_Result jpeg_append_unknown_app(gimg_jpeg_doc_state_t * state,
   return GIMG_OK;
 }
 
-/** Extract IPTC Caption/Abstract (record 2, dataset 80) from APP13 Photoshop 3.0
- * payload. APP13 starts with "Photoshop 3.0\0"; then 8BIM blocks: 4B "8BIM",
- * 2B id BE, 1B name_len, name_len bytes (pad to even), 4B data size BE, data.
- * IPTC is resource id 0x0404. IPTC tag: 0x1C, record, dataset, 2B length BE.
- * On success set *out_ptr and *out_len to caption bytes; return true. */
-static bool jpeg_app13_iptc_caption(const unsigned char * app13, size_t app13_len,
-    const unsigned char ** out_ptr, size_t * out_len) {
+/** Extract IPTC Caption/Abstract (record 2, dataset 80) from APP13
+ * Photoshop 3.0 payload. APP13 starts with "Photoshop 3.0\0"; then 8BIM blocks:
+ * 4B "8BIM", 2B id BE, 1B name_len, name_len bytes (pad to even), 4B data size
+ * BE, data. IPTC is resource id 0x0404. IPTC tag: 0x1C, record, dataset, 2B
+ * length BE. On success set *out_ptr and *out_len to caption bytes; return
+ * true. */
+static bool jpeg_app13_iptc_caption(const unsigned char * app13,
+    size_t app13_len, const unsigned char ** out_ptr, size_t * out_len) {
   if (!app13 || app13_len < 14 || !out_ptr || !out_len) {
     return false;
   }
@@ -179,9 +295,11 @@ GIMG_Result gimg_jpeg_verify_soi(GIMG_Stream * stream) {
   unsigned char buf[GIMG_JPEG_SIGNATURE_LEN];
   GIMG_Result r = gimg_stream_read_exact(stream, buf, GIMG_JPEG_SIGNATURE_LEN);
   if (r != GIMG_OK) {
+    jpeg_load_fmt_debug("SOI read failed", 0, 0);
     return GIMG_ERR_FORMAT;
   }
   if (buf[0] != 0xFF || buf[1] != GIMG_JPEG_MARKER_SOI) {
+    jpeg_load_fmt_debug("not SOI (bad signature)", 0, buf[1]);
     return GIMG_ERR_FORMAT;
   }
   return GIMG_OK;
@@ -193,6 +311,9 @@ GIMG_Result gimg_jpeg_read_marker(GIMG_Stream * stream, uint8_t * out_marker) {
     size_t n = 0;
     GIMG_Result r = gimg_stream_read(stream, &b, 1, &n);
     if (r != GIMG_OK || n == 0) {
+      if (r == GIMG_OK) {
+        jpeg_load_fmt_debug("read_marker EOF", 0, 0);
+      }
       return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
     }
     if (b != 0xFF) {
@@ -200,6 +321,9 @@ GIMG_Result gimg_jpeg_read_marker(GIMG_Stream * stream, uint8_t * out_marker) {
     }
     r = gimg_stream_read(stream, &b, 1, &n);
     if (r != GIMG_OK || n == 0) {
+      if (r == GIMG_OK) {
+        jpeg_load_fmt_debug("read_marker after 0xFF EOF", 0, 0);
+      }
       return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
     }
     if (b == 0x00) {
@@ -215,6 +339,7 @@ GIMG_Result gimg_jpeg_read_segment_length(
   unsigned char buf[2];
   GIMG_Result r = gimg_stream_read_exact(stream, buf, 2);
   if (r != GIMG_OK) {
+    jpeg_load_fmt_debug("segment length read failed", 0, 0);
     return GIMG_ERR_FORMAT;
   }
   *out_length = (uint16_t)((buf[0] << 8) | buf[1]);
@@ -226,6 +351,7 @@ GIMG_Result gimg_jpeg_read_segment_length(
 static GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
     uint8_t sof_marker, gimg_jpeg_sof_t * sof) {
   if (len < 8) {
+    jpeg_load_fmt_debug("SOF payload too short", 0, sof_marker);
     return GIMG_ERR_FORMAT;
   }
   uint8_t precision = payload[0];
@@ -233,23 +359,26 @@ static GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
   uint16_t width = (uint16_t)((payload[3] << 8) | payload[4]);
   uint8_t num_components = payload[5];
   if (num_components == 0 || num_components > GIMG_JPEG_MAX_COMPONENTS) {
+    jpeg_load_fmt_debug("SOF num_components invalid", 0, sof_marker);
     return GIMG_ERR_FORMAT;
   }
   if (sof_marker == GIMG_JPEG_MARKER_SOF0 && precision != 8) {
-    return GIMG_ERR_FORMAT; /* Baseline is 8-bit only per spec. */
+    jpeg_load_fmt_debug("SOF0 not 8-bit", 0, sof_marker);
+    return GIMG_ERR_FORMAT; // Baseline is 8-bit only per spec.
   }
   if (sof_marker == GIMG_JPEG_MARKER_SOF1 &&
       (precision != 8 && precision != 12)) {
-    return GIMG_ERR_UNSUPPORTED; /* Extended sequential: 8 or 12-bit. */
+    return GIMG_ERR_UNSUPPORTED; // Extended sequential: 8 or 12-bit.
   }
   if (sof_marker == GIMG_JPEG_MARKER_SOF2 &&
       (precision != 8 && precision != 12 && precision != 16)) {
-    return GIMG_ERR_UNSUPPORTED; /* Progressive: 8, 12, or 16-bit. */
+    return GIMG_ERR_UNSUPPORTED; // Progressive: 8, 12, or 16-bit.
   }
   if (precision != 8 && precision != 12 && precision != 16) {
     return GIMG_ERR_UNSUPPORTED;
   }
   if (width == 0) {
+    jpeg_load_fmt_debug("SOF width 0", 0, sof_marker);
     return GIMG_ERR_FORMAT;
   }
   if (height > GIMG_JPEG_MAX_DIMENSION || width > GIMG_JPEG_MAX_DIMENSION) {
@@ -257,6 +386,7 @@ static GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
   }
   size_t need = 6 + (size_t)num_components * 3;
   if (len < need) {
+    jpeg_load_fmt_debug("SOF payload length", 0, sof_marker);
     return GIMG_ERR_FORMAT;
   }
   memset(sof, 0, sizeof(*sof));
@@ -270,6 +400,7 @@ static GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
     sof->v_samp[i] = payload[7 + i * 3] & 0x0Fu;
     sof->quant_tbl_id[i] = payload[8 + i * 3];
     if (sof->h_samp[i] == 0 || sof->v_samp[i] == 0) {
+      jpeg_load_fmt_debug("SOF h_samp or v_samp 0", 0, sof_marker);
       return GIMG_ERR_FORMAT;
     }
   }
@@ -280,6 +411,7 @@ static GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
 static GIMG_Result jpeg_append_scan_data(
     gimg_jpeg_doc_state_t * state, const unsigned char * data, size_t len) {
   if (state->num_scans == 0) {
+    jpeg_load_fmt_debug("append_scan_data num_scans==0", 0, 0);
     return GIMG_ERR_FORMAT;
   }
   gimg_jpeg_scan_t * scan = &state->scans[state->num_scans - 1];
@@ -310,9 +442,19 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   for (int i = 0; i < 4; i++) {
     gimg_free(alloc, state->huff_dc[i]);
     gimg_free(alloc, state->huff_ac[i]);
+    gimg_free(alloc, state->huff_ac_refine[i]);
+  }
+  for (size_t i = 0; i < state->num_dht_entries; i++) {
+    gimg_free(alloc, state->dht_entries[i].payload);
   }
   for (unsigned i = 0; i < state->num_scans; i++) {
-    gimg_free(alloc, state->scans[i].data);
+    gimg_jpeg_scan_t * sc = &state->scans[i];
+    gimg_free(alloc, sc->data);
+    for (int j = 0; j < 4; j++) {
+      gimg_free(alloc, sc->huff_dc[j]);
+      gimg_free(alloc, sc->huff_ac[j]);
+      gimg_free(alloc, sc->huff_ac_refine[j]);
+    }
   }
   gimg_free(alloc, state->app0_jfif);
   gimg_free(alloc, state->app0_jfxx);
@@ -339,6 +481,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   GIMG_Result r = gimg_jpeg_verify_soi(stream);
   if (r != GIMG_OK) {
+    jpeg_load_fmt_debug("verify_soi failed", 0, 0);
     if (diagnostics) {
       (void)gimg_diagnostics_append(diagnostics, "jpeg", 0u,
           (uint32_t)GIMG_JPEG_MARKER_SOI, GIMG_DIAG_ERROR,
@@ -367,6 +510,12 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   for (;;) {
     size_t seg_start = 0;
     uint8_t marker = 0;
+    {
+      size_t pos = gimg_stream_tell(stream);
+      if (pos != (size_t)-1) {
+        seg_start = pos;
+      }
+    }
     if (have_pending_marker) {
       marker = pending_marker;
       have_pending_marker = false;
@@ -441,6 +590,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     case GIMG_JPEG_MARKER_SOF0:
     case GIMG_JPEG_MARKER_SOF1: {
       if (seen_sof) {
+        jpeg_load_fmt_debug("duplicate SOF0/SOF1", seg_start, marker);
         gimg_free(alloc, payload_buf);
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
@@ -459,6 +609,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
     case GIMG_JPEG_MARKER_SOF2: {
       if (seen_sof) {
+        jpeg_load_fmt_debug("duplicate SOF2", seg_start, marker);
         gimg_free(alloc, payload_buf);
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
@@ -545,8 +696,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
-      uint16_t dnl_lines =
-          (uint16_t)((payload_buf[0] << 8) | payload_buf[1]);
+      uint16_t dnl_lines = (uint16_t)((payload_buf[0] << 8) | payload_buf[1]);
       gimg_free(alloc, payload_buf);
       if (dnl_lines == 0 || dnl_lines > GIMG_JPEG_MAX_DIMENSION) {
         jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
@@ -568,36 +718,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       break;
     }
     case GIMG_JPEG_MARKER_DHT: {
-      // DHT: one or more tables. Each: 1 byte (Tc<<4|Th), then 16 bytes counts,
-      // then symbols.
-      const unsigned char * p = payload_buf;
-      size_t remain = payload_size;
-      while (remain >= 18) {
-        uint8_t tc_th = p[0];
-        uint8_t th = tc_th & 0x0Fu;
-        uint8_t tc = (tc_th >> 4) & 1;
-        size_t num_symbols = 0;
-        for (int i = 1; i <= 16; i++) {
-          num_symbols += p[i];
-        }
-        if (th >= 4 || remain < 17 + num_symbols) {
-          break;
-        }
-        size_t table_len = 17 + num_symbols;
-        unsigned char ** dest = tc ? &state->huff_ac[th] : &state->huff_dc[th];
-        size_t * dest_len =
-            tc ? &state->huff_ac_len[th] : &state->huff_dc_len[th];
-        if (*dest) {
-          gimg_free(alloc, *dest);
-        }
-        *dest = (unsigned char *)gimg_malloc(alloc, table_len);
-        if (*dest) {
-          memcpy(*dest, p, table_len);
-          *dest_len = table_len;
-        }
-        p += table_len;
-        remain -= table_len;
-      }
+      jpeg_apply_dht_payload(state, payload_buf, payload_size, alloc);
+      jpeg_record_dht_payload(state, payload_buf, payload_size, alloc);
       gimg_free(alloc, payload_buf);
       break;
     }
@@ -666,7 +788,159 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           scan->ah = (ah_al >> 4) & 0x0Fu;
           scan->al = ah_al & 0x0Fu;
         }
+        // Snapshot Huffman tables for this scan. T.81 B.2.4: DHT defines tables
+        // for the following scans. Use the *first* DHT (Th,Tc) after the previous
+        // scan's data (see task doc: "first" matches this fixture; "last" to match
+        // libjpeg caused scan 5 to diverge—root cause TBD). Scan 0 uses tables
+        // in effect at first SOS.
+        for (int ti = 0; ti < 4; ti++) {
+          const unsigned char * src = NULL;
+          size_t src_len = 0;
+          if (state->num_scans == 0) {
+            if (state->huff_dc[ti] && state->huff_dc_len[ti] > 0) {
+              src = state->huff_dc[ti];
+              src_len = state->huff_dc_len[ti];
+            }
+          }
+          else {
+            for (size_t j = state->last_scan_data_end_dht_index;
+                 j < state->num_dht_entries; j++) {
+              if (state->dht_entries[j].tc == 0 &&
+                  state->dht_entries[j].th == (unsigned)ti) {
+                src = state->dht_entries[j].payload;
+                src_len = state->dht_entries[j].len;
+                break;
+              }
+            }
+            if (!src && state->huff_dc[ti] && state->huff_dc_len[ti] > 0) {
+              src = state->huff_dc[ti];
+              src_len = state->huff_dc_len[ti];
+            }
+            if (!src) {
+              for (size_t j = state->num_dht_entries; j > 0; j--) {
+                if (state->dht_entries[j - 1].tc == 0 &&
+                    state->dht_entries[j - 1].th == (unsigned)ti) {
+                  src = state->dht_entries[j - 1].payload;
+                  src_len = state->dht_entries[j - 1].len;
+                  break;
+                }
+              }
+            }
+            if (!src && state->scans[state->num_scans - 1].huff_dc[ti]) {
+              src = state->scans[state->num_scans - 1].huff_dc[ti];
+              src_len = state->scans[state->num_scans - 1].huff_dc_len[ti];
+            }
+          }
+          if (src && src_len > 0) {
+            scan->huff_dc[ti] = (unsigned char *)gimg_malloc(alloc, src_len);
+            if (scan->huff_dc[ti]) {
+              memcpy(scan->huff_dc[ti], src, src_len);
+              scan->huff_dc_len[ti] = src_len;
+            }
+          }
+        }
+        for (int ti = 0; ti < 4; ti++) {
+          const unsigned char * src = NULL;
+          size_t src_len = 0;
+          if (state->num_scans == 0) {
+            if (state->huff_ac[ti] && state->huff_ac_len[ti] > 0) {
+              src = state->huff_ac[ti];
+              src_len = state->huff_ac_len[ti];
+            }
+          }
+          else {
+            /* First DHT (Th,Tc) after previous scan's data for AC initial. */
+            for (size_t j = state->last_scan_data_end_dht_index;
+                 j < state->num_dht_entries; j++) {
+              if (state->dht_entries[j].tc == 1 &&
+                  state->dht_entries[j].th == (unsigned)ti &&
+                  state->dht_entries[j].is_ac_refine == 0) {
+                src = state->dht_entries[j].payload;
+                src_len = state->dht_entries[j].len;
+                break;
+              }
+            }
+            if (!src && state->huff_ac[ti] && state->huff_ac_len[ti] > 0) {
+              src = state->huff_ac[ti];
+              src_len = state->huff_ac_len[ti];
+            }
+            if (!src) {
+              for (size_t j = state->num_dht_entries; j > 0; j--) {
+                if (state->dht_entries[j - 1].tc == 1 &&
+                    state->dht_entries[j - 1].th == (unsigned)ti &&
+                    state->dht_entries[j - 1].is_ac_refine == 0) {
+                  src = state->dht_entries[j - 1].payload;
+                  src_len = state->dht_entries[j - 1].len;
+                  break;
+                }
+              }
+            }
+            if (!src && state->scans[state->num_scans - 1].huff_ac[ti]) {
+              src = state->scans[state->num_scans - 1].huff_ac[ti];
+              src_len = state->scans[state->num_scans - 1].huff_ac_len[ti];
+            }
+          }
+          if (src && src_len > 0) {
+            scan->huff_ac[ti] = (unsigned char *)gimg_malloc(alloc, src_len);
+            if (scan->huff_ac[ti]) {
+              memcpy(scan->huff_ac[ti], src, src_len);
+              scan->huff_ac_len[ti] = src_len;
+            }
+          }
+        }
+        for (int ti = 0; ti < 4; ti++) {
+          const unsigned char * src = NULL;
+          size_t src_len = 0;
+          if (state->num_scans == 0) {
+            if (state->huff_ac_refine[ti] &&
+                state->huff_ac_refine_len[ti] > 0) {
+              src = state->huff_ac_refine[ti];
+              src_len = state->huff_ac_refine_len[ti];
+            }
+          }
+          else {
+            /* First DHT (Th,Tc) after previous scan's data for AC refinement. */
+            for (size_t j = state->last_scan_data_end_dht_index;
+                 j < state->num_dht_entries; j++) {
+              if (state->dht_entries[j].tc == 1 &&
+                  state->dht_entries[j].th == (unsigned)ti) {
+                src = state->dht_entries[j].payload;
+                src_len = state->dht_entries[j].len;
+                break;
+              }
+            }
+            if (!src && state->huff_ac_refine[ti] &&
+                state->huff_ac_refine_len[ti] > 0) {
+              src = state->huff_ac_refine[ti];
+              src_len = state->huff_ac_refine_len[ti];
+            }
+            if (!src) {
+              for (size_t j = state->num_dht_entries; j > 0; j--) {
+                if (state->dht_entries[j - 1].tc == 1 &&
+                    state->dht_entries[j - 1].th == (unsigned)ti) {
+                  src = state->dht_entries[j - 1].payload;
+                  src_len = state->dht_entries[j - 1].len;
+                  break;
+                }
+              }
+            }
+            if (!src && state->scans[state->num_scans - 1].huff_ac_refine[ti]) {
+              src = state->scans[state->num_scans - 1].huff_ac_refine[ti];
+              src_len =
+                  state->scans[state->num_scans - 1].huff_ac_refine_len[ti];
+            }
+          }
+          if (src && src_len > 0) {
+            scan->huff_ac_refine[ti] =
+                (unsigned char *)gimg_malloc(alloc, src_len);
+            if (scan->huff_ac_refine[ti]) {
+              memcpy(scan->huff_ac_refine[ti], src, src_len);
+              scan->huff_ac_refine_len[ti] = src_len;
+            }
+          }
+        }
         state->num_scans++;
+        state->inter_scan_dht_index_set = 0;  /* Next scan data end will set index. */
       }
       gimg_free(alloc, payload_buf);
       payload_buf = NULL;
@@ -696,6 +970,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           break;
         }
         if (b == 0x00) {
+          // T.81 B.2.2: 0x00 after 0xFF is stuffing; include both in scan data
+          // so the entropy decoder can skip the 0x00 when it advances past 0xFF.
           (void)gimg_stream_read(stream, &b, 1, &n);
           r = jpeg_append_scan_data(
               state, (const unsigned char *)"\xFF\x00", 2);
@@ -706,17 +982,124 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           continue;
         }
         if (b >= 0xD0 && b <= 0xD7) {
-          // RST0..RST7: part of scan data; consume and continue same scan
-          // (do not start a new segment).
+          // RST0..RST7: part of scan data (2-byte marker); append both bytes
+          // so entropy decoder can skip them; continue same scan.
           (void)gimg_stream_read(stream, &b, 1, &n);
+          r = jpeg_append_scan_data(state, (const unsigned char *)"\xFF", 1);
+          if (r != GIMG_OK) {
+            gimg_jpeg_free_doc_state(codec, state);
+            return r;
+          }
+          r = jpeg_append_scan_data(state, &b, 1);
+          if (r != GIMG_OK) {
+            gimg_jpeg_free_doc_state(codec, state);
+            return r;
+          }
           continue;
         }
-        // Next byte is a real marker; consume it and store for next iteration
-        // so the main loop can process it without seeking (non-seekable
-        // support).
+        // Consume the marker byte.
         (void)gimg_stream_read(stream, &b, 1, &n);
-        pending_marker = b;
-        have_pending_marker = true;
+        // End of this scan's entropy data only at next SOS or EOI (T.81 B.2.4:
+        // marker segments such as DHT may appear between scans; 0xFF before
+        // them is the start of the marker, not entropy — do not append it).
+        if (b == GIMG_JPEG_MARKER_SOS || b == GIMG_JPEG_MARKER_EOI) {
+          // T.81 B.2.4: 0xFF that starts the next marker is not scan entropy.
+          // Do not overwrite last_scan_data_end_dht_index here; it was set when
+          // we first exited this scan's data (before any inter-scan DHT).
+          pending_marker = b;
+          have_pending_marker = true;
+          break;
+        }
+        if (jpeg_marker_has_no_length(b)) {
+          // SOI or other no-length marker; hand off to main loop.
+          pending_marker = b;
+          have_pending_marker = true;
+          break;
+        }
+        // Per T.81 B.2.2 / B.2.4 the 0xFF we just read starts the next marker
+        // (e.g. DHT); it is not entropy. Do not append it to the current scan —
+        // that would add 8 bits and decode an extra coefficient from the next
+        // scan, producing wrong non-zeros and breaking later AC refinement.
+        // Read and process the segment (e.g. apply DHT) so following scans use
+        // updated tables. Set last_scan_data_end_dht_index only the first time
+        // we exit this scan's data, so "first DHT after previous scan" is correct.
+        if (!state->inter_scan_dht_index_set) {
+          state->last_scan_data_end_dht_index = state->num_dht_entries;
+          state->inter_scan_dht_index_set = 1;
+        }
+        {
+          unsigned char len_buf[2];
+          r = gimg_stream_read_exact(stream, len_buf, 2);
+          if (r != GIMG_OK) {
+            gimg_jpeg_free_doc_state(codec, state);
+            return r;
+          }
+          uint16_t seg_len = (uint16_t)((len_buf[0] << 8) | len_buf[1]);
+          if (seg_len < 2) {
+            pending_marker = b;
+            have_pending_marker = true;
+            break;
+          }
+          size_t payload_size = (size_t)(seg_len - 2);
+          if (b == GIMG_JPEG_MARKER_DHT && payload_size > 0) {
+            unsigned char * dht_buf =
+                (unsigned char *)gimg_malloc(alloc, payload_size);
+            if (!dht_buf) {
+              gimg_jpeg_free_doc_state(codec, state);
+              return GIMG_ERR_OOM;
+            }
+            r = gimg_stream_read_exact(stream, dht_buf, payload_size);
+            if (r != GIMG_OK) {
+              gimg_free(alloc, dht_buf);
+              gimg_jpeg_free_doc_state(codec, state);
+              return r;
+            }
+            jpeg_apply_dht_payload(state, dht_buf, payload_size, alloc);
+            jpeg_record_dht_payload(state, dht_buf, payload_size, alloc);
+            {
+              const unsigned char * dp = dht_buf;
+              size_t dremain = payload_size;
+              while (dremain >= 18) {
+                uint8_t tc_th = dp[0];
+                uint8_t th = tc_th & 0x0Fu;
+                uint8_t tc = (tc_th >> 4) & 1;
+                size_t num_syms = 0;
+                for (int i = 1; i <= 16; i++) {
+                  num_syms += dp[i];
+                }
+                if (th >= 4 || dremain < 17 + num_syms) {
+                  break;
+                }
+                if (tc && num_syms != 17) {
+                  state->ac_from_inter_scan_dht[th] = 1;
+                }
+                dp += 17 + num_syms;
+                dremain -= 17 + num_syms;
+              }
+            }
+            gimg_free(alloc, dht_buf);
+            // T.81 B.2.4: DHT defines conditioning for the *following*
+            // entropy-coded segments. This DHT appeared after the current
+            // scan's data, so it applies to the next scan. Do not copy state
+            // into the current scan; that would wrongly use this table for
+            // the scan we just finished (e.g. first AC-initial would get the
+            // next scan's table and desync).
+          }
+          else {
+            for (size_t k = 0; k < payload_size; k++) {
+              unsigned char discard;
+              size_t nr = 0;
+              r = gimg_stream_read(stream, &discard, 1, &nr);
+              if (r != GIMG_OK || nr == 0) {
+                gimg_jpeg_free_doc_state(codec, state);
+                return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
+              }
+            }
+          }
+        }
+        // Break so the main loop reads the next marker (e.g. SOS). Do not
+        // continue reading bytes into this scan — the next byte is the
+        // start of the next scan's data.
         break;
       }
       break;
@@ -833,8 +1216,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             // Assemble: total profile size = sum of (chunk_len - 14).
             size_t total_profile = 0;
             for (unsigned i = 0; i < total_chunks; i++) {
-              size_t data_len =
-                  state->app2_icc_chunk_len[i] -
+              size_t data_len = state->app2_icc_chunk_len[i] -
                   (state->app2_icc_chunk_len[i] >= 14u ? 14u : 0u);
               if (total_profile + data_len < total_profile ||
                   total_profile + data_len > GIMG_JPEG_MAX_ICC_PROFILE_SIZE) {
@@ -859,8 +1241,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
                   ? state->app2_icc_chunk_len[i] - 14u
                   : 0u;
               if (data_len > 0) {
-                memcpy(assembled + off,
-                    state->app2_icc_chunk_payload[i] + 14, data_len);
+                memcpy(assembled + off, state->app2_icc_chunk_payload[i] + 14,
+                    data_len);
                 off += data_len;
               }
             }
@@ -906,15 +1288,15 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       break;
     }
     case GIMG_JPEG_MARKER_APP14: {
-      // APP14 (0xEE): Adobe; byte 14 = transform (0=unknown, 1=YCbCr, 2=YCCK).
-      if (payload_size >= 15 && payload_buf &&
+      // APP14 (0xEE): Adobe; transform at byte 11 (0=unknown, 1=YCbCr, 2=YCCK).
+      if (payload_size >= 12 && payload_buf &&
           memcmp(payload_buf, "Adobe\0", 6) == 0) {
         if (state->app14) {
           gimg_free(alloc, state->app14);
         }
         state->app14 = payload_buf;
         state->app14_len = payload_size;
-        state->adobe_transform = payload_buf[14];
+        state->adobe_transform = payload_buf[11];
         payload_buf = NULL;
       }
       if (payload_buf) {
@@ -940,7 +1322,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     case 0xEB:
     case 0xEC:
     case 0xEF: {
-      // APP3..APP15 (excluding APP13/APP14 when recognized): store for round-trip.
+      // APP3..APP15 (excluding APP13/APP14 when recognized): store for
+      // round-trip.
       r = jpeg_append_unknown_app(state, marker, payload_buf, payload_size,
           alloc, diagnostics, seg_start);
       gimg_free(alloc, payload_buf);
@@ -999,7 +1382,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   }
   if (state->sof.height == 0) {
     jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_FORMAT,
-        "image height not specified (SOF height 0 requires DNL after first scan)");
+        "image height not specified (SOF height 0 requires DNL after first "
+        "scan)");
     gimg_jpeg_free_doc_state(codec, state);
     return GIMG_ERR_FORMAT;
   }
@@ -1110,8 +1494,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             (unsigned char *)gimg_malloc(alloc, chunks_blob_size);
         if (chunks_blob) {
           chunks_blob[0] = (unsigned char)(state->app2_icc_num_chunks >> 8);
-          chunks_blob[1] =
-              (unsigned char)(state->app2_icc_num_chunks & 0xFFu);
+          chunks_blob[1] = (unsigned char)(state->app2_icc_num_chunks & 0xFFu);
           size_t off = 2;
           for (unsigned i = 0; i < state->app2_icc_num_chunks; i++) {
             size_t plen = state->app2_icc_chunk_len[i];
@@ -1119,8 +1502,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             chunks_blob[off + 1] = (unsigned char)(plen & 0xFFu);
             off += 2;
             if (plen > 0 && state->app2_icc_chunk_payload[i]) {
-              memcpy(chunks_blob + off,
-                  state->app2_icc_chunk_payload[i], plen);
+              memcpy(chunks_blob + off, state->app2_icc_chunk_payload[i], plen);
               off += plen;
             }
           }
@@ -1135,16 +1517,16 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
     }
     if (state->app13 && state->app13_len > 0) {
-      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP13,
-          state->app13, state->app13_len);
+      r = gimg_meta_raw_attach(
+          raw, "jpeg", GIMG_JPEG_RAW_APP13, state->app13, state->app13_len);
       if (r != GIMG_OK) {
         gimg_doc_destroy(doc);
         return r;
       }
     }
     if (state->app14 && state->app14_len > 0) {
-      r = gimg_meta_raw_attach(raw, "jpeg", GIMG_JPEG_RAW_APP14,
-          state->app14, state->app14_len);
+      r = gimg_meta_raw_attach(
+          raw, "jpeg", GIMG_JPEG_RAW_APP14, state->app14, state->app14_len);
       if (r != GIMG_OK) {
         gimg_doc_destroy(doc);
         return r;
@@ -1209,16 +1591,19 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
     }
   }
-  // Populate meta_common description from APP13 IPTC Caption (2:80) when not set.
+  // Populate meta_common description from APP13 IPTC Caption (2:80) when not
+  // set.
   if (state->app13 && state->app13_len >= 14) {
-    if (!meta_common && gimg_doc_ensure_meta_common(doc, &meta_common) != GIMG_OK) {
+    if (!meta_common &&
+        gimg_doc_ensure_meta_common(doc, &meta_common) != GIMG_OK) {
       meta_common = NULL;
     }
     if (meta_common && !gimg_meta_common_description(meta_common)) {
       const unsigned char * cap_ptr = NULL;
       size_t cap_len = 0;
-      if (jpeg_app13_iptc_caption(state->app13, state->app13_len,
-              &cap_ptr, &cap_len) && cap_len > 0) {
+      if (jpeg_app13_iptc_caption(
+              state->app13, state->app13_len, &cap_ptr, &cap_len) &&
+          cap_len > 0) {
         char * buf = (char *)gimg_malloc(alloc, cap_len + 1u);
         if (buf) {
           memcpy(buf, cap_ptr, cap_len);
@@ -1230,7 +1615,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
   }
 
-  // EXIF embedded thumbnail (IFD1): try Compression=6 (JPEG), then 1 (uncompressed), then 7 (TIFF JPEG).
+  // EXIF embedded thumbnail (IFD1): try Compression=6 (JPEG), then 1
+  // (uncompressed), then 7 (TIFF JPEG).
   if (state->app1_exif && state->app1_exif_len > 6) {
     const void * exif_tiff = state->app1_exif + 6;
     size_t exif_tiff_len = state->app1_exif_len - 6;
@@ -1306,8 +1692,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             size_t stride = gimg_raster_stride_bytes(thumb_raster);
             const unsigned char * src = (const unsigned char *)strip_data;
             if (tphoto <= 1) {
-              size_t row_bytes =
-                  (tbits <= 8) ? (size_t)tw : (size_t)tw * 2u;
+              size_t row_bytes = (tbits <= 8) ? (size_t)tw : (size_t)tw * 2u;
               for (uint32_t y = 0; y < th; y++) {
                 memcpy((unsigned char *)pixels + (size_t)y * stride,
                     src + (size_t)y * row_bytes, row_bytes);
@@ -1372,8 +1757,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               if (r == GIMG_OK && copy_raster) {
                 r = gimg_doc_set_item_count(doc, 2);
                 if (r == GIMG_OK) {
-                  gimg_item_set_raster(
-                      gimg_doc_item(doc, 1), copy_raster);
+                  gimg_item_set_raster(gimg_doc_item(doc, 1), copy_raster);
                   thumb_added = 1;
                 }
                 else {
@@ -1404,8 +1788,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         (unsigned char)state->app0_jfif[15]);
     if (tx > 0 && ty > 0) {
       size_t thumb_pixels = 0;
-      if (gimg_safe_pixel_count((uint32_t)tx, (uint32_t)ty,
-              &thumb_pixels) == GIMG_OK &&
+      if (gimg_safe_pixel_count((uint32_t)tx, (uint32_t)ty, &thumb_pixels) ==
+              GIMG_OK &&
           thumb_pixels <= GIMG_JPEG_MAX_THUMB_PIXELS) {
         size_t need_rgb = 0;
         size_t need_gray = 0;
@@ -1423,14 +1807,12 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           const GIMG_Pixel_Format * fmt =
               use_rgb ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_GRAY8;
           GIMG_Raster * thumb_raster = NULL;
-          r = gimg_raster_create_with_allocator(
-              alloc, (uint32_t)tx, (uint32_t)ty, fmt, GIMG_RASTER_OWNED, NULL,
-              0, &thumb_raster);
+          r = gimg_raster_create_with_allocator(alloc, (uint32_t)tx,
+              (uint32_t)ty, fmt, GIMG_RASTER_OWNED, NULL, 0, &thumb_raster);
           if (r == GIMG_OK && thumb_raster) {
             void * pixels = gimg_raster_pixels(thumb_raster);
             size_t stride = gimg_raster_stride_bytes(thumb_raster);
-            const unsigned char * src =
-                state->app0_jfif + 16;
+            const unsigned char * src = state->app0_jfif + 16;
             if (use_rgb) {
               for (uint32_t y = 0; y < (uint32_t)ty; y++) {
                 for (uint32_t x = 0; x < (uint32_t)tx; x++) {
@@ -1463,8 +1845,9 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
   }
 
-  // JFXX (JFIF 1.02 extension): 0x10 = JPEG thumbnail, 0x11 = 1 BPP, 0x13 = 3 BPP.
-  // Only add second item if we do not already have one (EXIF or JFIF embedded).
+  // JFXX (JFIF 1.02 extension): 0x10 = JPEG thumbnail, 0x11 = 1 BPP, 0x13 = 3
+  // BPP. Only add second item if we do not already have one (EXIF or JFIF
+  // embedded).
   if (gimg_doc_item_count(doc) == 1 && state->app0_jfxx &&
       state->app0_jfxx_len >= 6) {
     uint8_t ext_code = state->app0_jfxx[5];
@@ -1492,8 +1875,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             if (r == GIMG_OK && copy_raster) {
               r = gimg_doc_set_item_count(doc, 2);
               if (r == GIMG_OK) {
-                gimg_item_set_raster(
-                    gimg_doc_item(doc, 1), copy_raster);
+                gimg_item_set_raster(gimg_doc_item(doc, 1), copy_raster);
               }
               else {
                 gimg_raster_destroy(copy_raster);
@@ -1515,20 +1897,19 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           (unsigned char)state->app0_jfif[15]);
       if (tx > 0 && ty > 0) {
         size_t thumb_pixels = 0;
-        if (gimg_safe_pixel_count((uint32_t)tx, (uint32_t)ty,
-                &thumb_pixels) == GIMG_OK &&
+        if (gimg_safe_pixel_count((uint32_t)tx, (uint32_t)ty, &thumb_pixels) ==
+                GIMG_OK &&
             thumb_pixels <= GIMG_JPEG_MAX_THUMB_PIXELS) {
           if (ext_code == 0x11) {
             // 1 BPP: 256*3 palette then tx*ty indices.
             size_t palette_size = 768u;
             size_t indices_size = 0;
-            if (gimg_safe_add_size(palette_size, thumb_pixels,
-                    &indices_size) &&
+            if (gimg_safe_add_size(palette_size, thumb_pixels, &indices_size) &&
                 jfxx_data_len >= indices_size) {
               GIMG_Raster * thumb_raster = NULL;
-              r = gimg_raster_create_with_allocator(
-                  alloc, (uint32_t)tx, (uint32_t)ty, &GIMG_PIXEL_RGBA8,
-                  GIMG_RASTER_OWNED, NULL, 0, &thumb_raster);
+              r = gimg_raster_create_with_allocator(alloc, (uint32_t)tx,
+                  (uint32_t)ty, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0,
+                  &thumb_raster);
               if (r == GIMG_OK && thumb_raster) {
                 void * pixels = gimg_raster_pixels(thumb_raster);
                 size_t stride = gimg_raster_stride_bytes(thumb_raster);
@@ -1537,8 +1918,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
                 for (uint32_t y = 0; y < (uint32_t)ty; y++) {
                   for (uint32_t x = 0; x < (uint32_t)tx; x++) {
                     unsigned char i = idx[(size_t)y * (uint32_t)tx + x];
-                    size_t dst_off =
-                        (size_t)y * stride + (size_t)x * 4u;
+                    size_t dst_off = (size_t)y * stride + (size_t)x * 4u;
                     ((unsigned char *)pixels)[dst_off + 0] = pal[(size_t)i * 3];
                     ((unsigned char *)pixels)[dst_off + 1] =
                         pal[(size_t)i * 3 + 1];
@@ -1549,8 +1929,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
                 }
                 r = gimg_doc_set_item_count(doc, 2);
                 if (r == GIMG_OK) {
-                  gimg_item_set_raster(
-                      gimg_doc_item(doc, 1), thumb_raster);
+                  gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
                 }
                 else {
                   gimg_raster_destroy(thumb_raster);
@@ -1564,19 +1943,17 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             if (gimg_safe_mul_size(thumb_pixels, 3u, &need) &&
                 jfxx_data_len >= need) {
               GIMG_Raster * thumb_raster = NULL;
-              r = gimg_raster_create_with_allocator(
-                  alloc, (uint32_t)tx, (uint32_t)ty, &GIMG_PIXEL_RGBA8,
-                  GIMG_RASTER_OWNED, NULL, 0, &thumb_raster);
+              r = gimg_raster_create_with_allocator(alloc, (uint32_t)tx,
+                  (uint32_t)ty, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0,
+                  &thumb_raster);
               if (r == GIMG_OK && thumb_raster) {
                 void * pixels = gimg_raster_pixels(thumb_raster);
                 size_t stride = gimg_raster_stride_bytes(thumb_raster);
                 const unsigned char * src = jfxx_data;
                 for (uint32_t y = 0; y < (uint32_t)ty; y++) {
                   for (uint32_t x = 0; x < (uint32_t)tx; x++) {
-                    size_t src_off =
-                        (size_t)(y * (uint32_t)tx + x) * 3u;
-                    size_t dst_off =
-                        (size_t)y * stride + (size_t)x * 4u;
+                    size_t src_off = (size_t)(y * (uint32_t)tx + x) * 3u;
+                    size_t dst_off = (size_t)y * stride + (size_t)x * 4u;
                     ((unsigned char *)pixels)[dst_off + 0] = src[src_off + 0];
                     ((unsigned char *)pixels)[dst_off + 1] = src[src_off + 1];
                     ((unsigned char *)pixels)[dst_off + 2] = src[src_off + 2];
@@ -1585,8 +1962,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
                 }
                 r = gimg_doc_set_item_count(doc, 2);
                 if (r == GIMG_OK) {
-                  gimg_item_set_raster(
-                      gimg_doc_item(doc, 1), thumb_raster);
+                  gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
                 }
                 else {
                   gimg_raster_destroy(thumb_raster);

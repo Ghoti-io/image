@@ -197,12 +197,21 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     GIMG_Save_Report * report);
 
 /**
+ * @brief JPEG chroma upsampling method (decode only).
+ * @see api_options
+ */
+#define GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE  0  /**< Box filter (replicate). */
+#define GIMG_JPEG_CHROMA_UPSAMPLE_FANCY  1  /**< Triangle filter (smooth). */
+
+/**
  * @brief Decode options.
  * @see api_options
  */
 typedef struct {
   const GIMG_Limits * limits;
-  uint8_t _reserved[8];
+  /** JPEG: chroma upsampling when decoding 4:2:0/4:2:2. GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE (0) or FANCY (1). Default 0 until fancy is default. */
+  uint8_t jpeg_chroma_upsampling;
+  uint8_t _reserved[7];
 } GIMG_Decode_Options;
 
 /**

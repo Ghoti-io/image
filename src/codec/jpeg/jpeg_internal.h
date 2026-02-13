@@ -27,10 +27,11 @@ extern "C" {
 #define GIMG_JPEG_SIGNATURE_LEN 2
 extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 
-/** Marker bytes (after 0xFF). Per ISO/IEC 10918-1 (ITU-T T.81) Annex B, the only
- * Start-of-Frame (SOF) marker bytes are 0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6,
- * 0xC7, 0xC9, 0xCA, 0xCB (and 0xCD, 0xCE, 0xCF for SOF13–SOF15). 0xC4 is DHT,
- * 0xC8 is reserved, 0xCC is DAC — not SOF. We support SOF0, SOF1, SOF2 only. */
+/** Marker bytes (after 0xFF). Per ISO/IEC 10918-1 (ITU-T T.81) Annex B, the
+ * only Start-of-Frame (SOF) marker bytes are 0xC0, 0xC1, 0xC2, 0xC3, 0xC5,
+ * 0xC6, 0xC7, 0xC9, 0xCA, 0xCB (and 0xCD, 0xCE, 0xCF for SOF13–SOF15). 0xC4 is
+ * DHT, 0xC8 is reserved, 0xCC is DAC — not SOF. We support SOF0, SOF1, SOF2
+ * only. */
 #define GIMG_JPEG_MARKER_SOI 0xD8
 #define GIMG_JPEG_MARKER_EOI 0xD9
 #define GIMG_JPEG_MARKER_SOF0 0xC0 // Baseline DCT (8-bit only)
@@ -38,9 +39,10 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MARKER_SOF2 0xC2 // Progressive DCT
 #define GIMG_JPEG_MARKER_SOF3 0xC3 // Lossless (not yet supported)
 // 0xC4 = DHT (Define Huffman Tables), not SOF
-// 0xC5 = SOF5  differential sequential DCT; 0xC6 = SOF6; 0xC7 = SOF7 differential lossless
-// 0xC8 = reserved; 0xC9 = SOF9 arithmetic sequential; 0xCA = SOF10; 0xCB = SOF11
-// 0xCC = DAC; 0xCD = SOF13; 0xCE = SOF14; 0xCF = SOF15
+// 0xC5 = SOF5  differential sequential DCT; 0xC6 = SOF6; 0xC7 = SOF7
+// differential lossless 0xC8 = reserved; 0xC9 = SOF9 arithmetic sequential;
+// 0xCA = SOF10; 0xCB = SOF11 0xCC = DAC; 0xCD = SOF13; 0xCE = SOF14; 0xCF =
+// SOF15
 #define GIMG_JPEG_MARKER_DHT 0xC4
 #define GIMG_JPEG_MARKER_DQT 0xDB
 #define GIMG_JPEG_MARKER_SOS 0xDA
@@ -55,7 +57,8 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 
 /** Meta_raw tag IDs for round-trip (format_id "jpeg"). */
 #define GIMG_JPEG_RAW_APP0 0xE0u
-/** APP0 JFXX (JFIF 1.02 extension) segment; written after main APP0 when present. */
+/** APP0 JFXX (JFIF 1.02 extension) segment; written after main APP0 when
+ * present. */
 #define GIMG_JPEG_RAW_APP0_JFXX 0xE001u
 #define GIMG_JPEG_RAW_APP1_EXIF 0xE100u
 #define GIMG_JPEG_RAW_APP1_XMP 0xE101u
@@ -63,8 +66,8 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 /** Multi-segment APP2 ICC round-trip: serialized [2B N][2B len1][payload1]...
  * Used when ICC profile was split across multiple APP2 segments. */
 #define GIMG_JPEG_RAW_APP2_ICC_CHUNKS 0xE201u
-#define GIMG_JPEG_RAW_APP13 0xEDu   ///< APP13 IPTC/Photoshop (Photoshop 3.0).
-#define GIMG_JPEG_RAW_APP14 0xEEu   ///< APP14 Adobe (transform: YCbCr/YCCK).
+#define GIMG_JPEG_RAW_APP13 0xEDu ///< APP13 IPTC/Photoshop (Photoshop 3.0).
+#define GIMG_JPEG_RAW_APP14 0xEEu ///< APP14 Adobe (transform: YCbCr/YCCK).
 /** Unknown APP segments (APPn not handled as JFIF/EXIF/XMP/ICC/Adobe). Stored
  * as concatenated (1-byte marker + 2-byte BE payload length + payload) in read
  * order for round-trip. */
@@ -105,11 +108,18 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
  */
 #define GIMG_JPEG_MAX_SCANS 128u
 
+/** Max DHT table entries we record (for "first DHT after previous scan" rule). */
+#define GIMG_JPEG_MAX_DHT_ENTRIES 128u
+
 /**
  * Max thumbnail pixels (JFIF embedded or JFXX) for bomb protection.
  * Rationale: 256×256 is a common thumbnail cap; avoids overflow in size checks.
  */
 #define GIMG_JPEG_MAX_THUMB_PIXELS (256u * 256u)
+
+/** Zigzag order (stream index -> row-major position). DQT is stored in this
+ * order. */
+extern const uint8_t gimg_jpeg_zigzag[64];
 
 /** Max APP2 ICC_PROFILE chunks (1-based index in spec; 255 max). */
 #define GIMG_JPEG_MAX_ICC_CHUNKS 255u
@@ -122,6 +132,8 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 
 /**
  * One scan (SOS) for baseline (single scan) or progressive (multiple scans).
+ * For progressive, each SOS may be preceded by DHT; we snapshot the Huffman
+ * tables active at this SOS so decode uses the correct tables per scan.
  */
 typedef struct {
   uint8_t comp_count;
@@ -131,6 +143,15 @@ typedef struct {
   uint8_t ss, se, ah, al; ///< Spectral selection and successive approximation.
   unsigned char * data;
   size_t data_size;
+  /** Snapshot of Huffman tables at this SOS (progressive multi-DHT). NULL = use
+   * state's. */
+  unsigned char * huff_dc[4];
+  size_t huff_dc_len[4];
+  unsigned char * huff_ac[4];
+  size_t huff_ac_len[4];
+  /** AC refinement (17-symbol) tables when Ah!=0; NULL = use huff_ac[]. */
+  unsigned char * huff_ac_refine[4];
+  size_t huff_ac_refine_len[4];
 } gimg_jpeg_scan_t;
 
 /**
@@ -162,14 +183,37 @@ typedef struct gimg_jpeg_doc_state {
   // Huffman tables (simplified: we store raw DHT payloads for decode later).
   unsigned char * huff_dc[4]; ///< DC 0..3
   size_t huff_dc_len[4];
-  unsigned char * huff_ac[4]; ///< AC 0..3
+  unsigned char * huff_ac[4]; ///< AC 0..3 (initial/162-symbol)
   size_t huff_ac_len[4];
+  unsigned char * huff_ac_refine[4]; ///< AC 0..3 refinement (17-symbol, Ah!=0)
+  size_t huff_ac_refine_len[4];
 
   uint16_t restart_interval; ///< DRI restart interval in MCUs (0 = none).
 
   // Scans: one for baseline, multiple for progressive.
   unsigned num_scans;
   gimg_jpeg_scan_t scans[GIMG_JPEG_MAX_SCANS];
+  /** Pillow/libjpeg compatibility: AC table was updated by a DHT between
+   * scans (after first SOS). When snapshotting for the first AC-initial scan,
+   * we leave scan->huff_ac NULL so the decoder uses the default AC table. */
+  unsigned char ac_from_inter_scan_dht[4];
+
+  /** Record of each DHT table (in parse order) for "last DHT before this scan"
+   * (T.81 B.2.4; matches libjpeg-turbo). */
+  struct {
+    uint8_t tc;
+    uint8_t th;
+    unsigned char is_ac_refine; /**< 1 for AC 17-symbol (refinement) table. */
+    unsigned char * payload;
+    size_t len;
+  } dht_entries[GIMG_JPEG_MAX_DHT_ENTRIES];
+  size_t num_dht_entries;
+  /** Index such that dht_entries[j] for j >= this are "after previous scan
+   * data". Set once when we first exit the scan-data loop (before any inter-scan
+   * DHT), so "first DHT after previous scan" uses the right range. */
+  size_t last_scan_data_end_dht_index;
+  /** 1 if we have set last_scan_data_end_dht_index for this inter-scan run. */
+  unsigned char inter_scan_dht_index_set;
 
   // APP segments for metadata (round-trip).
   unsigned char * app0_jfif;
@@ -187,18 +231,22 @@ typedef struct gimg_jpeg_doc_state {
    * When > 0, app2_icc points to assembled profile only; chunk payloads stored
    * for round-trip in app2_icc_chunk_* and in meta_raw APP2_ICC_CHUNKS. */
   unsigned app2_icc_num_chunks;
-  /** Expected total chunks (multi-segment); 0 until first multi-segment seen. */
+  /** Expected total chunks (multi-segment); 0 until first multi-segment seen.
+   */
   unsigned app2_icc_total_chunks;
   /** Chunks received so far (multi-segment). */
   unsigned app2_icc_chunks_received;
   /** Full segment payload (ICC_PROFILE\0 + index + total + data) per chunk. */
   unsigned char * app2_icc_chunk_payload[GIMG_JPEG_MAX_ICC_CHUNKS];
   size_t app2_icc_chunk_len[GIMG_JPEG_MAX_ICC_CHUNKS];
-  unsigned char * app13;   ///< APP13 IPTC/Photoshop payload when "Photoshop 3.0\0"; else in unknown.
+  unsigned char * app13; ///< APP13 IPTC/Photoshop payload when
+                         ///< "Photoshop 3.0\0"; else in unknown.
   size_t app13_len;
-  unsigned char * app14;  ///< APP14 Adobe payload when "Adobe\0"; else in unknown.
+  unsigned char *
+      app14; ///< APP14 Adobe payload when "Adobe\0"; else in unknown.
   size_t app14_len;
-  /** APP14 Adobe transform: 0=unknown, 1=YCbCr, 2=YCCK. Used for 4-component decode. */
+  /** APP14 Adobe transform: 0=unknown, 1=YCbCr, 2=YCCK. Used for 4-component
+   * decode. */
   uint8_t adobe_transform;
   /** COM segment(s) for round-trip: concatenated (2-byte BE length + payload)
    * per COM, in read order. */
@@ -289,6 +337,16 @@ GIMG_Result gimg_jpeg_encode_baseline_scan(uint32_t width, uint32_t height,
     uint16_t restart_interval, unsigned char ** out_scan_data,
     size_t * out_scan_size);
 
+/** Encode baseline (single scan) from coefficient buffer; same block order as
+ * gimg_jpeg_progressive_fill_coef_buffer. Used so baseline and progressive
+ * use identical coefficients and decode to identical pixels. */
+GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(
+    uint32_t GIMG_MAYBE_UNUSED(width), uint32_t GIMG_MAYBE_UNUSED(height),
+    int num_components, const int16_t * coef_buffer, size_t total_blocks,
+    const uint8_t * h_samp, const uint8_t * v_samp,
+    const GIMG_Allocator * alloc, uint16_t restart_interval,
+    unsigned char ** out_scan_data, size_t * out_scan_size);
+
 /** Fill coefficient buffer for progressive encode (DCT, quant, zigzag; MCU
  * order). Caller allocates coef_buffer for *out_total_blocks * 64 int16_t. */
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
@@ -330,9 +388,9 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_16bit(uint32_t width,
     const uint16_t * comp1, const uint16_t * comp2, size_t stride0,
     size_t stride1, size_t stride2, const uint8_t * h_samp,
     const uint8_t * v_samp, const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, int precision,
-    const GIMG_Allocator * alloc, uint16_t restart_interval,
-    unsigned char ** out_scan_data, size_t * out_scan_size);
+    const uint16_t * quant_chroma, int precision, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, unsigned char ** out_scan_data,
+    size_t * out_scan_size);
 
 /** Fill coefficient buffer for 12/16-bit progressive encode. */
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_16bit(uint32_t width,
