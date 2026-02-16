@@ -348,23 +348,28 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(
     unsigned char ** out_scan_data, size_t * out_scan_size);
 
 /** Fill coefficient buffer for progressive encode (DCT, quant, zigzag; MCU
- * order). Caller allocates coef_buffer for *out_total_blocks * 64 int16_t. */
+ * order). Caller allocates coef_buffer for *out_total_blocks * 64 int16_t.
+ * fdct_method: GIMG_JPEG_FDCT_LOEFFLER (0) or GIMG_JPEG_FDCT_REF (1).
+ * quant_method: GIMG_JPEG_QUANT_RECIP (0) or GIMG_JPEG_QUANT_DIV (1). */
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
     uint32_t height, int num_components, const unsigned char * comp0,
     const unsigned char * comp1, const unsigned char * comp2, size_t stride0,
     size_t stride1, size_t stride2, const uint8_t * h_samp,
     const uint8_t * v_samp, const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, int16_t * coef_buffer,
-    size_t * out_total_blocks);
+    const uint16_t * quant_chroma, unsigned fdct_method, unsigned quant_method,
+    int16_t * coef_buffer, size_t * out_total_blocks);
 
 /** Encode one progressive scan from coefficient buffer. Supports Ah>0
- * (refinement). Caller frees *out_scan_data. */
+ * (refinement). Caller frees *out_scan_data.
+ * state_after_scan_out: optional; when non-NULL and scan is AC initial, filled.
+ * state_after_previous_scan: optional; when non-NULL and scan is AC refinement, used. */
 GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
     const uint8_t * h_samp, const uint8_t * v_samp, uint8_t Ss, uint8_t Se,
     uint8_t Ah, uint8_t Al, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
-    size_t * out_scan_size);
+    size_t * out_scan_size, int16_t * state_after_scan_out,
+    const int16_t * state_after_previous_scan, int sync_debug_scan_index);
 
 /** Fill scaled default quant tables (quality 1..100). */
 void gimg_jpeg_default_quant_scaled(

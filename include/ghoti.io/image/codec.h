@@ -134,6 +134,13 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
 #define GIMG_JPEG_CHROMA_420 0
 #define GIMG_JPEG_CHROMA_422 1
 #define GIMG_JPEG_CHROMA_444 2
+/** FDCT method: Loeffler (libjpeg-compatible, default) or reference. */
+#define GIMG_JPEG_FDCT_LOEFFLER 0
+#define GIMG_JPEG_FDCT_REF     1
+/** Quantization method: reciprocal-based (libjpeg-compatible, default) or
+ * integer division (for speed/quality comparison). */
+#define GIMG_JPEG_QUANT_RECIP  0
+#define GIMG_JPEG_QUANT_DIV    1
 
 /**
  * @brief One scan in a progressive JPEG scan script (ISO/IEC 10918-1 Annex B).
@@ -171,6 +178,13 @@ typedef struct {
   uint8_t exif_thumbnail_quality; ///< Thumbnail JPEG quality 1–100 when
                                   ///< format 6 or 7; 0 = default (85).
   uint8_t jpeg_chroma_subsampling; ///< GIMG_JPEG_CHROMA_420 (default), 422, 444.
+  /** FDCT method: GIMG_JPEG_FDCT_LOEFFLER (0, default) = libjpeg-compatible
+   * Loeffler integer DCT for exact match; GIMG_JPEG_FDCT_REF (1) = reference
+   * implementation (float-based) for speed/quality comparison. */
+  uint8_t jpeg_fdct_method;
+  /** Quantization: GIMG_JPEG_QUANT_RECIP (0, default) = reciprocal-based
+   * (libjpeg match); GIMG_JPEG_QUANT_DIV (1) = integer division. */
+  uint8_t jpeg_quant_method;
   uint8_t jpeg_progressive;        ///< 0 = baseline (default), 1 = progressive.
   /** When jpeg_progressive==1: NULL or scan_count 0 = default progression;
    * otherwise use this scan script. Ignored for non-JPEG or baseline. */
@@ -209,7 +223,7 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
  */
 typedef struct {
   const GIMG_Limits * limits;
-  /** JPEG: chroma upsampling when decoding 4:2:0/4:2:2. GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE (0) or FANCY (1). Default 0 until fancy is default. */
+  /** JPEG: chroma upsampling when decoding 4:2:0/4:2:2. GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE (0) or FANCY (1). When options is NULL, FANCY is used (default). */
   uint8_t jpeg_chroma_upsampling;
   uint8_t _reserved[7];
 } GIMG_Decode_Options;

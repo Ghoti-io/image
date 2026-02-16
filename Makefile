@@ -275,17 +275,20 @@ $(OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
+# Project root for test data (run make from repo root so CURDIR is correct).
+# Test binary may run from build/.../apps/; paths are compile-time absolute so data/out are found.
+IMAGE_ROOT := $(CURDIR)
 # Test data path for PNG tests (reference files from tests/data/png/generate.py).
-TEST_DATA_PNG := $(CURDIR)/tests/data/png
+TEST_DATA_PNG := $(IMAGE_ROOT)/tests/data/png
 # Test data path for JPEG tests (optional cmyk_sample.jpg etc.).
-TEST_DATA_JPEG := $(CURDIR)/tests/data/jpeg
+TEST_DATA_JPEG := $(IMAGE_ROOT)/tests/data/jpeg
 # libjpeg for decode oracle tools (dump_jpeg_pixels_ref, dump_jpeg_coef_ref).
 LIBJPEG_CFLAGS := $(shell pkg-config --cflags libjpeg 2>/dev/null)
 LIBJPEG_LIBS := $(shell pkg-config --libs libjpeg 2>/dev/null)
 # Output directory for PNG encode test output (add to .gitignore); verifier reads this.
-TEST_OUT_PNG := $(CURDIR)/tests/out/png
+TEST_OUT_PNG := $(IMAGE_ROOT)/tests/out/png
 # Output directory for JPEG encode test output; verifier reads this.
-TEST_OUT_JPEG := $(CURDIR)/tests/out/jpeg
+TEST_OUT_JPEG := $(IMAGE_ROOT)/tests/out/jpeg
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
 	@mkdir -p $(@D)
@@ -367,7 +370,10 @@ jpeg-oracle-tools: ## Build dump_jpeg_pixels_ref and dump_jpeg_coef_ref in tests
 	fi
 	$(CC) $(CFLAGS) $(LIBJPEG_CFLAGS) -o $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref.c $(LIBJPEG_LIBS)
 	$(CC) $(CFLAGS) $(LIBJPEG_CFLAGS) -o $(TEST_DATA_JPEG)/dump_jpeg_coef_ref$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_coef_ref.c $(LIBJPEG_LIBS)
+	$(CC) $(CFLAGS) $(LIBJPEG_CFLAGS) -o $(TEST_DATA_JPEG)/encode_libjpeg_baseline_scan$(EXE_EXTENSION) $(TEST_DATA_JPEG)/encode_libjpeg_baseline_scan.c $(LIBJPEG_LIBS)
 	@echo "Oracle tools built in $(TEST_DATA_JPEG)/"
+
+jpeg-encode-oracle: jpeg-oracle-tools ## Build encode_libjpeg_baseline_scan (part of jpeg-oracle-tools)
 
 # Build oracle tools against instrumented libjpeg (for debugging). Two options:
 #
@@ -375,7 +381,7 @@ jpeg-oracle-tools: ## Build dump_jpeg_pixels_ref and dump_jpeg_coef_ref in tests
 #    Requires: cd third_party/libjpeg-turbo && mkdir build-debug && cd build-debug && cmake .. && make
 # 2) Link against installed lib: make jpeg-oracle-tools-debug
 #    Requires: same then make install (prefix ../../libjpeg-debug)
-jpeg-oracle-tools-debug-build: ## Build dump_jpeg_coef_ref_debug and dump_jpeg_pixels_ref_debug (link third_party/libjpeg-turbo/build-debug)
+jpeg-oracle-tools-debug-build: ## Build dump_jpeg_*_debug and encode_libjpeg_baseline_scan_debug (link third_party/libjpeg-turbo/build-debug; use LIBJPEG_DUMP_FIRST_BLOCK_COEF when running encode tool)
 	@JPEG_BD=$(CURDIR)/third_party/libjpeg-turbo/build-debug; \
 	JPEG_SRC=$(CURDIR)/third_party/libjpeg-turbo/src; \
 	if [ ! -f "$$JPEG_BD/libjpeg.a" ]; then \
@@ -384,6 +390,7 @@ jpeg-oracle-tools-debug-build: ## Build dump_jpeg_coef_ref_debug and dump_jpeg_p
 	fi; \
 	$(CC) $(CFLAGS) -I$$JPEG_SRC -I$$JPEG_BD -o $(TEST_DATA_JPEG)/dump_jpeg_coef_ref_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_coef_ref.c $$JPEG_BD/libjpeg.a; \
 	$(CC) $(CFLAGS) -I$$JPEG_SRC -I$$JPEG_BD -o $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref.c $$JPEG_BD/libjpeg.a; \
+	$(CC) $(CFLAGS) -I$$JPEG_SRC -I$$JPEG_BD -o $(TEST_DATA_JPEG)/encode_libjpeg_baseline_scan_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/encode_libjpeg_baseline_scan.c $$JPEG_BD/libjpeg.a; \
 	echo "Oracle debug tools built (linked against build-debug) in $(TEST_DATA_JPEG)/"
 
 jpeg-oracle-tools-debug: ## Build dump_jpeg_coef_ref_debug against installed third_party/libjpeg-debug
@@ -421,7 +428,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c $(APP_DIR)/$(TARGET)
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples jpeg-oracle-tools jpeg-oracle-tools-debug jpeg-oracle-tools-debug-build
+.PHONY: clean cloc docs docs-pdf examples jpeg-oracle-tools jpeg-encode-oracle jpeg-oracle-tools-debug jpeg-oracle-tools-debug-build
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-watch uninstall watch
 # Debug build commands
@@ -487,7 +494,7 @@ endif
 TEST_LD_PATH := $(APP_DIR):../compress/build/$(BUILD)/apps
 
 test: ## Make and run the Unit tests, then verify PNG and JPEG output with PIL
-test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
+test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) jpeg-oracle-tools
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
@@ -496,7 +503,7 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 		printf "### Running %s tests ###\n" "$$test_name"; \
 		printf "############################"; \
 		printf "\033[0m\n\n"; \
-		LD_LIBRARY_PATH="$(TEST_LD_PATH)" $$test_exe --gtest_brief=1; \
+		GIMG_IMAGE_ROOT="$(IMAGE_ROOT)" LD_LIBRARY_PATH="$(TEST_LD_PATH)" $$test_exe --gtest_brief=1; \
 	done
 	@printf "\033[0;30;43m\n############################\n### Verifying PNG output (PIL) ###\n############################\033[0m\n\n"; \
 	python3 $(CURDIR)/tests/data/png/verify_png_output.py $(TEST_OUT_PNG) && \
@@ -506,14 +513,14 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 	printf "\033[0;32mJPEG output verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
-test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
+test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) jpeg-oracle-tools
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;36m%-30s %8s %10s %s\033[0m\n" "Test Suite" "Tests" "Time" "Status"; \
 	printf "\033[1;36m%-30s %8s %10s %s\033[0m\n" "------------------------------" "--------" "----------" "------"; \
 	for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
-		output=$$(LD_LIBRARY_PATH="$(TEST_LD_PATH)" $$test_exe --gtest_brief=1 2>&1); \
+		output=$$(GIMG_IMAGE_ROOT="$(IMAGE_ROOT)" LD_LIBRARY_PATH="$(TEST_LD_PATH)" $$test_exe --gtest_brief=1 2>&1); \
 		exit_code=$$?; \
 		num_tests=$$(echo "$$output" | grep -oP '\[\s*=+\s*\]\s*\K\d+(?=\s+tests?)' | head -1); \
 		time_ms=$$(echo "$$output" | grep -oP '\(\K\d+(?=\s*ms\s*total\))' | head -1); \
@@ -556,7 +563,7 @@ test-verify-jpeg: ## Run only JPEG output verification (run 'make test' for full
 		printf "\033[0;32mJPEG output verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
-test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
+test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) jpeg-oracle-tools
 ifeq ($(OS_NAME), Linux)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \

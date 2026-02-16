@@ -89,7 +89,7 @@ static void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
     size_t table_len = 17 + num_symbols;
     if (tc) {
       // AC: 17-symbol DHT is refinement (Ah!=0); store separately so initial
-      // table (162 symbols) is not overwritten. T.81 Table K.6.
+      // table (162 symbols, T.81 K.4) is not overwritten. T.81 Table K.6.
       if (num_symbols == 17) {
         unsigned char ** dest = &state->huff_ac_refine[th];
         size_t * dest_len = &state->huff_ac_refine_len[th];
@@ -899,11 +899,14 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             }
           }
           else {
-            /* First DHT (Th,Tc) after previous scan's data for AC refinement. */
+            /* First DHT (Th,Tc) after previous scan's data for AC refinement.
+             * Must use 17-symbol refinement table (is_ac_refine), not 162-symbol
+             * AC initial table with same Th. */
             for (size_t j = state->last_scan_data_end_dht_index;
                  j < state->num_dht_entries; j++) {
               if (state->dht_entries[j].tc == 1 &&
-                  state->dht_entries[j].th == (unsigned)ti) {
+                  state->dht_entries[j].th == (unsigned)ti &&
+                  state->dht_entries[j].is_ac_refine) {
                 src = state->dht_entries[j].payload;
                 src_len = state->dht_entries[j].len;
                 break;
@@ -917,7 +920,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             if (!src) {
               for (size_t j = state->num_dht_entries; j > 0; j--) {
                 if (state->dht_entries[j - 1].tc == 1 &&
-                    state->dht_entries[j - 1].th == (unsigned)ti) {
+                    state->dht_entries[j - 1].th == (unsigned)ti &&
+                    state->dht_entries[j - 1].is_ac_refine) {
                   src = state->dht_entries[j - 1].payload;
                   src_len = state->dht_entries[j - 1].len;
                   break;
@@ -938,6 +942,20 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               scan->huff_ac_refine_len[ti] = src_len;
             }
           }
+        }
+        if (scan->ah != 0 && getenv("GIMG_JPEG_PROGRESSIVE_DEBUG") &&
+            getenv("GIMG_JPEG_PROGRESSIVE_DEBUG")[0] != '\0') {
+          (void)fprintf(stderr,
+              "LOADER scan %zu (refinement ah=%u) last_dht=%zu num_dht=%zu",
+              (size_t)state->num_scans, (unsigned)scan->ah,
+              (size_t)state->last_scan_data_end_dht_index,
+              (size_t)state->num_dht_entries);
+          for (int ti = 0; ti < 4; ti++) {
+            (void)fprintf(stderr, " ac_ref[%d]=%s", ti,
+                scan->huff_ac_refine[ti] ? "yes" : "no");
+          }
+          (void)fprintf(stderr, "\n");
+          (void)fflush(stderr);
         }
         state->num_scans++;
         state->inter_scan_dht_index_set = 0;  /* Next scan data end will set index. */

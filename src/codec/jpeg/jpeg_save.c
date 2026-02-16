@@ -17,6 +17,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../../container/doc_internal.h"
@@ -29,6 +31,72 @@
 
 /** Default quality when not specified (1..100). */
 #define GIMG_JPEG_DEFAULT_QUALITY 85u
+
+/** T.81 Annex K.1 sample quantization tables (natural/row-major order). */
+static const unsigned int gimg_jpeg_std_luminance_quant[64] = {
+  16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55,
+  14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62,
+  18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92,
+  49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99
+};
+static const unsigned int gimg_jpeg_std_chrominance_quant[64] = {
+  17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99,
+  24, 26, 56, 99, 99, 99, 99, 99, 47, 66, 99, 99, 99, 99, 99, 99,
+  99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+  99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99
+};
+
+/** Quality 0..100 -> scale percentage (IJG curve). Q 50 -> 100; Q<50 -> 5000/Q; Q>=50 -> 200-2*Q. */
+static unsigned int gimg_jpeg_quality_to_scale(unsigned quality) {
+  if (quality <= 0) {
+    quality = 1;
+  }
+  if (quality > 100) {
+    quality = 100;
+  }
+  if (quality < 50) {
+    return (unsigned int)(5000 / quality);
+  }
+  return (unsigned int)(200 - quality * 2);
+}
+
+void gimg_jpeg_default_quant_scaled(
+    unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma) {
+  unsigned int scale = gimg_jpeg_quality_to_scale(quality);
+  for (int i = 0; i < 64; i++) {
+    unsigned long t = (unsigned long)gimg_jpeg_std_luminance_quant[i] * scale + 50UL;
+    t /= 100UL;
+    if (t <= 0UL) t = 1UL;
+    if (t > 255UL) t = 255UL;
+    quant_luma[i] = (uint16_t)t;
+  }
+  for (int i = 0; i < 64; i++) {
+    unsigned long t = (unsigned long)gimg_jpeg_std_chrominance_quant[i] * scale + 50UL;
+    t /= 100UL;
+    if (t <= 0UL) t = 1UL;
+    if (t > 255UL) t = 255UL;
+    quant_chroma[i] = (uint16_t)t;
+  }
+}
+
+void gimg_jpeg_default_quant_scaled_16bit(
+    unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma) {
+  unsigned int scale = gimg_jpeg_quality_to_scale(quality);
+  for (int i = 0; i < 64; i++) {
+    unsigned long t = (unsigned long)gimg_jpeg_std_luminance_quant[i] * scale + 50UL;
+    t /= 100UL;
+    if (t <= 0UL) t = 1UL;
+    if (t > 32767UL) t = 32767UL;
+    quant_luma[i] = (uint16_t)t;
+  }
+  for (int i = 0; i < 64; i++) {
+    unsigned long t = (unsigned long)gimg_jpeg_std_chrominance_quant[i] * scale + 50UL;
+    t /= 100UL;
+    if (t <= 0UL) t = 1UL;
+    if (t > 32767UL) t = 32767UL;
+    quant_chroma[i] = (uint16_t)t;
+  }
+}
 
 /** Write a 2-byte segment length (big-endian). */
 static GIMG_Result jpeg_write_u16(
@@ -56,7 +124,9 @@ static GIMG_Result jpeg_write_marker(
 }
 
 /** Write entropy-coded segment with 0xFF stuffing (T.81 B.2.2: 0xFF in scan
- * data must be followed by a stuffed 0x00 so the next 0xFF is not misread). */
+ * data must be followed by a stuffed 0x00 so the next 0xFF is not misread).
+ * Do not insert stuffing when the encoder already stuffed (next byte is 0x00)
+ * or when the next byte is RST (0xD0..0xD7): 0xFF 0xDn is the RST marker. */
 static GIMG_Result jpeg_write_scan_data_with_stuffing(GIMG_Stream * stream,
     const unsigned char * scan_data, size_t scan_size, size_t * out_n) {
   size_t total = 0;
@@ -68,6 +138,13 @@ static GIMG_Result jpeg_write_scan_data_with_stuffing(GIMG_Stream * stream,
       return r;
     }
     total += n;
+    if (b == 0xFF && (i + 1) < scan_size) {
+      unsigned char next = scan_data[i + 1];
+      if (next == 0x00 || (next >= 0xD0 && next <= 0xD7)) {
+        /* Already stuffed by encoder, or RST marker: do not add stuffing. */
+        continue;
+      }
+    }
     if (b == 0xFF) {
       const unsigned char stuff = 0x00;
       r = gimg_stream_write(stream, &stuff, 1, &n);
@@ -142,18 +219,19 @@ static void jpeg_build_minimal_app0(
   buf[13] = 0; // Ythumbnail
 }
 
-/** RGB to YCbCr (BT.601). R,G,B 0..255 -> Y,Cb,Cr 0..255. */
+/** RGB to YCbCr per ITU-R BT.601. R,G,B 0..255 -> Y,Cb,Cr 0..255.
+ * FIX(x) = (x * 65536 + 0.5) for rounding. */
 static void jpeg_rgb_to_ycbcr(
     uint8_t r, uint8_t g, uint8_t b, uint8_t * y, uint8_t * cb, uint8_t * cr) {
-  int ri = (int)r;
-  int gi = (int)g;
-  int bi = (int)b;
-  int yv = (77 * ri + 150 * gi + 29 * bi + 128) / 256;
-  int cbv = (-43 * ri - 84 * gi + 127 * bi + 128 * 256) / 256 + 128;
-  int crv = (127 * ri - 106 * gi - 21 * bi + 128 * 256) / 256 + 128;
-  *y = (uint8_t)(yv < 0 ? 0 : (yv > 255 ? 255 : yv));
-  *cb = (uint8_t)(cbv < 0 ? 0 : (cbv > 255 ? 255 : cbv));
-  *cr = (uint8_t)(crv < 0 ? 0 : (crv > 255 ? 255 : crv));
+  /* Y  = 0.299*R + 0.587*G + 0.114*B; FIX(0.299)=19595, FIX(0.587)=38470, FIX(0.114)=7471; +ONE_HALF for B */
+  int32_t yv = (19595 * (int32_t)r + 38470 * (int32_t)g + 7471 * (int32_t)b + 32768) >> 16;
+  /* Cb = -0.16874*R - 0.33126*G + 0.5*B + 128 (CBCR_OFFSET + ONE_HALF - 1). */
+  int32_t cbv = (-11059 * (int32_t)r - 21709 * (int32_t)g + 32768 * (int32_t)b + 8421375) >> 16;
+  /* Cr = 0.5*R - 0.41869*G - 0.08131*B + 128 */
+  int32_t crv = (32768 * (int32_t)r - 27439 * (int32_t)g - 5331 * (int32_t)b + 8421375) >> 16;
+  *y = (uint8_t)(yv < 0 ? 0 : (yv > 255 ? 255 : (uint8_t)yv));
+  *cb = (uint8_t)(cbv < 0 ? 0 : (cbv > 255 ? 255 : (uint8_t)cbv));
+  *cr = (uint8_t)(crv < 0 ? 0 : (crv > 255 ? 255 : (uint8_t)crv));
 }
 
 /** Chroma subsampling: 0 = 4:2:0, 1 = 4:2:2, 2 = 4:4:4. */
@@ -258,10 +336,13 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
   uint16_t * use_cr = comp_cr;
   if (num_components == 3 && chroma_subsampling != CHROMA_444) {
     if (chroma_subsampling == CHROMA_420) {
+      /* T.81 Annex A: expand chroma to fill integral DCT blocks (output_cols = width_in_blocks*8). */
       uint32_t mcu_per_row = (width + 15u) / 16u;
-      uint32_t mcu_per_col = (height + 15u) / 16u;
       uint32_t cw = 8u * mcu_per_row;
-      uint32_t ch = 8u * mcu_per_col;
+      uint32_t ch = (height + 1u) / 2u;
+      if (ch == 0u) {
+        ch = 1u;
+      }
       h_samp[0] = 2;
       h_samp[1] = 1;
       h_samp[2] = 1;
@@ -287,10 +368,15 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
         }
         return GIMG_ERR_OOM;
       }
+      /* T.81 Annex A: chroma has (width+1)/2 samples per line for 2h; fill to
+       * width_in_blocks*8 by replicating the last sample (Annex A data unit
+       * alignment; downsampler output width = compptr->width_in_blocks*8). */
+      uint32_t real_cw = (width + 1u) / 2u;
+      if (real_cw == 0u) {
+        real_cw = 1u;
+      }
       for (uint32_t cb_y = 0; cb_y < ch; cb_y++) {
-        uint32_t mcu_y = cb_y / 8u;
-        uint32_t by = cb_y % 8u;
-        uint32_t y_lo = mcu_y * 16u + by * 2u;
+        uint32_t y_lo = cb_y * 2u;
         uint32_t y1 = y_lo + 1u < height ? y_lo + 1u : y_lo;
         if (y_lo >= height) {
           y_lo = height - 1u;
@@ -298,10 +384,8 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
         if (y1 >= height) {
           y1 = height - 1u;
         }
-        for (uint32_t cb_x = 0; cb_x < cw; cb_x++) {
-          uint32_t mcu_x = cb_x / 8u;
-          uint32_t bx = cb_x % 8u;
-          uint32_t x_lo = mcu_x * 16u + bx * 2u;
+        for (uint32_t cb_x = 0; cb_x < real_cw; cb_x++) {
+          uint32_t x_lo = cb_x * 2u;
           uint32_t x1 = x_lo + 1u < width ? x_lo + 1u : x_lo;
           if (x_lo >= width) {
             x_lo = width - 1u;
@@ -317,8 +401,17 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
               (uint32_t)comp_cr[y_lo * (size_t)width + x1] +
               (uint32_t)comp_cr[y1 * (size_t)width + x_lo] +
               (uint32_t)comp_cr[y1 * (size_t)width + x1];
-          use_cb[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cb + 2) / 4);
-          use_cr[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cr + 2) / 4);
+          /* Ordered-dither rounding for 2×2 box: bias 1,2,1,2 per column (T.81 does not specify filter). */
+          unsigned bias_16 = 1u + (cb_x % 2u);
+          use_cb[cb_y * (size_t)cw + cb_x] =
+              (uint16_t)((sum_cb + bias_16) / 4);
+          use_cr[cb_y * (size_t)cw + cb_x] =
+              (uint16_t)((sum_cr + bias_16) / 4);
+        }
+        /* Replicate rightmost chroma column to fill to cw (T.81 Annex A). */
+        for (uint32_t cb_x = real_cw; cb_x < cw; cb_x++) {
+          use_cb[cb_y * (size_t)cw + cb_x] = use_cb[cb_y * (size_t)cw + (real_cw - 1u)];
+          use_cr[cb_y * (size_t)cw + cb_x] = use_cr[cb_y * (size_t)cw + (real_cw - 1u)];
         }
       }
       stride1 = (size_t)cw;
@@ -495,8 +588,8 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
  * *out_precision is set to 8 or 16. */
 static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
-    bool progressive, uint16_t restart_interval,
-    unsigned char ** out_scan_data, size_t * out_scan_size,
+    bool progressive, uint16_t restart_interval, unsigned fdct_method,
+    unsigned quant_method, unsigned char ** out_scan_data, size_t * out_scan_size,
     int16_t ** out_coef_buffer, size_t * out_total_blocks,
     uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
@@ -631,10 +724,13 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
 
   if (num_components == 3 && chroma_subsampling != CHROMA_444) {
     if (chroma_subsampling == CHROMA_420) {
+      /* T.81 Annex A: expand chroma to fill integral DCT blocks (output_cols = width_in_blocks*8). */
       uint32_t mcu_per_row = (width + 15u) / 16u;
-      uint32_t mcu_per_col = (height + 15u) / 16u;
       uint32_t cw = 8u * mcu_per_row;
-      uint32_t ch = 8u * mcu_per_col;
+      uint32_t ch = (height + 1u) / 2u;
+      if (ch == 0u) {
+        ch = 1u;
+      }
       h_samp[0] = 2;
       h_samp[1] = 1;
       h_samp[2] = 1;
@@ -660,9 +756,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
         return GIMG_ERR_OOM;
       }
       for (uint32_t cb_y = 0; cb_y < ch; cb_y++) {
-        uint32_t mcu_y = cb_y / 8u;
-        uint32_t by = cb_y % 8u;
-        uint32_t y_lo = mcu_y * 16u + by * 2u;
+        uint32_t y_lo = cb_y * 2u;
         uint32_t y1 = y_lo + 1u < height ? y_lo + 1u : y_lo;
         if (y_lo >= height) {
           y_lo = height - 1u;
@@ -671,9 +765,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
           y1 = height - 1u;
         }
         for (uint32_t cb_x = 0; cb_x < cw; cb_x++) {
-          uint32_t mcu_x = cb_x / 8u;
-          uint32_t bx = cb_x % 8u;
-          uint32_t x_lo = mcu_x * 16u + bx * 2u;
+          uint32_t x_lo = cb_x * 2u;
           uint32_t x1 = x_lo + 1u < width ? x_lo + 1u : x_lo;
           if (x_lo >= width) {
             x_lo = width - 1u;
@@ -689,8 +781,12 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
               (unsigned)comp_cr[y_lo * (size_t)width + x1] +
               (unsigned)comp_cr[y1 * (size_t)width + x_lo] +
               (unsigned)comp_cr[y1 * (size_t)width + x1];
-          use_cb[cb_y * (size_t)cw + cb_x] = (unsigned char)((sum_cb + 2) / 4);
-          use_cr[cb_y * (size_t)cw + cb_x] = (unsigned char)((sum_cr + 2) / 4);
+          /* Ordered-dither rounding for 2×2 box: bias 1,2,1,2 per column (T.81 does not specify filter). */
+          unsigned bias = 1u + (cb_x % 2u);
+          use_cb[cb_y * (size_t)cw + cb_x] =
+              (unsigned char)((sum_cb + bias) / 4);
+          use_cr[cb_y * (size_t)cw + cb_x] =
+              (unsigned char)((sum_cr + bias) / 4);
         }
       }
       stride1 = (size_t)cw;
@@ -846,7 +942,8 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     }
     r = gimg_jpeg_progressive_fill_coef_buffer(width, height, num_components,
         comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
-        quant_luma, quant_chroma, coef_buf, out_total_blocks);
+        quant_luma, quant_chroma, fdct_method, quant_method, coef_buf,
+        out_total_blocks);
     gimg_free(alloc, comp_y);
     if (use_cb != comp_cb) {
       gimg_free(alloc, use_cb);
@@ -933,7 +1030,8 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     }
     r = gimg_jpeg_progressive_fill_coef_buffer(width, height, num_components,
         comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
-        quant_luma, quant_chroma, coef_buf, &total_blocks);
+        quant_luma, quant_chroma, fdct_method, quant_method, coef_buf,
+        &total_blocks);
     gimg_free(alloc, comp_y);
     if (use_cb != comp_cb) {
       gimg_free(alloc, use_cb);
@@ -951,6 +1049,61 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       gimg_free(alloc, coef_buf);
       return r;
     }
+    {
+      const char * mcu_coef_dir = getenv("GIMG_JPEG_DUMP_FIRST_MCU_COEF");
+      if (mcu_coef_dir && mcu_coef_dir[0] != '\0' && total_blocks >= blocks_per_mcu) {
+        for (size_t blk = 0; blk < blocks_per_mcu && blk < 16u; blk++) {
+          char path[1024];
+          int n = snprintf(path, sizeof(path), "%s/block_%zu.bin", mcu_coef_dir, blk);
+          if (n > 0 && (size_t)n < sizeof(path)) {
+            FILE * f = fopen(path, "wb");
+            if (f) {
+              (void)fwrite(coef_buf + blk * 64, sizeof(int16_t), 64, f);
+              (void)fclose(f);
+            }
+          }
+        }
+      }
+    }
+    {
+      const char * first_block_path = getenv("GIMG_JPEG_DUMP_FIRST_BLOCK_COEF");
+      if (first_block_path && first_block_path[0] != '\0' && total_blocks > 0) {
+        FILE * f = fopen(first_block_path, "wb");
+        if (f) {
+          (void)fwrite(coef_buf, sizeof(int16_t), 64, f);
+          (void)fclose(f);
+        }
+      }
+    }
+    /* Dump first N coefficient blocks (block_000.bin .. block_(N-1).bin) for
+     * comparison with reference encoder. T.81 Annex A block order; 64 int16_t
+     * per file, zigzag order. */
+    {
+      const char * n_blocks_dir = getenv("GIMG_JPEG_DUMP_FIRST_N_BLOCKS_COEF");
+      if (n_blocks_dir && n_blocks_dir[0] != '\0' && total_blocks > 0) {
+        size_t n_dump = 64;
+        const char * n_env = getenv("GIMG_JPEG_DUMP_FIRST_N_BLOCKS_N");
+        if (n_env && n_env[0] != '\0') {
+          int n_parsed = atoi(n_env);
+          if (n_parsed > 0 && (size_t)n_parsed < total_blocks)
+            n_dump = (size_t)n_parsed;
+        }
+        if (n_dump > total_blocks)
+          n_dump = total_blocks;
+        for (size_t blk = 0; blk < n_dump; blk++) {
+          char path[1024];
+          int n = snprintf(path, sizeof(path), "%s/block_%03zu.bin",
+              n_blocks_dir, blk);
+          if (n > 0 && (size_t)n < sizeof(path)) {
+            FILE * f = fopen(path, "wb");
+            if (f) {
+              (void)fwrite(coef_buf + blk * 64, sizeof(int16_t), 64, f);
+              (void)fclose(f);
+            }
+          }
+        }
+      }
+    }
     unsigned char * scan_data = NULL;
     size_t scan_size = 0;
     r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(width, height,
@@ -959,6 +1112,16 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     gimg_free(alloc, coef_buf);
     if (r != GIMG_OK || !scan_data) {
       return (r != GIMG_OK) ? r : GIMG_ERR_OOM;
+    }
+    {
+      const char * dump_path = getenv("GIMG_JPEG_DUMP_SCAN_BASELINE");
+      if (dump_path && dump_path[0] != '\0') {
+        FILE * f = fopen(dump_path, "wb");
+        if (f) {
+          (void)fwrite(scan_data, 1, scan_size, f);
+          (void)fclose(f);
+        }
+      }
     }
     *out_scan_data = scan_data;
     *out_scan_size = scan_size;
@@ -1062,13 +1225,178 @@ static GIMG_Result jpeg_write_dri(
   return GIMG_OK;
 }
 
+/** Standard Huffman tables for write_standard_dht (T.81 Annex K.3–K.6).
+ * Symbol count for each table = sum of its 16 bit-count bytes. See tasks/JPEG-T.81-Annex-K-Tables.md. */
+/* T.81 Table K.3: DC luminance (Th=0). Bits sum 12 → 12 values. */
+static const unsigned char jpeg_std_dc_lum_bits[16] = {
+  0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0
+};
+static const unsigned char jpeg_std_dc_lum_vals[12] = {
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+};
+/* T.81 Annex K.5: DC chrominance (Th=1). Bits sum 12 → 12 values. */
+static const unsigned char jpeg_std_dc_chr_bits[16] = {
+  0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0
+};
+static const unsigned char jpeg_std_dc_chr_vals[12] = {
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+};
+/* T.81 Table K.4: AC luminance (Th=0). Bits sum 162 → 162 values. */
+#define GIMG_JPEG_STD_AC_LUM_VALS 162
+static const unsigned char jpeg_std_ac_lum_bits[16] = {
+  0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125
+};
+static const unsigned char jpeg_std_ac_lum_vals[GIMG_JPEG_STD_AC_LUM_VALS] = {
+  0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
+  0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
+  0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08,
+  0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0,
+  0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16,
+  0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28,
+  0x29, 0x2a, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+  0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+  0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
+  0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
+  0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79,
+  0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+  0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
+  0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+  0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6,
+  0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5,
+  0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4,
+  0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2,
+  0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea,
+  0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8,
+  0xf9, 0xfa
+};
+/* T.81 Annex K.6 (Table K.6): AC chrominance (Th=1). Canonical table from the spec:
+ * 16 code-length bytes ending in 0x77 (119) at length 16, so sum(bits) = 162.
+ * B.2.4 requires the number of DHT value bytes to equal that sum; we use 162
+ * values in the order given in the spec. (Some printings cite 157 symbols;
+ * the table as specified in T.81 has 162.) */
+#define GIMG_JPEG_STD_AC_CHR_VALS 162
+static const unsigned char jpeg_std_ac_chr_bits[16] = {
+  0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119
+};
+static const unsigned char jpeg_std_ac_chr_vals[GIMG_JPEG_STD_AC_CHR_VALS] = {
+  0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,
+  0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
+  0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
+  0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0,
+  0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16, 0x24, 0x34,
+  0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26,
+  0x27, 0x28, 0x29, 0x2a, 0x35, 0x36, 0x37, 0x38,
+  0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+  0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+  0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
+  0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78,
+  0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+  0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96,
+  0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5,
+  0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4,
+  0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3,
+  0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2,
+  0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda,
+  0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9,
+  0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa
+};
+
+/** Write one DHT segment containing a single table (T.81 B.2.4). */
+static GIMG_Result jpeg_write_one_dht(GIMG_Stream * stream, unsigned char tc_th,
+    const unsigned char bits[16], const unsigned char * vals, int nvals,
+    size_t * out_n) {
+  size_t payload_len = (size_t)(1 + 16 + nvals);
+  uint16_t segment_len = (uint16_t)(2 + payload_len);
+  GIMG_Result r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DHT, out_n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_u16(stream, segment_len, out_n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  size_t w = 0;
+  unsigned char tc_th_byte = (unsigned char)tc_th;
+  r = gimg_stream_write(stream, &tc_th_byte, 1, &w);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (out_n) {
+    *out_n += w;
+  }
+  w = 0;
+  r = gimg_stream_write(stream, bits, 16, &w);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (out_n) {
+    *out_n += w;
+  }
+  w = 0;
+  r = gimg_stream_write(stream, vals, (size_t)nvals, &w);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (out_n) {
+    *out_n += w;
+  }
+  return GIMG_OK;
+}
+
+GIMG_Result gimg_jpeg_write_standard_dht(
+    GIMG_Stream * stream, size_t * out_bytes_written) {
+  size_t total = 0;
+  GIMG_Result r = jpeg_write_one_dht(stream, 0x00, jpeg_std_dc_lum_bits,
+      jpeg_std_dc_lum_vals, 12, &total);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_one_dht(stream, 0x10, jpeg_std_ac_lum_bits,
+      jpeg_std_ac_lum_vals, GIMG_JPEG_STD_AC_LUM_VALS, &total);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_one_dht(stream, 0x01, jpeg_std_dc_chr_bits,
+      jpeg_std_dc_chr_vals, 12, &total);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_one_dht(stream, 0x11, jpeg_std_ac_chr_bits,
+      jpeg_std_ac_chr_vals, GIMG_JPEG_STD_AC_CHR_VALS, &total);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (out_bytes_written) {
+    *out_bytes_written = total;
+  }
+  return GIMG_OK;
+}
+
+GIMG_Result gimg_jpeg_write_standard_dht_extended(
+    GIMG_Stream * stream, size_t * out_bytes_written) {
+  (void)stream;
+  if (out_bytes_written) {
+    *out_bytes_written = 0;
+  }
+  return GIMG_ERR_UNSUPPORTED;
+}
+
+GIMG_Result gimg_jpeg_write_ac_refine_dht(
+    GIMG_Stream * stream, size_t * out_bytes_written) {
+  (void)stream;
+  if (out_bytes_written) {
+    *out_bytes_written = 0;
+  }
+  return GIMG_ERR_UNSUPPORTED;
+}
+
 /** 8-bit DQT payload: 1 byte (Pq<<4|Tq) + 64 bytes = 65 (T.81 B.2.4.1). */
 #define GIMG_JPEG_DQT_8BIT_PAYLOAD 65
 /** Write 16-bit DQT (Pq=1): payload 1 + 64*2 = 129 bytes; segment length 131. */
 #define GIMG_JPEG_DQT_16BIT_PAYLOAD 129
 
 /** Write one 8-bit DQT segment: marker, length (2+65), then exactly 65 payload
- * bytes. Ensures correct order and size for libjpeg compatibility. */
+ * bytes (T.81 B.2.4). */
 static GIMG_Result jpeg_write_dqt_8bit_segment(GIMG_Stream * stream,
     const unsigned char payload[GIMG_JPEG_DQT_8BIT_PAYLOAD], size_t * out_n) {
   GIMG_Result r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DQT, out_n);
@@ -1142,9 +1470,9 @@ static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream, int num_components
   return GIMG_OK;
 }
 
-/** Write DQT, DHT, [DRI if restart_interval>0], SOF0/SOF1/SOF2, SOS, scan
- * data, EOI to stream. Does not free scan_data. precision 8 = SOF0; 12 = SOF1;
- * 16 = SOF2. */
+/** Write DQT, [DRI if restart_interval>0], SOF0/SOF1/SOF2, DHT, SOS, scan
+ * data, EOI to stream (SOF before DHT to match common decoders). Does not free
+ * scan_data. precision 8 = SOF0; 12 = SOF1; 16 = SOF2. */
 static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     uint32_t height, int num_components,
     const uint8_t * h_samp, const uint8_t * v_samp,
@@ -1195,19 +1523,8 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
         return r;
       }
     }
-    {
-      size_t dht_written = 0;
-      r = gimg_jpeg_write_standard_dht(stream, &dht_written);
-      if (r != GIMG_OK) {
-        return r;
-      }
-      n += dht_written;
-    }
   }
-  r = jpeg_write_dri(stream, restart_interval, &n);
-  if (r != GIMG_OK) {
-    return r;
-  }
+  /* T.81 B.2.2: frame header (SOF) before table specifications (DHT). */
   {
     uint8_t sof_marker = GIMG_JPEG_MARKER_SOF0;
     if (precision == 12) {
@@ -1254,6 +1571,19 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
       return r;
     }
     n += written;
+  }
+  if (precision <= 8) {
+    size_t dht_written = 0;
+    r = gimg_jpeg_write_standard_dht(stream, &dht_written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += dht_written;
+  }
+  /* T.81: DRI after SOF, before SOS. */
+  r = jpeg_write_dri(stream, restart_interval, &n);
+  if (r != GIMG_OK) {
+    return r;
   }
   {
     uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)num_components);
@@ -1463,9 +1793,36 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     }
     n += written;
   }
+  /* State after AC initial scan so refinement scan can tell newly vs already nonzero. */
+  int16_t * ac_initial_state = NULL;
+  if (scan_count >= 2) {
+    int need_state = 0;
+    for (unsigned s = 1; s < scan_count && !need_state; s++) {
+      int prev_ac_initial = (scans[s - 1].Ah == 0 &&
+          (scans[s - 1].Ss != 0 || scans[s - 1].Se != 0));
+      int this_refinement = (scans[s].Ah != 0 &&
+          (scans[s].Ss != 0 || scans[s].Se != 0));
+      if (prev_ac_initial && this_refinement) {
+        need_state = 1;
+      }
+    }
+    if (need_state) {
+      ac_initial_state = (int16_t *)gimg_malloc(alloc,
+          total_blocks * 64 * sizeof(int16_t));
+    }
+  }
   for (unsigned s = 0; s < scan_count; s++) {
     unsigned char * scan_data = NULL;
     size_t scan_size = 0;
+    int this_ac_initial = (scans[s].Ah == 0 &&
+        (scans[s].Ss != 0 || scans[s].Se != 0));
+    int this_refinement = (scans[s].Ah != 0 &&
+        (scans[s].Ss != 0 || scans[s].Se != 0));
+    int prev_ac_initial = (s > 0 && scans[s - 1].Ah == 0 &&
+        (scans[s - 1].Ss != 0 || scans[s - 1].Se != 0));
+    int16_t * state_out = (ac_initial_state && this_ac_initial) ? ac_initial_state : NULL;
+    const int16_t * state_in = (ac_initial_state && this_refinement && prev_ac_initial)
+        ? ac_initial_state : NULL;
     if (precision > 8) {
       r = gimg_jpeg_encode_progressive_scan_16bit(width, height, num_components,
           coef_buffer, total_blocks, h_samp, v_samp, scans[s].Ss, scans[s].Se,
@@ -1476,7 +1833,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       r = gimg_jpeg_encode_progressive_scan(width, height, num_components,
           coef_buffer, total_blocks, h_samp, v_samp, scans[s].Ss, scans[s].Se,
           scans[s].Ah, scans[s].Al, alloc, restart_interval,
-          &scan_data, &scan_size);
+          &scan_data, &scan_size, state_out, state_in, (int)s);
     }
     if (r != GIMG_OK) {
       return r;
@@ -1523,9 +1880,11 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     r = jpeg_write_scan_data_with_stuffing(stream, scan_data, scan_size, &n);
     gimg_free(alloc, scan_data);
     if (r != GIMG_OK) {
+      gimg_free(alloc, ac_initial_state);
       return r;
     }
   }
+  gimg_free(alloc, ac_initial_state);
   r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
   if (r != GIMG_OK) {
     return r;
@@ -1598,6 +1957,12 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       (options && options->jpeg_restart_interval != 0)
           ? options->jpeg_restart_interval
           : 0;
+  unsigned fdct_method = options && options->jpeg_fdct_method <= GIMG_JPEG_FDCT_REF
+      ? options->jpeg_fdct_method
+      : (unsigned)GIMG_JPEG_FDCT_LOEFFLER;
+  unsigned quant_method = options && options->jpeg_quant_method <= GIMG_JPEG_QUANT_DIV
+      ? options->jpeg_quant_method
+      : (unsigned)GIMG_JPEG_QUANT_RECIP;
   uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES];
   uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES];
   unsigned char * scan_data = NULL;
@@ -1610,7 +1975,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   uint8_t v_samp[3] = {1, 1, 1};
   int precision = 8;
   r = jpeg_raster_to_scan_data(alloc, raster, quality,
-      chroma_subsampling, progressive, restart_interval,
+      chroma_subsampling, progressive, restart_interval, fdct_method, quant_method,
       &scan_data, &scan_size, &coef_buffer, &total_blocks,
       quant_luma, quant_chroma, &width, &height, &num_components,
       h_samp, v_samp, &precision);
@@ -1900,8 +2265,10 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
               int tnc = 0;
               int thumb_prec = 8;
               r = jpeg_raster_to_scan_data(alloc, thumb_raster, thumb_quality,
-                  CHROMA_444, false, 0, &thumb_scan, &thumb_scan_size, NULL, NULL,
-                  tq_luma, tq_chroma, &tw, &th, &tnc, NULL, NULL, &thumb_prec);
+                  CHROMA_444, false, 0, fdct_method, quant_method, &thumb_scan,
+                  &thumb_scan_size,
+                  NULL, NULL, tq_luma, tq_chroma, &tw, &th, &tnc, NULL, NULL,
+                  &thumb_prec);
               if (thumb_raster_owned) {
                 gimg_raster_destroy(thumb_raster);
               }
