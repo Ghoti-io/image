@@ -901,16 +901,16 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             }
           }
           else {
-            /* First DHT (Th,Tc) after previous scan's data for AC refinement.
-             * Must use 17-symbol refinement table (is_ac_refine), not 162-symbol
-             * AC initial table with same Th. */
-            for (size_t j = state->last_scan_data_end_dht_index;
-                 j < state->num_dht_entries; j++) {
-              if (state->dht_entries[j].tc == 1 &&
-                  state->dht_entries[j].th == (unsigned)ti &&
-                  state->dht_entries[j].is_ac_refine) {
-                src = state->dht_entries[j].payload;
-                src_len = state->dht_entries[j].len;
+            /* T.81 B.2.4: table for this scan is the one most recently defined
+             * before this scan's entropy-coded segment. So use the last DHT in
+             * [last_scan_data_end_dht_index, num_dht_entries) with Tc=1 (AC)
+             * and Th=ti; symbol count is not restricted (custom tables allowed). */
+            for (size_t j = state->num_dht_entries; j > state->last_scan_data_end_dht_index; j--) {
+              size_t idx = j - 1;
+              if (state->dht_entries[idx].tc == 1 &&
+                  state->dht_entries[idx].th == (unsigned)ti) {
+                src = state->dht_entries[idx].payload;
+                src_len = state->dht_entries[idx].len;
                 break;
               }
             }

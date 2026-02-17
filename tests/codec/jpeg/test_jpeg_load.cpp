@@ -2072,8 +2072,9 @@ TEST(JpegLoad, DecodeProgressivePillowOracle) {
 }
 
 /** Golden progressive: decode of Pillow fixture matches canonical hash.
- * Fails until our progressive decoder supports this fixture (gimg_item_decode
- * must return GIMG_OK). */
+ * Chroma upsampling is a decoder choice (not specified in the bitstream).
+ * The canonical hash was produced with simple upsampling; we pass that option
+ * so our decode matches the reference. */
 TEST(JpegLoad, GoldenProgressive) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("progressive_sample.jpg", jpeg))
@@ -2085,7 +2086,9 @@ TEST(JpegLoad, GoldenProgressive) {
   GIMG_Item * item = gimg_doc_item(doc, 0);
   ASSERT_NE(item, nullptr);
   GIMG_Raster * raster = nullptr;
-  GIMG_Result dr = gimg_item_decode(item, nullptr, &raster);
+  GIMG_Decode_Options opts = {};
+  opts.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE;
+  GIMG_Result dr = gimg_item_decode(item, &opts, &raster);
   ASSERT_EQ(dr, GIMG_OK)
       << "progressive decoder must decode Pillow fixture progressive_sample.jpg (feature not implemented)";
   ASSERT_NE(raster, nullptr);
@@ -2094,7 +2097,7 @@ TEST(JpegLoad, GoldenProgressive) {
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
   EXPECT_EQ(hash, 6786767564893283945ULL)
-      << "canonical pixel hash progressive (matches libjpeg ref with simple upsampling)";
+      << "canonical pixel hash (reference produced with simple chroma upsampling)";
 }
 
 /** Decode EXIF-orientation fixture and compare pixels to oracle; check meta orientation. */
