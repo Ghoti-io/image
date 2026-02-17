@@ -267,6 +267,32 @@ typedef struct gimg_jpeg_doc_state {
   size_t unknown_app_combined_size;
 } gimg_jpeg_doc_state_t;
 
+/** Huffman decode table (used by bitstream/block decode). */
+typedef struct {
+  uint16_t min_code[17];
+  uint16_t max_code[17];
+  uint16_t base_index[17];
+  uint8_t values[256];
+  int num_values;
+} gimg_jpeg_huff_table_t;
+
+/** Bitstream over scan data (MSB first; 0xFF 0x00 is data). Used by
+ * jpeg_bitstream.c and jpeg_block.c. */
+typedef struct {
+  const unsigned char * data;
+  size_t size;
+  size_t byte_off;
+  int bit_off;
+  int pushback;
+  unsigned char pushback_buf[16];
+  unsigned int pushback_n;
+  int pad_at_eob;
+  int recover_stuff_zero;
+  int stuffed_any;
+  int expect_rst;
+  int rst_just_skipped;
+} gimg_jpeg_bitstream_t;
+
 /**
  * Read and verify SOI (0xFF 0xD8) at current stream position.
  * @return GIMG_OK if SOI present, GIMG_ERR_FORMAT otherwise.
@@ -447,6 +473,74 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_16bit(uint32_t width,
 /** Write AC refinement DHT (Th=2) for progressive scans with Ah>0. */
 GIMG_Result gimg_jpeg_write_ac_refine_dht(
     GIMG_Stream * stream, size_t * out_bytes_written);
+
+/* IDCT module: dezigzag, dequantise, 8x8 inverse DCT (used by jpeg_entropy.c). */
+void jpeg_dezigzag(const int16_t * block, int16_t * out);
+void jpeg_dequantise(
+    const int16_t * block, const uint16_t * quant, int16_t * out);
+void jpeg_dequantise_32(
+    const int16_t * block, const uint16_t * quant, int32_t * out);
+void jpeg_idct_8x8(const int16_t * in, int16_t * out);
+void jpeg_idct_8x8_32(const int32_t * in, int32_t * out, int scale);
+void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out);
+
+/* Bitstream module: init, read bits, skip RST, build Huffman table, decode
+ * symbol, extend (used by jpeg_block.c and jpeg_entropy.c). */
+void jpeg_bitstream_init(
+    gimg_jpeg_bitstream_t * bs, const unsigned char * data, size_t size);
+int jpeg_build_huff_table(
+    const unsigned char * dht, size_t dht_len, gimg_jpeg_huff_table_t * tbl);
+const unsigned char * jpeg_default_ac_dht_payload(size_t * out_len);
+void jpeg_build_pillow_compat_ac_scan1_table(gimg_jpeg_huff_table_t * tbl);
+int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
+    const gimg_jpeg_huff_table_t * tbl, int ac_prefer_eob, int is_ac,
+    int first_match_only);
+int jpeg_bitstream_read_bit(gimg_jpeg_bitstream_t * bs);
+int jpeg_bitstream_read_bits(gimg_jpeg_bitstream_t * bs, int n);
+int16_t jpeg_extend(int val, int n);
+void jpeg_bitstream_align_skip_rst(gimg_jpeg_bitstream_t * bs);
+
+/* Block module: decode one 8×8 block (baseline + progressive). */
+GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
+    const gimg_jpeg_huff_table_t * dc_tbl,
+    const gimg_jpeg_huff_table_t * ac_tbl, int16_t * block,
+    int16_t * dc_predictor, int is_last_block);
+GIMG_Result jpeg_decode_block_progressive_dc(gimg_jpeg_bitstream_t * bs,
+    const gimg_jpeg_huff_table_t * dc_tbl, int16_t * block,
+    int16_t * dc_predictor, int al, int * out_sym, int * out_diff,
+    int trace_all, int is_last_block);
+GIMG_Result jpeg_decode_block_progressive_dc_refine(
+    gimg_jpeg_bitstream_t * bs, int16_t * block, int16_t * dc_predictor,
+    unsigned int al, int * out_bit, int trace_all, int is_last_block);
+GIMG_Result jpeg_decode_block_progressive_ac_initial(
+    gimg_jpeg_bitstream_t * bs, const gimg_jpeg_huff_table_t * ac_tbl,
+    int16_t * block, int ss, int se, int al, int do_trace, int trace_block_id,
+    unsigned int trace_scan_idx, unsigned int * out_eobrun, int trace_all,
+    int is_last_block);
+GIMG_Result jpeg_decode_block_progressive_ac_refine(
+    gimg_jpeg_bitstream_t * bs, const gimg_jpeg_huff_table_t * ac_tbl,
+    int16_t * block, int ss, int se, int al, int do_trace, int trace_block_id,
+    int log_sanity, int trace_all, int trace_scan_idx, int is_last_block);
+
+/* Upsample module: chroma upsampling (used by jpeg_entropy.c). */
+int jpeg_chroma_sample_fancy_2h2v(const unsigned char * buf,
+    size_t stride, uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
+
+/* Parse module: segment payload → doc state (used by jpeg_load.c). */
+GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
+    uint8_t sof_marker, gimg_jpeg_sof_t * sof);
+void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload_buf, size_t payload_size,
+    const GIMG_Allocator * alloc);
+void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload_buf, size_t payload_size,
+    const GIMG_Allocator * alloc);
+GIMG_Result jpeg_append_scan_data(gimg_jpeg_doc_state_t * state,
+    const unsigned char * data, size_t len);
+GIMG_Result jpeg_append_unknown_app(gimg_jpeg_doc_state_t * state,
+    uint8_t marker, const unsigned char * payload, size_t payload_size,
+    const GIMG_Allocator * alloc, GIMG_Diagnostics * diagnostics,
+    size_t seg_start);
 
 #ifdef __cplusplus
 }

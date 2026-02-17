@@ -21,6 +21,9 @@
 #ifndef GIMG_JPEG_DEBUG_PROG_SYNC
 #define GIMG_JPEG_DEBUG_PROG_SYNC 0
 #endif
+/** When GIMG_JPEG_DEBUG_PROG_SYNC=1, log encoder/decoder step sync (used by
+ * jpeg_entropy.c and jpeg_block.c). */
+#define PROG_SYNC_DEBUG() (GIMG_JPEG_DEBUG_PROG_SYNC)
 #ifndef GIMG_JPEG_DEBUG_RST_DEC
 #define GIMG_JPEG_DEBUG_RST_DEC 0
 #endif

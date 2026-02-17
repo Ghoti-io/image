@@ -42,16 +42,22 @@ JPEG implementation lives under `src/codec/jpeg/`. Roles of the main files:
 
 | File | Role |
 |------|------|
-| `jpeg_load.c` | Segment parsing (SOI, SOF0/SOF1/SOF2, DQT, DHT, SOS, DRI, DNL, APP0–APP15, COM), limits enforcement, document state build, metadata round-trip. |
+| `jpeg_load.c` | Main load loop: verify SOI, read segments (via jpeg_segment), dispatch payload parsing (via jpeg_parse), enforce limits, build GIMG_Doc and meta, scan data read until next marker. |
+| `jpeg_segment.c` | Low-level segment I/O: read next marker (0xFF + byte), read segment length (big-endian), read payload with limit (used by jpeg_load.c). |
+| `jpeg_parse.c` | Parse segment payloads into doc state: SOF0/SOF1/SOF2, DQT, DHT (apply + record), SOS header + scan snapshot, append scan data, unknown APP/COM. No stream I/O. |
 | `jpeg_decode.c` | Thin dispatch: baseline vs progressive decode. |
-| `jpeg_entropy.c` | Entropy decode (baseline + progressive), bitstream, Huffman build/decode, block decode (DC/AC, refinement), dequant, IDCT, chroma upsampling, component→raster assembly. |
+| `jpeg_entropy.c` | Entropy orchestration: baseline and progressive decode entry points; MCU loop; calls jpeg_block, jpeg_idct, jpeg_upsample; scan state and buffer layout. Keeps default AC refine DHT and high-level control flow. |
+| `jpeg_bitstream.c` | Bitstream reader (byte/bit access, RST/stuff-byte skip). Build Huffman tables from DHT payload; decode next symbol given a table. Used by jpeg_block.c and jpeg_entropy.c. |
+| `jpeg_block.c` | Decode one 8×8 block: baseline DC/AC, progressive DC initial/refinement, progressive AC initial/refinement. Calls jpeg_bitstream; outputs coefficient block. |
+| `jpeg_idct.c` | Dezigzag, dequantise, 8×8 inverse DCT (float, 32-bit, and T.81 integer islow). Used by jpeg_entropy.c after block decode. |
+| `jpeg_upsample.c` | Chroma upsampling (e.g. 2h2v fancy). Used by jpeg_entropy.c for component→raster assembly. |
 | `jpeg_save.c` | Raster→scan, DQT/DHT/SOS/scan write, baseline and progressive body, APP/COM write. |
 | `jpeg_encode.c` | FDCT, quantization, bit writer, baseline and progressive scan encode (uses shared tables from `jpeg_huffman_tables_internal.h`). |
 | `jpeg_internal.h` | Constants, structs, internal API. |
 | `jpeg_register.c` | Codec registration and probe. |
 | `jpeg_tables.c` | Single translation unit that defines shared table data (zigzag, quant, Huffman) from `jpeg_*_internal.h` headers. |
 
-Data flow: **Load** — stream → segment loop → doc state (SOF, DQT, DHT, scans, APP/COM). **Decode** — doc state → baseline or progressive entropy → dequant/IDCT/upsample → raster. **Save** — doc + raster → DQT/DHT/SOF/SOS + scan data → stream.
+Data flow: **Load** — stream → jpeg_segment (marker + length + payload) → jpeg_parse (payload → state) → doc state (SOF, DQT, DHT, scans, APP/COM). **Decode** — doc state → baseline or progressive entropy → dequant/IDCT/upsample → raster. **Save** — doc + raster → DQT/DHT/SOF/SOS + scan data → stream.
 
 ## Error-handling policy
 
