@@ -16,6 +16,7 @@
 
 #include "jpeg_debug_internal.h"
 #include "jpeg_internal.h"
+
 GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * dc_tbl,
     const gimg_jpeg_huff_table_t * ac_tbl, int16_t * block,

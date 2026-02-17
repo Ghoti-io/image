@@ -145,13 +145,13 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
  * tables active at this SOS so decode uses the correct tables per scan.
  */
 typedef struct {
-  uint8_t comp_count;
-  uint8_t comp_id[GIMG_JPEG_MAX_COMPONENTS];
-  uint8_t dc_tbl[GIMG_JPEG_MAX_COMPONENTS];
-  uint8_t ac_tbl[GIMG_JPEG_MAX_COMPONENTS];
+  uint8_t comp_count;                          ///< Number of components in scan.
+  uint8_t comp_id[GIMG_JPEG_MAX_COMPONENTS];    ///< Component selector IDs.
+  uint8_t dc_tbl[GIMG_JPEG_MAX_COMPONENTS];    ///< DC Huffman table ID per comp.
+  uint8_t ac_tbl[GIMG_JPEG_MAX_COMPONENTS];    ///< AC Huffman table ID per comp.
   uint8_t ss, se, ah, al; ///< Spectral selection and successive approximation.
-  unsigned char * data;
-  size_t data_size;
+  unsigned char * data;   ///< Concatenated entropy-coded segment data.
+  size_t data_size;       ///< Length of data in bytes.
   /** Snapshot of Huffman tables at this SOS (progressive multi-DHT). NULL = use
    * state's. */
   unsigned char * huff_dc[4];
@@ -164,17 +164,17 @@ typedef struct {
 } gimg_jpeg_scan_t;
 
 /**
- * Parsed SOF0 (baseline) / SOF2 (progressive) fields.
+ * Parsed SOF0 (baseline) / SOF1 (extended) / SOF2 (progressive) fields.
  */
 typedef struct {
-  uint8_t precision; ///< Sample precision (8 for baseline).
-  uint16_t height;
-  uint16_t width;
-  uint8_t num_components;
-  uint8_t comp_id[GIMG_JPEG_MAX_COMPONENTS];
-  uint8_t h_samp[GIMG_JPEG_MAX_COMPONENTS];
-  uint8_t v_samp[GIMG_JPEG_MAX_COMPONENTS];
-  uint8_t quant_tbl_id[GIMG_JPEG_MAX_COMPONENTS];
+  uint8_t precision;      ///< Sample precision (8, 12, or 16).
+  uint16_t height;        ///< Image height in pixels.
+  uint16_t width;         ///< Image width in pixels.
+  uint8_t num_components; ///< Number of components (1..4).
+  uint8_t comp_id[GIMG_JPEG_MAX_COMPONENTS];    ///< Component selector IDs.
+  uint8_t h_samp[GIMG_JPEG_MAX_COMPONENTS];    ///< Horizontal sampling factor.
+  uint8_t v_samp[GIMG_JPEG_MAX_COMPONENTS];    ///< Vertical sampling factor.
+  uint8_t quant_tbl_id[GIMG_JPEG_MAX_COMPONENTS]; ///< Quantization table ID.
 } gimg_jpeg_sof_t;
 
 /**
@@ -267,34 +267,40 @@ typedef struct gimg_jpeg_doc_state {
   size_t unknown_app_combined_size;
 } gimg_jpeg_doc_state_t;
 
-/** Huffman decode table (used by bitstream/block decode). */
+/**
+ * Huffman decode table built from DHT payload (used by bitstream/block decode).
+ */
 typedef struct {
-  uint16_t min_code[17];
-  uint16_t max_code[17];
-  uint16_t base_index[17];
-  uint8_t values[256];
-  int num_values;
+  uint16_t min_code[17];   ///< Minimum Huffman code for each bit length 1..16.
+  uint16_t max_code[17];   ///< Maximum Huffman code for each bit length.
+  uint16_t base_index[17]; ///< Base index into values[] for each bit length.
+  uint8_t values[256];     ///< Decoded symbol values (DC size or AC (run,size)).
+  int num_values;          ///< Number of entries in values[].
 } gimg_jpeg_huff_table_t;
 
-/** Bitstream over scan data (MSB first; 0xFF 0x00 is data). Used by
- * jpeg_bitstream.c and jpeg_block.c. */
+/**
+ * Bitstream over JPEG scan data (MSB first; 0xFF 0x00 is data, not marker).
+ * Used by jpeg_bitstream.c and jpeg_block.c for entropy decode.
+ */
 typedef struct {
-  const unsigned char * data;
-  size_t size;
-  size_t byte_off;
-  int bit_off;
-  int pushback;
-  unsigned char pushback_buf[16];
-  unsigned int pushback_n;
-  int pad_at_eob;
-  int recover_stuff_zero;
-  int stuffed_any;
-  int expect_rst;
-  int rst_just_skipped;
+  const unsigned char * data; ///< Scan data (after SOS, before EOI).
+  size_t size;                ///< Length of data in bytes.
+  size_t byte_off;            ///< Current byte offset.
+  int bit_off;                ///< Current bit offset within byte (0..7).
+  int pushback;               ///< Pushback state for bit reads.
+  unsigned char pushback_buf[16]; ///< Pushback buffer.
+  unsigned int pushback_n;    ///< Number of bits in pushback buffer.
+  int pad_at_eob;             ///< If set, treat truncated AC as EOB (recovery).
+  int recover_stuff_zero;     ///< If set, treat 0xFF 0x00 in wrong place (opt-in).
+  int stuffed_any;            ///< Internal: saw byte stuffing.
+  int expect_rst;             ///< Next 0xFF 0xDx is RST marker (restart).
+  int rst_just_skipped;       ///< Caller should reset DC predictor.
 } gimg_jpeg_bitstream_t;
 
 /**
  * Read and verify SOI (0xFF 0xD8) at current stream position.
+ *
+ * @param stream Stream positioned at expected SOI.
  * @return GIMG_OK if SOI present, GIMG_ERR_FORMAT otherwise.
  */
 GIMG_Result gimg_jpeg_verify_soi(GIMG_Stream * stream);
@@ -311,7 +317,10 @@ GIMG_Result gimg_jpeg_read_marker(GIMG_Stream * stream, uint8_t * out_marker);
 /**
  * Read segment length (big-endian 2 bytes). Only valid for markers that have a
  * length (not SOI, EOI, RST).
- * @return GIMG_OK with *out_length = value (includes the 2 length bytes).
+ *
+ * @param stream Stream positioned after marker bytes.
+ * @param out_length Filled with length (includes the 2 length bytes).
+ * @return GIMG_OK or GIMG_ERR_FORMAT.
  */
 GIMG_Result gimg_jpeg_read_segment_length(
     GIMG_Stream * stream, uint16_t * out_length);
@@ -331,7 +340,17 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
 void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private);
 
 /**
- * Decode item to raster (baseline DCT: Huffman, dequant, IDCT, upsample).
+ * Decode item to raster: dispatch to baseline or progressive path.
+ *
+ * Non-primary items (e.g. EXIF thumbnail) may have pre-decoded raster;
+ * returns a copy. Primary item uses codec_private to choose baseline or
+ * progressive decode.
+ *
+ * @param codec JPEG codec.
+ * @param item Document item (index 0 = primary image).
+ * @param options Decode options (limits, etc.).
+ * @param out_raster Output raster (set to NULL on error).
+ * @return GIMG_OK, GIMG_ERR_INTERNAL, GIMG_ERR_UNSUPPORTED, or codec result.
  */
 GIMG_Result gimg_jpeg_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
@@ -474,73 +493,109 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_16bit(uint32_t width,
 GIMG_Result gimg_jpeg_write_ac_refine_dht(
     GIMG_Stream * stream, size_t * out_bytes_written);
 
-// IDCT module: dezigzag, dequantise, 8x8 inverse DCT (used by jpeg_entropy.c).
+/** @name IDCT module (dezigzag, dequantise, 8×8 inverse DCT; used by
+ * jpeg_entropy.c) */
+/** @{ */
+/** Reorder 64 coefficients from zigzag order to row-major 8×8. */
 void jpeg_dezigzag(const int16_t * block, int16_t * out);
+/** Dequantise block: out[i] = block[i] * quant[inv_zigzag[i]]. 8-bit path. */
 void jpeg_dequantise(
     const int16_t * block, const uint16_t * quant, int16_t * out);
+/** Dequantise block into 32-bit (for 12/16-bit IDCT). */
 void jpeg_dequantise_32(
     const int16_t * block, const uint16_t * quant, int32_t * out);
+/** 8×8 inverse DCT (row-column). Input/output row-major. */
 void jpeg_idct_8x8(const int16_t * in, int16_t * out);
+/** 8×8 inverse DCT with scale factor (12/16-bit). */
 void jpeg_idct_8x8_32(const int32_t * in, int32_t * out, int scale);
+/** Reference integer IDCT (ISLOW); matches libjpeg. */
 void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out);
+/** @} */
 
-// Bitstream module: init, read bits, skip RST, build Huffman table, decode
-// symbol, extend (used by jpeg_block.c and jpeg_entropy.c).
+/** @name Bitstream module (init, read bits, skip RST, Huffman table, decode;
+ * used by jpeg_block.c and jpeg_entropy.c) */
+/** @{ */
+/** Initialise bitstream over scan data; caller sets pad_at_eob/recover_stuff_zero
+ * if needed. */
 void jpeg_bitstream_init(
     gimg_jpeg_bitstream_t * bs, const unsigned char * data, size_t size);
+/** Build decode table from DHT payload. @return 0 on success, -1 on invalid. */
 int jpeg_build_huff_table(
     const unsigned char * dht, size_t dht_len, gimg_jpeg_huff_table_t * tbl);
+/** Default AC luminance DHT payload when no DHT precedes first SOS. */
 const unsigned char * jpeg_default_ac_dht_payload(size_t * out_len);
+/** Build AC table matching Pillow’s first AC-initial scan (no DHT in stream). */
 void jpeg_build_pillow_compat_ac_scan1_table(gimg_jpeg_huff_table_t * tbl);
+/** Decode next Huffman symbol. @return symbol or -1 on error. */
 int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * tbl, int ac_prefer_eob, int is_ac,
     int first_match_only);
+/** Read one bit (0 or 1). @return -1 on underflow. */
 int jpeg_bitstream_read_bit(gimg_jpeg_bitstream_t * bs);
+/** Read n bits (0..16). @return value or -1 on underflow. */
 int jpeg_bitstream_read_bits(gimg_jpeg_bitstream_t * bs, int n);
+/** Sign-extend n-bit value (T.81 F.1.2). */
 int16_t jpeg_extend(int val, int n);
+/** Align to byte boundary and skip RST markers until next entropy data. */
 void jpeg_bitstream_align_skip_rst(gimg_jpeg_bitstream_t * bs);
+/** @} */
 
-// Block module: decode one 8×8 block (baseline + progressive).
+/** @name Block module: decode one 8×8 coefficient block (baseline + progressive) */
+/** @{ */
+/** Baseline: one DC then AC (run,size) to EOB. Updates dc_predictor. */
 GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * dc_tbl,
     const gimg_jpeg_huff_table_t * ac_tbl, int16_t * block,
     int16_t * dc_predictor, int is_last_block);
+/** Progressive DC initial: decode single DC coefficient (Al bits). */
 GIMG_Result jpeg_decode_block_progressive_dc(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * dc_tbl, int16_t * block,
     int16_t * dc_predictor, int al, int * out_sym, int * out_diff,
     int trace_all, int is_last_block);
+/** Progressive DC refinement: decode one bit, refine block[0]. */
 GIMG_Result jpeg_decode_block_progressive_dc_refine(
     gimg_jpeg_bitstream_t * bs, int16_t * block, int16_t * dc_predictor,
     unsigned int al, int * out_bit, int trace_all, int is_last_block);
+/** Progressive AC initial: decode coefficients in band [ss..se] with Al. */
 GIMG_Result jpeg_decode_block_progressive_ac_initial(
     gimg_jpeg_bitstream_t * bs, const gimg_jpeg_huff_table_t * ac_tbl,
     int16_t * block, int ss, int se, int al, int do_trace, int trace_block_id,
     unsigned int trace_scan_idx, unsigned int * out_eobrun, int trace_all,
     int is_last_block);
+/** Progressive AC refinement: decode one bit per coefficient in band. */
 GIMG_Result jpeg_decode_block_progressive_ac_refine(
     gimg_jpeg_bitstream_t * bs, const gimg_jpeg_huff_table_t * ac_tbl,
     int16_t * block, int ss, int se, int al, int do_trace, int trace_block_id,
     int log_sanity, int trace_all, int trace_scan_idx, int is_last_block);
+/** @} */
 
-// Upsample module: chroma upsampling (used by jpeg_entropy.c).
+/** Chroma upsampling: fancy 2h2v (triangle filter). Call when width==cw*2,
+ * height==ch*2. Returns sample at (x,y). */
 int jpeg_chroma_sample_fancy_2h2v(const unsigned char * buf,
     size_t stride, uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
 
-// Parse module: segment payload → doc state (used by jpeg_load.c).
+/** @name Parse module: segment payload → doc state (used by jpeg_load.c) */
+/** @{ */
+/** Parse SOF0/SOF1/SOF2 payload into sof. Validates dimensions and precision. */
 GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
     uint8_t sof_marker, gimg_jpeg_sof_t * sof);
+/** Apply DHT payload to state (store DC/AC tables). Uses alloc for storage. */
 void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload_buf, size_t payload_size,
     const GIMG_Allocator * alloc);
+/** Record DHT for “first DHT after previous scan” (progressive). */
 void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload_buf, size_t payload_size,
     const GIMG_Allocator * alloc);
+/** Append SOS scan data to current scan. */
 GIMG_Result jpeg_append_scan_data(gimg_jpeg_doc_state_t * state,
     const unsigned char * data, size_t len);
+/** Append unknown APP segment to state for round-trip; append diagnostic. */
 GIMG_Result jpeg_append_unknown_app(gimg_jpeg_doc_state_t * state,
     uint8_t marker, const unsigned char * payload, size_t payload_size,
     const GIMG_Allocator * alloc, GIMG_Diagnostics * diagnostics,
     size_t seg_start);
+/** @} */
 
 #ifdef __cplusplus
 }

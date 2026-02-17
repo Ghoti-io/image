@@ -149,7 +149,6 @@ static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
   }
 }
 
-/** Read one bit; return 0 or 1, or -1 on underflow. */
 int jpeg_bitstream_read_bit(gimg_jpeg_bitstream_t * bs) {
   if (bs->pushback_n > 0) {
     int bit = (int)bs->pushback_buf[--bs->pushback_n];
