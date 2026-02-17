@@ -12,6 +12,8 @@
 
 #include "../../core/alloc_internal.h"
 #include "../../core/safe_math_internal.h"
+#include "jpeg_debug_internal.h"
+#include "jpeg_huffman_tables_internal.h"
 #include "jpeg_internal.h"
 
 #define DCTSIZE 8
@@ -428,8 +430,10 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
             }
             /* Optional debug: dump Cb (component 1) presamples for comparison
              * with reference. */
+#if GIMG_JPEG_DUMP_FIRST_MCU_COEF
             if (c == 1 && mcu_x == 0 && mcu_y == 0 && by == 0 && bx == 0) {
-              const char * dump_dir = getenv("GIMG_JPEG_DUMP_FIRST_MCU_COEF");
+              const char * dump_dir =
+                  getenv("GIMG_JPEG_DUMP_FIRST_MCU_COEF");
               if (dump_dir && dump_dir[0] != '\0') {
                 char path[1024];
                 int n = snprintf(
@@ -443,11 +447,14 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
                 }
               }
             }
+#endif
             jpeg_fdct_islow(block);
             /* Optional debug: dump Cb after FDCT (before quant) for comparison.
              */
+#if GIMG_JPEG_DUMP_FIRST_MCU_COEF
             if (c == 1 && mcu_x == 0 && mcu_y == 0 && by == 0 && bx == 0) {
-              const char * dump_dir = getenv("GIMG_JPEG_DUMP_FIRST_MCU_COEF");
+              const char * dump_dir =
+                  getenv("GIMG_JPEG_DUMP_FIRST_MCU_COEF");
               if (dump_dir && dump_dir[0] != '\0') {
                 char path[1024];
                 int n = snprintf(
@@ -461,6 +468,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
                 }
               }
             }
+#endif
             if (quant_method == GIMG_JPEG_QUANT_RECIP) {
               const int16_t * rtbl = (c == 0) ? recip_luma : recip_chroma;
               jpeg_quantize_block_recip(block, rtbl, out);
@@ -470,8 +478,10 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
             }
             /* Optional: dump first MCU Cb/Cr quantized blocks (zigzag) for
              * comparison with libjpeg. */
+#if GIMG_JPEG_DUMP_FIRST_MCU_COEF
             if (mcu_x == 0 && mcu_y == 0 && by == 0 && bx == 0) {
-              const char * dump_dir = getenv("GIMG_JPEG_DUMP_FIRST_MCU_COEF");
+              const char * dump_dir =
+                  getenv("GIMG_JPEG_DUMP_FIRST_MCU_COEF");
               if (dump_dir && dump_dir[0] != '\0') {
                 char path[1024];
                 const char * name = (c == 1) ? "cb_coef_ours.bin"
@@ -489,6 +499,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
                 }
               }
             }
+#endif
             last_dc[c] = out[0];
             out += 64;
           }
@@ -547,121 +558,6 @@ static void build_derived_tbl(const unsigned char * bits,
     }
   }
 }
-
-/* Encoder Huffman tables: must match DHT written by jpeg_save.c (T.81 Annex
- * K.3–K.6). See tasks/JPEG-T.81-Annex-K-Tables.md. */
-/* T.81 K.3: DC luminance, 12 symbols. */
-static const unsigned char enc_dc_lum_bits[16] = {
-    0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0};
-static const unsigned char enc_dc_lum_vals[12] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
-/* T.81 K.5: DC chrominance, 12 symbols. Must match jpeg_std_dc_chr_bits (DHT).
- */
-static const unsigned char enc_dc_chr_bits[16] = {
-    0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0};
-static const unsigned char enc_dc_chr_vals[12] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
-/* T.81 K.4: AC luminance, 162 symbols. */
-static const unsigned char enc_ac_lum_bits[16] = {
-    0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125};
-/* T.81 Annex K.6 (Table K.6): AC chrominance. Canonical spec table:
- * sum(bits)=162 (last length count 0x77), 162 value bytes. B.2.4 requires value
- * count = sum(bits). Must match jpeg_std_ac_chr_bits / jpeg_std_ac_chr_vals
- * (DHT) byte-for-byte. */
-static const unsigned char enc_ac_chr_bits[16] = {
-    0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119};
-static const unsigned char enc_ac_lum_vals[162] = { //
-    0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06,
-    0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08,
-    0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72,
-    0x82, 0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28,
-    0x29, 0x2a, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45,
-    0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
-    0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75,
-    0x76, 0x77, 0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
-    0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3,
-    0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6,
-    0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9,
-    0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2,
-    0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4,
-    0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa};
-/* 162 values per T.81 Table K.6; same order as DHT jpeg_std_ac_chr_vals. */
-static const unsigned char enc_ac_chr_vals[162] = {0x00, 0x01, 0x02, 0x03, 0x11,
-    0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71, 0x13,
-    0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xa1, 0xb1, 0xc1, 0x09, 0x23,
-    0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16, 0x24, 0x34, 0xe1,
-    0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x35,
-    0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
-    0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65,
-    0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79,
-    0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93,
-    0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6,
-    0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9,
-    0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3,
-    0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6,
-    0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9,
-    0xfa};
-
-/* Extended tables for 16-bit (must match DHT written by
- * write_standard_dht_extended). */
-#define ENC_EXT_DC_VALS 17
-#define ENC_EXT_AC_VALS 242
-static const unsigned char enc_ext_dc_lum_bits[16] = {
-    0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 5};
-static const unsigned char enc_ext_dc_lum_vals[ENC_EXT_DC_VALS] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-static const unsigned char enc_ext_dc_chr_bits[16] = {
-    0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 5};
-static const unsigned char enc_ext_dc_chr_vals[ENC_EXT_DC_VALS] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-static const unsigned char enc_ext_ac_lum_bits[16] = {
-    0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 205};
-/* Must match jpeg_save.c jpeg_ext_ac_chr_bits (242 symbols). */
-static const unsigned char enc_ext_ac_chr_bits[16] = {
-    0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 200};
-/* Extended AC values: 162 standard + 80 for size 11..15 (same as jpeg_save). */
-static const unsigned char enc_ext_ac_lum_vals[ENC_EXT_AC_VALS] = {0x01, 0x02,
-    0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51,
-    0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08, 0x23, 0x42,
-    0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09,
-    0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a,
-    0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47,
-    0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63,
-    0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77,
-    0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92,
-    0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5,
-    0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8,
-    0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2,
-    0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2, 0xe3, 0xe4,
-    0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6,
-    0xf7, 0xf8, 0xf9, 0xfa, 0x0B, 0x1B, 0x2B, 0x3B, 0x4B, 0x5B, 0x6B, 0x7B,
-    0x8B, 0x9B, 0xAB, 0xBB, 0xCB, 0xDB, 0xEB, 0xFB, 0x0C, 0x1C, 0x2C, 0x3C,
-    0x4C, 0x5C, 0x6C, 0x7C, 0x8C, 0x9C, 0xAC, 0xBC, 0xCC, 0xDC, 0xEC, 0xFC,
-    0x0D, 0x1D, 0x2D, 0x3D, 0x4D, 0x5D, 0x6D, 0x7D, 0x8D, 0x9D, 0xAD, 0xBD,
-    0xCD, 0xDD, 0xED, 0xFD, 0x0E, 0x1E, 0x2E, 0x3E, 0x4E, 0x5E, 0x6E, 0x7E,
-    0x8E, 0x9E, 0xAE, 0xBE, 0xCE, 0xDE, 0xEE, 0xFE, 0x0F, 0x1F, 0x2F, 0x3F,
-    0x4F, 0x5F, 0x6F, 0x7F, 0x8F, 0x9F, 0xAF, 0xBF, 0xCF, 0xDF, 0xEF, 0xFF};
-static const unsigned char enc_ext_ac_chr_vals[ENC_EXT_AC_VALS] = {0x00, 0x01,
-    0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07,
-    0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xa1, 0xb1,
-    0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16,
-    0x24, 0x34, 0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26, 0x27, 0x28,
-    0x29, 0x2a, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46,
-    0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a,
-    0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76,
-    0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
-    0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3,
-    0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6,
-    0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9,
-    0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe2, 0xe3,
-    0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6,
-    0xf7, 0xf8, 0xf9, 0xfa, 0x0B, 0x1B, 0x2B, 0x3B, 0x4B, 0x5B, 0x6B, 0x7B,
-    0x8B, 0x9B, 0xAB, 0xBB, 0xCB, 0xDB, 0xEB, 0xFB, 0x0C, 0x1C, 0x2C, 0x3C,
-    0x4C, 0x5C, 0x6C, 0x7C, 0x8C, 0x9C, 0xAC, 0xBC, 0xCC, 0xDC, 0xEC, 0xFC,
-    0x0D, 0x1D, 0x2D, 0x3D, 0x4D, 0x5D, 0x6D, 0x7D, 0x8D, 0x9D, 0xAD, 0xBD,
-    0xCD, 0xDD, 0xED, 0xFD, 0x0E, 0x1E, 0x2E, 0x3E, 0x4E, 0x5E, 0x6E, 0x7E,
-    0x8E, 0x9E, 0xAE, 0xBE, 0xCE, 0xDE, 0xEE, 0xFE, 0x0F, 0x1F, 0x2F, 0x3F,
-    0x4F, 0x5F, 0x6F, 0x7F, 0x8F, 0x9F, 0xAF, 0xBF, 0xCF, 0xDF, 0xEF, 0xFF};
 
 typedef struct {
   unsigned char * buf;
@@ -783,10 +679,10 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   static jpeg_derived_tbl dc_lum_tbl, dc_chr_tbl, ac_lum_tbl, ac_chr_tbl;
   static int tables_built = 0;
   if (!tables_built) {
-    build_derived_tbl(enc_dc_lum_bits, enc_dc_lum_vals, 12, &dc_lum_tbl);
-    build_derived_tbl(enc_dc_chr_bits, enc_dc_chr_vals, 12, &dc_chr_tbl);
-    build_derived_tbl(enc_ac_lum_bits, enc_ac_lum_vals, 162, &ac_lum_tbl);
-    build_derived_tbl(enc_ac_chr_bits, enc_ac_chr_vals, 162, &ac_chr_tbl);
+    build_derived_tbl(gimg_jpeg_std_dc_lum_bits, gimg_jpeg_std_dc_lum_vals, 12, &dc_lum_tbl);
+    build_derived_tbl(gimg_jpeg_std_dc_chr_bits, gimg_jpeg_std_dc_chr_vals, 12, &dc_chr_tbl);
+    build_derived_tbl(gimg_jpeg_std_ac_lum_bits, gimg_jpeg_std_ac_lum_vals, 162, &ac_lum_tbl);
+    build_derived_tbl(gimg_jpeg_std_ac_chr_bits, gimg_jpeg_std_ac_chr_vals, 162, &ac_chr_tbl);
     tables_built = 1;
   }
 
@@ -798,13 +694,19 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
 
   /* Optional: trace which symbol covers a given bit position (e.g. 247 for byte
    * 30 LSB). */
-  const char * trace_env = getenv("GIMG_JPEG_TRACE_BASELINE_BIT_POS");
   unsigned long trace_bit = 247;
+  const char * trace_env = NULL;
+#if GIMG_JPEG_TRACE_BASELINE_BIT_POS
+  trace_env = getenv("GIMG_JPEG_TRACE_BASELINE_BIT_POS");
   if (trace_env && trace_env[0] != '\0') {
     trace_bit = strtoul(trace_env, NULL, 0);
     if (trace_bit > 10000)
       trace_bit = 247;
   }
+  else {
+    trace_env = "1";
+  }
+#endif
   size_t total_bits = 0;
 
   for (;;) {
@@ -845,6 +747,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
         if (nbits > 11)
           nbits = 11;
         FILE * entropy_trace_fp = NULL;
+#if GIMG_JPEG_TRACE_ENTROPY
         {
           const char * entropy_trace = getenv("GIMG_JPEG_TRACE_ENTROPY");
           if (entropy_trace && entropy_trace[0] != '\0') {
@@ -863,6 +766,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
             }
           }
         }
+#endif
         if (dc_tbl->len[nbits] > 0) {
           int len = dc_tbl->len[nbits];
           if (trace_env && total_bits <= trace_bit &&
@@ -1058,13 +962,13 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
       ext_ac_chr_tbl;
   static int ext_baseline_tables_built = 0;
   if (!ext_baseline_tables_built) {
-    build_derived_tbl(enc_ext_dc_lum_bits, enc_ext_dc_lum_vals, ENC_EXT_DC_VALS,
+    build_derived_tbl(gimg_jpeg_ext_dc_lum_bits, gimg_jpeg_ext_dc_lum_vals, GIMG_JPEG_EXT_DC_VALS,
         &ext_dc_lum_tbl);
-    build_derived_tbl(enc_ext_dc_chr_bits, enc_ext_dc_chr_vals, ENC_EXT_DC_VALS,
+    build_derived_tbl(gimg_jpeg_ext_dc_chr_bits, gimg_jpeg_ext_dc_chr_vals, GIMG_JPEG_EXT_DC_VALS,
         &ext_dc_chr_tbl);
-    build_derived_tbl(enc_ext_ac_lum_bits, enc_ext_ac_lum_vals, ENC_EXT_AC_VALS,
+    build_derived_tbl(gimg_jpeg_ext_ac_lum_bits, gimg_jpeg_ext_ac_lum_vals, GIMG_JPEG_EXT_AC_VALS,
         &ext_ac_lum_tbl);
-    build_derived_tbl(enc_ext_ac_chr_bits, enc_ext_ac_chr_vals, ENC_EXT_AC_VALS,
+    build_derived_tbl(gimg_jpeg_ext_ac_chr_bits, gimg_jpeg_ext_ac_chr_vals, GIMG_JPEG_EXT_AC_VALS,
         &ext_ac_chr_tbl);
     ext_baseline_tables_built = 1;
   }
@@ -1393,14 +1297,6 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
   return GIMG_OK;
 }
 
-/* T.81 Annex K.6: AC refinement (17 symbols). Used when Ah!=0 for AC band. */
-static const unsigned char enc_ac_refine_bits[16] = {
-    0, 0, 1, 0, 2, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-/* (0,0)=EOB, (0,1)..(15,1)=run then newly nz, (15,0)=ZRL (T.81 G.1.2.2). */
-static const unsigned char enc_ac_refine_vals[18] = {
-    0x00, 0x01, 0x11, 0x21, 0x31, 0x41, 0x51, 0x61, 0x71, 0x81, 0x91, 0xa1,
-    0xb1, 0xc1, 0xd1, 0xe1, 0xf1, 0xf0};
-
 /* T.81 Annex G: progressive scan encode. DC scan (Ss=0,Se=0,Ah=0): encode only
  * DC diff per block. AC initial (Ss>=1,Ah=0): encode AC in band [Ss,Se]. DC
  * refinement (Ss=0,Se=0,Ah>0): one bit per block (Al-th bit of DC). AC
@@ -1454,10 +1350,10 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
   static jpeg_derived_tbl dc_lum_tbl, dc_chr_tbl, ac_lum_tbl, ac_chr_tbl;
   static int tables_built = 0;
   if (!tables_built) {
-    build_derived_tbl(enc_dc_lum_bits, enc_dc_lum_vals, 12, &dc_lum_tbl);
-    build_derived_tbl(enc_dc_chr_bits, enc_dc_chr_vals, 12, &dc_chr_tbl);
-    build_derived_tbl(enc_ac_lum_bits, enc_ac_lum_vals, 162, &ac_lum_tbl);
-    build_derived_tbl(enc_ac_chr_bits, enc_ac_chr_vals, 162, &ac_chr_tbl);
+    build_derived_tbl(gimg_jpeg_std_dc_lum_bits, gimg_jpeg_std_dc_lum_vals, 12, &dc_lum_tbl);
+    build_derived_tbl(gimg_jpeg_std_dc_chr_bits, gimg_jpeg_std_dc_chr_vals, 12, &dc_chr_tbl);
+    build_derived_tbl(gimg_jpeg_std_ac_lum_bits, gimg_jpeg_std_ac_lum_vals, 162, &ac_lum_tbl);
+    build_derived_tbl(gimg_jpeg_std_ac_chr_bits, gimg_jpeg_std_ac_chr_vals, 162, &ac_chr_tbl);
     tables_built = 1;
   }
 
@@ -1497,13 +1393,13 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
             const int16_t * block = coef_buffer + block_idx * 64;
             int dc_val = (int)block[0];
             int diff = dc_val - last_dc[c];
-            if (block_idx < 6 && getenv("GIMG_JPEG_TRACE_PROG_FIRST_DC")) {
+            if (block_idx < 6 && GIMG_JPEG_TRACE_PROG_FIRST_DC) {
               (void)fprintf(stderr,
                   "PROG_ENC_DC block=%zu c=%d dc_val=%d diff=%d\n", block_idx, c,
                   dc_val, diff);
               (void)fflush(stderr);
             }
-            if (block_idx == 4 && getenv("GIMG_JPEG_TRACE_FIRST_CB")) {
+            if (block_idx == 4 && GIMG_JPEG_TRACE_FIRST_CB) {
               (void)fprintf(
                   stderr, "PROG_ENC first Cb block_idx=4 dc_val=%d\n", dc_val);
               (void)fflush(stderr);
@@ -1581,8 +1477,8 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     static jpeg_derived_tbl ac_refine_tbl;
     static int ac_refine_tbl_built = 0;
     if (!ac_refine_tbl_built) {
-      build_derived_tbl(enc_ac_refine_bits, enc_ac_refine_vals, 18,
-          &ac_refine_tbl);
+      build_derived_tbl(gimg_jpeg_std_ac_refine_bits, gimg_jpeg_std_ac_refine_vals,
+        GIMG_JPEG_AC_REFINE_VALS, &ac_refine_tbl);
       ac_refine_tbl_built = 1;
     }
     unsigned int k_start = (unsigned int)Ss;
@@ -1714,7 +1610,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
               k++;
             }
             if (k > k_end) {
-              if (block_idx == 0 && getenv("GIMG_JPEG_TRACE_PROG_FIRST_AC")) {
+              if (block_idx == 0 && GIMG_JPEG_TRACE_PROG_FIRST_AC) {
                 (void)fprintf(stderr, "PROG_ENC_AC block=0 EOB\n");
                 (void)fflush(stderr);
               }
@@ -1734,7 +1630,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
               size = 10;
             int symbol = (run << 4) | size;
             if (symbol >= 0 && symbol <= 255 && ac_tbl->len[symbol] > 0) {
-              if (block_idx == 0 && getenv("GIMG_JPEG_TRACE_PROG_FIRST_AC")) {
+              if (block_idx == 0 && GIMG_JPEG_TRACE_PROG_FIRST_AC) {
                 (void)fprintf(stderr,
                     "PROG_ENC_AC block=0 run=%d size=%d val=%d k=%u\n", run,
                     size, coeff, k);
@@ -1820,13 +1716,13 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_16bit(uint32_t width,
       ext_ac_chr_tbl;
   static int ext_tables_built = 0;
   if (!ext_tables_built) {
-    build_derived_tbl(enc_ext_dc_lum_bits, enc_ext_dc_lum_vals, ENC_EXT_DC_VALS,
+    build_derived_tbl(gimg_jpeg_ext_dc_lum_bits, gimg_jpeg_ext_dc_lum_vals, GIMG_JPEG_EXT_DC_VALS,
         &ext_dc_lum_tbl);
-    build_derived_tbl(enc_ext_dc_chr_bits, enc_ext_dc_chr_vals, ENC_EXT_DC_VALS,
+    build_derived_tbl(gimg_jpeg_ext_dc_chr_bits, gimg_jpeg_ext_dc_chr_vals, GIMG_JPEG_EXT_DC_VALS,
         &ext_dc_chr_tbl);
-    build_derived_tbl(enc_ext_ac_lum_bits, enc_ext_ac_lum_vals, ENC_EXT_AC_VALS,
+    build_derived_tbl(gimg_jpeg_ext_ac_lum_bits, gimg_jpeg_ext_ac_lum_vals, GIMG_JPEG_EXT_AC_VALS,
         &ext_ac_lum_tbl);
-    build_derived_tbl(enc_ext_ac_chr_bits, enc_ext_ac_chr_vals, ENC_EXT_AC_VALS,
+    build_derived_tbl(gimg_jpeg_ext_ac_chr_bits, gimg_jpeg_ext_ac_chr_vals, GIMG_JPEG_EXT_AC_VALS,
         &ext_ac_chr_tbl);
     ext_tables_built = 1;
   }

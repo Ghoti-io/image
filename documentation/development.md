@@ -113,6 +113,22 @@ Tests under `tests/` include:
 
 6. **Docs:** Update `documentation/format-references.md` and option docs for format-specific behavior and limits.
 
+## JPEG debug and recovery options
+
+JPEG debug and trace output are controlled by **compile-time** defines in
+`src/codec/jpeg/jpeg_debug_internal.h`. All default to 0. To enable a category
+for a debug build, define it when compiling (e.g. `-DGIMG_JPEG_DEBUG_LOAD=1`).
+See that header for the full list (e.g. `GIMG_JPEG_DEBUG_LOAD`,
+`GIMG_JPEG_TRACE_DC_BLOCK`, `GIMG_JPEG_DUMP_FIRST_MCU_COEF`). Dump options that
+write files may still read the output path from the same-named environment
+variable when the category is enabled at compile time.
+
+**Behaviour-altering options** `recover_stuff_zero` and `pad_at_eob` remain
+**runtime** (environment variable) for field debugging of truncated or
+non-byte-aligned streams. They are not part of T.81; use only for recovery.
+Set `GIMG_JPEG_RECOVER_STUFF_ZERO=1` to enable recover_stuff_zero (treat missing
+bits at segment end as 0). Do not set pad_at_eob for normal decode.
+
 ## Sanitizers (ASan / UBSan)
 
 The Makefile provides:

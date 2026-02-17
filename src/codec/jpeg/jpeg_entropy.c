@@ -23,28 +23,9 @@
 #include "../../core/alloc_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../../raster/raster_internal.h"
+#include "jpeg_debug_internal.h"
+#include "jpeg_huffman_tables_internal.h"
 #include "jpeg_internal.h"
-
-// Disable clang-format for this block of code.
-// clang-format off
-
-// Zigzag order (stream index -> 8x8 row-major position). ITU-T T.81.
-const uint8_t gimg_jpeg_zigzag[64] = {
-    0,  1,  8,  16, 9,  2,  3,  10, 17, 24, 32, 25, 18, 11, 4,  5,
-    12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6,  7,  14, 21, 28,
-    35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
-    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
-};
-
-// Row-major index -> zigzag (DQT) index. DQT is stored in zigzag order.
-static const uint8_t gimg_jpeg_inv_zigzag[64] = {
-    0,  1,  5,  6,  14, 15, 27, 28, 2,  4,  7,  13, 16, 26, 29, 42,
-    3,  8,  12, 17, 25, 30, 41, 43, 9,  11, 18, 24, 31, 40, 44, 53,
-    10, 19, 23, 32, 39, 45, 52, 54, 20, 22, 33, 38, 46, 51, 55, 60,
-    21, 34, 37, 47, 50, 56, 59, 61, 35, 36, 48, 49, 57, 58, 62, 63,
-};
-
-// clang-format on
 
 /** When GIMG_JPEG_TRACE_ALL=1, dump block[0..63] (zigzag order) to stderr as
  * 64 space-separated values in natural order. Prefix with label (e.g.
@@ -66,9 +47,7 @@ static void jpeg_trace_all_dump_block(const char * label, unsigned int scan_idx,
 /** When GIMG_JPEG_DEBUG_PROG_SYNC=1, log every encoder/decoder step with
  * PROG_SYNC_ENC / PROG_SYNC_DEC scan=N block=B byte=X bit=Y op=... so you can
  * diff enc vs dec and find first divergence. */
-#define PROG_SYNC_DEBUG()                                                      \
-  (getenv("GIMG_JPEG_DEBUG_PROG_SYNC") &&                                      \
-      getenv("GIMG_JPEG_DEBUG_PROG_SYNC")[0] == '1')
+#define PROG_SYNC_DEBUG() (GIMG_JPEG_DEBUG_PROG_SYNC)
 
 /** Fancy chroma upsampling (triangle filter, 2h2v). ISO/IEC 10918-1 does not
  * mandate a specific upsampling method—multiple approaches are valid and
@@ -209,13 +188,12 @@ static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
                    misaligned) */
     }
     bs->expect_rst = 0;
-    if (getenv("GIMG_JPEG_DEBUG_RST_DEC") &&
-        getenv("GIMG_JPEG_DEBUG_RST_DEC")[0] == '1') {
-      (void)fprintf(stderr,
-          "RST_DEC skip_marker_at_ff at byte_off=%zu marker=0x%02x\n",
-          bs->byte_off, (unsigned)m);
-      (void)fflush(stderr);
-    }
+#if GIMG_JPEG_DEBUG_RST_DEC
+    (void)fprintf(stderr,
+        "RST_DEC skip_marker_at_ff at byte_off=%zu marker=0x%02x\n",
+        bs->byte_off, (unsigned)m);
+    (void)fflush(stderr);
+#endif
     bs->byte_off += 2; // skip 0xFF and marker byte (RST is on byte boundary)
     bs->bit_off = 0;
     bs->rst_just_skipped = 1;
@@ -248,17 +226,16 @@ static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
  * not consume bytes beyond the current block/phase — each scan has its own
  * data buffer; within a block we only advance by bits we read. */
 static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
-  const char * trace = getenv("GIMG_JPEG_DEBUG_SKIP_FF");
   while (bs->byte_off < bs->size) {
     unsigned char m = bs->data[bs->byte_off];
     if (m == 0x00) {
       // Byte stuffing: 0xFF 0x00 is data 0xFF; skip the 0x00.
-      if (trace && trace[0] == '1') {
-        (void)fprintf(stderr,
-            "SKIP_FF skipping stuffing 0x00 at byte_off=%zu -> %zu\n",
-            (size_t)bs->byte_off, (size_t)(bs->byte_off + 1));
-        (void)fflush(stderr);
-      }
+#if GIMG_JPEG_DEBUG_SKIP_FF
+      (void)fprintf(stderr,
+          "SKIP_FF skipping stuffing 0x00 at byte_off=%zu -> %zu\n",
+          (size_t)bs->byte_off, (size_t)(bs->byte_off + 1));
+      (void)fflush(stderr);
+#endif
       bs->byte_off++;
       // Only a single 0x00 after 0xFF is stuffing. If another 0x00 follows,
       // it is real entropy data and must not be skipped again (T.81 B.2.2).
@@ -270,13 +247,12 @@ static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
       if (bs->byte_off + 1 < bs->size && bs->data[bs->byte_off + 1] >= 0xD0 &&
           bs->data[bs->byte_off + 1] <= 0xD7 && bs->expect_rst) {
         bs->expect_rst = 0;
-        if (getenv("GIMG_JPEG_DEBUG_RST_DEC") &&
-            getenv("GIMG_JPEG_DEBUG_RST_DEC")[0] == '1') {
-          (void)fprintf(stderr,
-              "RST_DEC skip_after_ff (0xFF 0xDx) at byte_off=%zu\n",
-              bs->byte_off - 1);
-          (void)fflush(stderr);
-        }
+#if GIMG_JPEG_DEBUG_RST_DEC
+        (void)fprintf(stderr,
+            "RST_DEC skip_after_ff (0xFF 0xDx) at byte_off=%zu\n",
+            bs->byte_off - 1);
+        (void)fflush(stderr);
+#endif
         bs->byte_off += 2;
         bs->bit_off = 0;
         bs->rst_just_skipped = 1;
@@ -423,7 +399,8 @@ static int jpeg_build_huff_table(
     }
     code = (code + count) << 1;
   }
-  if (getenv("GIMG_JPEG_DEBUG_DHT_DC") && dht[0] == 0x00) {
+#if GIMG_JPEG_DEBUG_DHT_DC
+  if (dht[0] == 0x00) {
     (void)fprintf(stderr,
         "DHT_DC build: len3 min=0x%x max=0x%x base_idx=%u vals[1..5]=",
         (unsigned)tbl->min_code[3], (unsigned)tbl->max_code[3],
@@ -435,6 +412,7 @@ static int jpeg_build_huff_table(
         (unsigned)tbl->values[tbl->base_index[3] + (4 - tbl->min_code[3])]);
     (void)fflush(stderr);
   }
+#endif
   return 0;
 }
 
@@ -480,31 +458,11 @@ static const unsigned char jpeg_default_ac_refine_dht[1 + 16 + 18] = {
     0xf0,
 };
 
-/** Default AC luminance table (T.81 Table K.4): 16 bytes bits + 162 values.
- * Bits sum = 162; used when no DHT precedes first SOS. Match libjpeg
- * val_ac_luminance. */
-static const unsigned char jpeg_default_ac_lum_dht[1 + 16 + 162] = {0x10, 0, 2,
-    1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125, 0x01, 0x02, 0x03, 0x00, 0x04,
-    0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22,
-    0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08, 0x23, 0x42, 0xb1, 0xc1, 0x15,
-    0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16, 0x17,
-    0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36,
-    0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a,
-    0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66,
-    0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a,
-    0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95,
-    0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8,
-    0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2,
-    0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5,
-    0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
-    0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9,
-    0xfa};
-
 /** Return default AC table (T.81 Table K.4, 162 symbols) for first AC-initial
  * scan when no DHT before first SOS. */
 static const unsigned char * jpeg_default_ac_dht_payload(size_t * out_len) {
-  *out_len = sizeof(jpeg_default_ac_lum_dht);
-  return jpeg_default_ac_lum_dht;
+  *out_len = sizeof(gimg_jpeg_default_ac_lum_dht_payload);
+  return gimg_jpeg_default_ac_lum_dht_payload;
 }
 
 /** Pillow/libjpeg compat: build AC table for first AC-initial scan when DHT
@@ -558,13 +516,8 @@ static int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
   uint16_t code = 0;
   const size_t start_byte_off = bs->byte_off;
   const int start_bit_off = bs->bit_off;
-  const char * trace_dc = getenv("GIMG_JPEG_TRACE_DC");
-  const char * trace_bits_env = getenv("GIMG_JPEG_TRACE_HUFF_BITS");
-  const char * trace_all_env = getenv("GIMG_JPEG_TRACE_ALL");
-  const char * trace_ac_fail_env = getenv("GIMG_JPEG_TRACE_AC_FAIL");
-  const int trace_bits = (trace_bits_env && trace_bits_env[0] == '1') ||
-      (trace_all_env && trace_all_env[0] == '1');
-  const int trace_ac_fail = (trace_ac_fail_env && trace_ac_fail_env[0] == '1');
+  const int trace_bits =
+      (GIMG_JPEG_TRACE_HUFF_BITS) || (GIMG_JPEG_TRACE_ALL);
   for (int len = 1; len <= 16; len++) {
     size_t pre_byte = bs->byte_off;
     int pre_bit = bs->bit_off;
@@ -578,7 +531,7 @@ static int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
       return -1;
     }
     code = (code << 1) | (uint16_t)b;
-    if (trace_ac_fail) {
+    if (GIMG_JPEG_TRACE_AC_FAIL) {
       (void)fprintf(stderr,
           "AC_FAIL_BIT len=%d bit=%d code=0x%04x (binary: ", len, b,
           (unsigned)code);
@@ -595,7 +548,7 @@ static int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
           (unsigned)code, (size_t)bs->byte_off, (unsigned)bs->bit_off);
       (void)fflush(stderr);
     }
-    if (trace_dc && !ac_prefer_eob) {
+    if (GIMG_JPEG_TRACE_DC && !ac_prefer_eob) {
       (void)fprintf(stderr,
           "TRACE_DC len=%d bit=%d code=0x%x pre=(byte=%zu,bit=%d) "
           "post=(byte=%zu,bit=%d)\n",
@@ -629,8 +582,7 @@ static int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
       }
       else {
       int sym = (int)tbl->values[idx];
-      if (is_ac && getenv("GIMG_JPEG_AC_INITIAL_SYM_LOG") &&
-          getenv("GIMG_JPEG_AC_INITIAL_SYM_LOG")[0] == '1') {
+      if (is_ac && GIMG_JPEG_AC_INITIAL_SYM_LOG) {
         (void)fprintf(stderr,
             "AC_INITIAL_HUFF_MATCH len=%d code=%u sym=0x%02x (run=%d size=%d) "
             "%s\n",
@@ -638,7 +590,7 @@ static int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
             sym == 0 ? "(EOB)" : "");
         (void)fflush(stderr);
       }
-      if (!is_ac && getenv("GIMG_JPEG_TRACE_DC_MATCH")) {
+      if (!is_ac && GIMG_JPEG_TRACE_DC_MATCH) {
         size_t pos_after = (size_t)bs->byte_off * 8u + (unsigned)bs->bit_off;
         if (pos_after >= 966u && pos_after <= 976u) {
           (void)fprintf(stderr,
@@ -680,9 +632,9 @@ static int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
        * (0,1)/(0,2) is a prefix; avoid using it for longer first matches to
        * prevent over-consumption. */
       {
-        const char * ac_longest = getenv("GIMG_JPEG_AC_LONGEST_MATCH");
-        int do_longest = is_ac && !first_match_only &&
-            (!ac_longest || ac_longest[0] != '0') && !ac_prefer_eob &&
+        const int ac_longest = GIMG_JPEG_AC_LONGEST_MATCH;
+        int do_longest = is_ac && !first_match_only && ac_longest &&
+            !ac_prefer_eob &&
             len == 2; /* baseline: only extend 2-bit prefix to avoid desync */
         if (do_longest && len < 16) {
           int peek_bits[16];
@@ -747,7 +699,7 @@ static int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
   if (bs->recover_stuff_zero) {
     return 0;
   }
-  if (trace_ac_fail_env && trace_ac_fail_env[0] == '1') {
+  if (GIMG_JPEG_TRACE_AC_FAIL) {
     (void)fprintf(stderr,
         "AC_HUFF_FAIL no match after 16 bits: code=0x%04u (%u)\n",
         (unsigned)code, (unsigned)code);
@@ -798,10 +750,15 @@ static int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
 
 /** Extend sign for n-bit value (DC and AC). Per T.81 Annex F Figure F.12,
  * Table K.2: if val < 2^(n-1) then negative (val - (2^n - 1)); else unchanged.
+ * Precondition: n in [0, 16] (DC/AC size category per T.81; avoids UB on shift).
  */
 static int16_t jpeg_extend(int val, int n) {
-  if (n == 0) {
+  if (n <= 0) {
     return 0;
+  }
+  if (n > 16) {
+    return (int16_t)val; /* Clamp: spec allows only 0..16; guard against misuse.
+                          */
   }
   int half = 1 << (n - 1);
   if (val < half) {
@@ -853,12 +810,11 @@ static void jpeg_bitstream_align_skip_rst(gimg_jpeg_bitstream_t * bs) {
   bs->byte_off = rst_start + 2; /* skip 0xFF and 0xD0..0xD7 */
   bs->bit_off = 0;
   bs->rst_just_skipped = 1;
-  if (getenv("GIMG_JPEG_DEBUG_RST_DEC") &&
-      getenv("GIMG_JPEG_DEBUG_RST_DEC")[0] == '1') {
-    (void)fprintf(
-        stderr, "RST_DEC align_skip_rst at byte_off=%zu\n", rst_start);
-    (void)fflush(stderr);
-  }
+#if GIMG_JPEG_DEBUG_RST_DEC
+  (void)fprintf(
+      stderr, "RST_DEC align_skip_rst at byte_off=%zu\n", rst_start);
+  (void)fflush(stderr);
+#endif
 }
 
 /** Decode one 8x8 block (DC + AC). Block is 64 int16_t in zigzag order.
@@ -874,7 +830,7 @@ static GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
   memset(block, 0, 64 * sizeof(int16_t));
   int sym = jpeg_huff_decode(bs, dc_tbl, 0, 0, 0);
   if (sym < 0) {
-    if (getenv("GIMG_JPEG_DEBUG_BASELINE_FAIL")) {
+    if (GIMG_JPEG_DEBUG_BASELINE_FAIL) {
       (void)fprintf(stderr,
           "BASELINE_FAIL_STEP dc_sym byte_off=%zu bit_off=%u\n",
           (size_t)bs->byte_off, (unsigned)bs->bit_off);
@@ -893,7 +849,7 @@ static GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
   if (nbits > 0) {
     diff = jpeg_bitstream_read_bits(bs, nbits);
     if (diff < 0) {
-      if (getenv("GIMG_JPEG_DEBUG_BASELINE_FAIL")) {
+      if (GIMG_JPEG_DEBUG_BASELINE_FAIL) {
         (void)fprintf(stderr,
             "BASELINE_FAIL_STEP dc_extra nbits=%d byte_off=%zu\n", nbits,
             (size_t)bs->byte_off);
@@ -908,8 +864,7 @@ static GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
 
   {
     size_t pos_after_dc = (size_t)bs->byte_off * 8u + (unsigned)bs->bit_off;
-    const char * trace_dc_blk = getenv("GIMG_JPEG_TRACE_DC_BLOCK");
-    if (trace_dc_blk && trace_dc_blk[0] == '1' && pos_after_dc >= 960u &&
+    if (GIMG_JPEG_TRACE_DC_BLOCK && pos_after_dc >= 960u &&
         pos_after_dc <= 995u) {
       (void)fprintf(stderr,
           "DEC after_dc pos_bits=%zu (byte=%zu bit=%u) dc_cat=%d\n",
@@ -929,7 +884,7 @@ static GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
         sym = 0;
       }
       else {
-        if (getenv("GIMG_JPEG_DEBUG_BASELINE_FAIL")) {
+        if (GIMG_JPEG_DEBUG_BASELINE_FAIL) {
           (void)fprintf(stderr,
               "BASELINE_FAIL_STEP ac_sym k=%d byte_off=%zu bit_off=%u\n", k,
               (size_t)bs->byte_off, (unsigned)bs->bit_off);
@@ -951,7 +906,7 @@ static GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
     k += run;
     /* T.81 Annex F: (run, size) with k+run >= 64 is invalid. */
     if (k >= 64) {
-      if (getenv("GIMG_JPEG_DEBUG_BASELINE_FAIL")) {
+      if (GIMG_JPEG_DEBUG_BASELINE_FAIL) {
         (void)fprintf(stderr,
             "BASELINE_FAIL_STEP ac_run_overflow k=%d run=%d byte_off=%zu "
             "bit_off=%u\n",
@@ -972,7 +927,7 @@ static GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
           }
           return GIMG_OK;
         }
-        if (getenv("GIMG_JPEG_DEBUG_BASELINE_FAIL")) {
+        if (GIMG_JPEG_DEBUG_BASELINE_FAIL) {
           (void)fprintf(stderr,
               "BASELINE_FAIL_STEP ac_extra size=%d byte_off=%zu\n", size,
               (size_t)bs->byte_off);
@@ -1129,9 +1084,12 @@ static GIMG_Result jpeg_decode_block_progressive_ac_initial(
     int is_last_block) {
   /* Full step dump for harmonization with ref
    * (GIMG_JPEG_DUMP_AC_INITIAL_FULL=1). */
-  const char * dump_ac_initial_env = getenv("GIMG_JPEG_DUMP_AC_INITIAL_FULL");
-  const int dump_full = (trace_block_id >= 0 && dump_ac_initial_env != NULL &&
-      dump_ac_initial_env[0] == '1');
+#if GIMG_JPEG_DUMP_AC_INITIAL_FULL
+  const int dump_ac_initial_env = 1;
+#else
+  const int dump_ac_initial_env = 0;
+#endif
+  const int dump_full = (trace_block_id >= 0 && dump_ac_initial_env);
   int k = ss;
   /* T.81 Annex G: at start of block, if EOBRUN > 0 this block is all-zero in
    * band. */
@@ -1206,7 +1164,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_initial(
       (void)fflush(stderr);
     }
     if (sym == 0) {
-      if (trace_block_id == 0 && getenv("GIMG_JPEG_TRACE_PROG_FIRST_AC")) {
+      if (trace_block_id == 0 && GIMG_JPEG_TRACE_PROG_FIRST_AC) {
         (void)fprintf(stderr, "PROG_DEC_AC block=0 EOB\n");
         (void)fflush(stderr);
       }
@@ -1236,8 +1194,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_initial(
               stderr, "TRACE_JPEG_AC_SYMBOLS block=%d EOB\n", trace_block_id);
         else
           (void)fprintf(stderr, "TRACE_JPEG_AC_SYMBOLS EOB\n");
-        if (getenv("TRACE_AC_COMPARE") &&
-            getenv("TRACE_AC_COMPARE")[0] == '1' && trace_block_id >= 0) {
+        if (GIMG_JPEG_TRACE_AC_COMPARE && trace_block_id >= 0) {
           (void)fprintf(stderr, "AC_INITIAL scan=%u block=%d EOB\n",
               trace_scan_idx, trace_block_id);
           (void)fflush(stderr);
@@ -1391,7 +1348,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_initial(
       ac = jpeg_extend(ac, size);
     }
     block[k] = (int16_t)(ac << al);
-    if (trace_block_id == 0 && getenv("GIMG_JPEG_TRACE_PROG_FIRST_AC")) {
+    if (trace_block_id == 0 && GIMG_JPEG_TRACE_PROG_FIRST_AC) {
       (void)fprintf(stderr, "PROG_DEC_AC block=0 run=%d size=%d val=%d k=%d\n",
           run, size, ac << al, k);
       (void)fflush(stderr);
@@ -1421,7 +1378,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_initial(
         (void)fprintf(stderr,
             "TRACE_JPEG_AC_SYMBOLS run=%d size=%d val=%d k=%d\n", run, size,
             ac << al, k);
-      if (getenv("TRACE_AC_COMPARE") && getenv("TRACE_AC_COMPARE")[0] == '1' &&
+      if (GIMG_JPEG_TRACE_AC_COMPARE &&
           trace_block_id >= 0) {
         (void)fprintf(stderr,
             "AC_INITIAL scan=%u block=%d run=%d size=%d val=%d k=%d\n",
@@ -1458,8 +1415,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_refine(
     int log_sanity, int trace_all, int trace_scan_idx, int is_last_block) {
   /* Full dump for compare with ref: every byte/bit/block
    * (GIMG_JPEG_DUMP_AC_REFINE_FULL=1). */
-  const int dump_full = (getenv("GIMG_JPEG_DUMP_AC_REFINE_FULL") != NULL &&
-      getenv("GIMG_JPEG_DUMP_AC_REFINE_FULL")[0] == '1');
+  const int dump_full = GIMG_JPEG_DUMP_AC_REFINE_FULL;
   /* T.81: AC band is [Ss, Se] with 1 <= Ss <= Se <= 63. Clamp to prevent
    * overrun. */
   if (se > 63) {
@@ -1505,8 +1461,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_refine(
         break; /* Opt-in recovery only (e.g. truncated stream). */
       }
       /* T.81 B.2.4: entropy-coded segment ends at the next marker. */
-      if (getenv("GIMG_JPEG_PROGRESSIVE_DEBUG") &&
-          getenv("GIMG_JPEG_PROGRESSIVE_DEBUG")[0] == '1')
+      if (GIMG_JPEG_PROGRESSIVE_DEBUG)
         (void)fprintf(stderr,
             " ac_refine underflow: huff_decode at k=%d byte_off=%zu "
             "bit_off=%u\n",
@@ -1547,8 +1502,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_refine(
               rbit = 0; /* T.81 B.2.2 / recovery: treat as 0. */
             }
             else {
-              if (getenv("GIMG_JPEG_PROGRESSIVE_DEBUG") &&
-                  getenv("GIMG_JPEG_PROGRESSIVE_DEBUG")[0] == '1')
+              if (GIMG_JPEG_PROGRESSIVE_DEBUG)
                 (void)fprintf(stderr,
                     " ac_refine underflow: correction_bit at EOB k=%d "
                     "byte_off=%zu\n",
@@ -1659,8 +1613,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_refine(
           b = 0; /* T.81 B.2.2 / recovery: treat as 0. */
         }
         else {
-          if (getenv("GIMG_JPEG_PROGRESSIVE_DEBUG") &&
-              getenv("GIMG_JPEG_PROGRESSIVE_DEBUG")[0] == '1')
+          if (GIMG_JPEG_PROGRESSIVE_DEBUG)
             (void)fprintf(stderr,
                 " ac_refine underflow: refinement_bit at k=%d byte_off=%zu\n",
                 k, (size_t)bs->byte_off);
@@ -1723,8 +1676,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_refine(
               rbit = 0; /* T.81 B.2.2 / recovery: treat as 0. */
             }
             else {
-              if (getenv("GIMG_JPEG_PROGRESSIVE_DEBUG") &&
-                  getenv("GIMG_JPEG_PROGRESSIVE_DEBUG")[0] == '1')
+              if (GIMG_JPEG_PROGRESSIVE_DEBUG)
                 (void)fprintf(stderr,
                     " ac_refine underflow: correction_bit at k=%d "
                     "byte_off=%zu\n",
@@ -1769,7 +1721,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_refine(
             (void)fflush(stderr);
           }
           if (trace_block_id == 0 &&
-              getenv("GIMG_JPEG_AC_REFINE_CORRECTION_K") != NULL &&
+              GIMG_JPEG_AC_REFINE_CORRECTION_K &&
               !trace_all) {
             (void)fprintf(stderr,
                 "AC_REFINE_CORRECTION_K block=0 k=%d block[k]=%d\n", k,
@@ -1810,8 +1762,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_refine(
       // Newly nonzero: refinement bit is the sign (1 = +, 0 = −); magnitude at
       // Al is 1.
       if (k > se || k < ss) {
-        if (getenv("GIMG_JPEG_PROGRESSIVE_DEBUG") &&
-            getenv("GIMG_JPEG_PROGRESSIVE_DEBUG")[0] == '1')
+        if (GIMG_JPEG_PROGRESSIVE_DEBUG)
           (void)fprintf(
               stderr, " ac_refine k=%d out of band [%d,%d]\n", k, ss, se);
         return GIMG_ERR_CORRUPT;
@@ -1852,8 +1803,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_refine(
                 b = 0;
               }
               else {
-                if (getenv("GIMG_JPEG_PROGRESSIVE_DEBUG") &&
-                    getenv("GIMG_JPEG_PROGRESSIVE_DEBUG")[0] == '1')
+                if (GIMG_JPEG_PROGRESSIVE_DEBUG)
                   (void)fprintf(stderr,
                       " ac_refine underflow: eobrun bits at run=%d "
                       "byte_off=%zu\n",
@@ -1880,8 +1830,7 @@ static GIMG_Result jpeg_decode_block_progressive_ac_refine(
                 rbit = 0; /* T.81 B.2.2 / recovery: treat as 0. */
               }
               else {
-                if (getenv("GIMG_JPEG_PROGRESSIVE_DEBUG") &&
-                    getenv("GIMG_JPEG_PROGRESSIVE_DEBUG")[0] == '1')
+                if (GIMG_JPEG_PROGRESSIVE_DEBUG)
                   (void)fprintf(stderr,
                       " ac_refine underflow: correction_bit (eob) k=%d "
                       "byte_off=%zu\n",
@@ -2343,8 +2292,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
   uint16_t restart_interval = state->restart_interval;
   size_t block_counter = 0;
   const int trace_baseline_sync =
-      (getenv("GIMG_JPEG_TRACE_BASELINE_SYNC") != NULL &&
-          getenv("GIMG_JPEG_TRACE_BASELINE_SYNC")[0] != '\0')
+      (GIMG_JPEG_TRACE_BASELINE_SYNC)
       ? 1
       : 0;
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
@@ -2603,7 +2551,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
             &ac_tables[ac_id]) != 0) {
       return GIMG_ERR_CORRUPT;
     }
-    if (getenv("GIMG_JPEG_DEBUG_DHT_AC") && state->huff_ac[ac_id] &&
+    if (GIMG_JPEG_DEBUG_DHT_AC && state->huff_ac[ac_id] &&
         state->huff_ac_len[ac_id] >= 18) {
       const unsigned char * bits = state->huff_ac[ac_id] + 1;
       size_t n_sym = 0;
@@ -2618,7 +2566,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
       (void)fflush(stderr);
     }
   }
-  if (getenv("GIMG_JPEG_DEBUG_BASELINE_FAIL")) {
+  if (GIMG_JPEG_DEBUG_BASELINE_FAIL) {
     /* Sanity: AC Th=1 first 3-bit symbol should be EOB (0x00) per T.81 Table
      * K.6. */
     if (state->huff_ac[1] && state->huff_ac_len[1] >= 17 + 2) {
@@ -2726,7 +2674,11 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   /* Step 2: log first 80 bytes of scan data as seen by decoder (compare to
    * encoder buffer). */
   {
-    const char * dbg_scan = getenv("GIMG_JPEG_DEBUG_SCAN_LOADED");
+#if GIMG_JPEG_DEBUG_SCAN_LOADED
+    const char * dbg_scan = "1";
+#else
+    const char * dbg_scan = NULL;
+#endif
     if (dbg_scan && dbg_scan[0] == '1' && scan0->data && scan0->data_size > 0) {
       (void)fprintf(stderr, "DECODER scan_data (first 80 bytes) size=%zu:\n",
           (size_t)scan0->data_size);
@@ -2757,8 +2709,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   uint16_t restart_interval = state->restart_interval;
   size_t block_counter_8 = 0;
   const int trace_baseline_sync_8 =
-      (getenv("GIMG_JPEG_TRACE_BASELINE_SYNC") != NULL &&
-          getenv("GIMG_JPEG_TRACE_BASELINE_SYNC")[0] != '\0')
+      (GIMG_JPEG_TRACE_BASELINE_SYNC)
       ? 1
       : 0;
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
@@ -2796,7 +2747,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
         for (uint8_t by = 0; by < v_samp; by++) {
           for (uint8_t bx = 0; bx < h_samp; bx++) {
             (void)block_idx;
-            if (getenv("GIMG_JPEG_TRACE_DEC_BLOCK_POS")) {
+            if (GIMG_JPEG_TRACE_DEC_BLOCK_POS) {
               size_t linear_block =
                   (size_t)mcu_y * (size_t)mcu_per_row + (size_t)mcu_x;
               if (linear_block <= 40u ||
@@ -2816,8 +2767,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
             GIMG_Result r = jpeg_decode_block(
                 &bs, dc_tbl, ac_tbl, block_zig, &dc_pred[comp_idx], is_last_8);
             if (r != GIMG_OK) {
-              if (getenv("GIMG_JPEG_DEBUG_BIT_POS") ||
-                  getenv("GIMG_JPEG_DEBUG_BASELINE_FAIL")) {
+              if (GIMG_JPEG_DEBUG_BIT_POS || GIMG_JPEG_DEBUG_BASELINE_FAIL) {
                 (void)fprintf(stderr,
                     "BASELINE_FAIL mcu=(%u,%u) comp=%u (comp_idx=%u) dc_tbl=%u "
                     "ac_tbl=%u byte_off=%zu bit_off=%u\n",
@@ -2845,7 +2795,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
                   block_counter_8, (size_t)bs.byte_off, (unsigned)bs.bit_off);
               (void)fflush(stderr);
             }
-            if (block_counter_8 == 0 && getenv("GIMG_JPEG_TRACE_FIRST_BLOCK")) {
+            if (block_counter_8 == 0 && GIMG_JPEG_TRACE_FIRST_BLOCK) {
               (void)fprintf(stderr, "DEC_FIRST_BLOCK comp=%u DC=%d",
                   (unsigned)comp_idx, (int)block_zig[0]);
               for (int ki = 1; ki < 64; ki++) {
@@ -2857,7 +2807,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
               (void)fflush(stderr);
             }
             block_counter_8++;
-            if (getenv("GIMG_JPEG_DEBUG_BIT_POS") && mcu_x == 0 && mcu_y == 0 &&
+            if (GIMG_JPEG_DEBUG_BIT_POS && mcu_x == 0 && mcu_y == 0 &&
                 s == 0 && by == 0 && bx == 0) {
               (void)fprintf(stderr,
                   "DEC after block0: byte_off=%zu bit_off=%u (next byte(s):",
@@ -2874,7 +2824,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
             jpeg_idct_8x8_islow(block_q, block_rz);
 
             if (comp_idx == 1 && by == 0 && bx == 0 &&
-                getenv("GIMG_JPEG_TRACE_FIRST_CB")) {
+                GIMG_JPEG_TRACE_FIRST_CB) {
               (void)fprintf(stderr,
                   "BASELINE first Cb: quant[0]=%u dequant[0]=%d idct[0]=%d "
                   "stored=%d\n",
@@ -2886,8 +2836,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
             /* Bit-by-bit debug: first MCU coefficients and pipeline (compare to
              * encoder dump). */
             if (mcu_x == 0 && mcu_y == 0 &&
-                getenv("GIMG_JPEG_TRACE_BASELINE_FIRST_MCU") &&
-                getenv("GIMG_JPEG_TRACE_BASELINE_FIRST_MCU")[0] == '1') {
+                GIMG_JPEG_TRACE_BASELINE_FIRST_MCU) {
               unsigned linear = (unsigned)block_counter_8 -
                   1u; /* 0-based to match encoder block_0.bin */
               (void)fprintf(stderr,
@@ -2934,7 +2883,9 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
             }
 
             if (mcu_x == 0 && mcu_y == 0) {
-              const char * dump_dir = getenv("DUMP_JPEG_COMPONENTS");
+#if GIMG_JPEG_DUMP_JPEG_COMPONENTS
+              const char * dump_dir =
+                  getenv("GIMG_JPEG_DUMP_JPEG_COMPONENTS");
               if (dump_dir && dump_dir[0] != '\0') {
                 char path[1024];
                 int n = -1;
@@ -2970,6 +2921,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
                   }
                 }
               }
+#endif
             }
 
             uint32_t dst_x = mcu_x * (uint32_t)(8 * h_samp) + (uint32_t)bx * 8;
@@ -3021,8 +2973,9 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   else if (num_comp == 3) {
     // Optional debug dump: Y, Cb, Cr component buffers (see
     // compare_ycbcr_components.py).
+#if GIMG_JPEG_DUMP_JPEG_COMPONENTS
     {
-      const char * dir = getenv("DUMP_JPEG_COMPONENTS");
+      const char * dir = getenv("GIMG_JPEG_DUMP_JPEG_COMPONENTS");
       if (dir && dir[0] != '\0') {
         const char * names[] = {"Y.raw", "Cb.raw", "Cr.raw"};
         const uint32_t cw[] = {comp_w[0], comp_w[1], comp_w[2]};
@@ -3046,6 +2999,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
         }
       }
     }
+#endif
     // YCbCr -> RGB per Rec. ITU-R BT.601 (JFIF/JPEG).
     r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
         (uint32_t)height, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0,
@@ -3537,7 +3491,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
                   goto prog_ext_fail;
                 }
                 if (block_counter_prog < 6 &&
-                    getenv("GIMG_JPEG_TRACE_PROG_FIRST_DC")) {
+                    GIMG_JPEG_TRACE_PROG_FIRST_DC) {
                   (void)fprintf(stderr,
                       "PROG_DEC_DC block=%zu comp=%u block[0]=%d\n",
                       block_counter_prog, (unsigned)comp_idx, (int)block[0]);
@@ -3546,7 +3500,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
               }
               else {
                 if (ah == 0) {
-                  int trace_blk = getenv("GIMG_JPEG_TRACE_PROG_FIRST_AC")
+                  int trace_blk = GIMG_JPEG_TRACE_PROG_FIRST_AC
                       ? (int)block_counter_prog
                       : -1;
                   GIMG_Result r = jpeg_decode_block_progressive_ac_initial(&bs,
@@ -3632,7 +3586,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
           jpeg_dequantise(block_rz, quant, block_q_16);
           jpeg_idct_8x8_islow(block_q_16, block_rz);
           if (comp_idx == 1 && by == 0 && bx == 0 &&
-              getenv("GIMG_JPEG_TRACE_FIRST_CB")) {
+              GIMG_JPEG_TRACE_FIRST_CB) {
             (void)fprintf(stderr,
                 "PROGRESSIVE first Cb: quant[0]=%u dequant[0]=%d idct[0]=%d "
                 "stored=%d\n",

@@ -118,8 +118,8 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MAX_THUMB_PIXELS (256u * 256u)
 
 /** Zigzag order (stream index -> row-major position). DQT is stored in this
- * order. */
-extern const uint8_t gimg_jpeg_zigzag[64];
+ * order. Defined in jpeg_zigzag_internal.h. */
+#include "jpeg_zigzag_internal.h"
 
 /** Max APP2 ICC_PROFILE chunks (1-based index in spec; 255 max). */
 #define GIMG_JPEG_MAX_ICC_CHUNKS 255u

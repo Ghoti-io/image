@@ -34,16 +34,20 @@
 #include "../../core/safe_math_internal.h"
 #include "../../meta/exif_internal.h"
 #include "../codec_internal.h"
+#include "jpeg_debug_internal.h"
 #include "jpeg_internal.h"
 
 /** If GIMG_JPEG_DEBUG_LOAD is set, log why we're returning FORMAT. */
 static void jpeg_load_fmt_debug(const char * action, size_t offset,
     uint8_t marker) {
-  if (getenv("GIMG_JPEG_DEBUG_LOAD") == NULL) {
-    return;
-  }
+#if GIMG_JPEG_DEBUG_LOAD
   (void)fprintf(stderr, "JPEG_LOAD_FORMAT: %s (offset=%zu marker=0x%02x)\n",
       action ? action : "?", offset, (unsigned)marker);
+#else
+  (void)action;
+  (void)offset;
+  (void)marker;
+#endif
 }
 
 /** Append diagnostic on load error (codec "jpeg", offset, marker). */
@@ -945,8 +949,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             }
           }
         }
-        if (scan->ah != 0 && getenv("GIMG_JPEG_PROGRESSIVE_DEBUG") &&
-            getenv("GIMG_JPEG_PROGRESSIVE_DEBUG")[0] != '\0') {
+        if (scan->ah != 0 && GIMG_JPEG_PROGRESSIVE_DEBUG) {
           (void)fprintf(stderr,
               "LOADER scan %zu (refinement ah=%u) last_dht=%zu num_dht=%zu",
               (size_t)state->num_scans, (unsigned)scan->ah,
