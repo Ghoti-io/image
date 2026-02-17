@@ -130,7 +130,7 @@ Tests under `tests/` include:
 
 ## Adding a new codec
 
-See **Codec implementation checklist** below for allocator, limits, safe math, and error-cleanup requirements.
+**Checklist:** (1) Use the codec allocator for all codec-owned allocations. (2) Enforce **GIMG_Limits** (max_chunk_size, max_decoded_pixels, max_frame_count if applicable). (3) Use `safe_math_internal.h` for size calculations. (4) Set `*out_doc` / `*out_raster` to NULL on error and free any partial state before returning. See **Codec implementation checklist** below for details and **Codec contract** for the full allocator, limits, diagnostics, and error-cleanup requirements (PNG and JPEG are the reference implementations).
 
 1. **Stub and register:** Create a codec stub (e.g. `gimg_codec_create_stub()` or `gimg_codec_create_stub_with_allocator()`), implement probe (magic bytes / peek), and register with `gimg_codec_register()`. Probe result `format_name` is used by load/save; document that `format_name` lifetime is only until the next registry-mutating call (see @ref api_options "API Options and Types").
 
@@ -162,6 +162,18 @@ When implementing a new codec (or auditing an existing one), ensure:
 | **JPEG** | Applied via max segment payload in load | Enforced in load (after SOF) and in entropy decode | N/A (still image; multi-item from EXIF thumbnail counts as one “frame”) |
 
 New codecs should enforce the same limits that apply to their format and document which of these (or format-specific limits) they use.
+
+### Codec contract
+
+This subsection spells out the contract that every codec must satisfy. PNG and JPEG are the reference implementations; when in doubt, follow their behavior.
+
+- **Allocator source:** The codec receives an allocator at creation (`gimg_codec_create_stub_with_allocator()`); store it in `codec->allocator`. Use **`codec->allocator`** for all codec-owned allocations during load, decode, and save (e.g. segment/chunk buffers, Huffman tables, scan data, document-private state). When creating the **GIMG_Doc** at load, set `doc->allocator` from the codec allocator; subsequent document and raster creation use **`doc->allocator`**. Streams created for in-memory buffers (e.g. save output, or load paths that need a stream over decoded data) should use the same allocator via `gimg_stream_create_memory_*_with_allocator(alloc, ...)`. Do not use `gimg_allocator_default()` when a codec or document allocator is available; pass the allocator explicitly so tests and embedders can use custom allocators end-to-end.
+
+- **Limits application points:** Apply **GIMG_Limits** at these points: (1) **Before reading large payloads** — check segment/chunk size against `max_chunk_size` (or the codec’s equivalent) and return **GIMG_ERR_LIMIT** if exceeded. (2) **Before allocating decode buffers** — compute pixel count with `gimg_safe_pixel_count()` (or safe_math helpers) and check against `max_decoded_pixels`; return **GIMG_ERR_LIMIT** if exceeded. (3) **For animated formats** — enforce `max_frame_count` in load (e.g. when reading frame count or appending frames). See the “Limits per codec” table above for where PNG and JPEG apply each limit.
+
+- **Diagnostics when provided:** If the caller passes a **GIMG_Diagnostics** pointer to load or decode, append diagnostic entries on error (e.g. codec name, stream offset, format-specific code, and a short message such as “CRC error”, “segment too large”, “limit exceeded”). Use **GIMG_DIAG_ERROR** (or the appropriate level) so that API users can log or display failures. Do not require diagnostics to be non-NULL; treat it as optional.
+
+- **Error-cleanup requirements:** On any error path: (1) Free any partially allocated state (e.g. buffers, doc-private state) using the same allocator that was used to allocate it. (2) Call the codec’s free_doc_state (or equivalent) if doc state was partially built before the error. (3) Do **not** set `*out_doc` or `*out_raster` on error; leave the output parameter unchanged (or ensure the central dispatch clears it, as in `codec.c` for decode). (4) Return the appropriate **GIMG_Result** (e.g. **GIMG_ERR_OOM**, **GIMG_ERR_LIMIT**, **GIMG_ERR_CORRUPT**, **GIMG_ERR_FORMAT**). Load and decode must set `*out_doc` / `*out_raster` to **NULL** before any work so that a later error leaves the output unset.
 
 ## JPEG debug and recovery options
 
