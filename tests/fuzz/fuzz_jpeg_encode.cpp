@@ -1,12 +1,13 @@
 /**
  * @file
  *
- * LibFuzzer harness for PNG/APNG round-trip: load -> decode all items ->
- * save -> load. Stress the encoder with random or truncated input; must not
- * crash. Input that fails load or save is ignored (return 0).
+ * LibFuzzer harness for JPEG round-trip: load -> decode all items ->
+ * save -> load. Stress the JPEG encoder with random or truncated input;
+ * must not crash. Input that fails load or save is ignored (return 0).
  *
- * Build with: make fuzz-png-encode (uses clang -fsanitize=fuzzer).
- * Run: ./build/linux/release/apps/fuzz_png_encode [corpus_dir]
+ * Build with: make fuzz-jpeg-encode (uses clang -fsanitize=fuzzer).
+ * Run: ./build/linux/release/apps/fuzz_jpeg_encode [corpus_dir]
+ * Minimal corpus: copy JPEG files from tests/data/jpeg/ to tests/fuzz/corpus/.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -56,7 +57,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
 
   GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
   GIMG_Save_Report report = {0, nullptr, {0}};
-  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  r = gimg_doc_save(doc, out_s, "jpeg", &opts, &report);
   if (r != GIMG_OK) {
     gimg_stream_destroy(out_s);
     gimg_doc_destroy(doc);

@@ -111,7 +111,7 @@ These targets are documented in the main Makefile and in this guide. Use them in
 
 ### Fuzzing
 
-A libFuzzer harness for PNG/APNG load and decode is under `tests/fuzz/`. Build and run the fuzz target as described in the Makefile (e.g. `make fuzz-build` and run the harness with a corpus). The harness decodes all frames to stress multi-frame and error paths.
+LibFuzzer harnesses under `tests/fuzz/` cover PNG/APNG load and decode, PNG round-trip (load/save/load), JPEG load and decode, and JPEG round-trip (load/save/load). Build with `make fuzz-png`, `make fuzz-png-encode`, `make fuzz-jpeg`, or `make fuzz-jpeg-encode` (requires clang); run with a corpus as described in the Makefile and `tests/fuzz/README.md`.
 
 ### Limits and failure-path tests
 

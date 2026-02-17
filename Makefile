@@ -879,5 +879,14 @@ fuzz-jpeg: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for JPEG load/decode 
 	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_load.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_jpeg_load$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_jpeg_load tests/fuzz/corpus"
 
+fuzz-jpeg-encode: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for JPEG round-trip load->save->load (requires clang++)
+	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
+		echo "fuzz-jpeg-encode requires $(FUZZ_CXX); install clang or set FUZZ_CXX"; exit 1; \
+	fi
+	@mkdir -p $(OBJ_DIR) $(APP_DIR)
+	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_jpeg_encode.cpp -o $(OBJ_DIR)/fuzz_jpeg_encode.o
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_encode.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	@echo "Fuzz harness: $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_jpeg_encode tests/fuzz/corpus"
+
 help: ## Display this help
 	@grep -E '^[ a-zA-Z_-]+:.*?## .*$$' Makefile | sort | sed 's/\\([^:]*\\):.*## \\(.*\\)/\\1:\\2/' | awk -F: '{printf "%-15s %s\n", $$1, $$2}' | sed "s/(SUITE)/$(SUITE)/g; s/(PROJECT)/$(PROJECT)/g; s/(BRANCH)/$(BRANCH)/g"
