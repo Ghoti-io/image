@@ -226,6 +226,37 @@ static void jpeg_quantize_block(
   }
 }
 
+/* Quantize for 16-bit DQT: quant entries are uint16_t; use 32-bit divisor
+ * (q*8). T.81 Annex F rounding. Table in natural order (same as 8-bit path). */
+static void jpeg_quantize_block_16bit(
+    const int16_t * block, const uint16_t * quant, int16_t * out) {
+  for (int z = 0; z < 64; z++) {
+    int nat = (int)gimg_jpeg_zigzag[z];
+    int32_t val = (int32_t)block[nat];
+    uint32_t q = (uint32_t)quant[nat];
+    uint32_t q8 = q << 3;
+    int32_t result;
+    if (q8 == 0) {
+      result = 0;
+    }
+    else {
+      if (val < 0) {
+        val = -val;
+        result = (int32_t)((val + (int32_t)(q << 2)) / (int32_t)q8);
+        result = -result;
+      }
+      else {
+        result = (int32_t)((val + (int32_t)(q << 2)) / (int32_t)q8);
+      }
+    }
+    if (result < -32768)
+      result = -32768;
+    if (result > 32767)
+      result = 32767;
+    out[z] = (int16_t)result;
+  }
+}
+
 #define RECIP_STRIDE 4 /* recip, corr, scale, shift per coefficient */
 
 /* Quantize using reciprocal (libjpeg 8-bit path); dtbl indexed by natural
@@ -533,9 +564,10 @@ static const unsigned char enc_dc_chr_vals[12] = {
 /* T.81 K.4: AC luminance, 162 symbols. */
 static const unsigned char enc_ac_lum_bits[16] = {
     0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125};
-/* T.81 Annex K.6 (Table K.6): AC chrominance. Canonical spec table: sum(bits)=162
- * (last length count 0x77), 162 value bytes. B.2.4 requires value count = sum(bits).
- * Must match jpeg_std_ac_chr_bits / jpeg_std_ac_chr_vals (DHT) byte-for-byte. */
+/* T.81 Annex K.6 (Table K.6): AC chrominance. Canonical spec table:
+ * sum(bits)=162 (last length count 0x77), 162 value bytes. B.2.4 requires value
+ * count = sum(bits). Must match jpeg_std_ac_chr_bits / jpeg_std_ac_chr_vals
+ * (DHT) byte-for-byte. */
 static const unsigned char enc_ac_chr_bits[16] = {
     0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119};
 static const unsigned char enc_ac_lum_vals[162] = { //
@@ -554,21 +586,82 @@ static const unsigned char enc_ac_lum_vals[162] = { //
     0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4,
     0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa};
 /* 162 values per T.81 Table K.6; same order as DHT jpeg_std_ac_chr_vals. */
-static const unsigned char enc_ac_chr_vals[162] = { //
-    0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41,
-    0x51, 0x07, 0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
-    0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1,
-    0x0a, 0x16, 0x24, 0x34, 0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26,
-    0x27, 0x28, 0x29, 0x2a, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44,
-    0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
-    0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74,
-    0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
-    0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a,
-    0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4,
-    0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
-    0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda,
-    0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4,
-    0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa};
+static const unsigned char enc_ac_chr_vals[162] = {0x00, 0x01, 0x02, 0x03, 0x11,
+    0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71, 0x13,
+    0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xa1, 0xb1, 0xc1, 0x09, 0x23,
+    0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16, 0x24, 0x34, 0xe1,
+    0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x35,
+    0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+    0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65,
+    0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79,
+    0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93,
+    0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6,
+    0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9,
+    0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3,
+    0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6,
+    0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9,
+    0xfa};
+
+/* Extended tables for 16-bit (must match DHT written by
+ * write_standard_dht_extended). */
+#define ENC_EXT_DC_VALS 17
+#define ENC_EXT_AC_VALS 242
+static const unsigned char enc_ext_dc_lum_bits[16] = {
+    0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 5};
+static const unsigned char enc_ext_dc_lum_vals[ENC_EXT_DC_VALS] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+static const unsigned char enc_ext_dc_chr_bits[16] = {
+    0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 5};
+static const unsigned char enc_ext_dc_chr_vals[ENC_EXT_DC_VALS] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+static const unsigned char enc_ext_ac_lum_bits[16] = {
+    0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 205};
+/* Must match jpeg_save.c jpeg_ext_ac_chr_bits (242 symbols). */
+static const unsigned char enc_ext_ac_chr_bits[16] = {
+    0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 200};
+/* Extended AC values: 162 standard + 80 for size 11..15 (same as jpeg_save). */
+static const unsigned char enc_ext_ac_lum_vals[ENC_EXT_AC_VALS] = {0x01, 0x02,
+    0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51,
+    0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08, 0x23, 0x42,
+    0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09,
+    0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a,
+    0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47,
+    0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63,
+    0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77,
+    0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92,
+    0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5,
+    0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8,
+    0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2,
+    0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2, 0xe3, 0xe4,
+    0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6,
+    0xf7, 0xf8, 0xf9, 0xfa, 0x0B, 0x1B, 0x2B, 0x3B, 0x4B, 0x5B, 0x6B, 0x7B,
+    0x8B, 0x9B, 0xAB, 0xBB, 0xCB, 0xDB, 0xEB, 0xFB, 0x0C, 0x1C, 0x2C, 0x3C,
+    0x4C, 0x5C, 0x6C, 0x7C, 0x8C, 0x9C, 0xAC, 0xBC, 0xCC, 0xDC, 0xEC, 0xFC,
+    0x0D, 0x1D, 0x2D, 0x3D, 0x4D, 0x5D, 0x6D, 0x7D, 0x8D, 0x9D, 0xAD, 0xBD,
+    0xCD, 0xDD, 0xED, 0xFD, 0x0E, 0x1E, 0x2E, 0x3E, 0x4E, 0x5E, 0x6E, 0x7E,
+    0x8E, 0x9E, 0xAE, 0xBE, 0xCE, 0xDE, 0xEE, 0xFE, 0x0F, 0x1F, 0x2F, 0x3F,
+    0x4F, 0x5F, 0x6F, 0x7F, 0x8F, 0x9F, 0xAF, 0xBF, 0xCF, 0xDF, 0xEF, 0xFF};
+static const unsigned char enc_ext_ac_chr_vals[ENC_EXT_AC_VALS] = {0x00, 0x01,
+    0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07,
+    0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xa1, 0xb1,
+    0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16,
+    0x24, 0x34, 0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26, 0x27, 0x28,
+    0x29, 0x2a, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46,
+    0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a,
+    0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76,
+    0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+    0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3,
+    0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6,
+    0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9,
+    0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe2, 0xe3,
+    0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6,
+    0xf7, 0xf8, 0xf9, 0xfa, 0x0B, 0x1B, 0x2B, 0x3B, 0x4B, 0x5B, 0x6B, 0x7B,
+    0x8B, 0x9B, 0xAB, 0xBB, 0xCB, 0xDB, 0xEB, 0xFB, 0x0C, 0x1C, 0x2C, 0x3C,
+    0x4C, 0x5C, 0x6C, 0x7C, 0x8C, 0x9C, 0xAC, 0xBC, 0xCC, 0xDC, 0xEC, 0xFC,
+    0x0D, 0x1D, 0x2D, 0x3D, 0x4D, 0x5D, 0x6D, 0x7D, 0x8D, 0x9D, 0xAD, 0xBD,
+    0xCD, 0xDD, 0xED, 0xFD, 0x0E, 0x1E, 0x2E, 0x3E, 0x4E, 0x5E, 0x6E, 0x7E,
+    0x8E, 0x9E, 0xAE, 0xBE, 0xCE, 0xDE, 0xEE, 0xFE, 0x0F, 0x1F, 0x2F, 0x3F,
+    0x4F, 0x5F, 0x6F, 0x7F, 0x8F, 0x9F, 0xAF, 0xBF, 0xCF, 0xDF, 0xEF, 0xFF};
 
 typedef struct {
   unsigned char * buf;
@@ -742,6 +835,11 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
         const int16_t * block = coef_buffer + block_idx * 64;
         int dc_val = (int)block[0];
         int diff = dc_val - last_dc[c];
+        if (block_idx == 4 && getenv("GIMG_JPEG_TRACE_FIRST_CB")) {
+          (void)fprintf(
+              stderr, "BASELINE_ENC first Cb block_idx=4 dc_val=%d\n", dc_val);
+          (void)fflush(stderr);
+        }
         last_dc[c] = dc_val;
         int nbits = jpeg_nbits(diff);
         if (nbits > 11)
@@ -754,13 +852,14 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
             if (entropy_trace_fp) {
               if (block_idx == 0 && ac_tbl->len[0] > 0) {
                 (void)fprintf(entropy_trace_fp,
-                    "table_ac_lum EOB code=0x%x len=%d sym03 code=0x%x len=%d\n",
+                    "table_ac_lum EOB code=0x%x len=%d sym03 code=0x%x "
+                    "len=%d\n",
                     (unsigned)ac_tbl->code[0], ac_tbl->len[0],
                     (unsigned)ac_tbl->code[3], ac_tbl->len[3]);
               }
-              (void)fprintf(entropy_trace_fp, "block %zu DC cat=%d code=0x%x len=%d\n",
-                  block_idx, nbits, (unsigned)dc_tbl->code[nbits],
-                  dc_tbl->len[nbits]);
+              (void)fprintf(entropy_trace_fp,
+                  "block %zu DC cat=%d code=0x%x len=%d\n", block_idx, nbits,
+                  (unsigned)dc_tbl->code[nbits], dc_tbl->len[nbits]);
             }
           }
         }
@@ -806,8 +905,9 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
           if (k >= 64) {
             int len0 = ac_tbl->len[0];
             if (entropy_trace_fp)
-              (void)fprintf(entropy_trace_fp, "block %zu EOB code=0x%x len=%d\n",
-                  block_idx, (unsigned)ac_tbl->code[0], len0);
+              (void)fprintf(entropy_trace_fp,
+                  "block %zu EOB code=0x%x len=%d\n", block_idx,
+                  (unsigned)ac_tbl->code[0], len0);
             if (trace_env && total_bits <= trace_bit &&
                 (size_t)trace_bit < total_bits + (size_t)len0) {
               (void)fprintf(stderr,
@@ -878,8 +978,8 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
           k++;
         }
         /* T.81 Annex F: EOB when remaining are zero. Omit EOB when the last
-         * coefficient (zigzag 63) was just encoded; emit EOB only when we exited
-         * via trailing zeros or when we skipped a coefficient. */
+         * coefficient (zigzag 63) was just encoded; emit EOB only when we
+         * exited via trailing zeros or when we skipped a coefficient. */
         if (k >= 64 && !ac_eob_emitted && !last_encoded_was_63) {
           int len0 = ac_tbl->len[0];
           if (entropy_trace_fp && len0 > 0)
@@ -910,6 +1010,174 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   return GIMG_OK;
 }
 
+/** Baseline sequential (single scan) from coefficient buffer using extended
+ * DHT (DC 0..16, AC 242 symbols). T.81 Annex F: per block DC then AC.
+ * Used for 12-bit SOF1 and any single-scan extended precision. */
+GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
+    uint32_t width, uint32_t height, int num_components,
+    const int16_t * coef_buffer, size_t total_blocks, const uint8_t * h_samp,
+    const uint8_t * v_samp, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, unsigned char ** out_scan_data,
+    size_t * out_scan_size) {
+  if (!alloc || !out_scan_data || !out_scan_size) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!h_samp)
+    h_samp = default_samp;
+  if (!v_samp)
+    v_samp = default_samp;
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  if (num_components >= 3) {
+    if (h_samp[1] > h_max)
+      h_max = h_samp[1];
+    if (h_samp[2] > h_max)
+      h_max = h_samp[2];
+    if (v_samp[1] > v_max)
+      v_max = v_samp[1];
+    if (v_samp[2] > v_max)
+      v_max = v_samp[2];
+  }
+  size_t blocks_per_mcu = 0;
+  for (int c = 0; c < num_components; c++) {
+    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
+  }
+  uint32_t mcu_per_row =
+      (width + (uint32_t)(8 * h_max) - 1) / (uint32_t)(8 * h_max);
+  uint32_t mcu_per_col =
+      (height + (uint32_t)(8 * v_max) - 1) / (uint32_t)(8 * v_max);
+  size_t mcu_count = 0;
+  if (!gimg_safe_mul_size(
+          (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
+    return GIMG_ERR_LIMIT;
+  }
+  static jpeg_derived_tbl ext_dc_lum_tbl, ext_dc_chr_tbl, ext_ac_lum_tbl,
+      ext_ac_chr_tbl;
+  static int ext_baseline_tables_built = 0;
+  if (!ext_baseline_tables_built) {
+    build_derived_tbl(enc_ext_dc_lum_bits, enc_ext_dc_lum_vals, ENC_EXT_DC_VALS,
+        &ext_dc_lum_tbl);
+    build_derived_tbl(enc_ext_dc_chr_bits, enc_ext_dc_chr_vals, ENC_EXT_DC_VALS,
+        &ext_dc_chr_tbl);
+    build_derived_tbl(enc_ext_ac_lum_bits, enc_ext_ac_lum_vals, ENC_EXT_AC_VALS,
+        &ext_ac_lum_tbl);
+    build_derived_tbl(enc_ext_ac_chr_bits, enc_ext_ac_chr_vals, ENC_EXT_AC_VALS,
+        &ext_ac_chr_tbl);
+    ext_baseline_tables_built = 1;
+  }
+  jpeg_bit_writer w = {0};
+  int last_dc[3] = {0, 0, 0};
+  size_t block_off = 0;
+  uint16_t next_restart = 0;
+  size_t mcu_index = 0;
+  for (;;) {
+    if (restart_interval > 0 && mcu_index > 0 &&
+        (mcu_index % (size_t)restart_interval) == 0) {
+      bit_writer_flush(&w, alloc);
+      if (!bit_writer_ensure(&w, alloc, 2)) {
+        gimg_free(alloc, w.buf);
+        return GIMG_ERR_OOM;
+      }
+      w.buf[w.len++] = 0xFF;
+      w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+      next_restart++;
+      w.bitbuf = 0;
+      w.nbits = 0;
+      last_dc[0] = 0;
+      last_dc[1] = 0;
+      last_dc[2] = 0;
+    }
+    for (int c = 0; c < num_components; c++) {
+      const jpeg_derived_tbl * dc_tbl =
+          (c == 0) ? &ext_dc_lum_tbl : &ext_dc_chr_tbl;
+      const jpeg_derived_tbl * ac_tbl =
+          (c == 0) ? &ext_ac_lum_tbl : &ext_ac_chr_tbl;
+      size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+      for (size_t b = 0; b < nblocks; b++) {
+        size_t block_idx = block_off + b;
+        const int16_t * block = coef_buffer + block_idx * 64;
+        int dc_val = (int)block[0];
+        int diff = dc_val - last_dc[c];
+        last_dc[c] = dc_val;
+        int nbits = jpeg_nbits(diff);
+        if (nbits > 16)
+          nbits = 16;
+        if (dc_tbl->len[nbits] > 0) {
+          bit_writer_put_bits(
+              &w, alloc, dc_tbl->code[nbits], dc_tbl->len[nbits]);
+        }
+        if (nbits > 0) {
+          int extra = diff;
+          if (extra < 0)
+            extra += (1 << nbits) - 1;
+          bit_writer_put_bits(&w, alloc, (unsigned int)extra, nbits);
+        }
+        int k = 1;
+        int ac_eob_emitted = 0;
+        int last_encoded_was_63 = 0;
+        while (k < 64) {
+          int run = 0;
+          while (k < 64 && block[k] == 0) {
+            run++;
+            k++;
+          }
+          if (k >= 64) {
+            if (ac_tbl->len[0] > 0)
+              bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
+            ac_eob_emitted = 1;
+            break;
+          }
+          while (run >= 16) {
+            if (ac_tbl->len[0xF0] > 0)
+              bit_writer_put_bits(
+                  &w, alloc, ac_tbl->code[0xF0], ac_tbl->len[0xF0]);
+            run -= 16;
+          }
+          /* T.81: do not encode past coefficient 63; EOB must be sent when rest are zero. */
+          if (k >= 64) {
+            if (ac_tbl->len[0] > 0)
+              bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
+            ac_eob_emitted = 1;
+            break;
+          }
+          int coeff = (int)block[k];
+          int size = jpeg_nbits(coeff);
+          if (size > 15)
+            size = 15;
+          int symbol = (run << 4) | size;
+          if (symbol >= 0 && symbol <= 255 && ac_tbl->len[symbol] > 0) {
+            bit_writer_put_bits(
+                &w, alloc, ac_tbl->code[symbol], ac_tbl->len[symbol]);
+            if (size > 0) {
+              int extra = coeff;
+              if (extra < 0)
+                extra += (1 << size) - 1;
+              bit_writer_put_bits(&w, alloc, (unsigned int)extra, size);
+            }
+            last_encoded_was_63 = (k == 63);
+          }
+          k++;
+        }
+        if (k >= 64 && !ac_eob_emitted && !last_encoded_was_63 &&
+            ac_tbl->len[0] > 0) {
+          bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
+        }
+      }
+      block_off += (size_t)h_samp[c] * (size_t)v_samp[c];
+    }
+    mcu_index++;
+    if (block_off >= total_blocks || mcu_index >= mcu_count)
+      break;
+  }
+  bit_writer_flush(&w, alloc);
+  *out_scan_data = w.buf;
+  *out_scan_size = w.len;
+  return GIMG_OK;
+}
+
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_16bit(uint32_t width,
     uint32_t height, int num_components, const uint16_t * comp0,
     const uint16_t * comp1, const uint16_t * comp2, size_t stride0,
@@ -917,26 +1185,227 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_16bit(uint32_t width,
     const uint8_t * v_samp, const uint16_t * quant_luma,
     const uint16_t * quant_chroma, int precision, int16_t * coef_buffer,
     size_t * out_total_blocks) {
-  (void)width;
-  (void)height;
-  (void)num_components;
-  (void)comp0;
-  (void)comp1;
-  (void)comp2;
-  (void)stride0;
-  (void)stride1;
-  (void)stride2;
-  (void)h_samp;
-  (void)v_samp;
-  (void)quant_luma;
-  (void)quant_chroma;
   (void)precision;
-  (void)coef_buffer;
-  if (out_total_blocks)
-    *out_total_blocks = 0;
-  return GIMG_ERR_UNSUPPORTED;
+  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!h_samp)
+    h_samp = default_samp;
+  if (!v_samp)
+    v_samp = default_samp;
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  if (num_components >= 3) {
+    if (h_samp[1] > h_max)
+      h_max = h_samp[1];
+    if (h_samp[2] > h_max)
+      h_max = h_samp[2];
+    if (v_samp[1] > v_max)
+      v_max = v_samp[1];
+    if (v_samp[2] > v_max)
+      v_max = v_samp[2];
+  }
+  uint32_t mcu_w = (uint32_t)(8 * h_max);
+  uint32_t mcu_h = (uint32_t)(8 * v_max);
+  uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
+  uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
+  size_t blocks_per_mcu = 0;
+  for (int c = 0; c < num_components; c++) {
+    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
+  }
+  size_t total_blocks = 0;
+  if (!gimg_safe_mul_size(
+          (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
+      !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+    return GIMG_ERR_LIMIT;
+  }
+  *out_total_blocks = total_blocks;
+
+  /* Strides are in elements (uint16_t), not bytes. */
+  const uint16_t * comps[3] = {comp0, comp1, comp2};
+  size_t strides_el[3] = {stride0, stride1, stride2};
+  uint32_t comp_w[3], comp_h[3];
+  uint32_t comp_pix_w[3], comp_pix_h[3];
+  for (int c = 0; c < num_components; c++) {
+    jpeg_comp_blocks(width, height, h_samp[c], v_samp[c], h_max, v_max,
+        &comp_w[c], &comp_h[c]);
+    jpeg_comp_pixels(width, height, h_samp[c], v_samp[c], h_max, v_max,
+        &comp_pix_w[c], &comp_pix_h[c]);
+  }
+
+  int16_t * out = coef_buffer;
+  int16_t block[64];
+  /* T.81 Annex A: dummy blocks use previous DC, zero AC. */
+  int16_t last_dc[3] = {0, 0, 0};
+  /* Level shift for 16-bit: 2^(P-1) = 32768 (T.81). */
+  const int32_t level_shift = 32768;
+
+  for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
+    for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
+      for (int c = 0; c < num_components; c++) {
+        const uint16_t * quant = (c == 0) ? quant_luma : quant_chroma;
+        const uint16_t * comp = comps[c];
+        size_t stride_el = strides_el[c];
+        uint32_t cw = comp_w[c];
+        uint32_t ch = comp_h[c];
+        uint32_t pix_w = comp_pix_w[c];
+        uint32_t pix_h = comp_pix_h[c];
+        for (uint32_t by = 0; by < (uint32_t)v_samp[c]; by++) {
+          for (uint32_t bx = 0; bx < (uint32_t)h_samp[c]; bx++) {
+            uint32_t blk_x = mcu_x * (uint32_t)h_samp[c] + bx;
+            uint32_t blk_y = mcu_y * (uint32_t)v_samp[c] + by;
+            if (blk_x >= cw || blk_y >= ch) {
+              out[0] = last_dc[c];
+              for (int i = 1; i < 64; i++)
+                out[i] = 0;
+              out += 64;
+              continue;
+            }
+            uint32_t px = blk_x * 8;
+            uint32_t py = blk_y * 8;
+            for (int row = 0; row < 8; row++) {
+              uint32_t y_src = (py + (uint32_t)row) < pix_h
+                  ? (py + (uint32_t)row)
+                  : (pix_h - 1u);
+              size_t row_off = (size_t)y_src * stride_el;
+              for (int col = 0; col < 8; col++) {
+                uint32_t x_src = px + (uint32_t)col;
+                if (x_src >= pix_w)
+                  x_src = pix_w - 1u;
+                uint16_t s = comp[row_off + (size_t)x_src];
+                block[row * 8 + col] = (int16_t)((int32_t)s - level_shift);
+              }
+            }
+            jpeg_fdct_islow(block);
+            jpeg_quantize_block_16bit(block, quant, out);
+            last_dc[c] = out[0];
+            out += 64;
+          }
+        }
+      }
+    }
+  }
+  return GIMG_OK;
 }
 
+/** 12-bit variant: samples 0..4095, level shift 2048 (T.81). */
+GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
+    uint32_t height, int num_components, const uint16_t * comp0,
+    const uint16_t * comp1, const uint16_t * comp2, size_t stride0,
+    size_t stride1, size_t stride2, const uint8_t * h_samp,
+    const uint8_t * v_samp, const uint16_t * quant_luma,
+    const uint16_t * quant_chroma, int16_t * coef_buffer,
+    size_t * out_total_blocks) {
+  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!h_samp)
+    h_samp = default_samp;
+  if (!v_samp)
+    v_samp = default_samp;
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  if (num_components >= 3) {
+    if (h_samp[1] > h_max)
+      h_max = h_samp[1];
+    if (h_samp[2] > h_max)
+      h_max = h_samp[2];
+    if (v_samp[1] > v_max)
+      v_max = v_samp[1];
+    if (v_samp[2] > v_max)
+      v_max = v_samp[2];
+  }
+  uint32_t mcu_w = (uint32_t)(8 * h_max);
+  uint32_t mcu_h = (uint32_t)(8 * v_max);
+  uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
+  uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
+  size_t blocks_per_mcu = 0;
+  for (int c = 0; c < num_components; c++) {
+    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
+  }
+  size_t total_blocks = 0;
+  if (!gimg_safe_mul_size(
+          (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
+      !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+    return GIMG_ERR_LIMIT;
+  }
+  *out_total_blocks = total_blocks;
+
+  const uint16_t * comps[3] = {comp0, comp1, comp2};
+  size_t strides_el[3] = {stride0, stride1, stride2};
+  uint32_t comp_w[3], comp_h[3];
+  uint32_t comp_pix_w[3], comp_pix_h[3];
+  for (int c = 0; c < num_components; c++) {
+    jpeg_comp_blocks(width, height, h_samp[c], v_samp[c], h_max, v_max,
+        &comp_w[c], &comp_h[c]);
+    jpeg_comp_pixels(width, height, h_samp[c], v_samp[c], h_max, v_max,
+        &comp_pix_w[c], &comp_pix_h[c]);
+  }
+
+  int16_t * out = coef_buffer;
+  int16_t block[64];
+  int16_t last_dc[3] = {0, 0, 0};
+  const int32_t level_shift = 2048;
+
+  for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
+    for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
+      for (int c = 0; c < num_components; c++) {
+        const uint16_t * quant = (c == 0) ? quant_luma : quant_chroma;
+        const uint16_t * comp = comps[c];
+        size_t stride_el = strides_el[c];
+        uint32_t cw = comp_w[c];
+        uint32_t ch = comp_h[c];
+        uint32_t pix_w = comp_pix_w[c];
+        uint32_t pix_h = comp_pix_h[c];
+        for (uint32_t by = 0; by < (uint32_t)v_samp[c]; by++) {
+          for (uint32_t bx = 0; bx < (uint32_t)h_samp[c]; bx++) {
+            uint32_t blk_x = mcu_x * (uint32_t)h_samp[c] + bx;
+            uint32_t blk_y = mcu_y * (uint32_t)v_samp[c] + by;
+            if (blk_x >= cw || blk_y >= ch) {
+              out[0] = last_dc[c];
+              for (int i = 1; i < 64; i++)
+                out[i] = 0;
+              out += 64;
+              continue;
+            }
+            uint32_t px = blk_x * 8;
+            uint32_t py = blk_y * 8;
+            for (int row = 0; row < 8; row++) {
+              uint32_t y_src = (py + (uint32_t)row) < pix_h
+                  ? (py + (uint32_t)row)
+                  : (pix_h - 1u);
+              size_t row_off = (size_t)y_src * stride_el;
+              for (int col = 0; col < 8; col++) {
+                uint32_t x_src = px + (uint32_t)col;
+                if (x_src >= pix_w)
+                  x_src = pix_w - 1u;
+                uint16_t s = comp[row_off + (size_t)x_src];
+                if (s > 4095u)
+                  s = 4095u;
+                block[row * 8 + col] = (int16_t)((int32_t)s - level_shift);
+              }
+            }
+            jpeg_fdct_islow(block);
+            jpeg_quantize_block_16bit(block, quant, out);
+            last_dc[c] = out[0];
+            out += 64;
+          }
+        }
+      }
+    }
+  }
+  return GIMG_OK;
+}
+
+/* T.81 Annex K.6: AC refinement (17 symbols). Used when Ah!=0 for AC band. */
+static const unsigned char enc_ac_refine_bits[16] = {
+    0, 0, 1, 0, 2, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+/* (0,0)=EOB, (0,1)..(15,1)=run then newly nz, (15,0)=ZRL (T.81 G.1.2.2). */
+static const unsigned char enc_ac_refine_vals[18] = {
+    0x00, 0x01, 0x11, 0x21, 0x31, 0x41, 0x51, 0x61, 0x71, 0x81, 0x91, 0xa1,
+    0xb1, 0xc1, 0xd1, 0xe1, 0xf1, 0xf0};
+
+/* T.81 Annex G: progressive scan encode. DC scan (Ss=0,Se=0,Ah=0): encode only
+ * DC diff per block. AC initial (Ss>=1,Ah=0): encode AC in band [Ss,Se]. DC
+ * refinement (Ss=0,Se=0,Ah>0): one bit per block (Al-th bit of DC). AC
+ * refinement (Ah>0, Ss..Se): (run,size)+refinement/correction bits per T.81
+ * G.1.2.2. */
 GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
     const uint8_t * h_samp, const uint8_t * v_samp, uint8_t Ss, uint8_t Se,
@@ -944,51 +1413,554 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     uint16_t restart_interval, unsigned char ** out_scan_data,
     size_t * out_scan_size, int16_t * state_after_scan_out,
     const int16_t * state_after_previous_scan, int sync_debug_scan_index) {
-  (void)width;
-  (void)height;
-  (void)num_components;
-  (void)coef_buffer;
-  (void)total_blocks;
-  (void)h_samp;
-  (void)v_samp;
-  (void)Ss;
-  (void)Se;
-  (void)Ah;
-  (void)Al;
-  (void)alloc;
-  (void)restart_interval;
-  (void)state_after_scan_out;
-  (void)state_after_previous_scan;
   (void)sync_debug_scan_index;
-  if (out_scan_data)
-    *out_scan_data = NULL;
-  if (out_scan_size)
-    *out_scan_size = 0;
-  return GIMG_ERR_UNSUPPORTED;
+  if (!alloc || !out_scan_data || !out_scan_size) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+
+  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!h_samp)
+    h_samp = default_samp;
+  if (!v_samp)
+    v_samp = default_samp;
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  if (num_components >= 3) {
+    if (h_samp[1] > h_max)
+      h_max = h_samp[1];
+    if (h_samp[2] > h_max)
+      h_max = h_samp[2];
+    if (v_samp[1] > v_max)
+      v_max = v_samp[1];
+    if (v_samp[2] > v_max)
+      v_max = v_samp[2];
+  }
+  size_t blocks_per_mcu = 0;
+  for (int c = 0; c < num_components; c++) {
+    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
+  }
+  uint32_t mcu_per_row =
+      (width + (uint32_t)(8 * h_max) - 1) / (uint32_t)(8 * h_max);
+  uint32_t mcu_per_col =
+      (height + (uint32_t)(8 * v_max) - 1) / (uint32_t)(8 * v_max);
+  size_t mcu_count = 0;
+  if (!gimg_safe_mul_size(
+          (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
+    return GIMG_ERR_LIMIT;
+  }
+
+  static jpeg_derived_tbl dc_lum_tbl, dc_chr_tbl, ac_lum_tbl, ac_chr_tbl;
+  static int tables_built = 0;
+  if (!tables_built) {
+    build_derived_tbl(enc_dc_lum_bits, enc_dc_lum_vals, 12, &dc_lum_tbl);
+    build_derived_tbl(enc_dc_chr_bits, enc_dc_chr_vals, 12, &dc_chr_tbl);
+    build_derived_tbl(enc_ac_lum_bits, enc_ac_lum_vals, 162, &ac_lum_tbl);
+    build_derived_tbl(enc_ac_chr_bits, enc_ac_chr_vals, 162, &ac_chr_tbl);
+    tables_built = 1;
+  }
+
+  jpeg_bit_writer w = {0};
+  int last_dc[3] = {0, 0, 0};
+  size_t block_off = 0;
+  uint16_t next_restart = 0;
+  size_t mcu_index = 0;
+
+  if (Ss == 0 && Se == 0) {
+    if (Ah == 0) {
+      /* DC initial (T.81 Annex G.1.2.1): encode only DC difference per block. */
+      for (;;) {
+        if (restart_interval > 0 && mcu_index > 0 &&
+            (mcu_index % (size_t)restart_interval) == 0) {
+          bit_writer_flush(&w, alloc);
+          if (!bit_writer_ensure(&w, alloc, 2)) {
+            gimg_free(alloc, w.buf);
+            return GIMG_ERR_OOM;
+          }
+          w.buf[w.len++] = 0xFF;
+          w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+          next_restart++;
+          w.bitbuf = 0;
+          w.nbits = 0;
+          last_dc[0] = 0;
+          last_dc[1] = 0;
+          last_dc[2] = 0;
+        }
+        size_t mcu_block_off = 0;
+        for (int c = 0; c < num_components; c++) {
+          const jpeg_derived_tbl * dc_tbl =
+              (c == 0) ? &dc_lum_tbl : &dc_chr_tbl;
+          size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+          for (size_t b = 0; b < nblocks; b++) {
+            size_t block_idx = block_off + mcu_block_off + b;
+            const int16_t * block = coef_buffer + block_idx * 64;
+            int dc_val = (int)block[0];
+            int diff = dc_val - last_dc[c];
+            if (block_idx < 6 && getenv("GIMG_JPEG_TRACE_PROG_FIRST_DC")) {
+              (void)fprintf(stderr,
+                  "PROG_ENC_DC block=%zu c=%d dc_val=%d diff=%d\n", block_idx, c,
+                  dc_val, diff);
+              (void)fflush(stderr);
+            }
+            if (block_idx == 4 && getenv("GIMG_JPEG_TRACE_FIRST_CB")) {
+              (void)fprintf(
+                  stderr, "PROG_ENC first Cb block_idx=4 dc_val=%d\n", dc_val);
+              (void)fflush(stderr);
+            }
+            last_dc[c] = dc_val;
+            int nbits = jpeg_nbits(diff);
+            if (nbits > 11)
+              nbits = 11;
+            if (dc_tbl->len[nbits] > 0) {
+              bit_writer_put_bits(
+                  &w, alloc, dc_tbl->code[nbits], dc_tbl->len[nbits]);
+            }
+            if (nbits > 0) {
+              int extra = diff;
+              if (extra < 0)
+                extra += (1 << nbits) - 1;
+              bit_writer_put_bits(&w, alloc, (unsigned int)extra, nbits);
+            }
+          }
+          mcu_block_off += nblocks;
+        }
+        block_off += blocks_per_mcu;
+        mcu_index++;
+        if (block_off >= total_blocks || mcu_index >= mcu_count)
+          break;
+      }
+    }
+    else {
+      /* DC refinement (T.81 Annex G.1.1.2.1): one bit per block (Al-th bit of
+       * DC). Decoder sets block[0] |= (bit << Al). */
+      unsigned int bitpos = (Al <= 15u) ? Al : 0;
+      for (;;) {
+        if (restart_interval > 0 && mcu_index > 0 &&
+            (mcu_index % (size_t)restart_interval) == 0) {
+          bit_writer_flush(&w, alloc);
+          if (!bit_writer_ensure(&w, alloc, 2)) {
+            gimg_free(alloc, w.buf);
+            return GIMG_ERR_OOM;
+          }
+          w.buf[w.len++] = 0xFF;
+          w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+          next_restart++;
+          w.bitbuf = 0;
+          w.nbits = 0;
+        }
+        size_t mcu_block_off = 0;
+        for (int c = 0; c < num_components; c++) {
+          size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+          for (size_t b = 0; b < nblocks; b++) {
+            size_t block_idx = block_off + mcu_block_off + b;
+            const int16_t * block = coef_buffer + block_idx * 64;
+            int dc = (int)block[0];
+            int mag = dc < 0 ? -dc : dc;
+            unsigned int bit = (unsigned int)((mag >> bitpos) & 1);
+            bit_writer_put_bits(&w, alloc, bit, 1);
+          }
+          mcu_block_off += nblocks;
+        }
+        block_off += blocks_per_mcu;
+        mcu_index++;
+        if (block_off >= total_blocks || mcu_index >= mcu_count)
+          break;
+      }
+    }
+  }
+  else if (Ah != 0) {
+    /* AC refinement (T.81 Annex G.1.2.2): (run,size=1) + refinement bit for
+     * newly nonzero; correction bits for already-nonzero. state_after_previous
+     * is the coefficient state after the AC initial scan. */
+    const int16_t * prev = state_after_previous_scan;
+    if (!prev) {
+      gimg_free(alloc, w.buf);
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    static jpeg_derived_tbl ac_refine_tbl;
+    static int ac_refine_tbl_built = 0;
+    if (!ac_refine_tbl_built) {
+      build_derived_tbl(enc_ac_refine_bits, enc_ac_refine_vals, 18,
+          &ac_refine_tbl);
+      ac_refine_tbl_built = 1;
+    }
+    unsigned int k_start = (unsigned int)Ss;
+    unsigned int k_end = (unsigned int)Se;
+    if (k_end > 63)
+      k_end = 63;
+    int bitpos = (Al <= 15u) ? (int)Al : 0;
+    for (;;) {
+      if (restart_interval > 0 && mcu_index > 0 &&
+          (mcu_index % (size_t)restart_interval) == 0) {
+        bit_writer_flush(&w, alloc);
+        if (!bit_writer_ensure(&w, alloc, 2)) {
+          gimg_free(alloc, w.buf);
+          return GIMG_ERR_OOM;
+        }
+        w.buf[w.len++] = 0xFF;
+        w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+        next_restart++;
+        w.bitbuf = 0;
+        w.nbits = 0;
+      }
+      size_t mcu_block_off = 0;
+      for (int c = 0; c < num_components; c++) {
+        size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+        for (size_t b = 0; b < nblocks; b++) {
+          size_t block_idx = block_off + mcu_block_off + b;
+          const int16_t * block = coef_buffer + block_idx * 64;
+          const int16_t * p = prev + block_idx * 64;
+          unsigned int start = k_start;
+          for (unsigned int k = k_start; k <= k_end;) {
+            int coef = (int)block[k];
+            int prev_val = (int)p[k];
+            int mag = coef < 0 ? -coef : coef;
+            int newly_nz = (prev_val == 0 && mag != 0 &&
+                (mag & (1 << bitpos)) != 0);
+            if (newly_nz) {
+              int run = (int)(k - start);
+              while (run >= 16) {
+                if (ac_refine_tbl.len[0xF0] > 0)
+                  bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[0xF0],
+                      ac_refine_tbl.len[0xF0]);
+                run -= 16;
+                start += 16;
+              }
+              int symbol = (run << 4) | 1;
+              if (symbol >= 0 && symbol <= 255 &&
+                  ac_refine_tbl.len[symbol] > 0) {
+                bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[symbol],
+                    ac_refine_tbl.len[symbol]);
+              }
+              unsigned int ref_bit = (coef > 0) ? 1u : 0u;
+              bit_writer_put_bits(&w, alloc, ref_bit, 1);
+              for (unsigned int pos = start; pos < k; pos++) {
+                if (p[pos] != 0) {
+                  int cmag = (int)block[pos];
+                  if (cmag < 0)
+                    cmag = -cmag;
+                  unsigned int corr =
+                      (unsigned int)((cmag >> bitpos) & 1);
+                  bit_writer_put_bits(&w, alloc, corr, 1);
+                }
+              }
+              start = k + 1;
+              k++;
+            }
+            else if (prev_val != 0) {
+              k++;
+            }
+            else {
+              k++;
+            }
+          }
+          if (ac_refine_tbl.len[0] > 0)
+            bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[0],
+                ac_refine_tbl.len[0]);
+          for (unsigned int pos = start; pos <= k_end; pos++) {
+            if (p[pos] != 0) {
+              int cmag = (int)block[pos];
+              if (cmag < 0)
+                cmag = -cmag;
+              unsigned int corr = (unsigned int)((cmag >> bitpos) & 1);
+              bit_writer_put_bits(&w, alloc, corr, 1);
+            }
+          }
+        }
+        mcu_block_off += nblocks;
+      }
+      block_off += blocks_per_mcu;
+      mcu_index++;
+      if (block_off >= total_blocks || mcu_index >= mcu_count)
+        break;
+    }
+  }
+  else {
+    /* AC initial scan (T.81 Annex G.1.2.2): encode AC in band [Ss, Se]. */
+    unsigned int k_start = (unsigned int)Ss;
+    unsigned int k_end = (unsigned int)Se;
+    if (k_end > 63)
+      k_end = 63;
+    for (;;) {
+      if (restart_interval > 0 && mcu_index > 0 &&
+          (mcu_index % (size_t)restart_interval) == 0) {
+        bit_writer_flush(&w, alloc);
+        if (!bit_writer_ensure(&w, alloc, 2)) {
+          gimg_free(alloc, w.buf);
+          return GIMG_ERR_OOM;
+        }
+        w.buf[w.len++] = 0xFF;
+        w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+        next_restart++;
+        w.bitbuf = 0;
+        w.nbits = 0;
+      }
+      size_t mcu_block_off = 0;
+      for (int c = 0; c < num_components; c++) {
+        const jpeg_derived_tbl * ac_tbl = (c == 0) ? &ac_lum_tbl : &ac_chr_tbl;
+        size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+        for (size_t b = 0; b < nblocks; b++) {
+          size_t block_idx = block_off + mcu_block_off + b;
+          const int16_t * block = coef_buffer + block_idx * 64;
+          if (state_after_scan_out) {
+            for (int i = 0; i < 64; i++)
+              state_after_scan_out[block_idx * 64 + i] = 0;
+          }
+          for (unsigned int k = k_start; k <= k_end;) {
+            int run = 0;
+            while (k <= k_end && block[k] == 0) {
+              run++;
+              k++;
+            }
+            if (k > k_end) {
+              if (block_idx == 0 && getenv("GIMG_JPEG_TRACE_PROG_FIRST_AC")) {
+                (void)fprintf(stderr, "PROG_ENC_AC block=0 EOB\n");
+                (void)fflush(stderr);
+              }
+              if (ac_tbl->len[0] > 0)
+                bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
+              break;
+            }
+            while (run >= 16) {
+              if (ac_tbl->len[0xF0] > 0)
+                bit_writer_put_bits(
+                    &w, alloc, ac_tbl->code[0xF0], ac_tbl->len[0xF0]);
+              run -= 16;
+            }
+            int coeff = (int)block[k];
+            int size = jpeg_nbits(coeff);
+            if (size > 10)
+              size = 10;
+            int symbol = (run << 4) | size;
+            if (symbol >= 0 && symbol <= 255 && ac_tbl->len[symbol] > 0) {
+              if (block_idx == 0 && getenv("GIMG_JPEG_TRACE_PROG_FIRST_AC")) {
+                (void)fprintf(stderr,
+                    "PROG_ENC_AC block=0 run=%d size=%d val=%d k=%u\n", run,
+                    size, coeff, k);
+                (void)fflush(stderr);
+              }
+              bit_writer_put_bits(
+                  &w, alloc, ac_tbl->code[symbol], ac_tbl->len[symbol]);
+              if (size > 0) {
+                int extra = coeff;
+                if (extra < 0)
+                  extra += (1 << size) - 1;
+                bit_writer_put_bits(&w, alloc, (unsigned int)extra, size);
+              }
+              if (state_after_scan_out)
+                state_after_scan_out[block_idx * 64 + k] = (int16_t)coeff;
+            }
+            k++;
+          }
+        }
+        mcu_block_off += nblocks;
+      }
+      block_off += blocks_per_mcu;
+      mcu_index++;
+      if (block_off >= total_blocks || mcu_index >= mcu_count)
+        break;
+    }
+  }
+
+  bit_writer_flush(&w, alloc);
+  *out_scan_data = w.buf;
+  *out_scan_size = w.len;
+  return GIMG_OK;
 }
 
+/* 16-bit progressive: DC size 0..16, AC 242 symbols. No refinement (Ah!=0). */
 GIMG_Result gimg_jpeg_encode_progressive_scan_16bit(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
     uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size) {
-  (void)width;
-  (void)height;
-  (void)num_components;
-  (void)coef_buffer;
-  (void)total_blocks;
-  (void)h_samp;
-  (void)v_samp;
-  (void)Ss;
-  (void)Se;
-  (void)Ah;
   (void)Al;
-  (void)alloc;
-  (void)restart_interval;
-  if (out_scan_data)
-    *out_scan_data = NULL;
-  if (out_scan_size)
-    *out_scan_size = 0;
-  return GIMG_ERR_UNSUPPORTED;
+  if (!alloc || !out_scan_data || !out_scan_size) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+  if (Ah != 0) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!h_samp)
+    h_samp = default_samp;
+  if (!v_samp)
+    v_samp = default_samp;
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  if (num_components >= 3) {
+    if (h_samp[1] > h_max)
+      h_max = h_samp[1];
+    if (h_samp[2] > h_max)
+      h_max = h_samp[2];
+    if (v_samp[1] > v_max)
+      v_max = v_samp[1];
+    if (v_samp[2] > v_max)
+      v_max = v_samp[2];
+  }
+  size_t blocks_per_mcu = 0;
+  for (int c = 0; c < num_components; c++) {
+    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
+  }
+  uint32_t mcu_per_row =
+      (width + (uint32_t)(8 * h_max) - 1) / (uint32_t)(8 * h_max);
+  uint32_t mcu_per_col =
+      (height + (uint32_t)(8 * v_max) - 1) / (uint32_t)(8 * v_max);
+  size_t mcu_count = 0;
+  if (!gimg_safe_mul_size(
+          (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
+    return GIMG_ERR_LIMIT;
+  }
+
+  static jpeg_derived_tbl ext_dc_lum_tbl, ext_dc_chr_tbl, ext_ac_lum_tbl,
+      ext_ac_chr_tbl;
+  static int ext_tables_built = 0;
+  if (!ext_tables_built) {
+    build_derived_tbl(enc_ext_dc_lum_bits, enc_ext_dc_lum_vals, ENC_EXT_DC_VALS,
+        &ext_dc_lum_tbl);
+    build_derived_tbl(enc_ext_dc_chr_bits, enc_ext_dc_chr_vals, ENC_EXT_DC_VALS,
+        &ext_dc_chr_tbl);
+    build_derived_tbl(enc_ext_ac_lum_bits, enc_ext_ac_lum_vals, ENC_EXT_AC_VALS,
+        &ext_ac_lum_tbl);
+    build_derived_tbl(enc_ext_ac_chr_bits, enc_ext_ac_chr_vals, ENC_EXT_AC_VALS,
+        &ext_ac_chr_tbl);
+    ext_tables_built = 1;
+  }
+
+  jpeg_bit_writer w = {0};
+  int last_dc[3] = {0, 0, 0};
+  size_t block_off = 0;
+  uint16_t next_restart = 0;
+  size_t mcu_index = 0;
+
+  if (Ss == 0 && Se == 0) {
+    for (;;) {
+      if (restart_interval > 0 && mcu_index > 0 &&
+          (mcu_index % (size_t)restart_interval) == 0) {
+        bit_writer_flush(&w, alloc);
+        if (!bit_writer_ensure(&w, alloc, 2)) {
+          gimg_free(alloc, w.buf);
+          return GIMG_ERR_OOM;
+        }
+        w.buf[w.len++] = 0xFF;
+        w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+        next_restart++;
+        w.bitbuf = 0;
+        w.nbits = 0;
+        last_dc[0] = 0;
+        last_dc[1] = 0;
+        last_dc[2] = 0;
+      }
+      size_t mcu_block_off = 0;
+      for (int c = 0; c < num_components; c++) {
+        const jpeg_derived_tbl * dc_tbl =
+            (c == 0) ? &ext_dc_lum_tbl : &ext_dc_chr_tbl;
+        size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+        for (size_t b = 0; b < nblocks; b++) {
+          size_t block_idx = block_off + mcu_block_off + b;
+          const int16_t * block = coef_buffer + block_idx * 64;
+          int dc_val = (int)block[0];
+          int diff = dc_val - last_dc[c];
+          last_dc[c] = dc_val;
+          int nbits = jpeg_nbits(diff);
+          if (nbits > 16)
+            nbits = 16;
+          if (dc_tbl->len[nbits] > 0) {
+            bit_writer_put_bits(
+                &w, alloc, dc_tbl->code[nbits], dc_tbl->len[nbits]);
+          }
+          if (nbits > 0) {
+            int extra = diff;
+            if (extra < 0)
+              extra += (1 << nbits) - 1;
+            bit_writer_put_bits(&w, alloc, (unsigned int)extra, nbits);
+          }
+        }
+        mcu_block_off += nblocks;
+      }
+      block_off += blocks_per_mcu;
+      mcu_index++;
+      if (block_off >= total_blocks || mcu_index >= mcu_count)
+        break;
+    }
+  }
+  else {
+    unsigned int k_start = (unsigned int)Ss;
+    unsigned int k_end = (unsigned int)Se;
+    if (k_end > 63)
+      k_end = 63;
+    for (;;) {
+      if (restart_interval > 0 && mcu_index > 0 &&
+          (mcu_index % (size_t)restart_interval) == 0) {
+        bit_writer_flush(&w, alloc);
+        if (!bit_writer_ensure(&w, alloc, 2)) {
+          gimg_free(alloc, w.buf);
+          return GIMG_ERR_OOM;
+        }
+        w.buf[w.len++] = 0xFF;
+        w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+        next_restart++;
+        w.bitbuf = 0;
+        w.nbits = 0;
+      }
+      size_t mcu_block_off = 0;
+      for (int c = 0; c < num_components; c++) {
+        const jpeg_derived_tbl * ac_tbl =
+            (c == 0) ? &ext_ac_lum_tbl : &ext_ac_chr_tbl;
+        size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+        for (size_t b = 0; b < nblocks; b++) {
+          size_t block_idx = block_off + mcu_block_off + b;
+          const int16_t * block = coef_buffer + block_idx * 64;
+          for (unsigned int k = k_start; k <= k_end;) {
+            int run = 0;
+            while (k <= k_end && block[k] == 0) {
+              run++;
+              k++;
+            }
+            if (k > k_end) {
+              if (ac_tbl->len[0] > 0)
+                bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
+              break;
+            }
+            while (run >= 16) {
+              if (ac_tbl->len[0xF0] > 0)
+                bit_writer_put_bits(
+                    &w, alloc, ac_tbl->code[0xF0], ac_tbl->len[0xF0]);
+              run -= 16;
+            }
+            int coeff = (int)block[k];
+            int size = jpeg_nbits(coeff);
+            if (size > 15)
+              size = 15;
+            int symbol = (run << 4) | size;
+            if (symbol >= 0 && symbol <= 255 && ac_tbl->len[symbol] > 0) {
+              bit_writer_put_bits(
+                  &w, alloc, ac_tbl->code[symbol], ac_tbl->len[symbol]);
+              if (size > 0) {
+                int extra = coeff;
+                if (extra < 0)
+                  extra += (1 << size) - 1;
+                bit_writer_put_bits(&w, alloc, (unsigned int)extra, size);
+              }
+            }
+            k++;
+          }
+        }
+        mcu_block_off += nblocks;
+      }
+      block_off += blocks_per_mcu;
+      mcu_index++;
+      if (block_off >= total_blocks || mcu_index >= mcu_count)
+        break;
+    }
+  }
+
+  bit_writer_flush(&w, alloc);
+  *out_scan_data = w.buf;
+  *out_scan_size = w.len;
+  return GIMG_OK;
 }

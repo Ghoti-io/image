@@ -54,6 +54,26 @@ static const GIMG_Pixel_Format gimg_pixel_gray16 = {
     ._reserved = {0},
 };
 
+static const GIMG_Pixel_Format gimg_pixel_gray12 = {
+    .channel_model = GIMG_CHANNEL_GRAY,
+    .channel_type = GIMG_CHANNEL_UNORM,
+    .layout = GIMG_LAYOUT_INTERLEAVED,
+    .channel_count = 1,
+    .bits_per_channel = {12, 0, 0, 0, 0, 0, 0, 0},
+    .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    ._reserved = {0},
+};
+
+static const GIMG_Pixel_Format gimg_pixel_rgba12 = {
+    .channel_model = GIMG_CHANNEL_RGBA,
+    .channel_type = GIMG_CHANNEL_UNORM,
+    .layout = GIMG_LAYOUT_INTERLEAVED,
+    .channel_count = 4,
+    .bits_per_channel = {12, 12, 12, 12, 0, 0, 0, 0},
+    .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    ._reserved = {0},
+};
+
 static const GIMG_Pixel_Format gimg_pixel_cmyk8 = {
     .channel_model = GIMG_CHANNEL_CMYK,
     .channel_type = GIMG_CHANNEL_UNORM,
@@ -68,11 +88,17 @@ GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA8 = gimg_pixel_rgba8;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA16 = gimg_pixel_rgba16;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY8 = gimg_pixel_gray8;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY16 = gimg_pixel_gray16;
+GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY12 = gimg_pixel_gray12;
+GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA12 = gimg_pixel_rgba12;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK8 = gimg_pixel_cmyk8;
 
 GIMG_API size_t gimg_raster_bytes_per_pixel(const GIMG_Pixel_Format * format) {
   if (!format || format->channel_count == 0) {
     return 0;
+  }
+  // 12-bit is stored as uint16_t per sample (0..4095); 8- and 16-bit as usual.
+  if (format->bits_per_channel[0] == 12) {
+    return (size_t)format->channel_count * 2u;
   }
   size_t bits = 0;
   for (uint8_t i = 0; i < format->channel_count && i < 8; i++) {

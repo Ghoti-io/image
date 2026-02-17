@@ -14,17 +14,19 @@ Inputs:
   (emits REF_HUFF_BIT, REF_HUFF_MATCH; when slow path is used for first block
   also REF_AC_REFINE_REFINEMENT_BIT / REF_AC_REFINE_CORRECTION_BIT).
 
-Ref trace has no SCAN_ENTER/BLOCK_BEFORE; we identify scan 5 by
-REF_AC_REFINE_TABLE scan=6 (ref uses 1-based scan index) and then
-REF_AC_REFINE_BLOCK_START / REF_AC_REFINE_AFTER_BLOCK0 to delimit blocks.
+Ref trace has no SCAN_ENTER/BLOCK_BEFORE; we identify an AC refinement scan by
+REF_AC_REFINE_TABLE scan=N (ref uses 1-based scan index). For our 0-based scan
+index S, ref uses scan N = S+1 (e.g. our scan 2 = refinement -> ref scan 3).
+Blocks are delimited by REF_AC_REFINE_BLOCK_START / REF_AC_REFINE_AFTER_BLOCK0.
 
 Usage:
   python3 compare_progressive_bits.py \
       --ours trace_ours.txt \
       --ref trace_ref.txt \
-      --scan 5 --comp 0 --block 0
+      --scan 2 --comp 0 --block 0
 
-You can run with --block 1 to compare the next block.
+  For a 3-scan file (DC=0, AC initial=1, AC refinement=2) use --scan 2.
+  You can run with --block 1 to compare the next block.
 """
 
 from __future__ import annotations
@@ -41,6 +43,9 @@ SCAN_ENTER_RE = re.compile(
 
 BLOCK_BEFORE_RE = re.compile(
     r"BLOCK_BEFORE scan(\d+)\s+mcu=\((\d+),(\d+)\)\s+comp=(\d+)\s+block=(\d+)\s+"
+)
+BLOCK_AFTER_RE = re.compile(
+    r"BLOCK_AFTER scan(\d+)\s+mcu=\((\d+),(\d+)\)\s+comp=(\d+)\s+block=(\d+)\s+"
 )
 
 HUFF_BIT_RE = re.compile(
@@ -90,38 +95,45 @@ def _iter_lines(path: str) -> Iterable[Tuple[int, str]]:
 def extract_ours_bits(
     path: str, target_scan: int, target_comp: int, target_block: int
 ) -> List[BitRecord]:
-    """Extract full bit sequence (Huffman + refinement + correction) for (scan, comp, block)."""
+    """Extract full bit sequence (Huffman + refinement + correction) for (scan, comp, block).
+
+    Block is the stream block index (0 = first block in scan, 1 = second, etc.),
+    since for grayscale each MCU has one block and BLOCK_BEFORE block=0 repeats per MCU.
+    """
     bits: List[BitRecord] = []
     cur_scan: Optional[int] = None
-    cur_comp: Optional[int] = None
-    cur_block: Optional[int] = None
+    stream_block_counter = 0
+    cur_collecting = False
 
     for line_no, line in _iter_lines(path):
         m_scan = SCAN_ENTER_RE.match(line)
         if m_scan:
             cur_scan = int(m_scan.group(1))
+            stream_block_counter = 0
             continue
 
         m_blk = BLOCK_BEFORE_RE.match(line)
         if m_blk:
-            cur_scan = int(m_blk.group(1))
-            mcu_x = int(m_blk.group(2))
-            mcu_y = int(m_blk.group(3))
-            comp = int(m_blk.group(4))
-            block = int(m_blk.group(5))
-            if mcu_x == 0 and mcu_y == 0:
-                cur_comp = comp
-                cur_block = block
+            scan_b = int(m_blk.group(1))
+            comp_b = int(m_blk.group(4))
+            if scan_b == target_scan and comp_b == target_comp:
+                cur_collecting = stream_block_counter == target_block
+                stream_block_counter += 1
             else:
-                cur_comp = None
-                cur_block = None
+                cur_collecting = False
+            cur_scan = scan_b
             continue
 
-        if (
-            cur_scan != target_scan
-            or cur_comp != target_comp
-            or cur_block != target_block
-        ):
+        m_after = BLOCK_AFTER_RE.match(line)
+        if m_after:
+            scan_a = int(m_after.group(1))
+            comp_a = int(m_after.group(4))
+            if scan_a == target_scan and comp_a == target_comp and cur_collecting:
+                cur_collecting = False
+                continue
+            continue
+
+        if cur_scan != target_scan or not cur_collecting:
             continue
 
         s = line.strip()
@@ -170,24 +182,36 @@ def extract_ours_bits(
     return bits
 
 
-def _ref_scan5_block_regions(path: str) -> List[Tuple[int, int]]:
-    """Find (start_line, end_line) for each scan-5 AC-refine block in ref trace.
+def _ref_scan_block_regions(path: str, ref_scan: int) -> List[Tuple[int, int]]:
+    """Find (start_line, end_line) for each AC-refine block in ref trace.
 
-    Scan 5 is identified by REF_AC_REFINE_TABLE scan=6 (ref uses 1-based).
-    Blocks are delimited by REF_AC_REFINE_BLOCK_START and REF_AC_REFINE_AFTER_BLOCK0.
-    Returns list of (start, end) line numbers for comp-0 blocks (first N blocks
-    after the table).
+    ref_scan is libjpeg's 1-based scan number (e.g. 3 for our scan index 2).
+    REF_AC_REFINE_TABLE scan=N identifies the scan; if absent (ref run without
+    LIBJPEG_DEBUG_AC_TABLE), treat region after REF_COEF_AFTER_SCAN scan(N-1)
+    until REF_COEF_AFTER_SCAN scan N as the refinement scan. Blocks are delimited
+    by REF_AC_REFINE_BLOCK_START and REF_AC_REFINE_AFTER_BLOCK0.
+    Returns list of (start, end) line numbers for comp-0 blocks.
     """
-    in_scan5 = False
+    in_scan = False
     block_starts: List[int] = []
     block_ends: List[int] = []
+    ref_scan_str = f"scan={ref_scan}"
+    # Fallback: ref uses 0-based scan in REF_COEF_AFTER_SCAN (scan0, scan1, scan2).
+    # Our scan 2 (refinement) = ref 0-based scan 2; we enter after REF_COEF_AFTER_SCAN scan1.
+    after_prev_scan = re.compile(r"REF_COEF_AFTER_SCAN\s+scan(\d+)")
 
     for line_no, line in _iter_lines(path):
         m_tbl = REF_AC_REFINE_TABLE_RE.search(line)
-        if m_tbl and int(m_tbl.group(1)) == 6:
-            in_scan5 = True
+        if m_tbl and int(m_tbl.group(1)) == ref_scan:
+            in_scan = True
             continue
-        if not in_scan5:
+        m_prev = after_prev_scan.search(line)
+        if m_prev and int(m_prev.group(1)) == ref_scan - 2:
+            in_scan = True
+            continue
+        if "REF_COEF_AFTER_SCAN" in line and f"scan{ref_scan - 1}" in line:
+            break
+        if not in_scan:
             continue
         if REF_AC_REFINE_BLOCK_START_RE.search(line):
             block_starts.append(line_no)
@@ -195,18 +219,40 @@ def _ref_scan5_block_regions(path: str) -> List[Tuple[int, int]]:
         if REF_AC_REFINE_AFTER_BLOCK0_RE.search(line):
             block_ends.append(line_no)
             continue
-        # If we see another scan's table or coef dump, stop
-        if "REF_COEF_AFTER_SCAN" in line or "REF_AC_REFINE_TABLE" in line:
-            if "REF_AC_REFINE_TABLE" in line and "scan=6" not in line:
-                break
+        if "REF_AC_REFINE_TABLE" in line and ref_scan_str not in line:
+            break
 
     regions: List[Tuple[int, int]] = []
     for i, start in enumerate(block_starts):
         if i < len(block_ends):
             regions.append((start, block_ends[i]))
-        if len(regions) >= 4:
-            break
     return regions
+
+
+def extract_ref_bits_ac_initial(path: str) -> List[BitRecord]:
+    """Extract all REF_HUFF_BIT lines before REF_AC_REFINE_TABLE (AC initial scan).
+
+    Ref emits REF_HUFF_BIT for AC initial when LIBJPEG_TRACE_HUFF_BITS=1 and
+    trace start is set at first AC initial block. No block boundaries in ref;
+    caller should slice to block 0 length using len(ours).
+    """
+    bits: List[BitRecord] = []
+    for _line_no, line in _iter_lines(path):
+        if "REF_AC_REFINE_TABLE" in line:
+            break
+        s = line.strip()
+        m = REF_HUFF_BIT_RE.match(s)
+        if m:
+            bits.append(
+                BitRecord(
+                    bit=int(m.group(2)),
+                    byte_off=int(m.group(3)),
+                    bit_off=int(m.group(4)),
+                    line_no=_line_no,
+                    line=line,
+                )
+            )
+    return bits
 
 
 def extract_ref_bits(
@@ -214,16 +260,19 @@ def extract_ref_bits(
 ) -> List[BitRecord]:
     """Extract bit sequence for (scan, comp, block) from ref using REF_* markers.
 
-    For scan 5 we use REF_AC_REFINE_TABLE scan=6 and REF_AC_REFINE_BLOCK_START/
-    REF_AC_REFINE_AFTER_BLOCK0 to get block 0 and 1. We collect REF_HUFF_BIT,
-    REF_AC_REFINE_REFINEMENT_BIT, REF_AC_REFINE_CORRECTION_BIT in order.
-    If ref used the fast path there may be no REF_HUFF_BIT; we still collect
-    refinement/correction when present.
+    For scan 1 (AC initial): return first len(ours) bits from ref AC initial
+    stream (ref has no block boundaries; we slice by ours block 0 length in main).
+    For refinement (scan 2): ref_scan = target_scan + 1, use REF_AC_REFINE_*
+    to delimit blocks. Only comp 0 is supported for ref.
     """
-    if target_scan != 5 or target_comp != 0:
+    if target_comp != 0:
         return []
 
-    regions = _ref_scan5_block_regions(path)
+    if target_scan == 1:
+        return extract_ref_bits_ac_initial(path)
+
+    ref_scan = target_scan + 1
+    regions = _ref_scan_block_regions(path, ref_scan)
     if target_block >= len(regions):
         return []
 
@@ -316,7 +365,12 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Bit-level progressive JPEG trace diff.")
     p.add_argument("--ours", required=True, help="Path to our trace_ours.txt")
     p.add_argument("--ref", required=True, help="Path to trace_ref.txt")
-    p.add_argument("--scan", type=int, default=5, help="Scan index (default: 5)")
+    p.add_argument(
+        "--scan",
+        type=int,
+        default=2,
+        help="Our 0-based scan index (e.g. 2 for AC refinement in 3-scan file)",
+    )
     p.add_argument("--comp", type=int, default=0, help="Component index (default: 0)")
     p.add_argument(
         "--block",
@@ -328,6 +382,13 @@ def main() -> int:
 
     ours_bits = extract_ours_bits(args.ours, args.scan, args.comp, args.block)
     ref_bits = extract_ref_bits(args.ref, args.scan, args.comp, args.block)
+
+    # AC initial (scan 1): ref has no block boundaries; ref_bits are all bits in order. Slice to this block.
+    if args.scan == 1 and ref_bits and ours_bits:
+        offset = 0
+        for b in range(0, args.block):
+            offset += len(extract_ours_bits(args.ours, 1, args.comp, b))
+        ref_bits = ref_bits[offset : offset + len(ours_bits)]
 
     print(
         f"Comparing bits for scan={args.scan}, comp={args.comp}, block={args.block}"

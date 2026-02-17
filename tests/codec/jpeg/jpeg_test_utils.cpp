@@ -20,8 +20,55 @@ namespace jpeg_test {
 static constexpr uint64_t kFnv1aOffsetBasis = 0xcbf29ce484222325ULL;
 static constexpr uint64_t kFnv1aPrime = 0x100000001b3ULL;
 
+/** Resolved test data dir: absolute when possible so the test binary (e.g. in
+ * build/.../apps/) finds tests/data/jpeg and tests/out/jpeg regardless of cwd.
+ * If GIMG_TEST_DATA_JPEG is relative and GIMG_IMAGE_ROOT is set, prepend it. */
+static std::string resolved_data_dir(void) {
+  std::string s(GIMG_TEST_DATA_JPEG);
+  const char * root = std::getenv("GIMG_IMAGE_ROOT");
+  if (root && root[0] != '\0' && s.size() > 0 && s[0] != '/' &&
+#ifdef _WIN32
+      !(s.size() >= 2 && s[1] == ':')
+#else
+      true
+#endif
+  ) {
+    std::string r(root);
+    if (r.size() > 0 && r.back() != '/' && (s.empty() || s[0] != '/')) {
+      r += '/';
+    }
+    s = r + s;
+  }
+  return s;
+}
+
+/** Directory containing oracle tool binaries (dump_jpeg_pixels_ref, encode_libjpeg_*, etc.).
+ * Prefer GIMG_JPEG_ORACLE_DIR (e.g. build/linux/release/apps); else data dir for backward compat. */
+static std::string resolved_oracle_dir(void) {
+  const char * env = std::getenv("GIMG_JPEG_ORACLE_DIR");
+  if (env && env[0] != '\0') {
+    std::string s(env);
+    const char * root = std::getenv("GIMG_IMAGE_ROOT");
+    if (root && root[0] != '\0' && s.size() > 0 && s[0] != '/' &&
+#ifdef _WIN32
+        !(s.size() >= 2 && s[1] == ':')
+#else
+        true
+#endif
+    ) {
+      std::string r(root);
+      if (r.size() > 0 && r.back() != '/' && (s.empty() || s[0] != '/')) {
+        r += '/';
+      }
+      s = r + s;
+    }
+    return s;
+  }
+  return resolved_data_dir();
+}
+
 bool load_jpeg_file(const char * filename, std::vector<uint8_t> & out) {
-  std::string path = std::string(GIMG_TEST_DATA_JPEG) + "/" + filename;
+  std::string path = resolved_data_dir() + "/" + filename;
   std::ifstream f(path, std::ios::binary | std::ios::ate);
   if (!f) {
     return false;
@@ -39,7 +86,7 @@ bool load_jpeg_file(const char * filename, std::vector<uint8_t> & out) {
 }
 
 std::string jpeg_output_dir(void) {
-  std::string s(GIMG_TEST_DATA_JPEG);
+  std::string s(resolved_data_dir());
   std::string const needle("data/jpeg");
   auto const pos = s.rfind(needle);
   if (pos != std::string::npos) {
@@ -53,7 +100,12 @@ std::string jpeg_output_dir(void) {
 
 void write_jpeg_output(
     const char * filename, const uint8_t * data, size_t size) {
-  std::string path = jpeg_output_dir() + "/" + filename;
+  std::string dir = jpeg_output_dir();
+  std::string path = dir + "/" + filename;
+#ifndef _WIN32
+  int mk_ret = std::system(("mkdir -p \"" + dir + "\"").c_str());
+  (void)mk_ret;  /* best-effort; directory may already exist or path may be absolute */
+#endif
   std::ofstream f(path, std::ios::binary);
   if (f && data && size > 0) {
     f.write(reinterpret_cast<const char *>(data),
@@ -246,14 +298,101 @@ bool rasters_equal_with_tolerance(
   return true;
 }
 
-/** Run dump_jpeg_pixels_ref (libjpeg-based oracle) and parse one line.
- * Prefers dump_jpeg_pixels_ref_debug when present (built with third_party
- * libjpeg) for bit-exact match with our decoder's fancy upsampling. */
-static bool run_libjpeg_oracle(const std::string & data_dir,
+/** Try Pillow-based decode oracle (Python). Returns true if script ran and output parsed. */
+static bool run_pillow_decode_oracle(const char * file_path, uint64_t * out_hash,
+    uint32_t * out_width, uint32_t * out_height) {
+  std::string data_dir = resolved_data_dir();
+  std::string script = data_dir + "/decode_oracle_pillow.py";
+  std::ifstream check(script);
+  if (!check.good()) {
+    return false;
+  }
+  std::string cmd = "python3 \"" + script + "\" \"" + std::string(file_path) + "\" 2>";
+#ifdef _WIN32
+  cmd += "NUL";
+#else
+  cmd += "/dev/null";
+#endif
+  FILE * pipe = popen(cmd.c_str(), "r");
+  if (!pipe) {
+    return false;
+  }
+  char line[256];
+  if (!fgets(line, static_cast<int>(sizeof(line)), pipe)) {
+    pclose(pipe);
+    return false;
+  }
+  pclose(pipe);
+  unsigned long long h = 0;
+  unsigned int w = 0, ht = 0;
+  char mode[8];
+  if (sscanf(line, "HASH %16llx WIDTH %u HEIGHT %u MODE %7s", &h, &w, &ht,
+             mode) != 4) {
+    return false;
+  }
+  *out_hash = static_cast<uint64_t>(h);
+  *out_width = w;
+  *out_height = ht;
+  return true;
+}
+
+/** Try Pillow decode oracle with -o raw_path. Returns true on success. */
+static bool run_pillow_decode_oracle_to_raw(const char * jpeg_path, const char * raw_path) {
+  std::string data_dir = resolved_data_dir();
+  std::string script = data_dir + "/decode_oracle_pillow.py";
+  std::ifstream check(script);
+  if (!check.good()) {
+    return false;
+  }
+  std::string cmd = "python3 \"" + script + "\" -o \"" + std::string(raw_path) +
+      "\" \"" + std::string(jpeg_path) + "\" 2>";
+#ifdef _WIN32
+  cmd += "NUL";
+#else
+  cmd += "/dev/null";
+#endif
+  int ret = std::system(cmd.c_str());
+  return (ret == 0);
+}
+
+/** Try Pillow encode oracle. Returns true if JPEG was written. */
+static bool run_pillow_encode_baseline_to_file(const char * jpeg_path,
+    unsigned int width, unsigned int height, int quality, unsigned int restart_interval) {
+  (void)restart_interval;
+  std::string data_dir = resolved_data_dir();
+  std::string script = data_dir + "/encode_oracle_pillow.py";
+  std::ifstream check(script);
+  if (!check.good()) {
+    return false;
+  }
+  char w[32], h[32], q[32];
+  (void)std::snprintf(w, sizeof(w), "%u", width);
+  (void)std::snprintf(h, sizeof(h), "%u", height);
+  (void)std::snprintf(q, sizeof(q), "%d", quality);
+  std::string scan_tmp = jpeg_output_dir() + "/libjpeg_enc_scan_tmp.bin";
+  std::string cmd = "python3 \"" + script + "\" " + w + " " + h + " " + q +
+      " \"" + scan_tmp + "\" 0 \"" + std::string(jpeg_path) + "\" 2>";
+#ifdef _WIN32
+  cmd += "NUL";
+#else
+  cmd += "/dev/null";
+#endif
+  if (std::system(cmd.c_str()) != 0) {
+    return false;
+  }
+  std::ifstream f(jpeg_path, std::ios::binary | std::ios::ate);
+  return f && f.tellg() > 0;
+}
+
+/** Run decode oracle (Pillow script first, else libjpeg binary) and parse one line. */
+static bool run_libjpeg_oracle(const std::string & oracle_dir,
     const char * file_path, uint64_t * out_hash, uint32_t * out_width,
     uint32_t * out_height) {
-  std::string ref_debug = data_dir + "/dump_jpeg_pixels_ref_debug";
-  std::string ref_std = data_dir + "/dump_jpeg_pixels_ref";
+  if (run_pillow_decode_oracle(file_path, out_hash, out_width, out_height)) {
+    return true;
+  }
+  std::string ref_debug = oracle_dir + "/dump_jpeg_pixels_ref_debug";
+  std::string ref_std = oracle_dir + "/dump_jpeg_pixels_ref";
 #ifdef _WIN32
   ref_debug += ".exe";
   ref_std += ".exe";
@@ -290,21 +429,72 @@ static bool run_libjpeg_oracle(const std::string & data_dir,
   return true;
 }
 
-/** Run dump_jpeg_pixels_ref -o raw_path jpeg_path; return true on success. */
-static bool run_libjpeg_oracle_to_raw(const std::string & data_dir,
+/** Run decode oracle to .raw (Pillow script first, else libjpeg binary). */
+static bool run_libjpeg_oracle_to_raw(const std::string & oracle_dir,
     const char * jpeg_path, const char * raw_path) {
-  std::string ref = data_dir + "/dump_jpeg_pixels_ref";
+  if (run_pillow_decode_oracle_to_raw(jpeg_path, raw_path)) {
+    return true;
+  }
+  std::string ref = oracle_dir + "/dump_jpeg_pixels_ref";
 #ifdef _WIN32
   ref += ".exe";
 #endif
-  std::string cmd = "\"" + ref + "\" -o \"" + raw_path + "\" \"" + jpeg_path + "\" 2>";
+  std::string cmd = "\"" + ref + "\" -o \"" + raw_path + "\" \"" + jpeg_path + "\"";
+#ifdef _WIN32
+  cmd += " 2>NUL";
+#else
+  cmd += " 2>/dev/null";
+#endif
+  int ret = std::system(cmd.c_str());
+  /* Do not re-run without stderr redirect: oracle failures would print to test
+   * output (e.g. libjpeg "Invalid progressive parameters"). Caller can run
+   * the oracle binary manually to see diagnostics. */
+  return (ret == 0);
+}
+
+/** Run encode oracle to produce a full JPEG (Pillow script first, else libjpeg binary). */
+bool libjpeg_encode_baseline_to_file(const char * jpeg_path,
+    unsigned int width, unsigned int height, int quality,
+    unsigned int restart_interval) {
+  if (!jpeg_path) {
+    return false;
+  }
+  std::string out_dir(jpeg_path);
+  size_t slash = out_dir.rfind('/');
+  if (slash != std::string::npos && slash > 0) {
+    out_dir.resize(slash);
+#ifndef _WIN32
+    int mk = std::system(("mkdir -p \"" + out_dir + "\"").c_str());
+    (void)mk;
+#endif
+  }
+  if (run_pillow_encode_baseline_to_file(jpeg_path, width, height, quality,
+                                         restart_interval)) {
+    return true;
+  }
+  std::string oracle_dir(resolved_oracle_dir());
+  std::string encoder = oracle_dir + "/encode_libjpeg_baseline_scan";
+#ifdef _WIN32
+  encoder += ".exe";
+#endif
+  std::string scan_tmp = jpeg_output_dir() + "/libjpeg_enc_scan_tmp.bin";
+  char w[32], h[32], q[32], ri[32];
+  (void)std::snprintf(w, sizeof(w), "%u", width);
+  (void)std::snprintf(h, sizeof(h), "%u", height);
+  (void)std::snprintf(q, sizeof(q), "%d", quality);
+  (void)std::snprintf(ri, sizeof(ri), "%u", restart_interval);
+  std::string cmd = "\"" + encoder + "\" " + w + " " + h + " " + q + " \"" +
+      scan_tmp + "\" " + ri + " \"" + jpeg_path + "\" 2>";
 #ifdef _WIN32
   cmd += "NUL";
 #else
   cmd += "/dev/null";
 #endif
-  int ret = std::system(cmd.c_str());
-  return (ret == 0);
+  if (std::system(cmd.c_str()) != 0) {
+    return false;
+  }
+  std::ifstream f(jpeg_path, std::ios::binary | std::ios::ate);
+  return f && f.tellg() > 0;
 }
 
 bool pillow_oracle_hash(const char * fixture_filename, uint64_t * out_hash,
@@ -312,9 +502,9 @@ bool pillow_oracle_hash(const char * fixture_filename, uint64_t * out_hash,
   if (!fixture_filename || !out_hash || !out_width || !out_height) {
     return false;
   }
-  std::string data_dir(GIMG_TEST_DATA_JPEG);
+  std::string data_dir(resolved_data_dir());
   std::string path = data_dir + "/" + fixture_filename;
-  return run_libjpeg_oracle(data_dir, path.c_str(), out_hash, out_width,
+  return run_libjpeg_oracle(resolved_oracle_dir(), path.c_str(), out_hash, out_width,
                            out_height);
 }
 
@@ -323,8 +513,7 @@ bool pillow_oracle_hash_from_path(const char * file_path, uint64_t * out_hash,
   if (!file_path || !out_hash || !out_width || !out_height) {
     return false;
   }
-  std::string data_dir(GIMG_TEST_DATA_JPEG);
-  return run_libjpeg_oracle(data_dir, file_path, out_hash, out_width,
+  return run_libjpeg_oracle(resolved_oracle_dir(), file_path, out_hash, out_width,
                             out_height);
 }
 
@@ -352,7 +541,7 @@ bool load_jpeg_oracle_raw(const char * fixture_base,
   if (!fixture_base || !out_width || !out_height || !out_mode) {
     return false;
   }
-  std::string path = std::string(GIMG_TEST_DATA_JPEG) + "/" + fixture_base + ".raw";
+  std::string path = resolved_data_dir() + "/" + fixture_base + ".raw";
   std::ifstream f(path, std::ios::binary);
   if (!f) {
     return false;
@@ -440,8 +629,7 @@ bool libjpeg_decode_to_oracle_raw(const char * jpeg_path, const char * raw_path,
   if (!jpeg_path || !raw_path || !out_width || !out_height || !out_mode) {
     return false;
   }
-  std::string data_dir(GIMG_TEST_DATA_JPEG);
-  if (!run_libjpeg_oracle_to_raw(data_dir, jpeg_path, raw_path)) {
+  if (!run_libjpeg_oracle_to_raw(resolved_oracle_dir(), jpeg_path, raw_path)) {
     return false;
   }
   return load_jpeg_oracle_raw_from_path(raw_path, out_pixels, out_width,
@@ -475,7 +663,14 @@ bool raster_matches_oracle_raw(const GIMG_Raster * raster,
         unsigned char ours = (bpp >= 1) ? row[x * bpp] : 0;
         int d = static_cast<int>(ours) - static_cast<int>(raw_pixels[y * w + x]);
         if (d < 0) d = -d;
-        if (d > tolerance) return false;
+        if (d > tolerance) {
+          (void)fprintf(stderr,
+              "First pixel diff at (%u,%u): ours=%u oracle=%u (diff=%d)\n",
+              (unsigned)x, (unsigned)y, (unsigned)ours,
+              (unsigned)raw_pixels[y * w + x], d);
+          (void)fflush(stderr);
+          return false;
+        }
       }
       else if (raw_mode == 1) {
         unsigned char r = (bpp >= 1) ? row[x * bpp + 0] : 0;
@@ -488,7 +683,17 @@ bool raster_matches_oracle_raw(const GIMG_Raster * raster,
         if (dr < 0) dr = -dr;
         if (dg < 0) dg = -dg;
         if (db < 0) db = -db;
-        if (dr > tolerance || dg > tolerance || db > tolerance) return false;
+        if (dr > tolerance || dg > tolerance || db > tolerance) {
+          (void)fprintf(stderr,
+              "First pixel diff at (%u,%u): ours=(%u,%u,%u) oracle=(%u,%u,%u)\n",
+              (unsigned)x, (unsigned)y,
+              (unsigned)r, (unsigned)g, (unsigned)b,
+              (unsigned)raw_pixels[raw_off + 0],
+              (unsigned)raw_pixels[raw_off + 1],
+              (unsigned)raw_pixels[raw_off + 2]);
+          (void)fflush(stderr);
+          return false;
+        }
       }
       else {
         /* raw_mode == 2: CMYK, 4 bytes per pixel */
@@ -505,8 +710,18 @@ bool raster_matches_oracle_raw(const GIMG_Raster * raster,
         if (dm < 0) dm = -dm;
         if (dy < 0) dy = -dy;
         if (dk < 0) dk = -dk;
-        if (dc > tolerance || dm > tolerance || dy > tolerance || dk > tolerance)
+        if (dc > tolerance || dm > tolerance || dy > tolerance || dk > tolerance) {
+          (void)fprintf(stderr,
+              "First pixel diff at (%u,%u): ours=(%u,%u,%u,%u) oracle=(%u,%u,%u,%u)\n",
+              (unsigned)x, (unsigned)y,
+              (unsigned)c, (unsigned)m, (unsigned)y_, (unsigned)k,
+              (unsigned)raw_pixels[raw_off + 0],
+              (unsigned)raw_pixels[raw_off + 1],
+              (unsigned)raw_pixels[raw_off + 2],
+              (unsigned)raw_pixels[raw_off + 3]);
+          (void)fflush(stderr);
           return false;
+        }
       }
     }
   }

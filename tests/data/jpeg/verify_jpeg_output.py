@@ -34,12 +34,25 @@ EXPECTATIONS: dict[str, dict] = {
     "baseline_rgb.jpg": {"width": 8, "height": 8, "sof_baseline": True},
     "quality_low.jpg": {"width": 8, "height": 8, "sof_baseline": True},
     "chroma_420.jpg": {"width": 32, "height": 32, "sof_baseline": True},
+    "chroma_422.jpg": {"width": 32, "height": 32, "sof_baseline": True},
+    "chroma_444.jpg": {"width": 32, "height": 32, "sof_baseline": True},
+    "restart_interval.jpg": {"width": 32, "height": 32, "sof_baseline": True},
     "progressive_default.jpg": {"width": 16, "height": 16, "sof_baseline": False},
     "progressive_custom.jpg": {"width": 8, "height": 8, "sof_baseline": False},
     "progressive_refinement.jpg": {"width": 16, "height": 16, "sof_baseline": False},
     "baseline_gray16.jpg": {"width": 16, "height": 16},
     "baseline_rgb16.jpg": {"width": 8, "height": 8},
     "progressive_gray16.jpg": {"width": 16, "height": 16, "sof_baseline": False},
+    "progressive_rgb16.jpg": {"width": 8, "height": 8, "sof_baseline": False},
+    "baseline_gray12.jpg": {"width": 16, "height": 16, "sof_marker": 0xC1},
+    "baseline_rgb12.jpg": {"width": 8, "height": 8, "sof_marker": 0xC1},
+    "progressive_gray12.jpg": {"width": 16, "height": 16, "sof_baseline": False},
+    "progressive_rgb12.jpg": {"width": 8, "height": 8, "sof_baseline": False},
+    "large_640x480_baseline_grayscale.jpg": {"width": 640, "height": 480, "sof_baseline": True},
+    "large_640x480_baseline_rgb420.jpg": {"width": 640, "height": 480, "sof_baseline": True},
+    "large_640x480_progressive_grayscale.jpg": {"width": 640, "height": 480, "sof_baseline": False},
+    "large_640x480_progressive_rgb420.jpg": {"width": 640, "height": 480, "sof_baseline": False},
+    "large_640x480_restart.jpg": {"width": 640, "height": 480, "sof_baseline": True},
 }
 
 
@@ -165,6 +178,11 @@ def verify_file_features(path: str, name: str, expect: dict) -> list[str]:
             errors.append(f"{name}: expected SOF0 (baseline), got SOF 0x{sof:02X}")
         if not expect["sof_baseline"] and is_baseline:
             errors.append(f"{name}: expected SOF2 (progressive), got SOF0")
+    if "sof_marker" in expect:
+        if sof != expect["sof_marker"]:
+            errors.append(
+                f"{name}: expected SOF 0x{expect['sof_marker']:02X}, got 0x{sof:02X}"
+            )
     return errors
 
 

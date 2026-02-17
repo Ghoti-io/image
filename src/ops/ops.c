@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <ghoti.io/image/bitdepth.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <string.h>
@@ -116,6 +117,117 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
   unsigned char * dp = (unsigned char *)gimg_raster_pixels(*out_raster);
   for (uint32_t y = 0; y < h; y++) {
     memcpy(dp, sp, row_bytes);
+    sp += src_stride;
+    dp += dst_stride;
+  }
+  return GIMG_OK;
+}
+
+//
+// Bit-depth conversion: same channel model, 8/12/16 bits per channel. Uses
+// library bitdepth sample-level functions (T.81 / codec-agnostic).
+//
+static const GIMG_Pixel_Format * format_for_bits(
+    GIMG_Channel_Model model, uint8_t bits) {
+  if (model == GIMG_CHANNEL_GRAY) {
+    if (bits == 8) return &GIMG_PIXEL_GRAY8;
+    if (bits == 12) return &GIMG_PIXEL_GRAY12;
+    if (bits == 16) return &GIMG_PIXEL_GRAY16;
+  }
+  if (model == GIMG_CHANNEL_RGBA) {
+    if (bits == 8) return &GIMG_PIXEL_RGBA8;
+    if (bits == 12) return &GIMG_PIXEL_RGBA12;
+    if (bits == 16) return &GIMG_PIXEL_RGBA16;
+  }
+  return NULL;
+}
+
+GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
+    uint8_t dst_bits, GIMG_Raster ** out_raster) {
+  if (!src || !out_raster) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_raster = NULL;
+  if (dst_bits != 8 && dst_bits != 12 && dst_bits != 16) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  const GIMG_Pixel_Format * src_f = gimg_raster_format(src);
+  uint8_t src_bits = src_f->bits_per_channel[0];
+  for (uint8_t i = 1; i < src_f->channel_count && i < 8; i++) {
+    if (src_f->bits_per_channel[i] != src_bits) {
+      return GIMG_ERR_UNSUPPORTED;
+    }
+  }
+  if (src_bits != 8 && src_bits != 12 && src_bits != 16) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (src_f->channel_model != GIMG_CHANNEL_GRAY &&
+      src_f->channel_model != GIMG_CHANNEL_RGBA) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  const GIMG_Pixel_Format * dst_f = format_for_bits(src_f->channel_model,
+      dst_bits);
+  if (!dst_f) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  uint32_t w = gimg_raster_width(src);
+  uint32_t h = gimg_raster_height(src);
+  GIMG_Result r = gimg_raster_create_with_allocator(gimg_raster_allocator(src),
+      w, h, dst_f, GIMG_RASTER_OWNED, NULL, 0, out_raster);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  size_t src_stride = gimg_raster_stride_bytes(src);
+  size_t dst_stride = gimg_raster_stride_bytes(*out_raster);
+  const unsigned char * sp =
+      (const unsigned char *)gimg_raster_pixels_const(src);
+  unsigned char * dp = (unsigned char *)gimg_raster_pixels(*out_raster);
+  uint8_t nch = src_f->channel_count;
+
+  if (src_bits == dst_bits) {
+    size_t row_bytes = (size_t)w * gimg_raster_bytes_per_pixel(src_f);
+    for (uint32_t y = 0; y < h; y++) {
+      memcpy(dp, sp, row_bytes);
+      sp += src_stride;
+      dp += dst_stride;
+    }
+    return GIMG_OK;
+  }
+
+  size_t src_bpp = gimg_raster_bytes_per_pixel(src_f);
+  size_t dst_bpp = gimg_raster_bytes_per_pixel(dst_f);
+  for (uint32_t y = 0; y < h; y++) {
+    const unsigned char * sr = sp;
+    unsigned char * dr = dp;
+    for (uint32_t x = 0; x < w; x++) {
+      for (uint8_t c = 0; c < nch; c++) {
+        if (src_bits == 8) {
+          uint8_t v8 = sr[c];
+          if (dst_bits == 12) {
+            ((uint16_t *)dr)[c] = gimg_bitdepth_8_to_12(v8);
+          } else {
+            ((uint16_t *)dr)[c] = gimg_bitdepth_8_to_16(v8);
+          }
+        } else if (src_bits == 12) {
+          uint16_t v12 = ((const uint16_t *)sr)[c];
+          if (v12 > 4095u) v12 = 4095u;
+          if (dst_bits == 8) {
+            dr[c] = gimg_bitdepth_12_to_8(v12);
+          } else {
+            ((uint16_t *)dr)[c] = gimg_bitdepth_12_to_16(v12);
+          }
+        } else {
+          uint16_t v16 = ((const uint16_t *)sr)[c];
+          if (dst_bits == 8) {
+            dr[c] = gimg_bitdepth_16_to_8(v16);
+          } else {
+            ((uint16_t *)dr)[c] = gimg_bitdepth_16_to_12(v16);
+          }
+        }
+      }
+      sr += src_bpp;
+      dr += dst_bpp;
+    }
     sp += src_stride;
     dp += dst_stride;
   }

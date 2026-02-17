@@ -20,5 +20,6 @@ GIMG_API void gimg_color_info_default(GIMG_Color_Info * info) {
       .intent = GIMG_INTENT_PERCEPTUAL,
       .icc_bytes = NULL,
       .icc_size = 0,
+      .cmyk_polarity = GIMG_CMYK_POLARITY_UNKNOWN,
   };
 }

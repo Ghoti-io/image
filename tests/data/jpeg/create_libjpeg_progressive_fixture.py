@@ -23,6 +23,7 @@ import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ORACLE_DIR = os.environ.get("GIMG_JPEG_ORACLE_DIR") or SCRIPT_DIR
 
 
 def main() -> int:
@@ -68,7 +69,7 @@ def main() -> int:
         return 1
     print(f"Wrote {jpeg_path}")
 
-    ref_tool = os.path.join(SCRIPT_DIR, "dump_jpeg_coef_ref")
+    ref_tool = os.path.join(ORACLE_DIR, "dump_jpeg_coef_ref")
     if not os.path.isfile(ref_tool):
         print(f"Reference tool not found: {ref_tool}", file=sys.stderr)
         return 2

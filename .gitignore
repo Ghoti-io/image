@@ -3,8 +3,10 @@ build
 
 # Debug artifacts (GDB scripts, captured stderr, sanity/trace dumps)
 *.gdb
-sanity_*.txt
-stderr.txt
+*.txt
+
+# IDE / CTest run output (not used by project Makefile)
+Testing
 
 # Third-party / reference source trees (not tracked by name)
 third_party
@@ -21,11 +23,9 @@ tasks
 # Test output (e.g. PNGs written by encode tests for verification)
 tests/out
 
-# JPEG debug script outputs (trace comparison, libjpeg fixture creation)
-tests/data/jpeg/trace_ours.txt
-tests/data/jpeg/trace_ref.txt
-tests/data/jpeg/progressive_8x8_libjpeg.ppm
-tests/data/jpeg/progressive_8x8_libjpeg.jpg
+# Stray output under test data (use tests/out instead)
+tests/data/out
+
 
 # Pycache files (for generated test fixtures, in any directory)
 **/__pycache__

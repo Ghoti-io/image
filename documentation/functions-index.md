@@ -25,6 +25,11 @@ The complete API reference is generated from the header files. Below is a catego
 - **Raster copy:** `gimg_raster_copy`, `gimg_raster_copy_with_allocator` — allocate a new raster with the same dimensions and format, copy pixel data (row-by-row, source stride respected) and color info; caller owns the result. See `ghoti.io/image/raster.h`.
 - **Raster comparison:** `gimg_ops_raster_equal` — returns true if dimensions, format, and pixel data match (strides may differ); color info is not compared. See `ghoti.io/image/ops.h`.
 
+## Bit-depth conversion (8, 12, 16 bits per channel)
+
+- **Sample-level** (see `ghoti.io/image/bitdepth.h`): `gimg_bitdepth_8_to_12`, `gimg_bitdepth_8_to_16`, `gimg_bitdepth_12_to_8`, `gimg_bitdepth_12_to_16`, `gimg_bitdepth_16_to_8`, `gimg_bitdepth_16_to_12` — bitshift/scale and clamp; 12-bit range 0..4095, 16-bit 0..65535. Codecs (e.g. JPEG) use these when raster depth differs from codec precision.
+- **Raster-level:** `gimg_ops_convert_bit_depth` — convert a raster to another bit depth (8, 12, or 16) with the same channel model (GRAY or RGBA); uses the library bit-depth functions. See `ghoti.io/image/ops.h`.
+
 ## Copy and convenience helpers
 
 - **Document copy:** `gimg_doc_copy` / `gimg_doc_copy_with_allocator` — duplicate document structure (item count, per-item frame delay/dispose/blend) and attached rasters (each copied via `gimg_raster_copy`); doc-level meta_common and meta_raw are deep-copied if present. The copy is synthetic (no `loaded_by_codec`). Use to save a variant or duplicate a doc.

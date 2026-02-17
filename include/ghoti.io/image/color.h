@@ -50,6 +50,19 @@ typedef enum {
 } GIMG_Rendering_Intent;
 
 /**
+ * @brief CMYK channel interpretation (only relevant when raster format is CMYK).
+ * Raster pixels are stored as raw values; this describes how to interpret them.
+ */
+typedef enum {
+  GIMG_CMYK_POLARITY_UNKNOWN = 0,
+  /** 0 = full ink, 255 = no ink (Adobe / JPEG file convention). */
+  GIMG_CMYK_POLARITY_INK,
+  /** 0 = no ink, 255 = full ink (reflection; e.g. many design-tool APIs). */
+  GIMG_CMYK_POLARITY_REFLECTION,
+  GIMG_CMYK_POLARITY_COUNT
+} GIMG_CMYK_Polarity;
+
+/**
  * @brief Color info attached to raster (spec §4.2).
  */
 typedef struct {
@@ -60,7 +73,9 @@ typedef struct {
   GIMG_Rendering_Intent intent;
   const void * icc_bytes; ///< Opaque; library does not take ownership.
   size_t icc_size;        ///< ICC profile size in bytes.
-  uint8_t _reserved[8];
+  GIMG_CMYK_Polarity cmyk_polarity; ///< Interpretation of CMYK channels; use when
+                                    ///< raster format is GIMG_PIXEL_CMYK8.
+  uint8_t _reserved[7];
 } GIMG_Color_Info;
 
 /**

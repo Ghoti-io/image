@@ -696,6 +696,26 @@ TEST(JpegLoad, Sof0Precision12Rejected) {
   gimg_stream_destroy(s);
 }
 
+/** Task 4.2.3: SOF1 allows 8 or 12-bit only (T.81); SOF1 with precision 16 rejected. */
+TEST(JpegLoad, Sof1Precision16Rejected) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF1: L=11, P=16 (0x10), Y=8, X=8, Nf=1, C1=0 H=1 V=1 Tq=0
+  append(buf,
+      (const unsigned char *)"\xFF\xC1\x00\x0B\x10\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  GIMG_Stream * stream = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &stream);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(stream, nullptr, nullptr, &doc);
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(doc, nullptr);
+  EXPECT_TRUE(r == GIMG_ERR_FORMAT || r == GIMG_ERR_UNSUPPORTED)
+      << "SOF1 with precision 16 must be rejected (spec: SOF1 = 8 or 12-bit only)";
+  gimg_stream_destroy(stream);
+}
+
 TEST(JpegLoad, Sof1AcceptedFor8bit) {
   // SOF1 (extended sequential) with 8-bit: load succeeds (same as baseline).
   std::vector<uint8_t> buf;
@@ -1529,6 +1549,60 @@ TEST(JpegLoad, LoadProgressiveFromNonSeekableStream) {
   gimg_stream_destroy(s);
 }
 
+/** Task 4.1.2: Decode progressive JPEG from non-seekable stream. Encodes a small
+ * progressive JPEG in-test (so we have real scan data), then load+decode from
+ * non-seekable stream and assert success. No skip. */
+TEST(JpegLoad, DecodeProgressiveFromNonSeekableStream) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, nullptr, 0, &raster),
+      GIMG_OK);
+  memset(gimg_raster_pixels(raster), 160,
+      (size_t)8 * gimg_raster_stride_bytes(raster));
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options save_opts = {};
+  save_opts.jpeg_progressive = 1;
+  GIMG_Save_Report report = {};
+  GIMG_Result r = gimg_doc_save(doc, out_s, "jpeg", &save_opts, &report);
+  ASSERT_EQ(r, GIMG_OK) << "encode progressive JPEG must succeed";
+  const void * out_data = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_s, &out_data, &out_size);
+  std::vector<uint8_t> jpeg_buf(
+      (const uint8_t *)out_data, (const uint8_t *)out_data + out_size);
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+  ASSERT_GT(jpeg_buf.size(), 0u) << "progressive JPEG output must be non-empty";
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_no_seek(
+                jpeg_buf.data(), jpeg_buf.size(), &s),
+      GIMG_OK);
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  ASSERT_EQ(r, GIMG_OK)
+      << "progressive JPEG load must work from non-seekable stream";
+  ASSERT_NE(doc, nullptr);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * decoded = nullptr;
+  r = gimg_item_decode(item, nullptr, &decoded);
+  ASSERT_EQ(r, GIMG_OK)
+      << "progressive JPEG decode must work from non-seekable stream";
+  ASSERT_NE(decoded, nullptr);
+  EXPECT_EQ(gimg_raster_width(decoded), 8u);
+  EXPECT_EQ(gimg_raster_height(decoded), 8u);
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
 TEST(JpegLoad, LoadBaselineFromChunkedStream) {
   std::vector<uint8_t> jpeg = make_minimal_jpeg();
   GIMG_Stream * s = nullptr;
@@ -1838,15 +1912,48 @@ TEST(JpegLoad, DecodeBaseline640x480Ycbcr) {
   gimg_doc_destroy(doc);
 }
 
-/** Decode baseline grayscale fixture and compare to Pillow (external oracle).
- */
+/** Decode 12-bit JPEG fixture (SOF1 or SOF2, precision 12). Confirms 12-bit decode path.
+ * Fixture: copy baseline_gray12.jpg from tests/out/jpeg/ (after JpegEncode.SaveGray12ThenLoadDecode)
+ * to tests/data/jpeg/. See tests/data/jpeg/README.md. If fixture is absent, test is skipped. */
+TEST(JpegLoad, Decode12BitFixture) {
+  std::vector<uint8_t> jpeg;
+  if (!jpeg_test::load_jpeg_file("baseline_gray12.jpg", jpeg)) {
+    GTEST_SKIP() << "Optional 12-bit fixture tests/data/jpeg/baseline_gray12.jpg not found. "
+                    "Copy from tests/out/jpeg/ after running JpegEncode.SaveGray12ThenLoadDecode.";
+  }
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(gimg_raster_width(raster), 16u);
+  EXPECT_EQ(gimg_raster_height(raster), 16u);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  ASSERT_NE(fmt, nullptr);
+  EXPECT_EQ(fmt->bits_per_channel[0], 16)
+      << "12-bit decode outputs GRAY16 with 12-bit left-justified";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+/** Decode baseline grayscale fixture and compare pixels to oracle (Pillow or libjpeg).
+ * Uses .raw comparison so failures show first differing pixel. */
 TEST(JpegLoad, DecodeBaselineGrayPillowOracle) {
-  uint64_t expected_hash = 0;
-  uint32_t expected_w = 0, expected_h = 0;
-  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
-      "baseline_8x8_gray.jpg", &expected_hash, &expected_w, &expected_h))
-      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
-         "See tests/data/jpeg/README.md.";
+  std::string data_dir(GIMG_TEST_DATA_JPEG);
+  std::string jpeg_path = data_dir + "/baseline_8x8_gray.jpg";
+  std::string raw_path = jpeg_test::jpeg_output_dir() + "/oracle_baseline_8x8_gray.raw";
+  std::vector<uint8_t> oracle_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
+          oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+  }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", jpeg))
       << "Run tests/data/jpeg/generate.py";
@@ -1859,25 +1966,28 @@ TEST(JpegLoad, DecodeBaselineGrayPillowOracle) {
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  EXPECT_EQ(gimg_raster_width(raster), expected_w) << "width must match Pillow";
-  EXPECT_EQ(gimg_raster_height(raster), expected_h)
-      << "height must match Pillow";
-  uint64_t hash = jpeg_test::raster_pixel_hash(raster);
+  EXPECT_EQ(gimg_raster_width(raster), oracle_w) << "width must match oracle";
+  EXPECT_EQ(gimg_raster_height(raster), oracle_h) << "height must match oracle";
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, oracle_pixels.data(),
+      oracle_w, oracle_h, oracle_mode, 0))
+      << "decode pixels must match oracle (first diff printed to stderr)";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
-  EXPECT_EQ(hash, expected_hash)
-      << "decode pixel hash must match Pillow oracle";
 }
 
-/** Decode baseline YCbCr fixture and compare to Pillow (external oracle). */
+/** Decode baseline YCbCr fixture and compare pixels to oracle. */
 TEST(JpegLoad, DecodeBaselineYcbcrPillowOracle) {
-  uint64_t expected_hash = 0;
-  uint32_t expected_w = 0, expected_h = 0;
-  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
-      "baseline_16x16_ycbcr.jpg", &expected_hash, &expected_w, &expected_h))
-      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
-         "See tests/data/jpeg/README.md.";
+  std::string data_dir(GIMG_TEST_DATA_JPEG);
+  std::string jpeg_path = data_dir + "/baseline_16x16_ycbcr.jpg";
+  std::string raw_path = jpeg_test::jpeg_output_dir() + "/oracle_baseline_16x16_ycbcr.raw";
+  std::vector<uint8_t> oracle_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
+          oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+  }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_16x16_ycbcr.jpg", jpeg))
       << "Run tests/data/jpeg/generate.py";
@@ -1890,10 +2000,11 @@ TEST(JpegLoad, DecodeBaselineYcbcrPillowOracle) {
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  EXPECT_EQ(gimg_raster_width(raster), expected_w);
-  EXPECT_EQ(gimg_raster_height(raster), expected_h);
-  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
-      << "decode pixel hash must match Pillow oracle";
+  EXPECT_EQ(gimg_raster_width(raster), oracle_w);
+  EXPECT_EQ(gimg_raster_height(raster), oracle_h);
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, oracle_pixels.data(),
+      oracle_w, oracle_h, oracle_mode, 0))
+      << "decode pixels must match oracle (first diff printed to stderr)";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -1920,15 +2031,20 @@ TEST(JpegLoad, GoldenBaselineYcbcr) {
       << "canonical pixel hash baseline 16x16 YCbCr (matches Pillow/libjpeg)";
 }
 
-/** Decode progressive fixture and compare to Pillow (external oracle).
- * Uses only Pillow-generated progressive_sample.jpg; Pillow is the oracle. */
+/** Decode progressive fixture and compare pixels to oracle.
+ * Uses Pillow-generated progressive_sample.jpg. Fails until our progressive
+ * decoder supports this fixture (gimg_item_decode must return GIMG_OK). */
 TEST(JpegLoad, DecodeProgressivePillowOracle) {
-  uint64_t expected_hash = 0;
-  uint32_t expected_w = 0, expected_h = 0;
-  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
-      "progressive_sample.jpg", &expected_hash, &expected_w, &expected_h))
-      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
-         "See tests/data/jpeg/README.md.";
+  std::string data_dir(GIMG_TEST_DATA_JPEG);
+  std::string jpeg_path = data_dir + "/progressive_sample.jpg";
+  std::string raw_path = jpeg_test::jpeg_output_dir() + "/oracle_progressive_sample.raw";
+  std::vector<uint8_t> oracle_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
+          oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+  }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("progressive_sample.jpg", jpeg))
       << "Run tests/data/jpeg/generate.py";
@@ -1942,22 +2058,22 @@ TEST(JpegLoad, DecodeProgressivePillowOracle) {
   GIMG_Decode_Options opts = {};
   opts.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
   GIMG_Result dr = gimg_item_decode(item, &opts, &raster);
-  if (dr != GIMG_OK) {
-    gimg_doc_destroy(doc);
-    gimg_stream_destroy(s);
-    GTEST_SKIP() << "progressive decode not yet supported for Pillow fixture";
-  }
+  ASSERT_EQ(dr, GIMG_OK)
+      << "progressive decoder must decode Pillow fixture progressive_sample.jpg (feature not implemented)";
   ASSERT_NE(raster, nullptr);
-  EXPECT_EQ(gimg_raster_width(raster), expected_w);
-  EXPECT_EQ(gimg_raster_height(raster), expected_h);
-  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
-      << "decode pixel hash must match libjpeg oracle (fancy chroma upsampling)";
+  EXPECT_EQ(gimg_raster_width(raster), oracle_w);
+  EXPECT_EQ(gimg_raster_height(raster), oracle_h);
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, oracle_pixels.data(),
+      oracle_w, oracle_h, oracle_mode, 0))
+      << "decode pixels must match oracle (first diff printed to stderr)";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }
 
-/** Golden progressive: decode of Pillow fixture matches canonical hash. */
+/** Golden progressive: decode of Pillow fixture matches canonical hash.
+ * Fails until our progressive decoder supports this fixture (gimg_item_decode
+ * must return GIMG_OK). */
 TEST(JpegLoad, GoldenProgressive) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("progressive_sample.jpg", jpeg))
@@ -1970,11 +2086,8 @@ TEST(JpegLoad, GoldenProgressive) {
   ASSERT_NE(item, nullptr);
   GIMG_Raster * raster = nullptr;
   GIMG_Result dr = gimg_item_decode(item, nullptr, &raster);
-  if (dr != GIMG_OK) {
-    gimg_doc_destroy(doc);
-    gimg_stream_destroy(s);
-    GTEST_SKIP() << "progressive decode not yet supported for Pillow fixture";
-  }
+  ASSERT_EQ(dr, GIMG_OK)
+      << "progressive decoder must decode Pillow fixture progressive_sample.jpg (feature not implemented)";
   ASSERT_NE(raster, nullptr);
   uint64_t hash = jpeg_test::raster_pixel_hash(raster);
   gimg_raster_destroy(raster);
@@ -1984,15 +2097,18 @@ TEST(JpegLoad, GoldenProgressive) {
       << "canonical pixel hash progressive (matches libjpeg ref with simple upsampling)";
 }
 
-/** Decode EXIF-orientation fixture and compare pixels to Pillow; check meta
- * orientation. */
+/** Decode EXIF-orientation fixture and compare pixels to oracle; check meta orientation. */
 TEST(JpegLoad, DecodeExifOrientationPillowOracle) {
-  uint64_t expected_hash = 0;
-  uint32_t expected_w = 0, expected_h = 0;
-  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
-      "jpeg_exif_orientation.jpg", &expected_hash, &expected_w, &expected_h))
-      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
-         "See tests/data/jpeg/README.md.";
+  std::string data_dir(GIMG_TEST_DATA_JPEG);
+  std::string jpeg_path = data_dir + "/jpeg_exif_orientation.jpg";
+  std::string raw_path = jpeg_test::jpeg_output_dir() + "/oracle_jpeg_exif_orientation.raw";
+  std::vector<uint8_t> oracle_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
+          oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+  }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_exif_orientation.jpg", jpeg))
       << "Run tests/data/jpeg/generate.py";
@@ -2010,10 +2126,11 @@ TEST(JpegLoad, DecodeExifOrientationPillowOracle) {
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  EXPECT_EQ(gimg_raster_width(raster), expected_w);
-  EXPECT_EQ(gimg_raster_height(raster), expected_h);
-  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
-      << "decode pixel hash must match Pillow oracle";
+  EXPECT_EQ(gimg_raster_width(raster), oracle_w);
+  EXPECT_EQ(gimg_raster_height(raster), oracle_h);
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, oracle_pixels.data(),
+      oracle_w, oracle_h, oracle_mode, 0))
+      << "decode pixels must match oracle (first diff printed to stderr)";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -2045,14 +2162,18 @@ TEST(JpegLoad, GoldenExifOrientation) {
       << "canonical pixel hash jpeg_exif_orientation";
 }
 
-/** Decode ICC fixture and compare to Pillow (external oracle). */
+/** Decode ICC fixture and compare pixels to oracle. */
 TEST(JpegLoad, DecodeWithIccPillowOracle) {
-  uint64_t expected_hash = 0;
-  uint32_t expected_w = 0, expected_h = 0;
-  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
-      "jpeg_with_icc.jpg", &expected_hash, &expected_w, &expected_h))
-      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
-         "See tests/data/jpeg/README.md.";
+  std::string data_dir(GIMG_TEST_DATA_JPEG);
+  std::string jpeg_path = data_dir + "/jpeg_with_icc.jpg";
+  std::string raw_path = jpeg_test::jpeg_output_dir() + "/oracle_jpeg_with_icc.raw";
+  std::vector<uint8_t> oracle_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
+          oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+  }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_with_icc.jpg", jpeg))
       << "Run tests/data/jpeg/generate.py";
@@ -2065,10 +2186,11 @@ TEST(JpegLoad, DecodeWithIccPillowOracle) {
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  EXPECT_EQ(gimg_raster_width(raster), expected_w);
-  EXPECT_EQ(gimg_raster_height(raster), expected_h);
-  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
-      << "decode pixel hash must match Pillow oracle";
+  EXPECT_EQ(gimg_raster_width(raster), oracle_w);
+  EXPECT_EQ(gimg_raster_height(raster), oracle_h);
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, oracle_pixels.data(),
+      oracle_w, oracle_h, oracle_mode, 0))
+      << "decode pixels must match oracle (first diff printed to stderr)";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -2229,14 +2351,18 @@ TEST(JpegLoad, MultiSegmentIccDecodeAndRoundTrip) {
   gimg_doc_destroy(doc);
 }
 
-/** Decode CMYK fixture and compare to Pillow (external oracle). */
+/** Decode CMYK fixture and compare pixels to oracle. */
 TEST(JpegLoad, DecodeCmykPillowOracle) {
-  uint64_t expected_hash = 0;
-  uint32_t expected_w = 0, expected_h = 0;
-  ASSERT_TRUE(jpeg_test::pillow_oracle_hash(
-      "cmyk_sample.jpg", &expected_hash, &expected_w, &expected_h))
-      << "Build the decode oracle: make jpeg-oracle-tools (requires libjpeg). "
-         "See tests/data/jpeg/README.md.";
+  std::string data_dir(GIMG_TEST_DATA_JPEG);
+  std::string jpeg_path = data_dir + "/cmyk_sample.jpg";
+  std::string raw_path = jpeg_test::jpeg_output_dir() + "/oracle_cmyk_sample.raw";
+  std::vector<uint8_t> oracle_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
+          oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+  }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("cmyk_sample.jpg", jpeg))
       << "Run tests/data/jpeg/generate.py";
@@ -2255,10 +2381,11 @@ TEST(JpegLoad, DecodeCmykPillowOracle) {
     EXPECT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK);
     EXPECT_EQ(fmt->channel_count, 4u);
   }
-  EXPECT_EQ(gimg_raster_width(raster), expected_w);
-  EXPECT_EQ(gimg_raster_height(raster), expected_h);
-  EXPECT_EQ(jpeg_test::raster_pixel_hash(raster), expected_hash)
-      << "decode pixel hash must match Pillow oracle";
+  EXPECT_EQ(gimg_raster_width(raster), oracle_w);
+  EXPECT_EQ(gimg_raster_height(raster), oracle_h);
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, oracle_pixels.data(),
+      oracle_w, oracle_h, oracle_mode, 0))
+      << "decode pixels must match oracle (first diff printed to stderr)";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -2295,6 +2422,45 @@ TEST(JpegLoad, DecodeJpegWithIccVsLibjpeg) {
   EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, libjpeg_pixels.data(),
       oracle_w, oracle_h, oracle_mode, 0))
       << "our decode must match libjpeg .raw byte-for-byte";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+/** Priority (1): Decoder must work correctly with output from oracle (libjpeg).
+ * Use libjpeg to encode a known image, then our decoder decodes that JPEG;
+ * compare to libjpeg's decode of the same file. Requires make jpeg-oracle-tools. */
+TEST(JpegLoad, DecodeLibjpegEncodedBaseline) {
+  std::string jpeg_path = jpeg_test::jpeg_output_dir() + "/libjpeg_encoded_baseline.jpg";
+  if (!jpeg_test::libjpeg_encode_baseline_to_file(jpeg_path.c_str(), 640, 480, 85, 0)) {
+    GTEST_SKIP() << "Run make jpeg-oracle-tools (encode_libjpeg_baseline_scan)";
+  }
+  std::string raw_path = jpeg_test::jpeg_output_dir() + "/libjpeg_encoded_baseline.raw";
+  std::vector<uint8_t> libjpeg_pixels;
+  uint32_t oracle_w = 0, oracle_h = 0;
+  int oracle_mode = -1;
+  if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
+          libjpeg_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
+    GTEST_SKIP() << "Run make jpeg-oracle-tools (dump_jpeg_pixels_ref)";
+  }
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_from_path(jpeg_path.c_str(), jpeg));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK)
+      << "our decoder must decode libjpeg-encoded JPEG (priority 1)";
+  ASSERT_NE(raster, nullptr);
+  EXPECT_EQ(oracle_w, 640u);
+  EXPECT_EQ(oracle_h, 480u);
+  EXPECT_EQ(oracle_mode, 0) << "grayscale (mode 0)";
+  EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, libjpeg_pixels.data(),
+      oracle_w, oracle_h, oracle_mode, 0))
+      << "our decode must match libjpeg oracle byte-for-byte";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);

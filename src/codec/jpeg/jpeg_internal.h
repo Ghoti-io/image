@@ -347,6 +347,14 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size);
 
+/** Baseline sequential from coef buffer with extended DHT (12/16-bit). */
+GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
+    uint32_t width, uint32_t height, int num_components,
+    const int16_t * coef_buffer, size_t total_blocks, const uint8_t * h_samp,
+    const uint8_t * v_samp, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, unsigned char ** out_scan_data,
+    size_t * out_scan_size);
+
 /** Fill coefficient buffer for progressive encode (DCT, quant, zigzag; MCU
  * order). Caller allocates coef_buffer for *out_total_blocks * 64 int16_t.
  * fdct_method: GIMG_JPEG_FDCT_LOEFFLER (0) or GIMG_JPEG_FDCT_REF (1).
@@ -379,6 +387,10 @@ void gimg_jpeg_default_quant_scaled(
 void gimg_jpeg_default_quant_scaled_16bit(
     unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma);
 
+/** Fill 12-bit quant tables (Pq=1; same scaling as 16-bit). */
+void gimg_jpeg_default_quant_scaled_12bit(
+    unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma);
+
 /** Write standard DHT segments (DC0, AC0, DC1, AC1) to stream. */
 GIMG_Result gimg_jpeg_write_standard_dht(
     GIMG_Stream * stream, size_t * out_bytes_written);
@@ -404,6 +416,15 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_16bit(uint32_t width,
     size_t stride1, size_t stride2, const uint8_t * h_samp,
     const uint8_t * v_samp, const uint16_t * quant_luma,
     const uint16_t * quant_chroma, int precision, int16_t * coef_buffer,
+    size_t * out_total_blocks);
+
+/** Fill coefficient buffer for 12-bit (samples 0..4095, level shift 2048). */
+GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
+    uint32_t height, int num_components, const uint16_t * comp0,
+    const uint16_t * comp1, const uint16_t * comp2, size_t stride0,
+    size_t stride1, size_t stride2, const uint8_t * h_samp,
+    const uint8_t * v_samp, const uint16_t * quant_luma,
+    const uint16_t * quant_chroma, int16_t * coef_buffer,
     size_t * out_total_blocks);
 
 /** Progressive scan encode with extended tables (12/16-bit). */

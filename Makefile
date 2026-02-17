@@ -282,9 +282,6 @@ IMAGE_ROOT := $(CURDIR)
 TEST_DATA_PNG := $(IMAGE_ROOT)/tests/data/png
 # Test data path for JPEG tests (optional cmyk_sample.jpg etc.).
 TEST_DATA_JPEG := $(IMAGE_ROOT)/tests/data/jpeg
-# libjpeg for decode oracle tools (dump_jpeg_pixels_ref, dump_jpeg_coef_ref).
-LIBJPEG_CFLAGS := $(shell pkg-config --cflags libjpeg 2>/dev/null)
-LIBJPEG_LIBS := $(shell pkg-config --libs libjpeg 2>/dev/null)
 # Output directory for PNG encode test output (add to .gitignore); verifier reads this.
 TEST_OUT_PNG := $(IMAGE_ROOT)/tests/out/png
 # Output directory for JPEG encode test output; verifier reads this.
@@ -362,45 +359,22 @@ $(APP_DIR)/dump_jpeg_structure$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_struc
 
 jpeg-dump-structure: $(APP_DIR)/dump_jpeg_structure$(EXE_EXTENSION) ## Build dump_jpeg_structure; run: build/.../dump_jpeg_structure <file.jpg>
 
-# libjpeg-based decode oracle tools (required for Decode*PillowOracle tests).
-jpeg-oracle-tools: ## Build dump_jpeg_pixels_ref and dump_jpeg_coef_ref in tests/data/jpeg (requires libjpeg)
-	@if [ -z "$(LIBJPEG_LIBS)" ]; then \
-		echo "libjpeg not found. Install libjpeg-turbo (e.g. pkg-config libjpeg). See tests/data/jpeg/README.md."; \
-		exit 1; \
-	fi
-	$(CC) $(CFLAGS) $(LIBJPEG_CFLAGS) -o $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref.c $(LIBJPEG_LIBS)
-	$(CC) $(CFLAGS) $(LIBJPEG_CFLAGS) -o $(TEST_DATA_JPEG)/dump_jpeg_coef_ref$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_coef_ref.c $(LIBJPEG_LIBS)
-	$(CC) $(CFLAGS) $(LIBJPEG_CFLAGS) -o $(TEST_DATA_JPEG)/encode_libjpeg_baseline_scan$(EXE_EXTENSION) $(TEST_DATA_JPEG)/encode_libjpeg_baseline_scan.c $(LIBJPEG_LIBS)
-	@echo "Oracle tools built in $(TEST_DATA_JPEG)/"
+# libjpeg-based oracle tools live in third_party/jpeg-oracle (optional; not required for make test).
+# See third_party/jpeg-oracle/README.md. Tests that use the oracle skip when it is not present.
 
-jpeg-encode-oracle: jpeg-oracle-tools ## Build encode_libjpeg_baseline_scan (part of jpeg-oracle-tools)
-
-# Build oracle tools against instrumented libjpeg (for debugging). Two options:
-#
-# 1) Link against build tree (no install): make jpeg-oracle-tools-debug-build
-#    Requires: cd third_party/libjpeg-turbo && mkdir build-debug && cd build-debug && cmake .. && make
-# 2) Link against installed lib: make jpeg-oracle-tools-debug
-#    Requires: same then make install (prefix ../../libjpeg-debug)
-jpeg-oracle-tools-debug-build: ## Build dump_jpeg_*_debug and encode_libjpeg_baseline_scan_debug (link third_party/libjpeg-turbo/build-debug; use LIBJPEG_DUMP_FIRST_BLOCK_COEF when running encode tool)
-	@JPEG_BD=$(CURDIR)/third_party/libjpeg-turbo/build-debug; \
-	JPEG_SRC=$(CURDIR)/third_party/libjpeg-turbo/src; \
-	if [ ! -f "$$JPEG_BD/libjpeg.a" ]; then \
-		echo "Build libjpeg-turbo first: cd third_party/libjpeg-turbo && mkdir -p build-debug && cd build-debug && cmake .. && make"; \
+# IJG v10 (Independent JPEG Group reference, third_party/jpeg-10). Decode precision 8-12 only;
+# rejects 16-bit and extended DHT (242 AC symbols). See tests/data/jpeg/README.md.
+jpeg-ijg10-build: ## Build IJG v10 (configure + make) in third_party/jpeg-10. Requires source from ijg.org (jpegsrc.v10.tar.gz).
+	@IJG=third_party/jpeg-10; \
+	if [ ! -d "$$IJG" ]; then \
+		echo "Extract IJG v10 first: cd third_party && curl -sL -o jpegsrc.v10.tar.gz https://ijg.org/files/jpegsrc.v10.tar.gz && tar -xzf jpegsrc.v10.tar.gz"; \
 		exit 1; \
 	fi; \
-	$(CC) $(CFLAGS) -I$$JPEG_SRC -I$$JPEG_BD -o $(TEST_DATA_JPEG)/dump_jpeg_coef_ref_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_coef_ref.c $$JPEG_BD/libjpeg.a; \
-	$(CC) $(CFLAGS) -I$$JPEG_SRC -I$$JPEG_BD -o $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_pixels_ref.c $$JPEG_BD/libjpeg.a; \
-	$(CC) $(CFLAGS) -I$$JPEG_SRC -I$$JPEG_BD -o $(TEST_DATA_JPEG)/encode_libjpeg_baseline_scan_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/encode_libjpeg_baseline_scan.c $$JPEG_BD/libjpeg.a; \
-	echo "Oracle debug tools built (linked against build-debug) in $(TEST_DATA_JPEG)/"
-
-jpeg-oracle-tools-debug: ## Build dump_jpeg_coef_ref_debug against installed third_party/libjpeg-debug
-	@JPEG_DEBUG=third_party/libjpeg-debug; \
-	if [ ! -f "$$JPEG_DEBUG/lib/libjpeg.a" ] && [ ! -f "$$JPEG_DEBUG/lib/libjpeg.so" ]; then \
-		echo "Build libjpeg-turbo and install to $$JPEG_DEBUG first, or use: make jpeg-oracle-tools-debug-build"; \
-		exit 1; \
+	if [ ! -f "$$IJG/Makefile" ]; then \
+		(cd $$IJG && ./configure --prefix=$$(pwd)/build); \
 	fi; \
-	$(CC) $(CFLAGS) -I$$JPEG_DEBUG/include -o $(TEST_DATA_JPEG)/dump_jpeg_coef_ref_debug$(EXE_EXTENSION) $(TEST_DATA_JPEG)/dump_jpeg_coef_ref.c -L$$JPEG_DEBUG/lib -ljpeg -Wl,-rpath,$$(pwd)/$$JPEG_DEBUG/lib; \
-	echo "Oracle debug tools built in $(TEST_DATA_JPEG)/"
+	$(MAKE) -C $$IJG
+	@echo "IJG v10 built. Run third_party/jpeg-10/djpeg for decode (8-12 bit only; not 16-bit oracle)."
 
 # PNG tests link the shared png_test_utils helper.
 $(APP_DIR)/testPng_decode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_decode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET)
@@ -428,7 +402,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c $(APP_DIR)/$(TARGET)
 ####################################################################
 
 # General commands
-.PHONY: clean cloc docs docs-pdf examples jpeg-oracle-tools jpeg-encode-oracle jpeg-oracle-tools-debug jpeg-oracle-tools-debug-build
+.PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-watch uninstall watch
 # Debug build commands
@@ -494,7 +468,7 @@ endif
 TEST_LD_PATH := $(APP_DIR):../compress/build/$(BUILD)/apps
 
 test: ## Make and run the Unit tests, then verify PNG and JPEG output with PIL
-test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) jpeg-oracle-tools
+test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
@@ -513,7 +487,7 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) jpeg-oracle-tools
 	printf "\033[0;32mJPEG output verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
-test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) jpeg-oracle-tools
+test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;36m%-30s %8s %10s %s\033[0m\n" "Test Suite" "Tests" "Time" "Status"; \
@@ -563,7 +537,7 @@ test-verify-jpeg: ## Run only JPEG output verification (run 'make test' for full
 		printf "\033[0;32mJPEG output verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
-test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) jpeg-oracle-tools
+test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 ifeq ($(OS_NAME), Linux)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
@@ -750,7 +724,7 @@ ifeq ($(OS_NAME), Linux)
 	@for test_exe in $(ASAN_TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
 		printf "\033[0;30;43m\n### Running %s (ASan+UBSan) ###\033[0m\n\n" "$$test_name"; \
-		LD_LIBRARY_PATH="$(ASAN_APP_DIR):$(TEST_LD_PATH)" ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 $$test_exe --gtest_brief=1 || exit 1; \
+		GIMG_IMAGE_ROOT="$(IMAGE_ROOT)" LD_LIBRARY_PATH="$(ASAN_APP_DIR):$(TEST_LD_PATH)" ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 $$test_exe --gtest_brief=1 || exit 1; \
 	done
 	@printf "\033[0;32m\nAll tests passed with ASan + UBSan.\033[0m\n"
 else
@@ -763,6 +737,11 @@ test-ubsan: test-asan
 
 clean: ## Remove all contents of the build directories.
 	-@rm -rvf $(BUILD_DIR)
+
+clean-test-out: ## Remove test output (tests/out/jpeg, tests/out/png). Run 'make test' to regenerate.
+	-@rm -rf $(TEST_OUT_JPEG) $(TEST_OUT_PNG)
+	@mkdir -p $(TEST_OUT_JPEG) $(TEST_OUT_PNG)
+	@echo "Test output dirs cleared. Run 'make test' to regenerate."
 
 # Files will be as follows:
 # /usr/local/lib/(SUITE)/

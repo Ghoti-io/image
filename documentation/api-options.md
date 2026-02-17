@@ -48,8 +48,9 @@ Used by `gimg_doc_load()`.
 | `jpeg_chroma_subsampling` | For JPEG: `GIMG_JPEG_CHROMA_420` (default), `GIMG_JPEG_CHROMA_422`, `GIMG_JPEG_CHROMA_444`. Ignored by other codecs. |
 | `jpeg_progressive` | For JPEG: `0` = baseline (default), `1` = progressive. Ignored by other codecs. |
 | `jpeg_progressive_config` | When `jpeg_progressive` is 1: `NULL` or `scan_count` 0 = use default progression (DC + AC scan(s)); otherwise pointer to **GIMG_JPEG_Progressive_Config** giving a custom scan script (array of Ss, Se, Ah, Al per scan). Ignored for non-JPEG or baseline. |
+| `jpeg_precision` | For JPEG save: output precision. `0` = use raster bit depth (8, 12, or 16); `8`, `12`, or `16` = write at that precision. When raster depth differs from requested precision, the encoder uses **library** bit-depth conversion (`gimg_ops_convert_bit_depth` / `gimg_bitdepth_*`). 8-bit raster + save 12/16: use library up-convert or reject (documented in codec). Ignored for non-JPEG. |
 
-**GIMG_JPEG_Progressive_Config** holds `scan_count` and `scans` (array of **GIMG_JPEG_Progressive_Scan**). Each scan has `Ss`, `Se` (spectral selection, 0–63), `Ah`, `Al` (successive approximation). Caller keeps the array valid for the duration of `gimg_doc_save()`. Default progression when NULL or `scan_count` 0: one DC scan (Ss=0, Se=0) then one AC scan (Ss=1, Se=63, Ah=0, Al=0). Refinement passes (Ah>0) are supported: DC refinement (Ss=0, Se=0, Ah>0) and AC refinement (Ah>0 for band Ss..Se) with successive-approximation encoding and optional refinement DHT (Th=2).
+**GIMG_JPEG_Progressive_Config** holds `scan_count` and `scans` (array of **GIMG_JPEG_Progressive_Scan**). Each scan has `Ss`, `Se` (spectral selection, 0–63), `Ah`, `Al` (successive approximation). Caller keeps the array valid for the duration of `gimg_doc_save()`. **When `jpeg_progressive_config` is NULL or `scan_count` is 0:** the encoder uses the default scan script (one DC scan Ss=0, Se=0 then one AC scan Ss=1..63, Ah=0, Al=0). **Custom script:** non-NULL with `scan_count` > 0 uses the given sequence of scans. Initial AC spectral bands (Ah=0, Ss≥1) must not overlap (T.81 Annex G); overlapping [Ss,Se] ranges are rejected with **GIMG_ERR_UNSUPPORTED**. Refinement passes (Ah>0) are supported: DC refinement (Ss=0, Se=0, Ah>0) and AC refinement (Ah>0 for band Ss..Se) with successive-approximation encoding and optional refinement DHT (Th=2).
 
 Used by `gimg_doc_save()`.
 
@@ -75,7 +76,8 @@ Format-specific behavior (e.g. PNG chunk emission) is described in \ref format_r
 | Field     | Description |
 |-----------|-------------|
 | `limits`  | Pointer to **GIMG_Limits**; `NULL` = use defaults. Enforced during decode (e.g. max decoded pixels). |
-| `jpeg_chroma_upsampling` | JPEG only: chroma upsampling for 4:2:0/4:2:2. **GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE** (0) = box/replicate; **GIMG_JPEG_CHROMA_UPSAMPLE_FANCY** (1) = triangle filter (libjpeg default). Default 0 until fancy is made the default. Ignored for non-JPEG. |
+| `jpeg_chroma_upsampling` | JPEG only: chroma upsampling for 4:2:0/4:2:2. **GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE** (0) = box/replicate; **GIMG_JPEG_CHROMA_UPSAMPLE_FANCY** (1) = triangle filter. When options is NULL, FANCY is used (default). Ignored for non-JPEG. |
+| `jpeg_precision` | JPEG decode-to precision: `0` = use file precision (8→GRAY8/RGBA8; 12/16→GRAY16/RGB16, 12-bit left-justified); `8`, `12`, or `16` = decode to that bit depth (library conversion when different from file). Ignored for non-JPEG. |
 | `_reserved` | Reserved; set to zero. |
 
 Used by `gimg_item_decode()`.
@@ -161,3 +163,30 @@ For multi-frame formats (e.g. APNG), each **GIMG_Item** carries frame timing and
 - **Blend:** `gimg_item_blend_op()` / `gimg_item_set_blend_op()` — **GIMG_Blend_Op**: `GIMG_BLEND_SOURCE`, `GIMG_BLEND_OVER`. How to composite the frame over the canvas.
 
 Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read them on save.
+
+@section api_options_raster_formats_12bit Raster formats (12-bit)
+
+**GIMG_PIXEL_GRAY12** and **GIMG_PIXEL_RGBA12** (see `ghoti.io/image/raster.h`): 12 bits per channel, stored as **uint16_t per sample** with value in **0..4095** (clamped; no left-shift in the raster). Used for codecs that support 12-bit precision (e.g. JPEG 12-bit). Conversion to/from 8- or 16-bit uses the library bit-depth API (`gimg_bitdepth_*`, `gimg_ops_convert_bit_depth`).
+
+@section api_options_color_info Color info (GIMG_Color_Info)
+
+**GIMG_Color_Info** (see `ghoti.io/image/color.h`) is attached to a raster and describes how to interpret color: primaries, transfer, rendering intent, optional ICC profile, and (for CMYK rasters) channel polarity.
+
+| Field | Description |
+|-------|-------------|
+| `primaries` / `white_point` | **GIMG_Primaries** — sRGB, Adobe RGB, or unknown. |
+| `transfer` | **GIMG_Transfer** — linear, sRGB, gamma, or unknown. |
+| `gamma_value` | Used when `transfer` is **GIMG_TRANSFER_GAMMA**. |
+| `intent` | **GIMG_Rendering_Intent** — used when ICC is present. |
+| `icc_bytes` / `icc_size` | Optional ICC profile; library does not take ownership. |
+| `cmyk_polarity` | **GIMG_CMYK_Polarity** — interpretation of CMYK channel values. Only relevant when raster format is **GIMG_PIXEL_CMYK8**. |
+
+**GIMG_CMYK_Polarity** (see `ghoti.io/image/color.h`):
+
+| Value | Meaning |
+|-------|---------|
+| **GIMG_CMYK_POLARITY_UNKNOWN** | Polarity not specified (default for newly created color info). |
+| **GIMG_CMYK_POLARITY_INK** | 0 = full ink, 255 = no ink (Adobe / JPEG file convention). Set by the JPEG decoder for CMYK output. |
+| **GIMG_CMYK_POLARITY_REFLECTION** | 0 = no ink, 255 = full ink (reflection; e.g. many design-tool APIs). |
+
+Raster pixels are stored as raw values; `cmyk_polarity` tells consumers (e.g. display or CMYK→RGB conversion) whether to treat 0 as “no ink” or “full ink” when interpreting the channels.

@@ -192,6 +192,12 @@ typedef struct {
   /** Restart interval in MCUs (0 = none). When non-zero, DRI segment is
    * written and RST markers (0xFF 0xD0..0xD7) are injected every N MCUs. */
   uint16_t jpeg_restart_interval;
+  /** JPEG output precision (save): 0 = use raster bit depth (8, 12, or 16);
+   * 8, 12, or 16 = write at that precision. When raster depth differs, the
+   * encoder uses library bit-depth conversion (gimg_ops_convert_bit_depth or
+   * gimg_bitdepth_*). Ignored for non-JPEG. */
+  uint8_t jpeg_precision;
+  uint8_t _jpeg_pad[1];
 } GIMG_Save_Options;
 
 /**
@@ -225,7 +231,11 @@ typedef struct {
   const GIMG_Limits * limits;
   /** JPEG: chroma upsampling when decoding 4:2:0/4:2:2. GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE (0) or FANCY (1). When options is NULL, FANCY is used (default). */
   uint8_t jpeg_chroma_upsampling;
-  uint8_t _reserved[7];
+  /** JPEG decode-to precision: 0 = use file precision (8→GRAY8/RGBA8;
+   * 12/16→GRAY16/RGB16 with 12-bit left-justified); 8, 12, or 16 = decode to
+   * that bit depth (conversion via library when different from file). */
+  uint8_t jpeg_precision;
+  uint8_t _reserved[6];
 } GIMG_Decode_Options;
 
 /**

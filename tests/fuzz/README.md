@@ -4,7 +4,7 @@
 
 **fuzz_png_encode**: Round-trip harness (load -> decode all items -> save -> load). Stress-tests the encoder; invalid input that fails load or save is ignored (no crash).
 
-**fuzz_jpeg_load**: LibFuzzer harness for JPEG load and decode. Same contract: no crash on random or truncated input; return `GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, or `GIMG_ERR_LIMIT` as appropriate.
+**fuzz_jpeg_load**: LibFuzzer harness for JPEG load and decode. Same contract: no crash on random or truncated input; return `GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, or `GIMG_ERR_LIMIT` as appropriate. Covers baseline, progressive (SOF2), and 12/16-bit (SOF1/SOF2) when such files are in the corpus.
 
 ## Build
 
@@ -33,7 +33,7 @@ JPEG:
 ```bash
 cp tests/data/jpeg/*.jpg tests/fuzz/corpus/
 ```
-(After running `python3 tests/data/jpeg/generate.py`.)
+(After running `python3 tests/data/jpeg/generate.py`.) For broader coverage (Phase 2.2), include progressive and 12/16-bit JPEGs: copy from `tests/out/jpeg/` after running encode tests (e.g. `progressive_default.jpg`, `baseline_gray16.jpg`, `baseline_gray12.jpg`) so the fuzzer exercises multi-scan and extended-precision decode paths without crash.
 
 ## Run
 

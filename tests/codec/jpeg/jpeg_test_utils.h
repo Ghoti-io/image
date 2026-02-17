@@ -105,6 +105,16 @@ bool libjpeg_decode_to_oracle_raw(const char * jpeg_path, const char * raw_path,
     uint32_t * out_height, int * out_mode);
 
 /**
+ * Run encode_libjpeg_baseline_scan to produce a full JPEG (oracle-encoded).
+ * Writes width x height grayscale (x+y)&0xFF at quality, optional restart_interval.
+ * jpeg_path is where the tool writes the JPEG. Returns true if the tool succeeded
+ * and jpeg_path exists. Requires make jpeg-oracle-tools (or jpeg-encode-oracle).
+ */
+bool libjpeg_encode_baseline_to_file(const char * jpeg_path,
+    unsigned int width, unsigned int height, int quality,
+    unsigned int restart_interval);
+
+/**
  * Return true if decoded raster matches oracle raw pixels (same dimensions,
  * pixel values within tolerance). Converts our raster to L or RGB to match
  * oracle mode. tolerance = max per-component difference (0 = exact).

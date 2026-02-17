@@ -83,14 +83,15 @@ static void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
     for (int i = 1; i <= 16; i++) {
       num_symbols += p[i];
     }
+    /* T.81 B.2.4: number of value bytes must equal sum of the 16 bit counts. */
     if (th >= 4 || remain < 17 + num_symbols) {
       break;
     }
     size_t table_len = 17 + num_symbols;
     if (tc) {
-      // AC: 17-symbol DHT is refinement (Ah!=0); store separately so initial
-      // table (162 symbols, T.81 K.4) is not overwritten. T.81 Table K.6.
-      if (num_symbols == 17) {
+      // AC: 17- or 18-symbol DHT is refinement (Ah!=0); store separately so
+      // initial table (162 symbols, T.81 K.4) is not overwritten. T.81 K.6.
+      if (num_symbols == 17 || num_symbols == 18) {
         unsigned char ** dest = &state->huff_ac_refine[th];
         size_t * dest_len = &state->huff_ac_refine_len[th];
         if (*dest) {
@@ -153,7 +154,8 @@ static void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
       break;
     }
     size_t table_len = 17 + num_symbols;
-    unsigned char is_ac_refine = (tc && num_symbols == 17) ? 1 : 0;
+    unsigned char is_ac_refine =
+        (tc && (num_symbols == 17 || num_symbols == 18)) ? 1 : 0;
     unsigned char * copy = (unsigned char *)gimg_malloc(alloc, table_len);
     if (!copy) {
       break;

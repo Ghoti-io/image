@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <ghoti.io/image/bitdepth.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <gtest/gtest.h>
@@ -64,6 +65,85 @@ TEST(Ops, ConvertUnsupportedReturnsError) {
   ASSERT_NE(src, nullptr);
   GIMG_Raster * dst = nullptr;
   GIMG_Result r = gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_GRAY8, &dst);
+  EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(dst, nullptr);
+  gimg_raster_destroy(src);
+}
+
+TEST(Ops, BitdepthSampleConversions) {
+  EXPECT_EQ(gimg_bitdepth_8_to_12(0), 0);
+  EXPECT_EQ(gimg_bitdepth_8_to_12(255), 4095u);
+  EXPECT_EQ(gimg_bitdepth_8_to_16(0), 0);
+  EXPECT_EQ(gimg_bitdepth_8_to_16(255), 65535u);
+  EXPECT_EQ(gimg_bitdepth_12_to_8(0), 0);
+  EXPECT_EQ(gimg_bitdepth_12_to_8(4095), 255);
+  EXPECT_EQ(gimg_bitdepth_12_to_16(4095), 65520u);
+  EXPECT_EQ(gimg_bitdepth_16_to_8(0), 0);
+  EXPECT_EQ(gimg_bitdepth_16_to_8(65535), 255);
+  EXPECT_EQ(gimg_bitdepth_16_to_12(65535), 4095u);
+}
+
+TEST(Ops, ConvertBitDepthGray8To16) {
+  GIMG_Raster * src = nullptr;
+  gimg_raster_create(
+      2, 2, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, nullptr, 0, &src);
+  ASSERT_NE(src, nullptr);
+  size_t src_stride = gimg_raster_stride_bytes(src);
+  unsigned char * p = (unsigned char *)gimg_raster_pixels(src);
+  p[0] = 0;
+  p[1] = 255;
+  p[0 + src_stride] = 128;
+  p[1 + src_stride] = 64;
+  GIMG_Raster * dst = nullptr;
+  GIMG_Result r = gimg_ops_convert_bit_depth(src, 16, &dst);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(dst, nullptr);
+  EXPECT_EQ(gimg_raster_width(dst), 2u);
+  EXPECT_EQ(gimg_raster_height(dst), 2u);
+  EXPECT_EQ(gimg_raster_format(dst)->bits_per_channel[0], 16);
+  size_t stride = gimg_raster_stride_bytes(dst);
+  const unsigned char * base =
+      (const unsigned char *)gimg_raster_pixels_const(dst);
+  const uint16_t * row0 = (const uint16_t *)base;
+  const uint16_t * row1 = (const uint16_t *)(base + stride);
+  EXPECT_EQ(row0[0], 0);
+  EXPECT_EQ(row0[1], 65535u);
+  EXPECT_EQ(row1[0], (128u << 8) | 128u);  // 8→16 replicate (v<<8)|v
+  EXPECT_EQ(row1[1], (64u << 8) | 64u);
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+TEST(Ops, ConvertBitDepthGray16To12) {
+  GIMG_Raster * src = nullptr;
+  gimg_raster_create(
+      1, 2, &GIMG_PIXEL_GRAY16, GIMG_RASTER_OWNED, nullptr, 0, &src);
+  ASSERT_NE(src, nullptr);
+  size_t src_stride = gimg_raster_stride_bytes(src);
+  unsigned char * base = (unsigned char *)gimg_raster_pixels(src);
+  *(uint16_t *)base = 0;
+  *(uint16_t *)(base + src_stride) = 65535;
+  GIMG_Raster * dst = nullptr;
+  GIMG_Result r = gimg_ops_convert_bit_depth(src, 12, &dst);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(dst, nullptr);
+  EXPECT_EQ(gimg_raster_format(dst)->bits_per_channel[0], 12);
+  size_t dst_stride = gimg_raster_stride_bytes(dst);
+  const unsigned char * dbase =
+      (const unsigned char *)gimg_raster_pixels_const(dst);
+  EXPECT_EQ(*(const uint16_t *)dbase, 0);
+  EXPECT_EQ(*(const uint16_t *)(dbase + dst_stride), 4095u);
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+TEST(Ops, ConvertBitDepthInvalidDstBitsReturnsError) {
+  GIMG_Raster * src = nullptr;
+  gimg_raster_create(
+      1, 1, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, nullptr, 0, &src);
+  ASSERT_NE(src, nullptr);
+  GIMG_Raster * dst = nullptr;
+  GIMG_Result r = gimg_ops_convert_bit_depth(src, 7, &dst);
   EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
   EXPECT_EQ(dst, nullptr);
   gimg_raster_destroy(src);

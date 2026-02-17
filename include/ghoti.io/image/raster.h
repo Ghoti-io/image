@@ -80,6 +80,10 @@ extern const GIMG_Pixel_Format GIMG_PIXEL_RGBA16;
 extern const GIMG_Pixel_Format GIMG_PIXEL_GRAY8;
 /** @brief Canonical grayscale 16-bit. */
 extern const GIMG_Pixel_Format GIMG_PIXEL_GRAY16;
+/** @brief Grayscale 12-bit per channel (uint16_t per sample, value 0..4095). */
+extern const GIMG_Pixel_Format GIMG_PIXEL_GRAY12;
+/** @brief RGBA 12-bit per channel (uint16_t per sample, value 0..4095). */
+extern const GIMG_Pixel_Format GIMG_PIXEL_RGBA12;
 /** @brief Canonical CMYK 8-bit per channel (C, M, Y, K interleaved). */
 extern const GIMG_Pixel_Format GIMG_PIXEL_CMYK8;
 

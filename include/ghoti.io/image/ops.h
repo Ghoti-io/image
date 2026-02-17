@@ -38,6 +38,18 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
     const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster);
 
 /**
+ * @brief Convert raster bit depth (8, 12, or 16 bits per channel). Same
+ * channel model and count; uses library bit-depth conversion (bitshift/clamp).
+ * Supported: GRAY8/12/16, RGBA8/12/16. CMYK and other models return
+ * GIMG_ERR_UNSUPPORTED.
+ * @param src Source raster (8-, 12-, or 16-bit per channel).
+ * @param dst_bits Target bits per channel (8, 12, or 16).
+ * @param out_raster On success, new raster in target bit depth; caller owns it.
+ */
+GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
+    uint8_t dst_bits, GIMG_Raster ** out_raster);
+
+/**
  * @brief Premultiply alpha (straight -> premultiplied) (spec §4.4).
  * @param raster RGBA raster (in-place).
  * @return GIMG_OK or GIMG_ERR_UNSUPPORTED if format not supported.
