@@ -360,7 +360,8 @@ static int jpeg_bitstream_read_bits(gimg_jpeg_bitstream_t * bs, int n) {
 }
 
 /** Build Huffman decode table from DHT payload (TcTh byte + 16 counts +
- * symbols). */
+ * symbols). Contract: dht != NULL, dht_len >= 17 and dht_len >= 17 + sum(bits[1..16])
+ * (T.81 B.2.4); tbl != NULL. Returns 0 on success, -1 if payload is invalid. */
 static int jpeg_build_huff_table(
     const unsigned char * dht, size_t dht_len, gimg_jpeg_huff_table_t * tbl) {
   if (dht_len < 17) {
@@ -819,6 +820,8 @@ static void jpeg_bitstream_align_skip_rst(gimg_jpeg_bitstream_t * bs) {
 
 /** Decode one 8x8 block (DC + AC). Block is 64 int16_t in zigzag order.
  * T.81 Annex F: DC differential then AC (run, size) or EOB (0,0); rest zero.
+ * Contract: bs, dc_tbl, ac_tbl, block, dc_predictor all non-NULL; dc_tbl and
+ * ac_tbl must be built from valid DHT (e.g. via jpeg_build_huff_table).
  * is_last_block: when 1, AC underflow is treated as EOB (T.81 B.2.2 does not
  * specify padding bit value; supports 0-bit padding / segment end before byte).
  */

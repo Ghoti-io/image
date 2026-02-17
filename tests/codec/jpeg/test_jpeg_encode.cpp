@@ -20,6 +20,10 @@
 
 #include "jpeg_test_utils.h"
 
+extern "C" {
+#include "jpeg_huffman_tables_internal.h"
+}
+
 namespace {
 
 /** RAII: frees doc then stream on scope exit so load+decode tests don't leak on ASSERT. */
@@ -699,6 +703,78 @@ TEST(JpegEncode, MetadataKeepCommonOnlyNoExif) {
   }
   gimg_doc_destroy(doc);
   gimg_stream_destroy(in_stream);
+}
+
+// DHT consistency (task 2.3.2.2): saved DHT payloads must match shared table header.
+
+TEST(JpegEncode, SavedDhtMatchesSharedTableHeader) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * out_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+  GIMG_Save_Options save_opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
+  GIMG_Save_Report report = {};
+  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  gimg_doc_destroy(doc);
+  ASSERT_EQ(r, GIMG_OK);
+
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out_stream, &data, &size);
+  ASSERT_GE(size, 2u);
+  const uint8_t * p = (const uint8_t *)data;
+  if (p[0] != 0xFF || p[1] != 0xD8) {
+    gimg_stream_destroy(out_stream);
+    FAIL() << "expected SOI";
+  }
+  size_t off = 2;
+  const uint8_t * dht_payload = nullptr;
+  size_t dht_payload_len = 0;
+  while (off + 2 <= size) {
+    if (p[off] != 0xFF) {
+      gimg_stream_destroy(out_stream);
+      FAIL() << "expected marker at " << off;
+    }
+    uint8_t marker = p[off + 1];
+    if (marker == 0xD9)
+      break;
+    if (marker == 0xD8 || (marker >= 0xD0 && marker <= 0xD7)) {
+      off += 2;
+      continue;
+    }
+    if (off + 4 > size) {
+      gimg_stream_destroy(out_stream);
+      FAIL() << "truncated segment at " << off;
+    }
+    uint16_t seg_len = (uint16_t)((p[off + 2] << 8) | p[off + 3]);
+    if (marker == 0xC4 && seg_len >= 2) {
+      dht_payload_len = (size_t)seg_len - 2;
+      dht_payload = p + off + 4;
+      break;
+    }
+    off += 2 + seg_len;
+  }
+  ASSERT_NE(dht_payload, nullptr);
+  const size_t kDcLumPayloadLen =
+      1u + 16u + (size_t)GIMG_JPEG_STD_DC_VALS;  // TcTh + bits + vals
+  ASSERT_GE(dht_payload_len, kDcLumPayloadLen)
+      << "first DHT table (DC luma) is 1+16+12=29 bytes";
+
+  uint8_t expected_dc_lum[1 + 16 + GIMG_JPEG_STD_DC_VALS];
+  expected_dc_lum[0] = 0x00;
+  memcpy(expected_dc_lum + 1, gimg_jpeg_std_dc_lum_bits, 16);
+  memcpy(expected_dc_lum + 17, gimg_jpeg_std_dc_lum_vals,
+         (size_t)GIMG_JPEG_STD_DC_VALS);
+  EXPECT_EQ(0, memcmp(dht_payload, expected_dc_lum, kDcLumPayloadLen))
+      << "first DHT table (DC luma TcTh=0x00) must match jpeg_huffman_tables_internal.h";
+
+  gimg_stream_destroy(out_stream);  // after all uses of stream buffer (data/dht_payload)
 }
 
 // Save failure paths: NULL doc, invalid/unsupported format, unsupported raster.

@@ -437,6 +437,9 @@ static GIMG_Result jpeg_append_scan_data(
   return GIMG_OK;
 }
 
+/** Free all codec-private state. Cleanup order (add new fields here to avoid
+ * leaks): Huffman tables (dc/ac/refine), DHT entry payloads, scan data and
+ * per-scan Huffman, APP/COM buffers, ICC chunks, then state itself. */
 void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   (void)codec;
   gimg_jpeg_doc_state_t * state = (gimg_jpeg_doc_state_t *)codec_private;

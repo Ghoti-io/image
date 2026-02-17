@@ -750,6 +750,81 @@ TEST(JpegLoad, Sof1AcceptedFor8bit) {
   gimg_stream_destroy(stream);
 }
 
+TEST(JpegLoad, TruncatedSosRejected) {
+  // Minimal baseline up to SOS; SOS length says 10 but payload truncated (e.g. 2 bytes).
+  // Load should fail with GIMG_ERR_FORMAT or GIMG_ERR_CORRUPT.
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++)
+    buf.push_back(1);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  for (int i = 0; i < 16; i++)
+    buf.push_back(0);
+  // SOS: L=10, but only 2 bytes after length (truncated; need Ns=1 + 2*Ns + 3 = 6 more)
+  append(buf, (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00", 6);
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  EXPECT_NE(r, GIMG_OK) << "truncated SOS should be rejected";
+  EXPECT_EQ(doc, nullptr);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, DhtValueBytesMismatchRejected) {
+  // DHT: TcTh=0x00, 16 bits sum to 12, but only 11 value bytes (T.81 B.2.4 requires value bytes = sum).
+  // Load or decode should fail (loader may skip table; decode then fails for missing table).
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++)
+    buf.push_back(1);
+  // DHT: one table, TcTh=0x00, 12 symbols (e.g. one 3-bit code), but 11 value bytes
+  // Length 2 + (1+16+11)=30. Bits: 0,0,0,1,0,...,0 -> sum 1? We need sum 12 and 11 bytes.
+  // So bits sum to 12, payload 1+16+11=28, segment len 2+28=30.
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x1E\x00", 5);  // 0x1E = 30
+  // 16 bits: e.g. 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,12 (last count=12) -> 12 symbols
+  for (int i = 0; i < 15; i++)
+    buf.push_back(0);
+  buf.push_back(12);
+  for (int i = 0; i < 11; i++)
+    buf.push_back((uint8_t)i);  // only 11 value bytes, not 12
+  append(buf,
+      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
+      12);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  GIMG_Stream * s = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &s);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    EXPECT_TRUE(r == GIMG_ERR_FORMAT || r == GIMG_ERR_CORRUPT);
+    gimg_stream_destroy(s);
+    return;
+  }
+  ASSERT_NE(doc, nullptr);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  GIMG_Decode_Options opts = {};
+  r = gimg_item_decode(item, &opts, &raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_NE(r, GIMG_OK)
+      << "DHT with value bytes != sum(bit counts) must cause load or decode failure";
+  if (raster)
+    gimg_raster_destroy(raster);
+}
+
 TEST(JpegLoad, SegmentOverLimitReturnsLimit) {
   // SOI, then a segment with huge length to exceed max_chunk_size.
   std::vector<uint8_t> buf;

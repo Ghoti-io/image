@@ -36,6 +36,23 @@ Public API headers live under `include/ghoti.io/image/`. Internal implementation
 
 Internal headers use the `_internal.h` suffix (e.g. `png_internal.h`, `doc_internal.h`). Shared constants and helpers for a format are centralized (e.g. `png_common.c` for PNG row-bytes and Adam7).
 
+### JPEG codec layout
+
+JPEG implementation lives under `src/codec/jpeg/`. Roles of the main files:
+
+| File | Role |
+|------|------|
+| `jpeg_load.c` | Segment parsing (SOI, SOF0/SOF1/SOF2, DQT, DHT, SOS, DRI, DNL, APP0–APP15, COM), limits enforcement, document state build, metadata round-trip. |
+| `jpeg_decode.c` | Thin dispatch: baseline vs progressive decode. |
+| `jpeg_entropy.c` | Entropy decode (baseline + progressive), bitstream, Huffman build/decode, block decode (DC/AC, refinement), dequant, IDCT, chroma upsampling, component→raster assembly. |
+| `jpeg_save.c` | Raster→scan, DQT/DHT/SOS/scan write, baseline and progressive body, APP/COM write. |
+| `jpeg_encode.c` | FDCT, quantization, bit writer, baseline and progressive scan encode (uses shared tables from `jpeg_huffman_tables_internal.h`). |
+| `jpeg_internal.h` | Constants, structs, internal API. |
+| `jpeg_register.c` | Codec registration and probe. |
+| `jpeg_tables.c` | Single translation unit that defines shared table data (zigzag, quant, Huffman) from `jpeg_*_internal.h` headers. |
+
+Data flow: **Load** — stream → segment loop → doc state (SOF, DQT, DHT, scans, APP/COM). **Decode** — doc state → baseline or progressive entropy → dequant/IDCT/upsample → raster. **Save** — doc + raster → DQT/DHT/SOF/SOS + scan data → stream.
+
 ## Error-handling policy
 
 The library uses **GIMG_Result** for all API functions. Policy details (when to return which code, when to append diagnostics, behavior of output parameters on error) are documented in **Error handling** in @ref api_options "API Options and Types".
@@ -66,6 +83,8 @@ Test layout:
 
 After `make test`, PNG output is verified with `tests/data/png/verify_png_output.py` (e.g. via PIL). JPEG decode correctness is validated against Pillow (Python) where applicable (`Decode*PillowOracle` tests run `tests/data/jpeg/pillow_decode_hash.py`); JPEG encode output is verified by `tests/data/jpeg/verify_jpeg_output.py` (PIL opens each file in `tests/out/jpeg/`). **Pillow is required** for these JPEG tests (see Prerequisites above).
 
+**JPEG test map:** Load and segment/limit behaviour: `tests/codec/jpeg/test_jpeg_load.cpp` (e.g. SOF rejection, DNL, DHT/SOS negative tests, golden/oracle). Encode, round-trip, and save: `tests/codec/jpeg/test_jpeg_encode.cpp` (quality, chroma, progressive, 12/16-bit, DHT consistency, failure paths). Helpers: `jpeg_test_utils.cpp` / `jpeg_test_utils.h` (load_jpeg_file, raster hash, oracle helpers). Fuzz: `tests/fuzz/fuzz_jpeg_load` (load + decode; no crash on arbitrary input).
+
 ### Valgrind
 
 Run the full suite under Valgrind to ensure no leaks and clean memory use:
@@ -75,7 +94,7 @@ make test-valgrind   # Linux only
 make test-valgrind-quiet
 ```
 
-Tests that pass diagnostics must call `gimg_diagnostics_clear()` or `gimg_diagnostics_destroy()` so Valgrind stays clean.
+Tests that pass diagnostics must call `gimg_diagnostics_clear()` or `gimg_diagnostics_destroy()` so Valgrind stays clean. JPEG changes should be validated with `make test-quiet` and `make test-valgrind-quiet`; whether Valgrind runs in CI or only as a developer checklist is project policy (see task image-phase-2.3-jpeg-quality-maintainability.md).
 
 ### Sanitizers (ASan + UBSan)
 
