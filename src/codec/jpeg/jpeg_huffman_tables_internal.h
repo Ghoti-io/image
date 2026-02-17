@@ -237,7 +237,7 @@ const unsigned char
         0xf3, 0xf4, 0xf5, 0xf6, 0xf7,         0xf8, 0xf9, 0xfa
     };
 
-/* T.81 Table K.6: default AC refinement (Ah>0) when no DHT in file. */
+// T.81 Table K.6: default AC refinement (Ah>0) when no DHT in file.
 const unsigned char
     gimg_jpeg_default_ac_refine_dht_payload[1 + 16 +
                                             GIMG_JPEG_AC_REFINE_VALS] = {

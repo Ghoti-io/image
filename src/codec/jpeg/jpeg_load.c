@@ -302,8 +302,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       gimg_jpeg_free_doc_state(codec, state);
       return GIMG_ERR_LIMIT;
     }
-    /* All payload_buf accesses below are bounded by payload_size (and
-     * segment-specific minimums, e.g. SOF/SOS/DHT/DQT length checks). */
+    // All payload_buf accesses below are bounded by payload_size (and
+    // segment-specific minimums, e.g. SOF/SOS/DHT/DQT length checks).
 
     unsigned char * payload_buf = NULL;
     if (payload_size > 0) {
@@ -361,8 +361,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       seen_sof = true;
       break;
     }
-    /* Unsupported SOF (T.81: SOF3 lossless, SOF5–SOF7 differential, SOF9–SOF15).
-     * Reject explicitly so the caller gets a clear error instead of "no SOF". */
+    // Unsupported SOF (T.81: SOF3 lossless, SOF5–SOF7 differential, SOF9–SOF15).
+    // Reject explicitly so the caller gets a clear error instead of "no SOF".
     case GIMG_JPEG_MARKER_SOF3:
     case 0xC5:
     case 0xC6:
@@ -605,7 +605,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             }
           }
           else {
-            /* First DHT (Th,Tc) after previous scan's data for AC initial. */
+            // First DHT (Th,Tc) after previous scan's data for AC initial.
             for (size_t j = state->last_scan_data_end_dht_index;
                  j < state->num_dht_entries; j++) {
               if (state->dht_entries[j].tc == 1 &&
@@ -655,10 +655,9 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             }
           }
           else {
-            /* T.81 B.2.4: table for this scan is the one most recently defined
-             * before this scan's entropy-coded segment. So use the last DHT in
-             * [last_scan_data_end_dht_index, num_dht_entries) with Tc=1 (AC)
-             * and Th=ti; symbol count is not restricted (custom tables allowed). */
+            // T.81 B.2.4: table for this scan is the one most recently defined
+            // before this scan's entropy-coded segment. Use the last DHT in
+            // [last_scan_data_end_dht_index, num_dht_entries) with Tc=1 (AC) and Th=ti.
             for (size_t j = state->num_dht_entries; j > state->last_scan_data_end_dht_index; j--) {
               size_t idx = j - 1;
               if (state->dht_entries[idx].tc == 1 &&
@@ -713,7 +712,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           (void)fflush(stderr);
         }
         state->num_scans++;
-        state->inter_scan_dht_index_set = 0;  /* Next scan data end will set index. */
+        state->inter_scan_dht_index_set = 0;  // Next scan data end will set index.
       }
       gimg_free(alloc, payload_buf);
       payload_buf = NULL;

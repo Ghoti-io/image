@@ -32,11 +32,11 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
     }
     return GIMG_ERR_CORRUPT;
   }
-  /* RST is skipped inside the DC read; reset predictor for this component. */
+  // RST is skipped inside the DC read; reset predictor for this component.
   if (bs->rst_just_skipped) {
     *dc_predictor = 0;
     bs->rst_just_skipped =
-        0; /* clear so next block in same MCU / next MCU keeps predictor */
+        0; // clear so next block in same MCU / next MCU keeps predictor
   }
   int nbits = sym;
   int diff = 0;
@@ -68,13 +68,11 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
   }
 
   for (int k = 1; k < 64; k++) {
-    /* T.81 Annex F Figure F.16: baseline AC uses first-match only (no
-     * longest-match). */
+    // T.81 Annex F Figure F.16: baseline AC uses first-match only (no longest-match).
     sym = jpeg_huff_decode(bs, ac_tbl, 0, 1, 1);
     if (sym < 0) {
       if (is_last_block) {
-        /* Segment ended before byte boundary (e.g. 0-bit padding); treat as
-         * EOB. */
+        // Segment ended before byte boundary (e.g. 0-bit padding); treat as EOB.
         sym = 0;
       }
       else {
@@ -88,8 +86,7 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
       }
     }
     if (sym == 0) {
-      /* T.81 Annex F: EOB (0,0); remaining coefficients in zigzag order are
-       * zero. */
+      // T.81 Annex F: EOB (0,0); remaining coefficients in zigzag order are zero.
       for (; k < 64; k++) {
         block[k] = 0;
       }
@@ -98,7 +95,7 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
     int run = sym >> 4;
     int size = sym & 0x0F;
     k += run;
-    /* T.81 Annex F: (run, size) with k+run >= 64 is invalid. */
+    // T.81 Annex F: (run, size) with k+run >= 64 is invalid.
     if (k >= 64) {
       if (GIMG_JPEG_DEBUG_BASELINE_FAIL) {
         (void)fprintf(stderr,
@@ -114,8 +111,7 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
       ac = jpeg_bitstream_read_bits(bs, size);
       if (ac < 0) {
         if (is_last_block) {
-          /* T.81 B.2.2: decoders must not interpret padding as data; treat
-           * underflow as EOB. */
+          // T.81 B.2.2: decoders must not interpret padding as data; treat underflow as EOB.
           for (; k < 64; k++) {
             block[k] = 0;
           }
@@ -156,8 +152,7 @@ GIMG_Result jpeg_decode_block_progressive_dc(gimg_jpeg_bitstream_t * bs,
   int sym = jpeg_huff_decode(bs, dc_tbl, 0, 0, 0);
   if (sym < 0) {
     if (is_last_block) {
-      sym = 0; /* Segment ended before byte boundary; treat as DC size 0 (no
-                  extra bits). */
+      sym = 0; // Segment ended before byte boundary; treat as DC size 0 (no extra bits).
     }
     else {
       return GIMG_ERR_CORRUPT;
@@ -175,7 +170,7 @@ GIMG_Result jpeg_decode_block_progressive_dc(gimg_jpeg_bitstream_t * bs,
     diff = jpeg_bitstream_read_bits(bs, nbits);
     if (diff < 0) {
       if (is_last_block) {
-        diff = 0; /* Padding / end of segment; treat as 0. */
+        diff = 0; // Padding / end of segment; treat as 0.
       }
       else {
         return GIMG_ERR_CORRUPT;
@@ -233,7 +228,7 @@ GIMG_Result jpeg_decode_block_progressive_dc_refine(
   int b = jpeg_bitstream_read_bit(bs);
   if (b < 0) {
     if (is_last_block) {
-      b = 0; /* Segment ended; treat as 0 (do not assume padding value). */
+      b = 0; // Segment ended; treat as 0 (do not assume padding value).
     }
     else {
       return GIMG_ERR_CORRUPT;
@@ -277,8 +272,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(
     int16_t * block, int ss, int se, int al, int do_trace, int trace_block_id,
     unsigned int trace_scan_idx, unsigned int * out_eobrun, int trace_all,
     int is_last_block) {
-  /* Full step dump for harmonization with ref
-   * (GIMG_JPEG_DUMP_AC_INITIAL_FULL=1). */
+  // Full step dump for harmonization with ref (GIMG_JPEG_DUMP_AC_INITIAL_FULL=1).
 #if GIMG_JPEG_DUMP_AC_INITIAL_FULL
   const int dump_ac_initial_env = 1;
 #else
@@ -286,8 +280,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(
 #endif
   const int dump_full = (trace_block_id >= 0 && dump_ac_initial_env);
   int k = ss;
-  /* T.81 Annex G: at start of block, if EOBRUN > 0 this block is all-zero in
-   * band. */
+  // T.81 Annex G: at start of block, if EOBRUN > 0 this block is all-zero in band.
   if (out_eobrun && *out_eobrun > 0) {
     if (trace_all) {
       (void)fprintf(stderr,
@@ -318,15 +311,13 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(
           trace_block_id, k, (size_t)bs->byte_off, (unsigned)bs->bit_off);
       (void)fflush(stderr);
     }
-    /* Use first_match_only=0 (longest-match) for progressive AC initial: the
-     * standard table can have EOB (e.g. 4-bit 1010) as a prefix of a longer
-     * codeword (e.g. (10,1) at 9 bits). First-match would return EOB and drop
-     * the coefficient; longest-match reads the full codeword (T.81 Annex G). */
+    // Use first_match_only=0 (longest-match) for progressive AC initial: the
+    // standard table can have EOB as a prefix of a longer codeword; longest-match
+    // reads the full codeword (T.81 Annex G).
     int sym = jpeg_huff_decode(bs, ac_tbl, 0, 1, 0);
     if (sym < 0) {
       if (is_last_block) {
-        sym = 0; /* Segment ended; treat as EOB (T.81 B.2.2 padding
-                    unspecified). */
+        sym = 0; // Segment ended; treat as EOB (T.81 B.2.2 padding unspecified).
       }
       else {
         return GIMG_ERR_CORRUPT;
@@ -401,18 +392,18 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(
       }
       break;
     }
-    /* T.81 Annex G: (0,0)=EOB; (15,0)=ZRL; (r,0) r=1..14 = EOB with run 2^r + r
-     * bits. */
+    // T.81 Annex G: (0,0)=EOB; (15,0)=ZRL; (r,0) r=1..14 = EOB with run 2^r + r
+    // bits.
     if (size == 0) {
       if (run != 15) {
         if (out_eobrun && run >= 1 && run <= 14) {
-          /* EOB run: EOBRUN = 2^r + next r bits (T.81 Annex G). */
+          // EOB run: EOBRUN = 2^r + next r bits (T.81 Annex G).
           unsigned int eobrun = 1u << (unsigned)run;
           if (run > 0) {
             int rbits = jpeg_bitstream_read_bits(bs, run);
             if (rbits < 0) {
               if (is_last_block) {
-                rbits = 0; /* T.81 B.2.2: segment end; treat as 0. */
+                rbits = 0; // T.81 B.2.2: segment end; treat as 0.
               }
               else {
                 return GIMG_ERR_CORRUPT;
@@ -468,9 +459,9 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(
           }
           break;
         }
-        return GIMG_ERR_CORRUPT; /* (r,0) r!=15 without EOBRUN support. */
+        return GIMG_ERR_CORRUPT; // (r,0) r!=15 without EOBRUN support.
       }
-      /* ZRL: 16 zero coefficients (T.81 Annex G). */
+      // ZRL: 16 zero coefficients (T.81 Annex G).
       if (dump_full) {
         (void)fprintf(stderr,
             "OUR_AC_INITIAL_STEP scan=%u block=%d byte=%zu bit=%u op=ZRL\n",
@@ -518,7 +509,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(
       ac = jpeg_bitstream_read_bits(bs, size);
       if (ac < 0) {
         if (is_last_block) {
-          ac = 0; /* T.81 B.2.2: segment end; treat as 0. */
+          ac = 0; // T.81 B.2.2: segment end; treat as 0.
         }
         else {
           return GIMG_ERR_CORRUPT;
@@ -609,11 +600,9 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
     gimg_jpeg_bitstream_t * bs, const gimg_jpeg_huff_table_t * ac_tbl,
     int16_t * block, int ss, int se, int al, int do_trace, int trace_block_id,
     int log_sanity, int trace_all, int trace_scan_idx, int is_last_block) {
-  /* Full dump for compare with ref: every byte/bit/block
-   * (GIMG_JPEG_DUMP_AC_REFINE_FULL=1). */
+  // Full dump for compare with ref: every byte/bit/block (GIMG_JPEG_DUMP_AC_REFINE_FULL=1).
   const int dump_full = GIMG_JPEG_DUMP_AC_REFINE_FULL;
-  /* T.81: AC band is [Ss, Se] with 1 <= Ss <= Se <= 63. Clamp to prevent
-   * overrun. */
+  // T.81: AC band is [Ss, Se] with 1 <= Ss <= Se <= 63. Clamp to prevent overrun.
   if (se > 63) {
     se = 63;
   }
@@ -624,7 +613,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
   int k = ss;
   while (k <= se) {
     int k_at_iter_start = k;
-    /* Break-the-circle: log start of first two blocks (position + nz count). */
+    // Break-the-circle: log start of first two blocks (position + nz count).
     if ((trace_block_id >= 0 && trace_block_id < 2 && k == ss) || trace_all ||
         dump_full) {
       int nz_count = 0;
@@ -645,18 +634,17 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
           trace_block_id, k, (size_t)bs->byte_off, (unsigned)bs->bit_off);
       (void)fflush(stderr);
     }
-    /* T.81 Annex F / Table K.6: AC refinement uses 17-symbol table; decode
-     * first matching codeword only (no longest-match, no EOB peeking). */
+    // T.81 Annex F / Table K.6: AC refinement uses 17-symbol table; decode first
+    // matching codeword only (no longest-match, no EOB peeking).
     int sym = jpeg_huff_decode(bs, ac_tbl, 1, 1, 1);
     if (sym < 0) {
       if (is_last_block) {
-        break; /* Segment ended; treat as EOB (T.81 B.2.2 padding unspecified).
-                */
+        break; // Segment ended; treat as EOB (T.81 B.2.2 padding unspecified).
       }
       if (bs->recover_stuff_zero) {
-        break; /* Opt-in recovery only (e.g. truncated stream). */
+        break; // Opt-in recovery only (e.g. truncated stream).
       }
-      /* T.81 B.2.4: entropy-coded segment ends at the next marker. */
+      // T.81 B.2.4: entropy-coded segment ends at the next marker.
       if (GIMG_JPEG_PROGRESSIVE_DEBUG)
         (void)fprintf(stderr,
             " ac_refine underflow: huff_decode at k=%d byte_off=%zu "
@@ -686,16 +674,15 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
             (unsigned)bs->bit_off);
         (void)fflush(stderr);
       }
-      /* T.81 Annex G.1.2.2 / libjpeg jdphuff: after EOB we set EOBRUN and break
-       * from the symbol loop; then we must read one correction bit per
-       * already-nonzero coefficient in the band [k,Se] (libjpeg does this in
-       * the "if (EOBRUN > 0)" loop). So we read correction bits here. */
+      // T.81 Annex G.1.2.2 / libjpeg jdphuff: after EOB we set EOBRUN and break
+      // from the symbol loop; then read one correction bit per already-nonzero
+      // coefficient in the band [k,Se]. So we read correction bits here.
       for (; k <= se; k++) {
         if (block[k] != 0) {
           int rbit = jpeg_bitstream_read_bit(bs);
           if (rbit < 0) {
             if (is_last_block || bs->recover_stuff_zero) {
-              rbit = 0; /* T.81 B.2.2 / recovery: treat as 0. */
+              rbit = 0; // T.81 B.2.2 / recovery: treat as 0.
             }
             else {
               if (GIMG_JPEG_PROGRESSIVE_DEBUG)
@@ -715,9 +702,8 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
             (void)fflush(stderr);
           }
           if (rbit & 1) {
-            /* T.81 Annex G.1.2.2: correction bit 1 = Al-th bit of magnitude is
-             * 1; only add when that bit is not already set (successive
-             * approximation). */
+            // T.81 Annex G.1.2.2: correction bit 1 = Al-th bit of magnitude is 1;
+            // only add when that bit is not already set (successive approximation).
             if ((block[k] & (1 << bitpos)) == 0) {
               int16_t delta =
                   (int16_t)(block[k] >= 0 ? (1 << bitpos) : -(1 << bitpos));
@@ -806,7 +792,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
       int b = jpeg_bitstream_read_bit(bs);
       if (b < 0) {
         if (is_last_block || bs->recover_stuff_zero) {
-          b = 0; /* T.81 B.2.2 / recovery: treat as 0. */
+          b = 0; // T.81 B.2.2 / recovery: treat as 0.
         }
         else {
           if (GIMG_JPEG_PROGRESSIVE_DEBUG)
@@ -869,7 +855,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
           }
           if (rbit < 0) {
             if (is_last_block || bs->recover_stuff_zero) {
-              rbit = 0; /* T.81 B.2.2 / recovery: treat as 0. */
+              rbit = 0; // T.81 B.2.2 / recovery: treat as 0.
             }
             else {
               if (GIMG_JPEG_PROGRESSIVE_DEBUG)
@@ -881,9 +867,8 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
             }
           }
           int16_t old_val = block[k];
-          /* T.81 Annex G.1.2.2: correction bit 1 = Al-th bit of magnitude is 1;
-           * only add when that bit is not already set (successive
-           * approximation). */
+          // T.81 Annex G.1.2.2: correction bit 1 = Al-th bit of magnitude is 1;
+          // only add when that bit is not already set (successive approximation).
           if (rbit & 1) {
             if ((block[k] & (1 << bitpos)) == 0) {
               int16_t delta =
@@ -978,12 +963,10 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
       k++;
     }
     else {
-      /* size==0: T.81 Annex G.1.2.2 — (r,0) is either EOB run (r < 15) or ZRL
-       * (r == 15). Not a workaround: the spec explicitly defines (r,0) for
-       * r < 15 as EOB run with run length 2^r + (r appended bits). */
+      // size==0: T.81 Annex G.1.2.2 — (r,0) is either EOB run (r < 15) or ZRL (r == 15).
+      // Spec defines (r,0) for r < 15 as EOB run with run length 2^r + (r appended bits).
       if (run != 15) {
-        /* EOB run: consume r appended bits, then correction bits for nonzero in
-         * band. */
+        // EOB run: consume r appended bits, then correction bits for nonzero in band.
         int eobrun_bits = run;
         if (eobrun_bits > 0) {
           for (int bi = 0; bi < eobrun_bits; bi++) {
@@ -1007,7 +990,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
                 return GIMG_ERR_CORRUPT;
               }
             }
-            (void)b; /* EOBRUN value not needed for single-block decode */
+            (void)b; // EOBRUN value not needed for single-block decode
           }
         }
         for (; k <= se; k++) {
@@ -1023,7 +1006,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
             }
             if (rbit < 0) {
               if (is_last_block || bs->recover_stuff_zero) {
-                rbit = 0; /* T.81 B.2.2 / recovery: treat as 0. */
+                rbit = 0; // T.81 B.2.2 / recovery: treat as 0.
               }
               else {
                 if (GIMG_JPEG_PROGRESSIVE_DEBUG)
@@ -1043,9 +1026,9 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
             }
           }
         }
-        break; /* EOB: done with this block */
+        break; // EOB: done with this block
       }
-      /* run == 15: ZRL — skip 16 zero coefficients */
+      // run == 15: ZRL — skip 16 zero coefficients
       int left = 16;
       while (left > 0 && k <= se) {
         if (block[k] == 0) {
@@ -1054,9 +1037,8 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
         k++;
       }
     }
-    /* Break-the-circle: log position after first symbol of block 0 (before
-     * next Huffman decode). If (0,5) then next bit is 6th; if (0,4) we're
-     * one bit short in the first symbol. */
+    // Break-the-circle: log position after first symbol of block 0 (before next
+    // Huffman decode). If (0,5) then next bit is 6th; if (0,4) we're one bit short.
     if (trace_block_id == 0 && k_at_iter_start == ss) {
       (void)fprintf(stderr,
           "AC_REFINE_AFTER_FIRST_SYM block=0 byte_off=%zu bit_off=%u\n",

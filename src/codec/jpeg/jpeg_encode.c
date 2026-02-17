@@ -19,8 +19,7 @@
 #define DCTSIZE 8
 #define DCTSIZE2 64
 
-/* 8×8 FDCT per T.81 Annex F (integer Loeffler-style; CONST_BITS=13,
- * PASS1_BITS=2). */
+// 8×8 FDCT per T.81 Annex F (integer Loeffler-style; CONST_BITS=13, PASS1_BITS=2).
 #define CONST_BITS 13
 #define PASS1_BITS 2
 #define FIX_0_298631336 2446
@@ -39,8 +38,7 @@
 #define DESCALE(x, n) (((int32_t)(x) + (1 << ((n)-1))) >> (n))
 #define MULTIPLY(var, constval) ((int32_t)(var) * (int32_t)(constval))
 
-/* Bit position of highest set bit (1-based); 0 if x==0. Used for reciprocal
- * quant. */
+// Bit position of highest set bit (1-based); 0 if x==0. Used for reciprocal quant.
 static int flss_u32(uint32_t x) {
   if (x == 0)
     return 0;
@@ -52,9 +50,8 @@ static int flss_u32(uint32_t x) {
   return n;
 }
 
-/* Compute reciprocal quantizer parameters for one divisor (libjpeg 8-bit
- * style). divisor = 8 * quant_table[i]. Stores recip, corr, unused, shift into
- * tbl[0..3]. */
+// Compute reciprocal quantizer parameters for one divisor (libjpeg 8-bit style).
+// divisor = 8 * quant_table[i]. Stores recip, corr, unused, shift into tbl[0..3].
 static void compute_reciprocal(uint32_t divisor, int16_t * tbl) {
   if (divisor <= 1) {
     tbl[0] = 1;
@@ -198,7 +195,7 @@ static void jpeg_fdct_islow(int16_t * data) {
   }
 }
 
-/* Quantize DCT coefficients per T.81 Annex F (round to integer). */
+// Quantize DCT coefficients per T.81 Annex F (round to integer).
 static void jpeg_quantize_block(
     const int16_t * block, const uint16_t * quant, int16_t * out) {
   for (int z = 0; z < 64; z++) {
@@ -228,8 +225,8 @@ static void jpeg_quantize_block(
   }
 }
 
-/* Quantize for 16-bit DQT: quant entries are uint16_t; use 32-bit divisor
- * (q*8). T.81 Annex F rounding. Table in natural order (same as 8-bit path). */
+// Quantize for 16-bit DQT: quant entries are uint16_t; use 32-bit divisor (q*8).
+// T.81 Annex F rounding. Table in natural order (same as 8-bit path).
 static void jpeg_quantize_block_16bit(
     const int16_t * block, const uint16_t * quant, int16_t * out) {
   for (int z = 0; z < 64; z++) {
@@ -259,14 +256,13 @@ static void jpeg_quantize_block_16bit(
   }
 }
 
-#define RECIP_STRIDE 4 /* recip, corr, scale, shift per coefficient */
+#define RECIP_STRIDE 4 // recip, corr, scale, shift per coefficient
 
-/* Quantize using reciprocal (libjpeg 8-bit path); dtbl indexed by natural
- * order. Use 64-bit product so (temp+corr)*recip does not overflow before
- * shifting. */
+// Quantize using reciprocal (libjpeg 8-bit path); dtbl indexed by natural order.
+// Use 64-bit product so (temp+corr)*recip does not overflow before shifting.
 static void jpeg_quantize_block_recip(
     const int16_t * block, const int16_t * dtbl, int16_t * out) {
-  const int sh = (int)(sizeof(int16_t) * 8); /* 16 */
+  const int sh = (int)(sizeof(int16_t) * 8); // 16
   for (int z = 0; z < 64; z++) {
     int nat = (int)gimg_jpeg_zigzag[z];
     int32_t temp = (int32_t)block[nat];
@@ -287,9 +283,8 @@ static void jpeg_quantize_block_recip(
   }
 }
 
-/* Component dimensions in 8×8 blocks (T.81 Annex A: X_i = (X * H_i + H_max*8 -
- * 1)/(H_max*8) in blocks, so width_blocks = (width * h_samp + h_max*8 - 1) /
- * (h_max*8). */
+// Component dimensions in 8×8 blocks (T.81 Annex A: X_i = (X*H_i+H_max*8-1)/(H_max*8)
+// in blocks, so width_blocks = (width*h_samp+h_max*8-1)/(h_max*8).
 static void jpeg_comp_blocks(uint32_t width, uint32_t height, uint8_t h_samp,
     uint8_t v_samp, uint8_t h_max, uint8_t v_max, uint32_t * out_w,
     uint32_t * out_h) {
@@ -299,10 +294,9 @@ static void jpeg_comp_blocks(uint32_t width, uint32_t height, uint8_t h_samp,
   *out_h = (height * (uint32_t)v_samp + denom_h - 1u) / denom_h;
 }
 
-/* Component size in samples per line and per column (T.81 Annex A:
- * X_i = ceil(X*H_i/H_max), Y_i = ceil(Y*V_i/V_max). Used when a component
- * has fewer than 8 samples in a dimension so we replicate into the 8×8 block.)
- */
+// Component size in samples per line and per column (T.81 Annex A:
+// X_i = ceil(X*H_i/H_max), Y_i = ceil(Y*V_i/V_max). Used when a component
+// has fewer than 8 samples in a dimension so we replicate into the 8×8 block.
 static void jpeg_comp_pixels(uint32_t width, uint32_t height, uint8_t h_samp,
     uint8_t v_samp, uint8_t h_max, uint8_t v_max, uint32_t * out_pix_w,
     uint32_t * out_pix_h) {
@@ -353,8 +347,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
   }
   *out_total_blocks = total_blocks;
 
-  /* Reciprocal quantizer tables (libjpeg 8-bit style) when quant_method is
-   * RECIP. */
+  // Reciprocal quantizer tables (libjpeg 8-bit style) when quant_method is RECIP.
   static int16_t recip_luma[64 * RECIP_STRIDE];
   static int16_t recip_chroma[64 * RECIP_STRIDE];
   if (quant_method == GIMG_JPEG_QUANT_RECIP) {
@@ -383,8 +376,8 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
 
   int16_t * out = coef_buffer;
   int16_t block[64];
-  /* Per-component last DC for dummy blocks (T.81 Annex A: padding blocks use
-   * zero AC and DC = previous block DC so diff = 0). */
+  // Per-component last DC for dummy blocks (T.81 Annex A: padding blocks use
+  // zero AC and DC = previous block DC so diff = 0).
   int16_t last_dc[3] = {0, 0, 0};
 
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
@@ -397,16 +390,14 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
         uint32_t ch = comp_h[c];
         uint32_t pix_w = comp_pix_w[c];
         uint32_t pix_h = comp_pix_h[c];
-        /* T.81 Annex A: sample within component dimensions; clamp to pix_w so
-         * we do not read past the buffer when stride equals image width (e.g.
-         * 1×1). */
+        // T.81 Annex A: sample within component dimensions; clamp to pix_w so we do not
+        // read past the buffer when stride equals image width (e.g. 1×1).
         for (uint32_t by = 0; by < (uint32_t)v_samp[c]; by++) {
           for (uint32_t bx = 0; bx < (uint32_t)h_samp[c]; bx++) {
             uint32_t blk_x = mcu_x * (uint32_t)h_samp[c] + bx;
             uint32_t blk_y = mcu_y * (uint32_t)v_samp[c] + by;
             if (blk_x >= cw || blk_y >= ch) {
-              /* T.81 Annex A: padding/dummy block — zero AC, DC = previous DC.
-               */
+              // T.81 Annex A: padding/dummy block — zero AC, DC = previous DC.
               out[0] = last_dc[c];
               for (int i = 1; i < 64; i++)
                 out[i] = 0;
@@ -428,8 +419,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
                 block[row * 8 + col] = (int16_t)((int)s - 128);
               }
             }
-            /* Optional debug: dump Cb (component 1) presamples for comparison
-             * with reference. */
+            // Optional debug: dump Cb (component 1) presamples for comparison with reference.
 #if GIMG_JPEG_DUMP_FIRST_MCU_COEF
             if (c == 1 && mcu_x == 0 && mcu_y == 0 && by == 0 && bx == 0) {
               const char * dump_dir =
@@ -449,8 +439,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
             }
 #endif
             jpeg_fdct_islow(block);
-            /* Optional debug: dump Cb after FDCT (before quant) for comparison.
-             */
+            // Optional debug: dump Cb after FDCT (before quant) for comparison.
 #if GIMG_JPEG_DUMP_FIRST_MCU_COEF
             if (c == 1 && mcu_x == 0 && mcu_y == 0 && by == 0 && bx == 0) {
               const char * dump_dir =
@@ -476,8 +465,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
             else {
               jpeg_quantize_block(block, quant, out);
             }
-            /* Optional: dump first MCU Cb/Cr quantized blocks (zigzag) for
-             * comparison with libjpeg. */
+            // Optional: dump first MCU Cb/Cr quantized blocks (zigzag) for comparison with libjpeg.
 #if GIMG_JPEG_DUMP_FIRST_MCU_COEF
             if (mcu_x == 0 && mcu_y == 0 && by == 0 && bx == 0) {
               const char * dump_dir =
@@ -607,9 +595,9 @@ static void bit_writer_put_bits(jpeg_bit_writer * w,
   }
 }
 
-/* T.81 B.2.2 / B.2.4: the value of padding bits in the final incomplete byte
- * of an entropy-coded segment is unspecified (encoder choice). We fill the
- * partial byte with ones; decoders must not interpret padding as data. */
+// T.81 B.2.2 / B.2.4: the value of padding bits in the final incomplete byte
+// of an entropy-coded segment is unspecified (encoder choice). We fill the
+// partial byte with ones; decoders must not interpret padding as data.
 static void bit_writer_flush(
     jpeg_bit_writer * w, const GIMG_Allocator * alloc) {
   while (w->nbits > 0) {
@@ -692,8 +680,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   uint16_t next_restart = 0;
   size_t mcu_index = 0;
 
-  /* Optional: trace which symbol covers a given bit position (e.g. 247 for byte
-   * 30 LSB). */
+  // Optional: trace which symbol covers a given bit position (e.g. 247 for byte 30 LSB).
   unsigned long trace_bit = 247;
   const char * trace_env = NULL;
 #if GIMG_JPEG_TRACE_BASELINE_BIT_POS
@@ -710,7 +697,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   size_t total_bits = 0;
 
   for (;;) {
-    /* T.81 Annex F: RSTm (m = 0..7) at restart boundaries. */
+    // T.81 Annex F: RSTm (m = 0..7) at restart boundaries.
     if (restart_interval > 0 && mcu_index > 0 &&
         (mcu_index % (size_t)restart_interval) == 0) {
       bit_writer_flush(&w, alloc);
@@ -793,10 +780,9 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
           total_bits += (size_t)nbits;
           bit_writer_put_bits(&w, alloc, (unsigned int)extra, nbits);
         }
-        /* AC coefficients: coef_buffer is already in zigzag order (quantizer
-         * writes out[z]). T.81 F.1.2.2: EOB is sent when the remaining
-         * coefficients are zero; omit EOB when the last coefficient (zigzag 63)
-         * is nonzero (no "remaining" to signal). */
+        // AC coefficients: coef_buffer is already in zigzag order (quantizer writes out[z]).
+        // T.81 F.1.2.2: EOB is sent when the remaining coefficients are zero;
+        // omit EOB when the last coefficient (zigzag 63) is nonzero (no "remaining" to signal).
         int k = 1;
         int ac_eob_emitted = 0;
         int last_encoded_was_63 = 0;
@@ -881,9 +867,9 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
           last_encoded_was_63 = (k == 63);
           k++;
         }
-        /* T.81 Annex F: EOB when remaining are zero. Omit EOB when the last
-         * coefficient (zigzag 63) was just encoded; emit EOB only when we
-         * exited via trailing zeros or when we skipped a coefficient. */
+        // T.81 Annex F: EOB when remaining are zero. Omit EOB when the last coefficient
+        // (zigzag 63) was just encoded; emit EOB only when we exited via trailing zeros
+        // or when we skipped a coefficient.
         if (k >= 64 && !ac_eob_emitted && !last_encoded_was_63) {
           int len0 = ac_tbl->len[0];
           if (entropy_trace_fp && len0 > 0)
@@ -901,9 +887,8 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
     }
 
     mcu_index++;
-    /* T.81 Annex A: encode exactly the number of blocks in the coefficient
-     * buffer (from fill). Break when we have encoded total_blocks blocks or
-     * completed mcu_count MCUs (defensive). */
+    // T.81 Annex A: encode exactly the number of blocks in the coefficient buffer (from fill).
+    // Break when we have encoded total_blocks blocks or completed mcu_count MCUs (defensive).
     if (block_off >= total_blocks || mcu_index >= mcu_count)
       break;
   }
@@ -1040,7 +1025,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
                   &w, alloc, ac_tbl->code[0xF0], ac_tbl->len[0xF0]);
             run -= 16;
           }
-          /* T.81: do not encode past coefficient 63; EOB must be sent when rest are zero. */
+          // T.81: do not encode past coefficient 63; EOB must be sent when rest are zero.
           if (k >= 64) {
             if (ac_tbl->len[0] > 0)
               bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
@@ -1123,7 +1108,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_16bit(uint32_t width,
   }
   *out_total_blocks = total_blocks;
 
-  /* Strides are in elements (uint16_t), not bytes. */
+  // Strides are in elements (uint16_t), not bytes.
   const uint16_t * comps[3] = {comp0, comp1, comp2};
   size_t strides_el[3] = {stride0, stride1, stride2};
   uint32_t comp_w[3], comp_h[3];
@@ -1137,9 +1122,9 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_16bit(uint32_t width,
 
   int16_t * out = coef_buffer;
   int16_t block[64];
-  /* T.81 Annex A: dummy blocks use previous DC, zero AC. */
+  // T.81 Annex A: dummy blocks use previous DC, zero AC.
   int16_t last_dc[3] = {0, 0, 0};
-  /* Level shift for 16-bit: 2^(P-1) = 32768 (T.81). */
+  // Level shift for 16-bit: 2^(P-1) = 32768 (T.81).
   const int32_t level_shift = 32768;
 
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
@@ -1297,11 +1282,9 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
   return GIMG_OK;
 }
 
-/* T.81 Annex G: progressive scan encode. DC scan (Ss=0,Se=0,Ah=0): encode only
- * DC diff per block. AC initial (Ss>=1,Ah=0): encode AC in band [Ss,Se]. DC
- * refinement (Ss=0,Se=0,Ah>0): one bit per block (Al-th bit of DC). AC
- * refinement (Ah>0, Ss..Se): (run,size)+refinement/correction bits per T.81
- * G.1.2.2. */
+// T.81 Annex G: progressive scan encode. DC scan (Ss=0,Se=0,Ah=0): encode only DC diff per block.
+// AC initial (Ss>=1,Ah=0): encode AC in band [Ss,Se]. DC refinement (Ss=0,Se=0,Ah>0): one bit per block.
+// AC refinement (Ah>0, Ss..Se): (run,size)+refinement/correction bits per T.81 G.1.2.2.
 GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
     const uint8_t * h_samp, const uint8_t * v_samp, uint8_t Ss, uint8_t Se,
@@ -1365,7 +1348,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
 
   if (Ss == 0 && Se == 0) {
     if (Ah == 0) {
-      /* DC initial (T.81 Annex G.1.2.1): encode only DC difference per block. */
+      // DC initial (T.81 Annex G.1.2.1): encode only DC difference per block.
       for (;;) {
         if (restart_interval > 0 && mcu_index > 0 &&
             (mcu_index % (size_t)restart_interval) == 0) {
@@ -1428,8 +1411,8 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
       }
     }
     else {
-      /* DC refinement (T.81 Annex G.1.1.2.1): one bit per block (Al-th bit of
-       * DC). Decoder sets block[0] |= (bit << Al). */
+      // DC refinement (T.81 Annex G.1.1.2.1): one bit per block (Al-th bit of DC).
+      // Decoder sets block[0] |= (bit << Al).
       unsigned int bitpos = (Al <= 15u) ? Al : 0;
       for (;;) {
         if (restart_interval > 0 && mcu_index > 0 &&
@@ -1466,9 +1449,8 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     }
   }
   else if (Ah != 0) {
-    /* AC refinement (T.81 Annex G.1.2.2): (run,size=1) + refinement bit for
-     * newly nonzero; correction bits for already-nonzero. state_after_previous
-     * is the coefficient state after the AC initial scan. */
+    // AC refinement (T.81 Annex G.1.2.2): (run,size=1) + refinement bit for newly nonzero;
+    // correction bits for already-nonzero. state_after_previous is coefficient state after AC initial.
     const int16_t * prev = state_after_previous_scan;
     if (!prev) {
       gimg_free(alloc, w.buf);
@@ -1573,7 +1555,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     }
   }
   else {
-    /* AC initial scan (T.81 Annex G.1.2.2): encode AC in band [Ss, Se]. */
+    // AC initial scan (T.81 Annex G.1.2.2): encode AC in band [Ss, Se].
     unsigned int k_start = (unsigned int)Ss;
     unsigned int k_end = (unsigned int)Se;
     if (k_end > 63)
@@ -1665,7 +1647,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
   return GIMG_OK;
 }
 
-/* 16-bit progressive: DC size 0..16, AC 242 symbols. No refinement (Ah!=0). */
+// 16-bit progressive: DC size 0..16, AC 242 symbols. No refinement (Ah!=0).
 GIMG_Result gimg_jpeg_encode_progressive_scan_16bit(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,

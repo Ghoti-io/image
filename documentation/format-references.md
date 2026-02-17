@@ -92,4 +92,14 @@ Short list of dimension/stream edge cases; update when adding tests. See `image/
 
 ---
 
+## Adding a new format
+
+When adding a new format to this document, add a section with:
+
+- **Parts implemented** — What chunks/segments, color models, bit depths, and options are implemented; any “first in priority” or preservation policies.
+- **Conformance and tested scope** — Which spec (and version) is followed; tested scope (e.g. reference data under `tests/data/<format>/`, generators, golden/oracle verification).
+- **Rejected / limitation** (if applicable) — Unsupported markers, precision, or features and the error returned (e.g. `GIMG_ERR_FORMAT`, `GIMG_ERR_UNSUPPORTED`).
+
+Follow the structure of the PNG and JPEG sections above. For compliance checklists or edge-case tables, add subsections as needed (see JPEG compliance checklist and edge cases).
+
 *Other formats (GIF, TIFF, etc.) will be added as those codecs are implemented.*

@@ -140,7 +140,7 @@ See **Codec implementation checklist** below for allocator, limits, safe math, a
 
 4. **Save:** Implement save from **GIMG_Doc** to stream for the codec’s format name; apply metadata policy (PRESERVE_ALL, STRIP_GPS, NORMALIZE_EXIF, etc.) as documented in format-references and api-options.
 
-5. **Tests:** Add decode/encode tests (and round-trip if applicable); use shared test helpers where possible. Add fuzz coverage for load/decode and, if feasible, save. Ensure limits and failure-path tests cover the new codec.
+5. **Tests:** Add decode/encode tests (and round-trip if applicable); use shared test helpers where possible. Add a `tests/data/<format>/` directory with a manifest or generator and a verify script (or equivalent), consistent with PNG and JPEG. Add fuzz coverage for load/decode and, if feasible, save. Ensure limits and failure-path tests cover the new codec. Document round-trip and oracle strategy: at least one round-trip test (save→load→decode) and, if available, an external oracle (e.g. reference decoder) for decode correctness; see format-references and tests/data/png/ and tests/data/jpeg/ for reference.
 
 6. **Docs:** Update `documentation/format-references.md` and option docs for format-specific behavior and limits.
 
@@ -150,7 +150,7 @@ When implementing a new codec (or auditing an existing one), ensure:
 
 - **Allocator:** Use the codec allocator (`codec->allocator`) for all codec-owned allocations (load, decode, save). Document and raster creation use `doc->allocator` (set at load from the codec allocator). Do not use `gimg_allocator_default()` when a codec or document allocator is available; pass the allocator explicitly so tests and embedders can use custom allocators end-to-end.
 - **Limits:** Enforce **GIMG_Limits** at the appropriate points: `max_chunk_size` (or equivalent segment/payload size) before reading large payloads; `max_decoded_pixels` before allocating decode buffers; `max_frame_count` for animated formats. Return **GIMG_ERR_LIMIT** when exceeded; append diagnostics when provided. See @ref api_options "API Options and Types" and the “Limits per codec” subsection in this document.
-- **Safe math:** Use helpers from `safe_math_internal.h` (e.g. `gimg_safe_pixel_count()`, `gimg_safe_mul_size()`, `gimg_safe_add_size()`) for all size and pixel-count calculations that feed allocations or comparisons to limits. **Checklist for new codecs:** Validate every length/size field read from the stream before allocating or indexing; use safe_math for any derived buffer size.
+- **Safe math:** Use helpers from `safe_math_internal.h` (e.g. `gimg_safe_pixel_count()`, `gimg_safe_mul_size()`, `gimg_safe_add_size()`) for all size and pixel-count calculations that feed allocations or comparisons to limits. **Checklist for new codecs:** Validate all length/size fields read from the stream before allocating or indexing; use safe_math for any derived buffer size.
 - **Output parameters and cleanup:** Set `*out_doc` or `*out_raster` to **NULL** before any work in load/decode. On error, free any partially allocated state (e.g. via the codec’s free_doc_state or equivalent) and return without setting the output parameter. The central dispatch in `codec.c` also clears `*out_raster` on decode callback failure.
 - **Spec alignment:** Document implemented parts, conformance scope, and rejected/unsupported features in `documentation/format-references.md` (see PNG and JPEG sections as the reference structure).
 
@@ -178,6 +178,10 @@ variable when the category is enabled at compile time.
 non-byte-aligned streams. They are not part of T.81; use only for recovery.
 Set `GIMG_JPEG_RECOVER_STUFF_ZERO=1` to enable recover_stuff_zero (treat missing
 bits at segment end as 0). Do not set pad_at_eob for normal decode.
+
+**Other codecs (e.g. PNG):** If adding debug or trace in the future, use
+compile-time defines in a single internal header (e.g. `png_debug_internal.h`)
+rather than environment variables, consistent with JPEG.
 
 ## Sanitizers (ASan / UBSan)
 

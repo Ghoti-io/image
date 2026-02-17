@@ -60,11 +60,10 @@ static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
     return 0;
   }
   if (m >= 0xD0 && m <= 0xD7) {
-    /* RST (T.81 3.1.110): only skip when decoder expects RST at this position
-     * (start of restart interval), matching libjpeg read_restart_marker. */
+    // RST (T.81 3.1.110): only skip when decoder expects RST at this position
+    // (start of restart interval), matching libjpeg read_restart_marker.
     if (!bs->expect_rst) {
-      return 0; /* treat 0xFF 0xDx as entropy data (invalid stream if RST
-                   misaligned) */
+      return 0; // treat 0xFF 0xDx as entropy data (invalid stream if RST misaligned)
     }
     bs->expect_rst = 0;
 #if GIMG_JPEG_DEBUG_RST_DEC

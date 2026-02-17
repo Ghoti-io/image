@@ -135,7 +135,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
   const GIMG_Allocator * alloc = state->allocator;
   alloc = gimg_alloc_or_default(alloc);
 
-  /* Per-component dimensions in samples (T.81): X_i = ceil(X*H_i/H_max). */
+  // Per-component dimensions in samples (T.81): X_i = ceil(X*H_i/H_max).
   uint32_t comp_w[GIMG_JPEG_MAX_COMPONENTS];
   uint32_t comp_h[GIMG_JPEG_MAX_COMPONENTS];
   for (uint8_t i = 0; i < num_comp; i++) {
@@ -197,11 +197,11 @@ static GIMG_Result jpeg_decode_baseline_extended(
           memset(dc_pred, 0, sizeof(dc_pred));
           bs.rst_just_skipped = 0;
         }
-        /* Encoder byte-aligns before RST (bit_writer_flush), so we only see
-         * 0xFF 0xDx at the start of the first block after each RST. Set
-         * expect_rst before MCU ri, 2*ri, ... so align_skip_rst skips there. */
+        // Encoder byte-aligns before RST (bit_writer_flush), so we only see
+        // 0xFF 0xDx at the start of the first block after each RST. Set
+        // expect_rst before MCU ri, 2*ri, ... so align_skip_rst skips there.
         if (mcu_index > 0 && mcu_index % (uint32_t)restart_interval == 0) {
-          bs.expect_rst = 1; /* T.81 3.1.110: next 0xFF 0xD0..0xD7 is RST */
+          bs.expect_rst = 1; // T.81 3.1.110: next 0xFF 0xD0..0xD7 is RST
         }
       }
       for (uint8_t s = 0; s < scan0->comp_count; s++) {
@@ -275,7 +275,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
       }
     }
     if (restart_interval > 0 && bs.rst_just_skipped) {
-      bs.rst_just_skipped = 0; /* clear after all components of this MCU */
+      bs.rst_just_skipped = 0; // clear after all components of this MCU
     }
   }
 
@@ -461,8 +461,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     }
   }
   if (GIMG_JPEG_DEBUG_BASELINE_FAIL) {
-    /* Sanity: AC Th=1 first 3-bit symbol should be EOB (0x00) per T.81 Table
-     * K.6. */
+    // Sanity: AC Th=1 first 3-bit symbol should be EOB (0x00) per T.81 Table K.6.
     if (state->huff_ac[1] && state->huff_ac_len[1] >= 17 + 2) {
       const unsigned char * bits = state->huff_ac[1] + 1;
       if (bits[2] >= 1) {
@@ -527,7 +526,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   const GIMG_Allocator * alloc = state->allocator;
   alloc = gimg_alloc_or_default(alloc);
 
-  /* Per-component dimensions in samples (T.81): X_i = ceil(X*H_i/H_max). */
+  // Per-component dimensions in samples (T.81): X_i = ceil(X*H_i/H_max).
   uint32_t comp_w[GIMG_JPEG_MAX_COMPONENTS];
   uint32_t comp_h[GIMG_JPEG_MAX_COMPONENTS];
   for (uint8_t i = 0; i < num_comp; i++) {
@@ -565,8 +564,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   gimg_jpeg_bitstream_t bs;
   jpeg_bitstream_init(&bs, scan0->data, scan0->data_size);
 
-  /* Step 2: log first 80 bytes of scan data as seen by decoder (compare to
-   * encoder buffer). */
+  // Step 2: log first 80 bytes of scan data as seen by decoder (compare to encoder buffer).
   {
 #if GIMG_JPEG_DEBUG_SCAN_LOADED
     const char * dbg_scan = "1";
@@ -610,8 +608,8 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
       uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
       if (restart_interval > 0) {
-        /* dc_pred is reset in decode_block when rst_just_skipped; do not clear
-         * here or the next MCU would use predictor 0 and corrupt. */
+        // dc_pred is reset in decode_block when rst_just_skipped; do not clear
+        // here or the next MCU would use predictor 0 and corrupt.
         if (mcu_index > 0 && mcu_index % (uint32_t)restart_interval == 0) {
           bs.expect_rst = 1;
         }
@@ -727,12 +725,11 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
               (void)fflush(stderr);
             }
 
-            /* Bit-by-bit debug: first MCU coefficients and pipeline (compare to
-             * encoder dump). */
+            // Bit-by-bit debug: first MCU coefficients and pipeline (compare to encoder dump).
             if (mcu_x == 0 && mcu_y == 0 &&
                 GIMG_JPEG_TRACE_BASELINE_FIRST_MCU) {
               unsigned linear = (unsigned)block_counter_8 -
-                  1u; /* 0-based to match encoder block_0.bin */
+                  1u; // 0-based to match encoder block_0.bin
               (void)fprintf(stderr,
                   "BLOCK_DEC linear=%u comp=%u by=%u bx=%u ZIG:", linear,
                   (unsigned)comp_idx, (unsigned)by, (unsigned)bx);
@@ -747,8 +744,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
               for (int i = 0; i < 64; i++)
                 (void)fprintf(stderr, " %d", (int)block_rz[i]);
               (void)fprintf(stderr, "\n");
-              /* For chroma (Cr block linear==5), compare integer IDCT to float
-               * IDCT on same DEQUANT. */
+              // For chroma (Cr block linear==5), compare integer IDCT to float IDCT on same DEQUANT.
               if (linear == 5) {
                 int16_t idct_float[64];
                 jpeg_idct_8x8(block_q, idct_float);
@@ -1144,7 +1140,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
   uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
   uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
 
-  /* Per-component dimensions in samples (T.81): X_i = ceil(X*H_i/H_max). */
+  // Per-component dimensions in samples (T.81): X_i = ceil(X*H_i/H_max).
   uint32_t comp_w[GIMG_JPEG_MAX_COMPONENTS];
   uint32_t comp_h[GIMG_JPEG_MAX_COMPONENTS];
   for (uint8_t i = 0; i < num_comp; i++) {
@@ -1263,15 +1259,14 @@ static GIMG_Result jpeg_decode_progressive_extended(
         }
       }
       else if (!ac_src && ac_len == 0 && ac_tables[ac_id].num_values == 0) {
-        /* Refinement scans (Ah!=0) use only the AC refinement table (Ta=2);
-         * no initial AC table is required (T.81 G.1.1.2.2). */
+        // Refinement scans (Ah!=0) use only the AC refinement table (Ta=2);
+        // no initial AC table is required (T.81 G.1.1.2.2).
         if ((int)scan->ah == 0) {
           goto prog_ext_fail;
         }
       }
-      /* T.81 B.2.4: DHT defines tables for following scans. Refinement scan
-       * (Ah!=0) requires a valid AC refinement table (G.1.1.2.2); reject if
-       * build fails. */
+      // T.81 B.2.4: DHT defines tables for following scans. Refinement scan
+      // (Ah!=0) requires a valid AC refinement table (G.1.1.2.2); reject if build fails.
       if (ac_refine_src && ac_refine_len > 0) {
         if (jpeg_build_huff_table(
                 ac_refine_src, ac_refine_len, &ac_refine_tables[ac_id]) != 0) {
@@ -1279,7 +1274,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
         }
       }
       else if ((int)scan->ah != 0) {
-        /* T.81 Table K.6: default AC refinement table when no DHT in file. */
+        // T.81 Table K.6: default AC refinement table when no DHT in file.
         if (jpeg_build_huff_table(gimg_jpeg_default_ac_refine_dht_payload,
                 sizeof(gimg_jpeg_default_ac_refine_dht_payload),
                 &ac_refine_tables[ac_id]) != 0) {
@@ -1287,11 +1282,10 @@ static GIMG_Result jpeg_decode_progressive_extended(
         }
       }
     }
-    /* T.81 B.2.2: segment ends at next marker; padding bit value unspecified.
-     * We track expected block count and treat underflow in the last block as
-     * EOB/0 so we do not assume 0 or 1 for padding (spec compliance,
-     * third-party files). Do not set pad_at_eob — use last-block underflow
-     * handling instead. */
+    // T.81 B.2.2: segment ends at next marker; padding bit value unspecified.
+    // We track expected block count and treat underflow in the last block as EOB/0
+    // so we do not assume 0 or 1 for padding (spec compliance, third-party files).
+    // Do not set pad_at_eob — use last-block underflow handling instead.
     size_t blocks_per_mcu_prog = 0;
     for (uint8_t s = 0; s < scan->comp_count; s++) {
       uint8_t comp_idx = 0;
@@ -1319,7 +1313,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     {
       const char * e = getenv("GIMG_JPEG_RECOVER_STUFF_ZERO");
       if (e && e[0] == '1') {
-        bs.recover_stuff_zero = 1; /* Opt-in recovery only; not from T.81. */
+        bs.recover_stuff_zero = 1; // Opt-in recovery only; not from T.81.
       }
     }
     uint16_t restart_interval = state->restart_interval;
@@ -1405,9 +1399,8 @@ static GIMG_Result jpeg_decode_progressive_extended(
                   }
                 }
                 else {
-                  /* T.81 G.1.1.2.2: AC refinement uses only the refinement
-                   * table (Ta selects it). Do not fall back to initial AC
-                   * table (may be unbuilt for Ta=2). Require valid table. */
+                  // T.81 G.1.1.2.2: AC refinement uses only the refinement table (Ta selects it).
+                  // Do not fall back to initial AC table (may be unbuilt for Ta=2). Require valid table.
                   const gimg_jpeg_huff_table_t * ac_ref_tbl =
                       &ac_refine_tables[scan->ac_tbl[s]];
                   if (ac_ref_tbl->num_values == 0) {
@@ -1457,7 +1450,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
   int16_t block_rz[64];
   int32_t block_q[64];
   int32_t block_idct[64];
-  int16_t block_q_16[64]; /* 8-bit path: dequant output for islow IDCT */
+  int16_t block_q_16[64]; // 8-bit path: dequant output for islow IDCT
   for (uint8_t comp_idx = 0; comp_idx < num_comp; comp_idx++) {
     uint8_t qid = sof->quant_tbl_id[comp_idx];
     if (qid >= GIMG_JPEG_MAX_QUANT_TABLES || !state->quant_tbl_present[qid]) {
@@ -1474,9 +1467,8 @@ static GIMG_Result jpeg_decode_progressive_extended(
         uint32_t dst_x = bx * 8;
         uint32_t dst_y = by * 8;
         if (precision == 8) {
-          /* Same pipeline as baseline 8-bit: dequant (int16_t) + islow IDCT.
-           * Chroma may underflow/overflow (TBD: match baseline or use 32-bit).
-           */
+          // Same pipeline as baseline 8-bit: dequant (int16_t) + islow IDCT.
+          // Chroma may underflow/overflow (TBD: match baseline or use 32-bit).
           jpeg_dequantise(block_rz, quant, block_q_16);
           jpeg_idct_8x8_islow(block_q_16, block_rz);
           if (comp_idx == 1 && by == 0 && bx == 0 &&
@@ -1538,8 +1530,8 @@ static GIMG_Result jpeg_decode_progressive_extended(
     gimg_free(alloc, coef_blocks[i]);
   }
 
-  /* For 8-bit precision we used islow IDCT and stored 0..255 in comp_buf;
-   * output 8-bit raster (GRAY8/RGBA8) to match baseline decode. */
+  // For 8-bit precision we used islow IDCT and stored 0..255 in comp_buf;
+  // output 8-bit raster (GRAY8/RGBA8) to match baseline decode.
   const int prog_8bit = (precision == 8);
 
   GIMG_Result r;
@@ -1560,8 +1552,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     }
   }
   else if (prog_8bit && num_comp == 3) {
-    /* 8-bit colour: comp_buf holds 0..255; use same chroma and RGB as baseline.
-     */
+    // 8-bit colour: comp_buf holds 0..255; use same chroma and RGB as baseline.
     unsigned char * comp_buf_8[GIMG_JPEG_MAX_COMPONENTS];
     size_t comp_size_8[GIMG_JPEG_MAX_COMPONENTS];
     for (uint8_t i = 0; i < num_comp; i++) {

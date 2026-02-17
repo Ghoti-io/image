@@ -474,7 +474,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_16bit(uint32_t width,
 GIMG_Result gimg_jpeg_write_ac_refine_dht(
     GIMG_Stream * stream, size_t * out_bytes_written);
 
-/* IDCT module: dezigzag, dequantise, 8x8 inverse DCT (used by jpeg_entropy.c). */
+// IDCT module: dezigzag, dequantise, 8x8 inverse DCT (used by jpeg_entropy.c).
 void jpeg_dezigzag(const int16_t * block, int16_t * out);
 void jpeg_dequantise(
     const int16_t * block, const uint16_t * quant, int16_t * out);
@@ -484,8 +484,8 @@ void jpeg_idct_8x8(const int16_t * in, int16_t * out);
 void jpeg_idct_8x8_32(const int32_t * in, int32_t * out, int scale);
 void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out);
 
-/* Bitstream module: init, read bits, skip RST, build Huffman table, decode
- * symbol, extend (used by jpeg_block.c and jpeg_entropy.c). */
+// Bitstream module: init, read bits, skip RST, build Huffman table, decode
+// symbol, extend (used by jpeg_block.c and jpeg_entropy.c).
 void jpeg_bitstream_init(
     gimg_jpeg_bitstream_t * bs, const unsigned char * data, size_t size);
 int jpeg_build_huff_table(
@@ -500,7 +500,7 @@ int jpeg_bitstream_read_bits(gimg_jpeg_bitstream_t * bs, int n);
 int16_t jpeg_extend(int val, int n);
 void jpeg_bitstream_align_skip_rst(gimg_jpeg_bitstream_t * bs);
 
-/* Block module: decode one 8×8 block (baseline + progressive). */
+// Block module: decode one 8×8 block (baseline + progressive).
 GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * dc_tbl,
     const gimg_jpeg_huff_table_t * ac_tbl, int16_t * block,
@@ -522,11 +522,11 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(
     int16_t * block, int ss, int se, int al, int do_trace, int trace_block_id,
     int log_sanity, int trace_all, int trace_scan_idx, int is_last_block);
 
-/* Upsample module: chroma upsampling (used by jpeg_entropy.c). */
+// Upsample module: chroma upsampling (used by jpeg_entropy.c).
 int jpeg_chroma_sample_fancy_2h2v(const unsigned char * buf,
     size_t stride, uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
 
-/* Parse module: segment payload → doc state (used by jpeg_load.c). */
+// Parse module: segment payload → doc state (used by jpeg_load.c).
 GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
     uint8_t sof_marker, gimg_jpeg_sof_t * sof);
 void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,

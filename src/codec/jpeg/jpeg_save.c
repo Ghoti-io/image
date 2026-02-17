@@ -151,7 +151,7 @@ static GIMG_Result jpeg_write_scan_data_with_stuffing(GIMG_Stream * stream,
     if (b == 0xFF && (i + 1) < scan_size) {
       unsigned char next = scan_data[i + 1];
       if (next == 0x00 || (next >= 0xD0 && next <= 0xD7)) {
-        /* Already stuffed by encoder, or RST marker: do not add stuffing. */
+        // Already stuffed by encoder, or RST marker: do not add stuffing.
         continue;
       }
     }
@@ -233,16 +233,15 @@ static void jpeg_build_minimal_app0(
  * FIX(x) = (x * 65536 + 0.5) for rounding. */
 static void jpeg_rgb_to_ycbcr(
     uint8_t r, uint8_t g, uint8_t b, uint8_t * y, uint8_t * cb, uint8_t * cr) {
-  /* Y  = 0.299*R + 0.587*G + 0.114*B; FIX(0.299)=19595, FIX(0.587)=38470,
-   * FIX(0.114)=7471; +ONE_HALF for B */
+  // Y  = 0.299*R + 0.587*G + 0.114*B; FIX(0.299)=19595, FIX(0.587)=38470, FIX(0.114)=7471; +ONE_HALF for B
   int32_t yv =
       (19595 * (int32_t)r + 38470 * (int32_t)g + 7471 * (int32_t)b + 32768) >>
       16;
-  /* Cb = -0.16874*R - 0.33126*G + 0.5*B + 128 (CBCR_OFFSET + ONE_HALF - 1). */
+  // Cb = -0.16874*R - 0.33126*G + 0.5*B + 128 (CBCR_OFFSET + ONE_HALF - 1).
   int32_t cbv = (-11059 * (int32_t)r - 21709 * (int32_t)g + 32768 * (int32_t)b +
                     8421375) >>
       16;
-  /* Cr = 0.5*R - 0.41869*G - 0.08131*B + 128 */
+  // Cr = 0.5*R - 0.41869*G - 0.08131*B + 128
   int32_t crv =
       (32768 * (int32_t)r - 27439 * (int32_t)g - 5331 * (int32_t)b + 8421375) >>
       16;
@@ -376,8 +375,7 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
   uint16_t * use_cr = comp_cr;
   if (num_components == 3 && chroma_subsampling != CHROMA_444) {
     if (chroma_subsampling == CHROMA_420) {
-      /* T.81 Annex A: expand chroma to fill integral DCT blocks (output_cols =
-       * width_in_blocks*8). */
+      // T.81 Annex A: expand chroma to fill integral DCT blocks (output_cols = width_in_blocks*8).
       uint32_t mcu_per_row = (width + 15u) / 16u;
       uint32_t cw = 8u * mcu_per_row;
       uint32_t ch = (height + 1u) / 2u;
@@ -409,9 +407,8 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
         }
         return GIMG_ERR_OOM;
       }
-      /* T.81 Annex A: chroma has (width+1)/2 samples per line for 2h; fill to
-       * width_in_blocks*8 by replicating the last sample (Annex A data unit
-       * alignment; downsampler output width = compptr->width_in_blocks*8). */
+      // T.81 Annex A: chroma has (width+1)/2 samples per line for 2h; fill to width_in_blocks*8
+      // by replicating the last sample (Annex A data unit alignment).
       uint32_t real_cw = (width + 1u) / 2u;
       if (real_cw == 0u) {
         real_cw = 1u;
@@ -442,13 +439,12 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
               (uint32_t)comp_cr[y_lo * (size_t)width + x1] +
               (uint32_t)comp_cr[y1 * (size_t)width + x_lo] +
               (uint32_t)comp_cr[y1 * (size_t)width + x1];
-          /* Ordered-dither rounding for 2×2 box: bias 1,2,1,2 per column (T.81
-           * does not specify filter). */
+          // Ordered-dither rounding for 2×2 box: bias 1,2,1,2 per column (T.81 does not specify filter).
           unsigned bias_16 = 1u + (cb_x % 2u);
           use_cb[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cb + bias_16) / 4);
           use_cr[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cr + bias_16) / 4);
         }
-        /* Replicate rightmost chroma column to fill to cw (T.81 Annex A). */
+        // Replicate rightmost chroma column to fill to cw (T.81 Annex A).
         for (uint32_t cb_x = real_cw; cb_x < cw; cb_x++) {
           use_cb[cb_y * (size_t)cw + cb_x] =
               use_cb[cb_y * (size_t)cw + (real_cw - 1u)];
@@ -633,8 +629,8 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
     uint32_t * out_height, int * out_num_components, uint8_t out_h_samp[3],
     uint8_t out_v_samp[3]) {
-  /* Quality 100 triggers a known round-trip decode failure (ac_run_overflow);
-   * reject to avoid producing JPEG that our decoder cannot read. */
+  // Quality 100 triggers a known round-trip decode failure (ac_run_overflow);
+  // reject to avoid producing JPEG that our decoder cannot read.
   if (quality >= 100) {
     return GIMG_ERR_UNSUPPORTED;
   }
@@ -963,8 +959,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   }
   unsigned char * scan_data = NULL;
   size_t scan_size = 0;
-  /* T.81 Annex F: baseline sequential uses DC table for DC then AC table for
-   * AC 1..63 per block; not (0,63) band with AC table only. */
+  // T.81 Annex F: baseline sequential uses DC table for DC then AC table for AC 1..63 per block.
   r = gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(width, height,
       num_components, coef_buf, out_blocks, h_samp, v_samp, alloc,
       restart_interval, &scan_data, &scan_size);
@@ -1143,8 +1138,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
 
   if (num_components == 3 && chroma_subsampling != CHROMA_444) {
     if (chroma_subsampling == CHROMA_420) {
-      /* T.81 Annex A: expand chroma to fill integral DCT blocks (output_cols =
-       * width_in_blocks*8). */
+      // T.81 Annex A: expand chroma to fill integral DCT blocks (output_cols = width_in_blocks*8).
       uint32_t mcu_per_row = (width + 15u) / 16u;
       uint32_t cw = 8u * mcu_per_row;
       uint32_t ch = (height + 1u) / 2u;
@@ -1201,8 +1195,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
               (unsigned)comp_cr[y_lo * (size_t)width + x1] +
               (unsigned)comp_cr[y1 * (size_t)width + x_lo] +
               (unsigned)comp_cr[y1 * (size_t)width + x1];
-          /* Ordered-dither rounding for 2×2 box: bias 1,2,1,2 per column (T.81
-           * does not specify filter). */
+          // Ordered-dither rounding for 2×2 box: bias 1,2,1,2 per column (T.81 does not specify filter).
           unsigned bias = 1u + (cb_x % 2u);
           use_cb[cb_y * (size_t)cw + cb_x] =
               (unsigned char)((sum_cb + bias) / 4);
@@ -1505,9 +1498,8 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     }
 #endif
 #if GIMG_JPEG_DUMP_FIRST_N_BLOCKS_COEF
-    /* Dump first N coefficient blocks (block_000.bin .. block_(N-1).bin) for
-     * comparison with reference encoder. T.81 Annex A block order; 64 int16_t
-     * per file, zigzag order. */
+    // Dump first N coefficient blocks (block_000.bin .. block_(N-1).bin) for comparison with
+    // reference encoder. T.81 Annex A block order; 64 int16_t per file, zigzag order.
     {
       const char * n_blocks_dir =
           getenv("GIMG_JPEG_DUMP_FIRST_N_BLOCKS_COEF");
@@ -1764,7 +1756,7 @@ GIMG_Result gimg_jpeg_write_standard_dht_extended(
 GIMG_Result gimg_jpeg_write_ac_refine_dht(
     GIMG_Stream * stream, size_t * out_bytes_written) {
   size_t total = 0;
-  /* Th=2 (table 2) so SOS Ta=2 selects this refinement table (T.81 B.2.4). */
+  // Th=2 (table 2) so SOS Ta=2 selects this refinement table (T.81 B.2.4).
   GIMG_Result r = jpeg_write_one_dht(stream, 0x12, gimg_jpeg_std_ac_refine_bits,
       gimg_jpeg_std_ac_refine_vals, GIMG_JPEG_AC_REFINE_VALS, &total);
   if (r != GIMG_OK) {
@@ -1909,7 +1901,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
       }
     }
   }
-  /* T.81 B.2.2: frame header (SOF) before table specifications (DHT). */
+  // T.81 B.2.2: frame header (SOF) before table specifications (DHT).
   {
     uint8_t sof_marker = GIMG_JPEG_MARKER_SOF0;
     if (precision == 12) {
@@ -1919,7 +1911,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
       sof_marker = GIMG_JPEG_MARKER_SOF2;
     }
     uint8_t prec_byte = (uint8_t)(precision < 8 ? 8 : precision);
-    /* SOF Lf = 8 + 3*Nc (T.81 B.2.2); payload = Lf - 2 = 6 + 3*Nc bytes. */
+    // SOF Lf = 8 + 3*Nc (T.81 B.2.2); payload = Lf - 2 = 6 + 3*Nc bytes.
     uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
     size_t sof_payload = 6 + 3 * (size_t)num_components;
     r = jpeg_write_marker(stream, sof_marker, &n);
@@ -1965,7 +1957,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     }
     n += dht_written;
   }
-  /* T.81: DRI after SOF, before SOS. */
+  // T.81: DRI after SOF, before SOS.
   r = jpeg_write_dri(stream, restart_interval, &n);
   if (r != GIMG_OK) {
     return r;
@@ -2054,7 +2046,7 @@ static GIMG_Result jpeg_validate_progressive_config(
       return GIMG_ERR_UNSUPPORTED;
     }
   }
-  /* T.81 Annex G: initial AC bands [Ss,Se] (Ah=0, Ss>=1) must not overlap. */
+  // T.81 Annex G: initial AC bands [Ss,Se] (Ah=0, Ss>=1) must not overlap.
   for (unsigned i = 0; i < config->scan_count; i++) {
     uint8_t Ss_i = config->scans[i].Ss;
     uint8_t Se_i = config->scans[i].Se;
@@ -2071,7 +2063,7 @@ static GIMG_Result jpeg_validate_progressive_config(
       if (!ac_initial_j) {
         continue;
       }
-      /* Bands [Ss_i, Se_i] and [Ss_j, Se_j] overlap iff Ss_i <= Se_j && Ss_j <= Se_i */
+      // Bands [Ss_i, Se_i] and [Ss_j, Se_j] overlap iff Ss_i <= Se_j && Ss_j <= Se_i
       if (Ss_i <= (unsigned)Se_j && Ss_j <= (unsigned)Se_i) {
         return GIMG_ERR_UNSUPPORTED;
       }
@@ -2202,8 +2194,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     }
     n += written;
   }
-  /* State after AC initial scan so refinement scan can tell newly vs already
-   * nonzero. */
+  // State after AC initial scan so refinement scan can tell newly vs already nonzero.
   int16_t * ac_initial_state = NULL;
   if (scan_count >= 2) {
     int need_state = 0;
@@ -2339,8 +2330,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return GIMG_ERR_UNSUPPORTED; // No raster and not loaded by us.
   }
 
-  /* When jpeg_precision is 8, 12, or 16 and raster depth differs, convert via
-   * library bit-depth API (T.81 / first-class). */
+  // When jpeg_precision is 8, 12, or 16 and raster depth differs, convert via library bit-depth API.
   if (options && (options->jpeg_precision == 8 || options->jpeg_precision == 12
                       || options->jpeg_precision == 16)) {
     uint8_t want_bits = options->jpeg_precision;
@@ -2422,9 +2412,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   if (r != GIMG_OK) {
     return r;
   }
-  /* Use progressive image body when we have coefficient buffer (8-bit
-   * progressive, or 12/16-bit which use coef path for both baseline and
-   * progressive). */
+  // Use progressive image body when we have coefficient buffer (8-bit progressive, or 12/16-bit
+  // which use coef path for both baseline and progressive).
   bool use_progressive_body = (coef_buffer != NULL);
   if (use_progressive_body) {
     if (!coef_buffer) {

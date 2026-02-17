@@ -84,7 +84,7 @@ void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
     for (int i = 1; i <= (int)GIMG_JPEG_DHT_BIT_COUNTS; i++) {
       num_symbols += p[i];
     }
-    /* T.81 B.2.4: number of value bytes must equal sum of the 16 bit counts. */
+    // T.81 B.2.4: number of value bytes must equal sum of the 16 bit counts.
     if (th >= 4 || remain < GIMG_JPEG_DHT_HEADER_LEN + num_symbols) {
       break;
     }
