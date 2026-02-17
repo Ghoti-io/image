@@ -636,6 +636,26 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       seen_sof = true;
       break;
     }
+    /* Unsupported SOF (T.81: SOF3 lossless, SOF5–SOF7 differential, SOF9–SOF15).
+     * Reject explicitly so the caller gets a clear error instead of "no SOF". */
+    case GIMG_JPEG_MARKER_SOF3:
+    case 0xC5:
+    case 0xC6:
+    case 0xC7:
+    case 0xC9:
+    case 0xCA:
+    case 0xCB:
+    case 0xCD:
+    case 0xCE:
+    case 0xCF: {
+      if (payload_buf) {
+        gimg_free(alloc, payload_buf);
+      }
+      jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_UNSUPPORTED,
+          "unsupported SOF marker");
+      gimg_jpeg_free_doc_state(codec, state);
+      return GIMG_ERR_UNSUPPORTED;
+    }
     case GIMG_JPEG_MARKER_DQT: {
       // DQT: one or more tables. Each table: 1 byte (Pq<<4|Tq), then 64 or 128
       // bytes.

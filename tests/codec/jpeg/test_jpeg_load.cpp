@@ -716,6 +716,26 @@ TEST(JpegLoad, Sof1Precision16Rejected) {
   gimg_stream_destroy(stream);
 }
 
+/** Task 2.3.3.2: Unsupported SOF markers (e.g. SOF3 lossless) must be rejected. */
+TEST(JpegLoad, UnsupportedSofRejected) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF3 (0xC3) lossless: same payload layout as SOF0 but marker not supported
+  append(buf,
+      (const unsigned char *)"\xFF\xC3\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  GIMG_Stream * stream = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &stream);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(stream, nullptr, nullptr, &doc);
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(doc, nullptr);
+  EXPECT_TRUE(r == GIMG_ERR_UNSUPPORTED || r == GIMG_ERR_FORMAT)
+      << "SOF3 (lossless) must be rejected (not supported)";
+  gimg_stream_destroy(stream);
+}
+
 TEST(JpegLoad, Sof1AcceptedFor8bit) {
   // SOF1 (extended sequential) with 8-bit: load succeeds (same as baseline).
   std::vector<uint8_t> buf;
