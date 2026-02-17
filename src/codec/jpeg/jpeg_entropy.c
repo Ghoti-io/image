@@ -360,29 +360,30 @@ static int jpeg_bitstream_read_bits(gimg_jpeg_bitstream_t * bs, int n) {
 }
 
 /** Build Huffman decode table from DHT payload (TcTh byte + 16 counts +
- * symbols). Contract: dht != NULL, dht_len >= 17 and dht_len >= 17 + sum(bits[1..16])
- * (T.81 B.2.4); tbl != NULL. Returns 0 on success, -1 if payload is invalid. */
+ * symbols). Contract: dht != NULL, dht_len >= GIMG_JPEG_DHT_HEADER_LEN and
+ * dht_len >= GIMG_JPEG_DHT_HEADER_LEN + sum(bits[1..16]) (T.81 B.2.4); tbl != NULL.
+ * Returns 0 on success, -1 if payload is invalid. */
 static int jpeg_build_huff_table(
     const unsigned char * dht, size_t dht_len, gimg_jpeg_huff_table_t * tbl) {
-  if (dht_len < 17) {
+  if (dht_len < GIMG_JPEG_DHT_HEADER_LEN) {
     return -1;
   }
   const unsigned char * bits = dht + 1;
   size_t num_syms = 0;
-  for (int i = 0; i < 16; i++) {
+  for (unsigned int i = 0; i < GIMG_JPEG_DHT_BIT_COUNTS; i++) {
     num_syms += bits[i];
   }
   /* T.81 B.2.4: DHT value bytes must equal sum of the 16 bit counts. */
-  if (dht_len < 17 + num_syms) {
+  if (dht_len < GIMG_JPEG_DHT_HEADER_LEN + num_syms) {
     return -1;
   }
-  const unsigned char * vals = dht + 17;
+  const unsigned char * vals = dht + GIMG_JPEG_DHT_HEADER_LEN;
   tbl->num_values = (int)num_syms;
 
   /* Canonical code assignment per T.81 Annex C. */
   uint32_t code = 0;
   uint16_t base = 0;
-  for (int len = 1; len <= 16; len++) {
+  for (int len = 1; len <= (int)GIMG_JPEG_DHT_BIT_COUNTS; len++) {
     uint8_t count = bits[len - 1];
     tbl->min_code[len] = (uint16_t)code;
     if (count > 0) {
@@ -1075,7 +1076,8 @@ static GIMG_Result jpeg_decode_block_progressive_dc_refine(
 }
 
 /** Progressive AC initial (Ah=0): decode band [ss, se], store (value << al).
- *  T.81 Annex G: (0,0)=EOB; (15,0)=ZRL (16 zero coeffs); (r,0) r=1..14 = EOB
+ * Algorithm: Huffman (run,size), EOB/(r,0)/ZRL; extend value, place at k; repeat.
+ * T.81 Annex G: (0,0)=EOB; (15,0)=ZRL (16 zero coeffs); (r,0) r=1..14 = EOB
  * with run length EOBRUN = 2^r + next r bits (then skip EOBRUN-1 following
  * blocks). If out_eobrun is non-NULL we implement EOBRUN; else (r,0) r!=15 is
  * error. If do_trace, emit TRACE_JPEG_AC_SYMBOLS [block=N] run=X size=Y val=Z
@@ -1416,7 +1418,8 @@ static GIMG_Result jpeg_decode_block_progressive_ac_initial(
  *  When trace_all is 1, log every decoding step.
  *  is_last_block: when 1, underflow treated as EOB or 0 (T.81 B.2.2 padding
  * unspecified).
- */
+ * Summary: one refinement bit per coefficient in band [ss,se]; (r,0)+EOBRUN for
+ * skipped blocks; then correction bits for already-nonzero coeffs (T.81 G.1.2.2). */
 static GIMG_Result jpeg_decode_block_progressive_ac_refine(
     gimg_jpeg_bitstream_t * bs, const gimg_jpeg_huff_table_t * ac_tbl,
     int16_t * block, int ss, int se, int al, int do_trace, int trace_block_id,
@@ -3862,6 +3865,8 @@ prog_ext_fail:
   return GIMG_ERR_CORRUPT;
 }
 
+/** Progressive decode entry: run all scans (DC, AC initial, AC/DC refinement)
+ * into coefficient buffers, then dequant, IDCT, chroma upsample, assemble raster. */
 GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster) {
   if (!state || !out_raster) {

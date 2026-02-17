@@ -79,19 +79,19 @@ static void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
     const GIMG_Allocator * alloc) {
   const unsigned char * p = payload_buf;
   size_t remain = payload_size;
-  while (remain >= 18) {
+  while (remain >= GIMG_JPEG_DHT_HEADER_LEN) {
     uint8_t tc_th = p[0];
     uint8_t th = tc_th & 0x0Fu;
     uint8_t tc = (tc_th >> 4) & 1;
     size_t num_symbols = 0;
-    for (int i = 1; i <= 16; i++) {
+    for (int i = 1; i <= (int)GIMG_JPEG_DHT_BIT_COUNTS; i++) {
       num_symbols += p[i];
     }
     /* T.81 B.2.4: number of value bytes must equal sum of the 16 bit counts. */
-    if (th >= 4 || remain < 17 + num_symbols) {
+    if (th >= 4 || remain < GIMG_JPEG_DHT_HEADER_LEN + num_symbols) {
       break;
     }
-    size_t table_len = 17 + num_symbols;
+    size_t table_len = GIMG_JPEG_DHT_HEADER_LEN + num_symbols;
     if (tc) {
       // AC: 17- or 18-symbol DHT is refinement (Ah!=0); store separately so
       // initial table (162 symbols, T.81 K.4) is not overwritten. T.81 K.6.
@@ -145,19 +145,19 @@ static void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
     const GIMG_Allocator * alloc) {
   const unsigned char * p = payload_buf;
   size_t remain = payload_size;
-  while (remain >= 18 &&
+  while (remain >= GIMG_JPEG_DHT_HEADER_LEN &&
       state->num_dht_entries < GIMG_JPEG_MAX_DHT_ENTRIES) {
     uint8_t tc_th = p[0];
     uint8_t th = tc_th & 0x0Fu;
     uint8_t tc = (tc_th >> 4) & 1;
     size_t num_symbols = 0;
-    for (int i = 1; i <= 16; i++) {
+    for (int i = 1; i <= (int)GIMG_JPEG_DHT_BIT_COUNTS; i++) {
       num_symbols += p[i];
     }
-    if (th >= 4 || remain < 17 + num_symbols) {
+    if (th >= 4 || remain < GIMG_JPEG_DHT_HEADER_LEN + num_symbols) {
       break;
     }
-    size_t table_len = 17 + num_symbols;
+    size_t table_len = GIMG_JPEG_DHT_HEADER_LEN + num_symbols;
     unsigned char is_ac_refine =
         (tc && (num_symbols == 17 || num_symbols == 18)) ? 1 : 0;
     unsigned char * copy = (unsigned char *)gimg_malloc(alloc, table_len);
@@ -1107,22 +1107,22 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             {
               const unsigned char * dp = dht_buf;
               size_t dremain = payload_size;
-              while (dremain >= 18) {
+              while (dremain >= GIMG_JPEG_DHT_HEADER_LEN) {
                 uint8_t tc_th = dp[0];
                 uint8_t th = tc_th & 0x0Fu;
                 uint8_t tc = (tc_th >> 4) & 1;
                 size_t num_syms = 0;
-                for (int i = 1; i <= 16; i++) {
+                for (int i = 1; i <= (int)GIMG_JPEG_DHT_BIT_COUNTS; i++) {
                   num_syms += dp[i];
                 }
-                if (th >= 4 || dremain < 17 + num_syms) {
+                if (th >= 4 || dremain < GIMG_JPEG_DHT_HEADER_LEN + num_syms) {
                   break;
                 }
                 if (tc && num_syms != 17) {
                   state->ac_from_inter_scan_dht[th] = 1;
                 }
-                dp += 17 + num_syms;
-                dremain -= 17 + num_syms;
+                dp += GIMG_JPEG_DHT_HEADER_LEN + num_syms;
+                dremain -= GIMG_JPEG_DHT_HEADER_LEN + num_syms;
               }
             }
             gimg_free(alloc, dht_buf);

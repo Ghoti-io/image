@@ -93,8 +93,17 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 /** Max number of components (e.g. 4 for CMYK). */
 #define GIMG_JPEG_MAX_COMPONENTS 4u
 
-/** Quantization table size (8x8 = 64 entries). */
+/** Quantization table size (8x8 = 64 entries). T.81 Annex B. */
 #define GIMG_JPEG_DQT_ENTRIES 64u
+
+/** DHT: number of bit-length counts (T.81 B.2.4). Value bytes = sum of these. */
+#define GIMG_JPEG_DHT_BIT_COUNTS 16u
+/** DHT minimum payload per table: 1 (TcTh) + 16 (bit counts) = 17 bytes. */
+#define GIMG_JPEG_DHT_HEADER_LEN 17u
+/** 8-bit AC table symbol count (T.81 Annex K Table K.4). */
+#define GIMG_JPEG_AC_SYMBOLS_8BIT 162u
+/** Extended-precision AC table symbol count (12/16-bit: 162 + 80). */
+#define GIMG_JPEG_AC_SYMBOLS_EXTENDED 242u
 
 /** Max number of quantization tables. */
 #define GIMG_JPEG_MAX_QUANT_TABLES 4u
