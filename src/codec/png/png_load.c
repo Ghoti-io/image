@@ -200,7 +200,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   }
   unsigned char ihdr_buf[GIMG_PNG_IHDR_LEN];
   r = gimg_png_read_chunk_payload_and_crc(
-      stream, length, type, ihdr_buf, limits);
+      stream, length, type, ihdr_buf, limits, alloc);
   if (r != GIMG_OK) {
     png_load_diag(diagnostics, 8u, type, r,
         r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -251,7 +251,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     if (type == GIMG_PNG_IEND) {
       r = gimg_png_read_chunk_payload_and_crc(
-          stream, length, type, NULL, limits);
+          stream, length, type, NULL, limits, alloc);
       if (r != GIMG_OK) {
         png_load_diag(diagnostics, chunk_start, type, r,
             r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -277,7 +277,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       unsigned char actl_buf[GIMG_PNG_acTL_LEN];
       r = gimg_png_read_chunk_payload_and_crc(
-          stream, length, type, actl_buf, limits);
+          stream, length, type, actl_buf, limits, alloc);
       if (r != GIMG_OK) {
         png_load_diag(diagnostics, chunk_start, type, r,
             r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -319,7 +319,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       unsigned char fctl_buf[GIMG_PNG_fcTL_LEN];
       r = gimg_png_read_chunk_payload_and_crc(
-          stream, length, type, fctl_buf, limits);
+          stream, length, type, fctl_buf, limits, alloc);
       if (r != GIMG_OK) {
         png_load_diag(diagnostics, chunk_start, type, r,
             r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -376,7 +376,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return GIMG_ERR_OOM;
       }
       r = gimg_png_read_chunk_payload_and_crc(
-          stream, length, type, fdat_buf, limits);
+          stream, length, type, fdat_buf, limits, alloc);
       if (r != GIMG_OK) {
         png_load_diag(diagnostics, chunk_start, type, r,
             r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -424,7 +424,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       state->plte_size = length;
       r = gimg_png_read_chunk_payload_and_crc(
-          stream, length, type, state->plte, limits);
+          stream, length, type, state->plte, limits, alloc);
       if (r != GIMG_OK) {
         png_load_diag(diagnostics, chunk_start, type, r,
             r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -452,7 +452,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       state->trns_size = length;
       r = gimg_png_read_chunk_payload_and_crc(
-          stream, length, type, state->trns, limits);
+          stream, length, type, state->trns, limits, alloc);
       if (r != GIMG_OK) {
         png_load_diag(diagnostics, chunk_start, type, r,
             r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -476,7 +476,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
           return GIMG_ERR_OOM;
         }
         r = gimg_png_read_chunk_payload_and_crc(
-            stream, length, type, buf, limits);
+            stream, length, type, buf, limits, alloc);
         if (r != GIMG_OK) {
           png_load_diag(diagnostics, chunk_start, type, r,
               r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -500,7 +500,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       else {
         r = gimg_png_read_chunk_payload_and_crc(
-            stream, length, type, NULL, limits);
+            stream, length, type, NULL, limits, alloc);
         if (r != GIMG_OK) {
           png_load_diag(diagnostics, chunk_start, type, r,
               r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -529,7 +529,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return GIMG_ERR_OOM;
       }
       r = gimg_png_read_chunk_payload_and_crc(
-          stream, length, type, payload_buf, limits);
+          stream, length, type, payload_buf, limits, alloc);
       if (r != GIMG_OK) {
         png_load_diag(diagnostics, chunk_start, type, r,
             r == GIMG_ERR_LIMIT ? "increase max_chunk_size"
@@ -547,7 +547,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
     else {
       r = gimg_png_read_chunk_payload_and_crc(
-          stream, length, type, NULL, limits);
+          stream, length, type, NULL, limits, alloc);
       if (r != GIMG_OK) {
         png_load_diag(diagnostics, chunk_start, type, r,
             r == GIMG_ERR_LIMIT ? "increase max_chunk_size"

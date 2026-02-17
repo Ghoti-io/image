@@ -76,11 +76,13 @@ GIMG_Result gimg_png_read_chunk_header(GIMG_Stream * stream,
 
 GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
     uint32_t length, gimg_png_chunk_type_t type, unsigned char * payload_buf,
-    const GIMG_Limits * limits) {
+    const GIMG_Limits * limits, const GIMG_Allocator * alloc) {
   if (limits && limits->max_chunk_size != 0 &&
       length > limits->max_chunk_size) {
     return GIMG_ERR_LIMIT;
   }
+
+  const GIMG_Allocator * a = gimg_alloc_or_default(alloc);
 
   uint32_t crc = GCOMP_CRC32_INIT;
   // PNG CRC is over type (4 bytes) + payload; emit type as big-endian bytes
@@ -97,7 +99,7 @@ GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
     unsigned char stack_buf[GIMG_PNG_CHUNK_READ_STACK_BUF];
     bool use_stack = length <= GIMG_PNG_CHUNK_READ_STACK_BUF;
     if (!payload_buf && !use_stack) {
-      read_buf = (unsigned char *)gimg_malloc(gimg_allocator_default(), length);
+      read_buf = (unsigned char *)gimg_malloc(a, length);
       if (!read_buf) {
         return GIMG_ERR_OOM;
       }
@@ -110,13 +112,13 @@ GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
     GIMG_Result r = gimg_stream_read(stream, read_buf, length, &n);
     if (r != GIMG_OK) {
       if (read_buf != payload_buf && read_buf != stack_buf) {
-        gimg_free(gimg_allocator_default(), read_buf);
+        gimg_free(a, read_buf);
       }
       return r;
     }
     if (n != (size_t)length) {
       if (read_buf != payload_buf && read_buf != stack_buf) {
-        gimg_free(gimg_allocator_default(), read_buf);
+        gimg_free(a, read_buf);
       }
       return GIMG_ERR_CORRUPT;
     }
@@ -127,7 +129,7 @@ GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
       memcpy(payload_buf, read_buf, length);
     }
     if (read_buf != payload_buf && read_buf != stack_buf) {
-      gimg_free(gimg_allocator_default(), read_buf);
+      gimg_free(a, read_buf);
     }
   }
 

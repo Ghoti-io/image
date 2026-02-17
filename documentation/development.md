@@ -102,7 +102,7 @@ make test-valgrind   # Linux only
 make test-valgrind-quiet
 ```
 
-Tests that pass diagnostics must call `gimg_diagnostics_clear()` or `gimg_diagnostics_destroy()` so Valgrind stays clean. JPEG changes should be validated with `make test-quiet` and `make test-valgrind-quiet`; whether Valgrind runs in CI or only as a developer checklist is project policy (see task image-phase-2.3-jpeg-quality-maintainability.md).
+Tests that pass diagnostics must call `gimg_diagnostics_clear()` or `gimg_diagnostics_destroy()` so Valgrind stays clean. **Before release or major changes**, run the full test suite (PNG and JPEG) under Valgrind; this is expected for both codecs. JPEG changes should be validated with `make test-quiet` and `make test-valgrind-quiet`; whether Valgrind runs in CI or only as a developer checklist is project policy (see task image-phase-2.3-jpeg-quality-maintainability.md).
 
 ### Sanitizers (ASan + UBSan)
 
@@ -119,6 +119,8 @@ These targets are documented in the main Makefile and in this guide. Use them in
 
 LibFuzzer harnesses under `tests/fuzz/` cover PNG/APNG load and decode, PNG round-trip (load/save/load), JPEG load and decode, and JPEG round-trip (load/save/load). Build with `make fuzz-png`, `make fuzz-png-encode`, `make fuzz-jpeg`, or `make fuzz-jpeg-encode` (requires clang); run with a corpus as described in the Makefile and `tests/fuzz/README.md`.
 
+**New codecs:** Add at least (1) a load (and decode) fuzz harness so that arbitrary or truncated input does not crash and returns appropriate errors (`GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, or `GIMG_ERR_LIMIT`), and (2) if the codec supports save, a round-trip fuzz harness (load→save→load). PNG and JPEG are the reference; see `tests/fuzz/README.md` for harness layout.
+
 ### Limits and failure-path tests
 
 Tests under `tests/` include:
@@ -127,6 +129,8 @@ Tests under `tests/` include:
 - **Save failure paths:** `gimg_doc_save` with NULL doc, invalid/unsupported format, or unsupported raster format; expect documented error codes and no crash.
 
 ## Adding a new codec
+
+See **Codec implementation checklist** below for allocator, limits, safe math, and error-cleanup requirements.
 
 1. **Stub and register:** Create a codec stub (e.g. `gimg_codec_create_stub()` or `gimg_codec_create_stub_with_allocator()`), implement probe (magic bytes / peek), and register with `gimg_codec_register()`. Probe result `format_name` is used by load/save; document that `format_name` lifetime is only until the next registry-mutating call (see @ref api_options "API Options and Types").
 
@@ -139,6 +143,25 @@ Tests under `tests/` include:
 5. **Tests:** Add decode/encode tests (and round-trip if applicable); use shared test helpers where possible. Add fuzz coverage for load/decode and, if feasible, save. Ensure limits and failure-path tests cover the new codec.
 
 6. **Docs:** Update `documentation/format-references.md` and option docs for format-specific behavior and limits.
+
+### Codec implementation checklist
+
+When implementing a new codec (or auditing an existing one), ensure:
+
+- **Allocator:** Use the codec allocator (`codec->allocator`) for all codec-owned allocations (load, decode, save). Document and raster creation use `doc->allocator` (set at load from the codec allocator). Do not use `gimg_allocator_default()` when a codec or document allocator is available; pass the allocator explicitly so tests and embedders can use custom allocators end-to-end.
+- **Limits:** Enforce **GIMG_Limits** at the appropriate points: `max_chunk_size` (or equivalent segment/payload size) before reading large payloads; `max_decoded_pixels` before allocating decode buffers; `max_frame_count` for animated formats. Return **GIMG_ERR_LIMIT** when exceeded; append diagnostics when provided. See @ref api_options "API Options and Types" and the “Limits per codec” subsection in this document.
+- **Safe math:** Use helpers from `safe_math_internal.h` (e.g. `gimg_safe_pixel_count()`, `gimg_safe_mul_size()`, `gimg_safe_add_size()`) for all size and pixel-count calculations that feed allocations or comparisons to limits. **Checklist for new codecs:** Validate every length/size field read from the stream before allocating or indexing; use safe_math for any derived buffer size.
+- **Output parameters and cleanup:** Set `*out_doc` or `*out_raster` to **NULL** before any work in load/decode. On error, free any partially allocated state (e.g. via the codec’s free_doc_state or equivalent) and return without setting the output parameter. The central dispatch in `codec.c` also clears `*out_raster` on decode callback failure.
+- **Spec alignment:** Document implemented parts, conformance scope, and rejected/unsupported features in `documentation/format-references.md` (see PNG and JPEG sections as the reference structure).
+
+### Limits per codec
+
+| Codec | max_chunk_size | max_decoded_pixels | max_frame_count |
+|-------|----------------|--------------------|-----------------|
+| **PNG** | Enforced in chunk reader before reading payload | Enforced in decode (frame and full-image paths) | Enforced in load for APNG (acTL num_frames vs actual fcTL/fdAT) |
+| **JPEG** | Applied via max segment payload in load | Enforced in load (after SOF) and in entropy decode | N/A (still image; multi-item from EXIF thumbnail counts as one “frame”) |
+
+New codecs should enforce the same limits that apply to their format and document which of these (or format-specific limits) they use.
 
 ## JPEG debug and recovery options
 
@@ -165,7 +188,7 @@ The Makefile provides:
 | `make test-asan` | Build with AddressSanitizer + UndefinedBehaviorSanitizer and run the full test suite (Linux). |
 | `make test-ubsan` | Alias for `test-asan`. |
 
-Build artifacts go to a separate directory (e.g. `build/linux/release-asan/`) so the normal build is unchanged. Dependencies (e.g. the compress library) are linked from their normal build; only the image library and tests are instrumented. Document in CI or local workflow: run `make test-asan` in addition to `make test` and `make test-valgrind` to catch memory and undefined-behavior bugs.
+Build artifacts go to a separate directory (e.g. `build/linux/release-asan/`) so the normal build is unchanged. Dependencies (e.g. the compress library) are linked from their normal build; only the image library and tests are instrumented. Document in CI or local workflow: run `make test-asan` in addition to `make test` and `make test-valgrind` to catch memory and undefined-behavior bugs. **Before release or major changes**, run the full test suite (PNG and JPEG) under Valgrind and under ASan/UBSan; this is expected for both codecs.
 
 ## Probe result lifetime
 

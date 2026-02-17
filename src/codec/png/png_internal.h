@@ -247,16 +247,23 @@ GIMG_Result gimg_png_read_chunk_header(GIMG_Stream * stream,
  * stream is positioned after the CRC. Payload is written to payload_buf
  * (caller allocates; size must be >= length). If payload_buf is NULL,
  * payload is skipped (stream still advanced and CRC still verified).
+ * When payload_buf is NULL and length exceeds the stack buffer, a temporary
+ * buffer is allocated using alloc; the chunk reader must use the provided
+ * allocator for any heap allocation so that codec and document use a single
+ * allocator.
  * @param stream Stream positioned after chunk header.
  * @param length Payload length from chunk header.
  * @param type Chunk type (for CRC computation).
  * @param payload_buf Buffer for payload (or NULL to skip).
  * @param limits Optional limits; max_chunk_size is enforced.
- * @return GIMG_OK, GIMG_ERR_CORRUPT (bad CRC), GIMG_ERR_LIMIT, GIMG_ERR_IO.
+ * @param alloc Allocator for temporary read buffer when payload_buf is NULL
+ *        and length > GIMG_PNG_CHUNK_READ_STACK_BUF; use codec allocator.
+ * @return GIMG_OK, GIMG_ERR_CORRUPT (bad CRC), GIMG_ERR_LIMIT, GIMG_ERR_IO,
+ *         GIMG_ERR_OOM.
  */
 GIMG_Result gimg_png_read_chunk_payload_and_crc(GIMG_Stream * stream,
     uint32_t length, gimg_png_chunk_type_t type, unsigned char * payload_buf,
-    const GIMG_Limits * limits);
+    const GIMG_Limits * limits, const GIMG_Allocator * alloc);
 
 /**
  * @brief Parse acTL payload (8 bytes): num_frames, num_plays (big-endian).

@@ -23,10 +23,9 @@
 static GIMG_Codec ** gimg_codec_registry = NULL;
 static size_t gimg_codec_registry_count = 0;
 static size_t gimg_codec_registry_capacity = 0;
-
-static const GIMG_Allocator * gimg_codec_registry_allocator(void) {
-  return gimg_allocator_default();
-}
+// Allocator for the registry array; set from the first registering codec so
+// tests and embedders can use a custom allocator for registry storage.
+static const GIMG_Allocator * gimg_codec_registry_alloc = NULL;
 
 GIMG_API GIMG_Result gimg_codec_create_stub(const char * name,
     const void * magic_bytes, size_t magic_len, GIMG_Codec ** out_codec) {
@@ -112,13 +111,18 @@ GIMG_API GIMG_Result gimg_codec_register(GIMG_Codec * codec) {
   if (!codec || !codec->name) {
     return GIMG_ERR_INTERNAL;
   }
-  const GIMG_Allocator * alloc = gimg_codec_registry_allocator();
   for (size_t i = 0; i < gimg_codec_registry_count; i++) {
     if (strcmp(gimg_codec_registry[i]->name, codec->name) == 0) {
       return GIMG_ERR_INTERNAL; // Duplicate
     }
   }
   if (gimg_codec_registry_count >= gimg_codec_registry_capacity) {
+    const GIMG_Allocator * alloc = (gimg_codec_registry_alloc != NULL)
+        ? gimg_codec_registry_alloc
+        : gimg_alloc_or_default(codec->allocator);
+    if (gimg_codec_registry_alloc == NULL) {
+      gimg_codec_registry_alloc = alloc;
+    }
     size_t new_cap = gimg_codec_registry_capacity
         ? gimg_codec_registry_capacity * 2
         : REGISTRY_INITIAL;

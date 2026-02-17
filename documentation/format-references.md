@@ -6,6 +6,7 @@ This document lists the external specifications (or parts thereof) that the imag
 
 ## PNG
 
+- **Allocator:** The PNG codec uses the document/codec allocator for all codec-owned allocations (including chunk reading when a temporary buffer is needed for large payloads).
 - **Specification:** ISO/IEC 15948:2004 (PNG — Portable Network Graphics), and the PNG Specification (W3C Recommendation 10 Nov 2003) at <https://www.w3.org/TR/PNG/>.
 - **Data representation (image layout, filtering, interlace):** <https://www.w3.org/TR/PNG-DataRep.html>
 - **Filter algorithms (None, Sub, Up, Average, Paeth):** <https://www.w3.org/TR/PNG-Filters.html>
@@ -44,6 +45,7 @@ On PNG save, `GIMG_Save_Options.metadata_policy` controls which ancillary chunks
 
 ## JPEG
 
+- **Allocator:** The JPEG codec uses the document/codec allocator for all codec-owned allocations.
 - **Specification:** ISO/IEC 10918-1 (ITU-T T.81) — Information technology – Digital compression and coding of continuous-tone still images: Requirements and guidelines.
 - **Scope:** Baseline DCT (SOF0), progressive DCT (SOF2), lossless (SOF3), and hierarchical (SOF4–SOF7 as implemented); 8-, 12-, and 16-bit sample precision; **Huffman (DHT) and arithmetic (DAC, QM-coder) entropy coding**; COM and APP0–APP15 preservation; DRI/RST; JFIF thumbnail; chroma subsampling and progressive encode (including successive-approximation refinement scans, Ah>0). See `image/tasks/image-phase-2-jpeg.md` for full task list; scope is updated as milestones 2.5–2.9 are completed.
 - **Segment structure:** SOI (0xFF 0xD8), EOI (0xFF 0xD9); segments: 0xFF + marker + length (big-endian, length includes the 2 length bytes) + payload. Parsing enforces max segment size (bomb protection) and overflow-safe pixel count; returns `GIMG_ERR_LIMIT` when exceeded.

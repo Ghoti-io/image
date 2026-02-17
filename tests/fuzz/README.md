@@ -1,5 +1,7 @@
 # PNG/APNG and JPEG fuzz harnesses
 
+**New codecs:** Add at least (1) a load (and decode) fuzz harness so that arbitrary or truncated input does not crash and returns appropriate errors; (2) if the codec supports save, a round-trip fuzz harness (load→save→load). PNG and JPEG are the reference; see `documentation/development.md` (Fuzzing) for the same requirement.
+
 **fuzz_png_load**: LibFuzzer harness for PNG/APNG load and decode. Ensures the parser and decoder do not crash on random or truncated input and return appropriate errors (e.g. `GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, `GIMG_ERR_LIMIT`).
 
 **fuzz_png_encode**: Round-trip harness (load -> decode all items -> save -> load). Stress-tests the encoder; invalid input that fails load or save is ignored (no crash).
