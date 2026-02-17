@@ -72,6 +72,22 @@ Short reference for supported markers, precision, entropy, and limitations. Upda
 | **Color** | Grayscale, YCbCr (4:2:0, 4:2:2, 4:4:4, 4:1:1), CMYK (8-bit) | 12/16-bit decode: grayscale and YCbCr only (no CMYK) |
 | **APP/COM** | APP0 (JFIF/JFXX), APP1 (EXIF/XMP), APP2 (ICC), APP13/14, COM, unknown APP round-trip | — |
 
+### JPEG edge cases and test coverage
+
+Short list of dimension/stream edge cases; update when adding tests. See `image/tasks/image-phase-2.3-jpeg-quality-maintainability.md` task 2.3.3.3.
+
+| Edge case | Covered by |
+|-----------|------------|
+| **1×1** | SaveRgb1x1ThenLoadDecode (encode→load→decode round-trip) |
+| **8×8** | make_minimal_jpeg (SOF0 8×8), baseline_8x8_gray fixtures, ProgressiveMinimalDimensions8x8And16x16, DecodeMinimalJpegReturnsError |
+| **16×16** | baseline_16x16_ycbcr fixtures, ProgressiveMinimalDimensions8x8And16x16 |
+| **Non-MCU width/height** | Supported; dimensions in SOF; decode uses padded MCUs; no dedicated “non-MCU” fixture (same as 8×8 / 16×16 for minimal) |
+| **Restart interval 1** | Not explicitly tested; DRI=4 and 8 used (make_minimal_jpeg_with_dri, EncodeRestartIntervalThenLoadDecodeAndLibjpegOracle, ProgressiveWithRestartIntervalRoundTrip) |
+| **Empty / minimal scan** | make_minimal_jpeg (minimal scan data), make_minimal_progressive_jpeg; DecodeMinimalJpegReturnsError (decode fails on empty scan) |
+| **DNL-only height** | SOF height 0 with DNL setting height is documented in segment order; not in fixtures (SOF always has non-zero height in tests) |
+| **DNL after first scan** | make_minimal_jpeg_with_dnl_after_scan (DNL matches SOF 8); LoadJpegWithDnlMismatchFails, LoadJpegDnlBeforeScanFails (negative) |
+| **RST in scan** | make_minimal_jpeg_with_rst_in_scan (RST5), LoadJpegWithRstInScanSucceeds |
+
 ---
 
 *Other formats (GIF, TIFF, etc.) will be added as those codecs are implemented.*

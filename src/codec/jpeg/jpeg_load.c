@@ -577,6 +577,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       gimg_jpeg_free_doc_state(codec, state);
       return GIMG_ERR_LIMIT;
     }
+    /* All payload_buf accesses below are bounded by payload_size (and
+     * segment-specific minimums, e.g. SOF/SOS/DHT/DQT length checks). */
 
     unsigned char * payload_buf = NULL;
     if (payload_size > 0) {

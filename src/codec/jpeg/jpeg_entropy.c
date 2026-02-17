@@ -389,6 +389,11 @@ static int jpeg_build_huff_table(
       tbl->max_code[len] = (uint16_t)(code + count - 1);
       tbl->base_index[len] = base;
       for (int k = 0; k < count; k++) {
+        /* Bounds: base + k must be < num_syms (T.81 B.2.4 value bytes = sum of
+         * counts). Reject corrupted DHT where bits[] would imply out-of-range. */
+        if ((size_t)base + (size_t)k >= num_syms) {
+          return -1;
+        }
         tbl->values[base + k] = vals[base + k];
       }
       base += count;
