@@ -135,6 +135,11 @@ COMPRESS_CFLAGS := -I../compress/include
 COMPRESS_LIBS := -L../compress/build/$(BUILD)/apps -lghoti.io-compress$(BRANCH)
 # Let linker resolve image .so's dependency on compress when linking tests.
 LDFLAGS += -Wl,-rpath-link,../compress/build/$(BUILD)/apps
+# compress links against cutil in turn, so the linker has to be able to find
+# that as well when it resolves compress's NEEDED entry. cutil's build tree is
+# one level shallower (build/<os>/apps, with no release/debug component), hence
+# just the leading OS component of BUILD here.
+LDFLAGS += -Wl,-rpath-link,../cutil/build/$(firstword $(subst /, ,$(BUILD)))/apps
 endif
 INCLUDE += $(COMPRESS_CFLAGS)
 
@@ -464,8 +469,10 @@ else ifeq ($(OS_NAME), Windows)
 endif
 	@printf "\n"
 
-# So tests can load image lib and its dependency (e.g. compress for PNG).
-TEST_LD_PATH := $(APP_DIR):../compress/build/$(BUILD)/apps
+# So tests can load image lib and its dependency (e.g. compress for PNG), plus
+# compress's own dependency on cutil. cutil's build tree has no release/debug
+# component, so only the leading OS component of BUILD applies to it.
+TEST_LD_PATH := $(APP_DIR):../compress/build/$(BUILD)/apps:../cutil/build/$(firstword $(subst /, ,$(BUILD)))/apps
 
 test: ## Make and run the Unit tests, then verify PNG and JPEG output with PIL
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
