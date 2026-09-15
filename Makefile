@@ -268,6 +268,12 @@ $(OBJ_DIR)/tests/%.o: tests/unit/%.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
+# Tests in tests/codec/bmp/ (object name from basename for link).
+$(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
+	@printf "\n### Compiling Test Object: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
 # Test in tests/codec/png/ (object name from basename for link)
 $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
 	@printf "\n### Compiling Test Object: test_png_chunk ###\n"
@@ -295,6 +301,10 @@ TEST_DATA_JPEG := $(IMAGE_ROOT)/tests/data/jpeg
 TEST_OUT_PNG := $(IMAGE_ROOT)/tests/out/png
 # Output directory for JPEG encode test output; verifier reads this.
 TEST_OUT_JPEG := $(IMAGE_ROOT)/tests/out/jpeg
+# Test data path for BMP tests (fixtures from tests/data/bmp/generate.py).
+TEST_DATA_BMP := $(IMAGE_ROOT)/tests/data/bmp
+# Output directory for BMP encode test output.
+TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
 	@mkdir -p $(@D)
