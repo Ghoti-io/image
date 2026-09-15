@@ -179,14 +179,14 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
 
     size_t pixel_bytes;
-    if (!gimg_safe_mul_size(stride, (size_t)height, &pixel_bytes)) {
+    if (!gcu_safe_mul_size(stride, (size_t)height, &pixel_bytes)) {
       result = GIMG_ERR_LIMIT;
       goto done;
     }
 
     size_t data_offset = (size_t)GIMG_BMP_FILE_HEADER_SIZE + (size_t)dib_size;
     size_t file_size;
-    if (!gimg_safe_add_size(data_offset, pixel_bytes, &file_size) ||
+    if (!gcu_safe_add_size(data_offset, pixel_bytes, &file_size) ||
         file_size > UINT32_MAX) {
       result = GIMG_ERR_LIMIT;
       goto done;

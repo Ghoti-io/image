@@ -309,7 +309,7 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   int num_components = (fmt->channel_model == GIMG_CHANNEL_GRAY) ? 1 : 3;
   size_t comp_size = 0;
-  if (!gimg_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
     return GIMG_ERR_LIMIT;
   }
   uint16_t * comp_y =
@@ -389,7 +389,7 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
       v_samp[1] = 1;
       v_samp[2] = 1;
       size_t chroma_size = 0;
-      if (!gimg_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
+      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
         gimg_free(alloc, comp_y);
         gimg_free(alloc, comp_cb);
         gimg_free(alloc, comp_cr);
@@ -471,7 +471,7 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
       v_samp[1] = 1;
       v_samp[2] = 1;
       size_t chroma_size = 0;
-      if (!gimg_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
+      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
         gimg_free(alloc, comp_y);
         gimg_free(alloc, comp_cb);
         gimg_free(alloc, comp_cr);
@@ -568,9 +568,9 @@ static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
     blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
   }
   size_t total_blocks = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-      !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+      !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
     gimg_free(alloc, comp_y);
     if (use_cb != comp_cb) {
       gimg_free(alloc, use_cb);
@@ -639,7 +639,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   int num_components = (fmt->channel_model == GIMG_CHANNEL_GRAY) ? 1 : 3;
   size_t comp_size = 0;
-  if (!gimg_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
     return GIMG_ERR_LIMIT;
   }
   uint16_t * comp_y =
@@ -722,7 +722,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
       v_samp[1] = 1;
       v_samp[2] = 1;
       size_t chroma_size = 0;
-      if (!gimg_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
+      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
         gimg_free(alloc, comp_y);
         gimg_free(alloc, comp_cb);
         gimg_free(alloc, comp_cr);
@@ -800,7 +800,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
       v_samp[1] = 1;
       v_samp[2] = 1;
       size_t chroma_size = 0;
-      if (!gimg_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
+      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
         gimg_free(alloc, comp_y);
         gimg_free(alloc, comp_cb);
         gimg_free(alloc, comp_cr);
@@ -892,9 +892,9 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
   }
   size_t total_blocks = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-      !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+      !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
     gimg_free(alloc, comp_y);
     if (use_cb != comp_cb) {
       gimg_free(alloc, use_cb);
@@ -1074,7 +1074,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
         out_height, out_num_components, out_h_samp, out_v_samp);
   }
   size_t comp_size = 0;
-  if (!gimg_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
     return GIMG_ERR_LIMIT;
   }
   unsigned char * comp_y = (unsigned char *)gimg_malloc(alloc, comp_size);
@@ -1152,7 +1152,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       v_samp[1] = 1;
       v_samp[2] = 1;
       size_t chroma_size = 0;
-      if (!gimg_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
+      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
         gimg_free(alloc, comp_y);
         gimg_free(alloc, comp_cb);
         gimg_free(alloc, comp_cr);
@@ -1223,7 +1223,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       v_samp[1] = 1;
       v_samp[2] = 1;
       size_t chroma_size = 0;
-      if (!gimg_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
+      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
         gimg_free(alloc, comp_y);
         gimg_free(alloc, comp_cb);
         gimg_free(alloc, comp_cr);
@@ -1318,9 +1318,9 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
     }
     size_t total_blocks = 0;
-    if (!gimg_safe_mul_size(
+    if (!gcu_safe_mul_size(
             (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-        !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+        !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
       gimg_free(alloc, comp_y);
       if (use_cb != comp_cb) {
         gimg_free(alloc, use_cb);
@@ -1406,9 +1406,9 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
     }
     size_t total_blocks = 0;
-    if (!gimg_safe_mul_size(
+    if (!gcu_safe_mul_size(
             (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-        !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+        !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
       gimg_free(alloc, comp_y);
       if (use_cb != comp_cb) {
         gimg_free(alloc, use_cb);
@@ -1592,8 +1592,8 @@ static GIMG_Result jpeg_raster_to_uncompressed_strip(
     return GIMG_ERR_UNSUPPORTED;
   }
   size_t strip_size;
-  if (!gimg_safe_mul_size((size_t)width, (size_t)height, &strip_size) ||
-      !gimg_safe_mul_size(strip_size, (size_t)samples, &strip_size)) {
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &strip_size) ||
+      !gcu_safe_mul_size(strip_size, (size_t)samples, &strip_size)) {
     return GIMG_ERR_LIMIT;
   }
   unsigned char * strip = (unsigned char *)gimg_malloc(alloc, strip_size);

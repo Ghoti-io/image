@@ -112,7 +112,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
   uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
   uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
   size_t mcu_total = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_row, (size_t)mcu_per_col, &mcu_total)) {
     return GIMG_ERR_LIMIT;
   }
@@ -128,7 +128,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
           (size_t)sof->h_samp[comp_idx] * (size_t)sof->v_samp[comp_idx];
   }
   size_t total_blocks_ext = 0;
-  if (!gimg_safe_mul_size(mcu_total, blocks_per_mcu_ext, &total_blocks_ext)) {
+  if (!gcu_safe_mul_size(mcu_total, blocks_per_mcu_ext, &total_blocks_ext)) {
     return GIMG_ERR_LIMIT;
   }
 
@@ -154,9 +154,9 @@ static GIMG_Result jpeg_decode_baseline_extended(
   uint16_t * comp_buf[GIMG_JPEG_MAX_COMPONENTS];
   for (uint8_t i = 0; i < num_comp; i++) {
     comp_stride_el[i] = (size_t)comp_w[i];
-    if (!gimg_safe_mul_size(
+    if (!gcu_safe_mul_size(
             comp_stride_el[i], (size_t)comp_h[i], &comp_size[i]) ||
-        !gimg_safe_mul_size(comp_size[i], sizeof(uint16_t), &comp_size[i])) {
+        !gcu_safe_mul_size(comp_size[i], sizeof(uint16_t), &comp_size[i])) {
       for (uint8_t j = 0; j < i; j++)
         gimg_free(alloc, comp_buf[j]);
       return GIMG_ERR_LIMIT;
@@ -498,7 +498,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
   uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
   size_t mcu_total = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_row, (size_t)mcu_per_col, &mcu_total)) {
     return GIMG_ERR_LIMIT;
   }
@@ -519,7 +519,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
         (size_t)sof->h_samp[comp_idx] * (size_t)sof->v_samp[comp_idx];
   }
   size_t total_blocks = 0;
-  if (!gimg_safe_mul_size(mcu_total, blocks_per_mcu, &total_blocks)) {
+  if (!gcu_safe_mul_size(mcu_total, blocks_per_mcu, &total_blocks)) {
     return GIMG_ERR_LIMIT;
   }
 
@@ -545,7 +545,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   unsigned char * comp_buf[GIMG_JPEG_MAX_COMPONENTS];
   for (uint8_t i = 0; i < num_comp; i++) {
     comp_stride[i] = (size_t)comp_w[i];
-    if (!gimg_safe_mul_size(comp_stride[i], (size_t)comp_h[i], &comp_size[i])) {
+    if (!gcu_safe_mul_size(comp_stride[i], (size_t)comp_h[i], &comp_size[i])) {
       for (uint8_t j = 0; j < i; j++) {
         gimg_free(alloc, comp_buf[j]);
       }
@@ -1163,13 +1163,13 @@ static GIMG_Result jpeg_decode_progressive_extended(
   for (uint8_t i = 0; i < num_comp; i++) {
     size_t bw = (size_t)(comp_w[i] + 7) / 8;
     size_t bh = (size_t)(comp_h[i] + 7) / 8;
-    if (!gimg_safe_mul_size(bw, bh, &blocks_per_comp[i])) {
+    if (!gcu_safe_mul_size(bw, bh, &blocks_per_comp[i])) {
       for (uint8_t j = 0; j < i; j++)
         gimg_free(alloc, coef_blocks[j]);
       return GIMG_ERR_LIMIT;
     }
     size_t coef_size = 0;
-    if (!gimg_safe_mul_size(
+    if (!gcu_safe_mul_size(
             blocks_per_comp[i], 64 * sizeof(int16_t), &coef_size)) {
       for (uint8_t j = 0; j < i; j++)
         gimg_free(alloc, coef_blocks[j]);
@@ -1298,12 +1298,12 @@ static GIMG_Result jpeg_decode_progressive_extended(
             (size_t)sof->h_samp[comp_idx] * (size_t)sof->v_samp[comp_idx];
     }
     size_t mcu_total_prog = 0;
-    if (!gimg_safe_mul_size(
+    if (!gcu_safe_mul_size(
             (size_t)mcu_per_row, (size_t)mcu_per_col, &mcu_total_prog)) {
       goto prog_ext_fail;
     }
     size_t total_blocks_prog = 0;
-    if (!gimg_safe_mul_size(
+    if (!gcu_safe_mul_size(
             mcu_total_prog, blocks_per_mcu_prog, &total_blocks_prog)) {
       goto prog_ext_fail;
     }
@@ -1431,9 +1431,9 @@ static GIMG_Result jpeg_decode_progressive_extended(
   uint16_t * comp_buf[GIMG_JPEG_MAX_COMPONENTS];
   for (uint8_t i = 0; i < num_comp; i++) {
     comp_stride_el[i] = (size_t)comp_w[i];
-    if (!gimg_safe_mul_size(
+    if (!gcu_safe_mul_size(
             comp_stride_el[i], (size_t)comp_h[i], &comp_size[i]) ||
-        !gimg_safe_mul_size(comp_size[i], sizeof(uint16_t), &comp_size[i])) {
+        !gcu_safe_mul_size(comp_size[i], sizeof(uint16_t), &comp_size[i])) {
       for (uint8_t j = 0; j < i; j++)
         gimg_free(alloc, comp_buf[j]);
       goto prog_ext_fail;

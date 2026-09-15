@@ -1566,12 +1566,12 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         size_t need_rgb = 0;
         size_t need_gray = 0;
         int use_rgb = -1; // 0 = grayscale, 1 = RGB
-        if (gimg_safe_mul_size(thumb_pixels, 3u, &need_rgb) &&
-            gimg_safe_add_size(16u, need_rgb, &need_rgb) &&
+        if (gcu_safe_mul_size(thumb_pixels, 3u, &need_rgb) &&
+            gcu_safe_add_size(16u, need_rgb, &need_rgb) &&
             state->app0_jfif_len >= need_rgb) {
           use_rgb = 1;
         }
-        else if (gimg_safe_add_size(16u, thumb_pixels, &need_gray) &&
+        else if (gcu_safe_add_size(16u, thumb_pixels, &need_gray) &&
             state->app0_jfif_len >= need_gray) {
           use_rgb = 0;
         }
@@ -1676,7 +1676,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             // 1 BPP: 256*3 palette then tx*ty indices.
             size_t palette_size = 768u;
             size_t indices_size = 0;
-            if (gimg_safe_add_size(palette_size, thumb_pixels, &indices_size) &&
+            if (gcu_safe_add_size(palette_size, thumb_pixels, &indices_size) &&
                 jfxx_data_len >= indices_size) {
               GIMG_Raster * thumb_raster = NULL;
               r = gimg_raster_create_with_allocator(alloc, (uint32_t)tx,
@@ -1712,7 +1712,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           else {
             // 0x13: 3 BPP RGB.
             size_t need = 0;
-            if (gimg_safe_mul_size(thumb_pixels, 3u, &need) &&
+            if (gcu_safe_mul_size(thumb_pixels, 3u, &need) &&
                 jfxx_data_len >= need) {
               GIMG_Raster * thumb_raster = NULL;
               r = gimg_raster_create_with_allocator(alloc, (uint32_t)tx,

@@ -157,7 +157,7 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
       return GIMG_ERR_FORMAT;
     }
     size_t row_stride = 1 + row_bytes;
-    if (!gimg_safe_mul_size((size_t)h, row_stride, &raw_size)) {
+    if (!gcu_safe_mul_size((size_t)h, row_stride, &raw_size)) {
       return GIMG_ERR_LIMIT;
     }
   }
@@ -172,8 +172,8 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
       size_t pass_row_bytes = gimg_png_row_bytes_from_ihdr(ihdr, pw);
       size_t pass_row_stride = 1 + pass_row_bytes;
       size_t pass_size = 0;
-      if (!gimg_safe_mul_size((size_t)ph, pass_row_stride, &pass_size) ||
-          !gimg_safe_add_size(total, pass_size, &total)) {
+      if (!gcu_safe_mul_size((size_t)ph, pass_row_stride, &pass_size) ||
+          !gcu_safe_add_size(total, pass_size, &total)) {
         return GIMG_ERR_LIMIT;
       }
     }
@@ -208,7 +208,7 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
   }
   unsigned int bpp = gimg_png_bpp(ihdr);
   size_t raw_full_size = 0;
-  if (!gimg_safe_mul_size((size_t)h, row_bytes, &raw_full_size)) {
+  if (!gcu_safe_mul_size((size_t)h, row_bytes, &raw_full_size)) {
     gimg_free(alloc, raw);
     return GIMG_ERR_LIMIT;
   }

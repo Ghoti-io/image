@@ -132,8 +132,8 @@ bool gimg_png_adam7_raw_size(uint32_t width, uint32_t height, uint8_t color_type
     size_t row_bytes = gimg_png_row_bytes(color_type, bit_depth, pw);
     size_t pass_row_stride = 1u + row_bytes;
     size_t pass_size = 0;
-    if (!gimg_safe_mul_size((size_t)ph, pass_row_stride, &pass_size) ||
-        !gimg_safe_add_size(total, pass_size, &total)) {
+    if (!gcu_safe_mul_size((size_t)ph, pass_row_stride, &pass_size) ||
+        !gcu_safe_add_size(total, pass_size, &total)) {
       return false;
     }
   }

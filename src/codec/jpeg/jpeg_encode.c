@@ -340,9 +340,9 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
     blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
   }
   size_t total_blocks = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-      !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+      !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
     return GIMG_ERR_LIMIT;
   }
   *out_total_blocks = total_blocks;
@@ -659,7 +659,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   uint32_t mcu_per_col =
       (height + (uint32_t)(8 * v_max) - 1) / (uint32_t)(8 * v_max);
   size_t mcu_count = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
     return GIMG_ERR_LIMIT;
   }
@@ -939,7 +939,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
   uint32_t mcu_per_col =
       (height + (uint32_t)(8 * v_max) - 1) / (uint32_t)(8 * v_max);
   size_t mcu_count = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
     return GIMG_ERR_LIMIT;
   }
@@ -1101,9 +1101,9 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_16bit(uint32_t width,
     blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
   }
   size_t total_blocks = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-      !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+      !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
     return GIMG_ERR_LIMIT;
   }
   *out_total_blocks = total_blocks;
@@ -1209,9 +1209,9 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
     blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
   }
   size_t total_blocks = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-      !gimg_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+      !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
     return GIMG_ERR_LIMIT;
   }
   *out_total_blocks = total_blocks;
@@ -1325,7 +1325,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
   uint32_t mcu_per_col =
       (height + (uint32_t)(8 * v_max) - 1) / (uint32_t)(8 * v_max);
   size_t mcu_count = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
     return GIMG_ERR_LIMIT;
   }
@@ -1689,7 +1689,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_16bit(uint32_t width,
   uint32_t mcu_per_col =
       (height + (uint32_t)(8 * v_max) - 1) / (uint32_t)(8 * v_max);
   size_t mcu_count = 0;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
     return GIMG_ERR_LIMIT;
   }

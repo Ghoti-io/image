@@ -147,6 +147,22 @@ LDFLAGS += -Wl,-rpath-link,../cutil/build/$(firstword $(subst /, ,$(BUILD)))/app
 endif
 INCLUDE += $(COMPRESS_CFLAGS)
 
+# ghoti.io-cutil, for the allocator vtable and the overflow-checked size math
+# that image's public headers now use. It arrives transitively through
+# compress's .pc when that is installed; the fallback branch has to name it
+# itself, including cutil's generated include directory (float.h).
+CUTIL_PC ?= ghoti.io-cutil$(BRANCH)
+CUTIL_CFLAGS := $(shell pkg-config --cflags $(CUTIL_PC) 2>/dev/null)
+CUTIL_LIBS := $(shell pkg-config --libs $(CUTIL_PC) 2>/dev/null)
+CUTIL_PLACEHOLDER := (
+CUTIL_NEED_FALLBACK := $(or $(findstring $(CUTIL_PLACEHOLDER),$(CUTIL_CFLAGS)),$(if $(CUTIL_CFLAGS),,y))
+ifneq ($(CUTIL_NEED_FALLBACK),)
+CUTIL_SIBLING := ../cutil
+CUTIL_CFLAGS := -I$(CUTIL_SIBLING)/include -I$(CUTIL_SIBLING)/build/$(firstword $(subst /, ,$(BUILD)))/include
+CUTIL_LIBS := -L$(CUTIL_SIBLING)/build/$(firstword $(subst /, ,$(BUILD)))/apps -lghoti.io-cutil$(BRANCH)
+endif
+INCLUDE += $(CUTIL_CFLAGS)
+
 # Automatically collect all .c source files under the src directory.
 SOURCES := $(shell find src -type f -name '*.c')
 
@@ -230,7 +246,7 @@ $(APP_DIR)/$(TARGET): \
 		$(LIBOBJECTS)
 	@printf "\n### Compiling Image Library ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -shared -o $@ $^ $(LDFLAGS) $(COMPRESS_LIBS) $(OS_SPECIFIC_LIBRARY_NAME_FLAG)
+	$(CXX) $(CXXFLAGS) -shared -o $@ $^ $(LDFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(OS_SPECIFIC_LIBRARY_NAME_FLAG)
 
 ifeq ($(OS_NAME), Linux)
 	@ln -f -s $(TARGET) $(APP_DIR)/$(SO_NAME)
@@ -336,14 +352,14 @@ $(APP_DIR)/$2$(EXE_EXTENSION): \
 		| $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking %s Test ###\n" "$2"
 	@mkdir -p $$(@D)
-	$$(CXX) $$(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $$(TEST_HELPER_OBJ) $$(LDFLAGS) $$(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	$$(CXX) $$(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $$(TEST_HELPER_OBJ) $$(LDFLAGS) $$(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 endef
 
-# Test binaries need $(COMPRESS_LIBS) as well as the image library: image's
-# .so has a NEEDED entry for compress, and the linker has to be able to
-# resolve it. The sibling fallback used to hide this by adding -rpath-link to
-# LDFLAGS; with compress installed there is no such hint, and the install
-# directory is not on the linker's default search path either.
+# Test binaries need $(COMPRESS_LIBS) and $(CUTIL_LIBS) as well as the image
+# library: image's .so has NEEDED entries for both, and the linker has to be
+# able to resolve them. The sibling fallback used to hide this by adding
+# -rpath-link to LDFLAGS; with the libraries installed there is no such hint,
+# and the install directory is not on the linker's default search path either.
 
 # testPng_decode, testPng_encode, test_jpeg_load use explicit rules (link test utils).
 TEST_PAIRS_OTHER := $(filter-out tests/codec/png/test_png_decode.cpp|testPng_decode tests/codec/png/test_png_encode.cpp|testPng_encode tests/codec/jpeg/test_jpeg_load.cpp|testJpeg_load tests/codec/jpeg/test_jpeg_encode.cpp|testJpeg_encode,$(TEST_PAIRS))
@@ -354,13 +370,13 @@ $(foreach pair,$(TEST_PAIRS_OTHER),$(eval $(call test-executable-rule,$(word 1,$
 $(APP_DIR)/testJpeg_load$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testJpeg_load Test ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 
 # JPEG encode test links jpeg_test_utils (load_jpeg_file, raster_pixel_hash for round-trip test).
 $(APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testJpeg_encode Test ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 
 # Dump JPEG raster to stdout (for compare_pillow_ours.py).
 $(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp
@@ -370,7 +386,7 @@ $(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp
 $(APP_DIR)/dump_jpeg_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_raster.o | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking dump_jpeg_raster ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 
 # Dump JPEG file structure: segments in order with offset, size, hex dump (no library dependency).
 $(OBJ_DIR)/tests/dump_jpeg_structure.o: tests/codec/jpeg/dump_jpeg_structure.cpp
@@ -662,7 +678,7 @@ $(ASAN_OBJ_DIR)/%.o: src/%.c
 $(ASAN_APP_DIR)/$(ASAN_TARGET): $(ASAN_LIBOBJECTS)
 	@printf "\n### Linking ASan+UBSan Image Library ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -shared -o $@ $^ $(ASAN_LDFLAGS) $(COMPRESS_LIBS)
+	$(CXX) $(ASAN_CXXFLAGS) -shared -o $@ $^ $(ASAN_LDFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 
 # ASan test helper (optional)
 ASAN_TEST_HELPER_OBJ := $(patsubst $(OBJ_DIR)/%,$(ASAN_OBJ_DIR)/%,$(TEST_HELPER_OBJ))
@@ -896,7 +912,7 @@ fuzz-png: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for PNG/APNG (requires
 	fi
 	@mkdir -p $(OBJ_DIR) $(APP_DIR)
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_png_load.cpp -o $(OBJ_DIR)/fuzz_png_load.o
-	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_png_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_png_load.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_png_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_png_load.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_png_load$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_png_load tests/fuzz/corpus"
 
 fuzz-png-encode: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for PNG round-trip load->save->load (requires clang++)
@@ -905,7 +921,7 @@ fuzz-png-encode: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for PNG round-t
 	fi
 	@mkdir -p $(OBJ_DIR) $(APP_DIR)
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_png_encode.cpp -o $(OBJ_DIR)/fuzz_png_encode.o
-	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_png_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_png_encode.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_png_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_png_encode.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_png_encode$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_png_encode tests/fuzz/corpus"
 
 fuzz-jpeg: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for JPEG load/decode (requires clang++)
@@ -914,7 +930,7 @@ fuzz-jpeg: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for JPEG load/decode 
 	fi
 	@mkdir -p $(OBJ_DIR) $(APP_DIR)
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_jpeg_load.cpp -o $(OBJ_DIR)/fuzz_jpeg_load.o
-	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_load.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_load.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_jpeg_load$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_jpeg_load tests/fuzz/corpus"
 
 fuzz-jpeg-encode: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for JPEG round-trip load->save->load (requires clang++)
@@ -923,7 +939,7 @@ fuzz-jpeg-encode: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for JPEG round
 	fi
 	@mkdir -p $(OBJ_DIR) $(APP_DIR)
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_jpeg_encode.cpp -o $(OBJ_DIR)/fuzz_jpeg_encode.o
-	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_encode.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_encode.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_jpeg_encode tests/fuzz/corpus"
 
 help: ## Display this help

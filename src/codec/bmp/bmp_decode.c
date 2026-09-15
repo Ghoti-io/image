@@ -116,7 +116,7 @@ static GIMG_Result bmp_decode_uncompressed(
   // bmp_read_pixels() sized the buffer from this same computation, so a
   // mismatch here means the state was built inconsistently.
   size_t required;
-  if (!gimg_safe_mul_size(stride, (size_t)h->height, &required) ||
+  if (!gcu_safe_mul_size(stride, (size_t)h->height, &required) ||
       required > state->pixels_size) {
     return GIMG_ERR_INTERNAL;
   }
@@ -335,7 +335,7 @@ GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
   const GIMG_Limits * limits = options ? options->limits : NULL;
   if (limits && limits->max_decoded_pixels) {
     size_t pixel_count;
-    if (!gimg_safe_mul_size(
+    if (!gcu_safe_mul_size(
             (size_t)h->width, (size_t)h->height, &pixel_count) ||
         pixel_count > limits->max_decoded_pixels) {
       return GIMG_ERR_LIMIT;

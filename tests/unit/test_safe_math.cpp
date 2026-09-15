@@ -1,8 +1,9 @@
 /**
  * @file
  *
- * Unit tests for internal safe-math helpers (overflow-safe pixel count and
- * size).
+ * Unit tests for gimg_safe_pixel_count, the one safe-math helper specific to
+ * this library. The general overflow-checked arithmetic it is built on is
+ * cutil's and is covered by cutil's own suite.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -45,32 +46,6 @@ TEST(SafeMath, SafePixelCountOverflow) {
     EXPECT_EQ(r, GIMG_OK);
     EXPECT_EQ(out, (size_t)0x10000u * 0x10000u);
   }
-}
-
-TEST(SafeMath, SafeMulSizeZero) {
-  size_t out = 99;
-  EXPECT_TRUE(gimg_safe_mul_size(0, 100, &out));
-  EXPECT_EQ(out, 0u);
-  out = 99;
-  EXPECT_TRUE(gimg_safe_mul_size(100, 0, &out));
-  EXPECT_EQ(out, 0u);
-}
-
-TEST(SafeMath, SafeMulSizeNormal) {
-  size_t out = 0;
-  EXPECT_TRUE(gimg_safe_mul_size(100, 200, &out));
-  EXPECT_EQ(out, 20000u);
-}
-
-TEST(SafeMath, SafeAddSizeNormal) {
-  size_t out = 0;
-  EXPECT_TRUE(gimg_safe_add_size(100, 200, &out));
-  EXPECT_EQ(out, 300u);
-}
-
-TEST(SafeMath, SafeAddSizeOverflow) {
-  size_t out = 99;
-  EXPECT_FALSE(gimg_safe_add_size(SIZE_MAX, 1, &out));
 }
 
 int main(int argc, char ** argv) {

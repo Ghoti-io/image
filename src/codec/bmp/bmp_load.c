@@ -147,15 +147,15 @@ GIMG_Result gimg_bmp_row_stride(
   }
   // (width * bpp + 31) / 32 * 4, in size_t so wide images cannot wrap.
   size_t bits;
-  if (!gimg_safe_mul_size((size_t)width, (size_t)bit_count, &bits)) {
+  if (!gcu_safe_mul_size((size_t)width, (size_t)bit_count, &bits)) {
     return GIMG_ERR_LIMIT;
   }
   size_t padded;
-  if (!gimg_safe_add_size(bits, 31u, &padded)) {
+  if (!gcu_safe_add_size(bits, 31u, &padded)) {
     return GIMG_ERR_LIMIT;
   }
   size_t stride;
-  if (!gimg_safe_mul_size(padded / 32u, 4u, &stride)) {
+  if (!gcu_safe_mul_size(padded / 32u, 4u, &stride)) {
     return GIMG_ERR_LIMIT;
   }
   *out_stride = stride;
@@ -461,7 +461,7 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    if (!gimg_safe_mul_size(stride, (size_t)header->height, &needed)) {
+    if (!gcu_safe_mul_size(stride, (size_t)header->height, &needed)) {
       bmp_load_diag(
           diagnostics, (size_t)data_offset, "pixel data size overflows");
       return GIMG_ERR_LIMIT;
@@ -551,7 +551,7 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // Reject images whose pixel count exceeds the caller's limit before any
   // large allocation happens.
   size_t pixel_count;
-  if (!gimg_safe_mul_size(
+  if (!gcu_safe_mul_size(
           (size_t)header.width, (size_t)header.height, &pixel_count)) {
     bmp_load_diag(
         diagnostics, GIMG_BMP_FILE_HEADER_SIZE, "pixel count overflows");

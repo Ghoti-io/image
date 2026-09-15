@@ -551,7 +551,7 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
   }
   else {
     size_t row_stride = 1u + row_bytes;
-    if (!gimg_safe_mul_size((size_t)height, row_stride, &raw_size)) {
+    if (!gcu_safe_mul_size((size_t)height, row_stride, &raw_size)) {
       return GIMG_ERR_LIMIT;
     }
   }
