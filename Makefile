@@ -124,7 +124,11 @@ endif
 # The standard include directories for the project.
 INCLUDE := -I include/ -I $(GEN_DIR)/
 # ghoti.io-compress (required for PNG codec). Prefer pkg-config; fallback to sibling.
-COMPRESS_PC ?= ghoti.io-compress
+# The name must carry $(BRANCH): compress installs its .pc as
+# ghoti.io-compress-dev.pc, so asking for "ghoti.io-compress" never matched and
+# the sibling fallback below was taken even when compress was properly
+# installed.
+COMPRESS_PC ?= ghoti.io-compress$(BRANCH)
 COMPRESS_CFLAGS := $(shell pkg-config --cflags $(COMPRESS_PC) 2>/dev/null)
 COMPRESS_LIBS := $(shell pkg-config --libs $(COMPRESS_PC) 2>/dev/null)
 # Use sibling path when pkg-config failed (empty) or returned unsubstituted placeholder.
@@ -322,8 +326,14 @@ $(APP_DIR)/$2$(EXE_EXTENSION): \
 		| $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking %s Test ###\n" "$2"
 	@mkdir -p $$(@D)
-	$$(CXX) $$(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $$(TEST_HELPER_OBJ) $$(LDFLAGS) $$(TESTFLAGS) $(IMAGELIBRARY)
+	$$(CXX) $$(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $$(TEST_HELPER_OBJ) $$(LDFLAGS) $$(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
 endef
+
+# Test binaries need $(COMPRESS_LIBS) as well as the image library: image's
+# .so has a NEEDED entry for compress, and the linker has to be able to
+# resolve it. The sibling fallback used to hide this by adding -rpath-link to
+# LDFLAGS; with compress installed there is no such hint, and the install
+# directory is not on the linker's default search path either.
 
 # testPng_decode, testPng_encode, test_jpeg_load use explicit rules (link test utils).
 TEST_PAIRS_OTHER := $(filter-out tests/codec/png/test_png_decode.cpp|testPng_decode tests/codec/png/test_png_encode.cpp|testPng_encode tests/codec/jpeg/test_jpeg_load.cpp|testJpeg_load tests/codec/jpeg/test_jpeg_encode.cpp|testJpeg_encode,$(TEST_PAIRS))
@@ -334,13 +344,13 @@ $(foreach pair,$(TEST_PAIRS_OTHER),$(eval $(call test-executable-rule,$(word 1,$
 $(APP_DIR)/testJpeg_load$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testJpeg_load Test ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
 
 # JPEG encode test links jpeg_test_utils (load_jpeg_file, raster_pixel_hash for round-trip test).
 $(APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testJpeg_encode Test ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
 
 # Dump JPEG raster to stdout (for compare_pillow_ours.py).
 $(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp
@@ -350,7 +360,7 @@ $(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp
 $(APP_DIR)/dump_jpeg_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_raster.o | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking dump_jpeg_raster ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_raster.o $(LDFLAGS) $(IMAGELIBRARY)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS)
 
 # Dump JPEG file structure: segments in order with offset, size, hex dump (no library dependency).
 $(OBJ_DIR)/tests/dump_jpeg_structure.o: tests/codec/jpeg/dump_jpeg_structure.cpp
