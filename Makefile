@@ -92,14 +92,14 @@ endif
 
 
 CXX := g++
-CXXFLAGS := -pedantic-errors -Wall -Wextra -Werror -Wno-error=unused-function -Wfatal-errors -std=c++20 -O1 -g
+CXXFLAGS := -pedantic-errors -Wall -Wextra -Werror -Wno-error=unused-function -Wfatal-errors -std=c++20 -O1 -g $(EXTRA_CXXFLAGS)
 CC := cc
-CFLAGS := -pedantic-errors -Wall -Wextra -Werror -Wno-error=unused-function -Wfatal-errors -std=c17 -O0 -g
+CFLAGS := -pedantic-errors -Wall -Wextra -Werror -Wno-error=unused-function -Wfatal-errors -std=c17 -O0 -g $(EXTRA_CFLAGS)
 # Library-specific compile flags (export symbols on Windows, PIC on Linux)
 # GIMG_BUILD enables DLL export on Windows (checked by GIMG_API macro)
 # GIMG_TEST_BUILD enables export of internal functions for testing (checked by GIMG_INTERNAL_API macro)
-LIB_CFLAGS := $(CFLAGS) -DGIMG_BUILD -DGIMG_TEST_BUILD
-LDFLAGS := -L /usr/lib -lstdc++ -lm
+LIB_CFLAGS := $(CFLAGS) -DGIMG_BUILD -DGIMG_TEST_BUILD $(EXTRA_CFLAGS)
+LDFLAGS := -L /usr/lib -lstdc++ -lm $(EXTRA_LDFLAGS)
 BUILD_DIR := ./build/$(BUILD)
 OBJ_DIR := $(BUILD_DIR)/objects
 GEN_DIR := $(BUILD_DIR)/generated
@@ -443,7 +443,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c $(APP_DIR)/$(TARGET)
 ####################################################################
 
 # General commands
-.PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build
+.PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build coverage
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-watch uninstall watch
 # Debug build commands
@@ -941,6 +941,20 @@ fuzz-jpeg-encode: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for JPEG round
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_jpeg_encode.cpp -o $(OBJ_DIR)/fuzz_jpeg_encode.o
 	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_encode.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_jpeg_encode tests/fuzz/corpus"
+
+coverage: ## Build instrumented, run the tests, and report line coverage
+# Cleans first because the object files would otherwise be reused without the
+# instrumentation, then cleans and rebuilds at the end: leaving the
+# instrumented objects behind would have a later `make` silently link them,
+# and leaving the tree cleaned would break any sibling project that links
+# this one. The cost is one extra build; coverage is not run often.
+	@$(MAKE) --no-print-directory clean > /dev/null
+	@$(MAKE) --no-print-directory test \
+		EXTRA_CFLAGS="--coverage -O0" \
+		EXTRA_LDFLAGS="--coverage" > /dev/null
+	@tools/coverage.sh $(OBJ_DIR)
+	@$(MAKE) --no-print-directory clean > /dev/null
+	@$(MAKE) --no-print-directory all > /dev/null
 
 help: ## Display this help
 	@grep -E '^[ a-zA-Z_-]+:.*?## .*$$' Makefile | sort | sed 's/\\([^:]*\\):.*## \\(.*\\)/\\1:\\2/' | awk -F: '{printf "%-15s %s\n", $$1, $$2}' | sed "s/(SUITE)/$(SUITE)/g; s/(PROJECT)/$(PROJECT)/g; s/(BRANCH)/$(BRANCH)/g"
