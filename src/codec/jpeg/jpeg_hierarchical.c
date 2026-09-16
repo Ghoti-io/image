@@ -463,31 +463,8 @@ static GIMG_Result hier_decode_lossless_frame(
   if (precision < 2 || precision > 16) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  if (f->num_scans != 1u) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
-  const gimg_jpeg_scan_t * scan = &f->scans[0];
-  if (scan->comp_count != num_comp) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
-  if (!f->is_arithmetic && (!scan->data || scan->data_size == 0)) {
+  if (f->num_scans == 0u) {
     return GIMG_ERR_CORRUPT;
-  }
-  int psv = (int)scan->ss;
-  int pt = (int)scan->al;
-  if (pt < 0 || pt >= precision) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
-  // T.81 H.1.2 Table H.1 and J.1.3.2: selection value 0 means "no prediction"
-  // and "shall only be used for differential coding in the hierarchical mode";
-  // 1 to 7 are the predictors, and a differential frame may not use them.
-  if (f->is_differential) {
-    if (psv != 0) {
-      return GIMG_ERR_FORMAT;
-    }
-  }
-  else if (psv < 1 || psv > 7) {
-    return GIMG_ERR_FORMAT;
   }
 
   uint8_t h_max = 0, v_max = 0;
@@ -499,178 +476,266 @@ static GIMG_Result hier_decode_lossless_frame(
   uint32_t mcu_per_row = ((uint32_t)sof->width + h_max - 1u) / h_max;
   uint32_t mcu_per_col = ((uint32_t)sof->height + v_max - 1u) / v_max;
 
+  // Two geometries per component, and the difference is the whole of A.2.3.
+  // cw/chh is the MCU-padded grid an interleaved scan walks and the plane is
+  // allocated at; ow/oh is the component's own size, ceil(X x H_i / H_max) by
+  // ceil(Y x V_i / V_max), which is what a non-interleaved scan covers - A.2.2
+  // puts its data units "left-to-right, top-to-bottom" over that and codes no
+  // padding at all.
   uint32_t cw[GIMG_JPEG_MAX_COMPONENTS], chh[GIMG_JPEG_MAX_COMPONENTS];
+  uint32_t ow[GIMG_JPEG_MAX_COMPONENTS], oh[GIMG_JPEG_MAX_COMPONENTS];
   GIMG_Result r = GIMG_OK;
   uint8_t * db_cat[GIMG_JPEG_MAX_COMPONENTS];
   int da_cat[GIMG_JPEG_MAX_COMPONENTS];
   // One byte per line of each component, not one flag per component: see the
   // note in jpeg_lossless.c.  An interleaved scan walks MCUs, so with Hi above
   // one a single flag is read on a line other than the one it was set for, and
-  // on a first line that asks for the sample above the image.  Declared here
-  // with db_cat because the cleanup below frees both, and the allocations
-  // between here and there can fail.
+  // on a first line that asks for the sample above the image.
   unsigned char * row_1d[GIMG_JPEG_MAX_COMPONENTS];
+  // A.4 gives the point transform per scan, so a frame written as several
+  // scans may use a different Pt in each.  It is undone once, at the end, and
+  // so has to be remembered per component rather than held in one variable.
+  int pt_of[GIMG_JPEG_MAX_COMPONENTS];
   memset(db_cat, 0, sizeof(db_cat));
   memset(da_cat, 0, sizeof(da_cat));
   memset(row_1d, 0, sizeof(row_1d));
+  memset(pt_of, 0, sizeof(pt_of));
   for (uint8_t i = 0; i < num_comp; i++) {
     cw[i] = mcu_per_row * sof->h_samp[i];
     chh[i] = mcu_per_col * sof->v_samp[i];
+    ow[i] = ((uint32_t)sof->width * sof->h_samp[i] + h_max - 1u) / h_max;
+    oh[i] = ((uint32_t)sof->height * sof->v_samp[i] + v_max - 1u) / v_max;
+    if (ow[i] > cw[i]) {
+      ow[i] = cw[i];
+    }
+    if (oh[i] > chh[i]) {
+      oh[i] = chh[i];
+    }
     r = hier_plane_alloc(alloc, &out[i], cw[i], chh[i]);
     if (r != GIMG_OK) {
       goto fail;
     }
-  }
-
-  gimg_jpeg_huff_table_t dc_tables[4];
-  memset(dc_tables, 0, sizeof(dc_tables));
-  if (!f->is_arithmetic) {
-    for (uint8_t c = 0; c < scan->comp_count; c++) {
-      size_t len = 0;
-      const unsigned char * p =
-          hier_scan_huff(state, scan, 0, scan->dc_tbl[c], &len);
-      if (!p || jpeg_build_huff_table(p, len, &dc_tables[scan->dc_tbl[c]]) != 0) {
-        r = GIMG_ERR_CORRUPT;
-        goto fail;
-      }
-    }
-  }
-
-  gimg_jpeg_bitstream_t bs;
-  jpeg_bitstream_init(&bs, scan->data, scan->data_size);
-  jpeg_arith_decoder_t ad;
-  jpeg_arith_lossless_stats_t astats;
-  if (f->is_arithmetic) {
-    jpeg_arith_decoder_init(&ad, scan->data, scan->data_size);
-    jpeg_arith_lossless_stats_reset(&astats);
-    for (uint8_t i = 0; i < num_comp; i++) {
-      db_cat[i] = (uint8_t *)gimg_malloc(alloc, cw[i]);
-      if (!db_cat[i]) {
-        r = GIMG_ERR_OOM;
-        goto fail;
-      }
-      memset(db_cat[i], 0, cw[i]);
-    }
-  }
-
-  const uint16_t restart_interval = scan->restart_interval;
-  const int32_t initial_pred = (int32_t)1 << (precision - pt - 1);
-  for (uint8_t i = 0; i < num_comp; i++) {
+    db_cat[i] = (uint8_t *)gimg_malloc(alloc, cw[i]);
     row_1d[i] = (unsigned char *)gimg_malloc(alloc, chh[i]);
-    if (!row_1d[i]) {
+    if (!db_cat[i] || !row_1d[i]) {
       r = GIMG_ERR_OOM;
       goto fail;
     }
-    memset(row_1d[i], 1, chh[i]);
   }
-  int restart_now = 0;
 
-  for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
-    for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
-      uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
-      if (restart_interval > 0 && mcu_index > 0 &&
-          mcu_index % (uint32_t)restart_interval == 0) {
-        if (f->is_arithmetic) {
-          r = jpeg_arith_lossless_restart(&ad, &astats);
-          if (r != GIMG_OK) {
-            goto fail;
-          }
-          for (uint8_t i = 0; i < num_comp; i++) {
-            if (db_cat[i]) {
-              memset(db_cat[i], 0, cw[i]);
-            }
-            da_cat[i] = 0;
-          }
-        }
-        else {
-          bs.expect_rst = 1;
-          jpeg_bitstream_align_skip_rst(&bs);
-          bs.rst_just_skipped = 0;
-        }
-        restart_now = 1;
+  // T.81 A.2.3: a lossless frame may be written as one scan per component
+  // rather than as a single interleaved scan, in a hierarchical sequence just
+  // as outside one.  Each scan carries its own predictor, point transform,
+  // tables and restart interval (B.2.3), so all of that is per scan here and
+  // not per frame; H.1.2.1's prediction starts again in each of them, which
+  // falls out of resetting the line state below.
+  for (unsigned si = 0; si < f->num_scans; si++) {
+    const gimg_jpeg_scan_t * scan = &f->scans[si];
+    if (scan->comp_count == 0 || scan->comp_count > num_comp) {
+      r = GIMG_ERR_FORMAT;
+      goto fail;
+    }
+    if (!f->is_arithmetic && (!scan->data || scan->data_size == 0)) {
+      r = GIMG_ERR_CORRUPT;
+      goto fail;
+    }
+    int psv = (int)scan->ss;
+    int pt = (int)scan->al;
+    if (pt < 0 || pt >= precision) {
+      r = GIMG_ERR_UNSUPPORTED;
+      goto fail;
+    }
+    // T.81 H.1.2 Table H.1 and J.1.3.2: selection value 0 means "no
+    // prediction" and "shall only be used for differential coding in the
+    // hierarchical mode"; 1 to 7 are the predictors, and a differential frame
+    // may not use them.
+    if (f->is_differential) {
+      if (psv != 0) {
+        r = GIMG_ERR_FORMAT;
+        goto fail;
       }
-      for (uint8_t s = 0; s < scan->comp_count; s++) {
-        uint8_t ci = 0;
-        for (; ci < num_comp; ci++) {
-          if (sof->comp_id[ci] == scan->comp_id[s]) {
-            break;
-          }
-        }
-        if (ci >= num_comp) {
+    }
+    else if (psv < 1 || psv > 7) {
+      r = GIMG_ERR_FORMAT;
+      goto fail;
+    }
+
+    gimg_jpeg_huff_table_t dc_tables[4];
+    memset(dc_tables, 0, sizeof(dc_tables));
+    if (!f->is_arithmetic) {
+      for (uint8_t c = 0; c < scan->comp_count; c++) {
+        size_t len = 0;
+        const unsigned char * p =
+            hier_scan_huff(state, scan, 0, scan->dc_tbl[c], &len);
+        if (!p ||
+            jpeg_build_huff_table(p, len, &dc_tables[scan->dc_tbl[c]]) != 0) {
           r = GIMG_ERR_CORRUPT;
           goto fail;
         }
-        for (uint8_t sy = 0; sy < sof->v_samp[ci]; sy++) {
-          for (uint8_t sx = 0; sx < sof->h_samp[ci]; sx++) {
-            uint32_t x = mcu_x * sof->h_samp[ci] + sx;
-            uint32_t y = mcu_y * sof->v_samp[ci] + sy;
-            int32_t diff = 0;
-            if (f->is_arithmetic) {
-              if (x == 0) {
-                da_cat[ci] = 0;
-              }
-              int cat = 0;
-              r = jpeg_arith_lossless_decode_diff(&ad, &astats, &f->arith_cond,
-                  scan->dc_tbl[s], da_cat[ci], (int)db_cat[ci][x], &diff, &cat);
-              if (r != GIMG_OK) {
-                goto fail;
-              }
-              da_cat[ci] = cat;
-              db_cat[ci][x] = (uint8_t)cat;
-            }
-            else {
-              r = jpeg_lossless_decode_diff(
-                  &bs, &dc_tables[scan->dc_tbl[s]], &diff);
-              if (r != GIMG_OK) {
-                goto fail;
-              }
-            }
-            int32_t v;
-            if (f->is_differential) {
-              // J.2.3.2: the difference is the output; there is nothing to
-              // predict from, since the reference it belongs to is added later.
-              v = diff;
-            }
-            else {
-              int32_t pred;
-              if (x == 0) {
-                if (y == 0 || restart_now) {
-                  pred = initial_pred;
-                  row_1d[ci][y] = 1;
-                }
-                else {
-                  pred = out[ci].s[(size_t)(y - 1) * cw[ci]];
-                  row_1d[ci][y] = 0;
-                }
-              }
-              else if (row_1d[ci][y]) {
-                pred = out[ci].s[(size_t)y * cw[ci] + (x - 1)];
-              }
-              else {
-                int32_t ra = out[ci].s[(size_t)y * cw[ci] + (x - 1)];
-                int32_t rb = out[ci].s[(size_t)(y - 1) * cw[ci] + x];
-                int32_t rc = out[ci].s[(size_t)(y - 1) * cw[ci] + (x - 1)];
-                pred = jpeg_lossless_predict(psv, ra, rb, rc);
-              }
-              // H.1.2.1: the reconstruction is modulo 2^16.
-              v = (int32_t)((uint32_t)(pred + diff) & 0xFFFFu);
-            }
-            out[ci].s[(size_t)y * cw[ci] + x] = v;
+      }
+    }
+
+    gimg_jpeg_bitstream_t bs;
+    jpeg_bitstream_init(&bs, scan->data, scan->data_size);
+    jpeg_arith_decoder_t ad;
+    jpeg_arith_lossless_stats_t astats;
+    if (f->is_arithmetic) {
+      jpeg_arith_decoder_init(&ad, scan->data, scan->data_size);
+      jpeg_arith_lossless_stats_reset(&astats);
+    }
+    for (uint8_t i = 0; i < num_comp; i++) {
+      memset(db_cat[i], 0, cw[i]);
+      da_cat[i] = 0;
+      memset(row_1d[i], 1, chh[i]);
+    }
+
+    const uint16_t restart_interval = scan->restart_interval;
+    const int32_t initial_pred = (int32_t)1 << (precision - pt - 1);
+
+    // A.2.2: with one component the MCU is a single sample and the scan covers
+    // that component's own grid.  A.2.3: with more than one it is H_i x V_i
+    // samples of each, over the frame's MCU grid.
+    int interleaved = (scan->comp_count > 1);
+    uint8_t solo = 0;
+    if (!interleaved) {
+      for (; solo < num_comp; solo++) {
+        if (sof->comp_id[solo] == scan->comp_id[0]) {
+          break;
+        }
+      }
+      if (solo >= num_comp) {
+        r = GIMG_ERR_FORMAT;
+        goto fail;
+      }
+      pt_of[solo] = pt;
+    }
+    else {
+      for (uint8_t c = 0; c < scan->comp_count; c++) {
+        for (uint8_t ci = 0; ci < num_comp; ci++) {
+          if (sof->comp_id[ci] == scan->comp_id[c]) {
+            pt_of[ci] = pt;
+            break;
           }
         }
       }
-      restart_now = 0;
+    }
+    uint32_t nx = interleaved ? mcu_per_row : ow[solo];
+    uint32_t ny = interleaved ? mcu_per_col : oh[solo];
+    int restart_now = 0;
+
+    for (uint32_t mcu_y = 0; mcu_y < ny; mcu_y++) {
+      for (uint32_t mcu_x = 0; mcu_x < nx; mcu_x++) {
+        uint32_t mcu_index = mcu_y * nx + mcu_x;
+        if (restart_interval > 0 && mcu_index > 0 &&
+            mcu_index % (uint32_t)restart_interval == 0) {
+          if (f->is_arithmetic) {
+            r = jpeg_arith_lossless_restart(&ad, &astats);
+            if (r != GIMG_OK) {
+              goto fail;
+            }
+            for (uint8_t i = 0; i < num_comp; i++) {
+              memset(db_cat[i], 0, cw[i]);
+              da_cat[i] = 0;
+            }
+          }
+          else {
+            bs.expect_rst = 1;
+            jpeg_bitstream_align_skip_rst(&bs);
+            bs.rst_just_skipped = 0;
+          }
+          restart_now = 1;
+        }
+        for (uint8_t s = 0; s < scan->comp_count; s++) {
+          uint8_t ci = 0;
+          for (; ci < num_comp; ci++) {
+            if (sof->comp_id[ci] == scan->comp_id[s]) {
+              break;
+            }
+          }
+          if (ci >= num_comp) {
+            r = GIMG_ERR_CORRUPT;
+            goto fail;
+          }
+          uint8_t nsy = interleaved ? sof->v_samp[ci] : 1u;
+          uint8_t nsx = interleaved ? sof->h_samp[ci] : 1u;
+          for (uint8_t sy = 0; sy < nsy; sy++) {
+            for (uint8_t sx = 0; sx < nsx; sx++) {
+              uint32_t x = interleaved
+                  ? mcu_x * sof->h_samp[ci] + sx
+                  : mcu_x;
+              uint32_t y = interleaved
+                  ? mcu_y * sof->v_samp[ci] + sy
+                  : mcu_y;
+              int32_t diff = 0;
+              if (f->is_arithmetic) {
+                if (x == 0) {
+                  da_cat[ci] = 0;
+                }
+                int cat = 0;
+                r = jpeg_arith_lossless_decode_diff(&ad, &astats,
+                    &f->arith_cond, scan->dc_tbl[s], da_cat[ci],
+                    (int)db_cat[ci][x], &diff, &cat);
+                if (r != GIMG_OK) {
+                  goto fail;
+                }
+                da_cat[ci] = cat;
+                db_cat[ci][x] = (uint8_t)cat;
+              }
+              else {
+                r = jpeg_lossless_decode_diff(
+                    &bs, &dc_tables[scan->dc_tbl[s]], &diff);
+                if (r != GIMG_OK) {
+                  goto fail;
+                }
+              }
+              int32_t v;
+              if (f->is_differential) {
+                // J.2.3.2: the difference is the output; there is nothing to
+                // predict from, since the reference it belongs to is added
+                // later.
+                v = diff;
+              }
+              else {
+                int32_t pred;
+                if (x == 0) {
+                  if (y == 0 || restart_now) {
+                    pred = initial_pred;
+                    row_1d[ci][y] = 1;
+                  }
+                  else {
+                    pred = out[ci].s[(size_t)(y - 1) * cw[ci]];
+                    row_1d[ci][y] = 0;
+                  }
+                }
+                else if (row_1d[ci][y]) {
+                  pred = out[ci].s[(size_t)y * cw[ci] + (x - 1)];
+                }
+                else {
+                  int32_t ra = out[ci].s[(size_t)y * cw[ci] + (x - 1)];
+                  int32_t rb = out[ci].s[(size_t)(y - 1) * cw[ci] + x];
+                  int32_t rc = out[ci].s[(size_t)(y - 1) * cw[ci] + (x - 1)];
+                  pred = jpeg_lossless_predict(psv, ra, rb, rc);
+                }
+                // H.1.2.1: the reconstruction is modulo 2^16.
+                v = (int32_t)((uint32_t)(pred + diff) & 0xFFFFu);
+              }
+              out[ci].s[(size_t)y * cw[ci] + x] = v;
+            }
+          }
+        }
+        restart_now = 0;
+      }
     }
   }
 
   // A.4: the point transform divided the input by 2^Pt, so undo it once the
   // whole frame is decoded - the prediction above works in transformed space,
   // as H.1.2 intends, and only what leaves this function is a sample.
-  if (pt > 0) {
-    for (uint8_t i = 0; i < num_comp; i++) {
+  for (uint8_t i = 0; i < num_comp; i++) {
+    if (pt_of[i] > 0) {
       size_t n = (size_t)cw[i] * chh[i];
       for (size_t k = 0; k < n; k++) {
-        out[i].s[k] = (int32_t)((uint32_t)out[i].s[k] << pt);
+        out[i].s[k] = (int32_t)((uint32_t)out[i].s[k] << pt_of[i]);
       }
     }
   }

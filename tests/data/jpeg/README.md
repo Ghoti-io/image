@@ -701,3 +701,25 @@ Two independent checks that these are real JPEGs rather than something this
 decoder happens to like: libjpeg-turbo validated the frame and its scans before
 the DHP was inserted, and the ISO reference codec reads all three afterwards as
 hierarchical sequences.
+
+The same trick supplies the lossless case, from the files libjpeg-turbo wrote
+for the single-frame A.2.3 tests:
+
+```sh
+python3 $D/mk_hier_ni.py \
+    $D/lossless_noninterleaved.jpg         $D/hier_lossless_noninterleaved.jpg \
+    $D/lossless_noninterleaved_psv.jpg     $D/hier_lossless_noninterleaved_psv.jpg \
+    $D/lossless_noninterleaved_restart.jpg $D/hier_lossless_noninterleaved_restart.jpg
+```
+
+Lossless, so the expected answer is `hier_src_rgb.ppm` itself, exactly.  The
+`_psv` one is the useful one: it gives each scan a different predictor - 1, 2
+and 7 - which is what says the predictor is a property of the scan and not of
+the frame.
+
+What none of them reach: a non-interleaved scan covers the component's own grid
+rather than the MCU-padded one, and at 1x1 sampling those are the same size.
+Every lossless file anything here can write is 1x1, because libjpeg-turbo
+declines to subsample a lossless frame.  So that distinction follows A.2.2 read
+directly, and is unverified - the same position as the subsampled lossless
+fixtures above, and said out loud in the test for the same reason.

@@ -3934,3 +3934,80 @@ TEST(JpegLoad, HierarchicalFrameCodedAsNonInterleavedScans) {
     gimg_stream_destroy(s);
   }
 }
+
+// A.2.3 for a lossless frame inside a hierarchical sequence.
+//
+// The same gap as the DCT case and the same shape of fix, but a bigger one to
+// close: the lossless frame decoder had the scan's predictor, point transform,
+// tables and restart interval as frame-wide values, and a frame written one
+// scan per component gives each scan its own (B.2.3).  So the walk is now per
+// scan, and the point transform is remembered per component because A.4 lets
+// each scan choose its own Pt.
+//
+// Lossless, so the oracle is the source image itself, exactly - nothing here
+// is approximate.  The fixtures are one-frame sequences built by inserting DHP
+// ahead of the frame in the lossless_noninterleaved_* files, which
+// libjpeg-turbo wrote; the ISO reference codec reads all three as hierarchical
+// sequences.
+//
+// One thing these do not reach.  A non-interleaved scan covers the component's
+// own grid, ceil(X x H_i / H_max) by ceil(Y x V_i / V_max), rather than the
+// MCU-padded grid an interleaved scan walks; with 1x1 sampling the two are the
+// same size, and every lossless file anything here can write is 1x1, because
+// libjpeg-turbo declines to subsample a lossless frame at all.  Replacing the
+// one with the other passes this test.  The distinction is read straight from
+// A.2.2 and matches what the DCT path does; it is not checked against
+// anything, for the same reason the subsampled lossless fixtures are not.
+TEST(JpegLoad, HierarchicalLosslessFrameCodedAsNonInterleavedScans) {
+  struct Case {
+    const char * jpg;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"hier_lossless_noninterleaved.jpg", "three scans, predictor 4 throughout"},
+      {"hier_lossless_noninterleaved_psv.jpg",
+          "predictors 1, 2 and 7: one per scan, not one per frame"},
+      {"hier_lossless_noninterleaved_restart.jpg",
+          "with a restart interval, which each scan counts in its own MCUs"},
+  };
+  uint32_t sw = 0, sh = 0;
+  int schan = 0, sbits = 0;
+  std::vector<uint32_t> src;
+  ASSERT_TRUE(jpeg_test::load_pnm_file(
+      "hier_src_rgb.ppm", &sw, &sh, &schan, &sbits, src));
+  ASSERT_EQ(schan, 3);
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK)
+        << "a hierarchical lossless frame coded as non-interleaved scans must "
+           "decode";
+    ASSERT_NE(raster, nullptr);
+    EXPECT_EQ(gimg_raster_width(raster), sw);
+    EXPECT_EQ(gimg_raster_height(raster), sh);
+    const unsigned char * gp =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t gs = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < sh; y++) {
+      for (uint32_t x = 0; x < sw; x++) {
+        for (int ch = 0; ch < 3; ch++) {
+          int a = (int)gp[y * gs + x * 4 + (size_t)ch];
+          int b = (int)src[((size_t)y * sw + x) * 3 + (size_t)ch];
+          ASSERT_EQ(a, b) << "lossless must be exact: pixel (" << x << ","
+                          << y << ") channel " << ch;
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
