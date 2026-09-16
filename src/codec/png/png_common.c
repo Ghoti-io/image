@@ -143,6 +143,37 @@ bool gimg_png_adam7_raw_size(uint32_t width, uint32_t height, uint8_t color_type
 }
 
 //
+// Sub-byte sample access (PNG 7.2).
+//
+// Depths 1, 2 and 4 pack several samples into a byte, most significant bits
+// first: for depth 1 pixel 0 is bit 7, for depth 2 it is bits 7-6, for depth 4
+// it is bits 7-4. A scanline is padded to a whole byte. Anything that moves
+// samples between scanlines - the Adam7 reassembly on decode, the row packing
+// on save - has to address them by bit, because at these depths a pixel index
+// is not a byte offset.
+//
+
+uint8_t gimg_png_get_sample_bits(
+    const unsigned char * row, uint32_t x, uint8_t depth) {
+  unsigned int per_byte = 8u / (unsigned int)depth;
+  size_t byte_index = (size_t)(x / per_byte);
+  unsigned int within = (unsigned int)(x % per_byte);
+  unsigned int shift = 8u - (unsigned int)depth * (within + 1u);
+  return (uint8_t)((row[byte_index] >> shift) & ((1u << depth) - 1u));
+}
+
+void gimg_png_set_sample_bits(
+    unsigned char * row, uint32_t x, uint8_t depth, uint8_t value) {
+  unsigned int per_byte = 8u / (unsigned int)depth;
+  size_t byte_index = (size_t)(x / per_byte);
+  unsigned int within = (unsigned int)(x % per_byte);
+  unsigned int shift = 8u - (unsigned int)depth * (within + 1u);
+  unsigned int mask = ((1u << depth) - 1u) << shift;
+  unsigned int bits = ((unsigned int)value << shift) & mask;
+  row[byte_index] = (unsigned char)((row[byte_index] & ~mask) | bits);
+}
+
+//
 // Text chunk decode (tEXt/zTXt/iTXt) for meta_common description.
 //
 GIMG_Result gimg_png_text_chunk_decode(gimg_png_chunk_type_t type,

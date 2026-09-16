@@ -277,6 +277,16 @@ static void gimg_png_write_be16(unsigned char * out, uint16_t value) {
 /** Fill raw image rows (filter byte + row data) from raster. Caller allocates
  * raw_size = height * (1 + row_bytes). For palette (color_type 3), @a state
  * must be non-NULL with plte/trns; raster must be RGBA8. */
+/** Palette index for a raster pixel; false when no entry matches. PNG 11.2.2. */
+static bool gimg_png_palette_index_at(const GIMG_Raster * raster,
+    const gimg_png_doc_state_t * state, uint32_t x, uint32_t y,
+    uint8_t * out_index);
+
+/** One sample at a bit depth below 8 (palette index or grayscale level). */
+static bool gimg_png_sub_byte_sample_at(const GIMG_Raster * raster,
+    uint8_t color_type, uint8_t bit_depth, const gimg_png_doc_state_t * state,
+    uint32_t x, uint32_t y, uint8_t * out_sample);
+
 static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
     uint8_t color_type, uint8_t bit_depth, const gimg_png_doc_state_t * state,
     unsigned char * raw, size_t raw_size) {
@@ -297,33 +307,24 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
     if (!state || !state->plte || state->plte_size == 0) {
       return GIMG_ERR_FORMAT;
     }
-    size_t plte_entries = state->plte_size / 3u;
-    size_t trns_count = state->trns ? state->trns_size : 0;
     for (uint32_t y = 0; y < h; y++) {
       unsigned char * row = raw + (size_t)y * (1u + row_bytes);
       row[0] = 0;
-      const unsigned char * src = pixels + (size_t)y * stride;
+      // PNG 7.2: at depth 1, 2 or 4 several indices share a byte, so the row
+      // is row_bytes long and not w. Clear it first because packing writes
+      // single samples into shared bytes and leaves the row's padding bits.
+      memset(row + 1, 0, row_bytes);
       for (uint32_t x = 0; x < w; x++) {
-        unsigned char r = src[0], g = src[1], b = src[2], a = src[3];
-        size_t idx = (size_t)-1;
-        for (size_t i = 0; i < plte_entries; i++) {
-          if (state->plte[i * 3u] != r || state->plte[i * 3u + 1u] != g ||
-              state->plte[i * 3u + 2u] != b) {
-            continue;
-          }
-          unsigned char want_a =
-              (i < trns_count) ? state->trns[i] : (unsigned char)255;
-          if (a != want_a) {
-            continue;
-          }
-          idx = i;
-          break;
-        }
-        if (idx == (size_t)-1) {
+        uint8_t index = 0;
+        if (!gimg_png_palette_index_at(raster, state, x, y, &index)) {
           return GIMG_ERR_UNSUPPORTED;
         }
-        row[1u + (size_t)x] = (unsigned char)idx;
-        src += 4;
+        if (bit_depth < 8) {
+          gimg_png_set_sample_bits(row + 1, x, bit_depth, index);
+        }
+        else {
+          row[1u + (size_t)x] = (unsigned char)index;
+        }
       }
     }
     return GIMG_OK;
@@ -411,6 +412,61 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
  * 16-bit). Returns number of bytes written (1/2 for gray, 1 for palette, 4/8
  * for RGBA).
  */
+static bool gimg_png_palette_index_at(const GIMG_Raster * raster,
+    const gimg_png_doc_state_t * state, uint32_t x, uint32_t y,
+    uint8_t * out_index) {
+  if (!state || !state->plte || state->plte_size == 0) {
+    return false;
+  }
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  const unsigned char * p = pixels + (size_t)y * stride + (size_t)x * 4u;
+  unsigned char r = p[0], g = p[1], b = p[2], a = p[3];
+  size_t plte_entries = state->plte_size / 3u;
+  size_t trns_count = state->trns ? state->trns_size : 0;
+  for (size_t i = 0; i < plte_entries; i++) {
+    if (state->plte[i * 3u] != r || state->plte[i * 3u + 1u] != g ||
+        state->plte[i * 3u + 2u] != b) {
+      continue;
+    }
+    // PNG 11.3.2.1: tRNS gives the alpha of the first entries; the rest are
+    // opaque. A raster pixel only maps to this entry if its alpha agrees.
+    unsigned char want_a =
+        (i < trns_count) ? state->trns[i] : (unsigned char)255;
+    if (a != want_a) {
+      continue;
+    }
+    *out_index = (uint8_t)i;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Sample value for one pixel at a bit depth below 8: a palette index for
+ * colour type 3, or a grayscale level for colour type 0, rescaled from the
+ * raster's 8 bits by the inverse of the rescaling decode applies (PNG 13.12).
+ * Returns false when no palette entry matches the pixel.
+ */
+static bool gimg_png_sub_byte_sample_at(const GIMG_Raster * raster,
+    uint8_t color_type, uint8_t bit_depth, const gimg_png_doc_state_t * state,
+    uint32_t x, uint32_t y, uint8_t * out_sample) {
+  if (color_type == 3) {
+    return gimg_png_palette_index_at(raster, state, x, y, out_sample);
+  }
+  if (color_type != 0) {
+    return false;
+  }
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  unsigned int gray = pixels[(size_t)y * stride + (size_t)x];
+  unsigned int max_val = (1u << bit_depth) - 1u;
+  *out_sample = (uint8_t)((gray * max_val + 127u) / 255u);
+  return true;
+}
+
 static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
     uint8_t color_type, uint8_t bit_depth, const gimg_png_doc_state_t * state,
     uint32_t x, uint32_t y, unsigned char * dest) {
@@ -419,25 +475,13 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
       (const unsigned char *)gimg_raster_pixels_const(raster);
   const unsigned char * src = pixels + (size_t)y * stride;
 
-  if (color_type == 3 && state && state->plte && state->plte_size > 0) {
-    size_t plte_entries = state->plte_size / 3u;
-    size_t trns_count = state->trns ? state->trns_size : 0;
-    const unsigned char * p = src + (size_t)x * 4u;
-    unsigned char r = p[0], g = p[1], b = p[2], a = p[3];
-    for (size_t i = 0; i < plte_entries; i++) {
-      if (state->plte[i * 3u] != r || state->plte[i * 3u + 1u] != g ||
-          state->plte[i * 3u + 2u] != b) {
-        continue;
-      }
-      unsigned char want_a =
-          (i < trns_count) ? state->trns[i] : (unsigned char)255;
-      if (a != want_a) {
-        continue;
-      }
-      dest[0] = (unsigned char)i;
-      return 1;
+  if (color_type == 3) {
+    uint8_t index = 0;
+    if (!gimg_png_palette_index_at(raster, state, x, y, &index)) {
+      return 0;  // no palette match
     }
-    return 0;  // no palette match
+    dest[0] = (unsigned char)index;
+    return 1;
   }
 
   if (color_type == 0) {
@@ -512,18 +556,40 @@ static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
     }
     const gimg_png_adam7_pass_t * ap = &gimg_png_adam7_passes[pass];
 
+    // Each pass is its own image as far as PNG 7.2 is concerned: pw pixels a
+    // row, padded to a whole byte independently of the other passes.
+    size_t pass_row_bytes = gimg_png_row_bytes(color_type, bit_depth, pw);
+    if (pass_row_bytes == 0) {
+      return GIMG_ERR_FORMAT;
+    }
     for (uint32_t j = 0; j < ph; j++) {
-      raw[raw_off++] = 0;  // filter byte
+      unsigned char * row = raw + raw_off;
+      row[0] = 0;  // filter byte
+      memset(row + 1, 0, pass_row_bytes);
+      uint32_t y = ap->y_offset + j * ap->y_step;
+      size_t off = 0;
       for (uint32_t i = 0; i < pw; i++) {
         uint32_t x = ap->x_offset + i * ap->x_step;
-        uint32_t y = ap->y_offset + j * ap->y_step;
-        size_t n = gimg_png_write_pixel_at(
-            raster, color_type, bit_depth, state, x, y, raw + raw_off);
-        if (n == 0) {
-          return GIMG_ERR_UNSUPPORTED;
+        if (bit_depth < 8) {
+          uint8_t sample = 0;
+          if (!gimg_png_sub_byte_sample_at(
+                  raster, color_type, bit_depth, state, x, y, &sample)) {
+            return GIMG_ERR_UNSUPPORTED;
+          }
+          // The sample's place in the pass row is i, not x: the pass is
+          // packed densely and only scattered to x on decode.
+          gimg_png_set_sample_bits(row + 1, i, bit_depth, sample);
         }
-        raw_off += n;
+        else {
+          size_t n = gimg_png_write_pixel_at(
+              raster, color_type, bit_depth, state, x, y, row + 1 + off);
+          if (n == 0) {
+            return GIMG_ERR_UNSUPPORTED;
+          }
+          off += n;
+        }
       }
+      raw_off += 1u + pass_row_bytes;
     }
   }
   return GIMG_OK;

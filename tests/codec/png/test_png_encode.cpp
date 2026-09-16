@@ -1173,3 +1173,98 @@ int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// ---------------------------------------------------------------------------
+// Saving at sample depths below 8 bits.
+//
+// PNG 7.2 packs samples of depth 1, 2 and 4 several to a byte, so a scanline
+// is (width * bit_depth + 7) / 8 bytes and not width. A writer that stores one
+// byte per pixel overruns every row it writes and declares a bit depth in IHDR
+// that its own IDAT does not use.
+//
+// The fixtures are the interlaced/non-interlaced pairs from
+// tests/data/png/generate.py; each is loaded, saved, and loaded again, and the
+// pixels must survive. The saved files land in tests/out/png/ where
+// verify_png_output.py reads them back with an independent decoder.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct SubByteSaveCase {
+  const char * filename;
+  uint8_t expect_bit_depth;  ///< IHDR byte 8 the writer should emit.
+  uint8_t expect_color_type; ///< IHDR byte 9.
+};
+
+const SubByteSaveCase kSubByteSaveCases[] = {
+    {"png_pal1_32x8.png", 1, 3},
+    {"png_pal2_32x8.png", 2, 3},
+    {"png_pal4_32x8.png", 4, 3},
+    {"png_pal1_33x9.png", 1, 3},
+    {"png_pal2_33x9.png", 2, 3},
+    {"png_pal4_33x9.png", 4, 3},
+    {"png_pal4_32x8_interlaced.png", 4, 3},
+    {"png_pal2_33x9_interlaced.png", 2, 3},
+};
+
+} // namespace
+
+TEST(PngEncode, PaletteBelowEightBitsRoundTripsAndKeepsItsDepth) {
+  for (const SubByteSaveCase & c : kSubByteSaveCases) {
+    std::vector<uint8_t> buf;
+    ASSERT_TRUE(png_test::load_png_file(c.filename, buf))
+        << c.filename << " missing; run tests/data/png/generate.py";
+
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK) << c.filename;
+    gimg_stream_destroy(s);
+
+    GIMG_Stream * out_s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+    GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out_s, "png", &opts, &report), GIMG_OK)
+        << "save " << c.filename;
+
+    const void * out_ptr = nullptr;
+    size_t saved_size = 0;
+    gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
+    std::vector<uint8_t> saved(static_cast<const uint8_t *>(out_ptr),
+        static_cast<const uint8_t *>(out_ptr) + saved_size);
+    gimg_stream_destroy(out_s);
+
+    // IHDR payload starts at signature (8) + length (4) + type (4) = 16;
+    // bit depth is byte 8 of the payload and colour type byte 9. PNG 11.2.1.
+    ASSERT_GT(saved.size(), 26u) << c.filename;
+    EXPECT_EQ(saved[24], c.expect_bit_depth)
+        << c.filename << ": IHDR bit depth";
+    EXPECT_EQ(saved[25], c.expect_color_type)
+        << c.filename << ": IHDR colour type";
+
+    GIMG_Stream * s2 = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &s2),
+        GIMG_OK);
+    GIMG_Doc * doc2 = nullptr;
+    ASSERT_EQ(gimg_doc_load(s2, nullptr, nullptr, &doc2), GIMG_OK)
+        << "reload " << c.filename;
+    gimg_stream_destroy(s2);
+
+    GIMG_Raster * orig = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &orig), GIMG_OK);
+    GIMG_Raster * again = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc2, 0), nullptr, &again),
+        GIMG_OK);
+    EXPECT_TRUE(png_test::rasters_equal(orig, again))
+        << c.filename << ": pixels must survive a save at its own bit depth";
+
+    std::string out_name = std::string("subbyte_") + c.filename;
+    png_test::write_png_output(out_name.c_str(), saved.data(), saved.size());
+
+    gimg_raster_destroy(again);
+    gimg_raster_destroy(orig);
+    gimg_doc_destroy(doc2);
+    gimg_doc_destroy(doc);
+  }
+}

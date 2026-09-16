@@ -233,6 +233,10 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
     // full-size buffer at (x_offset + i*x_step, y_offset + j*y_step) so that
     // the final raw_full layout matches non-interlaced (row_bytes per row).
     // Same pass table and dimensions as png_common.c so save round-trips match.
+    // Below 8 bits the scatter merges samples into shared bytes, so the
+    // destination is cleared first: the passes between them cover every pixel,
+    // but not the padding bits PNG 7.2 leaves at the end of a scanline.
+    memset(raw_full, 0, raw_full_size);
     size_t raw_off = 0;
     for (int pass = 0; pass < 7; pass++) {
       uint32_t pw = 0, ph = 0;
@@ -248,12 +252,28 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
         unsigned char * row = raw + raw_off + (size_t)j * pass_row_stride;
         gimg_png_unfilter_row(row, pass_row_bytes, prev_row, bpp);
         prev_row = row + 1;
-        for (uint32_t i = 0; i < pw; i++) {
-          uint32_t ix = ap->x_offset + i * ap->x_step;
-          uint32_t iy = ap->y_offset + j * ap->y_step;
-          size_t dst_off = (size_t)iy * row_bytes + (size_t)ix * bpp;
-          size_t src_off = (size_t)i * bpp;
-          memcpy(raw_full + dst_off, row + 1 + src_off, (size_t)bpp);
+        uint32_t iy = ap->y_offset + j * ap->y_step;
+        unsigned char * dst_row = raw_full + (size_t)iy * row_bytes;
+        if (ihdr->bit_depth < 8) {
+          // PNG 7.2: below 8 bits a sample is a bit field, so pixel i of the
+          // pass row and pixel ix of the image row are bit positions. Copying
+          // bpp (== 1, the floor) bytes per pixel would both smear one sample
+          // over its eight neighbours and run off the end of the row, whose
+          // length is (width * bit_depth + 7) / 8 and not width.
+          for (uint32_t i = 0; i < pw; i++) {
+            uint32_t ix = ap->x_offset + i * ap->x_step;
+            uint8_t sample =
+                gimg_png_get_sample_bits(row + 1, i, ihdr->bit_depth);
+            gimg_png_set_sample_bits(dst_row, ix, ihdr->bit_depth, sample);
+          }
+        }
+        else {
+          for (uint32_t i = 0; i < pw; i++) {
+            uint32_t ix = ap->x_offset + i * ap->x_step;
+            size_t dst_off = (size_t)ix * bpp;
+            size_t src_off = (size_t)i * bpp;
+            memcpy(dst_row + dst_off, row + 1 + src_off, (size_t)bpp);
+          }
         }
       }
       raw_off += (size_t)ph * pass_row_stride;

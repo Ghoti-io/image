@@ -218,6 +218,26 @@ size_t gimg_png_row_bytes(uint8_t color_type, uint8_t bit_depth,
 size_t gimg_png_row_bytes_from_ihdr(const gimg_png_ihdr_t * ihdr,
     uint32_t width);
 
+/**
+ * @brief Read one sample of @a depth bits at pixel index @a x from a packed
+ * scanline.
+ *
+ * PNG 7.2: samples of depth 1, 2 and 4 are packed several to a byte, most
+ * significant bits first, and each scanline is padded to a byte boundary.
+ * Below 8 bits a pixel index is therefore a bit position and not a byte one.
+ * @a depth must be 1, 2 or 4.
+ */
+uint8_t gimg_png_get_sample_bits(
+    const unsigned char * row, uint32_t x, uint8_t depth);
+
+/**
+ * @brief Write one sample of @a depth bits at pixel index @a x into a packed
+ * scanline, leaving the neighbouring samples in that byte untouched. PNG 7.2.
+ * @a depth must be 1, 2 or 4.
+ */
+void gimg_png_set_sample_bits(
+    unsigned char * row, uint32_t x, uint8_t depth, uint8_t value);
+
 /** Expected raw size for interlaced (Adam7) image: sum over passes of
  * (1 + row_bytes) * pass_height. Returns true on success, false on overflow. */
 bool gimg_png_adam7_raw_size(uint32_t width, uint32_t height,

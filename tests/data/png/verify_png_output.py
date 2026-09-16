@@ -117,6 +117,42 @@ def verify_file_features(path: str, name: str, expect: dict) -> list[str]:
     return errors
 
 
+def verify_subbyte_pixels(path: str, name: str) -> list[str]:
+    """
+    For a file the encoder wrote at a sample depth below 8 bits, decode it with
+    Pillow and compare against the expected pixels in tests/data/png/*.raw.
+
+    PIL's verify() only checks that a file is structurally a PNG. These outputs
+    exist to prove the packing in PNG 7.2 is right, which only shows up in the
+    pixels, and only an independent decoder can say so: comparing our encoder
+    against our own decoder would pass however they agreed to be wrong.
+    """
+    prefix = "subbyte_"
+    if not name.startswith(prefix):
+        return []
+    stem = name[len(prefix):-len(".png")]
+    if stem.endswith("_interlaced"):
+        stem = stem[: -len("_interlaced")]
+    raw_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), stem + ".raw")
+    if not os.path.isfile(raw_path):
+        return [f"{name}: expected pixels {stem}.raw not found"]
+    with open(raw_path, "rb") as f:
+        expected = f.read()
+    try:
+        with Image.open(path) as im:
+            im.load()
+            got = im.convert("L" if stem.startswith("png_gray") else "RGBA").tobytes()
+    except Exception as e:  # pragma: no cover - reported, not raised
+        return [f"{name}: PIL decode failed: {e}"]
+    if got != expected:
+        first = next((i for i, (a, b) in enumerate(zip(got, expected)) if a != b), None)
+        return [
+            f"{name}: pixels differ from {stem}.raw "
+            f"(len {len(got)} vs {len(expected)}, first difference at byte {first})"
+        ]
+    return []
+
+
 def verify_directory(dirpath: str) -> tuple[int, list[str]]:
     """
     Check all .png files in dirpath. Return (failure_count, list of error messages).
@@ -149,6 +185,7 @@ def verify_directory(dirpath: str) -> tuple[int, list[str]]:
         expect = EXPECTATIONS.get(name)
         if expect is not None:
             errors.extend(verify_file_features(path, name, expect))
+        errors.extend(verify_subbyte_pixels(path, name))
     return len(errors), errors
 
 

@@ -343,7 +343,167 @@ def main() -> None:
         + iend
     )
     write_png("png_apng_2frame_16bit_rgba.png", apng_16rgba)
+    _write_subbyte_and_interlace_fixtures()
     _write_apng16_oracle_expected()
+
+
+# ---------------------------------------------------------------------------
+# Sub-byte sample depths (1/2/4) crossed with Adam7 interlacing.
+#
+# PNG 7.2 packs samples of depth 1, 2 and 4 several to a byte, MSB first, and
+# pads each scanline to a byte boundary. Adam7 (PNG 8.2, and the same table in
+# png_common.c) then splits the image into seven passes, each of which is an
+# independent, separately padded set of scanlines. The two together are the
+# case a decoder is most likely to get wrong, because a pass row is not a
+# sub-range of an image row: pixel i of a pass lands at image column
+# x_offset + i * x_step, which for depth < 8 is a *bit* position and not a byte
+# one.
+#
+# Each image is emitted twice, once non-interlaced and once interlaced, from
+# the same sample array. Adam7 is a pure reordering, so the two must decode to
+# identical pixels - a property that needs no reference decoder to check. The
+# .raw files alongside give the absolute expected pixels, computed here from
+# the spec's own rescaling rule (PNG 13.12: a sample of depth d scales to
+# 8 bits as round(s * 255 / (2^d - 1))), so a failure says which pixel and not
+# merely "different".
+# ---------------------------------------------------------------------------
+
+# Adam7 pass table: (x_offset, y_offset, x_step, y_step). PNG 8.2 Figure 8.1.
+ADAM7_PASSES = [
+    (0, 0, 8, 8),
+    (4, 0, 8, 8),
+    (0, 4, 4, 8),
+    (2, 0, 4, 4),
+    (0, 2, 2, 4),
+    (1, 0, 2, 2),
+    (0, 1, 1, 2),
+]
+
+
+def adam7_pass_dims(width: int, height: int, pass_index: int):
+    """Pass width and height (0 if the pass is empty). PNG 8.2."""
+    xo, yo, xs, ys = ADAM7_PASSES[pass_index]
+    pw = 0 if width <= xo else (width - xo + xs - 1) // xs
+    ph = 0 if height <= yo else (height - yo + ys - 1) // ys
+    return pw, ph
+
+
+def pack_samples(samples, depth: int) -> bytes:
+    """Pack samples into a scanline, MSB first, padded to a byte. PNG 7.2."""
+    if depth == 8:
+        return bytes(samples)
+    out = bytearray()
+    acc = 0
+    nbits = 0
+    mask = (1 << depth) - 1
+    for s in samples:
+        acc = (acc << depth) | (s & mask)
+        nbits += depth
+        if nbits == 8:
+            out.append(acc)
+            acc = 0
+            nbits = 0
+    if nbits:
+        out.append((acc << (8 - nbits)) & 0xFF)
+    return bytes(out)
+
+
+def raw_rows_plain(samples, width: int, height: int, depth: int) -> bytes:
+    """Filter-None scanlines for a non-interlaced image."""
+    out = bytearray()
+    for y in range(height):
+        out.append(0)
+        out += pack_samples([samples[y][x] for x in range(width)], depth)
+    return bytes(out)
+
+
+def raw_rows_adam7(samples, width: int, height: int, depth: int) -> bytes:
+    """Filter-None scanlines for the seven Adam7 passes, in order. PNG 8.2."""
+    out = bytearray()
+    for pass_index in range(7):
+        pw, ph = adam7_pass_dims(width, height, pass_index)
+        if pw == 0 or ph == 0:
+            continue
+        xo, yo, xs, ys = ADAM7_PASSES[pass_index]
+        for j in range(ph):
+            y = yo + j * ys
+            out.append(0)
+            out += pack_samples(
+                [samples[y][xo + i * xs] for i in range(pw)], depth)
+    return bytes(out)
+
+
+def scale_sample_to_8(sample: int, depth: int) -> int:
+    """PNG 13.12 sample depth rescaling, rounded."""
+    max_val = (1 << depth) - 1
+    return (sample * 255 + max_val // 2) // max_val
+
+
+def _subbyte_samples(width: int, height: int, depth: int):
+    """A pattern that varies along both axes and uses every value of the depth."""
+    n = 1 << depth
+    return [[(x * 3 + y * 5) % n for x in range(width)] for y in range(height)]
+
+
+def _subbyte_palette(depth: int) -> bytes:
+    """A palette of 2^depth entries, each a distinct colour."""
+    n = 1 << depth
+    out = bytearray()
+    for i in range(n):
+        out += bytes([(i * 37 + 11) & 0xFF, (i * 91 + 3) & 0xFF, (i * 53 + 199) & 0xFF])
+    return bytes(out)
+
+
+def _write_raw(name: str, data: bytes) -> None:
+    path = os.path.join(SCRIPT_DIR, name)
+    with open(path, "wb") as f:
+        f.write(data)
+    print("Wrote", path, f"({len(data)} bytes)")
+
+
+def _write_subbyte_and_interlace_fixtures() -> None:
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+    # 32x8 exercises every Adam7 pass with a whole number of bytes per row;
+    # 33x9 additionally leaves a partly-used final byte in several passes.
+    for width, height in ((32, 8), (33, 9)):
+        for depth in (1, 2, 4):
+            samples = _subbyte_samples(width, height, depth)
+
+            # ---- grayscale, colour type 0 ----
+            base = f"png_gray{depth}_{width}x{height}"
+            for interlace in (0, 1):
+                raw = (raw_rows_adam7 if interlace else raw_rows_plain)(
+                    samples, width, height, depth)
+                ihdr = struct.pack(">IIBBBBB", width, height, depth, 0, 0, 0,
+                    interlace)
+                name = base + ("_interlaced.png" if interlace else ".png")
+                write_png(name, signature + png_chunk(b"IHDR", ihdr)
+                    + png_chunk(b"IDAT", idat_zlib(raw)) + iend)
+            # Expected pixels: GRAY8, one byte per pixel.
+            _write_raw(base + ".raw", bytes(
+                scale_sample_to_8(samples[y][x], depth)
+                for y in range(height) for x in range(width)))
+
+            # ---- palette, colour type 3 ----
+            base = f"png_pal{depth}_{width}x{height}"
+            plte = _subbyte_palette(depth)
+            for interlace in (0, 1):
+                raw = (raw_rows_adam7 if interlace else raw_rows_plain)(
+                    samples, width, height, depth)
+                ihdr = struct.pack(">IIBBBBB", width, height, depth, 3, 0, 0,
+                    interlace)
+                name = base + ("_interlaced.png" if interlace else ".png")
+                write_png(name, signature + png_chunk(b"IHDR", ihdr)
+                    + png_chunk(b"PLTE", plte)
+                    + png_chunk(b"IDAT", idat_zlib(raw)) + iend)
+            # Expected pixels: RGBA8 from the palette, alpha 255 (no tRNS).
+            expected = bytearray()
+            for y in range(height):
+                for x in range(width):
+                    i = samples[y][x]
+                    expected += plte[i * 3:i * 3 + 3] + b"\xff"
+            _write_raw(base + ".raw", bytes(expected))
 
 
 def _write_apng16_oracle_expected() -> None:

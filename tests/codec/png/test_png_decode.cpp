@@ -930,3 +930,176 @@ int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// ---------------------------------------------------------------------------
+// Sample depths below 8 bits, crossed with Adam7 interlacing.
+//
+// PNG 7.2 packs samples of depth 1, 2 and 4 several to a byte, MSB first, each
+// scanline padded to a byte boundary. Adam7 (PNG 8.2) then splits the image
+// into seven passes of independently padded scanlines. Pixel i of a pass row
+// belongs at image column x_offset + i * x_step, which below 8 bits is a *bit*
+// position; treating it as a byte position both corrupts memory and misplaces
+// every sample. The fixtures come in interlaced and non-interlaced pairs built
+// from one sample array by tests/data/png/generate.py, with the expected
+// pixels in a .raw file computed from PNG 13.12's rescaling rule.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct SubByteCase {
+  const char * base;  ///< Fixture stem, e.g. "png_gray1_32x8".
+  uint32_t width;
+  uint32_t height;
+  bool palette;       ///< Palette decodes to RGBA8; grayscale to GRAY8.
+};
+
+const SubByteCase kSubByteCases[] = {
+    {"png_gray1_32x8", 32, 8, false},
+    {"png_gray2_32x8", 32, 8, false},
+    {"png_gray4_32x8", 32, 8, false},
+    {"png_pal1_32x8", 32, 8, true},
+    {"png_pal2_32x8", 32, 8, true},
+    {"png_pal4_32x8", 32, 8, true},
+    {"png_gray1_33x9", 33, 9, false},
+    {"png_gray2_33x9", 33, 9, false},
+    {"png_gray4_33x9", 33, 9, false},
+    {"png_pal1_33x9", 33, 9, true},
+    {"png_pal2_33x9", 33, 9, true},
+    {"png_pal4_33x9", 33, 9, true},
+};
+
+/** Decode a fixture by name. Caller destroys *out_raster, *out_doc, *out_s. */
+::testing::AssertionResult DecodeFixture(const char * filename,
+    GIMG_Stream ** out_s, GIMG_Doc ** out_doc, GIMG_Raster ** out_raster) {
+  std::vector<uint8_t> buf;
+  if (!png_test::load_png_file(filename, buf)) {
+    return ::testing::AssertionFailure()
+        << filename << " missing; run tests/data/png/generate.py";
+  }
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(buf.data(), buf.size(), &s) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "stream create failed";
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+    return ::testing::AssertionFailure()
+        << "load " << filename << " failed: " << static_cast<int>(r);
+  }
+  GIMG_Raster * raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    return ::testing::AssertionFailure()
+        << "decode " << filename << " failed: " << static_cast<int>(r);
+  }
+  *out_s = s;
+  *out_doc = doc;
+  *out_raster = raster;
+  return ::testing::AssertionSuccess();
+}
+
+/** Copy a raster's pixels without stride padding. */
+std::vector<uint8_t> RasterBytes(const GIMG_Raster * raster) {
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const unsigned char * px =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(raster));
+  std::vector<uint8_t> out;
+  out.reserve(static_cast<size_t>(w) * h * bpp);
+  for (uint32_t y = 0; y < h; y++) {
+    out.insert(out.end(), px + static_cast<size_t>(y) * stride,
+        px + static_cast<size_t>(y) * stride + static_cast<size_t>(w) * bpp);
+  }
+  return out;
+}
+
+} // namespace
+
+TEST(PngDecode, SubByteDepthsDecodeToTheSamplesTheSpecScalesThemTo) {
+  for (const SubByteCase & c : kSubByteCases) {
+    std::vector<uint8_t> expected;
+    ASSERT_TRUE(png_test::load_png_file(
+        (std::string(c.base) + ".raw").c_str(), expected))
+        << c.base << ".raw missing; run tests/data/png/generate.py";
+
+    GIMG_Stream * s = nullptr;
+    GIMG_Doc * doc = nullptr;
+    GIMG_Raster * raster = nullptr;
+    ASSERT_TRUE(DecodeFixture(
+        (std::string(c.base) + ".png").c_str(), &s, &doc, &raster));
+
+    EXPECT_EQ(gimg_raster_width(raster), c.width) << c.base;
+    EXPECT_EQ(gimg_raster_height(raster), c.height) << c.base;
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    // PNG 4.5.5: a palette entry is RGB, so an indexed image decodes to
+    // colour; a grayscale image of any depth below 8 rescales to GRAY8.
+    EXPECT_EQ(fmt->channel_model,
+        c.palette ? GIMG_CHANNEL_RGBA : GIMG_CHANNEL_GRAY)
+        << c.base;
+    EXPECT_EQ(RasterBytes(raster), expected) << c.base;
+
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
+TEST(PngDecode, Adam7IsAReorderingSoInterlacedDecodesLikeNonInterlaced) {
+  // PNG 8.2: interlacing changes the transmission order of the pixels and
+  // nothing else. The two members of each fixture pair hold the same samples,
+  // so whatever the decoder produces for one it must produce for the other.
+  // This needs no reference decoder to check.
+  for (const SubByteCase & c : kSubByteCases) {
+    GIMG_Stream * s_plain = nullptr;
+    GIMG_Doc * doc_plain = nullptr;
+    GIMG_Raster * plain = nullptr;
+    ASSERT_TRUE(DecodeFixture(
+        (std::string(c.base) + ".png").c_str(), &s_plain, &doc_plain, &plain));
+
+    GIMG_Stream * s_int = nullptr;
+    GIMG_Doc * doc_int = nullptr;
+    GIMG_Raster * interlaced = nullptr;
+    ASSERT_TRUE(DecodeFixture((std::string(c.base) + "_interlaced.png").c_str(),
+        &s_int, &doc_int, &interlaced));
+
+    EXPECT_TRUE(png_test::rasters_equal(plain, interlaced))
+        << c.base << ": Adam7 pass reassembly disagrees with the "
+        << "non-interlaced encoding of the same samples";
+
+    gimg_raster_destroy(interlaced);
+    gimg_doc_destroy(doc_int);
+    gimg_stream_destroy(s_int);
+    gimg_raster_destroy(plain);
+    gimg_doc_destroy(doc_plain);
+    gimg_stream_destroy(s_plain);
+  }
+}
+
+TEST(PngDecode, SubByteInterlacedDecodesToTheExpectedSamples) {
+  // The pair test above would pass if both halves were wrong in the same way;
+  // this one pins the interlaced half to the spec-derived expected pixels.
+  for (const SubByteCase & c : kSubByteCases) {
+    std::vector<uint8_t> expected;
+    ASSERT_TRUE(png_test::load_png_file(
+        (std::string(c.base) + ".raw").c_str(), expected))
+        << c.base << ".raw missing; run tests/data/png/generate.py";
+
+    GIMG_Stream * s = nullptr;
+    GIMG_Doc * doc = nullptr;
+    GIMG_Raster * raster = nullptr;
+    ASSERT_TRUE(DecodeFixture((std::string(c.base) + "_interlaced.png").c_str(),
+        &s, &doc, &raster));
+
+    EXPECT_EQ(RasterBytes(raster), expected) << c.base << " interlaced";
+
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
