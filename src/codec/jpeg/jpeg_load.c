@@ -831,11 +831,18 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       const gimg_jpeg_sof_t * sos_sof = cur_frame ? &cur_frame->sof : &state->sof;
       const int sos_progressive =
           cur_frame ? (int)cur_frame->is_progressive : state->is_progressive;
-      if (!sos_progressive && *sos_num_scans > 0) {
+      // T.81 A.2.3: a sequential or lossless frame may be coded as several
+      // non-interleaved scans, one per component, rather than as a single
+      // interleaved one, and files in the wild are - libjpeg writes them for
+      // any scan script that names one component at a time.  What is not legal
+      // is a second scan after one that already carried every component, which
+      // is a second copy of the frame.
+      if (!sos_progressive && *sos_num_scans > 0 &&
+          sos_scans[0].comp_count >= sos_sof->num_components) {
         if (payload_buf)
           gimg_free(alloc, payload_buf);
         jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-            "multiple SOS in baseline");
+            "a second scan after an interleaved one (T.81 A.2.3)");
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }

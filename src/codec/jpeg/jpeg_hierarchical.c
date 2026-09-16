@@ -753,7 +753,7 @@ static GIMG_Result hier_decode_progressive_frame(
   }
 
   r = jpeg_decode_progressive_scans(state, sof, f->scans, f->num_scans,
-      f->is_arithmetic, &f->arith_cond, f->is_differential, mcu_per_row,
+      f->is_arithmetic, &f->arith_cond, f->is_differential, 0, mcu_per_row,
       mcu_per_col, blk_w, blk_h, grid_w, coef);
   if (r != GIMG_OK) {
     goto fail;

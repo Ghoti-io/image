@@ -51,6 +51,10 @@ static void jpeg_trace_all_dump_block(const char * label, unsigned int scan_idx,
  * diff enc vs dec and find first divergence. */
 #define PROG_SYNC_DEBUG() (GIMG_JPEG_DEBUG_PROG_SYNC)
 
+static GIMG_Result jpeg_decode_progressive_extended(
+    const gimg_jpeg_doc_state_t * state, const GIMG_Decode_Options * options,
+    GIMG_Raster ** out_raster);
+
 static GIMG_Result jpeg_decode_baseline_extended(
     const gimg_jpeg_doc_state_t * state, const GIMG_Decode_Options * options,
     GIMG_Raster ** out_raster) {
@@ -491,6 +495,15 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     return GIMG_ERR_CORRUPT;
   }
 
+  // T.81 A.2.3: a sequential frame may be coded as several non-interleaved
+  // scans, one per component, instead of one interleaved scan.  That is a
+  // different order through the same blocks, and the walk that knows how to
+  // read it is the one Annex G already needed, so such a frame goes through
+  // the coefficient-buffer path rather than either single-scan walk.  Before
+  // the precision branch, because that path takes 8- and 12-bit frames alike.
+  if (state->num_scans > 1u) {
+    return jpeg_decode_progressive_extended(state, options, out_raster);
+  }
   if (sof->precision != 8) {
     return jpeg_decode_baseline_extended(state, options, out_raster);
   }
@@ -1200,9 +1213,9 @@ fail_comp:
 GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
     const gimg_jpeg_sof_t * sof, const gimg_jpeg_scan_t * scans,
     unsigned num_scans, int is_arithmetic, const jpeg_arith_cond_t * cond,
-    int differential, uint32_t mcu_per_row, uint32_t mcu_per_col,
-    const uint32_t * blk_w, const uint32_t * blk_h, const uint32_t * grid_w,
-    int16_t * const * coef_blocks) {
+    int differential, int sequential, uint32_t mcu_per_row,
+    uint32_t mcu_per_col, const uint32_t * blk_w, const uint32_t * blk_h,
+    const uint32_t * grid_w, int16_t * const * coef_blocks) {
   const uint8_t num_comp = sof->num_components;
   int16_t dc_pred[GIMG_JPEG_MAX_COMPONENTS];
   memset(dc_pred, 0, sizeof(dc_pred));
@@ -1215,6 +1228,10 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
                              : (!scan->data || scan->data_size == 0)) {
       return GIMG_ERR_CORRUPT;
     }
+    // F.2.1.3.1 and G.1.2.1: the DC prediction starts again at every scan, not
+    // only at every restart.  With one scan per frame that never showed; a
+    // sequential frame coded as one scan per component has three.
+    memset(dc_pred, 0, sizeof(dc_pred));
     int is_dc = (scan->ss == 0 && scan->se == 0);
     gimg_jpeg_huff_table_t dc_tables[4];
     gimg_jpeg_huff_table_t ac_tables[4];
@@ -1408,7 +1425,35 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
                   (size_t)(blk_row0 + (uint32_t)by) * (size_t)row_stride +
                   (size_t)(blk_col0 + (uint32_t)bx);
               int16_t * block = coef_blocks[comp_idx] + block_idx * 64;
-              if (is_dc) {
+              if (sequential) {
+                // A sequential scan carries the whole block - Ss = 0, Se = 63,
+                // no successive approximation (B.2.3) - so there is no band to
+                // split and the ordinary block decoder does it in one go.  The
+                // walk around it is the same one an Annex G scan needs, which
+                // is why this lives here rather than in a second copy: A.2.3's
+                // non-interleaved order is not a progressive idea, it is what
+                // any scan naming one component uses.
+                GIMG_Result r;
+                if (differential) {
+                  dc_pred[comp_idx] = 0; // J.2.3.1: DC decoded directly
+                  if (is_arithmetic) {
+                    astats.dc_pred[comp_idx] = 0;
+                  }
+                }
+                if (is_arithmetic) {
+                  r = jpeg_arith_decode_block_sequential(&ad, &astats, cond,
+                      comp_idx, scan->dc_tbl[s], scan->ac_tbl[s], 63, block);
+                }
+                else {
+                  r = jpeg_decode_block(&bs, &dc_tables[scan->dc_tbl[s]],
+                      &ac_tables[scan->ac_tbl[s]], block, &dc_pred[comp_idx],
+                      is_last_prog);
+                }
+                if (r != GIMG_OK) {
+                  return GIMG_ERR_CORRUPT;
+                }
+              }
+              else if (is_dc) {
                 GIMG_Result r;
                 // J.2.3.1: in a differential frame the DC coefficient is
                 // decoded directly.  Only the first pass predicts - a
@@ -1619,7 +1664,8 @@ static GIMG_Result jpeg_decode_progressive_extended(
   {
     GIMG_Result rr = jpeg_decode_progressive_scans(state, sof, state->scans,
         state->num_scans, state->is_arithmetic, &state->arith_cond, 0,
-        mcu_per_row, mcu_per_col, blk_w, blk_h, grid_w, coef_blocks);
+        !state->is_progressive, mcu_per_row, mcu_per_col, blk_w, blk_h, grid_w,
+        coef_blocks);
     if (rr != GIMG_OK) {
       goto prog_ext_fail;
     }

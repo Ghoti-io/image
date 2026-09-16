@@ -841,9 +841,9 @@ GIMG_Result gimg_jpeg_decode_hierarchical(const gimg_jpeg_doc_state_t * state,
 GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
     const gimg_jpeg_sof_t * sof, const gimg_jpeg_scan_t * scans,
     unsigned num_scans, int is_arithmetic, const jpeg_arith_cond_t * cond,
-    int differential, uint32_t mcu_per_row, uint32_t mcu_per_col,
-    const uint32_t * blk_w, const uint32_t * blk_h, const uint32_t * grid_w,
-    int16_t * const * coef_blocks);
+    int differential, int sequential, uint32_t mcu_per_row,
+    uint32_t mcu_per_col, const uint32_t * blk_w, const uint32_t * blk_h,
+    const uint32_t * grid_w, int16_t * const * coef_blocks);
 
 GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);

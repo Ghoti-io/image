@@ -1112,6 +1112,186 @@ TEST(JpegLoad, DecodeRespectsMaxDecodedPixels) {
   gimg_stream_destroy(s);
 }
 
+// A lossless frame coded as several non-interleaved scans (T.81 A.2.3).
+//
+// The same arrangement as the sequential case, and the same gap: this decoder
+// took scans[0] and refused anything whose scan did not carry every component.
+// What is different is what can be asserted.  A lossless codec returns exactly
+// what went in, so the expected output is the fixtures' own source image, and
+// the comparison needs no reference decode and no tolerance at all - if a
+// single sample is wrong the frame was not decoded, it was approximated.
+//
+// H.1 puts the predictor selection in each scan's Ss, so scans of the same
+// frame may use different predictors; lossless_noninterleaved_psv.jpg uses 1,
+// 2 and 7, which is a shape a single frame-level predictor cannot represent.
+TEST(JpegLoad, NonInterleavedLosslessScans) {
+  struct Case {
+    const char * jpg;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"lossless_noninterleaved.jpg", "three scans, predictor 4 throughout"},
+      {"lossless_noninterleaved_psv.jpg",
+          "predictors 1, 2 and 7: one per scan, not one per frame"},
+      {"lossless_noninterleaved_restart.jpg",
+          "with a restart interval, which each scan counts in its own MCUs"},
+  };
+  uint32_t sw = 0, sh = 0;
+  int schan = 0, sbits = 0;
+  std::vector<uint32_t> src;
+  ASSERT_TRUE(
+      jpeg_test::load_pnm_file("hier_src_rgb.ppm", &sw, &sh, &schan, &sbits, src));
+  ASSERT_EQ(schan, 3);
+  ASSERT_EQ(sbits, 8);
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    EXPECT_EQ(gimg_raster_width(raster), sw);
+    EXPECT_EQ(gimg_raster_height(raster), sh);
+    const unsigned char * px =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < sh; y++) {
+      for (uint32_t x = 0; x < sw; x++) {
+        for (int ch = 0; ch < 3; ch++) {
+          ASSERT_EQ((uint32_t)px[(size_t)y * stride + (size_t)x * 4 + ch],
+              src[((size_t)y * sw + x) * 3 + ch])
+              << "at (" << x << ", " << y << ") channel " << ch;
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
+// A sequential frame coded as several non-interleaved scans (T.81 A.2.3).
+//
+// A.2.3 lets a sequential frame be written as one scan per component instead
+// of a single interleaved one, and the scans are then in that component's own
+// block order rather than the image's MCU order.  This loader refused any
+// second scan outside a progressive frame, so every such file - libjpeg writes
+// one for any scan script that names one component at a time - failed to load
+// at all.
+//
+// The walk that reads them is the one Annex G already needed, so what changed
+// is which frames go through it, not how the scans are read.  The comparison
+// is exact rather than within a tolerance: these are libjpeg-turbo's own files
+// and its own decode of them, and this library matches libjpeg on ordinary
+// sequential frames, so any difference at all would be a real one.
+//
+// See tests/data/jpeg/README.md for the scan scripts and the commands.
+TEST(JpegLoad, NonInterleavedSequentialScans) {
+  struct Case {
+    const char * jpg;
+    const char * ref;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"noninterleaved_444.jpg", "noninterleaved_444_ref.ppm",
+          "three scans, one per component, 4:4:4"},
+      {"noninterleaved_420.jpg", "noninterleaved_420_ref.ppm",
+          "4:2:0, so each scan walks a different sized block grid"},
+      {"noninterleaved_422.jpg", "noninterleaved_422_ref.ppm", "4:2:2"},
+      {"noninterleaved_arith.jpg", "noninterleaved_arith_ref.ppm",
+          "SOF9: the same scans with the arithmetic coder"},
+      {"noninterleaved_mixed.jpg", "noninterleaved_mixed_ref.ppm",
+          "an interleaved scan of two components, then one of the third"},
+      {"noninterleaved_restart.jpg", "noninterleaved_restart_ref.ppm",
+          "with a restart interval, which each scan counts in its own MCUs"},
+      {"noninterleaved_12bit.jpg", "noninterleaved_12bit_ref.ppm",
+          "SOF1 at 12 bits"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    uint32_t rw = 0, rh = 0;
+    int rchan = 0, rbits = 0;
+    std::vector<uint32_t> ref;
+    ASSERT_TRUE(jpeg_test::load_pnm_file(c.ref, &rw, &rh, &rchan, &rbits, ref))
+        << "missing reference " << c.ref;
+    ASSERT_EQ(rchan, 3);
+
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    // The fixture must actually carry more than one scan.
+    int scans = 0;
+    for (size_t i = 0; i + 3 < jpeg.size();) {
+      if (jpeg[i] != 0xFF) {
+        i++;
+        continue;
+      }
+      uint8_t m = jpeg[i + 1];
+      if (m == 0xD8 || m == 0xD9 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) {
+        i += 2;
+        continue;
+      }
+      size_t len = (size_t)((jpeg[i + 2] << 8) | jpeg[i + 3]);
+      if (m == 0xDA) {
+        scans++;
+        i += 2 + len;
+        while (i + 1 < jpeg.size()) {
+          if (jpeg[i] == 0xFF && jpeg[i + 1] != 0 &&
+              !(jpeg[i + 1] >= 0xD0 && jpeg[i + 1] <= 0xD7)) {
+            break;
+          }
+          i++;
+        }
+        continue;
+      }
+      i += 2 + len;
+    }
+    ASSERT_GT(scans, 1) << "fixture must be coded as several scans";
+
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    EXPECT_EQ(gimg_raster_width(raster), rw);
+    EXPECT_EQ(gimg_raster_height(raster), rh);
+
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    ASSERT_NE(fmt, nullptr);
+    int out_bits = (int)fmt->bits_per_channel[0];
+    const unsigned char * px =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < rh; y++) {
+      for (uint32_t x = 0; x < rw; x++) {
+        for (int ch = 0; ch < 3; ch++) {
+          uint32_t got = (out_bits == 8)
+              ? (uint32_t)px[(size_t)y * stride + (size_t)x * 4 + ch]
+              : (uint32_t)((const uint16_t *)(px + (size_t)y * stride))[
+                    (size_t)x * 4 + ch];
+          // The reference carries the frame's own precision; the raster
+          // carries what the library widened it to, by replication.
+          uint32_t want = jpeg_test::widen_sample(
+              ref[((size_t)y * rw + x) * 3 + ch], rbits, out_bits);
+          ASSERT_EQ(got, want) << "at (" << x << ", " << y << ") channel "
+                               << ch;
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
 // A lossless frame whose sampling factors are not 1x1: two out-of-bounds
 // reads, both found by the fuzzer.
 //

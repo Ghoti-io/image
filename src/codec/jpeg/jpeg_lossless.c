@@ -126,26 +126,11 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   if (state->num_scans == 0) {
     return GIMG_ERR_CORRUPT;
   }
-  const gimg_jpeg_scan_t * scan = &state->scans[0];
-  if (!scan->data || scan->data_size == 0) {
-    return GIMG_ERR_CORRUPT;
-  }
-  // T.81 H.1: the predictor is carried in Ss and the point transform in Al.
-  int psv = (int)scan->ss;
-  int pt = (int)scan->al;
-  if (psv < 1 || psv > 7) {
-    return GIMG_ERR_UNSUPPORTED; // 0 is differential-frame only
-  }
-  if (precision < 2 || precision > 16 || pt < 0 || pt >= precision) {
+  if (precision < 2 || precision > 16) {
     return GIMG_ERR_UNSUPPORTED;
   }
   if (num_comp < 1 || num_comp > GIMG_JPEG_MAX_COMPONENTS) {
     return GIMG_ERR_CORRUPT;
-  }
-  if (scan->comp_count != num_comp) {
-    // A lossless scan that does not carry every component would need the
-    // multi-scan machinery the DCT path has; refuse rather than guess.
-    return GIMG_ERR_UNSUPPORTED;
   }
 
   size_t pixel_count = 0;
@@ -173,14 +158,6 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   // than by eight times them.
   uint32_t mcu_per_row = (width + h_max - 1u) / h_max;
   uint32_t mcu_per_col = (height + v_max - 1u) / v_max;
-  // A.2.2: when a scan names one component it is non-interleaved, the data
-  // units are "left-to-right, top-to-bottom within the component", and the
-  // sampling factors say nothing about the walk - the scan simply covers that
-  // component's own samples in raster order.  Treating such a scan as a grid
-  // of Hi x Vi blocks visits the wrong samples, and for a one-component frame
-  // with Hi above one it visits samples that are not in the image at all.
-  const int scan_interleaved = (scan->comp_count > 1);
-
   uint32_t comp_w[GIMG_JPEG_MAX_COMPONENTS];
   uint32_t comp_h[GIMG_JPEG_MAX_COMPONENTS];
   uint16_t * plane[GIMG_JPEG_MAX_COMPONENTS];
@@ -234,209 +211,262 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   // where a difference is read.
   const int is_arith = state->is_arithmetic;
 
-  gimg_jpeg_huff_table_t dc_tables[4];
-  memset(dc_tables, 0, sizeof(dc_tables));
-  if (!is_arith) {
-    for (uint8_t c = 0; c < scan->comp_count; c++) {
-      uint8_t id = scan->dc_tbl[c];
-      if (id >= 4 || !state->huff_dc[id] ||
-          jpeg_build_huff_table(
-              state->huff_dc[id], state->huff_dc_len[id], &dc_tables[id]) != 0) {
+  // A.2.3 lets a lossless frame be written as one scan per component rather
+  // than as a single interleaved scan, and libjpeg writes one for any scan
+  // script that names components one at a time.  Each scan carries its own
+  // predictor selection and point transform in Ss and Al (H.1), so the point
+  // transform has to be remembered per component for the output stage rather
+  // than taken once from the frame.
+  int pt_of[GIMG_JPEG_MAX_COMPONENTS];
+  for (uint8_t i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
+    pt_of[i] = 0;
+  }
+
+  for (unsigned si = 0; si < state->num_scans; si++) {
+    const gimg_jpeg_scan_t * scan = &state->scans[si];
+    if (!is_arith && (!scan->data || scan->data_size == 0)) {
+      r = GIMG_ERR_CORRUPT;
+      goto fail;
+    }
+    // T.81 H.1: the predictor is carried in Ss and the point transform in Al.
+    const int psv = (int)scan->ss;
+    const int pt = (int)scan->al;
+    if (psv < 1 || psv > 7) {
+      r = GIMG_ERR_UNSUPPORTED; // 0 is differential-frame only (Annex J)
+      goto fail;
+    }
+    if (pt < 0 || pt >= precision) {
+      r = GIMG_ERR_UNSUPPORTED;
+      goto fail;
+    }
+    if (scan->comp_count < 1 || scan->comp_count > num_comp) {
+      r = GIMG_ERR_CORRUPT;
+      goto fail;
+    }
+    // A.2.2: a scan naming one component is non-interleaved, and its data
+    // units are "left-to-right, top-to-bottom within the component" - the
+    // sampling factors say nothing about the walk.  Treating such a scan as a
+    // grid of Hi x Vi samples visits the wrong ones, and for a one-component
+    // frame with Hi above one it visits samples outside the image.
+    const int scan_interleaved = (scan->comp_count > 1);
+    uint32_t solo = 0;
+    if (!scan_interleaved) {
+      for (; solo < num_comp; solo++) {
+        if (sof->comp_id[solo] == scan->comp_id[0]) {
+          break;
+        }
+      }
+      if (solo >= num_comp) {
         r = GIMG_ERR_CORRUPT;
         goto fail;
       }
     }
-  }
+    const uint32_t scan_mcus_x = scan_interleaved
+        ? mcu_per_row
+        : ((width * sof->h_samp[solo] + h_max - 1u) / h_max);
+    const uint32_t scan_mcus_y = scan_interleaved
+        ? mcu_per_col
+        : ((height * sof->v_samp[solo] + v_max - 1u) / v_max);
 
-  gimg_jpeg_bitstream_t bs;
-  jpeg_bitstream_init(&bs, scan->data, scan->data_size);
-
-  // H.1.2.3.1: the conditioning needs the category of the difference coded for
-  // the sample above, so one row of categories per component is carried from
-  // line to line.  Categories, not the differences themselves - five values is
-  // all the model looks at.
-  jpeg_arith_decoder_t ad;
-  jpeg_arith_lossless_stats_t astats;
-  if (is_arith) {
-    jpeg_arith_decoder_init(&ad, scan->data, scan->data_size);
-    jpeg_arith_lossless_stats_reset(&astats);
-    for (uint8_t i = 0; i < num_comp; i++) {
-      db_cat[i] = (uint8_t *)gimg_malloc(alloc, comp_w[i]);
-      if (!db_cat[i]) {
-        r = GIMG_ERR_OOM;
-        goto fail;
-      }
-      memset(db_cat[i], 0, comp_w[i]);
-    }
-  }
-
-  uint16_t restart_interval = scan->restart_interval;
-
-  // H.1.2.1: the first sample of the image predicts from 2^(P-Pt-1), and so
-  // does the first sample after every restart interval.
-  const int32_t initial_pred = (int32_t)1 << (precision - pt - 1);
-  // A restart interval begins a fresh predictive context, not merely a fresh
-  // entropy-coded segment.  The row the interval starts on has no row above it
-  // that the interval may refer to, so that row is predicted one-dimensionally
-  // - first sample from the constant, the rest from Ra - exactly as the first
-  // row of the image is.  Only from the next row on does the frame's own
-  // predictor come into play.  Resetting just the single first sample, and
-  // then reading Rb and Rc from across the boundary, decodes the first row of
-  // every interval after the first as noise.
-  // Per component: in an interleaved scan every component starts its own
-  // predictive context afresh at a restart, and each has its own first sample.
-  // H.1.2.1 describes the predictor as a per-line state: the first line of the
-  // scan is predicted one-dimensionally from Ra, later lines use the selected
-  // predictor and take Rb at their start.  A restart puts the coder back into
-  // that first-line state - libjpeg does it by calling start_pass again from
-  // its restart handler, and the ISO reference codec behaves the same way.
-  //
-  // Because the state is per line, a restart only changes the prediction when
-  // it falls on a line boundary.  libjpeg refuses a restart interval that is
-  // not a whole number of MCU rows ("must be an integer multiple of the number
-  // of MCUs in an MCU row"), so for everything it will read, it always does.
-  // A mid-row interval is left predicting as though no restart had happened,
-  // which is what the reference codec produces and the only reading under
-  // which such a file decodes at all.
-  for (uint8_t i = 0; i < num_comp; i++) {
-    row_1d[i] = (unsigned char *)gimg_malloc(alloc, comp_h[i]);
-    if (!row_1d[i]) {
-      r = GIMG_ERR_OOM;
-      goto fail;
-    }
-    memset(row_1d[i], 1, comp_h[i]); // until a line says otherwise
-  }
-  int restart_now = 0;
-
-  // The scan's own grid: the image's MCU grid for an interleaved scan, the
-  // single component's sample grid for a non-interleaved one.
-  uint32_t solo = 0;
-  if (!scan_interleaved) {
-    for (; solo < num_comp; solo++) {
-      if (sof->comp_id[solo] == scan->comp_id[0]) {
-        break;
-      }
-    }
-    if (solo >= num_comp) {
-      r = GIMG_ERR_CORRUPT;
-      goto fail;
-    }
-  }
-  const uint32_t scan_mcus_x = scan_interleaved
-      ? mcu_per_row
-      : ((width * sof->h_samp[solo] + h_max - 1u) / h_max);
-  const uint32_t scan_mcus_y = scan_interleaved
-      ? mcu_per_col
-      : ((height * sof->v_samp[solo] + v_max - 1u) / v_max);
-
-  for (uint32_t mcu_y = 0; mcu_y < scan_mcus_y; mcu_y++) {
-    for (uint32_t mcu_x = 0; mcu_x < scan_mcus_x; mcu_x++) {
-      uint32_t mcu_index = mcu_y * scan_mcus_x + mcu_x;
-      if (restart_interval > 0 && mcu_index > 0 &&
-          mcu_index % (uint32_t)restart_interval == 0) {
-        if (is_arith) {
-          // D.2.9 and H.1.2.3.4: the decoder is primed afresh past the marker
-          // and every statistics bin goes back to its initial state.
-          r = jpeg_arith_lossless_restart(&ad, &astats);
-          if (r != GIMG_OK) {
-            goto fail;
-          }
-          // H.1.2.3.1: "At the beginning of the scan and each restart interval
-          // the conditioning derived from the line above is set to zero."
-          for (uint8_t i = 0; i < num_comp; i++) {
-            if (db_cat[i]) {
-              memset(db_cat[i], 0, comp_w[i]);
-            }
-            da_cat[i] = 0;
-          }
-        }
-        else {
-          bs.expect_rst = 1;
-          jpeg_bitstream_align_skip_rst(&bs);
-          if (bs.rst_just_skipped) {
-            bs.rst_just_skipped = 0;
-          }
-        }
-        restart_now = 1;
-      }
-      for (uint8_t s = 0; s < scan->comp_count; s++) {
-        uint8_t ci = 0;
-        for (; ci < num_comp; ci++) {
-          if (sof->comp_id[ci] == scan->comp_id[s]) {
-            break;
-          }
-        }
-        if (ci >= num_comp) {
+    gimg_jpeg_huff_table_t dc_tables[4];
+    memset(dc_tables, 0, sizeof(dc_tables));
+    if (!is_arith) {
+      for (uint8_t c = 0; c < scan->comp_count; c++) {
+        uint8_t id = scan->dc_tbl[c];
+        // B.2.4: the table in force is the one most recently defined before
+        // this scan's entropy data, which is what the SOS snapshot holds.  A
+        // frame written as several scans normally redefines it between them.
+        const unsigned char * src =
+            (id < 4 && scan->huff_dc[id] && scan->huff_dc_len[id] > 0)
+            ? scan->huff_dc[id]
+            : (id < 4 ? state->huff_dc[id] : NULL);
+        size_t len = (id < 4 && scan->huff_dc[id] && scan->huff_dc_len[id] > 0)
+            ? scan->huff_dc_len[id]
+            : (id < 4 ? state->huff_dc_len[id] : 0);
+        if (!src || jpeg_build_huff_table(src, len, &dc_tables[id]) != 0) {
           r = GIMG_ERR_CORRUPT;
           goto fail;
         }
-        const gimg_jpeg_huff_table_t * tbl = &dc_tables[scan->dc_tbl[s]];
-        uint32_t cw = comp_w[ci];
-        // A non-interleaved scan contributes one sample per MCU, at the MCU's
-        // own position in the component's grid (A.2.2).
-        uint8_t hs = scan_interleaved ? sof->h_samp[ci] : 1u;
-        uint8_t vs = scan_interleaved ? sof->v_samp[ci] : 1u;
-        for (uint8_t sy = 0; sy < vs; sy++) {
-          for (uint8_t sx = 0; sx < hs; sx++) {
-            uint32_t x = mcu_x * hs + sx;
-            uint32_t y = mcu_y * vs + sy;
-            int32_t diff = 0;
-            if (is_arith) {
-              // H.1.2.3.1: at the start of each line the difference to the
-              // left is taken as zero for conditioning purposes.
-              if (x == 0) {
-                da_cat[ci] = 0;
-              }
-              int cat = 0;
-              r = jpeg_arith_lossless_decode_diff(&ad, &astats,
-                  &state->arith_cond, scan->dc_tbl[s], da_cat[ci],
-                  (int)db_cat[ci][x], &diff, &cat);
-              if (r != GIMG_OK) {
-                goto fail;
-              }
-              // This difference becomes Da for the next sample on this line
-              // and Db for the sample below it.  db_cat[x] is read above and
-              // overwritten here, in that order.
-              da_cat[ci] = cat;
-              db_cat[ci][x] = (uint8_t)cat;
-            }
-            else {
-              r = jpeg_lossless_decode_diff(&bs, tbl, &diff);
-              if (r != GIMG_OK) {
-                goto fail;
-              }
-            }
-            int32_t pred;
-            if (x == 0) {
-              // H.1.2.1: 2^(P-Pt-1) begins the first line, and a restart makes
-              // the line it lands on a first line again.  Otherwise a line
-              // starts from the sample above it, whatever the frame's
-              // predictor selection says.
-              if (y == 0 || restart_now) {
-                pred = initial_pred;
-                row_1d[ci][y] = 1;
-              }
-              else {
-                pred = (int32_t)plane[ci][(size_t)(y - 1) * cw];
-                row_1d[ci][y] = 0;
-              }
-            }
-            else if (row_1d[ci][y]) {
-              pred = (int32_t)plane[ci][(size_t)y * cw + (x - 1)]; // Ra
-            }
-            else {
-              int32_t ra = (int32_t)plane[ci][(size_t)y * cw + (x - 1)];
-              int32_t rb = (int32_t)plane[ci][(size_t)(y - 1) * cw + x];
-              int32_t rc = (int32_t)plane[ci][(size_t)(y - 1) * cw + (x - 1)];
-              pred = jpeg_lossless_predict(psv, ra, rb, rc);
-            }
-            // H.1.2.1: the reconstruction is modulo 2^16.
-            plane[ci][(size_t)y * cw + x] =
-                (uint16_t)((uint32_t)(pred + diff) & 0xFFFFu);
-          }
+      }
+    }
+
+    gimg_jpeg_bitstream_t bs;
+    jpeg_bitstream_init(&bs, scan->data, scan->data_size);
+
+    // H.1.2.3.1: the conditioning needs the category of the difference coded
+    // for the sample above, so one row of categories per component is carried
+    // from line to line.  Categories, not the differences themselves - five
+    // values is all the model looks at.
+    jpeg_arith_decoder_t ad;
+    jpeg_arith_lossless_stats_t astats;
+    if (is_arith) {
+      jpeg_arith_decoder_init(&ad, scan->data, scan->data_size);
+      jpeg_arith_lossless_stats_reset(&astats);
+    }
+    for (uint8_t i = 0; i < num_comp; i++) {
+      if (is_arith && !db_cat[i]) {
+        db_cat[i] = (uint8_t *)gimg_malloc(alloc, comp_w[i]);
+        if (!db_cat[i]) {
+          r = GIMG_ERR_OOM;
+          goto fail;
         }
       }
-      restart_now = 0;
+      if (db_cat[i]) {
+        memset(db_cat[i], 0, comp_w[i]);
+      }
+      da_cat[i] = 0;
+      if (!row_1d[i]) {
+        row_1d[i] = (unsigned char *)gimg_malloc(alloc, comp_h[i]);
+        if (!row_1d[i]) {
+          r = GIMG_ERR_OOM;
+          goto fail;
+        }
+      }
+      memset(row_1d[i], 1, comp_h[i]); // until a line says otherwise
+    }
+
+    const uint16_t restart_interval = scan->restart_interval;
+
+    // H.1.2.1: the first sample of the image predicts from 2^(P-Pt-1), and so
+    // does the first sample after every restart interval.
+    const int32_t initial_pred = (int32_t)1 << (precision - pt - 1);
+    // A restart interval begins a fresh predictive context, not merely a fresh
+    // entropy-coded segment.  The row the interval starts on has no row above
+    // it that the interval may refer to, so that row is predicted
+    // one-dimensionally - first sample from the constant, the rest from Ra -
+    // exactly as the first row of the image is.  Only from the next row on
+    // does the frame's own predictor come into play.  Resetting just the
+    // single first sample, and then reading Rb and Rc from across the
+    // boundary, decodes the first row of every interval after the first as
+    // noise.
+    //
+    // H.1.2.1 describes the predictor as a per-line state: the first line of
+    // the scan is predicted one-dimensionally from Ra, later lines use the
+    // selected predictor and take Rb at their start.  A restart puts the coder
+    // back into that first-line state - libjpeg does it by calling start_pass
+    // again from its restart handler, and the ISO reference codec behaves the
+    // same way.
+    //
+    // Because the state is per line, a restart only changes the prediction
+    // when it falls on a line boundary.  libjpeg refuses a restart interval
+    // that is not a whole number of MCU rows ("must be an integer multiple of
+    // the number of MCUs in an MCU row"), so for everything it will read, it
+    // always does.  A mid-row interval is left predicting as though no restart
+    // had happened, which is what the reference codec produces and the only
+    // reading under which such a file decodes at all.
+    int restart_now = 0;
+
+    for (uint32_t mcu_y = 0; mcu_y < scan_mcus_y; mcu_y++) {
+      for (uint32_t mcu_x = 0; mcu_x < scan_mcus_x; mcu_x++) {
+        uint32_t mcu_index = mcu_y * scan_mcus_x + mcu_x;
+        if (restart_interval > 0 && mcu_index > 0 &&
+            mcu_index % (uint32_t)restart_interval == 0) {
+          if (is_arith) {
+            // D.2.9 and H.1.2.3.4: the decoder is primed afresh past the
+            // marker and every statistics bin goes back to its initial state.
+            r = jpeg_arith_lossless_restart(&ad, &astats);
+            if (r != GIMG_OK) {
+              goto fail;
+            }
+            // H.1.2.3.1: "At the beginning of the scan and each restart
+            // interval the conditioning derived from the line above is set to
+            // zero."
+            for (uint8_t i = 0; i < num_comp; i++) {
+              if (db_cat[i]) {
+                memset(db_cat[i], 0, comp_w[i]);
+              }
+              da_cat[i] = 0;
+            }
+          }
+          else {
+            bs.expect_rst = 1;
+            jpeg_bitstream_align_skip_rst(&bs);
+            if (bs.rst_just_skipped) {
+              bs.rst_just_skipped = 0;
+            }
+          }
+          restart_now = 1;
+        }
+        for (uint8_t sc = 0; sc < scan->comp_count; sc++) {
+          uint8_t ci = 0;
+          for (; ci < num_comp; ci++) {
+            if (sof->comp_id[ci] == scan->comp_id[sc]) {
+              break;
+            }
+          }
+          if (ci >= num_comp) {
+            r = GIMG_ERR_CORRUPT;
+            goto fail;
+          }
+          pt_of[ci] = pt;
+          const gimg_jpeg_huff_table_t * tbl = &dc_tables[scan->dc_tbl[sc]];
+          uint32_t cw = comp_w[ci];
+          // A non-interleaved scan contributes one sample per MCU, at the
+          // MCU's own position in the component's grid (A.2.2).
+          uint8_t hs = scan_interleaved ? sof->h_samp[ci] : 1u;
+          uint8_t vs = scan_interleaved ? sof->v_samp[ci] : 1u;
+          for (uint8_t sy = 0; sy < vs; sy++) {
+            for (uint8_t sx = 0; sx < hs; sx++) {
+              uint32_t x = mcu_x * hs + sx;
+              uint32_t y = mcu_y * vs + sy;
+              int32_t diff = 0;
+              if (is_arith) {
+                // H.1.2.3.1: at the start of each line the difference to the
+                // left is taken as zero for conditioning purposes.
+                if (x == 0) {
+                  da_cat[ci] = 0;
+                }
+                int cat = 0;
+                r = jpeg_arith_lossless_decode_diff(&ad, &astats,
+                    &state->arith_cond, scan->dc_tbl[sc], da_cat[ci],
+                    (int)db_cat[ci][x], &diff, &cat);
+                if (r != GIMG_OK) {
+                  goto fail;
+                }
+                // This difference becomes Da for the next sample on this line
+                // and Db for the sample below it.  db_cat[x] is read above and
+                // overwritten here, in that order.
+                da_cat[ci] = cat;
+                db_cat[ci][x] = (uint8_t)cat;
+              }
+              else {
+                r = jpeg_lossless_decode_diff(&bs, tbl, &diff);
+                if (r != GIMG_OK) {
+                  goto fail;
+                }
+              }
+              int32_t pred;
+              if (x == 0) {
+                // H.1.2.1: 2^(P-Pt-1) begins the first line, and a restart
+                // makes the line it lands on a first line again.  Otherwise a
+                // line starts from the sample above it, whatever the frame's
+                // predictor selection says.
+                if (y == 0 || restart_now) {
+                  pred = initial_pred;
+                  row_1d[ci][y] = 1;
+                }
+                else {
+                  pred = (int32_t)plane[ci][(size_t)(y - 1) * cw];
+                  row_1d[ci][y] = 0;
+                }
+              }
+              else if (row_1d[ci][y]) {
+                pred = (int32_t)plane[ci][(size_t)y * cw + (x - 1)]; // Ra
+              }
+              else {
+                int32_t ra = (int32_t)plane[ci][(size_t)y * cw + (x - 1)];
+                int32_t rb = (int32_t)plane[ci][(size_t)(y - 1) * cw + x];
+                int32_t rc = (int32_t)plane[ci][(size_t)(y - 1) * cw + (x - 1)];
+                pred = jpeg_lossless_predict(psv, ra, rb, rc);
+              }
+              // H.1.2.1: the reconstruction is modulo 2^16.
+              plane[ci][(size_t)y * cw + x] =
+                  (uint16_t)((uint32_t)(pred + diff) & 0xFFFFu);
+            }
+          }
+        }
+        restart_now = 0;
+      }
     }
   }
 
@@ -500,7 +530,9 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
             sv = plane[c][jpeg_component_index(
                 comp_w[c], comp_h[c], comp_w[c], x, y, width, height)];
           }
-          sv = (uint32_t)((uint64_t)sv << pt); // undo the point transform
+          // A.4: undo the point transform the scan that carried this
+          // component declared; different scans may declare different ones.
+          sv = (uint32_t)((uint64_t)sv << pt_of[c]);
           if (sv > max_val) {
             sv = max_val;
           }

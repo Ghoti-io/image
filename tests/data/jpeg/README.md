@@ -580,3 +580,52 @@ back nothing like the source - its round trip through them is off by 215 out of
 255.  So the test asserts only that they decode inside their buffers and at the
 declared size.  What the decoder does with them follows A.2.2, A.2.3 and H.1.1
 read directly; it is not checked against anything.
+
+## Non-interleaved scans (`noninterleaved_*.jpg`, `lossless_noninterleaved*.jpg`)
+
+T.81 A.2.3 lets a sequential or lossless frame be written as one scan per
+component rather than as a single interleaved scan, and A.2.2 then puts the
+data units in that component's own order, "left-to-right, top-to-bottom",
+with the sampling factors playing no part in the walk.  libjpeg writes such a
+file for any scan script that names components one at a time, so libjpeg-turbo
+is both the producer and the oracle here, and the comparison is exact.
+
+```sh
+C=/path/to/libjpeg-turbo/cjpeg   # 3.0.4, built static
+DJ=/path/to/libjpeg-turbo/djpeg
+D=tests/data/jpeg
+
+$C -scans $D/noninterleaved_scans.txt -sample 1x1,1x1,1x1 \
+    -outfile $D/noninterleaved_444.jpg $D/hier_src_rgb.ppm
+$C -scans $D/noninterleaved_scans.txt -sample 2x2,1x1,1x1 \
+    -outfile $D/noninterleaved_420.jpg $D/hier_src_rgb.ppm
+$C -scans $D/noninterleaved_scans.txt -sample 2x1,1x1,1x1 \
+    -outfile $D/noninterleaved_422.jpg $D/hier_src_rgb.ppm
+$C -scans $D/noninterleaved_scans.txt -arithmetic \
+    -outfile $D/noninterleaved_arith.jpg $D/hier_src_rgb.ppm
+$C -scans $D/noninterleaved_scans_mixed.txt \
+    -outfile $D/noninterleaved_mixed.jpg $D/hier_src_rgb.ppm
+$C -scans $D/noninterleaved_scans.txt -restart 1 \
+    -outfile $D/noninterleaved_restart.jpg $D/hier_src_rgb.ppm
+$C -scans $D/noninterleaved_scans.txt -precision 12 \
+    -outfile $D/noninterleaved_12bit.jpg $D/hier_src_rgb.ppm
+for f in $D/noninterleaved_*.jpg; do $DJ -pnm -outfile ${f%.jpg}_ref.ppm $f; done
+
+# Lossless: no reference decode, because a lossless codec returns what went in
+# and hier_src_rgb.ppm is therefore the expected output.
+$C -lossless 4 -scans $D/lossless_noninterleaved_scans.txt \
+    -outfile $D/lossless_noninterleaved.jpg $D/hier_src_rgb.ppm
+$C -lossless 1 -scans $D/lossless_noninterleaved_scans_psv.txt \
+    -outfile $D/lossless_noninterleaved_psv.jpg $D/hier_src_rgb.ppm
+$C -lossless 4 -scans $D/lossless_noninterleaved_scans.txt -restart 1 \
+    -outfile $D/lossless_noninterleaved_restart.jpg $D/hier_src_rgb.ppm
+```
+
+The scan scripts are committed beside the fixtures.  Note the trailing
+semicolons: cjpeg refuses the file without them, with "Invalid scan entry
+format" and no hint as to which part it disliked.
+
+`lossless_noninterleaved_scans_psv.txt` gives each scan a different predictor -
+1, 2 and 7 - because H.1 puts the predictor selection in the scan header, not
+the frame header, and a decoder that reads it once per frame gets two of the
+three components wrong.
