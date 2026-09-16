@@ -39,4 +39,16 @@ struct GIMG_Raster {
  */
 size_t gimg_raster_bytes_per_pixel(const GIMG_Pixel_Format * format);
 
+/**
+ * @brief Replace an owned raster's pixel buffer, dimensions and stride.
+ *
+ * Frees the buffer the raster held and takes ownership of @a pixels, which
+ * must come from the raster's own allocator. The raster itself keeps its
+ * address, so pointers held elsewhere (a document's item, say) stay valid.
+ * Only for rasters that own their pixels; a borrowed buffer is not ours to
+ * free or to replace.
+ */
+void gimg_raster_replace_owned_buffer(GIMG_Raster * raster, void * pixels,
+    uint32_t width, uint32_t height, size_t stride_bytes);
+
 #endif // GHOTI_IO_GIMG_SRC_RASTER_RASTER_INTERNAL_H

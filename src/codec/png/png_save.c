@@ -72,6 +72,37 @@
  * depth, that color_type is used so round-trip preserves format.
  */
 /**
+ * Would every sample of this grayscale raster survive being written at
+ * @a bit_depth and read back?
+ *
+ * PNG 13.12 rescales a sample of depth d to 8 bits as round(s * 255 / (2^d-1)),
+ * and only the values that rescaling can produce come back unchanged when the
+ * writer reverses it. A raster whose samples all came from that depth passes;
+ * one carrying any other value does not, and is written at 8 bits instead so
+ * nothing is quietly rounded away.
+ */
+static bool gimg_png_gray_fits_depth(
+    const GIMG_Raster * raster, uint8_t bit_depth) {
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  unsigned int max_val = (1u << bit_depth) - 1u;
+  for (uint32_t y = 0; y < h; y++) {
+    const unsigned char * row = pixels + (size_t)y * stride;
+    for (uint32_t x = 0; x < w; x++) {
+      unsigned int v = row[x];
+      unsigned int packed = (v * max_val + 127u) / 255u;
+      if ((packed * 255u + max_val / 2u) / max_val != v) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
  * Can this raster's transparency be expressed by a tRNS chunk beside a
  * colour type 2 image?
  *
@@ -189,6 +220,18 @@ static bool gimg_png_raster_to_ihdr(const GIMG_Raster * raster,
   }
   if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count >= 1) {
     if (fmt->bits_per_channel[0] == 8) {
+      // A frame that arrived at 1, 2 or 4 bits goes back out at that depth
+      // when every sample still survives the trip (PNG 13.12 rescales on the
+      // way in, and the way back is only exact for values that came from that
+      // depth). Otherwise 8 bits, which always holds what the raster holds.
+      if (state && state->ihdr.color_type == 0 &&
+          (state->ihdr.bit_depth == 1 || state->ihdr.bit_depth == 2 ||
+              state->ihdr.bit_depth == 4) &&
+          gimg_png_gray_fits_depth(raster, state->ihdr.bit_depth)) {
+        *color_type = 0;
+        *bit_depth = state->ihdr.bit_depth;
+        return true;
+      }
       *color_type = 0;
       *bit_depth = 8;
       return true;
@@ -606,6 +649,21 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
       // agree - which is how a grayscale frame comes back when tRNS gave it an
       // alpha channel on the way in (PNG 11.3.2.1). Either way only the first
       // channel is written.
+      if (bit_depth < 8) {
+        // PNG 7.2: several samples to a byte, so the row is shorter than w and
+        // the samples are placed by bit. Cleared first because packing writes
+        // into shared bytes and leaves the row's padding bits.
+        memset(row + 1, 0, row_bytes);
+        for (uint32_t x = 0; x < w; x++) {
+          uint8_t sample = 0;
+          if (!gimg_png_sub_byte_sample_at(
+                  raster, color_type, bit_depth, state, x, y, &sample)) {
+            return GIMG_ERR_UNSUPPORTED;
+          }
+          gimg_png_set_sample_bits(row + 1, x, bit_depth, sample);
+        }
+        continue;
+      }
       size_t src_pixel_bytes = gray_source ? (bit_depth == 8 ? 1u : 2u)
                                            : (bit_depth == 8 ? 4u : 8u);
       if (bit_depth == 8) {

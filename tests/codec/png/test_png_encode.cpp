@@ -1175,7 +1175,7 @@ int main(int argc, char ** argv) {
 }
 
 // ---------------------------------------------------------------------------
-// Saving at sample depths below 8 bits.
+// Saving at sample depths below 8 bits (palette and grayscale).
 //
 // PNG 7.2 packs samples of depth 1, 2 and 4 several to a byte, so a scanline
 // is (width * bit_depth + 7) / 8 bytes and not width. A writer that stores one
@@ -1205,11 +1205,22 @@ const SubByteSaveCase kSubByteSaveCases[] = {
     {"png_pal4_33x9.png", 4, 3},
     {"png_pal4_32x8_interlaced.png", 4, 3},
     {"png_pal2_33x9_interlaced.png", 2, 3},
+    // Grayscale at the same depths. A frame that arrived below 8 bits goes
+    // back out that way when every sample survives the rescaling of PNG 13.12
+    // in both directions; widening it to 8 would be lossless but would make
+    // the file several times larger for no reason.
+    {"png_gray1_32x8.png", 1, 0},
+    {"png_gray2_32x8.png", 2, 0},
+    {"png_gray4_32x8.png", 4, 0},
+    {"png_gray1_33x9.png", 1, 0},
+    {"png_gray4_33x9.png", 4, 0},
+    {"png_gray2_32x8_interlaced.png", 2, 0},
+    {"png_gray4_33x9_interlaced.png", 4, 0},
 };
 
 } // namespace
 
-TEST(PngEncode, PaletteBelowEightBitsRoundTripsAndKeepsItsDepth) {
+TEST(PngEncode, SamplesBelowEightBitsRoundTripAndKeepTheirDepth) {
   for (const SubByteSaveCase & c : kSubByteSaveCases) {
     std::vector<uint8_t> buf;
     ASSERT_TRUE(png_test::load_png_file(c.filename, buf))

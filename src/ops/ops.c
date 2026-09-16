@@ -13,10 +13,19 @@
 #include <string.h>
 
 #include "../core/alloc_internal.h"
+#include "../core/safe_math_internal.h"
+#include "../raster/raster_internal.h"
 
 //
-// Orientation: in-place transform. We support identity, 180, 90 CW, 90 CCW
-// by reallocating and copying. For 90/270 we swap width/height and stride.
+// Orientation (CIPA DC-008 Table 6, the eight EXIF values). A half turn is
+// done in place; the two axis mirrors, the two diagonal mirrors and the two
+// quarter turns build the destination and swap it in, because four of those
+// six exchange width and height.
+//
+// Until these were written every one of them returned GIMG_ERR_UNSUPPORTED,
+// and gimg_item_decode turns that into a failed decode - so an image whose
+// metadata said "rotate 90", which is what a camera writes for anything held
+// upright, could not be decoded at all.
 //
 
 static GIMG_Result apply_orientation_180(GIMG_Raster * raster) {
@@ -53,6 +62,100 @@ static GIMG_Result apply_orientation_180(GIMG_Raster * raster) {
   return GIMG_OK;
 }
 
+/**
+ * Apply one of the orientations that mirror the image or turn it a quarter,
+ * by building the destination and swapping it in (CIPA DC-008 Table 6).
+ *
+ * The quarter turns and the two diagonal mirrors exchange width and height, so
+ * none of them can be done in place. The two axis mirrors could be, but they
+ * go the same way for one piece of index arithmetic instead of several: for
+ * each destination pixel, where in the source it came from.
+ *
+ * The raster keeps its identity - the caller's pointer stays valid - and only
+ * its buffer, dimensions and stride change.
+ */
+static GIMG_Result apply_orientation_remap(
+    GIMG_Raster * raster, GIMG_Orientation orientation) {
+  const GIMG_Allocator * alloc = gimg_raster_allocator(raster);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+  if (bpp == 0) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  size_t src_stride = gimg_raster_stride_bytes(raster);
+  const unsigned char * src = (const unsigned char *)gimg_raster_pixels(raster);
+  if (!src) {
+    return GIMG_ERR_INTERNAL;
+  }
+
+  // Whether this orientation exchanges the axes.
+  bool swaps = (orientation == GIMG_ORIENTATION_TRANSPOSE ||
+      orientation == GIMG_ORIENTATION_ROTATE_90_CW ||
+      orientation == GIMG_ORIENTATION_TRANSVERSE ||
+      orientation == GIMG_ORIENTATION_ROTATE_90_CCW);
+  uint32_t dst_w = swaps ? h : w;
+  uint32_t dst_h = swaps ? w : h;
+
+  size_t dst_row_bytes = 0;
+  size_t dst_total = 0;
+  if (!gcu_safe_mul_size((size_t)dst_w, bpp, &dst_row_bytes)) {
+    return GIMG_ERR_LIMIT;
+  }
+  size_t dst_stride = (dst_row_bytes + (GIMG_DEFAULT_STRIDE_ALIGNMENT - 1u)) &
+      ~(size_t)(GIMG_DEFAULT_STRIDE_ALIGNMENT - 1u);
+  if (!gcu_safe_mul_size(dst_stride, (size_t)dst_h, &dst_total)) {
+    return GIMG_ERR_LIMIT;
+  }
+  unsigned char * dst = (unsigned char *)gimg_malloc(alloc, dst_total);
+  if (!dst) {
+    return GIMG_ERR_OOM;
+  }
+
+  for (uint32_t dy = 0; dy < dst_h; dy++) {
+    unsigned char * drow = dst + (size_t)dy * dst_stride;
+    for (uint32_t dx = 0; dx < dst_w; dx++) {
+      uint32_t sx = 0;
+      uint32_t sy = 0;
+      switch (orientation) {
+      case GIMG_ORIENTATION_FLIP_H: // mirror left to right
+        sx = w - 1u - dx;
+        sy = dy;
+        break;
+      case GIMG_ORIENTATION_FLIP_V: // mirror top to bottom
+        sx = dx;
+        sy = h - 1u - dy;
+        break;
+      case GIMG_ORIENTATION_TRANSPOSE: // mirror across the leading diagonal
+        sx = dy;
+        sy = dx;
+        break;
+      case GIMG_ORIENTATION_ROTATE_90_CW:
+        sx = dy;
+        sy = h - 1u - dx;
+        break;
+      case GIMG_ORIENTATION_TRANSVERSE: // mirror across the other diagonal
+        sx = w - 1u - dy;
+        sy = h - 1u - dx;
+        break;
+      case GIMG_ORIENTATION_ROTATE_90_CCW:
+        sx = w - 1u - dy;
+        sy = dx;
+        break;
+      default:
+        gimg_free(alloc, dst);
+        return GIMG_ERR_UNSUPPORTED;
+      }
+      memcpy(drow + (size_t)dx * bpp, src + (size_t)sy * src_stride +
+              (size_t)sx * bpp, bpp);
+    }
+  }
+
+  gimg_raster_replace_owned_buffer(raster, dst, dst_w, dst_h, dst_stride);
+  return GIMG_OK;
+}
+
 static bool format_is_rgba8(const GIMG_Pixel_Format * f) {
   return f->channel_model == GIMG_CHANNEL_RGBA && f->channel_count == 4 &&
       f->bits_per_channel[0] == 8 && f->bits_per_channel[1] == 8 &&
@@ -79,7 +182,7 @@ GIMG_API GIMG_Result gimg_ops_apply_orientation(
   case GIMG_ORIENTATION_ROTATE_90_CW:
   case GIMG_ORIENTATION_TRANSVERSE:
   case GIMG_ORIENTATION_ROTATE_90_CCW:
-    return GIMG_ERR_UNSUPPORTED; // 90° requires realloc + new dimensions
+    return apply_orientation_remap(raster, orientation);
   default:
     return GIMG_ERR_UNSUPPORTED;
   }

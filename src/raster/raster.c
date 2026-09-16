@@ -176,6 +176,21 @@ GIMG_API size_t gimg_raster_bytes_per_pixel(const GIMG_Pixel_Format * format) {
   return (bits + 7) / 8;
 }
 
+void gimg_raster_replace_owned_buffer(GIMG_Raster * raster, void * pixels,
+    uint32_t width, uint32_t height, size_t stride_bytes) {
+  if (!raster || !pixels) {
+    return;
+  }
+  if (raster->ownership == GIMG_RASTER_OWNED && raster->pixels) {
+    gimg_free(raster->allocator, raster->pixels);
+  }
+  raster->pixels = pixels;
+  raster->ownership = GIMG_RASTER_OWNED;
+  raster->width = width;
+  raster->height = height;
+  raster->stride_bytes = stride_bytes;
+}
+
 static size_t align_stride(size_t stride, uint8_t alignment) {
   if (alignment <= 1) {
     return stride;
