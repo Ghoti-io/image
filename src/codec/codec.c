@@ -236,7 +236,16 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
     return r;
   }
 
-  return codec->load_cb(codec, stream, options, diagnostics, out_doc);
+  r = codec->load_cb(codec, stream, options, diagnostics, out_doc);
+  // Remember the caller's limits on the document.  A load only parses headers;
+  // the pixels are decoded later, so without this the limits would apply to
+  // nothing that actually allocates.  Copied by value: the caller owns the
+  // GIMG_Limits it passed and may free it as soon as the load returns.
+  if (r == GIMG_OK && *out_doc && options && options->limits) {
+    (*out_doc)->load_limits = *options->limits;
+    (*out_doc)->has_load_limits = 1;
+  }
+  return r;
 }
 
 GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
@@ -270,6 +279,33 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
   GIMG_Codec * codec = doc->loaded_by_codec;
   if (!codec->decode_cb) {
     return GIMG_ERR_UNSUPPORTED;
+  }
+
+  // Fall back to the limits the document was loaded with whenever this call
+  // does not carry its own.  Two callers rely on it: an application that set
+  // limits at load time and then decodes with NULL options, and the library
+  // itself - gimg_*_save re-decodes its source item when the document was
+  // loaded by that codec and holds no raster, and has no options to pass on.
+  // Without this a limit an application deliberately set is silently dropped
+  // by the one path it never sees, and a save can be made to allocate without
+  // bound by a header that names an enormous frame.
+  GIMG_Decode_Options inherited;
+  if (doc->has_load_limits && (!options || !options->limits)) {
+    if (options) {
+      inherited = *options;
+    }
+    else {
+      // Careful: GIMG_Decode_Options is not symmetric with NULL.  A NULL
+      // pointer selects fancy chroma upsampling, but a zero-initialised struct
+      // selects simple, because GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE is 0.  So a
+      // struct substituted for NULL has to restore the defaults NULL implies,
+      // or this would silently decode with a different upsampling filter than
+      // the caller asked for.
+      memset(&inherited, 0, sizeof(inherited));
+      inherited.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
+    }
+    inherited.limits = &doc->load_limits;
+    options = &inherited;
   }
 
   GIMG_Result r = codec->decode_cb(codec, item, options, out_raster);

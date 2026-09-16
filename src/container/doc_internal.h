@@ -15,6 +15,7 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
+#include <ghoti.io/image/stream.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -47,6 +48,14 @@ struct GIMG_Doc {
       meta_raw; ///< Optional raw metadata (eXIf, etc.); owned by doc.
   GIMG_Meta_Common * meta_common; ///< Optional normalized metadata
                                   ///< (orientation, DPI); owned by doc.
+  /** Copy of the GIMG_Limits supplied to gimg_doc_load, and a flag saying
+   * whether one was.  Held by value because the caller's GIMG_Limits need not
+   * outlive the load call.  Decoding is deferred - loading a document only
+   * reads headers - so the limits an application sets have to survive the load
+   * in order to bound the decode that happens later, including one the library
+   * performs on its own behalf (a save re-decoding its source). */
+  GIMG_Limits load_limits;
+  int has_load_limits;
 };
 
 #endif // GHOTI_IO_GIMG_SRC_CONTAINER_DOC_INTERNAL_H

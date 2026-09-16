@@ -561,6 +561,60 @@ TEST(PngDecode, ApngMaxChunkSizeLimitEnforced) {
   EXPECT_EQ(doc, nullptr);
 }
 
+// PNG checks max_decoded_pixels only when decoding - png_load enforces
+// max_chunk_size and max_frame_count, but never the pixel count - so a limit
+// set at load time has to survive the load to bound anything at all.
+TEST(PngDecode, LoadLimitsBoundALaterDecodeWithNoOptions) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(png_test::load_png_file("png_2x2_gray.png", buf));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Limits limits = {};
+  limits.max_decoded_pixels = 1;  // 2x2 = 4 pixels
+  GIMG_Load_Options lopts = {};
+  lopts.limits = &limits;
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, &lopts, nullptr, &doc);
+  gimg_stream_destroy(s);
+  ASSERT_EQ(r, GIMG_OK) << "png_load does not cap pixels, so the load succeeds";
+  ASSERT_NE(doc, nullptr);
+  GIMG_Raster * raster = nullptr;
+  // No decode options: the limit must still be the one given at load.
+  EXPECT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+      GIMG_ERR_LIMIT);
+  EXPECT_EQ(raster, nullptr);
+  gimg_doc_destroy(doc);
+}
+
+// png_save re-decodes its source item when the document holds no raster, and
+// it has no decode options to hand on.  That decode used to run with no limits
+// at all, so saving was a way around a cap the application had set: a 20-byte
+// IHDR naming an enormous canvas allocates on the way out, and png_load will
+// not have stopped it because it does not look at the pixel count.
+TEST(PngDecode, SaveHonoursTheLimitsTheDocumentWasLoadedWith) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(png_test::load_png_file("png_2x2_gray.png", buf));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Limits limits = {};
+  limits.max_decoded_pixels = 1;
+  GIMG_Load_Options lopts = {};
+  lopts.limits = &limits;
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, &lopts, nullptr, &doc);
+  gimg_stream_destroy(s);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options sopts = {};
+  GIMG_Save_Report report = {};
+  EXPECT_NE(gimg_doc_save(doc, out, "png", &sopts, &report), GIMG_OK)
+      << "a save must not decode past the limit the document was loaded with";
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
 TEST(PngDecode, MaxDecodedPixelsLimitEnforced) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(png_test::load_png_file("png_2x2_gray.png", buf));

@@ -35,6 +35,16 @@ static GIMG_Decode_Options make_opts() {
   return o;
 }
 static const GIMG_Decode_Options kOpts = make_opts();
+// Set the same cap at load time.  gimg_*_save re-decodes its source item and
+// has no decode options to pass, so the limit it honours is the one recorded
+// on the document by gimg_doc_load - which is also how an application would
+// express the policy.
+static GIMG_Load_Options make_load_opts() {
+  GIMG_Load_Options o = {};
+  o.limits = &kLimits;
+  return o;
+}
+static const GIMG_Load_Options kLoadOpts = make_load_opts();
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   if (data == nullptr || size == 0) {
@@ -48,7 +58,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   }
 
   GIMG_Doc * doc = nullptr;
-  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  r = gimg_doc_load(s, &kLoadOpts, nullptr, &doc);
   gimg_stream_destroy(s);
   s = nullptr;
 
@@ -109,7 +119,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   doc = nullptr;
 
   GIMG_Doc * doc2 = nullptr;
-  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
+  r = gimg_doc_load(s2, &kLoadOpts, nullptr, &doc2);
   gimg_stream_destroy(s2);
   s2 = nullptr;
   gimg_stream_destroy(out_s);

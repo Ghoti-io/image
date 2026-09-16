@@ -585,6 +585,10 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     gimg_png_free_doc_state(codec, state);
     return GIMG_ERR_OOM;
   }
+  // Zero the whole structure: the fields below are assigned individually,
+  // so anything added to GIMG_Doc later would otherwise start as whatever
+  // malloc returned.
+  memset(doc, 0, sizeof(*doc));
   doc->allocator = alloc;
   doc->item_count = item_count;
   doc->items = (GIMG_Item *)gimg_malloc(alloc, item_count * sizeof(GIMG_Item));

@@ -31,6 +31,10 @@ GIMG_API GIMG_Result gimg_doc_create_with_allocator(
   if (!doc) {
     return GIMG_ERR_OOM;
   }
+  // Zero the whole structure: the fields below are assigned individually,
+  // so anything added to GIMG_Doc later would otherwise start as whatever
+  // malloc returned.
+  memset(doc, 0, sizeof(*doc));
   doc->allocator = allocator;
   doc->item_count = 1;
   doc->items = (GIMG_Item *)gimg_malloc(allocator, sizeof(GIMG_Item));
