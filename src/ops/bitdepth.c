@@ -8,6 +8,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/bitdepth.h>
 
 // 8 → 12: replicate bits so 0..255 maps to 0..4095. (v*4095+127)/255 or

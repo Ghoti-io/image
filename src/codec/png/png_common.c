@@ -18,6 +18,7 @@
 
 #include <ghoti.io/compress/compress.h>
 #include <ghoti.io/compress/options.h>
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/core.h>
 
 #include "../../core/alloc_internal.h"

@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_DOC_INTERNAL_H
-#define GHOTI_IO_GIMG_DOC_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_CONTAINER_DOC_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_CONTAINER_DOC_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -49,4 +49,4 @@ struct GIMG_Doc {
                                   ///< (orientation, DPI); owned by doc.
 };
 
-#endif // GHOTI_IO_GIMG_DOC_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_CONTAINER_DOC_INTERNAL_H

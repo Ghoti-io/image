@@ -28,6 +28,7 @@
  * is what the format specifies for a delta that skips them.
  */
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>

@@ -13,8 +13,8 @@
  */
 
 #include <cstdlib>
-#include <cutil/allocator.h>
-#include <cutil/array.h>
+#include <ghoti.io/cutil/allocator.h>
+#include <ghoti.io/cutil/array.h>
 #include <ghoti.io/compress/allocator.h>
 #include <ghoti.io/compress/options.h>
 #include <ghoti.io/image/allocator.h>

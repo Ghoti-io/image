@@ -7,8 +7,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_BMP_INTERNAL_H
-#define GHOTI_IO_GIMG_BMP_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_CODEC_BMP_BMP_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_CODEC_BMP_BMP_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -138,4 +138,4 @@ void gimg_bmp_free_doc_state(GIMG_Codec * codec, void * codec_private);
 GIMG_Result gimg_bmp_row_stride(
     uint32_t width, uint16_t bit_count, size_t * out_stride);
 
-#endif // GHOTI_IO_GIMG_BMP_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_CODEC_BMP_BMP_INTERNAL_H

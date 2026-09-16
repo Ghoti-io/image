@@ -11,8 +11,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_JPEG_DEBUG_INTERNAL_H
-#define GHOTI_IO_GIMG_JPEG_DEBUG_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_DEBUG_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_DEBUG_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -133,4 +133,4 @@
 // debugging of truncated or non-byte-aligned streams. Not from T.81; opt-in
 // only. See gimg_jpeg_bitstream_t in jpeg_entropy.c.
 
-#endif // GHOTI_IO_GIMG_JPEG_DEBUG_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_DEBUG_INTERNAL_H

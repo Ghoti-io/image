@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_IMAGE_META_H
-#define GHOTI_IO_IMAGE_META_H
+#ifndef GHOTI_IO_GIMG_META_H
+#define GHOTI_IO_GIMG_META_H
 
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/core.h>
@@ -135,4 +135,4 @@ typedef enum {
 }
 #endif
 
-#endif // GHOTI_IO_IMAGE_META_H
+#endif // GHOTI_IO_GIMG_META_H

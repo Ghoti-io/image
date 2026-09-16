@@ -9,8 +9,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_IMAGE_BITDEPTH_H
-#define GHOTI_IO_IMAGE_BITDEPTH_H
+#ifndef GHOTI_IO_GIMG_BITDEPTH_H
+#define GHOTI_IO_GIMG_BITDEPTH_H
 
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/macros.h>
@@ -42,4 +42,4 @@ GIMG_API uint16_t gimg_bitdepth_16_to_12(uint16_t v);
 }
 #endif
 
-#endif // GHOTI_IO_IMAGE_BITDEPTH_H
+#endif // GHOTI_IO_GIMG_BITDEPTH_H

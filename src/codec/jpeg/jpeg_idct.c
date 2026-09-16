@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <ghoti.io/image/macros.h>
 #include "jpeg_internal.h"
 
 void jpeg_dezigzag(const int16_t * block, int16_t * out) {

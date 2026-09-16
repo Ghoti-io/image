@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_ALLOC_INTERNAL_H
-#define GHOTI_IO_GIMG_ALLOC_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_CORE_ALLOC_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_CORE_ALLOC_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -45,4 +45,4 @@ static inline void gimg_free(const GIMG_Allocator * allocator, void * ptr) {
   allocator->free_fn(allocator->ctx, ptr);
 }
 
-#endif // GHOTI_IO_GIMG_ALLOC_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_CORE_ALLOC_INTERNAL_H

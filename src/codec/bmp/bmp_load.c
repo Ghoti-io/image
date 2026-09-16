@@ -30,6 +30,7 @@
  * and the pixel data allocation (max_memory) before either is committed.
  */
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>

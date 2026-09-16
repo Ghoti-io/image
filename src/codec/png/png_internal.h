@@ -23,8 +23,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_PNG_INTERNAL_H
-#define GHOTI_IO_GIMG_PNG_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_CODEC_PNG_PNG_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_CODEC_PNG_PNG_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -368,4 +368,4 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 }
 #endif
 
-#endif // GHOTI_IO_GIMG_PNG_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_CODEC_PNG_PNG_INTERNAL_H

@@ -46,6 +46,7 @@
  * frame. prev_rect is used only to restore for DISPOSE_PREVIOUS.
  */
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/color.h>
 #include <ghoti.io/image/doc.h>

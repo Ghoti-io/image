@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <ghoti.io/image/macros.h>
 #include "jpeg_internal.h"
 
 const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN] = {

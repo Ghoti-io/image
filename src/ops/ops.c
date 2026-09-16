@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/bitdepth.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>

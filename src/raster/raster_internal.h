@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_RASTER_INTERNAL_H
-#define GHOTI_IO_GIMG_RASTER_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_RASTER_RASTER_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_RASTER_RASTER_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -39,4 +39,4 @@ struct GIMG_Raster {
  */
 size_t gimg_raster_bytes_per_pixel(const GIMG_Pixel_Format * format);
 
-#endif // GHOTI_IO_GIMG_RASTER_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_RASTER_RASTER_INTERNAL_H

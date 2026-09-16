@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_IMAGE_COLOR_H
-#define GHOTI_IO_IMAGE_COLOR_H
+#ifndef GHOTI_IO_GIMG_COLOR_H
+#define GHOTI_IO_GIMG_COLOR_H
 
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/macros.h>
@@ -87,4 +87,4 @@ GIMG_API void gimg_color_info_default(GIMG_Color_Info * info);
 }
 #endif
 
-#endif // GHOTI_IO_IMAGE_COLOR_H
+#endif // GHOTI_IO_GIMG_COLOR_H

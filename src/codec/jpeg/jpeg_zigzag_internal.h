@@ -7,8 +7,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_JPEG_ZIGZAG_INTERNAL_H
-#define GHOTI_IO_GIMG_JPEG_ZIGZAG_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_ZIGZAG_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_ZIGZAG_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -44,4 +44,4 @@ const uint8_t gimg_jpeg_inv_zigzag[64] = {
 }
 #endif
 
-#endif // GHOTI_IO_GIMG_JPEG_ZIGZAG_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_ZIGZAG_INTERNAL_H

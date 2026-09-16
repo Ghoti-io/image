@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_STREAM_INTERNAL_H
-#define GHOTI_IO_GIMG_STREAM_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_STREAM_STREAM_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_STREAM_STREAM_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -35,4 +35,4 @@ struct GIMG_Stream {
                          ///< for chunked/short-read testing.
 };
 
-#endif // GHOTI_IO_GIMG_STREAM_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_STREAM_STREAM_INTERNAL_H

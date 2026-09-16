@@ -41,6 +41,7 @@
  */
 
 #include <ctype.h>
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/color.h>
 #include <ghoti.io/image/doc.h>

@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_EXIF_INTERNAL_H
-#define GHOTI_IO_GIMG_EXIF_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_META_EXIF_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_META_EXIF_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -180,4 +180,4 @@ GIMG_Result gimg_exif_build_with_thumbnail_tiff_jpeg(
     const GIMG_Allocator * allocator, const void * base_exif, size_t base_size,
     const void * jpeg_data, size_t jpeg_size, void ** out, size_t * out_size);
 
-#endif // GHOTI_IO_GIMG_EXIF_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_META_EXIF_INTERNAL_H

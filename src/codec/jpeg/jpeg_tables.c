@@ -12,6 +12,7 @@
 #define GIMG_JPEG_QUANT_TABLES_DEFINE
 #define GIMG_JPEG_HUFFMAN_TABLES_DEFINE
 
+#include <ghoti.io/image/macros.h>
 #include "jpeg_zigzag_internal.h"
 #include "jpeg_quant_tables_internal.h"
 #include "jpeg_huffman_tables_internal.h"

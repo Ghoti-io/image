@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>

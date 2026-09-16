@@ -8,8 +8,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_JPEG_QUANT_TABLES_INTERNAL_H
-#define GHOTI_IO_GIMG_JPEG_QUANT_TABLES_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_QUANT_TABLES_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_QUANT_TABLES_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -35,4 +35,4 @@ const unsigned int gimg_jpeg_std_chrominance_quant[64] = {
 // clang-format on
 #endif
 
-#endif // GHOTI_IO_GIMG_JPEG_QUANT_TABLES_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_QUANT_TABLES_INTERNAL_H

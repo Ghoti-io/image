@@ -15,10 +15,10 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_IMAGE_ALLOCATOR_H
-#define GHOTI_IO_IMAGE_ALLOCATOR_H
+#ifndef GHOTI_IO_GIMG_ALLOCATOR_H
+#define GHOTI_IO_GIMG_ALLOCATOR_H
 
-#include <cutil/allocator.h>
+#include <ghoti.io/cutil/allocator.h>
 #include <ghoti.io/image/macros.h>
 #include <stddef.h>
 
@@ -55,4 +55,4 @@ GIMG_API const GIMG_Allocator * gimg_allocator_default(void);
 }
 #endif
 
-#endif // GHOTI_IO_IMAGE_ALLOCATOR_H
+#endif // GHOTI_IO_GIMG_ALLOCATOR_H

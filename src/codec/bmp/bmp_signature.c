@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <ghoti.io/image/macros.h>
 #include "bmp_internal.h"
 
 const unsigned char gimg_bmp_signature[GIMG_BMP_SIGNATURE_LEN] = {0x42, 0x4D};

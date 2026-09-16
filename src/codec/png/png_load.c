@@ -36,6 +36,7 @@
  * fcTL for each frame.
  */
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>

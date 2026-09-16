@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/image.h>
 
 GIMG_API uint32_t gimg_version_major(void) {

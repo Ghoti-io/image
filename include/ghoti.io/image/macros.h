@@ -98,6 +98,25 @@ extern "C" {
 #endif
 
 /**
+ * @brief Marks an exported *variable* as part of the public API.
+ *
+ * Same visibility as GIMG_API, but without the `extern "C"`.  A variable
+ * declaration cannot carry a redundant linkage specification - `extern "C"
+ * extern int x;` is ill-formed in C++ - so a declaration that needs both
+ * `extern` and export uses this and sits inside the header's `extern "C"`
+ * block like every other declaration.  See CONVENTIONS.md section 4.
+ */
+#if defined(_WIN32) || defined(__CYGWIN__)
+#ifdef GIMG_BUILD
+#define GIMG_API_DATA __declspec(dllexport)
+#else
+#define GIMG_API_DATA __declspec(dllimport)
+#endif
+#else
+#define GIMG_API_DATA __attribute__((visibility("default")))
+#endif
+
+/**
  * @brief Internal API export macro for testing
  *
  * This macro is used to export internal functions that are needed for testing

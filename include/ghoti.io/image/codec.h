@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_IMAGE_CODEC_H
-#define GHOTI_IO_IMAGE_CODEC_H
+#ifndef GHOTI_IO_GIMG_CODEC_H
+#define GHOTI_IO_GIMG_CODEC_H
 
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/core.h>
@@ -260,4 +260,4 @@ GIMG_API GIMG_Result gimg_item_ensure_decoded(
 }
 #endif
 
-#endif // GHOTI_IO_IMAGE_CODEC_H
+#endif // GHOTI_IO_GIMG_CODEC_H

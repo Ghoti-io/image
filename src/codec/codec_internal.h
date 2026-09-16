@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_CODEC_INTERNAL_H
-#define GHOTI_IO_GIMG_CODEC_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_CODEC_CODEC_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_CODEC_CODEC_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -88,4 +88,4 @@ void gimg_codec_set_decode_cb(GIMG_Codec * codec, gimg_codec_decode_fn fn);
 void gimg_codec_set_free_doc_private(GIMG_Codec * codec,
     gimg_codec_free_doc_private_fn fn);
 
-#endif // GHOTI_IO_GIMG_CODEC_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_CODEC_CODEC_INTERNAL_H

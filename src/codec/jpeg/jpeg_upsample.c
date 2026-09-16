@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <ghoti.io/image/macros.h>
 #include "jpeg_internal.h"
 
 /** Fancy chroma upsampling (triangle filter, 2h2v). ISO/IEC 10918-1 does not

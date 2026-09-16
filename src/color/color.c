@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/color.h>
 
 GIMG_API void gimg_color_info_default(GIMG_Color_Info * info) {

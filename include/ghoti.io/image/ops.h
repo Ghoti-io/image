@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_IMAGE_OPS_H
-#define GHOTI_IO_IMAGE_OPS_H
+#ifndef GHOTI_IO_GIMG_OPS_H
+#define GHOTI_IO_GIMG_OPS_H
 
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/macros.h>
@@ -77,4 +77,4 @@ GIMG_API bool gimg_ops_raster_equal(
 }
 #endif
 
-#endif // GHOTI_IO_IMAGE_OPS_H
+#endif // GHOTI_IO_GIMG_OPS_H

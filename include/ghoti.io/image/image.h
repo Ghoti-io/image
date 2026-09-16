@@ -9,8 +9,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_H
-#define GHOTI_IO_GIMG_H
+#ifndef GHOTI_IO_GIMG_IMAGE_H
+#define GHOTI_IO_GIMG_IMAGE_H
 
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/codec.h>
@@ -55,4 +55,4 @@ GIMG_API uint32_t gimg_version_patch(void);
  */
 GIMG_API const char * gimg_version_string(void);
 
-#endif // GHOTI_IO_GIMG_H
+#endif // GHOTI_IO_GIMG_IMAGE_H

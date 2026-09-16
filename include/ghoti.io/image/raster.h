@@ -6,8 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_IMAGE_RASTER_H
-#define GHOTI_IO_IMAGE_RASTER_H
+#ifndef GHOTI_IO_GIMG_RASTER_H
+#define GHOTI_IO_GIMG_RASTER_H
 
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/color.h>
@@ -201,4 +201,4 @@ GIMG_API GIMG_Result gimg_raster_copy_with_allocator(
 }
 #endif
 
-#endif // GHOTI_IO_IMAGE_RASTER_H
+#endif // GHOTI_IO_GIMG_RASTER_H

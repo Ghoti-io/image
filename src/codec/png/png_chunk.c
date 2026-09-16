@@ -24,6 +24,7 @@
  * CRC. Caller-provided payload_buf is used when non-NULL.
  */
 
+#include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/stream.h>
 #include <string.h>

@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include <ghoti.io/image/macros.h>
 #include "../core/alloc_internal.h"
 #include "exif_internal.h"
 

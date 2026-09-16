@@ -10,8 +10,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#ifndef GHOTI_IO_GIMG_JPEG_INTERNAL_H
-#define GHOTI_IO_GIMG_JPEG_INTERNAL_H
+#ifndef GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_INTERNAL_H
+#define GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
 
@@ -609,4 +609,4 @@ GIMG_Result jpeg_append_unknown_app(gimg_jpeg_doc_state_t * state,
 }
 #endif
 
-#endif // GHOTI_IO_GIMG_JPEG_INTERNAL_H
+#endif // GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_INTERNAL_H
