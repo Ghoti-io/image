@@ -574,6 +574,22 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
 int jpeg_chroma_sample_fancy_2h2v(const unsigned char * buf, size_t stride,
     uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
 
+/** Chroma upsampling: fancy h2v1 (4:2:2, horizontal triangle filter). */
+int jpeg_chroma_sample_fancy_h2v1(const unsigned char * buf, size_t stride,
+    uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
+
+/**
+ * Sample a chroma plane for output pixel (x, y).
+ *
+ * Picks the fancy filter that matches the plane's ratio - 2h2v for 4:2:0, h2v1
+ * for 4:2:2 - and falls back to nearest-neighbour when there is no filter for
+ * the ratio or the caller asked for the box filter.  4:4:4 needs no filter: the
+ * nearest-neighbour path is exact there.
+ */
+int jpeg_chroma_sample(const unsigned char * buf, size_t stride, uint32_t cw,
+    uint32_t ch, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+    int fancy);
+
 /** @name Parse module: segment payload → doc state (used by jpeg_load.c) */
 /** @{ */
 /** Parse SOF0/SOF1/SOF2 payload into sof. Validates dimensions and precision.

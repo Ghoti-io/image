@@ -904,29 +904,15 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
-    int use_fancy = ((!options ||
-                         options->jpeg_chroma_upsampling ==
-                             GIMG_JPEG_CHROMA_UPSAMPLE_FANCY) &&
-        (width == cw1 * 2 && height == ch1 * 2 && width == cw2 * 2 &&
-            height == ch2 * 2));
+    int use_fancy = (!options ||
+        options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
     for (uint32_t y = 0; y < height; y++) {
-      uint32_t cy1 = (ch1 > 1 && height > 1) ? (y * ch1 / height) : 0;
-      uint32_t cy2 = (ch2 > 1 && height > 1) ? (y * ch2 / height) : 0;
       for (uint32_t x = 0; x < width; x++) {
-        uint32_t cx1 = (cw1 > 1 && width > 1) ? (x * cw1 / width) : 0;
-        uint32_t cx2 = (cw2 > 1 && width > 1) ? (x * cw2 / width) : 0;
         int yy = comp_buf[0][y * comp_stride[0] + x];
-        int cb, cr;
-        if (use_fancy) {
-          cb = jpeg_chroma_sample_fancy_2h2v(
-              comp_buf[1], comp_stride[1], cw1, ch1, x, y);
-          cr = jpeg_chroma_sample_fancy_2h2v(
-              comp_buf[2], comp_stride[2], cw2, ch2, x, y);
-        }
-        else {
-          cb = comp_buf[1][cy1 * comp_stride[1] + cx1];
-          cr = comp_buf[2][cy2 * comp_stride[2] + cx2];
-        }
+        int cb = jpeg_chroma_sample(comp_buf[1], comp_stride[1], cw1, ch1, x, y,
+            width, height, use_fancy);
+        int cr = jpeg_chroma_sample(comp_buf[2], comp_stride[2], cw2, ch2, x, y,
+            width, height, use_fancy);
         // YCbCr→RGB with scaled integer (SCALEBITS=16) per common practice.
         int cb_x = cb - 128;
         int cr_x = cr - 128;
@@ -1593,11 +1579,8 @@ static GIMG_Result jpeg_decode_progressive_extended(
         comp_buf_8[i][k] = (unsigned char)(v > 255u ? 255u : v);
       }
     }
-    int use_fancy = ((!options ||
-                         options->jpeg_chroma_upsampling ==
-                             GIMG_JPEG_CHROMA_UPSAMPLE_FANCY) &&
-        (width == comp_w[1] * 2 && height == comp_h[1] * 2 &&
-            width == comp_w[2] * 2 && height == comp_h[2] * 2));
+    int use_fancy = (!options ||
+        options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
     uint32_t cw1 = comp_w[1];
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
@@ -1613,23 +1596,12 @@ static GIMG_Result jpeg_decode_progressive_extended(
     unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
     size_t stride = gimg_raster_stride_bytes(*out_raster);
     for (uint32_t y = 0; y < height; y++) {
-      uint32_t cy1 = (ch1 > 1 && height > 1) ? (y * ch1 / height) : 0;
-      uint32_t cy2 = (ch2 > 1 && height > 1) ? (y * ch2 / height) : 0;
       for (uint32_t x = 0; x < width; x++) {
-        uint32_t cx1 = (cw1 > 1 && width > 1) ? (x * cw1 / width) : 0;
-        uint32_t cx2 = (cw2 > 1 && width > 1) ? (x * cw2 / width) : 0;
         int yy = comp_buf_8[0][y * comp_stride_el[0] + x];
-        int cb, cr;
-        if (use_fancy) {
-          cb = jpeg_chroma_sample_fancy_2h2v(
-              comp_buf_8[1], comp_stride_el[1], cw1, ch1, x, y);
-          cr = jpeg_chroma_sample_fancy_2h2v(
-              comp_buf_8[2], comp_stride_el[2], cw2, ch2, x, y);
-        }
-        else {
-          cb = comp_buf_8[1][cy1 * comp_stride_el[1] + cx1];
-          cr = comp_buf_8[2][cy2 * comp_stride_el[2] + cx2];
-        }
+        int cb = jpeg_chroma_sample(comp_buf_8[1], comp_stride_el[1], cw1, ch1,
+            x, y, width, height, use_fancy);
+        int cr = jpeg_chroma_sample(comp_buf_8[2], comp_stride_el[2], cw2, ch2,
+            x, y, width, height, use_fancy);
         int cb_x = cb - 128;
         int cr_x = cr - 128;
         int r_val = yy + (int)((91881L * cr_x + 32768) >> 16);
