@@ -175,9 +175,48 @@ Compare in the frame's own precision, not in the raster's: our decoder widens
 the raster back with the exact inverse before comparing, or the widening rule
 gets tested instead of the codec.
 
+`generate_12bit_matrix.py` builds a corpus with it and
+`compare_12bit_to_libjpeg.py` checks every file against it:
+
+```sh
+GIMG_CJPEG12=ljt-build/cjpeg-static python3 generate_12bit_matrix.py /tmp/m12
+GIMG_DJPEG12=ljt-build/djpeg-static \
+  python3 compare_12bit_to_libjpeg.py /tmp/m12/*.jpg
+```
+
+352 of 352 byte-exact as of this writing, across grey and colour, 4:4:4/4:2:2/
+4:2:0, baseline and progressive, qualities 25/75/95/100, and sizes including
+1x1, 1xN, Nx1 and non-MCU-aligned shapes.
+
 Fixtures generated this way:
 
 | File | Content |
 | ---- | ------- |
 | `baseline_rgb12_444.jpg` | 16x16 flat (3000, 1000, 2000) at P=12, 4:4:4, q95 |
 | `baseline_rgb12_422_16x1.jpg` | 16x1 gradient at P=12, 4:2:2, q90 - the single-row upsampling case |
+
+## The one difference that is not a defect
+
+Eight `progressive_sample_Nscan` fixtures decode a little differently from
+libjpeg - at most 4 counts out of 255, on the truncated progressions but never
+on the complete 10-scan one.  That is libjpeg's **block smoothing**
+(`do_block_smoothing`, jdcoefct.c `decompress_smooth_data`): where a progressive
+scan has not yet sent a coefficient, it estimates the missing low-frequency
+terms from the neighbouring blocks' DC values, so an incomplete progression
+looks smooth rather than blocky.  It is an optional display refinement and
+appears nowhere in T.81.
+
+This was a guess for a long time, and is now measured.  `djpeg -nosmooth` does
+not test it - that flag is the fancy-upsampling switch - so the check has to
+drive the library directly:
+
+```c
+jpeg_read_header(&cinfo, TRUE);
+cinfo.do_block_smoothing = FALSE;    /* not reachable from djpeg's flags */
+cinfo.do_fancy_upsampling = TRUE;
+```
+
+With smoothing off, all nine fixtures are byte-identical to our decoder, and
+the complete 10-scan file is identical either way because there is nothing left
+to estimate.  We do not implement it, deliberately: it changes samples the
+standard says how to reconstruct.
