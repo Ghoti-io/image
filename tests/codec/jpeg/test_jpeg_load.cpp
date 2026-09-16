@@ -4159,3 +4159,88 @@ TEST(JpegLoad, EverySamplingFactorMatchesLibjpegTurbo) {
     gimg_stream_destroy(s);
   }
 }
+
+// T.81 B.2.5, the case DNL exists for.
+//
+// B.2.2 lets a frame header carry Y = 0, and then "the number of lines shall be
+// defined by the DNL marker segment" after the first scan.  That is how a JPEG
+// is written by something that does not know the height until it has finished -
+// a scanner, a fax.  The three DNL tests here already covered a DNL that agrees
+// with a stated height, one that contradicts it, and one that arrives before
+// the first scan; none covered Y = 0, which is the only case where DNL decides
+// anything.
+//
+// The oracle takes two codecs, because neither alone can give one.
+// libjpeg-turbo refuses the file outright - "Empty JPEG image (DNL not
+// supported)" - so it cannot say what the pixels are; but dnl_stated_height.jpg
+// is the same image with its height in the SOF and no DNL, which libjpeg reads
+// happily, and that decode is the committed reference.  The ISO reference
+// codec, which does implement DNL, reads the zero-height file and agrees to
+// within 3 - its IDCT is not libjpeg's, the same tolerance the hierarchical
+// fixtures need.  So one codec vouches for the pixels and the other for the
+// file being well formed.
+TEST(JpegLoad, DnlSuppliesAHeightTheFrameHeaderLeftAtZero) {
+  uint32_t rw = 0, rh = 0;
+  int rchan = 0, rbits = 0;
+  std::vector<uint32_t> ref;
+  ASSERT_TRUE(jpeg_test::load_pnm_file(
+      "dnl_zero_height.ppm", &rw, &rh, &rchan, &rbits, ref));
+  ASSERT_EQ(rchan, 3);
+  ASSERT_GT(rh, 0u);
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("dnl_zero_height.jpg", jpeg));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK)
+      << "a frame header with Y = 0 is legal; DNL supplies the height";
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  EXPECT_EQ(gimg_raster_width(raster), rw);
+  EXPECT_EQ(gimg_raster_height(raster), rh)
+      << "the height must come from the DNL segment, not from the SOF's zero";
+  const unsigned char * gp = (const unsigned char *)gimg_raster_pixels(raster);
+  size_t gs = gimg_raster_stride_bytes(raster);
+  for (uint32_t y = 0; y < rh; y++) {
+    for (uint32_t x = 0; x < rw; x++) {
+      for (int ch = 0; ch < 3; ch++) {
+        int a = (int)gp[y * gs + x * 4 + (size_t)ch];
+        int b = (int)ref[((size_t)y * rw + x) * 3 + (size_t)ch];
+        ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << ch;
+      }
+    }
+  }
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+
+  // The same image with its height in the frame header must decode the same
+  // way; that is what says the DNL path joins the ordinary one rather than
+  // running beside it.
+  std::vector<uint8_t> plain;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("dnl_stated_height.jpg", plain));
+  GIMG_Stream * s2 = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(plain.data(), plain.size(), &s2), GIMG_OK);
+  GIMG_Doc * doc2 = nullptr;
+  ASSERT_EQ(gimg_doc_load(s2, nullptr, nullptr, &doc2), GIMG_OK);
+  GIMG_Raster * r2 = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc2, 0), nullptr, &r2), GIMG_OK);
+  ASSERT_NE(r2, nullptr);
+  EXPECT_EQ(gimg_raster_height(r2), rh);
+  const unsigned char * p2 = (const unsigned char *)gimg_raster_pixels(r2);
+  size_t s2stride = gimg_raster_stride_bytes(r2);
+  for (uint32_t y = 0; y < rh; y++) {
+    for (uint32_t x = 0; x < rw; x++) {
+      for (int ch = 0; ch < 3; ch++) {
+        ASSERT_EQ((int)p2[y * s2stride + x * 4 + (size_t)ch],
+            (int)ref[((size_t)y * rw + x) * 3 + (size_t)ch]);
+      }
+    }
+  }
+  gimg_raster_destroy(r2);
+  gimg_doc_destroy(doc2);
+  gimg_stream_destroy(s2);
+}

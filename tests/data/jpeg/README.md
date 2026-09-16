@@ -815,3 +815,33 @@ Ratios that do not divide (H_i = 3 against H_max = 4, say) keep the
 proportional map: libjpeg refuses those frames outright (jdmaster.c,
 `JERR_FRACT_SAMPLE_NOTIMPL`), so there is nothing to match and no oracle to
 match it with.
+
+## DNL: a height the frame header left at zero (`dnl_zero_height.jpg`)
+
+T.81 B.2.2 lets a frame header carry Y = 0, and B.2.5 then has the DNL segment
+after the first scan supply the number of lines.  That is how a JPEG gets
+written by something that does not know the height until it has finished - a
+scanner, a fax.  Nothing writes one now, so this is assembled.
+
+```sh
+C=/path/to/libjpeg-turbo/cjpeg
+D=tests/data/jpeg
+
+$C -quality 80 -outfile $D/dnl_stated_height.jpg $D/hier_enc_src.ppm
+python3 $D/mk_dnl.py $D/dnl_stated_height.jpg $D/dnl_zero_height.jpg
+# and the reference is libjpeg's decode of the file that still states its height
+$DJ -pnm -outfile $D/dnl_zero_height.ppm $D/dnl_stated_height.jpg
+```
+
+The oracle needs both codecs, because neither can give one alone.
+**libjpeg-turbo refuses the zero-height file** - `Empty JPEG image (DNL not
+supported)` - so it cannot say what the pixels are.  But `dnl_stated_height.jpg`
+is the same image with its height in the SOF and no DNL, which it reads
+happily, and that decode is the committed reference.  **The ISO reference codec
+does implement DNL**, reads the zero-height file, and agrees with our decode to
+within 3 - its IDCT is not libjpeg's, the same tolerance the hierarchical
+fixtures need.  So one codec vouches for the pixels and the other for the file.
+
+The three DNL cases already covered here - a DNL agreeing with a stated height,
+one contradicting it, one arriving before the first scan - are all about
+rejecting or ignoring DNL.  This is the only one where it decides anything.
