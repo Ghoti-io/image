@@ -201,7 +201,7 @@ GIMG_Result jpeg_decode_block_progressive_dc(gimg_jpeg_bitstream_t * bs,
   if (out_diff) {
     *out_diff = diff;
   }
-  *dc_predictor += (diff << al);
+  *dc_predictor += (int16_t)GIMG_JPEG_LSHIFT(diff, al);
   block[0] = *dc_predictor;
   if (trace_all) {
     (void)fprintf(stderr,
@@ -542,7 +542,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(gimg_jpeg_bitstream_t * bs,
       }
       ac = jpeg_extend(ac, size);
     }
-    block[k] = (int16_t)(ac << al);
+    block[k] = (int16_t)GIMG_JPEG_LSHIFT(ac, al);
     if (trace_block_id == 0 && GIMG_JPEG_TRACE_PROG_FIRST_AC) {
       (void)fprintf(stderr, "PROG_DEC_AC block=0 run=%d size=%d val=%d k=%d\n",
           run, size, ac << al, k);

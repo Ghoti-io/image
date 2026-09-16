@@ -36,8 +36,14 @@
 #define FIX_2_562915447 20995
 #define FIX_3_072711026 25172
 
-#define DESCALE(x, n) (((int32_t)(x) + (1 << ((n)-1))) >> (n))
-#define MULTIPLY(var, constval) ((int32_t)(var) * (int32_t)(constval))
+// The DCT intermediates are computed in 64 bits.  At 12-bit sample precision an
+// intermediate reaches ~2.6e5 and the fixed-point constants are up to 25172, so
+// the product exceeds int32 (UBSan: "signed integer overflow: -259968 * 9633").
+// libjpeg solves the same problem by widening DCTELEM to int for its 12-bit
+// build; 64 bits removes the question entirely and costs nothing on a 64-bit
+// target.  For 8-bit input the results are unchanged: nothing overflowed there.
+#define DESCALE(x, n) (((int64_t)(x) + ((int64_t)1 << ((n)-1))) >> (n))
+#define MULTIPLY(var, constval) ((int64_t)(var) * (int64_t)(constval))
 
 // Bit position of highest set bit (1-based); 0 if x==0. Used for reciprocal quant.
 static int flss_u32(uint32_t x) {
@@ -82,11 +88,11 @@ static void compute_reciprocal(uint32_t divisor, int16_t * tbl) {
   tbl[3] = (int16_t)(r - (int)(sizeof(int16_t) * 8));
 }
 
-static void jpeg_fdct_islow(int16_t * data) {
-  int32_t tmp0, tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
-  int32_t tmp10, tmp11, tmp12, tmp13;
-  int32_t z1, z2, z3, z4, z5;
-  int16_t * dataptr;
+static void jpeg_fdct_islow(int32_t * data) {
+  int64_t tmp0, tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
+  int64_t tmp10, tmp11, tmp12, tmp13;
+  int64_t z1, z2, z3, z4, z5;
+  int32_t * dataptr;
   int ctr;
 
   dataptr = data;
@@ -105,13 +111,13 @@ static void jpeg_fdct_islow(int16_t * data) {
     tmp11 = tmp1 + tmp2;
     tmp12 = tmp1 - tmp2;
 
-    dataptr[0] = (int16_t)((tmp10 + tmp11) << PASS1_BITS);
-    dataptr[4] = (int16_t)((tmp10 - tmp11) << PASS1_BITS);
+    dataptr[0] = (int32_t)GIMG_JPEG_LSHIFT(tmp10 + tmp11, PASS1_BITS);
+    dataptr[4] = (int32_t)GIMG_JPEG_LSHIFT(tmp10 - tmp11, PASS1_BITS);
 
     z1 = MULTIPLY(tmp12 + tmp13, FIX_0_541196100);
-    dataptr[2] = (int16_t)DESCALE(
+    dataptr[2] = (int32_t)DESCALE(
         z1 + MULTIPLY(tmp13, FIX_0_765366865), CONST_BITS - PASS1_BITS);
-    dataptr[6] = (int16_t)DESCALE(
+    dataptr[6] = (int32_t)DESCALE(
         z1 + MULTIPLY(tmp12, -FIX_1_847759065), CONST_BITS - PASS1_BITS);
 
     z1 = tmp4 + tmp7;
@@ -132,10 +138,10 @@ static void jpeg_fdct_islow(int16_t * data) {
     z3 += z5;
     z4 += z5;
 
-    dataptr[7] = (int16_t)DESCALE(tmp4 + z1 + z3, CONST_BITS - PASS1_BITS);
-    dataptr[5] = (int16_t)DESCALE(tmp5 + z2 + z4, CONST_BITS - PASS1_BITS);
-    dataptr[3] = (int16_t)DESCALE(tmp6 + z2 + z3, CONST_BITS - PASS1_BITS);
-    dataptr[1] = (int16_t)DESCALE(tmp7 + z1 + z4, CONST_BITS - PASS1_BITS);
+    dataptr[7] = (int32_t)DESCALE(tmp4 + z1 + z3, CONST_BITS - PASS1_BITS);
+    dataptr[5] = (int32_t)DESCALE(tmp5 + z2 + z4, CONST_BITS - PASS1_BITS);
+    dataptr[3] = (int32_t)DESCALE(tmp6 + z2 + z3, CONST_BITS - PASS1_BITS);
+    dataptr[1] = (int32_t)DESCALE(tmp7 + z1 + z4, CONST_BITS - PASS1_BITS);
 
     dataptr += DCTSIZE;
   }
@@ -156,13 +162,13 @@ static void jpeg_fdct_islow(int16_t * data) {
     tmp11 = tmp1 + tmp2;
     tmp12 = tmp1 - tmp2;
 
-    dataptr[DCTSIZE * 0] = (int16_t)DESCALE(tmp10 + tmp11, PASS1_BITS);
-    dataptr[DCTSIZE * 4] = (int16_t)DESCALE(tmp10 - tmp11, PASS1_BITS);
+    dataptr[DCTSIZE * 0] = (int32_t)DESCALE(tmp10 + tmp11, PASS1_BITS);
+    dataptr[DCTSIZE * 4] = (int32_t)DESCALE(tmp10 - tmp11, PASS1_BITS);
 
     z1 = MULTIPLY(tmp12 + tmp13, FIX_0_541196100);
-    dataptr[DCTSIZE * 2] = (int16_t)DESCALE(
+    dataptr[DCTSIZE * 2] = (int32_t)DESCALE(
         z1 + MULTIPLY(tmp13, FIX_0_765366865), CONST_BITS + PASS1_BITS);
-    dataptr[DCTSIZE * 6] = (int16_t)DESCALE(
+    dataptr[DCTSIZE * 6] = (int32_t)DESCALE(
         z1 + MULTIPLY(tmp12, -FIX_1_847759065), CONST_BITS + PASS1_BITS);
 
     z1 = tmp4 + tmp7;
@@ -184,13 +190,13 @@ static void jpeg_fdct_islow(int16_t * data) {
     z4 += z5;
 
     dataptr[DCTSIZE * 7] =
-        (int16_t)DESCALE(tmp4 + z1 + z3, CONST_BITS + PASS1_BITS);
+        (int32_t)DESCALE(tmp4 + z1 + z3, CONST_BITS + PASS1_BITS);
     dataptr[DCTSIZE * 5] =
-        (int16_t)DESCALE(tmp5 + z2 + z4, CONST_BITS + PASS1_BITS);
+        (int32_t)DESCALE(tmp5 + z2 + z4, CONST_BITS + PASS1_BITS);
     dataptr[DCTSIZE * 3] =
-        (int16_t)DESCALE(tmp6 + z2 + z3, CONST_BITS + PASS1_BITS);
+        (int32_t)DESCALE(tmp6 + z2 + z3, CONST_BITS + PASS1_BITS);
     dataptr[DCTSIZE * 1] =
-        (int16_t)DESCALE(tmp7 + z1 + z4, CONST_BITS + PASS1_BITS);
+        (int32_t)DESCALE(tmp7 + z1 + z4, CONST_BITS + PASS1_BITS);
 
     dataptr++;
   }
@@ -198,7 +204,7 @@ static void jpeg_fdct_islow(int16_t * data) {
 
 // Quantize DCT coefficients per T.81 Annex F (round to integer).
 static void jpeg_quantize_block(
-    const int16_t * block, const uint16_t * quant, int16_t * out) {
+    const int32_t * block, const uint16_t * quant, int16_t * out) {
   for (int z = 0; z < 64; z++) {
     int nat = (int)gimg_jpeg_zigzag[z];
     int32_t val = (int32_t)block[nat];
@@ -229,7 +235,7 @@ static void jpeg_quantize_block(
 // Quantize for 16-bit DQT: quant entries are uint16_t; use 32-bit divisor (q*8).
 // T.81 Annex F rounding. Table in natural order (same as 8-bit path).
 static void jpeg_quantize_block_16bit(
-    const int16_t * block, const uint16_t * quant, int16_t * out) {
+    const int32_t * block, const uint16_t * quant, int16_t * out) {
   for (int z = 0; z < 64; z++) {
     int nat = (int)gimg_jpeg_zigzag[z];
     int32_t val = (int32_t)block[nat];
@@ -262,7 +268,7 @@ static void jpeg_quantize_block_16bit(
 // Quantize using reciprocal (libjpeg 8-bit path); dtbl indexed by natural order.
 // Use 64-bit product so (temp+corr)*recip does not overflow before shifting.
 static void jpeg_quantize_block_recip(
-    const int16_t * block, const int16_t * dtbl, int16_t * out) {
+    const int32_t * block, const int16_t * dtbl, int16_t * out) {
   const int sh = (int)(sizeof(int16_t) * 8); // 16
   for (int z = 0; z < 64; z++) {
     int nat = (int)gimg_jpeg_zigzag[z];
@@ -376,7 +382,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
   }
 
   int16_t * out = coef_buffer;
-  int16_t block[64];
+  int32_t block[64];
   // Per-component last DC for dummy blocks (T.81 Annex A: padding blocks use
   // zero AC and DC = previous block DC so diff = 0).
   int16_t last_dc[3] = {0, 0, 0};
@@ -1121,7 +1127,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
   }
 
   int16_t * out = coef_buffer;
-  int16_t block[64];
+  int32_t block[64];
   int16_t last_dc[3] = {0, 0, 0};
   const int32_t level_shift = 2048;
 

@@ -105,6 +105,18 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_DHT_HEADER_LEN 17u
 /** 8-bit AC table symbol count (T.81 Annex K Table K.4). */
 #define GIMG_JPEG_AC_SYMBOLS_8BIT 162u
+/**
+ * Left shift that is defined when the value is negative.
+ *
+ * C17 6.5.7p4 leaves `x << n` undefined for negative x, and both the DCT and
+ * the entropy coder shift signed intermediates as a matter of course.  Shifting
+ * the unsigned representation and converting back produces the same bit pattern
+ * on a two's-complement target without the undefined behaviour; libjpeg spells
+ * the same idea LEFT_SHIFT.  The conversion back is implementation-defined
+ * rather than undefined, and gcc and clang both define it as the wrap we want.
+ */
+#define GIMG_JPEG_LSHIFT(x, n) ((int32_t)((uint32_t)(x) << (n)))
+
 /** Extended-precision AC table symbol count (12-bit: 162 + 80). */
 #define GIMG_JPEG_AC_SYMBOLS_EXTENDED 242u
 

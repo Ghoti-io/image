@@ -97,7 +97,7 @@ void jpeg_idct_8x8_32(const int32_t * in, int32_t * out, int scale) {
 #define IDCT_ISLOW_CONST_BITS 13
 #define IDCT_ISLOW_PASS1_BITS 2
 #define IDCT_ISLOW_ONE ((int32_t)1)
-#define IDCT_ISLOW_LEFT_SHIFT(x, n) ((int32_t)(x) << (n))
+#define IDCT_ISLOW_LEFT_SHIFT(x, n) GIMG_JPEG_LSHIFT(x, n)
 #define IDCT_ISLOW_RIGHT_SHIFT(x, n) ((x) >> (n))
 #define IDCT_ISLOW_DESCALE(x, n)                                               \
   IDCT_ISLOW_RIGHT_SHIFT((x) + (IDCT_ISLOW_ONE << ((n)-1)), n)

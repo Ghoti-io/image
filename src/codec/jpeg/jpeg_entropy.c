@@ -334,9 +334,9 @@ static GIMG_Result jpeg_decode_baseline_extended(
         // 12-bit: scale to 16-bit range (left-justified).
         int out_max = (precision == 12) ? 65520 : 65535;
         if (precision == 12) {
-          r_val <<= 4;
-          g_val <<= 4;
-          b_val <<= 4;
+          r_val = GIMG_JPEG_LSHIFT(r_val, 4);
+          g_val = GIMG_JPEG_LSHIFT(g_val, 4);
+          b_val = GIMG_JPEG_LSHIFT(b_val, 4);
         }
         if (r_val < 0)
           r_val = 0;
@@ -1161,8 +1161,22 @@ static GIMG_Result jpeg_decode_progressive_extended(
   int16_t * coef_blocks[GIMG_JPEG_MAX_COMPONENTS];
   memset(coef_blocks, 0, sizeof(coef_blocks));
   for (uint8_t i = 0; i < num_comp; i++) {
+    // Two different block grids address this buffer and the allocation has to
+    // cover both.  The IDCT reads it in raster order over the blocks that hold
+    // real samples, ceil(comp/8) each way.  The scan loop writes it in
+    // MCU-sequential order over the whole MCU grid, which for a component whose
+    // size is not a multiple of 8*sampling is the larger of the two: a 129x97
+    // 4:2:0 image gives ceil(129/8) x ceil(97/8) = 17x13 = 221 blocks against
+    // 9x2 x 7x2 = 252, and the scan wrote 31 blocks past the end of a
+    // 28288-byte allocation.  Take the larger.
     size_t bw = (size_t)(comp_w[i] + 7) / 8;
     size_t bh = (size_t)(comp_h[i] + 7) / 8;
+    size_t mcu_bw = (size_t)mcu_per_row * (size_t)sof->h_samp[i];
+    size_t mcu_bh = (size_t)mcu_per_col * (size_t)sof->v_samp[i];
+    if (mcu_bw > bw)
+      bw = mcu_bw;
+    if (mcu_bh > bh)
+      bh = mcu_bh;
     if (!gcu_safe_mul_size(bw, bh, &blocks_per_comp[i])) {
       for (uint8_t j = 0; j < i; j++)
         gimg_free(alloc, coef_blocks[j]);
@@ -1686,9 +1700,9 @@ static GIMG_Result jpeg_decode_progressive_extended(
         int b_val = yy + (int)(1.77200 * cb + 0.5);
         int out_max = (precision == 12) ? 65520 : 65535;
         if (precision == 12) {
-          r_val <<= 4;
-          g_val <<= 4;
-          b_val <<= 4;
+          r_val = GIMG_JPEG_LSHIFT(r_val, 4);
+          g_val = GIMG_JPEG_LSHIFT(g_val, 4);
+          b_val = GIMG_JPEG_LSHIFT(b_val, 4);
         }
         if (r_val < 0)
           r_val = 0;
