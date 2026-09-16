@@ -230,25 +230,75 @@ static void jpeg_build_minimal_app0(
   buf[13] = 0; // Ythumbnail
 }
 
-/** RGB to YCbCr per ITU-R BT.601. R,G,B 0..255 -> Y,Cb,Cr 0..255.
- * FIX(x) = (x * 65536 + 0.5) for rounding. */
+/**
+ * RGB to YCbCr (ITU-R BT.601, the transform JFIF specifies), at the frame's own
+ * sample precision.
+ *
+ *   Y  =  0.29900*R + 0.58700*G + 0.11400*B
+ *   Cb = -0.16874*R - 0.33126*G + 0.50000*B + centre
+ *   Cr =  0.50000*R - 0.41869*G - 0.08131*B + centre
+ *
+ * Scaled-integer form with SCALEBITS = 16, as libjpeg's jccolor.c does it:
+ * FIX(x) = round(x * 65536), ONE_HALF = 1 << 15 for rounding, and the chroma
+ * terms carry an extra (centre << 16) - 1.
+ *
+ * @param centre 2^(P-1): 128 at P=8, 2048 at P=12 (T.81 Table B.2 allows both).
+ * @param max_val 2^P - 1.
+ *
+ * The 12-bit case used to have a transform of its own, with coefficients scaled
+ * for 8-bit data (77, 150, 29 - they sum to 256) but a shift of 12 rather than
+ * 8, so every 12-bit luminance sample we encoded came out sixteen times too
+ * small.  Nothing caught it: no external decoder could open a 12-bit file, and
+ * our own decoder read the file back exactly as libjpeg would - both of them
+ * faithfully reproducing an image that had been wrong before it was written.
+ * The widest intermediate here is (19595 + 38470 + 7471) * 4095, which is
+ * 65536 * 4095, comfortably inside int32.
+ */
+static void jpeg_rgb_to_ycbcr_at(int32_t r, int32_t g, int32_t b,
+    int32_t centre, int32_t max_val, int32_t * y, int32_t * cb, int32_t * cr) {
+  if (r < 0)
+    r = 0;
+  if (r > max_val)
+    r = max_val;
+  if (g < 0)
+    g = 0;
+  if (g > max_val)
+    g = max_val;
+  if (b < 0)
+    b = 0;
+  if (b > max_val)
+    b = max_val;
+  const int32_t one_half = 1 << 15;
+  const int32_t cbcr_bias = (centre << 16) + one_half - 1;
+  int32_t yv = (19595 * r + 38470 * g + 7471 * b + one_half) >> 16;
+  int32_t cbv = (-11059 * r - 21709 * g + 32768 * b + cbcr_bias) >> 16;
+  int32_t crv = (32768 * r - 27439 * g - 5331 * b + cbcr_bias) >> 16;
+  if (yv < 0)
+    yv = 0;
+  if (yv > max_val)
+    yv = max_val;
+  if (cbv < 0)
+    cbv = 0;
+  if (cbv > max_val)
+    cbv = max_val;
+  if (crv < 0)
+    crv = 0;
+  if (crv > max_val)
+    crv = max_val;
+  *y = yv;
+  *cb = cbv;
+  *cr = crv;
+}
+
+/** RGB to YCbCr at 8 bits. See jpeg_rgb_to_ycbcr_at. */
 static void jpeg_rgb_to_ycbcr(
     uint8_t r, uint8_t g, uint8_t b, uint8_t * y, uint8_t * cb, uint8_t * cr) {
-  // Y  = 0.299*R + 0.587*G + 0.114*B; FIX(0.299)=19595, FIX(0.587)=38470, FIX(0.114)=7471; +ONE_HALF for B
-  int32_t yv =
-      (19595 * (int32_t)r + 38470 * (int32_t)g + 7471 * (int32_t)b + 32768) >>
-      16;
-  // Cb = -0.16874*R - 0.33126*G + 0.5*B + 128 (CBCR_OFFSET + ONE_HALF - 1).
-  int32_t cbv = (-11059 * (int32_t)r - 21709 * (int32_t)g + 32768 * (int32_t)b +
-                    8421375) >>
-      16;
-  // Cr = 0.5*R - 0.41869*G - 0.08131*B + 128
-  int32_t crv =
-      (32768 * (int32_t)r - 27439 * (int32_t)g - 5331 * (int32_t)b + 8421375) >>
-      16;
-  *y = (uint8_t)(yv < 0 ? 0 : (yv > 255 ? 255 : (uint8_t)yv));
-  *cb = (uint8_t)(cbv < 0 ? 0 : (cbv > 255 ? 255 : (uint8_t)cbv));
-  *cr = (uint8_t)(crv < 0 ? 0 : (crv > 255 ? 255 : (uint8_t)crv));
+  int32_t yv, cbv, crv;
+  jpeg_rgb_to_ycbcr_at(
+      (int32_t)r, (int32_t)g, (int32_t)b, 128, 255, &yv, &cbv, &crv);
+  *y = (uint8_t)yv;
+  *cb = (uint8_t)cbv;
+  *cr = (uint8_t)crv;
 }
 
 /** Chroma subsampling: 0 = 4:2:0, 1 = 4:2:2, 2 = 4:4:4. */
@@ -256,21 +306,15 @@ static void jpeg_rgb_to_ycbcr(
 #define CHROMA_422 1
 #define CHROMA_444 2
 
-/** RGB 12-bit to YCbCr 12-bit (BT.601). R,G,B 0..4095 -> Y,Cb,Cr 0..4095. */
+/** RGB to YCbCr at 12 bits. See jpeg_rgb_to_ycbcr_at. */
 static void jpeg_rgb12_to_ycbcr12(uint16_t r, uint16_t g, uint16_t b,
     uint16_t * y, uint16_t * cb, uint16_t * cr) {
-  if (r > 4095u) r = 4095u;
-  if (g > 4095u) g = 4095u;
-  if (b > 4095u) b = 4095u;
-  int32_t ri = (int32_t)r;
-  int32_t gi = (int32_t)g;
-  int32_t bi = (int32_t)b;
-  int32_t yv = (77 * ri + 150 * gi + 29 * bi + 2048) >> 12;
-  int32_t cbv = (-44 * ri - 87 * gi + 131 * bi + 2048 * 256) >> 8;
-  int32_t crv = (131 * ri - 110 * gi - 21 * bi + 2048 * 256) >> 8;
-  *y = (uint16_t)(yv < 0 ? 0 : (yv > 4095 ? 4095u : (uint32_t)yv));
-  *cb = (uint16_t)(cbv < 0 ? 0 : (cbv > 4095 ? 4095u : (uint32_t)cbv));
-  *cr = (uint16_t)(crv < 0 ? 0 : (crv > 4095 ? 4095u : (uint32_t)crv));
+  int32_t yv, cbv, crv;
+  jpeg_rgb_to_ycbcr_at(
+      (int32_t)r, (int32_t)g, (int32_t)b, 2048, 4095, &yv, &cbv, &crv);
+  *y = (uint16_t)yv;
+  *cb = (uint16_t)cbv;
+  *cr = (uint16_t)crv;
 }
 
 /** 12-bit path: GRAY12/RGBA12 (0..4095). Progressive: fill coef and return;

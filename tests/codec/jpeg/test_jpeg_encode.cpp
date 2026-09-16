@@ -2599,6 +2599,97 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
  * inverse DCT was scaled wrong by a factor of 64 passed them all.  T.81 A.3.3
  * fixes the transform exactly; there is no latitude in it beyond rounding.
  */
+/** A flat 12-bit colour field must survive a 12-bit round trip.
+ *
+ * The encoder's 12-bit RGB->YCbCr had coefficients scaled for 8-bit data but a
+ * shift of 12 rather than 8, so luminance came out sixteen times too small and
+ * every 12-bit colour image we wrote was ruined.  Neither this library's own
+ * decoder nor libjpeg could reveal that on its own - both read the file back
+ * faithfully, and what they read back was faithfully wrong - so the check has
+ * to be against the sample that went in.
+ *
+ * A flat field is used so that chroma subsampling and the DCT are both exact,
+ * leaving nothing between the input and the output but the colour transform.
+ * The tolerance covers the round trip through YCbCr, which is not lossless. */
+TEST(JpegEncode, Save12BitColourFlatFieldsKeepTheirValue) {
+  struct Case {
+    uint16_t r, g, b;
+  };
+  static const Case cases[] = {
+      {3000, 1000, 2000},
+      {4095, 4095, 4095},
+      {0, 0, 0},
+      {4095, 0, 0},
+      {0, 4095, 0},
+      {0, 0, 4095},
+      {2048, 2048, 2048},
+  };
+  for (const Case & c : cases) {
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_RGBA12, GIMG_RASTER_OWNED,
+                  NULL, 0, &raster),
+        GIMG_OK);
+    uint16_t * px = (uint16_t *)gimg_raster_pixels(raster);
+    size_t stride_el = gimg_raster_stride_bytes(raster) / 2;
+    for (uint32_t y = 0; y < 16; y++) {
+      for (uint32_t x = 0; x < 16; x++) {
+        px[y * stride_el + x * 4 + 0] = c.r;
+        px[y * stride_el + x * 4 + 1] = c.g;
+        px[y * stride_el + x * 4 + 2] = c.b;
+        px[y * stride_el + x * 4 + 3] = 4095;
+      }
+    }
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+    opts.quality = 95;
+    opts.jpeg_precision = 12;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK)
+        << "rgb (" << c.r << ", " << c.g << ", " << c.b << ")";
+    const void * data = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &data, &size);
+    std::vector<uint8_t> jpeg((const uint8_t *)data, (const uint8_t *)data + size);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+
+    GIMG_Stream * in = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in), GIMG_OK);
+    GIMG_Doc * back = nullptr;
+    ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &back), GIMG_OK);
+    gimg_stream_destroy(in);
+    GIMG_Raster * decoded = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(back, 0), nullptr, &decoded),
+        GIMG_OK);
+    ASSERT_NE(decoded, nullptr);
+    const uint16_t * out_px =
+        (const uint16_t *)gimg_raster_pixels_const(decoded);
+    size_t out_stride = gimg_raster_stride_bytes(decoded) / sizeof(uint16_t);
+    // The decoded raster is 16-bit, widened from 12 by replication; compare in
+    // the frame's own precision.
+    const uint16_t want[3] = {c.r, c.g, c.b};
+    for (uint32_t y = 0; y < 16; y++) {
+      for (uint32_t x = 0; x < 16; x++) {
+        for (int ch = 0; ch < 3; ch++) {
+          int got = (int)gimg_bitdepth_16_to_12(
+              out_px[y * out_stride + x * 4 + (uint32_t)ch]);
+          EXPECT_NEAR(got, (int)want[ch], 8)
+              << "rgb (" << c.r << ", " << c.g << ", " << c.b << ") channel "
+              << ch << " at (" << x << ", " << y << ")";
+        }
+      }
+    }
+    gimg_raster_destroy(decoded);
+    gimg_doc_destroy(back);
+  }
+}
+
 TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
   struct Case {
     uint16_t sample;   // 12-bit input, 0..4095
