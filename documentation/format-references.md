@@ -49,7 +49,7 @@ Short reference for chunks, depths, filters, and limitations. Update when adding
 
 | Area | Supported | Rejected / limitation |
 |------|------------|-------------------------|
-| **IHDR (11.2.1)** | Every colour type and bit depth combination of Table 11.1, read and written. Compression method 0, filter method 0, interlace 0 or 1 | Any other combination, a zero dimension, or an unknown method &rarr; `GIMG_ERR_FORMAT` |
+| **IHDR (11.2.1)** | Every colour type and bit depth combination of Table 11.1 is read; all are written too, though the sub-byte depths and colour type 3 are reached by preserving a frame's own, not chosen for a raster with no PNG history (see Colour types and depths above). Compression method 0, filter method 0, interlace 0 or 1 | Any other combination, a zero dimension, or an unknown method &rarr; `GIMG_ERR_FORMAT` |
 | **PLTE (11.2.2)** | Required for colour type 3; accepted and **ignored** for 2 and 6, where it is a suggested palette, and kept for round-trip | Present for colour type 0 or 4 &rarr; `GIMG_ERR_FORMAT` ("shall not appear"); length not a multiple of 3, zero, or over 256 entries &rarr; `GIMG_ERR_FORMAT`. A palette is preserved, not **created**: an RGB raster is written as truecolour, since building one means colour quantisation, which is an image-processing decision and not a codec's |
 | **tRNS (11.3.2.1)** | Read for colour types 0, 2 and 3. Written for 3, and for 0 and 2 when the alpha channel fits what the chunk can say | Must precede IDAT and follow PLTE; one only |
 | **IDAT (11.2.4)** | Contiguous, concatenated into one zlib stream; written split at 32768 bytes | Non-contiguous or absent &rarr; `GIMG_ERR_FORMAT` |
