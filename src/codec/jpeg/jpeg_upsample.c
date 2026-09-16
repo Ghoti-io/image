@@ -92,11 +92,19 @@ int jpeg_chroma_sample(const unsigned char * buf, size_t stride, uint32_t cw,
     // for.  The filters clamp at the edges and handle the odd case fine.
     int half_w = (cw == (width + 1u) / 2u);
     int half_h = (ch == (height + 1u) / 2u);
-    if (half_w && half_h) {
-      return jpeg_chroma_sample_fancy_2h2v(buf, stride, cw, ch, x, y);
-    }
-    if (half_w && ch == height) {
-      return jpeg_chroma_sample_fancy_h2v1(buf, stride, cw, ch, x, y);
+    // A triangle filter needs a neighbour on each side to interpolate between.
+    // With one or two columns there is no interior, and the filter degenerates
+    // into a weighted copy of the same one or two samples - which is not what
+    // libjpeg produces there: jdsample.c selects the fancy upsamplers only when
+    // downsampled_width > 2 and falls back to the box filter otherwise.  Match
+    // that, so a one-pixel-wide image decodes the same way everywhere.
+    if (cw > 2u) {
+      if (half_w && half_h) {
+        return jpeg_chroma_sample_fancy_2h2v(buf, stride, cw, ch, x, y);
+      }
+      if (half_w && ch == height) {
+        return jpeg_chroma_sample_fancy_h2v1(buf, stride, cw, ch, x, y);
+      }
     }
   }
   uint32_t cx = (cw > 1u && width > 1u) ? (x * cw / width) : 0u;

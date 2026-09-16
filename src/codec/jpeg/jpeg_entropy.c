@@ -205,15 +205,19 @@ static GIMG_Result jpeg_decode_baseline_extended(
     for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
       uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
       if (restart_interval > 0) {
-        if (bs.rst_just_skipped) {
-          memset(dc_pred, 0, sizeof(dc_pred));
-          bs.rst_just_skipped = 0;
-        }
-        // Encoder byte-aligns before RST (bit_writer_flush), so we only see
-        // 0xFF 0xDx at the start of the first block after each RST. Set
-        // expect_rst before MCU ri, 2*ri, ... so align_skip_rst skips there.
+        // T.81 B.2.1 and F.2.1.3.1: a restart marker byte-aligns the entropy
+        // data and resets the DC prediction of every component.  Consume it
+        // here, before any of this MCU's blocks, so all the predictors can be
+        // reset together - doing it inside the first block reset only that
+        // block's component.
+        // Set expect_rst before MCU ri, 2*ri, ... so align_skip_rst skips there.
         if (mcu_index > 0 && mcu_index % (uint32_t)restart_interval == 0) {
           bs.expect_rst = 1; // T.81 3.1.110: next 0xFF 0xD0..0xD7 is RST
+          jpeg_bitstream_align_skip_rst(&bs);
+          if (bs.rst_just_skipped) {
+            memset(dc_pred, 0, sizeof(dc_pred));
+            bs.rst_just_skipped = 0;
+          }
         }
       }
       for (uint8_t s = 0; s < scan0->comp_count; s++) {
@@ -616,10 +620,15 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
       uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
       if (restart_interval > 0) {
-        // dc_pred is reset in decode_block when rst_just_skipped; do not clear
-        // here or the next MCU would use predictor 0 and corrupt.
+        // Same as the 8-bit path: consume the restart marker before the MCU and
+        // reset every component's DC prediction (T.81 B.2.1, F.2.1.3.1).
         if (mcu_index > 0 && mcu_index % (uint32_t)restart_interval == 0) {
           bs.expect_rst = 1;
+          jpeg_bitstream_align_skip_rst(&bs);
+          if (bs.rst_just_skipped) {
+            memset(dc_pred, 0, sizeof(dc_pred));
+            bs.rst_just_skipped = 0;
+          }
         }
       }
       size_t block_idx = 0;

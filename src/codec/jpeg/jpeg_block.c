@@ -34,12 +34,13 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
     }
     return GIMG_ERR_CORRUPT;
   }
-  // RST is skipped inside the DC read; reset predictor for this component.
-  if (bs->rst_just_skipped) {
-    *dc_predictor = 0;
-    bs->rst_just_skipped =
-        0; // clear so next block in same MCU / next MCU keeps predictor
-  }
+  // T.81 F.2.1.3.1: the DC predictions of *every* component are reset at a
+  // restart, not just the one whose block happens to follow the marker.  This
+  // used to zero only *dc_predictor and then clear the flag, so in a 4:2:0
+  // image the two chroma predictors carried across the restart and every
+  // chroma block after the first interval was decoded against a stale
+  // prediction.  The caller now performs the reset, for all components at once,
+  // where it can see them all.
   int nbits = sym;
   int diff = 0;
   if (nbits > 0) {
