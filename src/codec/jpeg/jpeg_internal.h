@@ -41,10 +41,12 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MARKER_SOF2 0xC2 // Progressive DCT
 #define GIMG_JPEG_MARKER_SOF3 0xC3 // Lossless (not yet supported)
 // 0xC4 = DHT (Define Huffman Tables), not SOF
-// 0xC5 = SOF5  differential sequential DCT; 0xC6 = SOF6; 0xC7 = SOF7
-// differential lossless 0xC8 = reserved; 0xC9 = SOF9 arithmetic sequential;
-// 0xCA = SOF10; 0xCB = SOF11 0xCC = DAC; 0xCD = SOF13; 0xCE = SOF14; 0xCF =
-// SOF15
+// 0xC5 = SOF5 differential sequential DCT; 0xC6 = SOF6; 0xC7 = SOF7
+// differential lossless; 0xC8 = reserved; 0xCB = SOF11 arithmetic lossless;
+// 0xCD = SOF13; 0xCE = SOF14; 0xCF = SOF15
+#define GIMG_JPEG_MARKER_SOF9 0xC9  // Extended sequential DCT, arithmetic
+#define GIMG_JPEG_MARKER_SOF10 0xCA // Progressive DCT, arithmetic
+#define GIMG_JPEG_MARKER_DAC 0xCC   // Define Arithmetic Coding conditioning
 #define GIMG_JPEG_MARKER_DHT 0xC4
 #define GIMG_JPEG_MARKER_DQT 0xDB
 #define GIMG_JPEG_MARKER_SOS 0xDA
@@ -181,8 +183,88 @@ typedef struct {
   size_t huff_ac_refine_len[4];
 } gimg_jpeg_scan_t;
 
+/** @name Arithmetic entropy coding (T.81 Annex D and F.1.4/F.2.4; used by
+ * jpeg_entropy.c for SOF9 and SOF10 frames) */
+/** @{ */
+
+/** Statistics bins for one DC table.  T.81 F.1.4.4.1 uses 49; the extra room
+ * costs nothing and keeps a corrupt index inside the array. */
+#define GIMG_JPEG_ARITH_DC_BINS 64
+/** Statistics bins for one AC table.  T.81 F.1.4.4.2 uses 245. */
+#define GIMG_JPEG_ARITH_AC_BINS 256
+/** Arithmetic conditioning tables, four of each (T.81 B.2.4.3). */
+#define GIMG_JPEG_ARITH_TABLES 4
+
+/** State of the adaptive binary arithmetic decoder (T.81 Annex D). */
+typedef struct {
+  const unsigned char * data; /**< entropy-coded segment */
+  size_t size;
+  size_t pos;
+  uint32_t c;    /**< C register (D.2.3) */
+  int32_t a;     /**< A register: the current interval width */
+  int ct;        /**< shift counter; negative while priming */
+  uint8_t marker; /**< marker that ended the segment, 0 while inside it */
+} jpeg_arith_decoder_t;
+
 /**
- * Parsed SOF0 (baseline) / SOF1 (extended) / SOF2 (progressive) fields.
+ * Conditioning for the arithmetic coder, from the DAC segment (T.81 B.2.4.3).
+ *
+ * B.2.4.3 gives the defaults for a frame that carries no DAC: L = 0 and U = 1
+ * for the DC tables, and Kx = 5 for the AC tables.  A Huffman-coded frame never
+ * needs these; an arithmetic one always has them, stated or defaulted.
+ */
+typedef struct {
+  uint8_t dc_l[GIMG_JPEG_ARITH_TABLES]; /**< lower classification bound */
+  uint8_t dc_u[GIMG_JPEG_ARITH_TABLES]; /**< upper classification bound */
+  uint8_t ac_k[GIMG_JPEG_ARITH_TABLES]; /**< Kx: the block-position threshold */
+} jpeg_arith_cond_t;
+
+/** Adaptive statistics for one scan (T.81 F.1.4.4).  Reset at the start of a
+ * scan and at every restart interval (F.2.4.1). */
+typedef struct {
+  uint8_t dc[GIMG_JPEG_ARITH_TABLES][GIMG_JPEG_ARITH_DC_BINS];
+  uint8_t ac[GIMG_JPEG_ARITH_TABLES][GIMG_JPEG_ARITH_AC_BINS];
+  uint8_t fixed; /**< the fixed-probability bin used for AC signs (F.1.4.4.2) */
+  /** Per-component DC conditioning category, carried between blocks
+   * (F.1.4.4.1.2). */
+  int dc_context[GIMG_JPEG_MAX_COMPONENTS];
+  /** Per-component DC predictor (F.1.4.4.1.1). */
+  int dc_pred[GIMG_JPEG_MAX_COMPONENTS];
+} jpeg_arith_stats_t;
+
+/** Set the conditioning defaults of T.81 B.2.4.3. */
+void jpeg_arith_cond_defaults(jpeg_arith_cond_t * cond);
+
+/** Start decoding an entropy-coded segment (INITDEC, T.81 D.2.8). */
+void jpeg_arith_decoder_init(jpeg_arith_decoder_t * d,
+    const unsigned char * data, size_t size);
+
+/** Decode one binary decision against statistics bin @p st (DECODE, D.2.4). */
+int jpeg_arith_decode(jpeg_arith_decoder_t * d, uint8_t * st);
+
+/** Reset the adaptive statistics and predictors (T.81 F.2.4.1). */
+void jpeg_arith_stats_reset(jpeg_arith_stats_t * s);
+
+/**
+ * Decode one block of a sequential arithmetic scan (T.81 F.2.4.2 and F.2.4.3).
+ * @p block is 64 coefficients in zigzag order, as the Huffman path produces.
+ */
+GIMG_Result jpeg_arith_decode_block_sequential(jpeg_arith_decoder_t * d,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
+    uint8_t dc_tbl, uint8_t ac_tbl, int se, int16_t * block);
+
+/** Resynchronise at a restart marker: skip it, restart the decoder and reset
+ * the statistics and predictors (T.81 F.2.4.1). */
+GIMG_Result jpeg_arith_restart(
+    jpeg_arith_decoder_t * d, jpeg_arith_stats_t * stats);
+/** @} */
+
+/**
+ * Parsed SOF fields, for every frame type this codec decodes: SOF0 (baseline),
+ * SOF1 (extended sequential), SOF2 (progressive), SOF9 (extended sequential,
+ * arithmetic) and SOF10 (progressive, arithmetic).  The frame header has the
+ * same shape in all of them (T.81 B.2.2); which entropy coder and which coding
+ * process the frame uses is carried by the marker code alone.
  */
 typedef struct {
   uint8_t precision;      ///< Sample precision (8 or 12).
@@ -201,7 +283,12 @@ typedef struct {
 typedef struct gimg_jpeg_doc_state {
   const GIMG_Allocator * allocator;
   gimg_jpeg_sof_t sof;
-  int is_progressive; ///< SOF2 vs SOF0.
+  int is_progressive; ///< SOF2/SOF10 vs SOF0/SOF1/SOF9.
+  /** Arithmetic entropy coding (SOF9/SOF10) rather than Huffman (T.81 Annex D
+   * is normative; a frame that uses it is as much a JPEG as any other). */
+  int is_arithmetic;
+  /** Conditioning from DAC, or the B.2.4.3 defaults when there is none. */
+  jpeg_arith_cond_t arith_cond;
 
   // Quantization tables: 64 entries each; -1 = not present.
   int quant_tbl_present[GIMG_JPEG_MAX_QUANT_TABLES];

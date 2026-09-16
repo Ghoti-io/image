@@ -220,3 +220,36 @@ With smoothing off, all nine fixtures are byte-identical to our decoder, and
 the complete 10-scan file is identical either way because there is nothing left
 to estimate.  We do not implement it, deliberately: it changes samples the
 standard says how to reconstruct.
+
+## Arithmetic-coded fixtures
+
+T.81 defines two entropy coders: the Huffman coding of Annex F and the adaptive
+binary arithmetic coding of Annex D.  Both are normative, and a frame that uses
+the second (SOF9 sequential, SOF10 progressive) is as much a JPEG as one that
+uses the first.  It is rare only because the patents that once covered it - long
+expired - kept it out of the early implementations everything else was built
+from.
+
+libjpeg-turbo builds with arithmetic support by default, so the same oracle
+serves here:
+
+```sh
+ljt-build/cjpeg-static -arithmetic -quality 75 -outfile out.jpg in.ppm
+```
+
+Decoding needs a small program rather than `djpeg`, because the fixtures are
+compared against a decode with `do_block_smoothing` off, which djpeg does not
+expose; see the section above.
+
+| File | Content |
+| ---- | ------- |
+| `arith_gray_64x64.jpg` | SOF9 grayscale, quality 75 |
+| `arith_rgb_64x64_420.jpg` | SOF9 colour, 4:2:0 |
+| `arith_rgb_17x9_422_restart.jpg` | SOF9 colour, 4:2:2, restart interval 3, non-MCU-aligned |
+| `arith_gray_1x1_empty_scan.jpg` | SOF9 with an entropy-coded segment of zero bytes |
+| `arith_gray12_64x64.jpg` | SOF9 at P=12 |
+
+The empty-scan fixture is worth keeping: D.2.9 has the decoder supply zero bytes
+once it runs past the compressed data, so a frame whose every decision resolves
+to the more probable symbol needs no bytes at all, and libjpeg writes none.  A
+Huffman scan always has at least one.

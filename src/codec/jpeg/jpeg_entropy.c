@@ -84,6 +84,14 @@ static GIMG_Result jpeg_decode_baseline_extended(
   memset(dc_tables, 0, sizeof(dc_tables));
   memset(ac_tables, 0, sizeof(ac_tables));
   for (uint8_t c = 0; c < scan0->comp_count; c++) {
+    if (state->is_arithmetic) {
+      // An arithmetic frame (SOF9 or SOF10) carries no DHT segments at all.
+      // Its "tables" are the adaptive statistics of T.81 F.1.4, built as it
+      // decodes, and the scan header's Td and Ta select conditioning (B.2.4.3)
+      // rather than Huffman tables.  Asking for Huffman tables here would
+      // reject every such frame.
+      break;
+    }
     uint8_t dc_id = scan0->dc_tbl[c];
     uint8_t ac_id = scan0->ac_tbl[c];
     if (dc_id >= 4 || !state->huff_dc[dc_id] ||
@@ -187,6 +195,14 @@ static GIMG_Result jpeg_decode_baseline_extended(
 
   gimg_jpeg_bitstream_t bs;
   jpeg_bitstream_init(&bs, scan0->data, scan0->data_size);
+  // SOF9 at P=12 takes the same route through this function as SOF1; only the
+  // entropy coder differs (T.81 Annex D in place of Annex F).
+  jpeg_arith_decoder_t ad;
+  jpeg_arith_stats_t astats;
+  if (state->is_arithmetic) {
+    jpeg_arith_decoder_init(&ad, scan0->data, scan0->data_size);
+    jpeg_arith_stats_reset(&astats);
+  }
   int16_t dc_pred[GIMG_JPEG_MAX_COMPONENTS];
   memset(dc_pred, 0, sizeof(dc_pred));
   int16_t block_zig[64];
@@ -211,11 +227,19 @@ static GIMG_Result jpeg_decode_baseline_extended(
         // block's component.
         // Set expect_rst before MCU ri, 2*ri, ... so align_skip_rst skips there.
         if (mcu_index > 0 && mcu_index % (uint32_t)restart_interval == 0) {
-          bs.expect_rst = 1; // T.81 3.1.110: next 0xFF 0xD0..0xD7 is RST
-          jpeg_bitstream_align_skip_rst(&bs);
-          if (bs.rst_just_skipped) {
-            memset(dc_pred, 0, sizeof(dc_pred));
-            bs.rst_just_skipped = 0;
+          if (state->is_arithmetic) {
+            // T.81 F.2.4.1: restart the coder and forget what it had learned.
+            if (jpeg_arith_restart(&ad, &astats) != GIMG_OK) {
+              goto ext_fail;
+            }
+          }
+          else {
+            bs.expect_rst = 1; // T.81 3.1.110: next 0xFF 0xD0..0xD7 is RST
+            jpeg_bitstream_align_skip_rst(&bs);
+            if (bs.rst_just_skipped) {
+              memset(dc_pred, 0, sizeof(dc_pred));
+              bs.rst_just_skipped = 0;
+            }
           }
         }
       }
@@ -245,8 +269,16 @@ static GIMG_Result jpeg_decode_baseline_extended(
                 (total_blocks_ext > 0 && block_counter == total_blocks_ext - 1)
                 ? 1
                 : 0;
-            GIMG_Result r = jpeg_decode_block(
-                &bs, dc_tbl, ac_tbl, block_zig, &dc_pred[comp_idx], is_last);
+            GIMG_Result r;
+            if (state->is_arithmetic) {
+              r = jpeg_arith_decode_block_sequential(&ad, &astats,
+                  &state->arith_cond, comp_idx, scan0->dc_tbl[s],
+                  scan0->ac_tbl[s], 63, block_zig);
+            }
+            else {
+              r = jpeg_decode_block(&bs, dc_tbl, ac_tbl, block_zig,
+                  &dc_pred[comp_idx], is_last);
+            }
             if (r != GIMG_OK) {
               goto ext_fail;
             }
@@ -432,7 +464,14 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     return GIMG_ERR_CORRUPT;
   }
   const gimg_jpeg_scan_t * scan0 = &state->scans[0];
-  if (!scan0->data || scan0->data_size == 0) {
+  // An arithmetic scan is allowed to be empty.  T.81 D.2.9 has the decoder
+  // supply zero bytes once it has run past the compressed data, so a scan whose
+  // decisions all resolve to the more probable symbol - a 1x1 image whose only
+  // block is a zero DC difference and an immediate end of block, say - needs no
+  // bytes at all, and libjpeg writes exactly none.  A Huffman scan always has
+  // at least one byte, so the check still applies there.
+  if (state->is_arithmetic ? (scan0->data_size != 0 && !scan0->data)
+                           : (!scan0->data || scan0->data_size == 0)) {
     return GIMG_ERR_CORRUPT;
   }
 
@@ -446,6 +485,14 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   memset(dc_tables, 0, sizeof(dc_tables));
   memset(ac_tables, 0, sizeof(ac_tables));
   for (uint8_t c = 0; c < scan0->comp_count; c++) {
+    if (state->is_arithmetic) {
+      // An arithmetic frame (SOF9 or SOF10) carries no DHT segments at all.
+      // Its "tables" are the adaptive statistics of T.81 F.1.4, built as it
+      // decodes, and the scan header's Td and Ta select conditioning (B.2.4.3)
+      // rather than Huffman tables.  Asking for Huffman tables here would
+      // reject every such frame.
+      break;
+    }
     uint8_t dc_id = scan0->dc_tbl[c];
     uint8_t ac_id = scan0->ac_tbl[c];
     if (dc_id >= 4 || !state->huff_dc[dc_id] ||
@@ -603,6 +650,16 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   int16_t dc_pred[GIMG_JPEG_MAX_COMPONENTS];
   memset(dc_pred, 0, sizeof(dc_pred));
 
+  // Arithmetic frames (SOF9) use the coder of T.81 Annex D in place of the
+  // bitstream reader above; the surrounding MCU walk is identical, because the
+  // entropy coder is the only thing Annex D changes.
+  jpeg_arith_decoder_t ad;
+  jpeg_arith_stats_t astats;
+  if (state->is_arithmetic) {
+    jpeg_arith_decoder_init(&ad, scan0->data, scan0->data_size);
+    jpeg_arith_stats_reset(&astats);
+  }
+
   int16_t block_zig[64];
   int16_t block_rz[64];
   int32_t block_q[64];
@@ -626,11 +683,20 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
         // Same as the 8-bit path: consume the restart marker before the MCU and
         // reset every component's DC prediction (T.81 B.2.1, F.2.1.3.1).
         if (mcu_index > 0 && mcu_index % (uint32_t)restart_interval == 0) {
-          bs.expect_rst = 1;
-          jpeg_bitstream_align_skip_rst(&bs);
-          if (bs.rst_just_skipped) {
-            memset(dc_pred, 0, sizeof(dc_pred));
-            bs.rst_just_skipped = 0;
+          if (state->is_arithmetic) {
+            // T.81 F.2.4.1: restart the coder and forget what it had learned.
+            GIMG_Result rr = jpeg_arith_restart(&ad, &astats);
+            if (rr != GIMG_OK) {
+              goto fail_comp;
+            }
+          }
+          else {
+            bs.expect_rst = 1;
+            jpeg_bitstream_align_skip_rst(&bs);
+            if (bs.rst_just_skipped) {
+              memset(dc_pred, 0, sizeof(dc_pred));
+              bs.rst_just_skipped = 0;
+            }
           }
         }
       }
@@ -676,8 +742,16 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
             int is_last_8 =
                 (total_blocks > 0 && block_counter_8 == total_blocks - 1) ? 1
                                                                           : 0;
-            GIMG_Result r = jpeg_decode_block(
-                &bs, dc_tbl, ac_tbl, block_zig, &dc_pred[comp_idx], is_last_8);
+            GIMG_Result r;
+            if (state->is_arithmetic) {
+              r = jpeg_arith_decode_block_sequential(&ad, &astats,
+                  &state->arith_cond, comp_idx, scan0->dc_tbl[s],
+                  scan0->ac_tbl[s], 63, block_zig);
+            }
+            else {
+              r = jpeg_decode_block(&bs, dc_tbl, ac_tbl, block_zig,
+                  &dc_pred[comp_idx], is_last_8);
+            }
             if (r != GIMG_OK) {
               if (GIMG_JPEG_DEBUG_BIT_POS || GIMG_JPEG_DEBUG_BASELINE_FAIL) {
                 (void)fprintf(stderr,

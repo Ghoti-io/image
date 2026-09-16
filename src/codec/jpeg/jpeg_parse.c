@@ -41,6 +41,14 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
       (precision != 8 && precision != 12)) {
     return GIMG_ERR_UNSUPPORTED; // Progressive: 8 or 12-bit.
   }
+  // SOF9 and SOF10 are the arithmetic-coded counterparts of SOF1 and SOF2
+  // (T.81 Table B.1).  The frame header is identical; only the entropy coder
+  // differs, so the same precision rule applies.
+  if ((sof_marker == GIMG_JPEG_MARKER_SOF9 ||
+          sof_marker == GIMG_JPEG_MARKER_SOF10) &&
+      (precision != 8 && precision != 12)) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
   // T.81 Table B.2: every DCT-based frame is 8- or 12-bit.  Precision up to 16
   // belongs to lossless (SOF3) only, which we do not support.
   if (precision != 8 && precision != 12) {

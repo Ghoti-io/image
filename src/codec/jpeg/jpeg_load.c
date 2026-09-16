@@ -272,6 +272,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     return GIMG_ERR_OOM;
   }
   memset(state, 0, sizeof(*state));
+  // T.81 B.2.4.3 defaults, in force unless a DAC segment overrides them.
+  jpeg_arith_cond_defaults(&state->arith_cond);
   state->allocator = alloc;
 
   bool seen_sof = false;
@@ -361,9 +363,10 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     switch (marker) {
     case GIMG_JPEG_MARKER_SOF0:
-    case GIMG_JPEG_MARKER_SOF1: {
+    case GIMG_JPEG_MARKER_SOF1:
+    case GIMG_JPEG_MARKER_SOF9: {
       if (seen_sof) {
-        jpeg_load_fmt_debug("duplicate SOF0/SOF1", seg_start, marker);
+        jpeg_load_fmt_debug("duplicate SOF0/SOF1/SOF9", seg_start, marker);
         gimg_free(alloc, payload_buf);
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
@@ -377,12 +380,17 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return r;
       }
       state->is_progressive = 0;
+      // T.81 Table B.1: SOF9 is the same sequential DCT process as SOF1 with
+      // the arithmetic entropy coder of Annex D in place of the Huffman coder
+      // of Annex F.  Everything above this line is identical for both.
+      state->is_arithmetic = (marker == GIMG_JPEG_MARKER_SOF9);
       seen_sof = true;
       break;
     }
-    case GIMG_JPEG_MARKER_SOF2: {
+    case GIMG_JPEG_MARKER_SOF2:
+    case GIMG_JPEG_MARKER_SOF10: {
       if (seen_sof) {
-        jpeg_load_fmt_debug("duplicate SOF2", seg_start, marker);
+        jpeg_load_fmt_debug("duplicate SOF2/SOF10", seg_start, marker);
         gimg_free(alloc, payload_buf);
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
@@ -395,17 +403,17 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return r;
       }
       state->is_progressive = 1;
+      state->is_arithmetic = (marker == GIMG_JPEG_MARKER_SOF10);
       seen_sof = true;
       break;
     }
-    // Unsupported SOF (T.81: SOF3 lossless, SOF5–SOF7 differential, SOF9–SOF15).
-    // Reject explicitly so the caller gets a clear error instead of "no SOF".
+    // Unsupported SOF (T.81: SOF3 lossless, SOF5-SOF7 differential, SOF11 and
+    // SOF13-SOF15).  Reject explicitly so the caller gets a clear error instead
+    // of "no SOF".
     case GIMG_JPEG_MARKER_SOF3:
     case 0xC5:
     case 0xC6:
     case 0xC7:
-    case 0xC9:
-    case 0xCA:
     case 0xCB:
     case 0xCD:
     case 0xCE:
@@ -492,6 +500,67 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         }
         p += entry_bytes;
         remain -= entry_bytes;
+      }
+      gimg_free(alloc, payload_buf);
+      break;
+    }
+    case GIMG_JPEG_MARKER_DAC: {
+      // DAC (T.81 B.2.4.3): conditioning for the arithmetic coder, one byte of
+      // table class and destination followed by one byte of conditioning.  For
+      // a DC table (Tc = 0) that byte is U in the high nibble and L in the low
+      // one, and L must not exceed U; for an AC table (Tc = 1) it is Kx, which
+      // B.2.4.3 bounds to 1..63.
+      const unsigned char * p = payload_buf;
+      size_t remain = payload_size;
+      if (!p) {
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "DAC payload missing");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      while (remain >= 2) {
+        uint8_t tc = (uint8_t)(p[0] >> 4);
+        uint8_t tb = (uint8_t)(p[0] & 0x0Fu);
+        uint8_t cs = p[1];
+        if (tc > 1 || tb >= GIMG_JPEG_ARITH_TABLES) {
+          gimg_free(alloc, payload_buf);
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "DAC table class or destination out of range");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        if (tc == 0) {
+          uint8_t l = (uint8_t)(cs & 0x0Fu);
+          uint8_t u = (uint8_t)(cs >> 4);
+          if (l > u) {
+            gimg_free(alloc, payload_buf);
+            jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+                "DAC DC conditioning has L greater than U");
+            gimg_jpeg_free_doc_state(codec, state);
+            return GIMG_ERR_FORMAT;
+          }
+          state->arith_cond.dc_l[tb] = l;
+          state->arith_cond.dc_u[tb] = u;
+        }
+        else {
+          if (cs < 1u || cs > 63u) {
+            gimg_free(alloc, payload_buf);
+            jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+                "DAC AC conditioning Kx out of range");
+            gimg_jpeg_free_doc_state(codec, state);
+            return GIMG_ERR_FORMAT;
+          }
+          state->arith_cond.ac_k[tb] = cs;
+        }
+        p += 2;
+        remain -= 2;
+      }
+      if (remain != 0) {
+        gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "DAC payload is not a whole number of entries");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
       }
       gimg_free(alloc, payload_buf);
       break;

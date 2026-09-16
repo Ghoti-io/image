@@ -2195,6 +2195,145 @@ TEST(JpegLoad, DecodeBaseline640x480Ycbcr) {
   gimg_doc_destroy(doc);
 }
 
+/** Arithmetic-coded frames (SOF9) decode, and decode correctly.
+ *
+ * T.81 Annex D defines arithmetic coding as one of the two entropy coders a
+ * JPEG may use; Annex F defines the other.  A SOF9 frame is an ordinary
+ * sequential DCT frame that happens to use the first rather than the second,
+ * and this codec rejected every one of them outright until the coder existed.
+ *
+ * The expectations are libjpeg-turbo 3.0.4's decode of the same files - it
+ * builds with arithmetic support by default - reduced to a sum over the raster
+ * plus a handful of sampled pixels, which is enough to catch a coder that
+ * drifts out of step with the encoder partway through.  A wrong probability
+ * estimate does not produce a small error: the decoder and the encoder share
+ * one adaptive model, and once they disagree the rest of the scan is noise.
+ *
+ * @see tests/data/jpeg/README.md for how the fixtures were made. */
+TEST(JpegLoad, DecodeArithmeticSequential) {
+  struct Case {
+    const char * name;
+    uint32_t w, h;
+    int channels;
+    unsigned long sum;
+    int samples[15];
+  };
+  static const Case cases[] = {
+      {"arith_gray_64x64.jpg", 64, 64, 1, 520192,
+          {0, 129, 254, 4, 0}},
+      {"arith_rgb_64x64_420.jpg", 64, 64, 3, 1566364,
+          {114, 20, 10, 141, 183, 171, 180, 255, 255, 95, 0, 0, 96, 0, 0}},
+      {"arith_rgb_17x9_422_restart.jpg", 17, 9, 3, 58315,
+          {229, 1, 34, 148, 114, 130, 115, 249, 242, 194, 0, 20, 22, 29, 0}},
+  };
+  for (const Case & c : cases) {
+    std::vector<uint8_t> jpeg;
+    if (!jpeg_test::load_jpeg_file(c.name, jpeg)) {
+      ADD_FAILURE() << "missing fixture " << c.name;
+      continue;
+    }
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK) << c.name;
+    gimg_stream_destroy(s);
+    GIMG_Decode_Options opts = {};
+    opts.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), &opts, &raster), GIMG_OK)
+        << c.name;
+    ASSERT_NE(raster, nullptr);
+    ASSERT_EQ(gimg_raster_width(raster), c.w) << c.name;
+    ASSERT_EQ(gimg_raster_height(raster), c.h) << c.name;
+    const unsigned char * px =
+        (const unsigned char *)gimg_raster_pixels_const(raster);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    size_t bpp = gimg_raster_bytes_per_pixel(gimg_raster_format(raster));
+    unsigned long sum = 0;
+    for (uint32_t y = 0; y < c.h; y++) {
+      for (uint32_t x = 0; x < c.w; x++) {
+        const unsigned char * p = px + y * stride + x * bpp;
+        for (int ch = 0; ch < c.channels; ch++) {
+          // A grayscale frame decodes to GRAY8, a colour one to RGBA8.
+          sum += (bpp == 1) ? p[0] : p[ch];
+        }
+      }
+    }
+    EXPECT_EQ(sum, c.sum) << c.name;
+    const uint32_t pts[5][2] = {
+        {0, 0}, {c.w / 2, c.h / 2}, {c.w - 1, c.h - 1}, {1, 0}, {0, 1}};
+    int i = 0;
+    for (const auto & pt : pts) {
+      const unsigned char * p = px + pt[1] * stride + pt[0] * bpp;
+      for (int ch = 0; ch < c.channels; ch++, i++) {
+        EXPECT_EQ((int)((bpp == 1) ? p[0] : p[ch]), c.samples[i])
+            << c.name << " at (" << pt[0] << ", " << pt[1] << ") channel "
+            << ch;
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+  }
+}
+
+/** An arithmetic scan may legitimately carry no bytes at all.
+ *
+ * T.81 D.2.9 has the decoder supply zero bytes once it has run past the
+ * compressed data, so a frame whose every decision resolves to the more
+ * probable symbol needs no entropy-coded bytes.  libjpeg writes exactly none
+ * for a 1x1 image, and this fixture is that file.  A Huffman scan always has at
+ * least one byte, which is why the emptiness check that rejected this was
+ * correct until arithmetic coding arrived. */
+TEST(JpegLoad, DecodeArithmeticEmptyScan) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(
+      jpeg_test::load_jpeg_file("arith_gray_1x1_empty_scan.jpg", jpeg));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  EXPECT_EQ(gimg_raster_width(raster), 1u);
+  EXPECT_EQ(gimg_raster_height(raster), 1u);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+/** An arithmetic frame at 12-bit precision (SOF9 with P=12). */
+TEST(JpegLoad, DecodeArithmetic12Bit) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("arith_gray12_64x64.jpg", jpeg));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  ASSERT_EQ(gimg_raster_width(raster), 64u);
+  ASSERT_EQ(gimg_raster_height(raster), 64u);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  ASSERT_NE(fmt, nullptr);
+  EXPECT_EQ(fmt->bits_per_channel[0], 16);
+  // The source was a horizontal ramp over the full 12-bit range; check that it
+  // still is one, which a coder out of step with the encoder would not produce.
+  const uint16_t * px =
+      (const uint16_t *)gimg_raster_pixels_const(raster);
+  size_t stride_el = gimg_raster_stride_bytes(raster) / sizeof(uint16_t);
+  for (uint32_t x = 1; x < 64u; x++) {
+    EXPECT_GE(px[stride_el + x], px[stride_el + x - 1])
+        << "ramp is not monotonic at x=" << x;
+  }
+  EXPECT_LT(gimg_bitdepth_16_to_12(px[stride_el]), 64u);
+  EXPECT_GT(gimg_bitdepth_16_to_12(px[stride_el + 63]), 4000u);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
 /** A 12-bit colour frame must fill its whole raster.
  *
  * The fixture is a flat colour, so every decoded pixel has to be the same one;
