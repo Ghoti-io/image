@@ -230,6 +230,13 @@ uses the first.  It is rare only because the patents that once covered it - long
 expired - kept it out of the early implementations everything else was built
 from.
 
+This library both reads and writes arithmetic-coded frames; the encoder is
+selected with `GIMG_Save_Options.jpeg_arithmetic`.  A useful check that needs no
+external oracle at all is to encode the same image both ways and compare what
+comes back: both encoders are handed one coefficient buffer, so any difference
+is a bug in one of them.  That is what found the Huffman encoder's zero-run
+defect, which no decoder could have revealed.
+
 libjpeg-turbo builds with arithmetic support by default, so the same oracle
 serves here:
 

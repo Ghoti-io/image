@@ -203,7 +203,6 @@ often noticeably so against the fixed tables of Annex K, which is what this
 encoder uses for Huffman - at the cost of being understood by far fewer
 decoders.  It is off by default for that reason.
 
-Sequential frames only for now, at 8- or 12-bit precision.  Setting this
-together with `jpeg_progressive` returns `GIMG_ERR_UNSUPPORTED`: progressive
-arithmetic (SOF10) decodes but is not yet written, and silently falling back to
-Huffman would be worse than saying so.
+Progressive and arithmetic are independent choices - T.81 Table B.1 has a
+marker for each of the four combinations - and both work here, at 8- or 12-bit
+precision, with or without restart intervals.

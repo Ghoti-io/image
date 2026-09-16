@@ -297,6 +297,24 @@ void jpeg_arith_encode_block_sequential(jpeg_arith_encoder_t * e,
     jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
     uint8_t dc_tbl, uint8_t ac_tbl, int se, const int16_t * block);
 
+/** @name Progressive arithmetic encoding (T.81 G.2).  Unlike the Huffman
+ * progressive encoder these need no record of the previous scan: the point
+ * transform of G.1.1.1.2 is a shift, so what a scan has to say about a
+ * coefficient follows from the coefficient, Ah and Al alone. */
+/** @{ */
+void jpeg_arith_encode_block_prog_dc_first(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
+    uint8_t dc_tbl, int al, const int16_t * block);
+void jpeg_arith_encode_block_prog_dc_refine(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, int al, const int16_t * block);
+void jpeg_arith_encode_block_prog_ac_first(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t ac_tbl,
+    int ss, int se, int al, const int16_t * block);
+void jpeg_arith_encode_block_prog_ac_refine(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, uint8_t ac_tbl, int ss, int se, int ah, int al,
+    const int16_t * block);
+/** @} */
+
 /** Resynchronise at a restart marker: skip it, restart the decoder and reset
  * the statistics and predictors (T.81 F.2.4.1). */
 GIMG_Result jpeg_arith_restart(
@@ -604,6 +622,16 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
  * state_after_scan_out: optional; when non-NULL and scan is AC initial, filled.
  * state_after_previous_scan: optional; when non-NULL and scan is AC refinement,
  * used. */
+/** One progressive scan with arithmetic entropy coding (SOF10).  See the
+ * definition; it needs no previous-scan state. */
+GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
+    uint32_t height, int num_components, const int16_t * coef_buffer,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
+    const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, unsigned char ** out_scan_data,
+    size_t * out_scan_size);
+
 GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
     const uint8_t * h_samp, const uint8_t * v_samp, uint8_t Ss, uint8_t Se,

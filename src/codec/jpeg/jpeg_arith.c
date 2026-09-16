@@ -991,3 +991,160 @@ void jpeg_arith_encode_block_sequential(jpeg_arith_encoder_t * e,
   jpeg_arith_encode_dc(e, stats, cond, comp, dc_tbl, (int)block[0]);
   jpeg_arith_encode_ac(e, stats, cond, ac_tbl, 1, se, block);
 }
+
+/**
+ * Progressive arithmetic encoding (T.81 G.2).
+ *
+ * Worth noting against the Huffman progressive encoder: these need no record of
+ * what the previous scan sent.  The point transform of G.1.1.1.2 is an
+ * arithmetic shift of the coefficient, so "what this scan has to say about
+ * coefficient k" is a function of the coefficient and of Ah and Al alone.  The
+ * Huffman encoder carries a buffer of the state after the previous scan because
+ * its refinement symbols encode runs of newly-non-zero coefficients; the
+ * arithmetic coder asks a question per coefficient instead, and each question
+ * can be answered from the coefficient itself.
+ */
+
+/** Apply the point transform of T.81 G.1.1.1.2: an arithmetic shift towards
+ * zero, which for a negative value is not the same as a shift of the value. */
+static int32_t jpeg_arith_point_transform(int32_t coef, int al) {
+  if (coef >= 0) {
+    return coef >> al;
+  }
+  return -((-coef) >> al);
+}
+
+/** DC coefficient, first scan of a component (T.81 G.2, Figure G.4). */
+void jpeg_arith_encode_block_prog_dc_first(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
+    uint8_t dc_tbl, int al, const int16_t * block) {
+  jpeg_arith_encode_dc(e, stats, cond, comp, dc_tbl,
+      (int)jpeg_arith_point_transform((int32_t)block[0], al));
+}
+
+/** DC coefficient, refinement scan (T.81 G.2, Figure G.5): one bit, at fixed
+ * odds. */
+void jpeg_arith_encode_block_prog_dc_refine(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, int al, const int16_t * block) {
+  jpeg_arith_encode(e, &stats->fixed, (int)((block[0] >> al) & 1));
+}
+
+/** AC coefficients, first scan of a band (T.81 G.2, Figure G.6). */
+void jpeg_arith_encode_block_prog_ac_first(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t ac_tbl,
+    int ss, int se, int al, const int16_t * block) {
+  uint8_t * area = stats->ac[ac_tbl];
+  uint8_t kx = cond->ac_k[ac_tbl];
+
+  // The last coefficient this scan has anything to say about, after the point
+  // transform has discarded the bits below Al.
+  int ke = se;
+  for (; ke > 0; ke--) {
+    if (jpeg_arith_point_transform((int32_t)block[ke], al) != 0) {
+      break;
+    }
+  }
+
+  int k = ss;
+  for (; k <= ke; k++) {
+    uint8_t * st = area + 3 * (k - 1);
+    jpeg_arith_encode(e, st, 0); // not the end of the band
+    int32_t temp = jpeg_arith_point_transform((int32_t)block[k], al);
+    while (temp == 0) {
+      jpeg_arith_encode(e, st + 1, 0);
+      st += 3;
+      k++;
+      temp = jpeg_arith_point_transform((int32_t)block[k], al);
+    }
+    jpeg_arith_encode(e, st + 1, 1);
+
+    if (temp < 0) {
+      temp = -temp;
+      jpeg_arith_encode(e, &stats->fixed, 1);
+    }
+    else {
+      jpeg_arith_encode(e, &stats->fixed, 0);
+    }
+    st += 2;
+
+    int32_t m = 0;
+    temp -= 1;
+    if (temp != 0) {
+      jpeg_arith_encode(e, st, 1);
+      m = 1;
+      int32_t v = temp;
+      if ((v >>= 1) != 0) {
+        jpeg_arith_encode(e, st, 1);
+        m <<= 1;
+        st = area + (k <= (int)kx ? 189 : 217);
+        while ((v >>= 1) != 0) {
+          jpeg_arith_encode(e, st, 1);
+          m <<= 1;
+          st += 1;
+        }
+      }
+    }
+    jpeg_arith_encode(e, st, 0);
+    st += 14;
+    while ((m >>= 1) != 0) {
+      jpeg_arith_encode(e, st, (m & temp) ? 1 : 0);
+    }
+  }
+  if (k <= se) {
+    jpeg_arith_encode(e, area + 3 * (k - 1), 1); // end of the band
+  }
+}
+
+/** AC coefficients, refinement scan (T.81 G.2, Figure G.7). */
+void jpeg_arith_encode_block_prog_ac_refine(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, uint8_t ac_tbl, int ss, int se, int ah, int al,
+    const int16_t * block) {
+  uint8_t * area = stats->ac[ac_tbl];
+
+  // The last coefficient this scan says anything about...
+  int ke = se;
+  for (; ke > 0; ke--) {
+    if (jpeg_arith_point_transform((int32_t)block[ke], al) != 0) {
+      break;
+    }
+  }
+  // ...and the last one the previous scans had already made non-zero.  The
+  // end-of-band decision is only sent beyond that point, because every
+  // coefficient before it has to be refined whether or not the band ends here.
+  int kex = ke;
+  for (; kex > 0; kex--) {
+    if (jpeg_arith_point_transform((int32_t)block[kex], ah) != 0) {
+      break;
+    }
+  }
+
+  int k = ss;
+  for (; k <= ke; k++) {
+    uint8_t * st = area + 3 * (k - 1);
+    if (k > kex) {
+      jpeg_arith_encode(e, st, 0);
+    }
+    for (;;) {
+      int32_t temp = jpeg_arith_point_transform((int32_t)block[k], al);
+      int32_t mag = temp < 0 ? -temp : temp;
+      if (mag != 0) {
+        if (mag >> 1) {
+          // Already non-zero before this scan: send the next bit of it.
+          jpeg_arith_encode(e, st + 2, (int)(mag & 1));
+        }
+        else {
+          // Becomes non-zero in this scan; its sign follows, at fixed odds.
+          jpeg_arith_encode(e, st + 1, 1);
+          jpeg_arith_encode(e, &stats->fixed, temp < 0 ? 1 : 0);
+        }
+        break;
+      }
+      jpeg_arith_encode(e, st + 1, 0);
+      st += 3;
+      k++;
+    }
+  }
+  if (k <= se) {
+    jpeg_arith_encode(e, area + 3 * (k - 1), 1);
+  }
+}

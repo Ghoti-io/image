@@ -1341,6 +1341,128 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
 // T.81 Annex G: progressive scan encode. DC scan (Ss=0,Se=0,Ah=0): encode only DC diff per block.
 // AC initial (Ss>=1,Ah=0): encode AC in band [Ss,Se]. DC refinement (Ss=0,Se=0,Ah>0): one bit per block.
 // AC refinement (Ah>0, Ss..Se): (run,size)+refinement/correction bits per T.81 G.1.2.2.
+/**
+ * One scan of a progressive frame with arithmetic entropy coding (SOF10).
+ *
+ * The counterpart of gimg_jpeg_encode_progressive_scan, and much shorter,
+ * because the arithmetic coder needs neither the state of the previous scan nor
+ * an EOB run spanning blocks (T.81 G.2).  @p stats and @p e belong to this scan
+ * alone: F.2.4.1 starts the statistics afresh for every scan.
+ */
+GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
+    uint32_t height, int num_components, const int16_t * coef_buffer,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
+    const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, unsigned char ** out_scan_data,
+    size_t * out_scan_size) {
+  if (!alloc || !out_scan_data || !out_scan_size || !cond || !coef_buffer) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+
+  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!h_samp) {
+    h_samp = default_samp;
+  }
+  if (!v_samp) {
+    v_samp = default_samp;
+  }
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  if (num_components >= 3) {
+    for (int c = 1; c < 3; c++) {
+      if (h_samp[c] > h_max) {
+        h_max = h_samp[c];
+      }
+      if (v_samp[c] > v_max) {
+        v_max = v_samp[c];
+      }
+    }
+  }
+  uint32_t mcu_per_row =
+      (width + (uint32_t)(8 * h_max) - 1) / (uint32_t)(8 * h_max);
+  uint32_t mcu_per_col =
+      (height + (uint32_t)(8 * v_max) - 1) / (uint32_t)(8 * v_max);
+  size_t mcu_count = 0;
+  if (!gcu_safe_mul_size(
+          (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
+    return GIMG_ERR_LIMIT;
+  }
+
+  jpeg_bit_writer w = {0};
+  jpeg_arith_sink_t sink = {&w, alloc, 0};
+  jpeg_arith_encoder_t e;
+  jpeg_arith_stats_t stats;
+  jpeg_arith_encoder_init(&e, jpeg_arith_sink_emit, &sink);
+  jpeg_arith_stats_reset(&stats);
+
+  int is_dc = (Ss == 0);
+  size_t block_off = 0;
+  size_t mcu_index = 0;
+  uint16_t next_restart = 0;
+  for (;;) {
+    if (restart_interval > 0 && mcu_index > 0 &&
+        (mcu_index % (size_t)restart_interval) == 0) {
+      jpeg_arith_encoder_flush(&e);
+      if (!bit_writer_ensure(&w, alloc, 2)) {
+        gimg_free(alloc, w.buf);
+        return GIMG_ERR_OOM;
+      }
+      w.buf[w.len++] = 0xFF;
+      w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+      next_restart++;
+      jpeg_arith_encoder_init(&e, jpeg_arith_sink_emit, &sink);
+      jpeg_arith_stats_reset(&stats);
+    }
+
+    for (int c = 0; c < num_components; c++) {
+      uint8_t tbl = (c == 0) ? 0u : 1u;
+      size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+      for (size_t b = 0; b < nblocks; b++) {
+        const int16_t * block = coef_buffer + (block_off + b) * 64;
+        if (is_dc) {
+          if (Ah == 0) {
+            jpeg_arith_encode_block_prog_dc_first(
+                &e, &stats, cond, (uint8_t)c, tbl, (int)Al, block);
+          }
+          else {
+            jpeg_arith_encode_block_prog_dc_refine(&e, &stats, (int)Al, block);
+          }
+        }
+        else if (Ah == 0) {
+          jpeg_arith_encode_block_prog_ac_first(
+              &e, &stats, cond, tbl, (int)Ss, (int)Se, (int)Al, block);
+        }
+        else {
+          jpeg_arith_encode_block_prog_ac_refine(
+              &e, &stats, tbl, (int)Ss, (int)Se, (int)Ah, (int)Al, block);
+        }
+        if (sink.oom) {
+          gimg_free(alloc, w.buf);
+          return GIMG_ERR_OOM;
+        }
+      }
+      block_off += nblocks;
+    }
+
+    mcu_index++;
+    if (block_off >= total_blocks || mcu_index >= mcu_count) {
+      break;
+    }
+  }
+
+  jpeg_arith_encoder_flush(&e);
+  if (sink.oom) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
+  *out_scan_data = w.buf;
+  *out_scan_size = w.len;
+  return GIMG_OK;
+}
+
 GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
     const uint8_t * h_samp, const uint8_t * v_samp, uint8_t Ss, uint8_t Se,

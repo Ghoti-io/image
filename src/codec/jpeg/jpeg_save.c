@@ -1906,17 +1906,20 @@ static void jpeg_gather_component_blocks(int16_t * interleaved,
 }
 
 
-/** Write DQT, DHT, [DRI if restart_interval>0], SOF2, then for each scan: SOS
- * (Ss,Se,Ah,Al) + scan data; then EOI. precision 8 or 12. Frees scan data
- * after each write. */
+/** Write DQT, the table specifications, [DRI if restart_interval>0], the frame
+ * header, then for each scan: SOS (Ss,Se,Ah,Al) + scan data; then EOI.
+ * precision 8 or 12.  Frees scan data after each write.
+ *
+ * With Huffman coding the frame is SOF2 and the tables are DHT; with arithmetic
+ * coding it is SOF10 and the tables are DAC. */
 static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components, const uint8_t * h_samp,
     const uint8_t * v_samp, const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const int16_t * coef_buffer, size_t total_blocks,
     const GIMG_JPEG_Progressive_Scan * scans, unsigned scan_count,
-    int precision, const GIMG_Allocator * alloc, uint16_t restart_interval,
-    size_t * out_n) {
+    int precision, bool arithmetic, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
   size_t written = 0;
@@ -1926,7 +1929,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    {
+    if (!arithmetic) { // DAC replaces DHT in an arithmetic frame
       size_t dht_written = 0;
       r = gimg_jpeg_write_standard_dht_extended(stream, &dht_written);
       if (r != GIMG_OK) {
@@ -1960,7 +1963,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
         return r;
       }
     }
-    {
+    if (!arithmetic) {
       size_t dht_written = 0;
       r = gimg_jpeg_write_standard_dht(stream, &dht_written);
       if (r != GIMG_OK) {
@@ -1969,7 +1972,36 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       n += dht_written;
     }
   }
-  {
+  if (arithmetic) {
+    // T.81 B.2.4.3: DAC in place of DHT, with the B.2.4.3 default conditioning
+    // written out explicitly.
+    int tables = (num_components == 1) ? 1 : 2;
+    uint16_t dac_len = (uint16_t)(2 + 2 * 2 * tables);
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, dac_len, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    unsigned char dac[8];
+    size_t dl = 0;
+    for (int t = 0; t < tables; t++) {
+      dac[dl++] = (unsigned char)(0x00 | t);
+      dac[dl++] = 0x10; // U = 1, L = 0
+    }
+    for (int t = 0; t < tables; t++) {
+      dac[dl++] = (unsigned char)(0x10 | t);
+      dac[dl++] = 0x05; // Kx = 5
+    }
+    r = gimg_stream_write(stream, dac, dl, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+  else {
     int need_refine_dht = 0;
     for (unsigned s = 0; s < scan_count && !need_refine_dht; s++) {
       if (scans[s].Ah != 0 && !(scans[s].Ss == 0 && scans[s].Se == 0)) {
@@ -1993,7 +2025,10 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     uint8_t prec_byte = (uint8_t)(precision > 8 ? precision : 8);
     uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
     size_t sof_payload = 6 + 3 * (size_t)num_components;
-    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOF2, &n);
+    // T.81 Table B.1: SOF10 is the arithmetic counterpart of SOF2.
+    r = jpeg_write_marker(
+        stream, arithmetic ? GIMG_JPEG_MARKER_SOF10 : GIMG_JPEG_MARKER_SOF2,
+        &n);
     if (r != GIMG_OK) {
       return r;
     }
@@ -2150,7 +2185,17 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
         state_in = (this_refinement && prev_ac_initial) ? state_base : NULL;
       }
 
-      if (precision > 8) {
+      if (arithmetic) {
+        // T.81 Annex D and G.2.  The same coder serves both precisions, and it
+        // needs no previous-scan state: the point transform is a shift.
+        jpeg_arith_cond_t cond;
+        jpeg_arith_cond_defaults(&cond);
+        r = gimg_jpeg_encode_arith_progressive_scan(enc_w, enc_h_px,
+            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scans[s].Ss,
+            scans[s].Se, scans[s].Ah, scans[s].Al, &cond, alloc,
+            restart_interval, &scan_data, &scan_size);
+      }
+      else if (precision > 8) {
         r = gimg_jpeg_encode_progressive_scan_extended(enc_w, enc_h_px,
             scan_components, enc_coef, enc_blocks, enc_h, enc_v, scans[s].Ss,
             scans[s].Se, scans[s].Ah, scans[s].Al, alloc, restart_interval,
@@ -2333,11 +2378,6 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   bool progressive = (options && options->jpeg_progressive) ? true : false;
   bool arithmetic = (options && options->jpeg_arithmetic) ? true : false;
   GIMG_Result r;
-  if (arithmetic && progressive) {
-    // Progressive arithmetic (SOF10) decodes but is not yet written; say so
-    // rather than quietly producing a Huffman file the caller did not ask for.
-    return GIMG_ERR_UNSUPPORTED;
-  }
   if (progressive) {
     r = jpeg_validate_progressive_config(
         options ? options->jpeg_progressive_config : NULL);
@@ -2961,7 +3001,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     r = jpeg_write_image_body_progressive(stream, width, height, num_components,
         num_components == 3 ? h_samp : NULL,
         num_components == 3 ? v_samp : NULL, quant_luma, quant_chroma,
-        coef_buffer, total_blocks, scans, scan_count, precision, alloc,
+        coef_buffer, total_blocks, scans, scan_count, precision, arithmetic,
+        alloc,
         restart_interval, &report->bytes_written);
     gimg_free(alloc, coef_buffer);
   }

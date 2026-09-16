@@ -2782,7 +2782,7 @@ TEST(JpegEncode, Save12BitQuality100RoundTrips) {
  * had every chance of picking one that hides the defect. */
 TEST(JpegEncode, ArithmeticAndHuffmanEncodeTheSameImage) {
   static const uint32_t kW = 17u, kH = 9u;
-  auto encode = [](bool arithmetic, unsigned quality,
+  auto encode = [](bool arithmetic, bool progressive, unsigned quality,
                     std::vector<uint8_t> & out) {
     GIMG_Doc * doc = nullptr;
     ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
@@ -2815,6 +2815,7 @@ TEST(JpegEncode, ArithmeticAndHuffmanEncodeTheSameImage) {
     opts.metadata_policy = GIMG_META_PRESERVE_ALL;
     opts.quality = quality;
     opts.jpeg_arithmetic = arithmetic ? 1 : 0;
+    opts.jpeg_progressive = progressive ? 1 : 0;
     GIMG_Save_Report report = {};
     ASSERT_EQ(gimg_doc_save(doc, st, "jpeg", &opts, &report), GIMG_OK);
     const void * data = nullptr;
@@ -2849,9 +2850,10 @@ TEST(JpegEncode, ArithmeticAndHuffmanEncodeTheSameImage) {
   };
 
   for (unsigned q : {60u, 70u, 75u, 80u, 85u, 95u}) {
+   for (bool progressive : {false, true}) {
     std::vector<uint8_t> ar, hu, ar_px, hu_px;
-    encode(true, q, ar);
-    encode(false, q, hu);
+    encode(true, progressive, q, ar);
+    encode(false, progressive, q, hu);
     ASSERT_FALSE(ar.empty()) << "quality " << q;
     ASSERT_FALSE(hu.empty()) << "quality " << q;
     // The arithmetic file must announce itself as one: SOF9, and a DAC segment
@@ -2859,7 +2861,8 @@ TEST(JpegEncode, ArithmeticAndHuffmanEncodeTheSameImage) {
     bool saw_sof9 = false, saw_dac = false, saw_dht = false;
     for (size_t i = 0; i + 1 < ar.size(); i++) {
       if (ar[i] != 0xFF) continue;
-      if (ar[i + 1] == 0xC9) saw_sof9 = true;
+      // SOF9 sequential, SOF10 progressive (T.81 Table B.1).
+      if (ar[i + 1] == (progressive ? 0xCA : 0xC9)) saw_sof9 = true;
       if (ar[i + 1] == 0xCC) saw_dac = true;
       if (ar[i + 1] == 0xC4) saw_dht = true;
       if (ar[i + 1] == 0xDA) break; // stop before the entropy-coded data
@@ -2874,21 +2877,30 @@ TEST(JpegEncode, ArithmeticAndHuffmanEncodeTheSameImage) {
     EXPECT_EQ(ar_px, hu_px)
         << "the two entropy coders disagree about the same coefficients, at "
            "quality "
-        << q;
+        << q << (progressive ? " (progressive)" : " (sequential)");
+   }
   }
 }
 
-/** Progressive plus arithmetic is refused rather than quietly downgraded.
+/** A progressive arithmetic frame (SOF10) is written, and says what it is.
  *
- * SOF10 decodes, but the encoder does not write it yet.  Silently producing a
- * Huffman file would be worse than saying so. */
-TEST(JpegEncode, ProgressiveArithmeticIsRefusedForNow) {
+ * Progressive and arithmetic are independent choices in T.81: Table B.1 has a
+ * marker for each of the four combinations.  This checks the one that needs
+ * both the G.2 encoding procedures and the SOF10 frame header. */
+TEST(JpegEncode, ProgressiveArithmeticWritesSof10) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
   GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
+  ASSERT_EQ(gimg_raster_create(32, 32, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
                 NULL, 0, &raster),
       GIMG_OK);
+  unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  for (uint32_t y = 0; y < 32; y++) {
+    for (uint32_t x = 0; x < 32; x++) {
+      px[y * stride + x] = (unsigned char)((x * 8 + y * 3) & 0xFF);
+    }
+  }
   gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
   GIMG_Stream * st = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&st), GIMG_OK);
@@ -2898,10 +2910,49 @@ TEST(JpegEncode, ProgressiveArithmeticIsRefusedForNow) {
   opts.jpeg_progressive = 1;
   opts.jpeg_arithmetic = 1;
   GIMG_Save_Report report = {};
-  EXPECT_EQ(gimg_doc_save(doc, st, "jpeg", &opts, &report),
-      GIMG_ERR_UNSUPPORTED);
+  ASSERT_EQ(gimg_doc_save(doc, st, "jpeg", &opts, &report), GIMG_OK);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(st, &data, &size);
+  std::vector<uint8_t> jpeg((const uint8_t *)data, (const uint8_t *)data + size);
   gimg_stream_destroy(st);
   gimg_doc_destroy(doc);
+
+  bool saw_sof10 = false, saw_dac = false, saw_dht = false;
+  for (size_t i = 0; i + 1 < jpeg.size(); i++) {
+    if (jpeg[i] != 0xFF) continue;
+    if (jpeg[i + 1] == 0xCA) saw_sof10 = true;
+    if (jpeg[i + 1] == 0xCC) saw_dac = true;
+    if (jpeg[i + 1] == 0xC4) saw_dht = true;
+    if (jpeg[i + 1] == 0xDA) break;
+  }
+  EXPECT_TRUE(saw_sof10);
+  EXPECT_TRUE(saw_dac);
+  EXPECT_FALSE(saw_dht);
+
+  // And it reads back.
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in), GIMG_OK);
+  GIMG_Doc * back = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &back), GIMG_OK);
+  gimg_stream_destroy(in);
+  GIMG_Raster * decoded = nullptr;
+  ASSERT_EQ(
+      gimg_item_decode(gimg_doc_item(back, 0), nullptr, &decoded), GIMG_OK);
+  ASSERT_NE(decoded, nullptr);
+  EXPECT_EQ(gimg_raster_width(decoded), 32u);
+  EXPECT_EQ(gimg_raster_height(decoded), 32u);
+  const unsigned char * out =
+      (const unsigned char *)gimg_raster_pixels_const(decoded);
+  size_t out_stride = gimg_raster_stride_bytes(decoded);
+  for (uint32_t y = 0; y < 32u; y++) {
+    for (uint32_t x = 0; x < 32u; x++) {
+      EXPECT_NEAR((int)out[y * out_stride + x], (int)((x * 8 + y * 3) & 0xFF), 24)
+          << "at (" << x << ", " << y << ")";
+    }
+  }
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(back);
 }
 
 TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
