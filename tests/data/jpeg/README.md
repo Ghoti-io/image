@@ -338,3 +338,24 @@ has no row above it that the interval may refer to, so that row is predicted
 one-dimensionally, exactly as the first row of the image is.  Carrying the
 prediction across the boundary decodes the first row of every interval after the
 first as noise.
+
+## Checking that "lossless" is true
+
+The encoder side needs no golden values.  Encode a raster, decode it, and the
+samples must be identical - not close.  `JpegEncode.LosslessRoundTripsExactly`
+does that across all seven predictors, with and without restart intervals, for
+GRAY8, RGBA8, GRAY12, RGBA12, GRAY16 and RGBA16.
+
+Against libjpeg, the check is that `djpeg` recovers the original PNM byte for
+byte:
+
+```sh
+ljt-build/djpeg-static -pnm -outfile back.pnm ours.jpg && cmp original.pnm back.pnm
+```
+
+Two things to know when doing that by hand.  `djpeg` needs no `-rgb` for our
+colour output - but it will refuse the file outright if the writer emits a JFIF
+APP0, because JFIF declares three-component data to be YCbCr and libjpeg takes
+that ahead of the Adobe marker.  A lossless frame stores RGB, so it carries the
+Adobe marker and no JFIF.  And libjpeg's lossless decoder requires a restart
+interval to be a whole number of MCU rows; ours rounds down to satisfy it.

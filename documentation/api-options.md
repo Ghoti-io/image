@@ -206,3 +206,31 @@ decoders.  It is off by default for that reason.
 Progressive and arithmetic are independent choices - T.81 Table B.1 has a
 marker for each of the four combinations - and both work here, at 8- or 12-bit
 precision, with or without restart intervals.
+
+## `jpeg_lossless_predictor` (save)
+
+Write a lossless frame (ITU-T T.81 Annex H, SOF3) rather than a DCT-based one.
+0 (the default) writes a DCT frame; 1 to 7 select a predictor from Table H.1 —
+1 is the sample to the left, 2 the one above, 3 the one above-left, and 4 to 7
+combine them.  Which one compresses best depends on the image; 1 and 4 are the
+usual choices.
+
+The reconstruction is exact, so `quality` and `jpeg_chroma_subsampling` have no
+meaning here and are ignored, and colour is stored as RGB rather than YCbCr
+because that conversion is not reversible.
+
+Precision follows the raster: 8-bit rasters give P=8, 12-bit P=12 and 16-bit
+P=16, all of which Table B.2 permits in a lossless frame.  This is the only way
+a 16-bit raster survives a JPEG round trip unchanged — the DCT-based writers
+narrow one to 12 bits, because a 16-bit DCT frame does not exist.
+
+`jpeg_restart_interval` is honoured but rounded down to a whole number of image
+rows.  T.81 does not require a lossless restart interval to begin at the start
+of a row, but an interval resets the prediction, and what "the first row of the
+interval" means for an interval starting mid-row is not defined anywhere;
+implementations resolve that by requiring alignment, and libjpeg refuses to
+decode an unaligned one.
+
+Setting this together with `jpeg_progressive` or `jpeg_arithmetic` returns
+`GIMG_ERR_UNSUPPORTED`: progression belongs to the DCT-based processes, and
+arithmetic lossless is SOF11, which is not implemented.

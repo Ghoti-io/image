@@ -376,3 +376,402 @@ fail:
   }
   return r;
 }
+
+/* ------------------------------------------------------------------------
+ * Encoder
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Build a Huffman table from symbol frequencies (T.81 Annex K.2, Figures K.1
+ * to K.3).
+ *
+ * The fixed tables of Annex K are no use here: they cover DC categories 0 to 11
+ * and a lossless difference reaches category 16.  K.2 gives the procedure for
+ * generating one instead - ordinary Huffman code construction, followed by the
+ * two adjustments a JPEG table needs.  Code lengths are limited to 16 bits by
+ * repeatedly moving a pair of long codewords up the tree, and one codeword of
+ * the longest length is then given up, because C.2 reserves the all-ones
+ * codeword and a decoder is entitled to treat it as an error.
+ *
+ * @param freq   Frequency of each of the 17 symbols; modified.
+ * @param bits   Out: number of codes of each length, bits[0] unused.
+ * @param vals   Out: symbols in code-length order.
+ * @param out_n  Out: how many symbols were used.
+ */
+#define JPEG_LL_SYMBOLS 17
+#define JPEG_LL_MAX_CLEN 32
+static void jpeg_lossless_gen_table(uint32_t freq[JPEG_LL_SYMBOLS + 1],
+    unsigned char bits[17], unsigned char vals[JPEG_LL_SYMBOLS],
+    int * out_n) {
+  int codesize[JPEG_LL_SYMBOLS + 1];
+  int others[JPEG_LL_SYMBOLS + 1];
+  unsigned char cnt[JPEG_LL_MAX_CLEN + 1];
+  memset(codesize, 0, sizeof(codesize));
+  memset(cnt, 0, sizeof(cnt));
+  for (int i = 0; i <= JPEG_LL_SYMBOLS; i++) {
+    others[i] = -1;
+  }
+  // A reserved symbol with a frequency of one, so that the longest codeword is
+  // spent on something that never occurs and the all-ones codeword stays free.
+  freq[JPEG_LL_SYMBOLS] = 1;
+
+  for (;;) {
+    int c1 = -1, c2 = -1;
+    uint32_t v = 0xFFFFFFFFu;
+    for (int i = 0; i <= JPEG_LL_SYMBOLS; i++) {
+      if (freq[i] && freq[i] <= v) {
+        v = freq[i];
+        c1 = i;
+      }
+    }
+    v = 0xFFFFFFFFu;
+    for (int i = 0; i <= JPEG_LL_SYMBOLS; i++) {
+      if (freq[i] && freq[i] <= v && i != c1) {
+        v = freq[i];
+        c2 = i;
+      }
+    }
+    if (c2 < 0) {
+      break;
+    }
+    freq[c1] += freq[c2];
+    freq[c2] = 0;
+    codesize[c1]++;
+    while (others[c1] >= 0) {
+      c1 = others[c1];
+      codesize[c1]++;
+    }
+    others[c1] = c2;
+    codesize[c2]++;
+    while (others[c2] >= 0) {
+      c2 = others[c2];
+      codesize[c2]++;
+    }
+  }
+
+  for (int i = 0; i <= JPEG_LL_SYMBOLS; i++) {
+    if (codesize[i] > 0 && codesize[i] <= JPEG_LL_MAX_CLEN) {
+      cnt[codesize[i]]++;
+    }
+  }
+
+  // K.2 Figure K.3: bring every codeword within 16 bits.
+  int i = JPEG_LL_MAX_CLEN;
+  for (; i > 16; i--) {
+    while (cnt[i] > 0) {
+      int j = i - 2;
+      while (cnt[j] == 0) {
+        j--;
+      }
+      cnt[i] -= 2;
+      cnt[i - 1] += 1;
+      cnt[j + 1] += 2;
+      cnt[j] -= 1;
+    }
+  }
+  while (i > 0 && cnt[i] == 0) {
+    i--;
+  }
+  if (i > 0) {
+    cnt[i]--; // give up the all-ones codeword (T.81 C.2)
+  }
+
+  memset(bits, 0, 17);
+  for (int L = 1; L <= 16; L++) {
+    bits[L] = cnt[L];
+  }
+  int p = 0;
+  for (int L = 1; L <= JPEG_LL_MAX_CLEN; L++) {
+    for (int sym = 0; sym < JPEG_LL_SYMBOLS; sym++) {
+      if (codesize[sym] == L) {
+        vals[p++] = (unsigned char)sym;
+      }
+    }
+  }
+  *out_n = p;
+}
+
+/** Number of bits needed to hold the magnitude of a lossless difference
+ * (T.81 H.1.2.2): the DC categories of F.1.2.1 with one more at the top. */
+static int jpeg_lossless_category(int32_t diff) {
+  if (diff == 32768) {
+    return 16; // the one value that carries no additional bits
+  }
+  int32_t m = diff < 0 ? -diff : diff;
+  int s = 0;
+  while (m) {
+    s++;
+    m >>= 1;
+  }
+  return s;
+}
+
+/** Bit writer for the lossless scan.  Separate from the DCT encoder's because
+ * that one lives in jpeg_encode.c; the stuffing rule is the same (B.1.1.5). */
+typedef struct {
+  unsigned char * buf;
+  size_t cap;
+  size_t len;
+  uint32_t acc;
+  int nbits;
+  const GIMG_Allocator * alloc;
+  int oom;
+} jpeg_ll_writer;
+
+static int jpeg_ll_ensure(jpeg_ll_writer * w, size_t extra) {
+  if (w->len + extra <= w->cap) {
+    return 1;
+  }
+  size_t cap = w->cap ? w->cap * 2 : 4096;
+  if (cap < w->len + extra) {
+    cap = w->len + extra;
+  }
+  unsigned char * p = (unsigned char *)gimg_realloc(w->alloc, w->buf, cap);
+  if (!p) {
+    w->oom = 1;
+    return 0;
+  }
+  w->buf = p;
+  w->cap = cap;
+  return 1;
+}
+
+static void jpeg_ll_put_bits(jpeg_ll_writer * w, uint32_t code, int n) {
+  if (n <= 0) {
+    return;
+  }
+  w->acc = (w->acc << n) | (code & (n >= 32 ? 0xFFFFFFFFu : ((1u << n) - 1u)));
+  w->nbits += n;
+  while (w->nbits >= 8) {
+    w->nbits -= 8;
+    unsigned char b = (unsigned char)(w->acc >> w->nbits);
+    if (!jpeg_ll_ensure(w, 2)) {
+      return;
+    }
+    w->buf[w->len++] = b;
+    if (b == 0xFF) {
+      w->buf[w->len++] = 0x00; // B.1.1.5 byte stuffing
+    }
+  }
+}
+
+/** B.2.2: pad the last byte with ones; the value is the encoder's choice. */
+static void jpeg_ll_flush(jpeg_ll_writer * w) {
+  if (w->nbits > 0) {
+    jpeg_ll_put_bits(w, 0x7F, 8 - w->nbits);
+  }
+  w->acc = 0;
+  w->nbits = 0;
+}
+
+GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
+    const GIMG_Raster * raster, int psv, uint16_t restart_interval,
+    unsigned char ** out_scan_data, size_t * out_scan_size,
+    unsigned char ** out_dht, size_t * out_dht_len, uint32_t * out_width,
+    uint32_t * out_height, int * out_num_components, int * out_precision) {
+  if (!alloc || !raster || !out_scan_data || !out_scan_size || !out_dht ||
+      !out_dht_len) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+  *out_dht = NULL;
+  *out_dht_len = 0;
+
+  if (psv < 1 || psv > 7) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  uint32_t width = gimg_raster_width(raster);
+  uint32_t height = gimg_raster_height(raster);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  if (!fmt || width == 0 || height == 0) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  // The frame's precision follows the raster: Table B.2 permits 2 to 16 in a
+  // lossless frame, so there is no need to convert anything.
+  int precision = (int)fmt->bits_per_channel[0];
+  int channels = (int)fmt->channel_count;
+  int num_comp = (fmt->channel_model == GIMG_CHANNEL_GRAY) ? 1 : 3;
+  if (precision != 8 && precision != 12 && precision != 16) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (num_comp == 3 && channels < 3) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (fmt->channel_model != GIMG_CHANNEL_GRAY &&
+      fmt->channel_model != GIMG_CHANNEL_RGB &&
+      fmt->channel_model != GIMG_CHANNEL_RGBA) {
+    return GIMG_ERR_UNSUPPORTED; // CMYK lossless is not handled here
+  }
+
+  size_t n_samples = 0;
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &n_samples)) {
+    return GIMG_ERR_LIMIT;
+  }
+  size_t n_diffs = 0;
+  if (!gcu_safe_mul_size(n_samples, (size_t)num_comp, &n_diffs) ||
+      n_diffs > SIZE_MAX / sizeof(int32_t)) {
+    return GIMG_ERR_LIMIT;
+  }
+  int32_t * diffs = (int32_t *)gimg_malloc(alloc, n_diffs * sizeof(int32_t));
+  if (!diffs) {
+    return GIMG_ERR_OOM;
+  }
+
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  int wide = (precision > 8);
+  const int32_t initial_pred = (int32_t)1 << (precision - 1);
+  uint32_t freq[JPEG_LL_SYMBOLS + 1];
+  memset(freq, 0, sizeof(freq));
+
+  // Sample at (x, y) of component c, straight from the raster: a lossless frame
+  // stores colour as RGB, because YCbCr is not reversible and "lossless" would
+  // then be a lie.
+  #define LL_SAMPLE(cc, xx, yy)                                                \
+    (wide ? (int32_t)((const uint16_t *)(pixels +                              \
+                (size_t)(yy) * stride))[(size_t)(xx) * (size_t)channels + (cc)] \
+          : (int32_t)(pixels + (size_t)(yy) * stride)[(size_t)(xx) *           \
+                (size_t)channels + (cc)])
+
+  uint32_t restart_row[GIMG_JPEG_MAX_COMPONENTS];
+  int restart_pending[GIMG_JPEG_MAX_COMPONENTS];
+  for (unsigned i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
+    restart_row[i] = 0;
+    restart_pending[i] = 1;
+  }
+  // Sampling is 1x1 for every component, so an MCU is one sample of each
+  // (T.81 H.1.1) and the MCU index is the raster index.
+  size_t di = 0;
+  for (uint32_t y = 0; y < height; y++) {
+    for (uint32_t x = 0; x < width; x++) {
+      size_t mcu_index = (size_t)y * width + x;
+      if (restart_interval > 0 && mcu_index > 0 &&
+          mcu_index % (size_t)restart_interval == 0) {
+        for (unsigned i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
+          restart_pending[i] = 1;
+        }
+      }
+      for (int c = 0; c < num_comp; c++) {
+        int32_t pred;
+        if (restart_pending[c]) {
+          pred = initial_pred;
+          restart_row[c] = y;
+        }
+        else if (y == restart_row[c]) {
+          pred = LL_SAMPLE(c, x - 1, y);
+        }
+        else if (x == 0) {
+          pred = LL_SAMPLE(c, 0, y - 1);
+        }
+        else {
+          pred = jpeg_lossless_predict(psv, LL_SAMPLE(c, x - 1, y),
+              LL_SAMPLE(c, x, y - 1), LL_SAMPLE(c, x - 1, y - 1));
+        }
+        restart_pending[c] = 0;
+        // H.1.2.1: the difference is taken modulo 2^16, so that it always fits
+        // the categories of H.1.2.2 whatever the prediction was.
+        int32_t d = (int32_t)(((uint32_t)LL_SAMPLE(c, x, y) - (uint32_t)pred) &
+            0xFFFFu);
+        if (d > 32768) {
+          d -= 65536;
+        }
+        diffs[di++] = d;
+        freq[jpeg_lossless_category(d)]++;
+      }
+    }
+  }
+  #undef LL_SAMPLE
+
+  unsigned char bits[17];
+  unsigned char vals[JPEG_LL_SYMBOLS];
+  int nvals = 0;
+  jpeg_lossless_gen_table(freq, bits, vals, &nvals);
+
+  // Build the encoding table: canonical codes in code-length order (C.2).
+  unsigned int code_of[JPEG_LL_SYMBOLS];
+  int len_of[JPEG_LL_SYMBOLS];
+  memset(code_of, 0, sizeof(code_of));
+  memset(len_of, 0, sizeof(len_of));
+  {
+    unsigned int code = 0;
+    int k = 0;
+    for (int L = 1; L <= 16; L++) {
+      for (int i = 0; i < (int)bits[L]; i++, k++) {
+        code_of[vals[k]] = code++;
+        len_of[vals[k]] = L;
+      }
+      code <<= 1;
+    }
+  }
+
+  jpeg_ll_writer w;
+  memset(&w, 0, sizeof(w));
+  w.alloc = alloc;
+  for (size_t i = 0; i < n_diffs; i++) {
+    if (restart_interval > 0) {
+      size_t mcu_index = i / (size_t)num_comp;
+      if (i % (size_t)num_comp == 0 && mcu_index > 0 &&
+          mcu_index % (size_t)restart_interval == 0) {
+        jpeg_ll_flush(&w);
+        if (!jpeg_ll_ensure(&w, 2)) {
+          gimg_free(alloc, diffs);
+          gimg_free(alloc, w.buf);
+          return GIMG_ERR_OOM;
+        }
+        w.buf[w.len++] = 0xFF;
+        w.buf[w.len++] = (unsigned char)(0xD0 +
+            ((mcu_index / (size_t)restart_interval - 1u) & 7u));
+      }
+    }
+    int32_t d = diffs[i];
+    int s = jpeg_lossless_category(d);
+    if (len_of[s] == 0) {
+      gimg_free(alloc, diffs);
+      gimg_free(alloc, w.buf);
+      return GIMG_ERR_INTERNAL; // the table was built from these very symbols
+    }
+    jpeg_ll_put_bits(&w, code_of[s], len_of[s]);
+    if (s > 0 && s < 16) {
+      // F.1.2.1: a negative value is sent as its one's complement.
+      int32_t v = d < 0 ? d - 1 : d;
+      jpeg_ll_put_bits(&w, (uint32_t)v & ((1u << s) - 1u), s);
+    }
+    if (w.oom) {
+      gimg_free(alloc, diffs);
+      gimg_free(alloc, w.buf);
+      return GIMG_ERR_OOM;
+    }
+  }
+  jpeg_ll_flush(&w);
+  gimg_free(alloc, diffs);
+  if (w.oom) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
+
+  // DHT payload: Tc|Th, sixteen counts, then the symbols (B.2.4.2).
+  size_t dht_len = 1u + 16u + (size_t)nvals;
+  unsigned char * dht = (unsigned char *)gimg_malloc(alloc, dht_len);
+  if (!dht) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
+  dht[0] = 0x00; // class 0 (DC/lossless), destination 0
+  for (int L = 1; L <= 16; L++) {
+    dht[L] = bits[L];
+  }
+  memcpy(dht + 17, vals, (size_t)nvals);
+
+  *out_scan_data = w.buf;
+  *out_scan_size = w.len;
+  *out_dht = dht;
+  *out_dht_len = dht_len;
+  if (out_width) *out_width = width;
+  if (out_height) *out_height = height;
+  if (out_num_components) *out_num_components = num_comp;
+  if (out_precision) *out_precision = precision;
+  return GIMG_OK;
+}

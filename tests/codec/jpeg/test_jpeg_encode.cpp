@@ -2765,6 +2765,161 @@ TEST(JpegEncode, Save12BitQuality100RoundTrips) {
   gimg_doc_destroy(back);
 }
 
+/** A lossless frame round-trips exactly, at every precision and predictor.
+ *
+ * "Lossless" is a claim that can be checked directly rather than approximated:
+ * decode what was encoded and the samples must be identical, not close.  T.81
+ * Annex H is also the only place a JPEG may carry 16-bit samples (Table B.2),
+ * so this is where a 16-bit raster survives a JPEG round trip - the DCT-based
+ * writers narrow one to 12 bits, because a 16-bit DCT frame does not exist. */
+TEST(JpegEncode, LosslessRoundTripsExactly) {
+  struct Case {
+    const GIMG_Pixel_Format * fmt;
+    int channels;
+    int bits;
+    const char * what;
+  };
+  static const Case formats[] = {
+      {&GIMG_PIXEL_GRAY8, 1, 8, "GRAY8"},
+      {&GIMG_PIXEL_RGBA8, 4, 8, "RGBA8"},
+      {&GIMG_PIXEL_GRAY12, 1, 12, "GRAY12"},
+      {&GIMG_PIXEL_RGBA12, 4, 12, "RGBA12"},
+      {&GIMG_PIXEL_GRAY16, 1, 16, "GRAY16"},
+      {&GIMG_PIXEL_RGBA16, 4, 16, "RGBA16"},
+  };
+  const uint32_t kW = 23, kH = 11; // deliberately not a multiple of anything
+  for (const Case & f : formats) {
+    for (int psv = 1; psv <= 7; psv++) {
+      for (uint16_t ri : {(uint16_t)0, (uint16_t)kW}) {
+        uint32_t maxv = (f.bits >= 32) ? 0xFFFFFFFFu : ((1u << f.bits) - 1u);
+        std::vector<uint32_t> want((size_t)kW * kH * 3);
+        GIMG_Doc * doc = nullptr;
+        ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+        GIMG_Raster * raster = nullptr;
+        ASSERT_EQ(gimg_raster_create(kW, kH, f.fmt, GIMG_RASTER_OWNED, NULL, 0,
+                      &raster),
+            GIMG_OK);
+        size_t stride = gimg_raster_stride_bytes(raster);
+        void * px = gimg_raster_pixels(raster);
+        uint32_t seed = 4242u;
+        for (uint32_t y = 0; y < kH; y++) {
+          for (uint32_t x = 0; x < kW; x++) {
+            for (int c = 0; c < 3; c++) {
+              seed = seed * 1103515245u + 12345u;
+              // Mix noise with a gradient: noise reaches the large difference
+              // categories, the gradient the small ones.
+              uint32_t v = ((seed >> 13) ^ (x * 37u + y * 11u)) & maxv;
+              want[((size_t)y * kW + x) * 3 + (size_t)c] = v;
+              if (f.channels == 1) {
+                if (f.bits == 8) {
+                  ((unsigned char *)px)[y * stride + x] =
+                      (unsigned char)want[((size_t)y * kW + x) * 3];
+                } else {
+                  ((uint16_t *)((unsigned char *)px + y * stride))[x] =
+                      (uint16_t)want[((size_t)y * kW + x) * 3];
+                }
+              } else if (f.bits == 8) {
+                unsigned char * p = (unsigned char *)px + y * stride + x * 4;
+                p[c] = (unsigned char)v;
+                p[3] = 255;
+              } else {
+                uint16_t * p =
+                    (uint16_t *)((unsigned char *)px + y * stride) + x * 4;
+                p[c] = (uint16_t)v;
+                p[3] = (uint16_t)maxv;
+              }
+            }
+          }
+        }
+        gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+        GIMG_Stream * st = nullptr;
+        ASSERT_EQ(gimg_stream_create_memory_output(&st), GIMG_OK);
+        GIMG_Save_Options opts = {};
+        opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+        opts.jpeg_lossless_predictor = (uint8_t)psv;
+        opts.jpeg_restart_interval = ri;
+        GIMG_Save_Report report = {};
+        ASSERT_EQ(gimg_doc_save(doc, st, "jpeg", &opts, &report), GIMG_OK)
+            << f.what << " psv " << psv;
+        const void * data = nullptr;
+        size_t size = 0;
+        gimg_stream_output_buffer(st, &data, &size);
+        std::vector<uint8_t> jpeg(
+            (const uint8_t *)data, (const uint8_t *)data + size);
+        gimg_stream_destroy(st);
+        gimg_doc_destroy(doc);
+
+        // The frame must announce itself as lossless at the raster's own
+        // precision, and must carry no quantisation table - there is nothing
+        // to quantise.
+        bool saw_sof3 = false, saw_dqt = false;
+        int got_precision = 0;
+        for (size_t i = 0; i + 3 < jpeg.size(); i++) {
+          if (jpeg[i] != 0xFF) continue;
+          if (jpeg[i + 1] == 0xC3) {
+            saw_sof3 = true;
+            got_precision = jpeg[i + 4];
+          }
+          if (jpeg[i + 1] == 0xDB) saw_dqt = true;
+          if (jpeg[i + 1] == 0xDA) break;
+        }
+        EXPECT_TRUE(saw_sof3) << f.what;
+        EXPECT_FALSE(saw_dqt) << f.what << ": a lossless frame has no DQT";
+        EXPECT_EQ(got_precision, f.bits) << f.what;
+
+        GIMG_Stream * in = nullptr;
+        ASSERT_EQ(
+            gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in), GIMG_OK);
+        GIMG_Doc * back = nullptr;
+        ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &back), GIMG_OK)
+            << f.what << " psv " << psv;
+        gimg_stream_destroy(in);
+        GIMG_Raster * decoded = nullptr;
+        ASSERT_EQ(gimg_item_decode(gimg_doc_item(back, 0), nullptr, &decoded),
+            GIMG_OK)
+            << f.what << " psv " << psv;
+        ASSERT_NE(decoded, nullptr);
+        ASSERT_EQ(gimg_raster_width(decoded), kW);
+        ASSERT_EQ(gimg_raster_height(decoded), kH);
+        const GIMG_Pixel_Format * dfmt = gimg_raster_format(decoded);
+        int out_bits = dfmt->bits_per_channel[0];
+        size_t dstride = gimg_raster_stride_bytes(decoded);
+        const void * dpx = gimg_raster_pixels_const(decoded);
+        int nch = (f.channels == 1) ? 1 : 3;
+        for (uint32_t y = 0; y < kH && !HasFailure(); y++) {
+          for (uint32_t x = 0; x < kW && !HasFailure(); x++) {
+            for (int c = 0; c < nch; c++) {
+              uint32_t got;
+              if (out_bits == 8) {
+                const unsigned char * p =
+                    (const unsigned char *)dpx + y * dstride;
+                got = (nch == 1) ? p[x] : p[x * 4 + (uint32_t)c];
+              } else {
+                const uint16_t * p =
+                    (const uint16_t *)((const unsigned char *)dpx + y * dstride);
+                got = (nch == 1) ? p[x] : p[x * 4 + (uint32_t)c];
+              }
+              // The decoder widens to the raster depth; undo that to compare
+              // the samples that were actually coded.
+              uint32_t narrowed = (out_bits == f.bits)
+                  ? got
+                  : (uint32_t)(((uint64_t)got * maxv +
+                                   ((1ull << out_bits) - 1ull) / 2ull) /
+                      ((1ull << out_bits) - 1ull));
+              ASSERT_EQ(narrowed, want[((size_t)y * kW + x) * 3 + (size_t)c])
+                  << f.what << " psv " << psv << " ri " << ri << " at (" << x
+                  << ", " << y << ") channel " << c;
+            }
+          }
+        }
+        gimg_raster_destroy(decoded);
+        gimg_doc_destroy(back);
+      }
+    }
+  }
+}
+
 /** Arithmetic and Huffman encoding of the same image must agree.
  *
  * T.81 defines two entropy coders, and they are exactly that: two ways of

@@ -557,6 +557,15 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
  * Progressive decode: multiple scans (DC then AC spectral/approximation),
  * then dequant, IDCT, upsample, color convert. Internal.
  */
+/** Encode a raster as a lossless frame (SOF3, T.81 Annex H).  Produces the
+ * entropy-coded scan and the DHT payload that goes with it; the caller writes
+ * the segments.  Precision follows the raster (8, 12 or 16). */
+GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
+    const GIMG_Raster * raster, int psv, uint16_t restart_interval,
+    unsigned char ** out_scan_data, size_t * out_scan_size,
+    unsigned char ** out_dht, size_t * out_dht_len, uint32_t * out_width,
+    uint32_t * out_height, int * out_num_components, int * out_precision);
+
 /** Decode a lossless frame (SOF3, T.81 Annex H). */
 GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);

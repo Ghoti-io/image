@@ -206,6 +206,16 @@ typedef struct {
    * smaller and is understood by far fewer decoders, so Huffman remains the
    * default.  Ignored for non-JPEG. */
   uint8_t jpeg_arithmetic;
+  /** Write a lossless frame (T.81 Annex H, SOF3) instead of a DCT-based one,
+   * using this predictor selection value.  0 (default) writes a DCT frame; 1
+   * to 7 select a predictor from Table H.1 - 1 is the sample to the left, 2 the
+   * one above, and 4 to 7 combine them.  The reconstruction is exact, so
+   * `quality` and `jpeg_chroma_subsampling` have no meaning and are ignored,
+   * and colour is stored as RGB rather than YCbCr because that conversion is
+   * not reversible.  Precision follows the raster: 8-bit rasters give P=8,
+   * 12-bit P=12, 16-bit P=16, all of which Table B.2 permits in a lossless
+   * frame.  Ignored for non-JPEG. */
+  uint8_t jpeg_lossless_predictor;
 } GIMG_Save_Options;
 
 /**

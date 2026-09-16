@@ -1906,6 +1906,151 @@ static void jpeg_gather_component_blocks(int16_t * interleaved,
 }
 
 
+/**
+ * Write the body of a lossless frame (T.81 Annex H).
+ *
+ * Shorter than the DCT-based writers, and different in shape: there is no DQT,
+ * because nothing is quantised.  The frame header is SOF3 and the scan header
+ * carries the predictor selection value in Ss, zero in Se, and the point
+ * transform in Al (H.1).
+ *
+ * Colour is written as RGB, with the component identifiers 'R', 'G' and 'B' and
+ * an Adobe APP14 saying transform 0, which is how libjpeg marks the same thing.
+ * A YCbCr conversion would make the result not lossless.
+ */
+static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
+    uint32_t width, uint32_t height, int num_components, int precision,
+    int psv, const unsigned char * dht, size_t dht_len,
+    const unsigned char * scan_data, size_t scan_size,
+    uint16_t restart_interval, size_t * out_n) {
+  size_t n = (out_n ? *out_n : 0);
+  size_t written = 0;
+  GIMG_Result r;
+
+  if (num_components == 3) {
+    // APP14 Adobe, transform 0: the components are not YCbCr.
+    unsigned char app14[12];
+    memcpy(app14, "Adobe", 5);
+    app14[5] = 0x00;
+    app14[6] = 100; // version
+    app14[7] = 0x00;
+    app14[8] = 0x00; // flags0
+    app14[9] = 0x00;
+    app14[10] = 0x00; // flags1
+    app14[11] = 0x00; // transform: none
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_APP14, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, (uint16_t)(2 + sizeof(app14)), &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = gimg_stream_write(stream, app14, sizeof(app14), &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+
+  // SOF3 (B.2.2), with 1x1 sampling: a lossless MCU is made of samples, and
+  // subsampling would discard them.
+  {
+    uint16_t sof_len = (uint16_t)(8 + 3 * num_components);
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOF3, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, sof_len, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    unsigned char sof[6 + 3 * 4];
+    static const unsigned char rgb_ids[3] = {'R', 'G', 'B'};
+    sof[0] = (unsigned char)precision;
+    sof[1] = (unsigned char)(height >> 8);
+    sof[2] = (unsigned char)(height & 0xFF);
+    sof[3] = (unsigned char)(width >> 8);
+    sof[4] = (unsigned char)(width & 0xFF);
+    sof[5] = (unsigned char)num_components;
+    for (int c = 0; c < num_components; c++) {
+      sof[6 + c * 3] = (num_components == 3) ? rgb_ids[c] : (unsigned char)1;
+      sof[7 + c * 3] = 0x11; // H = V = 1
+      sof[8 + c * 3] = 0x00; // no quantisation table
+    }
+    r = gimg_stream_write(stream, sof, 6 + 3 * (size_t)num_components, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+
+  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DHT, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = jpeg_write_u16(stream, (uint16_t)(2 + dht_len), &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = gimg_stream_write(stream, dht, dht_len, &written);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  n += written;
+
+  r = jpeg_write_dri(stream, restart_interval, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+
+  {
+    uint16_t sos_len = (uint16_t)(6 + 2 * num_components);
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, sos_len, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    unsigned char sos[12];
+    static const unsigned char rgb_ids[3] = {'R', 'G', 'B'};
+    sos[0] = (unsigned char)num_components;
+    for (int c = 0; c < num_components; c++) {
+      sos[1 + c * 2] = (num_components == 3) ? rgb_ids[c] : (unsigned char)1;
+      sos[2 + c * 2] = 0x00; // Td = 0, Ta unused
+    }
+    size_t tail = 1 + 2 * (size_t)num_components;
+    sos[tail] = (unsigned char)psv; // Ss: predictor selection (H.1)
+    sos[tail + 1] = 0x00;           // Se
+    sos[tail + 2] = 0x00;           // Ah = 0, Al = point transform 0
+    r = gimg_stream_write(stream, sos, tail + 3, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+
+  // The encoder has already stuffed its own 0x00 after every 0xFF and written
+  // the restart markers, so the bytes go out as they stand.
+  if (scan_size > 0) {
+    r = gimg_stream_write(stream, scan_data, scan_size, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (out_n) {
+    *out_n = n;
+  }
+  return GIMG_OK;
+}
+
 /** Write DQT, the table specifications, [DRI if restart_interval>0], the frame
  * header, then for each scan: SOS (Ss,Se,Ah,Al) + scan data; then EOI.
  * precision 8 or 12.  Frees scan data after each write.
@@ -2320,9 +2465,14 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
 
   // T.81 Table B.2: a DCT-based frame carries 8- or 12-bit samples.  Precision
-  // up to 16 exists only for lossless (SOF3), which this codec does not write,
-  // so a request for 16 is refused rather than quietly downgraded.
-  if (options && options->jpeg_precision == 16) {
+  // up to 16 exists only in a lossless frame (SOF3), so a request for 16
+  // without jpeg_lossless_predictor is refused rather than quietly downgraded.
+  // A lossless frame is not bound by the DCT precision rules below; declared
+  // here because they need to know.
+  int lossless_psv = (options && options->jpeg_lossless_predictor)
+      ? (int)options->jpeg_lossless_predictor
+      : 0;
+  if (options && options->jpeg_precision == 16 && lossless_psv == 0) {
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -2330,9 +2480,13 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
 
   // Convert when the caller asked for a precision the raster is not already in.
-  // A 16-bit raster has no matching JPEG precision, so it becomes 12-bit even
-  // when the caller expressed no preference.
-  {
+  // A 16-bit raster has no matching JPEG precision in a DCT-based frame, so it
+  // becomes 12-bit even when the caller expressed no preference.
+  //
+  // None of that applies to a lossless frame: T.81 Table B.2 allows P from 2 to
+  // 16 there, so a 16-bit raster is written at 16 bits and narrowing it would
+  // throw away exactly what the caller asked to keep.
+  if (lossless_psv == 0) {
     uint8_t want_bits = 0;
     const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
     uint8_t have_bits = fmt && fmt->channel_count > 0
@@ -2378,6 +2532,23 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   bool progressive = (options && options->jpeg_progressive) ? true : false;
   bool arithmetic = (options && options->jpeg_arithmetic) ? true : false;
   GIMG_Result r;
+  if (lossless_psv != 0) {
+    if (lossless_psv > 7) {
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      return GIMG_ERR_UNSUPPORTED; // T.81 Table H.1 defines 1..7
+    }
+    if (progressive || arithmetic) {
+      // T.81 has SOF11 for arithmetic lossless and puts progression in the
+      // DCT-based processes only; neither is implemented, and quietly writing
+      // something else is worse than saying so.
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      return GIMG_ERR_UNSUPPORTED;
+    }
+  }
   if (progressive) {
     r = jpeg_validate_progressive_config(
         options ? options->jpeg_progressive_config : NULL);
@@ -2410,6 +2581,35 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   uint8_t h_samp[3] = {1, 1, 1};
   uint8_t v_samp[3] = {1, 1, 1};
   int precision = 8;
+  unsigned char * lossless_dht = NULL;
+  size_t lossless_dht_len = 0;
+  if (lossless_psv != 0) {
+    // T.81 does not say a restart interval must begin at the start of a row,
+    // but a lossless interval resets the prediction, and what "the first row of
+    // the interval" means when an interval starts mid-row is not defined
+    // anywhere.  Implementations resolve that by requiring alignment - libjpeg
+    // refuses to decode an unaligned one outright - so round down to whole
+    // rows rather than write a file the most widely used decoder rejects.
+    if (restart_interval > 0) {
+      uint32_t rw = gimg_raster_width(raster);
+      if (rw > 0) {
+        uint32_t rows = restart_interval / rw;
+        uint32_t snapped = rows > 0 ? rows * rw : rw;
+        restart_interval =
+            (snapped > 0xFFFFu) ? (uint16_t)0 : (uint16_t)snapped;
+      }
+    }
+    r = gimg_jpeg_encode_lossless(alloc, raster, lossless_psv, restart_interval,
+        &scan_data, &scan_size, &lossless_dht, &lossless_dht_len, &width,
+        &height, &num_components, &precision);
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    if (r != GIMG_OK) {
+      return r;
+    }
+    goto lossless_have_scan;
+  }
   r = jpeg_raster_to_scan_data(alloc, raster, quality, chroma_subsampling,
       progressive, arithmetic, restart_interval, fdct_method, quant_method,
       &scan_data,
@@ -2421,6 +2621,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   if (r != GIMG_OK) {
     return r;
   }
+lossless_have_scan:
   // Use progressive image body when we have coefficient buffer (8-bit progressive, or 12/16-bit
   // which use coef path for both baseline and progressive).
   bool use_progressive_body = (coef_buffer != NULL);
@@ -2515,8 +2716,19 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
 
     // APP0: from meta_raw when preserving and present, else minimal (JFIF).
+    //
+    // Not for a three-component lossless frame, though.  JFIF declares
+    // three-component data to be YCbCr, and a decoder that sees a JFIF marker
+    // takes it at its word ahead of anything the Adobe marker says - libjpeg
+    // does exactly that in jdmaster.c.  A lossless frame stores RGB, because
+    // the YCbCr conversion is not reversible, so a JFIF marker here is simply
+    // false: it made libjpeg refuse the file with "unsupported color
+    // conversion request".  libjpeg's own lossless RGB output carries the
+    // Adobe marker and no JFIF, and so does ours now.
+    int suppress_jfif = (lossless_psv != 0 && num_components == 3);
     size_t app0_len = 0;
-    bool have_app0 = (policy != GIMG_META_DROP_ALL &&
+    bool have_app0 = !suppress_jfif &&
+        (policy != GIMG_META_DROP_ALL &&
                          policy != GIMG_META_KEEP_COMMON_ONLY) &&
         meta_raw &&
         gimg_meta_raw_get(
@@ -2538,7 +2750,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         return r;
       }
     }
-    else {
+    else if (!suppress_jfif) {
       unsigned char app0[14];
       jpeg_build_minimal_app0(app0, x_dpi, y_dpi);
       r = jpeg_write_app_segment(
@@ -3005,6 +3217,13 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         alloc,
         restart_interval, &report->bytes_written);
     gimg_free(alloc, coef_buffer);
+  }
+  else if (lossless_psv != 0) {
+    r = jpeg_write_image_body_lossless(stream, width, height, num_components,
+        precision, lossless_psv, lossless_dht, lossless_dht_len, scan_data,
+        scan_size, restart_interval, &report->bytes_written);
+    gimg_free(alloc, lossless_dht);
+    gimg_free(alloc, to_free);
   }
   else {
     r = jpeg_write_image_body(stream, width, height, num_components,
