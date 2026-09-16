@@ -192,10 +192,12 @@ typedef struct {
   /** Restart interval in MCUs (0 = none). When non-zero, DRI segment is
    * written and RST markers (0xFF 0xD0..0xD7) are injected every N MCUs. */
   uint16_t jpeg_restart_interval;
-  /** JPEG output precision (save): 0 = use raster bit depth (8, 12, or 16);
-   * 8, 12, or 16 = write at that precision. When raster depth differs, the
-   * encoder uses library bit-depth conversion (gimg_ops_convert_bit_depth or
-   * gimg_bitdepth_*). Ignored for non-JPEG. */
+  /** JPEG output precision (save): 0 = derive from the raster, 8 or 12 = write
+   * at that precision.  T.81 Table B.2 allows only 8 and 12 in a DCT-based
+   * frame, so 16 returns GIMG_ERR_UNSUPPORTED and a 16-bit raster is written
+   * at 12 when this is 0.  When raster depth differs from the chosen
+   * precision, the encoder uses library bit-depth conversion
+   * (gimg_ops_convert_bit_depth or gimg_bitdepth_*). Ignored for non-JPEG. */
   uint8_t jpeg_precision;
   uint8_t _jpeg_pad[1];
 } GIMG_Save_Options;

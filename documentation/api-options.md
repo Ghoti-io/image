@@ -48,7 +48,7 @@ Used by `gimg_doc_load()`.
 | `jpeg_chroma_subsampling` | For JPEG: `GIMG_JPEG_CHROMA_420` (default), `GIMG_JPEG_CHROMA_422`, `GIMG_JPEG_CHROMA_444`. Ignored by other codecs. |
 | `jpeg_progressive` | For JPEG: `0` = baseline (default), `1` = progressive. Ignored by other codecs. |
 | `jpeg_progressive_config` | When `jpeg_progressive` is 1: `NULL` or `scan_count` 0 = use default progression (DC + AC scan(s)); otherwise pointer to **GIMG_JPEG_Progressive_Config** giving a custom scan script (array of Ss, Se, Ah, Al per scan). Ignored for non-JPEG or baseline. |
-| `jpeg_precision` | For JPEG save: output precision. `0` = use raster bit depth (8, 12, or 16); `8`, `12`, or `16` = write at that precision. When raster depth differs from requested precision, the encoder uses **library** bit-depth conversion (`gimg_ops_convert_bit_depth` / `gimg_bitdepth_*`). 8-bit raster + save 12/16: use library up-convert or reject (documented in codec). Ignored for non-JPEG. |
+| `jpeg_precision` | For JPEG save: output precision. `0` = derive from the raster; `8` or `12` = write at that precision. T.81 Table B.2 allows only 8 and 12 in a DCT-based frame, so `16` returns `GIMG_ERR_UNSUPPORTED` and a 16-bit raster is written at 12-bit when this is `0`. When raster depth differs from the chosen precision, the encoder uses **library** bit-depth conversion (`gimg_ops_convert_bit_depth` / `gimg_bitdepth_*`). Ignored for non-JPEG. |
 
 **GIMG_JPEG_Progressive_Config** holds `scan_count` and `scans` (array of **GIMG_JPEG_Progressive_Scan**). Each scan has `Ss`, `Se` (spectral selection, 0–63), `Ah`, `Al` (successive approximation). Caller keeps the array valid for the duration of `gimg_doc_save()`. **When `jpeg_progressive_config` is NULL or `scan_count` is 0:** the encoder uses the default scan script (one DC scan Ss=0, Se=0 then one AC scan Ss=1..63, Ah=0, Al=0). **Custom script:** non-NULL with `scan_count` > 0 uses the given sequence of scans. Initial AC spectral bands (Ah=0, Ss≥1) must not overlap (T.81 Annex G); overlapping [Ss,Se] ranges are rejected with **GIMG_ERR_UNSUPPORTED**. Refinement passes (Ah>0) are supported: DC refinement (Ss=0, Se=0, Ah>0) and AC refinement (Ah>0 for band Ss..Se) with successive-approximation encoding and optional refinement DHT (Th=2).
 
@@ -77,7 +77,7 @@ Format-specific behavior (e.g. PNG chunk emission) is described in \ref format_r
 |-----------|-------------|
 | `limits`  | Pointer to **GIMG_Limits**; `NULL` = use defaults. Enforced during decode (e.g. max decoded pixels). |
 | `jpeg_chroma_upsampling` | JPEG only: chroma upsampling for 4:2:0/4:2:2. **GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE** (0) = box/replicate; **GIMG_JPEG_CHROMA_UPSAMPLE_FANCY** (1) = triangle filter. When options is NULL, FANCY is used (default). Ignored for non-JPEG. |
-| `jpeg_precision` | JPEG decode-to precision: `0` = use file precision (8→GRAY8/RGBA8; 12/16→GRAY16/RGB16, 12-bit left-justified); `8`, `12`, or `16` = decode to that bit depth (library conversion when different from file). Ignored for non-JPEG. |
+| `jpeg_precision` | JPEG decode-to precision: `0` = use file precision (8→GRAY8/RGBA8; 12→GRAY16/RGB16, left-justified); `8`, `12`, or `16` = decode to that bit depth (library conversion when different from file). A *file* precision of 16 does not exist in T.81 and is rejected on load; this option is about the output raster. Ignored for non-JPEG. |
 | `_reserved` | Reserved; set to zero. |
 
 Used by `gimg_item_decode()`.

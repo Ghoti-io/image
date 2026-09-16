@@ -2544,8 +2544,15 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
   }
   gimg_item_set_raster(item, raster);
 
+  // A GRAY16 raster is written at 12-bit (T.81 has no 16-bit DCT frame), so the
+  // 12-bit quality limits apply here.  Quality 100 is refused outright (see
+  // SaveGray12Quality100Unsupported).  Qualities 88-90 and 94-99 currently
+  // produce a file our own decoder rejects as corrupt - a 12-bit entropy-coding
+  // defect that predates this test and is tracked separately - so this test
+  // stays inside the range that is known to work rather than asserting broken
+  // behaviour.
   size_t size_50 = 0, size_85 = 0, size_100 = 0;
-  for (unsigned q : {50u, 85u, 100u}) {
+  for (unsigned q : {50u, 85u}) {
     GIMG_Stream * out = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {
@@ -2559,8 +2566,7 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
     size_t n = 0;
     gimg_stream_output_buffer(out, &data, &n);
     if (q == 50) size_50 = n;
-    else if (q == 85) size_85 = n;
-    else size_100 = n;
+    else size_85 = n;
     GIMG_Stream * in_stream = nullptr;
     ASSERT_EQ(gimg_stream_create_memory((const uint8_t *)data, n, &in_stream),
         GIMG_OK);
@@ -2580,7 +2586,7 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
   /* Same image: higher quality should yield larger or similar size (no strict order). */
   EXPECT_GT(size_50, 0u);
   EXPECT_GT(size_85, 0u);
-  EXPECT_GT(size_100, 0u);
+  (void)size_100;
 }
 
 /* Task 3.3.5: Native 12-bit format (GRAY12) → 12-bit JPEG (SOF1 baseline), round-trip. */
@@ -3100,7 +3106,12 @@ TEST(JpegEncode, SaveRgb16Chroma420_422_444) {
 }
 
 /* Task 3.2.3: 16-bit encode uses SOF2 only (T.81; no SOF1 for 16-bit). */
-TEST(JpegEncode, SaveGray16EmitsSof2) {
+/** A 16-bit raster has no matching JPEG precision: T.81 Table B.2 allows 8 and
+ * 12 in a DCT frame, and nothing above that outside lossless (SOF3).  So a
+ * GRAY16 raster is written at 12-bit, which for a sequential frame is SOF1.
+ * This test previously asserted SOF2 with precision 16 "per T.81"; no such
+ * frame exists. */
+TEST(JpegEncode, SaveGray16WritesTwelveBitFrame) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
   GIMG_Raster * raster = nullptr;
@@ -3126,14 +3137,49 @@ TEST(JpegEncode, SaveGray16EmitsSof2) {
   gimg_doc_destroy(doc);
 
   const uint8_t * p = copy.data();
-  bool found_sof2 = false;
+  int sof_marker = 0;
+  size_t sof_at = 0;
   for (size_t i = 0; i + 1 < copy.size(); i++) {
-    if (p[i] == 0xFF && p[i + 1] == 0xC2) {
-      found_sof2 = true;
+    if (p[i] == 0xFF &&
+        (p[i + 1] == 0xC0 || p[i + 1] == 0xC1 || p[i + 1] == 0xC2)) {
+      sof_marker = p[i + 1];
+      sof_at = i;
       break;
     }
   }
-  EXPECT_TRUE(found_sof2) << "16-bit JPEG must use SOF2 (0xFF 0xC2) per T.81";
+  ASSERT_NE(sof_marker, 0) << "no SOF written";
+  EXPECT_EQ(sof_marker, 0xC1)
+      << "a 12-bit sequential frame is SOF1 (extended sequential)";
+  ASSERT_LT(sof_at + 4, copy.size());
+  EXPECT_EQ(p[sof_at + 4], 12)
+      << "sample precision byte must be 12, never 16";
+}
+
+/** Asking for precision 16 is refused rather than quietly downgraded, so a
+ * caller that wants it learns it does not exist. */
+TEST(JpegEncode, SavePrecision16Unsupported) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_GRAY16, GIMG_RASTER_OWNED,
+                NULL, 0, &raster),
+      GIMG_OK);
+  memset(gimg_raster_pixels(raster), 0, 8 * 8 * 2);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .quality = 85,
+  };
+  opts.jpeg_precision = 16;
+  GIMG_Save_Report report = {};
+  EXPECT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report),
+      GIMG_ERR_UNSUPPORTED)
+      << "jpeg_precision = 16 has no representation in T.81";
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
 }
 
 static constexpr uint32_t kLargeW = 640u;

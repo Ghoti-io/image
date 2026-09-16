@@ -256,24 +256,6 @@ static void jpeg_rgb_to_ycbcr(
 #define CHROMA_422 1
 #define CHROMA_444 2
 
-/** RGB 16-bit to YCbCr 16-bit (BT.601). R,G,B 0..65535 -> Y,Cb,Cr 0..65535. */
-static void jpeg_rgb16_to_ycbcr16(uint16_t r, uint16_t g, uint16_t b,
-    uint16_t * y, uint16_t * cb, uint16_t * cr) {
-  uint32_t ri = (uint32_t)(r >> 8);
-  uint32_t gi = (uint32_t)(g >> 8);
-  uint32_t bi = (uint32_t)(b >> 8);
-  int yv = (int)((77 * ri + 150 * gi + 29 * bi + 128) / 256);
-  int cbv =
-      (int)((-43 * (int)ri - 84 * (int)gi + 127 * (int)bi + 128 * 256) / 256) +
-      128;
-  int crv =
-      (int)((127 * (int)ri - 106 * (int)gi - 21 * (int)bi + 128 * 256) / 256) +
-      128;
-  *y = (uint16_t)(yv < 0 ? 0 : (yv > 255 ? 65535u : (uint32_t)yv << 8));
-  *cb = (uint16_t)(cbv < 0 ? 0 : (cbv > 255 ? 65535u : (uint32_t)cbv << 8));
-  *cr = (uint16_t)(crv < 0 ? 0 : (crv > 255 ? 65535u : (uint32_t)crv << 8));
-}
-
 /** RGB 12-bit to YCbCr 12-bit (BT.601). R,G,B 0..4095 -> Y,Cb,Cr 0..4095. */
 static void jpeg_rgb12_to_ycbcr12(uint16_t r, uint16_t g, uint16_t b,
     uint16_t * y, uint16_t * cb, uint16_t * cr) {
@@ -289,335 +271,6 @@ static void jpeg_rgb12_to_ycbcr12(uint16_t r, uint16_t g, uint16_t b,
   *y = (uint16_t)(yv < 0 ? 0 : (yv > 4095 ? 4095u : (uint32_t)yv));
   *cb = (uint16_t)(cbv < 0 ? 0 : (cbv > 4095 ? 4095u : (uint32_t)cbv));
   *cr = (uint16_t)(crv < 0 ? 0 : (crv > 4095 ? 4095u : (uint32_t)crv));
-}
-
-/** 16-bit path: fill uint16_t comps, quant 16-bit, encode with extended
- * precision. */
-static GIMG_Result jpeg_raster_to_scan_data_16bit(const GIMG_Allocator * alloc,
-    const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
-    bool progressive, unsigned char ** out_scan_data, size_t * out_scan_size,
-    int16_t ** out_coef_buffer, size_t * out_total_blocks,
-    uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
-    uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
-    uint32_t * out_height, int * out_num_components, uint8_t out_h_samp[3],
-    uint8_t out_v_samp[3]) {
-  (void)progressive;
-  (void)out_scan_data;
-  (void)out_scan_size;
-  // 16-bit always uses coef buffer (SOF2 + two scans).
-  uint32_t width = gimg_raster_width(raster);
-  uint32_t height = gimg_raster_height(raster);
-  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
-  int num_components = (fmt->channel_model == GIMG_CHANNEL_GRAY) ? 1 : 3;
-  size_t comp_size = 0;
-  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
-    return GIMG_ERR_LIMIT;
-  }
-  uint16_t * comp_y =
-      (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
-  if (!comp_y) {
-    return GIMG_ERR_OOM;
-  }
-  uint16_t * comp_cb = NULL;
-  uint16_t * comp_cr = NULL;
-  if (num_components == 3) {
-    comp_cb = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
-    comp_cr = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
-    if (!comp_cb || !comp_cr) {
-      gimg_free(alloc, comp_y);
-      if (comp_cb) {
-        gimg_free(alloc, comp_cb);
-      }
-      return GIMG_ERR_OOM;
-    }
-  }
-  size_t stride_bytes = gimg_raster_stride_bytes(raster);
-  const unsigned char * pixels =
-      (const unsigned char *)gimg_raster_pixels_const(raster);
-  if (!pixels) {
-    gimg_free(alloc, comp_y);
-    gimg_free(alloc, comp_cb);
-    gimg_free(alloc, comp_cr);
-    return GIMG_ERR_UNSUPPORTED;
-  }
-  if (num_components == 1) {
-    for (uint32_t y = 0; y < height; y++) {
-      const uint16_t * row = (const uint16_t *)(pixels + y * stride_bytes);
-      for (uint32_t x = 0; x < width; x++) {
-        comp_y[y * (size_t)width + x] = row[x];
-      }
-    }
-  }
-  else {
-    int ch_count = (int)fmt->channel_count;
-    if (ch_count < 3) {
-      ch_count = 3;
-    }
-    for (uint32_t y = 0; y < height; y++) {
-      const uint16_t * row = (const uint16_t *)(pixels + y * stride_bytes);
-      for (uint32_t x = 0; x < width; x++) {
-        uint16_t r = row[x * (size_t)ch_count + 0];
-        uint16_t g = row[x * (size_t)ch_count + 1];
-        uint16_t b = row[x * (size_t)ch_count + 2];
-        uint16_t yv, cb, cr;
-        jpeg_rgb16_to_ycbcr16(r, g, b, &yv, &cb, &cr);
-        comp_y[y * (size_t)width + x] = yv;
-        comp_cb[y * (size_t)width + x] = cb;
-        comp_cr[y * (size_t)width + x] = cr;
-      }
-    }
-  }
-  uint8_t h_samp[3] = {1, 1, 1};
-  uint8_t v_samp[3] = {1, 1, 1};
-  size_t stride0 = (size_t)width;
-  size_t stride1 = (size_t)width;
-  size_t stride2 = (size_t)width;
-  uint16_t * use_cb = comp_cb;
-  uint16_t * use_cr = comp_cr;
-  if (num_components == 3 && chroma_subsampling != CHROMA_444) {
-    if (chroma_subsampling == CHROMA_420) {
-      // T.81 Annex A: expand chroma to fill integral DCT blocks (output_cols = width_in_blocks*8).
-      uint32_t mcu_per_row = (width + 15u) / 16u;
-      uint32_t cw = 8u * mcu_per_row;
-      uint32_t ch = (height + 1u) / 2u;
-      if (ch == 0u) {
-        ch = 1u;
-      }
-      h_samp[0] = 2;
-      h_samp[1] = 1;
-      h_samp[2] = 1;
-      v_samp[0] = 2;
-      v_samp[1] = 1;
-      v_samp[2] = 1;
-      size_t chroma_size = 0;
-      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
-        gimg_free(alloc, comp_y);
-        gimg_free(alloc, comp_cb);
-        gimg_free(alloc, comp_cr);
-        return GIMG_ERR_LIMIT;
-      }
-      chroma_size *= sizeof(uint16_t);
-      use_cb = (uint16_t *)gimg_malloc(alloc, chroma_size);
-      use_cr = (uint16_t *)gimg_malloc(alloc, chroma_size);
-      if (!use_cb || !use_cr) {
-        gimg_free(alloc, comp_y);
-        gimg_free(alloc, comp_cb);
-        gimg_free(alloc, comp_cr);
-        if (use_cb) {
-          gimg_free(alloc, use_cb);
-        }
-        return GIMG_ERR_OOM;
-      }
-      // T.81 Annex A: chroma has (width+1)/2 samples per line for 2h; fill to width_in_blocks*8
-      // by replicating the last sample (Annex A data unit alignment).
-      uint32_t real_cw = (width + 1u) / 2u;
-      if (real_cw == 0u) {
-        real_cw = 1u;
-      }
-      for (uint32_t cb_y = 0; cb_y < ch; cb_y++) {
-        uint32_t y_lo = cb_y * 2u;
-        uint32_t y1 = y_lo + 1u < height ? y_lo + 1u : y_lo;
-        if (y_lo >= height) {
-          y_lo = height - 1u;
-        }
-        if (y1 >= height) {
-          y1 = height - 1u;
-        }
-        for (uint32_t cb_x = 0; cb_x < real_cw; cb_x++) {
-          uint32_t x_lo = cb_x * 2u;
-          uint32_t x1 = x_lo + 1u < width ? x_lo + 1u : x_lo;
-          if (x_lo >= width) {
-            x_lo = width - 1u;
-          }
-          if (x1 >= width) {
-            x1 = width - 1u;
-          }
-          uint32_t sum_cb = (uint32_t)comp_cb[y_lo * (size_t)width + x_lo] +
-              (uint32_t)comp_cb[y_lo * (size_t)width + x1] +
-              (uint32_t)comp_cb[y1 * (size_t)width + x_lo] +
-              (uint32_t)comp_cb[y1 * (size_t)width + x1];
-          uint32_t sum_cr = (uint32_t)comp_cr[y_lo * (size_t)width + x_lo] +
-              (uint32_t)comp_cr[y_lo * (size_t)width + x1] +
-              (uint32_t)comp_cr[y1 * (size_t)width + x_lo] +
-              (uint32_t)comp_cr[y1 * (size_t)width + x1];
-          // Ordered-dither rounding for 2×2 box: bias 1,2,1,2 per column (T.81 does not specify filter).
-          unsigned bias_16 = 1u + (cb_x % 2u);
-          use_cb[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cb + bias_16) / 4);
-          use_cr[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cr + bias_16) / 4);
-        }
-        // Replicate rightmost chroma column to fill to cw (T.81 Annex A).
-        for (uint32_t cb_x = real_cw; cb_x < cw; cb_x++) {
-          use_cb[cb_y * (size_t)cw + cb_x] =
-              use_cb[cb_y * (size_t)cw + (real_cw - 1u)];
-          use_cr[cb_y * (size_t)cw + cb_x] =
-              use_cr[cb_y * (size_t)cw + (real_cw - 1u)];
-        }
-      }
-      stride1 = (size_t)cw;
-      stride2 = (size_t)cw;
-      gimg_free(alloc, comp_cb);
-      gimg_free(alloc, comp_cr);
-      comp_cb = NULL;
-      comp_cr = NULL;
-    }
-    else {
-      uint32_t mcu_per_row = (width + 15u) / 16u;
-      uint32_t mcu_per_col = (height + 7u) / 8u;
-      uint32_t cw = 8u * mcu_per_row;
-      uint32_t ch = 8u * mcu_per_col;
-      h_samp[0] = 2;
-      h_samp[1] = 1;
-      h_samp[2] = 1;
-      v_samp[0] = 1;
-      v_samp[1] = 1;
-      v_samp[2] = 1;
-      size_t chroma_size = 0;
-      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
-        gimg_free(alloc, comp_y);
-        gimg_free(alloc, comp_cb);
-        gimg_free(alloc, comp_cr);
-        return GIMG_ERR_LIMIT;
-      }
-      chroma_size *= sizeof(uint16_t);
-      use_cb = (uint16_t *)gimg_malloc(alloc, chroma_size);
-      use_cr = (uint16_t *)gimg_malloc(alloc, chroma_size);
-      if (!use_cb || !use_cr) {
-        gimg_free(alloc, comp_y);
-        gimg_free(alloc, comp_cb);
-        gimg_free(alloc, comp_cr);
-        if (use_cb) {
-          gimg_free(alloc, use_cb);
-        }
-        return GIMG_ERR_OOM;
-      }
-      for (uint32_t cb_y = 0; cb_y < ch; cb_y++) {
-        uint32_t y_src = (cb_y * height) / ch;
-        if (y_src >= height) {
-          y_src = height - 1u;
-        }
-        size_t row_off = (size_t)y_src * (size_t)width;
-        for (uint32_t cb_x = 0; cb_x < cw; cb_x++) {
-          uint32_t x_lo = cb_x * 2u;
-          uint32_t x1 = x_lo + 1u < width ? x_lo + 1u : x_lo;
-          if (x_lo >= width) {
-            x_lo = width - 1u;
-          }
-          if (x1 >= width) {
-            x1 = width - 1u;
-          }
-          uint32_t sum_cb = (uint32_t)comp_cb[row_off + x_lo] +
-              (uint32_t)comp_cb[row_off + x1];
-          uint32_t sum_cr = (uint32_t)comp_cr[row_off + x_lo] +
-              (uint32_t)comp_cr[row_off + x1];
-          use_cb[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cb + 1) / 2);
-          use_cr[cb_y * (size_t)cw + cb_x] = (uint16_t)((sum_cr + 1) / 2);
-        }
-      }
-      stride1 = (size_t)cw;
-      stride2 = (size_t)cw;
-      gimg_free(alloc, comp_cb);
-      gimg_free(alloc, comp_cr);
-      comp_cb = NULL;
-      comp_cr = NULL;
-    }
-  }
-  if (out_h_samp && out_v_samp && num_components >= 3) {
-    out_h_samp[0] = h_samp[0];
-    out_h_samp[1] = h_samp[1];
-    out_h_samp[2] = h_samp[2];
-    out_v_samp[0] = v_samp[0];
-    out_v_samp[1] = v_samp[1];
-    out_v_samp[2] = v_samp[2];
-  }
-  if (quality > 100) {
-    quality = 100;
-  }
-  gimg_jpeg_default_quant_scaled_16bit(quality, quant_luma, quant_chroma);
-  const uint8_t * h_ptr =
-      (num_components == 3 && (h_samp[0] != 1 || h_samp[1] != 1)) ? h_samp
-                                                                  : NULL;
-  const uint8_t * v_ptr =
-      (num_components == 3 && (v_samp[0] != 1 || v_samp[1] != 1)) ? v_samp
-                                                                  : NULL;
-  GIMG_Result r;
-  int precision = 16;
-  // 16-bit must use SOF2 (progressive) with two scans (DC then AC) so the
-  // decoder can decode; always fill coef buffer and let the writer emit
-  // SOF2 + DC scan + AC scan.
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    if (h_samp[1] > h_max) {
-      h_max = h_samp[1];
-    }
-    if (h_samp[2] > h_max) {
-      h_max = h_samp[2];
-    }
-    if (v_samp[1] > v_max) {
-      v_max = v_samp[1];
-    }
-    if (v_samp[2] > v_max) {
-      v_max = v_samp[2];
-    }
-  }
-  uint32_t mcu_w = (uint32_t)(8 * h_max);
-  uint32_t mcu_h = (uint32_t)(8 * v_max);
-  uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
-  uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
-  size_t blocks_per_mcu = 0;
-  for (int c = 0; c < num_components; c++) {
-    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
-  }
-  size_t total_blocks = 0;
-  if (!gcu_safe_mul_size(
-          (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-      !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
-    gimg_free(alloc, comp_y);
-    if (use_cb != comp_cb) {
-      gimg_free(alloc, use_cb);
-    }
-    if (use_cr != comp_cr) {
-      gimg_free(alloc, use_cr);
-    }
-    return GIMG_ERR_LIMIT;
-  }
-  int16_t * coef_buf =
-      (int16_t *)gimg_malloc(alloc, total_blocks * 64 * sizeof(int16_t));
-  if (!coef_buf) {
-    gimg_free(alloc, comp_y);
-    if (use_cb != comp_cb) {
-      gimg_free(alloc, use_cb);
-    }
-    if (use_cr != comp_cr) {
-      gimg_free(alloc, use_cr);
-    }
-    return GIMG_ERR_OOM;
-  }
-  size_t out_blocks = 0;
-  r = gimg_jpeg_progressive_fill_coef_buffer_16bit(width, height,
-      num_components, comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr,
-      v_ptr, quant_luma, quant_chroma, precision, coef_buf, &out_blocks);
-  gimg_free(alloc, comp_y);
-  if (use_cb != comp_cb) {
-    gimg_free(alloc, use_cb);
-  }
-  if (use_cr != comp_cr) {
-    gimg_free(alloc, use_cr);
-  }
-  if (num_components == 3) {
-    gimg_free(alloc, comp_cb);
-    gimg_free(alloc, comp_cr);
-  }
-  if (r != GIMG_OK) {
-    gimg_free(alloc, coef_buf);
-    return r;
-  }
-  *out_coef_buffer = coef_buf;
-  *out_total_blocks = out_blocks;
-  *out_width = width;
-  *out_height = height;
-  *out_num_components = num_components;
-  return GIMG_OK;
 }
 
 /** 12-bit path: GRAY12/RGBA12 (0..4095). Progressive: fill coef and return;
@@ -979,8 +632,8 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
 /** Encode raster to scan data (baseline) or coefficient buffer (progressive).
  * When !progressive: allocates *out_scan_data; caller must free. When
  * progressive: allocates *out_coef_buffer (out_total_blocks * 64 int16_t);
- * caller must free. Supports GRAY8, RGB 8-bit, GRAY16, RGB 16-bit.
- * *out_precision is set to 8 or 16. */
+ * caller must free. Supports GRAY8, RGB 8-bit, GRAY12, RGB 12-bit.
+ * *out_precision is set to 8 or 12. */
 static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
     bool progressive, uint16_t restart_interval, unsigned fdct_method,
@@ -1034,15 +687,15 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   }
   else if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count == 1 &&
       fmt->bits_per_channel[0] == 16) {
-    num_components = 1;
-    precision = 16;
+    // A 16-bit raster is converted to 12-bit before this point (T.81 has no
+    // 16-bit DCT frame).  Reaching here means that conversion did not happen.
+    return GIMG_ERR_UNSUPPORTED;
   }
   else if ((fmt->channel_model == GIMG_CHANNEL_RGB ||
                fmt->channel_model == GIMG_CHANNEL_RGBA) &&
       fmt->channel_count >= 3 && fmt->bits_per_channel[0] == 16 &&
       fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
-    num_components = 3;
-    precision = 16;
+    return GIMG_ERR_UNSUPPORTED; // See above: converted to 12-bit earlier.
   }
   else if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count == 1 &&
       fmt->bits_per_channel[0] == 12) {
@@ -1066,13 +719,6 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
         out_scan_size, out_coef_buffer, out_total_blocks, quant_luma,
         quant_chroma, out_width, out_height, out_num_components, out_h_samp,
         out_v_samp);
-  }
-  if (precision == 16) {
-    *out_precision = 16;
-    return jpeg_raster_to_scan_data_16bit(alloc, raster, quality,
-        chroma_subsampling, progressive, out_scan_data, out_scan_size,
-        out_coef_buffer, out_total_blocks, quant_luma, quant_chroma, out_width,
-        out_height, out_num_components, out_h_samp, out_v_samp);
   }
   size_t comp_size = 0;
   if (!gcu_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
@@ -1851,7 +1497,7 @@ static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream,
 
 /** Write DQT, [DRI if restart_interval>0], SOF0/SOF1/SOF2, DHT, SOS, scan
  * data, EOI to stream (SOF before DHT to match common decoders). Does not free
- * scan_data. precision 8 = SOF0; 12 = SOF1; 16 = SOF2. */
+ * scan_data. precision 8 = SOF0; 12 = SOF1. */
 static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     uint32_t height, int num_components, const uint8_t * h_samp,
     const uint8_t * v_samp, const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
@@ -1907,9 +1553,6 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     uint8_t sof_marker = GIMG_JPEG_MARKER_SOF0;
     if (precision == 12) {
       sof_marker = GIMG_JPEG_MARKER_SOF1;
-    }
-    else if (precision == 16) {
-      sof_marker = GIMG_JPEG_MARKER_SOF2;
     }
     uint8_t prec_byte = (uint8_t)(precision < 8 ? 8 : precision);
     // SOF Lf = 8 + 3*Nc (T.81 B.2.2); payload = Lf - 2 = 6 + 3*Nc bytes.
@@ -2074,7 +1717,7 @@ static GIMG_Result jpeg_validate_progressive_config(
 }
 
 /** Write DQT, DHT, [DRI if restart_interval>0], SOF2, then for each scan: SOS
- * (Ss,Se,Ah,Al) + scan data; then EOI. precision 8 or 16. Frees scan data
+ * (Ss,Se,Ah,Al) + scan data; then EOI. precision 8 or 12. Frees scan data
  * after each write. */
 static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components, const uint8_t * h_samp,
@@ -2229,7 +1872,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
         ? ac_initial_state
         : NULL;
     if (precision > 8) {
-      r = gimg_jpeg_encode_progressive_scan_16bit(width, height, num_components,
+      r = gimg_jpeg_encode_progressive_scan_extended(width, height, num_components,
           coef_buffer, total_blocks, h_samp, v_samp, scans[s].Ss, scans[s].Se,
           scans[s].Ah, scans[s].Al, alloc, restart_interval, &scan_data,
           &scan_size);
@@ -2331,16 +1974,34 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return GIMG_ERR_UNSUPPORTED; // No raster and not loaded by us.
   }
 
-  // When jpeg_precision is 8, 12, or 16 and raster depth differs, convert via library bit-depth API.
-  if (options && (options->jpeg_precision == 8 || options->jpeg_precision == 12
-                      || options->jpeg_precision == 16)) {
-    uint8_t want_bits = options->jpeg_precision;
+  // T.81 Table B.2: a DCT-based frame carries 8- or 12-bit samples.  Precision
+  // up to 16 exists only for lossless (SOF3), which this codec does not write,
+  // so a request for 16 is refused rather than quietly downgraded.
+  if (options && options->jpeg_precision == 16) {
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  // Convert when the caller asked for a precision the raster is not already in.
+  // A 16-bit raster has no matching JPEG precision, so it becomes 12-bit even
+  // when the caller expressed no preference.
+  {
+    uint8_t want_bits = 0;
     const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
     uint8_t have_bits = fmt && fmt->channel_count > 0
         ? fmt->bits_per_channel[0]
         : 0;
-    if (have_bits != want_bits && (have_bits == 8 || have_bits == 12 ||
-            have_bits == 16)) {
+    if (options && (options->jpeg_precision == 8 ||
+                       options->jpeg_precision == 12)) {
+      want_bits = options->jpeg_precision;
+    }
+    else if (have_bits == 16) {
+      want_bits = 12;
+    }
+    if (want_bits != 0 && have_bits != want_bits &&
+        (have_bits == 8 || have_bits == 12 || have_bits == 16)) {
       GIMG_Raster * converted = NULL;
       GIMG_Result r_conv =
           gimg_ops_convert_bit_depth(raster, want_bits, &converted);

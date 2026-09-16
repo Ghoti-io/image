@@ -105,7 +105,7 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_DHT_HEADER_LEN 17u
 /** 8-bit AC table symbol count (T.81 Annex K Table K.4). */
 #define GIMG_JPEG_AC_SYMBOLS_8BIT 162u
-/** Extended-precision AC table symbol count (12/16-bit: 162 + 80). */
+/** Extended-precision AC table symbol count (12-bit: 162 + 80). */
 #define GIMG_JPEG_AC_SYMBOLS_EXTENDED 242u
 
 /** Max number of quantization tables. */
@@ -171,7 +171,7 @@ typedef struct {
  * Parsed SOF0 (baseline) / SOF1 (extended) / SOF2 (progressive) fields.
  */
 typedef struct {
-  uint8_t precision;      ///< Sample precision (8, 12, or 16).
+  uint8_t precision;      ///< Sample precision (8 or 12).
   uint16_t height;        ///< Image height in pixels.
   uint16_t width;         ///< Image width in pixels.
   uint8_t num_components; ///< Number of components (1..4).
@@ -406,7 +406,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size);
 
-/** Baseline sequential from coef buffer with extended DHT (12/16-bit). */
+/** Baseline sequential from coef buffer with extended DHT (12-bit). */
 GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
     uint32_t width, uint32_t height, int num_components,
     const int16_t * coef_buffer, size_t total_blocks, const uint8_t * h_samp,
@@ -443,11 +443,11 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
 void gimg_jpeg_default_quant_scaled(
     unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma);
 
-/** Fill 16-bit quant tables for 12/16-bit DQT (quality 1..100). */
+/** Fill 16-bit quant table entries for the 12-bit DQT (quality 1..100). */
 void gimg_jpeg_default_quant_scaled_16bit(
     unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma);
 
-/** Fill 12-bit quant tables (Pq=1; same scaling as 16-bit). */
+/** Fill 12-bit quant tables (Pq=1; 16-bit table entries). */
 void gimg_jpeg_default_quant_scaled_12bit(
     unsigned quality, uint16_t * quant_luma, uint16_t * quant_chroma);
 
@@ -455,28 +455,9 @@ void gimg_jpeg_default_quant_scaled_12bit(
 GIMG_Result gimg_jpeg_write_standard_dht(
     GIMG_Stream * stream, size_t * out_bytes_written);
 
-/** Write extended DHT for 12/16-bit (DC 0..16, AC 242 symbols). */
+/** Write extended DHT for 12-bit (DC 0..16, AC 242 symbols). */
 GIMG_Result gimg_jpeg_write_standard_dht_extended(
     GIMG_Stream * stream, size_t * out_bytes_written);
-
-/** Baseline encode for 12/16-bit (uint16_t components, extended tables). */
-GIMG_Result gimg_jpeg_encode_baseline_scan_16bit(uint32_t width,
-    uint32_t height, int num_components, const uint16_t * comp0,
-    const uint16_t * comp1, const uint16_t * comp2, size_t stride0,
-    size_t stride1, size_t stride2, const uint8_t * h_samp,
-    const uint8_t * v_samp, const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, int precision, const GIMG_Allocator * alloc,
-    uint16_t restart_interval, unsigned char ** out_scan_data,
-    size_t * out_scan_size);
-
-/** Fill coefficient buffer for 12/16-bit progressive encode. */
-GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_16bit(uint32_t width,
-    uint32_t height, int num_components, const uint16_t * comp0,
-    const uint16_t * comp1, const uint16_t * comp2, size_t stride0,
-    size_t stride1, size_t stride2, const uint8_t * h_samp,
-    const uint8_t * v_samp, const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, int precision, int16_t * coef_buffer,
-    size_t * out_total_blocks);
 
 /** Fill coefficient buffer for 12-bit (samples 0..4095, level shift 2048). */
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
@@ -487,8 +468,8 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
     const uint16_t * quant_chroma, int16_t * coef_buffer,
     size_t * out_total_blocks);
 
-/** Progressive scan encode with extended tables (12/16-bit). */
-GIMG_Result gimg_jpeg_encode_progressive_scan_16bit(uint32_t width,
+/** Progressive scan encode with extended tables (12-bit). */
+GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
     uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
@@ -507,12 +488,12 @@ void jpeg_dezigzag(const int16_t * block, int16_t * out);
 /** Dequantise block: out[i] = block[i] * quant[inv_zigzag[i]]. 8-bit path. */
 void jpeg_dequantise(
     const int16_t * block, const uint16_t * quant, int16_t * out);
-/** Dequantise block into 32-bit (for 12/16-bit IDCT). */
+/** Dequantise block into 32-bit (for 12-bit IDCT). */
 void jpeg_dequantise_32(
     const int16_t * block, const uint16_t * quant, int32_t * out);
 /** 8×8 inverse DCT (row-column). Input/output row-major. */
 void jpeg_idct_8x8(const int16_t * in, int16_t * out);
-/** 8×8 inverse DCT with scale factor (12/16-bit). */
+/** 8×8 inverse DCT with scale factor (12-bit). */
 void jpeg_idct_8x8_32(const int32_t * in, int32_t * out, int scale);
 /** Reference integer IDCT (ISLOW); matches libjpeg. */
 void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out);

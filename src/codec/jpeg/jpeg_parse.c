@@ -38,10 +38,12 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
     return GIMG_ERR_UNSUPPORTED; // Extended sequential: 8 or 12-bit.
   }
   if (sof_marker == GIMG_JPEG_MARKER_SOF2 &&
-      (precision != 8 && precision != 12 && precision != 16)) {
-    return GIMG_ERR_UNSUPPORTED; // Progressive: 8, 12, or 16-bit.
+      (precision != 8 && precision != 12)) {
+    return GIMG_ERR_UNSUPPORTED; // Progressive: 8 or 12-bit.
   }
-  if (precision != 8 && precision != 12 && precision != 16) {
+  // T.81 Table B.2: every DCT-based frame is 8- or 12-bit.  Precision up to 16
+  // belongs to lossless (SOF3) only, which we do not support.
+  if (precision != 8 && precision != 12) {
     return GIMG_ERR_UNSUPPORTED;
   }
   if (width == 0) {

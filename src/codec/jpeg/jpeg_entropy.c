@@ -55,14 +55,14 @@ static GIMG_Result jpeg_decode_baseline_extended(
     GIMG_Raster ** out_raster) {
   const gimg_jpeg_sof_t * sof = &state->sof;
   uint8_t precision = sof->precision;
-  if (precision != 12 && precision != 16) {
+  if (precision != 12) {
     return GIMG_ERR_UNSUPPORTED;
   }
   uint16_t width = sof->width;
   uint16_t height = sof->height;
   uint8_t num_comp = sof->num_components;
   if (num_comp != 1 && num_comp != 3) {
-    return GIMG_ERR_UNSUPPORTED; // 12/16-bit: grayscale or YCbCr only
+    return GIMG_ERR_UNSUPPORTED; // 12-bit: grayscale or YCbCr only
   }
 
   size_t pixel_count = 0;
@@ -309,7 +309,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
-    // For 12-bit, comp_buf is left-justified (sample<<4); for 16-bit, raw.
+    // For 12-bit, comp_buf is left-justified (sample<<4).
     int mid = level_shift;
     for (uint32_t y = 0; y < height; y++) {
       uint32_t cy1 = (ch1 > 1 && height > 1) ? (y * ch1 / height) : 0;
@@ -331,7 +331,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
         int r_val = yy + (int)(1.40200 * cr + 0.5);
         int g_val = yy - (int)(0.34414 * cb + 0.71414 * cr + 0.5);
         int b_val = yy + (int)(1.77200 * cb + 0.5);
-        // 12-bit: scale to 16-bit range (left-justified); 16-bit: full range.
+        // 12-bit: scale to 16-bit range (left-justified).
         int out_max = (precision == 12) ? 65520 : 65535;
         if (precision == 12) {
           r_val <<= 4;
@@ -1096,14 +1096,13 @@ fail_comp:
   return GIMG_ERR_FORMAT;
 }
 
-/** Progressive decode for 8-, 12-, or 16-bit precision. Grayscale and YCbCr
- * only. */
+/** Progressive decode for 8- or 12-bit precision. Grayscale and YCbCr only. */
 static GIMG_Result jpeg_decode_progressive_extended(
     const gimg_jpeg_doc_state_t * state, const GIMG_Decode_Options * options,
     GIMG_Raster ** out_raster) {
   const gimg_jpeg_sof_t * sof = &state->sof;
   uint8_t precision = sof->precision;
-  if (precision != 8 && precision != 12 && precision != 16) {
+  if (precision != 8 && precision != 12) {
     return GIMG_ERR_UNSUPPORTED;
   }
   uint16_t width = sof->width;

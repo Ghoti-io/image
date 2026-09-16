@@ -13,6 +13,9 @@
 #include "../codec_internal.h"
 #include "jpeg_internal.h"
 
+// GIMG_CAP_16BPC says the decoded raster can be 16 bits per channel, which it
+// is for a 12-bit frame (left-justified).  It does not mean 16-bit JPEG: T.81
+// Table B.2 has no such frame.  See documentation/format-references.md.
 #define JPEG_CAPABILITIES                                                      \
   (GIMG_CAP_READ | GIMG_CAP_WRITE | GIMG_CAP_ICC | GIMG_CAP_CMYK | GIMG_CAP_16BPC)
 

@@ -1068,114 +1068,6 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
   return GIMG_OK;
 }
 
-GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_16bit(uint32_t width,
-    uint32_t height, int num_components, const uint16_t * comp0,
-    const uint16_t * comp1, const uint16_t * comp2, size_t stride0,
-    size_t stride1, size_t stride2, const uint8_t * h_samp,
-    const uint8_t * v_samp, const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, int precision, int16_t * coef_buffer,
-    size_t * out_total_blocks) {
-  (void)precision;
-  static const uint8_t default_samp[3] = {1, 1, 1};
-  if (!h_samp)
-    h_samp = default_samp;
-  if (!v_samp)
-    v_samp = default_samp;
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    if (h_samp[1] > h_max)
-      h_max = h_samp[1];
-    if (h_samp[2] > h_max)
-      h_max = h_samp[2];
-    if (v_samp[1] > v_max)
-      v_max = v_samp[1];
-    if (v_samp[2] > v_max)
-      v_max = v_samp[2];
-  }
-  uint32_t mcu_w = (uint32_t)(8 * h_max);
-  uint32_t mcu_h = (uint32_t)(8 * v_max);
-  uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
-  uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
-  size_t blocks_per_mcu = 0;
-  for (int c = 0; c < num_components; c++) {
-    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
-  }
-  size_t total_blocks = 0;
-  if (!gcu_safe_mul_size(
-          (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-      !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
-    return GIMG_ERR_LIMIT;
-  }
-  *out_total_blocks = total_blocks;
-
-  // Strides are in elements (uint16_t), not bytes.
-  const uint16_t * comps[3] = {comp0, comp1, comp2};
-  size_t strides_el[3] = {stride0, stride1, stride2};
-  uint32_t comp_w[3], comp_h[3];
-  uint32_t comp_pix_w[3], comp_pix_h[3];
-  for (int c = 0; c < num_components; c++) {
-    jpeg_comp_blocks(width, height, h_samp[c], v_samp[c], h_max, v_max,
-        &comp_w[c], &comp_h[c]);
-    jpeg_comp_pixels(width, height, h_samp[c], v_samp[c], h_max, v_max,
-        &comp_pix_w[c], &comp_pix_h[c]);
-  }
-
-  int16_t * out = coef_buffer;
-  int16_t block[64];
-  // T.81 Annex A: dummy blocks use previous DC, zero AC.
-  int16_t last_dc[3] = {0, 0, 0};
-  // Level shift for 16-bit: 2^(P-1) = 32768 (T.81).
-  const int32_t level_shift = 32768;
-
-  for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
-    for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
-      for (int c = 0; c < num_components; c++) {
-        const uint16_t * quant = (c == 0) ? quant_luma : quant_chroma;
-        const uint16_t * comp = comps[c];
-        size_t stride_el = strides_el[c];
-        uint32_t cw = comp_w[c];
-        uint32_t ch = comp_h[c];
-        uint32_t pix_w = comp_pix_w[c];
-        uint32_t pix_h = comp_pix_h[c];
-        for (uint32_t by = 0; by < (uint32_t)v_samp[c]; by++) {
-          for (uint32_t bx = 0; bx < (uint32_t)h_samp[c]; bx++) {
-            uint32_t blk_x = mcu_x * (uint32_t)h_samp[c] + bx;
-            uint32_t blk_y = mcu_y * (uint32_t)v_samp[c] + by;
-            if (blk_x >= cw || blk_y >= ch) {
-              out[0] = last_dc[c];
-              for (int i = 1; i < 64; i++)
-                out[i] = 0;
-              out += 64;
-              continue;
-            }
-            uint32_t px = blk_x * 8;
-            uint32_t py = blk_y * 8;
-            for (int row = 0; row < 8; row++) {
-              uint32_t y_src = (py + (uint32_t)row) < pix_h
-                  ? (py + (uint32_t)row)
-                  : (pix_h - 1u);
-              size_t row_off = (size_t)y_src * stride_el;
-              for (int col = 0; col < 8; col++) {
-                uint32_t x_src = px + (uint32_t)col;
-                if (x_src >= pix_w)
-                  x_src = pix_w - 1u;
-                uint16_t s = comp[row_off + (size_t)x_src];
-                block[row * 8 + col] = (int16_t)((int32_t)s - level_shift);
-              }
-            }
-            jpeg_fdct_islow(block);
-            jpeg_quantize_block_16bit(block, quant, out);
-            last_dc[c] = out[0];
-            out += 64;
-          }
-        }
-      }
-    }
-  }
-  return GIMG_OK;
-}
-
 /** 12-bit variant: samples 0..4095, level shift 2048 (T.81). */
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
     uint32_t height, int num_components, const uint16_t * comp0,
@@ -1649,7 +1541,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
 }
 
 // 16-bit progressive: DC size 0..16, AC 242 symbols. No refinement (Ah!=0).
-GIMG_Result gimg_jpeg_encode_progressive_scan_16bit(uint32_t width,
+GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
     uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,

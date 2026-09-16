@@ -716,6 +716,50 @@ TEST(JpegLoad, Sof1Precision16Rejected) {
   gimg_stream_destroy(stream);
 }
 
+/** T.81 Table B.2 gives every DCT-based frame a sample precision of 8 or 12.
+ * Precision up to 16 belongs to lossless (SOF3) alone, so a progressive frame
+ * claiming 16 is not a JPEG and must be refused.  This library used to accept
+ * it, and used to write it. */
+TEST(JpegLoad, Sof2Precision16Rejected) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF2: L=11, P=16 (0x10), Y=8, X=8, Nf=1, C1=0 H=1 V=1 Tq=0
+  append(buf,
+      (const unsigned char *)"\xFF\xC2\x00\x0B\x10\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  GIMG_Stream * stream = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &stream);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(stream, nullptr, nullptr, &doc);
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(doc, nullptr);
+  EXPECT_TRUE(r == GIMG_ERR_FORMAT || r == GIMG_ERR_UNSUPPORTED)
+      << "SOF2 with precision 16 must be rejected (T.81: SOF2 = 8 or 12-bit)";
+  gimg_stream_destroy(stream);
+}
+
+/** The one precision above 8 that a DCT frame may carry. */
+TEST(JpegLoad, Sof2Precision12Accepted) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  append(buf,
+      (const unsigned char *)"\xFF\xC2\x00\x0B\x0C\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  GIMG_Stream * stream = nullptr;
+  gimg_stream_create_memory(buf.data(), buf.size(), &stream);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(stream, nullptr, nullptr, &doc);
+  EXPECT_NE(r, GIMG_ERR_UNSUPPORTED)
+      << "SOF2 with precision 12 is legal and must not be refused for precision";
+  if (doc) {
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(stream);
+}
+
 /** Task 2.3.3.2: Unsupported SOF markers (e.g. SOF3 lossless) must be rejected. */
 TEST(JpegLoad, UnsupportedSofRejected) {
   std::vector<uint8_t> buf;
