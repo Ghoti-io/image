@@ -7,6 +7,10 @@
  */
 
 #include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/doc.h>
+#include <cstdio>
+#include <string>
+#include <vector>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
 
@@ -67,6 +71,72 @@ TEST(Codec, ItemDecodeReturnsUnsupported) {
   EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
   EXPECT_EQ(raster, nullptr);
   gimg_doc_destroy(doc);
+}
+
+
+/**
+ * A document carries codec_private state belonging to whichever codec loaded
+ * it, and the type of that state is that codec's.  Saving through a different
+ * codec must not reach into it.
+ *
+ * png_save cast doc->codec_private to its own state unconditionally, so a JPEG
+ * re-saved as PNG walked a JPEG structure as a PNG one and read through a wild
+ * pointer.  Every load/save pair is exercised here; the requirement is that
+ * none of them crash or corrupt, whatever they return.
+ */
+TEST(Codec, SaveThroughADifferentCodecDoesNotTouchForeignState) {
+  struct Sample {
+    const char * path;
+    const char * name;
+  };
+  const std::string jpeg_dir(GIMG_TEST_DATA_JPEG);
+  const std::string png_dir(GIMG_TEST_DATA_PNG);
+  const std::vector<std::string> inputs = {
+      jpeg_dir + "/baseline_16x16_ycbcr.jpg",
+      jpeg_dir + "/progressive_sample.jpg",
+      png_dir + "/png_2x2_gray.png",
+  };
+  for (const std::string & path : inputs) {
+    std::vector<uint8_t> bytes;
+    {
+      FILE * f = fopen(path.c_str(), "rb");
+      if (!f) {
+        continue;  // fixture not generated; other inputs still cover the case
+      }
+      fseek(f, 0, SEEK_END);
+      long n = ftell(f);
+      fseek(f, 0, SEEK_SET);
+      bytes.resize((size_t)(n > 0 ? n : 0));
+      size_t got = fread(bytes.data(), 1, bytes.size(), f);
+      (void)got;
+      fclose(f);
+    }
+    if (bytes.empty()) {
+      continue;
+    }
+    for (const char * fmt : {"png", "jpeg", "bmp"}) {
+      GIMG_Stream * in = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &in),
+          GIMG_OK);
+      GIMG_Doc * doc = nullptr;
+      if (gimg_doc_load(in, nullptr, nullptr, &doc) != GIMG_OK) {
+        gimg_stream_destroy(in);
+        continue;
+      }
+      GIMG_Stream * out = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+      GIMG_Save_Options opts = {};
+      opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+      opts.quality = 85;
+      GIMG_Save_Report report = {};
+      // The return value is not the point - some pairs are legitimately
+      // unsupported.  Reaching this line without a crash is.
+      (void)gimg_doc_save(doc, out, fmt, &opts, &report);
+      gimg_stream_destroy(out);
+      gimg_doc_destroy(doc);
+      gimg_stream_destroy(in);
+    }
+  }
 }
 
 int main(int argc, char ** argv) {

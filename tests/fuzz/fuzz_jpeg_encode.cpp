@@ -55,7 +55,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
 
-  GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
+  // Value-initialise first: a designated initialiser that names one member
+  // leaves the rest zeroed, but clang warns about it under -Wextra, and the
+  // fuzz harnesses build with -Werror.  Zeroing and then assigning says the
+  // same thing without the warning, and keeps building when the struct grows.
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "jpeg", &opts, &report);
   if (r != GIMG_OK) {

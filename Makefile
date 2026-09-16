@@ -392,7 +392,7 @@ $(OBJ_DIR)/tests/%.o: tests/%.cpp
 $(OBJ_DIR)/tests/%.o: tests/unit/%.cpp
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/bmp/ (object name from basename for link).
 $(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
@@ -888,7 +888,7 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp
 $(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/bmp/ (mirrors the non-ASan rule; without this the ASan
 # build has no way to make test_bmp_*.o and `make test-asan` does not build).

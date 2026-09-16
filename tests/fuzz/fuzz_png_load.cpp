@@ -7,7 +7,8 @@
  *
  * Build with: make fuzz-png (uses clang -fsanitize=fuzzer).
  * Run: ./build/linux/release/apps/fuzz_png_load [corpus_dir]
- * Minimal corpus in tests/fuzz/corpus/ (e.g. copy of tests/data/png/*.png).
+ * Minimal corpus in tests/fuzz/corpus (e.g. copies of the PNG files under
+ * tests/data/png).
  *
  * Copyright 2026 by Corey Pennycuff
  */

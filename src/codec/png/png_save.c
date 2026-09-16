@@ -671,7 +671,17 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       return r != GIMG_OK ? r : GIMG_ERR_FORMAT;
     }
   }
-  gimg_png_doc_state_t * state = (gimg_png_doc_state_t *)doc->codec_private;
+  // codec_private belongs to whichever codec loaded this document, and the type
+  // is that codec's.  Saving a document that some other codec loaded - a JPEG
+  // re-saved as PNG, say - used to cast that codec's state to this one's and
+  // walk its ancillary-chunk list, reading unrelated fields as a pointer.
+  // Fuzzing reached it in the seed corpus: the crash was a read through
+  // 0x3000300030003.  The document records which codec owns the state, so
+  // consult it.
+  gimg_png_doc_state_t * state =
+      (doc->loaded_by_codec == (struct GIMG_Codec *)codec)
+      ? (gimg_png_doc_state_t *)doc->codec_private
+      : NULL;
   GIMG_Color_Info color_info_for_save;
   const GIMG_Color_Info * rci = gimg_raster_color_info_const(raster);
   if (rci) {
