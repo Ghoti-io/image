@@ -19,6 +19,7 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/stream.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -113,6 +114,20 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
  * Rationale: bomb protection; reject unreasonably large APP/DQT/DHT segments.
  */
 #define GIMG_JPEG_DEFAULT_MAX_SEGMENT_PAYLOAD (64u * 1024u)
+
+/**
+ * A set of table-specification segments read from an abbreviated stream
+ * (T.81 B.4).
+ *
+ * Kept as the segments themselves rather than as parsed tables, so that
+ * installing them is the same code that installs a table segment found in an
+ * ordinary file - there is no second reading of B.2.4 to drift from the first.
+ */
+struct GIMG_JPEG_Tables {
+  const GIMG_Allocator * allocator;
+  unsigned char * segments; /**< marker, 2-byte length, payload; repeated. */
+  size_t size;
+};
 
 /** Max number of components in a frame: T.81 B.2.2 gives Nf as 1 to 255. */
 #define GIMG_JPEG_MAX_COMPONENTS 255u
@@ -747,6 +762,31 @@ GIMG_Result gimg_jpeg_verify_soi(GIMG_Stream * stream);
  * marker.
  */
 GIMG_Result gimg_jpeg_read_marker(GIMG_Stream * stream, uint8_t * out_marker);
+
+/** True for the markers T.81 B.1.1.3 Table B.1 gives no length field: SOI,
+ * EOI, TEM and RST0-RST7.  Defined in jpeg_load.c. */
+bool gimg_jpeg_marker_has_no_length(uint8_t marker);
+
+/** Install a DQT segment's tables (T.81 B.2.4.1).  Defined in jpeg_load.c. */
+GIMG_Result gimg_jpeg_apply_dqt(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload, size_t payload_size, bool seen_sof,
+    const char ** out_why);
+
+/** Install a DAC segment's conditioning (T.81 B.2.4.3).  In jpeg_load.c. */
+GIMG_Result gimg_jpeg_apply_dac(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload, size_t payload_size, const char ** out_why);
+
+/** Install a DRI segment's restart interval (T.81 B.2.4.4).  In jpeg_load.c. */
+GIMG_Result gimg_jpeg_apply_dri(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload, size_t payload_size, const char ** out_why);
+
+/**
+ * Install a table set read from an abbreviated table-specification stream
+ * (T.81 B.4) into a fresh document state.  Defined in jpeg_abbreviated.c.
+ */
+GIMG_Result gimg_jpeg_tables_install(const GIMG_JPEG_Tables * tables,
+    gimg_jpeg_doc_state_t * state, const GIMG_Allocator * alloc,
+    const char ** out_why);
 
 /**
  * Read segment length (big-endian 2 bytes). Only valid for markers that have a

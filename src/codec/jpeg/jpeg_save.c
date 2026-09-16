@@ -1996,10 +1996,17 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const unsigned char * scan_data, size_t scan_size, int precision,
     uint16_t restart_interval, bool arithmetic, const int16_t * coef_buffer,
-    const GIMG_Allocator * alloc, size_t * out_n) {
+    const GIMG_Allocator * alloc, unsigned abbreviated, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
   size_t written = 0;
+  // T.81 B.4.  1 leaves the table-specification segments out and keeps the
+  // frame; 2 writes them and nothing else.  0 writes both, as usual.
+  const int want_tables = (abbreviated != 1u);
+  const int want_frame = (abbreviated != 2u);
+  if (!want_tables) {
+    goto after_tables;
+  }
   if (precision > 8) {
     r = jpeg_write_dqt_16bit(
         stream, num_components, quant_luma, quant_chroma, &n);
@@ -2044,8 +2051,11 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
       }
     }
   }
+after_tables:
   // T.81 B.2.2: frame header (SOF) before table specifications (DHT).
-  {
+  // Skipped entirely for B.4's table-specification stream, which has no frame;
+  // the DHT, DAC and DRI below are table data and are written there.
+  if (want_frame) {
     // T.81 Table B.1: the marker says which coding process and which entropy
     // coder.  SOF9 is the arithmetic counterpart of SOF1, and serves 8-bit data
     // too - there is no arithmetic equivalent of the baseline process, because
@@ -2096,7 +2106,10 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     }
     n += written;
   }
-  if (arithmetic) {
+  if (!want_tables) {
+    // Left out with the rest of the table-specification data (B.4).
+  }
+  else if (arithmetic) {
     // T.81 B.2.4.3: DAC in place of DHT.  These are the values B.2.4.3 gives as
     // defaults - L = 0 and U = 1 for DC, Kx = 5 for AC - written out rather
     // than left implicit, which is what libjpeg does as well.
@@ -2134,10 +2147,23 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     }
     n += dht_written;
   }
-  // T.81: DRI after SOF, before SOS.
-  r = jpeg_write_dri(stream, restart_interval, &n);
+  // T.81: DRI after SOF, before SOS.  DRI is table-specification data too
+  // (B.2.4.4), so an abbreviated image leaves it to the tables stream.
+  r = want_tables ? jpeg_write_dri(stream, restart_interval, &n) : GIMG_OK;
   if (r != GIMG_OK) {
     return r;
+  }
+  if (!want_frame) {
+    // B.4's abbreviated format for table-specification data: SOI, every table
+    // segment, EOI.  Nothing of the picture reaches such a stream.
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    if (out_n) {
+      *out_n = n;
+    }
+    return GIMG_OK;
   }
   // T.81 A.2.3: the same blocks, written one component at a time.  Everything
   // above this point - the tables, the frame header, the restart interval - is
@@ -2528,10 +2554,17 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     const int16_t * coef_buffer, size_t total_blocks,
     const GIMG_JPEG_Progressive_Scan * scans, unsigned scan_count,
     int precision, bool arithmetic, const GIMG_Allocator * alloc,
-    uint16_t restart_interval, size_t * out_n) {
+    uint16_t restart_interval, unsigned abbreviated, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
   size_t written = 0;
+  // T.81 B.4, as in jpeg_write_image_body: 1 leaves the tables out, 2 writes
+  // nothing but them.
+  const int want_tables = (abbreviated != 1u);
+  const int want_frame = (abbreviated != 2u);
+  if (!want_tables) {
+    goto after_prog_tables;
+  }
   if (precision > 8) {
     r = jpeg_write_dqt_16bit(
         stream, num_components, quant_luma, quant_chroma, &n);
@@ -2629,7 +2662,26 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       n += dht_written;
     }
   }
-  r = jpeg_write_dri(stream, restart_interval, &n);
+  // DRI is table-specification data too (B.2.4.4), so an abbreviated image
+  // leaves it to the tables stream.
+  r = want_tables ? jpeg_write_dri(stream, restart_interval, &n) : GIMG_OK;
+  if (r != GIMG_OK) {
+    return r;
+  }
+after_prog_tables:
+  if (!want_frame) {
+    // B.4's abbreviated format for table-specification data: the tables and
+    // nothing else.
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    if (out_n) {
+      *out_n = n;
+    }
+    return GIMG_OK;
+  }
+  r = GIMG_OK;
   if (r != GIMG_OK) {
     return r;
   }
@@ -3068,6 +3120,19 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       (options && options->jpeg_cmyk_transform) ? options->jpeg_cmyk_transform
                                                 : 0u;
   if (cmyk_transform != 0u && cmyk_transform != 2u) {
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  // T.81 B.4: the abbreviated formats.  Refused where they cannot mean
+  // anything: a hierarchical sequence's frames carry their own tables (B.3.1),
+  // and a lossless frame's Huffman table is generated from the very
+  // coefficients it codes, so it cannot be written before them.
+  unsigned abbreviated =
+      (options && options->jpeg_abbreviated) ? options->jpeg_abbreviated : 0u;
+  if (abbreviated > 2u ||
+      (abbreviated != 0u && (hier_levels != 0 || lossless_psv != 0))) {
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -3538,7 +3603,8 @@ have_scan:
                   if (r == GIMG_OK) {
                     r = jpeg_write_image_body(mem_stream, tw, th, tnc, NULL,
                         NULL, NULL, tq_luma, tq_chroma, thumb_scan,
-                        thumb_scan_size, 8, 0, false, NULL, alloc, &mem_n);
+                        thumb_scan_size, 8, 0, false, NULL, alloc, 0u,
+                        &mem_n);
                   }
                   if (r == GIMG_OK) {
                     const void * jpeg_buf = NULL;
@@ -3870,7 +3936,7 @@ have_scan:
         num_components > 1 ? v_samp : NULL, tbl_sel, quant_luma, quant_chroma,
         coef_buffer, total_blocks, scans, scan_count, precision, arithmetic,
         alloc,
-        restart_interval, &report->bytes_written);
+        restart_interval, abbreviated, &report->bytes_written);
     gimg_free(alloc, coef_buffer);
   }
   else if (hier_levels != 0) {
@@ -3892,7 +3958,8 @@ have_scan:
         num_components > 1 ? h_samp : NULL,
         num_components > 1 ? v_samp : NULL, tbl_sel, quant_luma, quant_chroma,
         scan_data, scan_size, precision, restart_interval, arithmetic,
-        non_interleaved ? coef_buffer : NULL, alloc, &report->bytes_written);
+        non_interleaved ? coef_buffer : NULL, alloc, abbreviated,
+        &report->bytes_written);
     gimg_free(alloc, to_free);
   }
   if (r != GIMG_OK) {

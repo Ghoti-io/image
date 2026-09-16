@@ -532,7 +532,9 @@ TEST(PngDecode, ApngMaxFrameCountLimitEnforced) {
 
   GIMG_Limits limits = {};
   limits.max_frame_count = 1;
-  GIMG_Load_Options opts = {&limits, GIMG_NORMAL, {0}};
+  GIMG_Load_Options opts = {};
+  opts.limits = &limits;
+  opts.strictness = GIMG_NORMAL;
 
   GIMG_Doc * doc = nullptr;
   r = gimg_doc_load(s, &opts, nullptr, &doc);
@@ -552,7 +554,9 @@ TEST(PngDecode, ApngMaxChunkSizeLimitEnforced) {
 
   GIMG_Limits limits = {};
   limits.max_chunk_size = 8;  // IHDR payload is 13 bytes
-  GIMG_Load_Options opts = {&limits, GIMG_NORMAL, {0}};
+  GIMG_Load_Options opts = {};
+  opts.limits = &limits;
+  opts.strictness = GIMG_NORMAL;
 
   GIMG_Doc * doc = nullptr;
   r = gimg_doc_load(s, &opts, nullptr, &doc);
@@ -652,7 +656,9 @@ TEST(PngDecode, LimitEnforcedMaxFrameCountFillsDiagnostics) {
 
   GIMG_Limits limits = {};
   limits.max_frame_count = 1;
-  GIMG_Load_Options opts = {&limits, GIMG_NORMAL, {0}};
+  GIMG_Load_Options opts = {};
+  opts.limits = &limits;
+  opts.strictness = GIMG_NORMAL;
 
   GIMG_Diagnostics diag = {nullptr, 0, 0, nullptr};
   gimg_diagnostics_init(&diag, nullptr);

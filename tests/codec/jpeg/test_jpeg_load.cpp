@@ -4034,6 +4034,119 @@ TEST(JpegLoad, HierarchicalLosslessFrameCodedAsNonInterleavedScans) {
 // writes a genuine YCCK file, and the resulting picture is not meaningful, but
 // the decode is well defined and libjpeg agrees with it byte for byte.  That
 // branch had no fixture at all before.
+// T.81 B.4 describes two streams that are not complete JPEGs and only mean
+// anything as a pair: one of table-specification data with no frame, and one
+// carrying a frame whose tables are absent.  They exist so that a set of
+// images can share one copy of its tables.  Both were refused here.
+//
+// The fixtures are libjpeg-turbo's own output - jpeg_write_tables() for the
+// first and jpeg_start_compress(..., FALSE) for the second, from one compress
+// object so that the tables really are left out of the image (see
+// tests/data/jpeg/mk_abbrev.c) - and the expected pixels are its decode of the
+// complete file it wrote from the same tables.  So this reads another
+// implementation's abbreviated pair and has to arrive where it arrives.
+TEST(JpegLoad, AbbreviatedStreamsOfB4) {
+  std::vector<uint8_t> tables_bytes, image_bytes;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("abbrev_ljt_tables.jpg", tables_bytes));
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("abbrev_ljt_image.jpg", image_bytes));
+  std::vector<uint8_t> oracle;
+  uint32_t ow = 0, oh = 0;
+  int omode = -1;
+  ASSERT_TRUE(jpeg_test::load_jpeg_oracle_raw(
+      "abbrev_ljt_full", oracle, &ow, &oh, &omode));
+  ASSERT_EQ(omode, jpeg_test::kOracleRgb);
+
+  // The abbreviated image is not readable on its own: its tables are absent
+  // and nothing in it says what they were.
+  {
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(
+        gimg_stream_create_memory(image_bytes.data(), image_bytes.size(), &s),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+    if (r == GIMG_OK) {
+      GIMG_Raster * raster = nullptr;
+      EXPECT_NE(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+          GIMG_OK)
+          << "a frame with no tables cannot be decoded without them";
+      if (raster) {
+        gimg_raster_destroy(raster);
+      }
+      gimg_doc_destroy(doc);
+    }
+    gimg_stream_destroy(s);
+  }
+
+  // Nor is the table-specification stream an image: it has no frame at all.
+  {
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(
+        gimg_stream_create_memory(tables_bytes.data(), tables_bytes.size(), &s),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+    EXPECT_NE(r, GIMG_OK) << "a table-specification stream carries no picture";
+    if (r == GIMG_OK) {
+      gimg_doc_destroy(doc);
+    }
+    gimg_stream_destroy(s);
+  }
+
+  // Together they are the picture libjpeg decoded from the complete file.
+  GIMG_Stream * ts = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(tables_bytes.data(), tables_bytes.size(), &ts),
+      GIMG_OK);
+  GIMG_JPEG_Tables * tables = nullptr;
+  ASSERT_EQ(gimg_jpeg_tables_load(ts, &tables), GIMG_OK);
+  gimg_stream_destroy(ts);
+  ASSERT_NE(tables, nullptr);
+
+  GIMG_Load_Options lo = {};
+  lo.jpeg_tables = tables;
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(image_bytes.data(), image_bytes.size(), &s),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, &lo, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  ASSERT_EQ(gimg_raster_width(raster), ow);
+  ASSERT_EQ(gimg_raster_height(raster), oh);
+  const unsigned char * gp = (const unsigned char *)gimg_raster_pixels(raster);
+  size_t gs = gimg_raster_stride_bytes(raster);
+  for (uint32_t y = 0; y < oh; y++) {
+    for (uint32_t x = 0; x < ow; x++) {
+      for (int c = 0; c < 3; c++) {
+        int a = (int)gp[y * gs + x * 4 + (size_t)c];
+        int b = (int)oracle[((size_t)y * ow + x) * 3 + (size_t)c];
+        ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << c;
+      }
+    }
+  }
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  gimg_jpeg_tables_destroy(tables);
+}
+
+// A stream with a frame in it is not table-specification data, whatever else
+// it contains (B.4), and gimg_jpeg_tables_load says so rather than returning
+// whatever tables it saw on the way past.
+TEST(JpegLoad, TablesLoadRefusesAStreamWithAFrame) {
+  std::vector<uint8_t> full;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("abbrev_ljt_full.jpg", full));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(full.data(), full.size(), &s), GIMG_OK);
+  GIMG_JPEG_Tables * tables = nullptr;
+  EXPECT_EQ(gimg_jpeg_tables_load(s, &tables), GIMG_ERR_FORMAT);
+  EXPECT_EQ(tables, nullptr);
+  gimg_stream_destroy(s);
+}
+
 // T.81 B.2.2 lets a frame carry from 1 to 255 components and never says what
 // any of them mean; B.2.3 Table B.3 caps one scan at 4, so a frame wider than
 // four is legal and has to be written as several non-interleaved scans

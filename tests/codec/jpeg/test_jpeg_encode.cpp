@@ -1075,6 +1075,160 @@ TEST(JpegEncode, FourComponentFrameAlwaysCarriesItsAdobeMarker) {
   }
 }
 
+// The other half of T.81 B.4: writing the pair.  A tables stream and an
+// abbreviated image saved with the same options belong together, and reading
+// them together must give exactly what the complete file gives - not nearly,
+// exactly, because the same tables and the same coefficients are involved
+// either way and nothing is requantised between them.
+//
+// The two halves are also checked apart: neither is a JPEG on its own.
+TEST(JpegEncode, AbbreviatedStreamsOfB4) {
+  for (int progressive = 0; progressive <= 1; progressive++) {
+    for (int arithmetic = 0; arithmetic <= 1; arithmetic++) {
+      SCOPED_TRACE("progressive " + std::to_string(progressive) +
+          ", arithmetic " + std::to_string(arithmetic));
+      std::vector<uint8_t> out[3];
+      for (int mode = 0; mode < 3; mode++) {
+        GIMG_Doc * doc = nullptr;
+        ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+        GIMG_Raster * raster = nullptr;
+        ASSERT_EQ(gimg_raster_create(33, 17, &GIMG_PIXEL_RGBA8,
+                      GIMG_RASTER_OWNED, NULL, 0, &raster),
+            GIMG_OK);
+        unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+        size_t stride = gimg_raster_stride_bytes(raster);
+        for (uint32_t y = 0; y < 17u; y++) {
+          for (uint32_t x = 0; x < 33u; x++) {
+            unsigned char * p = px + y * stride + x * 4;
+            p[0] = (unsigned char)((x * 5 + y * 3) & 0xFF);
+            p[1] = (unsigned char)((x * 2 + y * 7) & 0xFF);
+            p[2] = (unsigned char)((x * 9 + y * 11) & 0xFF);
+            p[3] = 255;
+          }
+        }
+        gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+        GIMG_Stream * os = nullptr;
+        ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+        GIMG_Save_Options so = {};
+        so.metadata_policy = GIMG_META_DROP_ALL;
+        so.quality = 88;
+        so.jpeg_abbreviated = (uint8_t)mode;
+        so.jpeg_progressive = (uint8_t)progressive;
+        so.jpeg_arithmetic = (uint8_t)arithmetic;
+        GIMG_Save_Report rep = {};
+        ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_OK);
+        const void * buf = nullptr;
+        size_t bn = 0;
+        gimg_stream_output_buffer(os, &buf, &bn);
+        out[mode].assign((const uint8_t *)buf, (const uint8_t *)buf + bn);
+        gimg_doc_destroy(doc);
+        gimg_stream_destroy(os);
+      }
+      const std::vector<uint8_t> & full = out[0];
+      const std::vector<uint8_t> & image = out[1];
+      const std::vector<uint8_t> & tabs = out[2];
+      EXPECT_LT(image.size(), full.size())
+          << "the abbreviated image must be the smaller of the two";
+      // A table-specification stream has no frame header and no scan.
+      for (size_t i = 2; i + 4 <= tabs.size() && tabs[i] == 0xFF;) {
+        uint8_t m = tabs[i + 1];
+        if (m == 0xD9) {
+          break;
+        }
+        EXPECT_FALSE(m == 0xDA || (m >= 0xC0 && m <= 0xCF && m != 0xC4 &&
+                                      m != 0xC8 && m != 0xCC))
+            << "a table-specification stream carries no frame (T.81 B.4)";
+        i += 2 + (size_t)((tabs[i + 2] << 8) | tabs[i + 3]);
+      }
+
+      // Neither half on its own.
+      {
+        GIMG_Stream * s = nullptr;
+        ASSERT_EQ(gimg_stream_create_memory(tabs.data(), tabs.size(), &s),
+            GIMG_OK);
+        GIMG_Doc * d = nullptr;
+        EXPECT_NE(gimg_doc_load(s, nullptr, nullptr, &d), GIMG_OK);
+        gimg_stream_destroy(s);
+      }
+
+      GIMG_Stream * ts = nullptr;
+      ASSERT_EQ(
+          gimg_stream_create_memory(tabs.data(), tabs.size(), &ts), GIMG_OK);
+      GIMG_JPEG_Tables * tables = nullptr;
+      ASSERT_EQ(gimg_jpeg_tables_load(ts, &tables), GIMG_OK);
+      gimg_stream_destroy(ts);
+
+      GIMG_Load_Options lo = {};
+      lo.jpeg_tables = tables;
+      DocStreamGuard ab;
+      ASSERT_EQ(
+          gimg_stream_create_memory(image.data(), image.size(), &ab.s),
+          GIMG_OK);
+      ASSERT_EQ(gimg_doc_load(ab.s, &lo, nullptr, &ab.d), GIMG_OK);
+      RasterGuard got;
+      ASSERT_EQ(
+          gimg_item_decode(gimg_doc_item(ab.d, 0), nullptr, &got.r), GIMG_OK);
+      ASSERT_NE(got.r, nullptr);
+
+      DocStreamGuard fl;
+      ASSERT_EQ(
+          gimg_stream_create_memory(full.data(), full.size(), &fl.s), GIMG_OK);
+      ASSERT_EQ(gimg_doc_load(fl.s, nullptr, nullptr, &fl.d), GIMG_OK);
+      RasterGuard want;
+      ASSERT_EQ(
+          gimg_item_decode(gimg_doc_item(fl.d, 0), nullptr, &want.r), GIMG_OK);
+      ASSERT_NE(want.r, nullptr);
+      EXPECT_TRUE(jpeg_test::rasters_equal(got.r, want.r))
+          << "the abbreviated pair and the complete file are the same image: "
+          << jpeg_test::raster_first_diff(got.r, want.r);
+      gimg_jpeg_tables_destroy(tables);
+    }
+  }
+}
+
+// B.4's formats need tables that can be written before the frame.  A
+// hierarchical sequence's frames carry their own (B.3.1), and a lossless
+// frame's Huffman table is generated from the very coefficients it codes, so
+// neither can be split that way; both are refused rather than half-written.
+TEST(JpegEncode, AbbreviatedRefusesWhatCannotBeSplit) {
+  struct Case {
+    uint8_t abbreviated;
+    uint8_t hierarchical;
+    uint8_t lossless;
+    const char * what;
+  };
+  const Case cases[] = {
+      {1, 1, 0, "abbreviated image of a hierarchical sequence"},
+      {2, 1, 0, "tables of a hierarchical sequence"},
+      {1, 0, 3, "abbreviated image of a lossless frame"},
+      {2, 0, 3, "tables of a lossless frame"},
+      {3, 0, 0, "an abbreviation that is neither of B.4's two"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                  NULL, 0, &raster),
+        GIMG_OK);
+    memset(gimg_raster_pixels(raster), 0x40,
+        gimg_raster_stride_bytes(raster) * 16);
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+    GIMG_Stream * os = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+    GIMG_Save_Options so = {};
+    so.quality = 85;
+    so.jpeg_abbreviated = c.abbreviated;
+    so.jpeg_hierarchical_levels = c.hierarchical;
+    so.jpeg_lossless_predictor = c.lossless;
+    GIMG_Save_Report rep = {};
+    EXPECT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_ERR_UNSUPPORTED);
+    gimg_stream_destroy(os);
+    gimg_doc_destroy(doc);
+  }
+}
+
 // T.81 B.2.2 lets a frame carry from 1 to 255 components; B.2.3 caps one scan
 // at 4, so a frame wider than that has exactly one legal arrangement - several
 // non-interleaved scans (A.2.3) - and the encoder writes it that way whether

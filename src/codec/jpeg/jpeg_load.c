@@ -71,7 +71,7 @@ static void jpeg_load_diag(GIMG_Diagnostics * d, size_t offset, uint8_t marker,
  * reading a two-byte length after it consumes the start of whatever follows,
  * so a file carrying one was refused outright.  libjpeg skips it.
  */
-static bool jpeg_marker_has_no_length(uint8_t marker) {
+bool gimg_jpeg_marker_has_no_length(uint8_t marker) {
   if (marker == GIMG_JPEG_MARKER_SOI || marker == GIMG_JPEG_MARKER_EOI ||
       marker == GIMG_JPEG_MARKER_TEM) {
     return true;
@@ -255,7 +255,86 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
  * same number of MCUs in a row.  libjpeg writes a different DRI before nearly
  * every scan of a subsampled progressive image.
  */
-static GIMG_Result jpeg_apply_dri(gimg_jpeg_doc_state_t * state,
+/**
+ * Install a DQT segment's tables (T.81 B.2.4.1).
+ *
+ * Its own function rather than a case body, because B.4's abbreviated format
+ * for table-specification data installs the very same segments from a stream
+ * that has no frame in it at all.
+ *
+ * @param seen_sof Whether a frame header has already been read, which decides
+ *   whether the Pq-against-precision rule can be checked yet.
+ */
+GIMG_Result gimg_jpeg_apply_dqt(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload, size_t payload_size, bool seen_sof,
+    const char ** out_why) {
+  *out_why = NULL;
+  if (!payload) {
+    *out_why = "DQT payload missing";
+    return GIMG_ERR_FORMAT;
+  }
+  // One or more tables. Each: 1 byte (Pq<<4 | Tq), then 64 or 128 bytes.
+  const unsigned char * p = payload;
+  size_t remain = payload_size;
+  while (remain >= 2) {
+    uint8_t pq_tq = p[0];
+    uint8_t tq = pq_tq & 0x0Fu;
+    uint8_t pq = (uint8_t)(pq_tq >> 4);
+    int is_16bit = (pq != 0);
+    size_t entry_bytes = is_16bit ? 128u : 64u;
+    // T.81 B.2.4.1: Pq is 0 (8-bit elements) or 1 (16-bit), Tq selects one of
+    // four tables, and the segment must actually contain the elements it
+    // declares.  A malformed table used to end the loop silently, leaving
+    // whatever tables followed it undefined and the frame to fail later
+    // somewhere less informative.
+    if (pq > 1u) {
+      *out_why = "DQT Pq must be 0 or 1 (T.81 B.2.4.1)";
+      return GIMG_ERR_FORMAT;
+    }
+    // B.2.4.1: "Pq shall be zero for 8-bit sample precision."
+    if (pq == 1u && seen_sof && state->sof.precision == 8u) {
+      *out_why = "DQT Pq=1 with 8-bit sample precision (T.81 B.2.4.1)";
+      return GIMG_ERR_FORMAT;
+    }
+    if (tq >= GIMG_JPEG_MAX_QUANT_TABLES) {
+      *out_why = "DQT Tq above 3 (T.81 B.2.4.1)";
+      return GIMG_ERR_FORMAT;
+    }
+    if (remain < 1 + entry_bytes) {
+      *out_why = "DQT segment shorter than the table it declares "
+                 "(T.81 B.2.4.1)";
+      return GIMG_ERR_FORMAT;
+    }
+    p++;
+    remain--;
+    state->quant_tbl_present[tq] = 1;
+    if (is_16bit) {
+      for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
+        state->quant_tbl[tq][i] = (uint16_t)((p[i * 2] << 8) | p[i * 2 + 1]);
+      }
+    }
+    else {
+      for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
+        state->quant_tbl[tq][i] = (uint16_t)p[i];
+      }
+    }
+    // T.81 B.2.4.1 Table B.4: a quantization value is 1..255 (Pq=0) or
+    // 1..65535 (Pq=1).  Zero is not a permitted value, and dequantisation
+    // multiplies by it, so a zero element silently discards a coefficient
+    // rather than being caught anywhere downstream.
+    for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
+      if (state->quant_tbl[tq][i] == 0u) {
+        *out_why = "DQT contains a zero quantization value (T.81 B.2.4.1)";
+        return GIMG_ERR_FORMAT;
+      }
+    }
+    p += entry_bytes;
+    remain -= entry_bytes;
+  }
+  return GIMG_OK;
+}
+
+GIMG_Result gimg_jpeg_apply_dri(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload, size_t payload_size, const char ** out_why) {
   *out_why = NULL;
   if (payload_size != 2 || !payload) {
@@ -274,7 +353,7 @@ static GIMG_Result jpeg_apply_dri(gimg_jpeg_doc_state_t * state,
  * and L must not exceed U; for an AC table (Tc = 1) it is Kx, which B.2.4.3
  * bounds to 1..63.  Like DRI, this may appear between scans and change.
  */
-static GIMG_Result jpeg_apply_dac(gimg_jpeg_doc_state_t * state,
+GIMG_Result gimg_jpeg_apply_dac(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload, size_t payload_size, const char ** out_why) {
   *out_why = NULL;
   if (!payload) {
@@ -464,6 +543,20 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   jpeg_arith_cond_defaults(&state->arith_cond);
   state->allocator = alloc;
 
+  // T.81 B.4: tables installed from a table-specification stream, for a frame
+  // whose own are absent.  They go in before anything is read, so that the
+  // stream's own segments override them where it has any - which is what
+  // B.2.4.1's "until redefined" means.
+  if (options && options->jpeg_tables) {
+    const char * why = NULL;
+    r = gimg_jpeg_tables_install(options->jpeg_tables, state, alloc, &why);
+    if (r != GIMG_OK) {
+      jpeg_load_diag(diagnostics, 0, 0, r, why);
+      gimg_jpeg_free_doc_state(codec, state);
+      return r;
+    }
+  }
+
   bool seen_sof = false;
   bool have_pending_marker = false;
   uint8_t pending_marker = 0;
@@ -505,7 +598,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       break;
     }
 
-    if (jpeg_marker_has_no_length(marker)) {
+    if (gimg_jpeg_marker_has_no_length(marker)) {
       if (marker >= 0xD0 && marker <= 0xD7) {
         // RST: may appear in scan data; we already advanced past 0xFF and
         // marker byte.
@@ -702,86 +795,21 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       break;
     }
     case GIMG_JPEG_MARKER_DQT: {
-      // DQT: one or more tables. Each table: 1 byte (Pq<<4|Tq), then 64 or 128
-      // bytes.
-      const unsigned char * p = payload_buf;
-      size_t remain = payload_size;
-      while (remain >= 2) {
-        uint8_t pq_tq = p[0];
-        uint8_t tq = pq_tq & 0x0Fu;
-        uint8_t pq = (uint8_t)(pq_tq >> 4);
-        int is_16bit = (pq != 0);
-        size_t entry_bytes = is_16bit ? 128u : 64u;
-        // T.81 B.2.4.1: Pq is 0 (8-bit elements) or 1 (16-bit), Tq selects one
-        // of four tables, and the segment must actually contain the elements it
-        // declares.  A malformed table used to end the loop silently, leaving
-        // whatever tables followed it undefined and the frame to fail later
-        // somewhere less informative.
-        if (pq > 1u) {
-          gimg_free(alloc, payload_buf);
-          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-              "DQT Pq must be 0 or 1 (T.81 B.2.4.1)");
-          gimg_jpeg_free_doc_state(codec, state);
-          return GIMG_ERR_FORMAT;
-        }
-        // B.2.4.1: "Pq shall be zero for 8-bit sample precision."
-        if (pq == 1u && seen_sof && state->sof.precision == 8u) {
-          gimg_free(alloc, payload_buf);
-          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-              "DQT Pq=1 with 8-bit sample precision (T.81 B.2.4.1)");
-          gimg_jpeg_free_doc_state(codec, state);
-          return GIMG_ERR_FORMAT;
-        }
-        if (tq >= GIMG_JPEG_MAX_QUANT_TABLES) {
-          gimg_free(alloc, payload_buf);
-          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-              "DQT Tq above 3 (T.81 B.2.4.1)");
-          gimg_jpeg_free_doc_state(codec, state);
-          return GIMG_ERR_FORMAT;
-        }
-        if (remain < 1 + entry_bytes) {
-          gimg_free(alloc, payload_buf);
-          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-              "DQT segment shorter than the table it declares (T.81 B.2.4.1)");
-          gimg_jpeg_free_doc_state(codec, state);
-          return GIMG_ERR_FORMAT;
-        }
-        p++;
-        remain--;
-        state->quant_tbl_present[tq] = 1;
-        if (is_16bit) {
-          for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
-            state->quant_tbl[tq][i] =
-                (uint16_t)((p[i * 2] << 8) | p[i * 2 + 1]);
-          }
-        }
-        else {
-          for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
-            state->quant_tbl[tq][i] = (uint16_t)p[i];
-          }
-        }
-        // T.81 B.2.4.1 Table B.4: a quantization value is 1..255 (Pq=0) or
-        // 1..65535 (Pq=1).  Zero is not a permitted value, and dequantisation
-        // multiplies by it, so a zero element silently discards a coefficient
-        // rather than being caught anywhere downstream.
-        for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
-          if (state->quant_tbl[tq][i] == 0u) {
-            gimg_free(alloc, payload_buf);
-            jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-                "DQT contains a zero quantization value (T.81 B.2.4.1)");
-            gimg_jpeg_free_doc_state(codec, state);
-            return GIMG_ERR_FORMAT;
-          }
-        }
-        p += entry_bytes;
-        remain -= entry_bytes;
+      const char * why = NULL;
+      r = gimg_jpeg_apply_dqt(state, payload_buf, payload_size, seen_sof, &why);
+      if (payload_buf) {
+        gimg_free(alloc, payload_buf);
       }
-      gimg_free(alloc, payload_buf);
+      if (r != GIMG_OK) {
+        jpeg_load_diag(diagnostics, seg_start, marker, r, why);
+        gimg_jpeg_free_doc_state(codec, state);
+        return r;
+      }
       break;
     }
     case GIMG_JPEG_MARKER_DAC: {
       const char * why = NULL;
-      r = jpeg_apply_dac(state, payload_buf, payload_size, &why);
+      r = gimg_jpeg_apply_dac(state, payload_buf, payload_size, &why);
       if (payload_buf) {
         gimg_free(alloc, payload_buf);
       }
@@ -794,7 +822,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
     case GIMG_JPEG_MARKER_DRI: {
       const char * why = NULL;
-      r = jpeg_apply_dri(state, payload_buf, payload_size, &why);
+      r = gimg_jpeg_apply_dri(state, payload_buf, payload_size, &why);
       if (payload_buf) {
         gimg_free(alloc, payload_buf);
       }
@@ -1187,7 +1215,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           have_pending_marker = true;
           break;
         }
-        if (jpeg_marker_has_no_length(b)) {
+        if (gimg_jpeg_marker_has_no_length(b)) {
           // SOI or other no-length marker; hand off to main loop.
           pending_marker = b;
           have_pending_marker = true;
@@ -1309,8 +1337,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               }
               const char * why = NULL;
               r = (b == GIMG_JPEG_MARKER_DRI)
-                  ? jpeg_apply_dri(state, seg, payload_size, &why)
-                  : jpeg_apply_dac(state, seg, payload_size, &why);
+                  ? gimg_jpeg_apply_dri(state, seg, payload_size, &why)
+                  : gimg_jpeg_apply_dac(state, seg, payload_size, &why);
               gimg_free(alloc, seg);
               if (r != GIMG_OK) {
                 jpeg_load_diag(diagnostics, seg_start, b, r, why);

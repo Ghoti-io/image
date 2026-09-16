@@ -106,12 +106,51 @@ GIMG_API GIMG_Result gimg_probe(
     GIMG_Stream * stream, GIMG_Probe_Result * result);
 
 /**
+ * @brief A set of JPEG tables read from a table-specification stream.
+ *
+ * ISO/IEC 10918-1 (T.81) B.4 describes two abbreviated formats.  One is a
+ * stream of table-specification data with no frame in it - DQT, DHT, DAC and
+ * DRI between SOI and EOI - which installs tables for later use; the other is
+ * a stream carrying a frame whose tables are missing, to be read with the
+ * tables that stream installed.  The pair exists so that a set of images can
+ * share one copy of its tables, and neither half is a complete JPEG on its
+ * own.
+ *
+ * Load one with gimg_jpeg_tables_load(), pass it in
+ * GIMG_Load_Options.jpeg_tables to read an abbreviated image, and free it with
+ * gimg_jpeg_tables_destroy().  One tables object may be used for any number of
+ * loads; it is not modified by them.
+ */
+typedef struct GIMG_JPEG_Tables GIMG_JPEG_Tables;
+
+/**
+ * @brief Read a JPEG table-specification stream (T.81 B.4).
+ *
+ * The stream must be SOI, table-specification and miscellaneous segments, then
+ * EOI, with no frame header.  A stream that carries a frame is not a
+ * table-specification stream and returns GIMG_ERR_FORMAT.
+ */
+GIMG_API GIMG_Result gimg_jpeg_tables_load(
+    GIMG_Stream * stream, GIMG_JPEG_Tables ** out_tables);
+
+/** @brief Free a table set from gimg_jpeg_tables_load(). */
+GIMG_API void gimg_jpeg_tables_destroy(GIMG_JPEG_Tables * tables);
+
+/**
  * @brief Load options (limits, strictness, etc.).
  * @see api_options
  */
 typedef struct {
   const GIMG_Limits * limits; ///< NULL = use defaults.
   GIMG_Strictness strictness;
+  /** Tables to install before reading the stream (T.81 B.4).
+   *
+   * Needed only for the abbreviated format for compressed image data - a frame
+   * whose own tables are absent.  A complete JPEG carries its tables and
+   * ignores this, except that its own segments override whatever these
+   * installed, which is what B.2.4.1's "until redefined" means.  Ignored for
+   * non-JPEG. */
+  const GIMG_JPEG_Tables * jpeg_tables;
   uint8_t _reserved[8];
 } GIMG_Load_Options;
 
@@ -269,6 +308,28 @@ typedef struct {
    * and to nothing else: a raw CMYK frame has no chrominance, and libjpeg does
    * not subsample one either. */
   uint8_t jpeg_cmyk_transform;
+
+  /** Write one of the abbreviated formats of T.81 B.4 rather than a complete
+   * JPEG.
+   *
+   * 0 (the default) writes a complete file: tables and frame together.
+   *
+   * 1 writes the abbreviated format for compressed image data - the frame with
+   * its table-specification segments left out.  Such a file is not a JPEG on
+   * its own; it is read by passing the matching tables in
+   * GIMG_Load_Options.jpeg_tables.  The tables it needs are whatever the same
+   * options would have written, so a tables stream and an image stream saved
+   * with the same quality, precision and entropy coder belong together.
+   *
+   * 2 writes the abbreviated format for table-specification data - the tables
+   * alone, between SOI and EOI, with no frame.  The raster is read only for
+   * its shape: nothing of the picture reaches such a file.
+   *
+   * Refused together with `jpeg_hierarchical_levels`, whose frames carry their
+   * own tables (B.3.1), and with a lossless frame, whose Huffman table is
+   * generated from the very coefficients it codes and so cannot be written
+   * before them.  Ignored for non-JPEG. */
+  uint8_t jpeg_abbreviated;
 } GIMG_Save_Options;
 
 /**
