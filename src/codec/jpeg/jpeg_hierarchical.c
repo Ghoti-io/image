@@ -236,6 +236,11 @@ static const unsigned char * hier_scan_huff(const gimg_jpeg_doc_state_t * state,
  * arithmetic path of F.1.4.4.1 adds its own carried DC value, so a zero
  * predictor leaves the decoded value standing as the coefficient.
  */
+// Defined below; the sequential frame decoder hands A.2.3 frames to it.
+static GIMG_Result hier_decode_progressive_frame(
+    const gimg_jpeg_doc_state_t * state, const gimg_jpeg_frame_t * f,
+    hier_plane_t * out, int sequential);
+
 static GIMG_Result hier_decode_dct_frame(const gimg_jpeg_doc_state_t * state,
     const gimg_jpeg_frame_t * f, hier_plane_t * out) {
   const gimg_jpeg_sof_t * sof = &f->sof;
@@ -246,14 +251,23 @@ static GIMG_Result hier_decode_dct_frame(const gimg_jpeg_doc_state_t * state,
     // T.81 Table B.2: a DCT-based frame is 8- or 12-bit.
     return GIMG_ERR_UNSUPPORTED;
   }
-  if (f->num_scans != 1u) {
-    // Sequential frames here are interleaved, so the frame is one scan (A.2.2).
-    return GIMG_ERR_UNSUPPORTED;
+  if (f->num_scans == 0u) {
+    return GIMG_ERR_CORRUPT;
+  }
+  // T.81 A.2.3: a frame of a hierarchical sequence may be coded as several
+  // non-interleaved scans, one per component, just as a single-frame image
+  // may.  Annex J says nothing to forbid it - J.1 changes the coding model,
+  // not the scan arrangement - and the ISO reference codec reads such a file.
+  //
+  // That order is a different walk through the same blocks, and the walk that
+  // knows how to read it is the one Annex G already needed, so such a frame
+  // takes the coefficient-buffer path with `sequential` set.  This is the same
+  // delegation the single-frame sequential decoder makes, for the same reason;
+  // it used to be refused here only because nothing had needed it yet.
+  if (f->num_scans > 1u || f->scans[0].comp_count != num_comp) {
+    return hier_decode_progressive_frame(state, f, out, 1);
   }
   const gimg_jpeg_scan_t * scan = &f->scans[0];
-  if (scan->comp_count != num_comp) {
-    return GIMG_ERR_UNSUPPORTED; // Non-interleaved sequential: see above.
-  }
   if (!f->is_arithmetic && (!scan->data || scan->data_size == 0)) {
     return GIMG_ERR_CORRUPT;
   }
@@ -687,7 +701,7 @@ fail:
  */
 static GIMG_Result hier_decode_progressive_frame(
     const gimg_jpeg_doc_state_t * state, const gimg_jpeg_frame_t * f,
-    hier_plane_t * out) {
+    hier_plane_t * out, int sequential) {
   const gimg_jpeg_sof_t * sof = &f->sof;
   const GIMG_Allocator * alloc = gimg_alloc_or_default(state->allocator);
   uint8_t num_comp = sof->num_components;
@@ -753,8 +767,8 @@ static GIMG_Result hier_decode_progressive_frame(
   }
 
   r = jpeg_decode_progressive_scans(state, sof, f->scans, f->num_scans,
-      f->is_arithmetic, &f->arith_cond, f->is_differential, 0, mcu_per_row,
-      mcu_per_col, blk_w, blk_h, grid_w, coef);
+      f->is_arithmetic, &f->arith_cond, f->is_differential, sequential,
+      mcu_per_row, mcu_per_col, blk_w, blk_h, grid_w, coef);
   if (r != GIMG_OK) {
     goto fail;
   }
@@ -1101,7 +1115,7 @@ GIMG_Result gimg_jpeg_decode_hierarchical(const gimg_jpeg_doc_state_t * state,
       r = hier_decode_lossless_frame(state, f, cur);
     }
     else if (f->is_progressive) {
-      r = hier_decode_progressive_frame(state, f, cur);
+      r = hier_decode_progressive_frame(state, f, cur, 0);
     }
     else {
       r = hier_decode_dct_frame(state, f, cur);

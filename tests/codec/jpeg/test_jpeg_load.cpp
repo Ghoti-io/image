@@ -3864,3 +3864,73 @@ int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// T.81 A.2.3 inside a hierarchical sequence.
+//
+// A frame of a sequence may be coded as one non-interleaved scan per component
+// exactly as a single-frame image may; Annex J changes the coding model, not
+// the scan arrangement, and says nothing to forbid it.  The decoder refused
+// such a frame outright until it learned to hand it to the walk that already
+// knew the order.
+//
+// The fixtures are one-frame sequences: DHP followed by a single
+// non-differential frame, which J.1.3 leaves coded normally, so the sequence
+// decodes to exactly that frame.  That is what gives them a known answer - the
+// reference decode committed for the plain file they were built from, compared
+// exactly.  They were built by inserting a DHP segment (B.3.2: the frame
+// header's own parameters with Tq zeroed) ahead of the frame in
+// ni_ours_*.jpg, and the ISO reference codec reads all three as hierarchical
+// sequences, so they are well formed T.81 and not merely something this
+// decoder happens to accept.
+TEST(JpegLoad, HierarchicalFrameCodedAsNonInterleavedScans) {
+  struct Case {
+    const char * jpg;
+    const char * ref;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"hier_noninterleaved_444.jpg", "ni_ours_444_turbo.ppm",
+          "4:4:4, three scans"},
+      {"hier_noninterleaved_420.jpg", "ni_ours_420_turbo.ppm",
+          "4:2:0, three scans, chroma grid smaller than the MCU grid"},
+      {"hier_noninterleaved_arith_420.jpg", "ni_ours_arith_420_turbo.ppm",
+          "4:2:0, three scans, arithmetic"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    uint32_t rw = 0, rh = 0;
+    int rchan = 0, rbits = 0;
+    std::vector<uint32_t> ref;
+    ASSERT_TRUE(jpeg_test::load_pnm_file(c.ref, &rw, &rh, &rchan, &rbits, ref))
+        << "missing reference " << c.ref;
+    ASSERT_EQ(rchan, 3);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK)
+        << "a hierarchical frame coded as non-interleaved scans must decode";
+    ASSERT_NE(raster, nullptr);
+    EXPECT_EQ(gimg_raster_width(raster), rw);
+    EXPECT_EQ(gimg_raster_height(raster), rh);
+    const unsigned char * gp =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t gs = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < rh; y++) {
+      for (uint32_t x = 0; x < rw; x++) {
+        for (int ch = 0; ch < 3; ch++) {
+          int a = (int)gp[y * gs + x * 4 + (size_t)ch];
+          int b = (int)ref[((size_t)y * rw + x) * 3 + (size_t)ch];
+          ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << ch;
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}

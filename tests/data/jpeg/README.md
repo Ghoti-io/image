@@ -672,3 +672,32 @@ regression test than the fixtures above.  `JpegEncode.NonInterleavedAndInter‐
 leavedDecodeToTheSamePixels` is the one that holds the encoder still: it writes
 the same image both ways at test time and requires the two to decode to
 identical pixels, at sizes where no dimension is a whole number of MCUs.
+
+### A hierarchical frame coded as non-interleaved scans (`hier_noninterleaved_*.jpg`)
+
+A.2.3 applies inside a sequence as well: Annex J changes the coding model, not
+the scan arrangement, and nothing there forbids a frame being written one
+component at a time.  Nothing available writes such a file - the ISO reference
+codec has no option for it and libjpeg-turbo cannot write a sequence at all -
+so these are assembled from files that were already validated.
+
+```sh
+# mk_hier_ni.py is committed next to the fixtures.  It is six lines:
+# insert a DHP segment ahead of the SOF of a single-frame JPEG.  B.3.1 makes
+# DHP-then-frames a hierarchical sequence; B.3.2 gives DHP "the same parameters
+# as a frame header" with Tq zeroed.
+python3 $D/mk_hier_ni.py \
+    $D/ni_ours_444.jpg       $D/hier_noninterleaved_444.jpg \
+    $D/ni_ours_420.jpg       $D/hier_noninterleaved_420.jpg \
+    $D/ni_ours_arith_420.jpg $D/hier_noninterleaved_arith_420.jpg
+```
+
+A sequence of one non-differential frame decodes to exactly that frame (J.1.3
+leaves a first frame coded normally), which is the whole point: the expected
+answer is already committed, as the libjpeg-turbo decode of the plain file each
+was built from, and the comparison is exact.
+
+Two independent checks that these are real JPEGs rather than something this
+decoder happens to like: libjpeg-turbo validated the frame and its scans before
+the DHP was inserted, and the ISO reference codec reads all three afterwards as
+hierarchical sequences.
