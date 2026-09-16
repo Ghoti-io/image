@@ -32,6 +32,32 @@ Generated files:
 
 Tests in `tests/codec/png/test_png_decode.cpp` load these files when built with `GIMG_TEST_DATA_PNG` (the Makefile sets this to the path of this directory).
 
+## Fixtures for the sub-byte, integrity and Third Edition cases
+
+| File(s) | What they are for |
+|---------|-------------------|
+| `png_gray{1,2,4}_{32x8,33x9}.png` and `_interlaced.png` | Grayscale at 1, 2 and 4 bits, each emitted twice from one sample array. Adam7 is a reordering, so the two members of a pair must decode alike - a property that needs no reference decoder. 33×9 additionally leaves a partly-used final byte in several passes. |
+| `png_pal{1,2,4}_{32x8,33x9}.png` and `_interlaced.png` | The same for palette images. The only palette fixture before these was 8-bit, which is why a write overrun in the sub-byte packing survived so long. |
+| `png_gray*.raw`, `png_pal*.raw` | The expected decoded pixels, computed in `generate.py` from the rescaling rule of PNG 13.12 - not captured from this library's own output. Used by the decode tests and by `verify_png_output.py`. |
+| `png_zlib_ok.png` | Control: a correct zlib stream. Every file below differs from it only in the wrapper bytes, and all chunk CRCs are correct, so nothing else can account for rejecting them. |
+| `png_zlib_bad_adler.png` | Adler-32 of the wrong bytes. DEFLATE alone accepts this stream; only the check RFC 1950 requires catches it. |
+| `png_zlib_bad_header.png` | CMF/FLG that is not a multiple of 31, declaring a compression method other than the 8 PNG 10.3 allows. |
+| `png_zlib_preset_dict.png` | FDICT set, which PNG forbids. The header still passes the multiple-of-31 test, so only the flag marks it - and a decoder ignoring it reads the DICTID as DEFLATE data. |
+| `png_rgb_suggested_palette.png`, `png_rgba_suggested_palette.png` | PLTE on a truecolour image, which PNG 11.2.2 allows as a suggested palette. The palette deliberately does not contain the image's colours. |
+| `png_rgb_no_palette.png` | The same image with no PLTE, so "the suggested palette was ignored" is checkable without a reference decoder. |
+| `png_gray_forbidden_palette.png` | PLTE on colour type 0, which the spec forbids outright. Some decoders read it anyway; this one does not. |
+| `png_gradient_64x64_rgb.png` | A smooth gradient, which is where row filtering pays most, so choosing per row can be shown to beat forcing any single filter. |
+| `png_cicp_srgb.png` | cICP naming the sRGB pair beside a gAMA that disagrees, so the Third Edition's precedence is testable. |
+| `png_cicp_bt2020_pq.png` | cICP naming BT.2020 primaries with the PQ transfer - legal, and beyond what `GIMG_Color_Info` can describe. A gAMA rides along so that "left unknown" is an assertion and not an accident. |
+| `png_mdcv_clli.png` | The HDR mastering chunks, which are preserved and not interpreted. |
+
+Every one of these was checked against Pillow and libpng before any test was
+written on it: a fixture this library alone agrees with proves nothing.
+
+**The published conformance suite** (PngSuite) is used as a development oracle
+from a scratch directory and is deliberately **not** vendored here. These
+fixtures cover the same ground in files this project generates.
+
 **Encode test output:** When the PNG encode tests run (with `GIMG_TEST_DATA_PNG` set), they write encoded PNGs to `tests/out/png/`. That directory is in `.gitignore`. `make test` runs all unit tests and then verifies these PNGs with PIL (Pillow); Pillow is required (`pip install Pillow`). Verification ensures:
 
 - Each file has a valid PNG signature and IHDR chunk.
