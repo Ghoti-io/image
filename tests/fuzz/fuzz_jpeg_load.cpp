@@ -43,10 +43,22 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
 
+  // Cap the decoded size.  A JPEG header is a handful of bytes and can ask for
+  // an image of any size the fields allow, so without a limit the fuzzer spends
+  // its time rediscovering that a 580-byte file declaring 25889x27248 needs
+  // gigabytes - which is not a defect, it is what GIMG_Limits is for - instead
+  // of exploring the decoders.  Callers that care set this; the library does
+  // not impose a default, because what counts as too large is the caller's
+  // judgement.
+  GIMG_Limits limits = {};
+  limits.max_decoded_pixels = 4u * 1024u * 1024u;
+  GIMG_Decode_Options opts = {};
+  opts.limits = &limits;
+
   size_t n = gimg_doc_item_count(doc);
   for (size_t i = 0; i < n; i++) {
     GIMG_Raster * raster = nullptr;
-    GIMG_Result dr = gimg_item_decode(gimg_doc_item(doc, i), nullptr, &raster);
+    GIMG_Result dr = gimg_item_decode(gimg_doc_item(doc, i), &opts, &raster);
     if (raster != nullptr) {
       gimg_raster_destroy(raster);
     }

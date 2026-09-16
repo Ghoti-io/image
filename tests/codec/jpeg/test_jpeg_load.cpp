@@ -2195,6 +2195,129 @@ TEST(JpegLoad, DecodeBaseline640x480Ycbcr) {
   gimg_doc_destroy(doc);
 }
 
+/** Lossless JPEG (SOF3) decodes, exactly.
+ *
+ * T.81 Annex H is a coding process in its own right, not a variation on the
+ * DCT ones: each sample is predicted from its already-decoded neighbours and
+ * the difference is entropy-coded, so the reconstruction is exact.  This codec
+ * rejected every such frame until the process existed.
+ *
+ * It is also the only place a JPEG may carry a precision other than 8 or 12.
+ * Table B.2 allows P from 2 to 16 in a lossless frame - so a 16-bit JPEG is a
+ * real thing, and two of the fixtures here are one.
+ *
+ * Expectations are libjpeg-turbo 3.0.4's decode of the same files, in the
+ * frame's own precision; this library widens those samples to an 8- or 16-bit
+ * raster by replication, so the comparison undoes that. */
+TEST(JpegLoad, DecodeLossless) {
+  struct Case {
+    const char * name;
+    uint32_t w, h;
+    int channels;
+    int precision;
+    unsigned long long sum;
+    int samples[15];
+  };
+  static const Case cases[] = {
+      // Every predictor selection value gets its own arithmetic (Table H.1);
+      // 1 is one-dimensional, 4 and 7 are two-dimensional.
+      {"lossless_gray_psv1.jpg", 64, 64, 1, 8, 520320,
+          {0, 129, 255, 4, 0}},
+      {"lossless_rgb_psv4.jpg", 64, 64, 3, 8, 1567160,
+          {142, 0, 0, 241, 129, 129, 236, 255, 255, 106, 0, 2, 67, 4, 2}},
+      // Point transform Pt = 1: the samples were shifted down before coding.
+      {"lossless_rgb_psv7_pt1.jpg", 17, 9, 3, 8, 58092,
+          {224, 0, 0, 100, 126, 126, 98, 254, 254, 174, 0, 10, 44, 30, 10}},
+      // The same image as psv4 above, with restart intervals: a restart begins
+      // a fresh predictive context, so it must decode to exactly the same
+      // samples.
+      {"lossless_rgb_psv4_restart.jpg", 64, 64, 3, 8, 1567160,
+          {142, 0, 0, 241, 129, 129, 236, 255, 255, 106, 0, 2, 67, 4, 2}},
+      // Precisions a DCT frame may not use.
+      {"lossless_gray16_psv1.jpg", 64, 64, 1, 16, 134449403ULL,
+          {32767, 34575, 13611, 36315, 32767}},
+      {"lossless_rgb12_psv4.jpg", 64, 64, 3, 12, 25158656ULL,
+          {0, 0, 0, 2080, 2080, 2080, 4095, 4095, 4095, 65, 0, 32, 0, 65, 32}},
+  };
+  // The library's widening rule, generalised to any source precision.
+  auto widen = [](uint32_t v, int from, int to) -> uint32_t {
+    if (from >= to) return v >> (from - to);
+    uint32_t r = v;
+    int have = from;
+    while (have < to) {
+      int take = to - have;
+      if (take > from) take = from;
+      r = (r << take) | (v >> (from - take));
+      have += take;
+    }
+    return r;
+  };
+  for (const Case & c : cases) {
+    std::vector<uint8_t> jpeg;
+    if (!jpeg_test::load_jpeg_file(c.name, jpeg)) {
+      ADD_FAILURE() << "missing fixture " << c.name;
+      continue;
+    }
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK) << c.name;
+    gimg_stream_destroy(s);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK)
+        << c.name;
+    ASSERT_NE(raster, nullptr);
+    ASSERT_EQ(gimg_raster_width(raster), c.w) << c.name;
+    ASSERT_EQ(gimg_raster_height(raster), c.h) << c.name;
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    ASSERT_NE(fmt, nullptr);
+    int out_bits = (c.precision <= 8) ? 8 : 16;
+    EXPECT_EQ(fmt->bits_per_channel[0], out_bits) << c.name;
+    size_t stride = gimg_raster_stride_bytes(raster);
+    const void * px = gimg_raster_pixels_const(raster);
+    auto at = [&](uint32_t x, uint32_t y, int ch) -> uint32_t {
+      if (out_bits == 8) {
+        const unsigned char * p = (const unsigned char *)px + y * stride;
+        return (c.channels == 1) ? p[x] : p[x * 4 + (uint32_t)ch];
+      }
+      const uint16_t * p =
+          (const uint16_t *)((const unsigned char *)px + y * stride);
+      return (c.channels == 1) ? p[x] : p[x * 4 + (uint32_t)ch];
+    };
+    unsigned long long sum = 0;
+    for (uint32_t y = 0; y < c.h; y++) {
+      for (uint32_t x = 0; x < c.w; x++) {
+        for (int ch = 0; ch < c.channels; ch++) {
+          // Reduce the raster sample back to the frame's own precision.
+          uint32_t v = at(x, y, ch);
+          uint32_t want_bits = (uint32_t)c.precision;
+          uint32_t narrowed =
+              (out_bits == (int)want_bits)
+              ? v
+              : (uint32_t)(((uint64_t)v * ((1ull << want_bits) - 1ull) +
+                               ((1ull << out_bits) - 1ull) / 2ull) /
+                  ((1ull << out_bits) - 1ull));
+          sum += narrowed;
+        }
+      }
+    }
+    EXPECT_EQ(sum, c.sum) << c.name;
+    const uint32_t pts[5][2] = {
+        {0, 0}, {c.w / 2, c.h / 2}, {c.w - 1, c.h - 1}, {1, 0}, {0, 1}};
+    int i = 0;
+    for (const auto & pt : pts) {
+      for (int ch = 0; ch < c.channels; ch++, i++) {
+        EXPECT_EQ(at(pt[0], pt[1], ch),
+            widen((uint32_t)c.samples[i], c.precision, out_bits))
+            << c.name << " at (" << pt[0] << ", " << pt[1] << ") channel "
+            << ch;
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+  }
+}
+
 /** Arithmetic-coded frames decode, and decode correctly.
  *
  * SOF9 is sequential and SOF10 progressive; both are covered here, together

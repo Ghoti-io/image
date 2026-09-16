@@ -365,6 +365,10 @@ typedef struct gimg_jpeg_doc_state {
   const GIMG_Allocator * allocator;
   gimg_jpeg_sof_t sof;
   int is_progressive; ///< SOF2/SOF10 vs SOF0/SOF1/SOF9.
+  /** Lossless predictive coding (SOF3/SOF11, T.81 Annex H) rather than the
+   * DCT-based processes.  A different coding process, not a variation: no DCT,
+   * no quantisation, and sample precision from 2 to 16 (Table B.2). */
+  int is_lossless;
   /** Arithmetic entropy coding (SOF9/SOF10) rather than Huffman (T.81 Annex D
    * is normative; a frame that uses it is as much a JPEG as any other). */
   int is_arithmetic;
@@ -553,6 +557,10 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
  * Progressive decode: multiple scans (DC then AC spectral/approximation),
  * then dequant, IDCT, upsample, color convert. Internal.
  */
+/** Decode a lossless frame (SOF3, T.81 Annex H). */
+GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
+    const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
+
 GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 

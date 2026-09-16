@@ -49,9 +49,15 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
       (precision != 8 && precision != 12)) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  // T.81 Table B.2: every DCT-based frame is 8- or 12-bit.  Precision up to 16
-  // belongs to lossless (SOF3) only, which we do not support.
-  if (precision != 8 && precision != 12) {
+  // T.81 Table B.2: a lossless frame may use any precision from 2 to 16, and a
+  // DCT-based one exactly 8 or 12.  This is the only place 16-bit samples are
+  // legal in a JPEG.
+  if (sof_marker == GIMG_JPEG_MARKER_SOF3) {
+    if (precision < 2 || precision > 16) {
+      return GIMG_ERR_UNSUPPORTED;
+    }
+  }
+  else if (precision != 8 && precision != 12) {
     return GIMG_ERR_UNSUPPORTED;
   }
   if (width == 0) {

@@ -282,3 +282,36 @@ The empty-scan fixture is worth keeping: D.2.9 has the decoder supply zero bytes
 once it runs past the compressed data, so a frame whose every decision resolves
 to the more probable symbol needs no bytes at all, and libjpeg writes none.  A
 Huffman scan always has at least one.
+
+## Lossless fixtures
+
+T.81 Annex H is a predictive coding process, not a DCT one, and libjpeg-turbo
+3.x can write it:
+
+```sh
+ljt-build/cjpeg-static -lossless <psv>[,<Pt>] -outfile out.jpg in.ppm
+ljt-build/cjpeg-static -precision 16 -lossless 1 -outfile out.jpg in16.ppm
+```
+
+`psv` is the predictor selection value of Table H.1 (1–7) and `Pt` the point
+transform.  Decoding these needs an oracle that reads at the frame's own
+precision: `djpeg` will, but a program calling `jpeg_read_scanlines` will not -
+above 8 bits libjpeg expects `jpeg12_read_scanlines` or `jpeg16_read_scanlines`
+according to `cinfo.data_precision`.
+
+| File | Content |
+| ---- | ------- |
+| `lossless_gray_psv1.jpg` | grayscale, predictor 1 (one-dimensional) |
+| `lossless_rgb_psv4.jpg` | RGB, predictor 4 (two-dimensional) |
+| `lossless_rgb_psv7_pt1.jpg` | RGB, predictor 7, point transform 1, 17x9 |
+| `lossless_rgb_psv4_restart.jpg` | as psv4, with restart intervals |
+| `lossless_gray16_psv1.jpg` | **16-bit** grayscale |
+| `lossless_rgb12_psv4.jpg` | 12-bit RGB |
+
+The restart fixture is the same image as `lossless_rgb_psv4.jpg` and must decode
+to exactly the same samples.  It is worth having because a restart interval in a
+lossless frame resets more than the entropy coder: the row an interval begins on
+has no row above it that the interval may refer to, so that row is predicted
+one-dimensionally, exactly as the first row of the image is.  Carrying the
+prediction across the boundary decodes the first row of every interval after the
+first as noise.

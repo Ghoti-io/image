@@ -480,10 +480,30 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       seen_sof = true;
       break;
     }
-    // Unsupported SOF (T.81: SOF3 lossless, SOF5-SOF7 differential, SOF11 and
-    // SOF13-SOF15).  Reject explicitly so the caller gets a clear error instead
-    // of "no SOF".
-    case GIMG_JPEG_MARKER_SOF3:
+    case GIMG_JPEG_MARKER_SOF3: {
+      if (seen_sof) {
+        jpeg_load_fmt_debug("duplicate SOF3", seg_start, marker);
+        gimg_free(alloc, payload_buf);
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      r = jpeg_parse_sof(payload_buf, payload_size, marker, &state->sof);
+      gimg_free(alloc, payload_buf);
+      if (r != GIMG_OK) {
+        jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF3");
+        gimg_jpeg_free_doc_state(codec, state);
+        return r;
+      }
+      // T.81 Annex H: predictive coding, not DCT.  Everything downstream that
+      // assumes 8x8 blocks is bypassed for such a frame.
+      state->is_lossless = 1;
+      state->is_progressive = 0;
+      seen_sof = true;
+      break;
+    }
+    // Unsupported SOF (T.81: SOF5-SOF7 differential, SOF11 arithmetic
+    // lossless, SOF13-SOF15 hierarchical).  Reject explicitly so the caller
+    // gets a clear error instead of "no SOF".
     case 0xC5:
     case 0xC6:
     case 0xC7:
@@ -699,9 +719,13 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           const char * why = NULL;
           int progressive =
               state->is_progressive ? 1 : 0;
+          int lossless = state->is_lossless ? 1 : 0;
           // B.2.3: 0 <= Ss <= 63, Ss <= Se <= 63; Td and Ta select one of four
-          // tables.
-          if (scan->se > 63u || scan->ss > scan->se) {
+          // tables.  A lossless scan reads these three fields quite
+          // differently (H.1): Ss is the predictor selection value, Se is zero,
+          // and Al is the point transform - so the DCT reading of them does not
+          // apply and would reject every such scan.
+          if (!lossless && (scan->se > 63u || scan->ss > scan->se)) {
             why = "SOS spectral selection out of range (T.81 B.2.3)";
           }
           for (uint8_t i = 0; i < ns && !why; i++) {
@@ -746,6 +770,26 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             // by the coefficient range.
             else if (scan->al > 13u) {
               why = "progressive Al out of range (T.81 G.1.1.1.2)";
+            }
+          }
+          else if (lossless && !why) {
+            // T.81 H.1: Ss carries the predictor selection value, which is
+            // 1..7 in a non-differential frame (0 selects "no prediction" and
+            // is only meaningful in the differential frames of Annex J); Se is
+            // zero; Ah is zero; and Al is the point transform, which cannot
+            // discard every bit of a sample.
+            if (scan->ss < 1u || scan->ss > 7u) {
+              why = "lossless predictor selection out of range (T.81 H.1)";
+            }
+            else if (scan->se != 0u) {
+              why = "lossless scan must have Se=0 (T.81 B.2.3)";
+            }
+            else if (scan->ah != 0u) {
+              why = "lossless scan must have Ah=0 (T.81 B.2.3)";
+            }
+            else if (scan->al >= state->sof.precision) {
+              why = "lossless point transform discards the whole sample "
+                    "(T.81 H.1)";
             }
           }
           else if (!why) {
