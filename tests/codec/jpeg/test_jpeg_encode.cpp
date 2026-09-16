@@ -2546,14 +2546,13 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
   gimg_item_set_raster(item, raster);
 
   // A GRAY16 raster is written at 12-bit (T.81 has no 16-bit DCT frame), so the
-  // 12-bit quality limits apply here.  Quality 100 is refused outright (see
-  // SaveGray12Quality100Unsupported).  Qualities 88-90 and 94-99 currently
-  // produce a file our own decoder rejects as corrupt - a 12-bit entropy-coding
-  // defect that predates this test and is tracked separately - so this test
-  // stays inside the range that is known to work rather than asserting broken
-  // behaviour.
+  // 12-bit quality range applies here.  This test used to run only qualities 50
+  // and 85: quality 100 was refused at save, and 88-90 and 94-99 produced files
+  // our own decoder rejected as corrupt, because the extended Huffman tables
+  // over-subscribed the code space.  With the tables fixed and the refusal
+  // removed, every quality works, so the test covers the ends of the range too.
   size_t size_50 = 0, size_85 = 0, size_100 = 0;
-  for (unsigned q : {50u, 85u}) {
+  for (unsigned q : {1u, 50u, 85u, 95u, 100u}) {
     GIMG_Stream * out = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {
@@ -2567,7 +2566,8 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
     size_t n = 0;
     gimg_stream_output_buffer(out, &data, &n);
     if (q == 50) size_50 = n;
-    else size_85 = n;
+    else if (q == 85) size_85 = n;
+    else if (q == 100) size_100 = n;
     GIMG_Stream * in_stream = nullptr;
     ASSERT_EQ(gimg_stream_create_memory((const uint8_t *)data, n, &in_stream),
         GIMG_OK);
@@ -2587,7 +2587,10 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
   /* Same image: higher quality should yield larger or similar size (no strict order). */
   EXPECT_GT(size_50, 0u);
   EXPECT_GT(size_85, 0u);
-  (void)size_100;
+  EXPECT_GT(size_100, 0u) << "quality 100 must produce a file, not an error";
+  // Finer quantisation, more bits.
+  EXPECT_GT(size_85, size_50);
+  EXPECT_GT(size_100, size_85);
 }
 
 /**
@@ -2688,6 +2691,78 @@ TEST(JpegEncode, Save12BitColourFlatFieldsKeepTheirValue) {
     gimg_raster_destroy(decoded);
     gimg_doc_destroy(back);
   }
+}
+
+/** Quality 100 at 12 bits must encode, and must read back.
+ *
+ * It used to be refused outright: the saver returned GIMG_ERR_UNSUPPORTED for
+ * any quality of 100 or more at P=12, because the file it produced could not be
+ * decoded.  The cause was in the extended Huffman tables - they over-subscribed
+ * the code space, so 79 symbols shared codes with other symbols - and not in
+ * the quantiser, as the comment on the guard had assumed.  With the tables
+ * fixed the guard was refusing files that are perfectly good, so it is gone.
+ *
+ * The content here is deliberately hostile to quality 100: a one-pixel
+ * checkerboard puts as much energy as an 8x8 block can hold into its highest
+ * AC coefficients, which is where a coefficient too large for any category
+ * (T.81 F.1.2.2 allows SSSS up to 14 at P=12) would first appear. */
+TEST(JpegEncode, Save12BitQuality100RoundTrips) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(32, 32, &GIMG_PIXEL_GRAY12, GIMG_RASTER_OWNED,
+                NULL, 0, &raster),
+      GIMG_OK);
+  uint16_t * px = (uint16_t *)gimg_raster_pixels(raster);
+  size_t stride_el = gimg_raster_stride_bytes(raster) / 2;
+  for (uint32_t y = 0; y < 32; y++) {
+    for (uint32_t x = 0; x < 32; x++) {
+      px[y * stride_el + x] = ((x + y) & 1u) ? 4095u : 0u;
+    }
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  opts.quality = 100;
+  opts.jpeg_precision = 12;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+  EXPECT_GT(report.bytes_written, 0u);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &data, &size);
+  std::vector<uint8_t> jpeg((const uint8_t *)data, (const uint8_t *)data + size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in), GIMG_OK);
+  GIMG_Doc * back = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &back), GIMG_OK);
+  gimg_stream_destroy(in);
+  GIMG_Raster * decoded = nullptr;
+  ASSERT_EQ(
+      gimg_item_decode(gimg_doc_item(back, 0), nullptr, &decoded), GIMG_OK);
+  ASSERT_NE(decoded, nullptr);
+  ASSERT_EQ(gimg_raster_width(decoded), 32u);
+  ASSERT_EQ(gimg_raster_height(decoded), 32u);
+  const uint16_t * out_px = (const uint16_t *)gimg_raster_pixels_const(decoded);
+  size_t out_stride = gimg_raster_stride_bytes(decoded) / sizeof(uint16_t);
+  // At quality 100 the quantisation values are all 1, so the checkerboard comes
+  // back essentially intact; the tolerance is for the DCT round trip alone.
+  for (uint32_t y = 0; y < 32; y++) {
+    for (uint32_t x = 0; x < 32; x++) {
+      int want = ((x + y) & 1u) ? 4095 : 0;
+      int got =
+          (int)gimg_bitdepth_16_to_12(out_px[y * out_stride + x]);
+      EXPECT_NEAR(got, want, 24) << "at (" << x << ", " << y << ")";
+    }
+  }
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(back);
 }
 
 TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
@@ -3187,10 +3262,11 @@ TEST(JpegEncode, SaveGray12QualityVariation) {
   }
   gimg_item_set_raster(item, raster);
 
-  /* Quality 100 is rejected for 12-bit (GIMG_ERR_UNSUPPORTED) due to a known
-   * round-trip decode failure; use quality 50 and 85 for encode+decode. */
-  size_t size_50 = 0, size_85 = 0;
-  for (unsigned q : {50u, 85u}) {
+  /* Quality 100 used to be rejected at P=12 (GIMG_ERR_UNSUPPORTED) because the
+   * file it produced could not be decoded; the fault was in the extended
+   * Huffman tables and is fixed, so the whole range is exercised here. */
+  size_t size_50 = 0, size_85 = 0, size_100 = 0;
+  for (unsigned q : {50u, 85u, 100u}) {
     GIMG_Stream * out = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {
@@ -3204,7 +3280,8 @@ TEST(JpegEncode, SaveGray12QualityVariation) {
     size_t n = 0;
     gimg_stream_output_buffer(out, &data, &n);
     if (q == 50) size_50 = n;
-    else size_85 = n;
+    else if (q == 85) size_85 = n;
+    else if (q == 100) size_100 = n;
     std::vector<uint8_t> jpeg_copy(
         (const uint8_t *)data, (const uint8_t *)data + n);
     gimg_stream_destroy(out);
@@ -3233,41 +3310,10 @@ TEST(JpegEncode, SaveGray12QualityVariation) {
   gimg_doc_destroy(doc);
   EXPECT_GT(size_50, 0u);
   EXPECT_GT(size_85, 0u);
-}
-
-/* 12-bit save rejects quality 100 (known round-trip decode failure). */
-TEST(JpegEncode, SaveGray12Quality100Unsupported) {
-  GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
-  GIMG_Item * item = gimg_doc_item(doc, 0);
-  ASSERT_NE(item, nullptr);
-  GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_GRAY12, GIMG_RASTER_OWNED,
-                NULL, 0, &raster),
-      GIMG_OK);
-  uint16_t * pixels = (uint16_t *)gimg_raster_pixels(raster);
-  size_t stride_el = gimg_raster_stride_bytes(raster) / 2;
-  for (uint32_t y = 0; y < 16; y++) {
-    for (uint32_t x = 0; x < 16; x++) {
-      uint16_t v = (uint16_t)((x + y * 16) * 16);
-      if (v > 4095) v = 4095;
-      pixels[y * stride_el + x] = v;
-    }
-  }
-  gimg_item_set_raster(item, raster);
-  GIMG_Stream * out = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
-  GIMG_Save_Options opts = {
-      .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 100,
-      .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
-  };
-  GIMG_Save_Report report = {};
-  GIMG_Result save_r = gimg_doc_save(doc, out, "jpeg", &opts, &report);
-  gimg_stream_destroy(out);
-  gimg_doc_destroy(doc);
-  EXPECT_NE(save_r, GIMG_OK);
-  EXPECT_EQ(save_r, GIMG_ERR_UNSUPPORTED);
+  EXPECT_GT(size_100, 0u) << "quality 100 must produce a file, not an error";
+  // Finer quantisation, more bits.
+  EXPECT_GT(size_85, size_50);
+  EXPECT_GT(size_100, size_85);
 }
 
 /* Task 3.2.2: 16-bit YCbCr encode with 4:2:0, 4:2:2, 4:4:4; round-trip decode. */

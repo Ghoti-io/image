@@ -327,11 +327,6 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
     uint32_t * out_height, int * out_num_components, uint8_t out_h_samp[3],
     uint8_t out_v_samp[3]) {
-  // Quality 100 triggers a known round-trip decode failure (ac_run_overflow);
-  // reject to avoid producing JPEG that our decoder cannot read.
-  if (quality >= 100) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
