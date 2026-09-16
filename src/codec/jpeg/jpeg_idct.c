@@ -95,7 +95,7 @@ void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits) {
         inptr[40] == 0 && inptr[48] == 0 && inptr[56] == 0) {
       int64_t dcval = IDCT_ISLOW_LEFT_SHIFT((int64_t)inptr[0], pass1_bits);
       for (int r = 0; r < 8; r++) {
-        wsptr[r * 8] = (int)dcval;
+        wsptr[r * 8] = dcval;
       }
       continue;
     }
@@ -144,14 +144,29 @@ void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits) {
     tmp2 += z2 + z3;
     tmp3 += z1 + z4;
 
-    wsptr[0] = (int)IDCT_ISLOW_DESCALE(tmp10 + tmp3, descale_pass1);
-    wsptr[56] = (int)IDCT_ISLOW_DESCALE(tmp10 - tmp3, descale_pass1);
-    wsptr[8] = (int)IDCT_ISLOW_DESCALE(tmp11 + tmp2, descale_pass1);
-    wsptr[48] = (int)IDCT_ISLOW_DESCALE(tmp11 - tmp2, descale_pass1);
-    wsptr[16] = (int)IDCT_ISLOW_DESCALE(tmp12 + tmp1, descale_pass1);
-    wsptr[40] = (int)IDCT_ISLOW_DESCALE(tmp12 - tmp1, descale_pass1);
-    wsptr[24] = (int)IDCT_ISLOW_DESCALE(tmp13 + tmp0, descale_pass1);
-    wsptr[32] = (int)IDCT_ISLOW_DESCALE(tmp13 - tmp0, descale_pass1);
+    // These stores used to narrow through (int).  The workspace is int64_t and
+    // every intermediate above is int64_t, so that cast threw the width away
+    // again at the one point it mattered: pass 2 then read a wrapped value.
+    // It is not undefined - a conversion that will not fit is
+    // implementation-defined, not UB - which is why the sanitizer never said
+    // anything about it.  It is still wrong.  The largest dequantised DC a
+    // syntactically valid frame can carry is 32767 x 65535 (a 15-category DC
+    // coefficient, T.81 F.1.2.1, against a 16-bit quantiser value, B.2.4.1
+    // Pq=1); at P=12 that reaches 4294770690 after the pass-1 shift, and
+    // (int) of it is -196606.  The sample came out black where the transform
+    // had computed white.  No encoder can produce such a coefficient - the FDCT
+    // of any 12-bit block bounds the DC at about 16376 - so T.81 says nothing
+    // about what to decode it to, and nothing a real image contains goes near
+    // the cast either way.  But a decoder should not turn a value it has just
+    // computed into its own negation on the way to memory.
+    wsptr[0] = IDCT_ISLOW_DESCALE(tmp10 + tmp3, descale_pass1);
+    wsptr[56] = IDCT_ISLOW_DESCALE(tmp10 - tmp3, descale_pass1);
+    wsptr[8] = IDCT_ISLOW_DESCALE(tmp11 + tmp2, descale_pass1);
+    wsptr[48] = IDCT_ISLOW_DESCALE(tmp11 - tmp2, descale_pass1);
+    wsptr[16] = IDCT_ISLOW_DESCALE(tmp12 + tmp1, descale_pass1);
+    wsptr[40] = IDCT_ISLOW_DESCALE(tmp12 - tmp1, descale_pass1);
+    wsptr[24] = IDCT_ISLOW_DESCALE(tmp13 + tmp0, descale_pass1);
+    wsptr[32] = IDCT_ISLOW_DESCALE(tmp13 - tmp0, descale_pass1);
   }
 
   for (int ctr = 0; ctr < 8; ctr++) {

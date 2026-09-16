@@ -4905,3 +4905,47 @@ TEST(JpegEncode, ScanDataGrowsGeometrically) {
   counting_free(nullptr, state->scans[0].data);
   free(state);
 }
+
+// The inverse DCT carries its intermediates in int64_t on purpose: the
+// dequantised input alone is a 31-bit quantity for a block that is
+// syntactically legal, and 32-bit sums of those values overflow.  Pass 1 used
+// to compute wide and then store through (int) into the int64_t workspace,
+// which handed pass 2 a wrapped value - implementation-defined rather than
+// undefined, so no sanitizer ever objected.
+//
+// This test sits at the transform rather than at a file because the input that
+// exposes it is one no encoder can emit: the forward DCT of any 12-bit block
+// bounds the DC coefficient near 16376, whereas a 15-category DC difference
+// (T.81 F.1.2.1) against a 16-bit quantiser value (B.2.4.1, Pq=1) dequantises
+// to 32767 x 65535.  T.81 does not say what such a block decodes to.  It does
+// have to decode to the sign the transform actually computed.
+TEST(JpegIdct, Pass1ResultReachesPass2WithoutBeingNarrowed) {
+  const int32_t dequantised_dc = 32767 * 65535;
+  // pass1_bits is 1 for 12-bit frames (jidctint.c's PASS1_BITS), so the
+  // pass-1 DC is dequantised_dc << 1 == 4294770690 - past int32, and (int) of
+  // it is -196606.
+  ASSERT_GT((int64_t)dequantised_dc << 1, (int64_t)INT32_MAX);
+
+  // The DC-only shortcut in pass 1.
+  int32_t in[64] = {0};
+  int32_t out[64];
+  in[0] = dequantised_dc;
+  jpeg_idct_8x8_islow(in, out, 1);
+  for (int i = 0; i < 64; i++) {
+    EXPECT_GT(out[i], 0) << "sample " << i << " came back negative; a positive "
+                            "DC must not decode to a negative sample";
+  }
+  EXPECT_EQ(out[0], 268423168);
+
+  // The general path, reached by making one AC coefficient non-zero so the
+  // shortcut does not apply.  The eight pass-1 stores are the ones that used
+  // to narrow.
+  int32_t in2[64] = {0};
+  in2[0] = dequantised_dc;
+  in2[1] = 1;
+  jpeg_idct_8x8_islow(in2, out, 1);
+  for (int i = 0; i < 64; i++) {
+    EXPECT_GT(out[i], 0) << "sample " << i << " came back negative on the "
+                            "general path";
+  }
+}
