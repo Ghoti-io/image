@@ -2004,6 +2004,46 @@ TEST(PngPalette, APaletteIsNeverTheLargerFile) {
   }
 }
 
+TEST(PngAncillaryRetarget, TheBackgroundAndHistogramComeAfterThePalette) {
+  // PNG 5.6, Table 5.3: bKGD and hIST come after PLTE and before IDAT. They
+  // are in the ancillary list in the order the file had them - after PLTE
+  // there - but this writer emits PLTE itself, after the list, so writing them
+  // where they are found puts them in front of it. libpng then reports
+  // "bKGD: out of place" and "hIST: invalid", the second because it cannot
+  // check the entry count against a palette it has not read yet, and drops it.
+  std::vector<uint8_t> saved = LoadAndSave("png_palette_trns_bkgd_hist.png");
+  ASSERT_FALSE(saved.empty());
+
+  // Walk the chunks once and record where each type landed.
+  std::vector<std::string> order;
+  size_t i = 8;
+  while (i + 8 <= saved.size()) {
+    uint32_t len = ((uint32_t)saved[i] << 24) | ((uint32_t)saved[i + 1] << 16) |
+        ((uint32_t)saved[i + 2] << 8) | (uint32_t)saved[i + 3];
+    order.emplace_back(reinterpret_cast<const char *>(&saved[i + 4]), 4);
+    if (i + 12 + (size_t)len > saved.size()) {
+      break;
+    }
+    i += 12 + (size_t)len;
+  }
+  auto at = [&order](const char * t) -> long {
+    for (size_t k = 0; k < order.size(); k++) {
+      if (order[k] == t) {
+        return (long)k;
+      }
+    }
+    return -1;
+  };
+  ASSERT_GE(at("PLTE"), 0);
+  ASSERT_GE(at("bKGD"), 0);
+  ASSERT_GE(at("hIST"), 0);
+  ASSERT_GE(at("IDAT"), 0);
+  EXPECT_GT(at("bKGD"), at("PLTE")) << "Table 5.3: bKGD is after PLTE";
+  EXPECT_GT(at("hIST"), at("PLTE")) << "Table 5.3: hIST is after PLTE";
+  EXPECT_LT(at("bKGD"), at("IDAT")) << "Table 5.3: and before IDAT";
+  EXPECT_LT(at("hIST"), at("IDAT"));
+}
+
 TEST(PngPalette, AnImageThatArrivedAsAPaletteIsStillWrittenAsOne) {
   // PALETTE_NEVER is about creating a palette, not about discarding one. A
   // frame that came with a palette goes back out with it either way.

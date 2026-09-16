@@ -11,6 +11,7 @@
 #include "../../core/safe_math_internal.h"
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/raster.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -64,8 +65,17 @@ static unsigned int gimg_png_bpp(const gimg_png_ihdr_t * ihdr) {
   return (channels * (unsigned int)depth + 7) / 8;
 }
 
-/** Unfilter one row; prior is previous row (or NULL for first row). */
-static void gimg_png_unfilter_row(unsigned char * row, size_t row_bytes,
+/**
+ * Unfilter one row; prior is the previous row (or NULL for the first).
+ *
+ * @return false when the row's filter byte is not one of the five clause 9
+ *         defines. Table 9.1 lists 0 through 4 and nothing else, so a byte
+ *         above 4 is not a filter type this format has: the row cannot be
+ *         reconstructed, and a decoder that treated it as None would report
+ *         success for pixels no conforming decoder produces. libpng calls such
+ *         a file a "bad adaptive filter value" and refuses it.
+ */
+static bool gimg_png_unfilter_row(unsigned char * row, size_t row_bytes,
     const unsigned char * prior, unsigned int bpp) {
   unsigned char filter = row[0];
   unsigned char * raw = row + 1;
@@ -115,8 +125,9 @@ static void gimg_png_unfilter_row(unsigned char * row, size_t row_bytes,
     break;
   }
   default:
-    break;
+    return false; // not a filter type (9.2, Table 9.1)
   }
+  return true;
 }
 
 GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
@@ -197,7 +208,11 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
     unsigned char * prev_row = NULL;
     for (uint32_t y = 0; y < h; y++) {
       unsigned char * row = raw + (size_t)y * row_stride;
-      gimg_png_unfilter_row(row, row_bytes, prev_row, bpp);
+      if (!gimg_png_unfilter_row(row, row_bytes, prev_row, bpp)) {
+        gimg_free(alloc, raw_full);
+        gimg_free(alloc, raw);
+        return GIMG_ERR_CORRUPT;
+      }
       prev_row = row + 1;
       memcpy(raw_full + (size_t)y * row_bytes, row + 1, row_bytes);
     }
@@ -224,7 +239,11 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
       unsigned char * prev_row = NULL;
       for (uint32_t j = 0; j < ph; j++) {
         unsigned char * row = raw + raw_off + (size_t)j * pass_row_stride;
-        gimg_png_unfilter_row(row, pass_row_bytes, prev_row, bpp);
+        if (!gimg_png_unfilter_row(row, pass_row_bytes, prev_row, bpp)) {
+          gimg_free(alloc, raw_full);
+          gimg_free(alloc, raw);
+          return GIMG_ERR_CORRUPT;
+        }
         prev_row = row + 1;
         uint32_t iy = ap->y_offset + j * ap->y_step;
         unsigned char * dst_row = raw_full + (size_t)iy * row_bytes;

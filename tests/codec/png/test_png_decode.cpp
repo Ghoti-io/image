@@ -1327,3 +1327,72 @@ TEST(PngDecode, ThirdEditionChunksSurviveARoundTrip) {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Filter types (PNG clause 9, Table 9.1)
+//
+// Table 9.1 defines filter types 0 through 4 and nothing else. A row whose
+// filter byte is above 4 cannot be reconstructed: there is no predictor to
+// invert. Treating it as None - which is what "ignore what you do not know"
+// amounts to here - returns success for pixels no conforming decoder produces.
+// libpng calls such a file a "bad adaptive filter value" and refuses it;
+// Pillow calls it "unrecognized data stream contents" and refuses it too.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Load a fixture and try to decode it; returns the result of the decode. */
+GIMG_Result TryDecodeFixture(const char * filename) {
+  std::vector<uint8_t> buf;
+  if (!png_test::load_png_file(filename, buf)) {
+    return GIMG_ERR_IO;
+  }
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(buf.data(), buf.size(), &s) != GIMG_OK) {
+    return GIMG_ERR_INTERNAL;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+    return r;
+  }
+  GIMG_Raster * raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  if (raster) {
+    gimg_raster_destroy(raster);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  return r;
+}
+
+} // namespace
+
+TEST(PngFilterType, AFilterTypeTableNineOneDoesNotDefineIsRefused) {
+  EXPECT_EQ(TryDecodeFixture("png_bad_filter_type.png"), GIMG_ERR_CORRUPT);
+}
+
+TEST(PngFilterType, TheSameImageWithATypeThatExistsStillDecodes) {
+  // The other half of the pair. A decoder that refused every row it had not
+  // seen before would pass the test above and fail this one; filter type 1 is
+  // Sub, the type a rejection of "anything above 4" must not reach.
+  GIMG_Stream * s = nullptr;
+  GIMG_Doc * doc = nullptr;
+  GIMG_Raster * raster = nullptr;
+  ASSERT_TRUE(DecodeFixture("png_good_filter_type.png", &s, &doc, &raster));
+  // Row 0 is stored unfiltered; row 1 is Sub over {1,1,1,1}, so each sample is
+  // the running sum of the ones before it (9.2).
+  const std::vector<uint8_t> expected = {10, 20, 30, 40, 1, 2, 3, 4};
+  EXPECT_EQ(RasterBytes(raster), expected);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(PngFilterType, TheCheckIsReachedOnTheInterlacedPathToo) {
+  // Adam7 filters every pass as its own image (9.2), so the filter byte is
+  // read in a second place and has to be checked in both.
+  EXPECT_EQ(TryDecodeFixture("png_bad_filter_type_interlaced.png"),
+      GIMG_ERR_CORRUPT);
+}

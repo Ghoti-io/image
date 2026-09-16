@@ -349,6 +349,7 @@ def main() -> None:
     _write_filter_fixtures()
     _write_third_edition_fixtures()
     _write_colour_typed_ancillary_fixtures()
+    _write_filter_validity_fixtures()
     _write_apng16_oracle_expected()
 
 
@@ -791,6 +792,42 @@ def _write_colour_typed_ancillary_fixtures() -> None:
         + png_chunk(b"bKGD", bytes([0x00, 0x80, 0x00]))
         + png_chunk(b"IDAT", idat_zlib(gray8))
         + iend)
+
+
+
+def _write_filter_validity_fixtures() -> None:
+    """Rows whose filter byte is not one of the five clause 9 defines.
+
+    Table 9.1 lists filter types 0 through 4 and nothing else, so a byte above
+    4 is not a filter type this format has. A decoder that treated it as None
+    would reconstruct the row from the wrong predictor and report success.
+    libpng refuses such a file ("bad adaptive filter value") and so does
+    Pillow ("unrecognized data stream contents").
+    """
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+    ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 2, 8, 0, 0, 0, 0))
+
+    # First row filtered None, second row claiming filter type 5.
+    raw = b"\x00" + bytes([10, 20, 30, 40]) + b"\x05" + bytes([1, 1, 1, 1])
+    write_png("png_bad_filter_type.png",
+        signature + ihdr + png_chunk(b"IDAT", idat_zlib(raw)) + iend)
+
+    # The same image with that row filtered Sub, which is the largest type
+    # Table 9.1 does define. The pair is the point: one must decode and one
+    # must not, so a decoder that refused both would fail this fixture.
+    raw_ok = b"\x00" + bytes([10, 20, 30, 40]) + b"\x01" + bytes([1, 1, 1, 1])
+    write_png("png_good_filter_type.png",
+        signature + ihdr + png_chunk(b"IDAT", idat_zlib(raw_ok)) + iend)
+
+    # Interlaced, so the check is reached on the Adam7 path as well. Pass 1 of
+    # a 4x2 image is one pixel; its filter byte is the invalid one.
+    ihdr_i = png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 2, 8, 0, 0, 0, 1))
+    samples = [[10, 20, 30, 40], [50, 60, 70, 80]]
+    rows = bytearray(raw_rows_adam7(samples, 4, 2, 8))
+    rows[0] = 5
+    write_png("png_bad_filter_type_interlaced.png",
+        signature + ihdr_i + png_chunk(b"IDAT", idat_zlib(bytes(rows))) + iend)
 
 
 def _write_apng16_oracle_expected() -> None:

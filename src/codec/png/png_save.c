@@ -1779,6 +1779,34 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   report->bytes_written += 8 + GIMG_PNG_IHDR_LEN + 4;
 
   // Ancillary before IDAT (per metadata policy).
+  //
+  // PNG 5.6, Table 5.3: bKGD and hIST come *after* PLTE and before IDAT.
+  //
+  // They sit in the ancillary list in the order the file had them, which for a
+  // palette image is already after its PLTE - but this writer emits PLTE
+  // itself, after the whole list, so writing them where they are found puts
+  // them in front of it. libpng then says "bKGD: out of place" and, for the
+  // histogram, "hIST: invalid", because it cannot check the entry count
+  // against a palette it has not seen yet - so the chunk is lost.
+  //
+  // Every other ancillary type this writer emits is allowed before PLTE:
+  // cHRM, gAMA, iCCP, sBIT, sRGB, cICP, mDCv and cLLi must be, pHYs, sPLT and
+  // eXIf only have to precede IDAT, and the text and time chunks may appear
+  // anywhere.
+  //
+  // So these two are held back and written after the palette. Eight is more
+  // than a conforming file can have - one of each - and the cap only matters
+  // for a file that already broke that rule.
+  //
+  typedef struct {
+    gimg_png_chunk_type_t type;
+    const unsigned char * payload;
+    size_t size;
+    unsigned char inline_buf[6]; ///< Holds a rewritten bKGD, which is short.
+  } gimg_png_deferred_t;
+  gimg_png_deferred_t deferred[8];
+  size_t deferred_count = 0;
+
   GIMG_Meta_Policy policy =
       options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
 
@@ -1927,6 +1955,25 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
             }
           }
         }
+        if ((t == GIMG_PNG_bKGD || t == GIMG_PNG_hIST) &&
+            deferred_count < sizeof(deferred) / sizeof(deferred[0])) {
+          gimg_png_deferred_t * d = &deferred[deferred_count++];
+          d->type = t;
+          d->size = chunk_size;
+          if (chunk_payload == retargeted && chunk_size <= sizeof(d->inline_buf)) {
+            // The rewritten payload lives in a buffer that goes out of scope
+            // with this iteration, so it is copied rather than pointed at.
+            memcpy(d->inline_buf, chunk_payload, chunk_size);
+            d->payload = d->inline_buf;
+          }
+          else {
+            d->payload = (const unsigned char *)chunk_payload;
+          }
+          if (modified) {
+            gimg_free(alloc, modified);
+          }
+          continue;
+        }
         r = gimg_png_write_chunk(stream, t, chunk_payload, chunk_size);
         if (modified) {
           gimg_free(alloc, modified);
@@ -2047,6 +2094,20 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         raw_payload = retargeted;
         raw_size = retargeted_size;
       }
+      if ((t == GIMG_PNG_bKGD || t == GIMG_PNG_hIST) &&
+          deferred_count < sizeof(deferred) / sizeof(deferred[0])) {
+        gimg_png_deferred_t * d = &deferred[deferred_count++];
+        d->type = t;
+        d->size = raw_size;
+        if (raw_payload == retargeted && raw_size <= sizeof(d->inline_buf)) {
+          memcpy(d->inline_buf, raw_payload, raw_size);
+          d->payload = d->inline_buf;
+        }
+        else {
+          d->payload = (const unsigned char *)raw_payload;
+        }
+        continue;
+      }
       r = gimg_png_write_chunk(
           stream, state->ancillary[i].type, raw_payload, raw_size);
       if (r != GIMG_OK) {
@@ -2106,6 +2167,17 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
       report->bytes_written += 8 + palette_state->trns_size + 4;
     }
+  }
+
+  // The chunks held back above, now that PLTE is behind them (5.6, Table 5.3).
+  for (size_t i = 0; i < deferred_count; i++) {
+    r = gimg_png_write_chunk(
+        stream, deferred[i].type, deferred[i].payload, deferred[i].size);
+    if (r != GIMG_OK) {
+      gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+      return r;
+    }
+    report->bytes_written += 8 + deferred[i].size + 4;
   }
 
   // APNG: acTL (num_frames, num_plays) before first fcTL per spec.
