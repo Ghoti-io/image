@@ -1268,3 +1268,159 @@ TEST(PngEncode, PaletteBelowEightBitsRoundTripsAndKeepsItsDepth) {
     gimg_doc_destroy(doc);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Row filters (PNG 9, filter method 0).
+//
+// Every row carries a filter type byte, and the five types subtract a
+// prediction drawn from the byte above, the byte to the left, both, or the
+// Paeth choice among them. The encoder wrote type 0 on every row and no other,
+// so four of the five had no producer at all and the sizes showed it.
+//
+// GIMG_Save_Options.png_filter pins one filter for testing; the default is the
+// per-row choice PNG 12.8 recommends.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Load, save with the given filter setting, and return the encoded bytes. */
+std::vector<uint8_t> SaveWithFilter(
+    const char * fixture, uint8_t filter, GIMG_Result * out_result) {
+  std::vector<uint8_t> buf;
+  if (!png_test::load_png_file(fixture, buf)) {
+    *out_result = GIMG_ERR_IO;
+    return {};
+  }
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(buf.data(), buf.size(), &s) != GIMG_OK) {
+    *out_result = GIMG_ERR_INTERNAL;
+    return {};
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (r != GIMG_OK) {
+    *out_result = r;
+    return {};
+  }
+  GIMG_Stream * out_s = nullptr;
+  if (gimg_stream_create_memory_output(&out_s) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    *out_result = GIMG_ERR_INTERNAL;
+    return {};
+  }
+  GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
+  opts.png_filter = filter;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  std::vector<uint8_t> saved;
+  if (r == GIMG_OK) {
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out_s, &p, &n);
+    saved.assign(static_cast<const uint8_t *>(p),
+        static_cast<const uint8_t *>(p) + n);
+  }
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+  *out_result = r;
+  return saved;
+}
+
+/** Decode encoded PNG bytes to a flat pixel vector. */
+std::vector<uint8_t> DecodeBytes(const std::vector<uint8_t> & data) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(data.data(), data.size(), &s) != GIMG_OK) {
+    return {};
+  }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_load(s, nullptr, nullptr, &doc) != GIMG_OK) {
+    gimg_stream_destroy(s);
+    return {};
+  }
+  GIMG_Raster * raster = nullptr;
+  if (gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    return {};
+  }
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const unsigned char * px =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(raster));
+  std::vector<uint8_t> out;
+  for (uint32_t y = 0; y < h; y++) {
+    out.insert(out.end(), px + static_cast<size_t>(y) * stride,
+        px + static_cast<size_t>(y) * stride + static_cast<size_t>(w) * bpp);
+  }
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  return out;
+}
+
+} // namespace
+
+TEST(PngEncode, EveryRowFilterReconstructsTheSamePixels) {
+  const char * kFixture = "png_gradient_64x64_rgb.png";
+  const uint8_t filters[] = {GIMG_PNG_FILTER_ADAPTIVE, GIMG_PNG_FILTER_NONE,
+      GIMG_PNG_FILTER_SUB, GIMG_PNG_FILTER_UP, GIMG_PNG_FILTER_AVERAGE,
+      GIMG_PNG_FILTER_PAETH};
+  const char * names[] = {
+      "adaptive", "none", "sub", "up", "average", "paeth"};
+
+  std::vector<uint8_t> reference;
+  std::vector<std::vector<uint8_t>> encodings;
+  for (size_t i = 0; i < sizeof(filters) / sizeof(filters[0]); i++) {
+    GIMG_Result r = GIMG_OK;
+    std::vector<uint8_t> saved = SaveWithFilter(kFixture, filters[i], &r);
+    ASSERT_EQ(r, GIMG_OK) << "save with filter " << names[i];
+    ASSERT_FALSE(saved.empty()) << names[i];
+    std::vector<uint8_t> pixels = DecodeBytes(saved);
+    ASSERT_FALSE(pixels.empty()) << "decode " << names[i];
+    if (reference.empty()) {
+      reference = pixels;
+    }
+    else {
+      EXPECT_EQ(pixels, reference)
+          << "filter " << names[i] << " does not reconstruct the same image";
+    }
+    encodings.push_back(std::move(saved));
+    std::string out_name = std::string("filter_") + names[i] + ".png";
+    png_test::write_png_output(
+        out_name.c_str(), encodings.back().data(), encodings.back().size());
+  }
+
+  // Each setting must actually change what is written; otherwise a filter that
+  // was silently never applied would pass the round-trip check above.
+  for (size_t i = 1; i < encodings.size(); i++) {
+    for (size_t j = i + 1; j < encodings.size(); j++) {
+      EXPECT_NE(encodings[i], encodings[j])
+          << names[i] << " and " << names[j] << " produced identical files";
+    }
+  }
+}
+
+TEST(PngEncode, ChoosingAFilterPerRowBeatsForcingNoneOnAll) {
+  // PNG 12.8's reason for choosing per row: on data a predictor fits, the
+  // filtered bytes are small and DEFLATE codes them in fewer bits. A gradient
+  // is the clearest case, and filter None is what the encoder used to write.
+  GIMG_Result r = GIMG_OK;
+  std::vector<uint8_t> adaptive =
+      SaveWithFilter("png_gradient_64x64_rgb.png", GIMG_PNG_FILTER_ADAPTIVE, &r);
+  ASSERT_EQ(r, GIMG_OK);
+  std::vector<uint8_t> none =
+      SaveWithFilter("png_gradient_64x64_rgb.png", GIMG_PNG_FILTER_NONE, &r);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_LT(adaptive.size(), none.size())
+      << "adaptive " << adaptive.size() << " bytes, none " << none.size();
+}
+
+TEST(PngEncode, AnUnknownFilterSettingIsRefused) {
+  GIMG_Result r = GIMG_OK;
+  (void)SaveWithFilter("png_gradient_64x64_rgb.png", 99, &r);
+  EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+}

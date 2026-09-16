@@ -27,6 +27,20 @@ static bool is_little_endian(const unsigned char * h) {
   return h[0] == 0x49u && h[1] == 0x49u; // "II"
 }
 
+/**
+ * Does a run of @a length bytes at @a offset lie inside a buffer of @a size?
+ *
+ * Both the offset and the entry count come out of the file, and an IFD offset
+ * is a full 32 bits. Adding them in 32-bit arithmetic lets a large offset wrap
+ * to a small one and pass a bounds test it should fail - which is how a
+ * crafted offset reached a long way past the end of the buffer and segfaulted
+ * in read_u16. uint64_t holds every sum these callers can form (an offset
+ * below 2^32 plus at most 65535 entries of twelve bytes), so nothing wraps.
+ */
+static bool exif_region_fits(uint64_t offset, uint64_t length, size_t size) {
+  return offset + length <= (uint64_t)size;
+}
+
 static uint16_t read_u16(const unsigned char * p, int little) {
   if (little) {
     return (uint16_t)(p[0] | (p[1] << 8));
@@ -89,11 +103,11 @@ GIMG_Result gimg_exif_parse_orientation(
   }
   int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
-  if (ifd0 + 2 > size) {
+  if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   uint16_t num_entries = read_u16(buf + ifd0, le);
-  if (ifd0 + 2u + (uint32_t)num_entries * 12u + 4u > size) {
+  if (!exif_region_fits(ifd0, 2u + (uint64_t)num_entries * 12u + 4u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   for (uint16_t i = 0; i < num_entries; i++) {
@@ -120,11 +134,11 @@ GIMG_Result gimg_exif_parse_orientation(
 // invalid.
 static size_t exif_ifd_size(
     const unsigned char * buf, size_t size, uint32_t ifd_off, int le) {
-  if (ifd_off + 2 > size) {
+  if (!exif_region_fits(ifd_off, 2u, size)) {
     return 0;
   }
   uint16_t n = read_u16(buf + ifd_off, le);
-  if (ifd_off + 2 + (size_t)n * 12 + 4 > size) {
+  if (!exif_region_fits(ifd_off, 2u + (uint64_t)n * 12u + 4u, size)) {
     return 0;
   }
   return 2 + (size_t)n * 12 + 4;
@@ -175,7 +189,8 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
     return GIMG_OK;
   }
   size_t gps_ifd_size = exif_ifd_size(buf, size, gps_ifd_offset, le);
-  if (gps_ifd_size == 0 || gps_ifd_offset + gps_ifd_size > size) {
+  if (gps_ifd_size == 0 ||
+      !exif_region_fits(gps_ifd_offset, gps_ifd_size, size)) {
     return GIMG_ERR_CORRUPT;
   }
   size_t delta = 12 + gps_ifd_size;
@@ -236,11 +251,11 @@ GIMG_Result gimg_exif_normalize(const GIMG_Allocator * allocator,
   }
   int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
-  if (ifd0 + 2 > size) {
+  if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   uint16_t num_entries = read_u16(buf + ifd0, le);
-  if (ifd0 + 2u + (uint32_t)num_entries * 12u + 4u > size) {
+  if (!exif_region_fits(ifd0, 2u + (uint64_t)num_entries * 12u + 4u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   allocator = gimg_alloc_or_default(allocator);
@@ -289,22 +304,22 @@ GIMG_Result gimg_exif_embedded_thumbnail_jpeg(
   }
   int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
-  if (ifd0 + 2 > size) {
+  if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   uint16_t num0 = read_u16(buf + ifd0, le);
-  if (ifd0 + 2u + (uint32_t)num0 * 12u + 4u > size) {
+  if (!exif_region_fits(ifd0, 2u + (uint64_t)num0 * 12u + 4u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   uint32_t ifd1 = read_u32(buf + ifd0 + 2 + (size_t)num0 * 12, le);
   if (ifd1 == 0) {
     return GIMG_OK;
   }
-  if (ifd1 + 2 > size) {
+  if (!exif_region_fits(ifd1, 2u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   uint16_t num1 = read_u16(buf + ifd1, le);
-  if (ifd1 + 2u + (uint32_t)num1 * 12u > size) {
+  if (!exif_region_fits(ifd1, 2u + (uint64_t)num1 * 12u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   int has_compression_jpeg = 0;
@@ -402,19 +417,19 @@ GIMG_Result gimg_exif_embedded_thumbnail_uncompressed(
   }
   int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
-  if (ifd0 + 2 > size) {
+  if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   uint16_t num0 = read_u16(buf + ifd0, le);
-  if (ifd0 + 2u + (uint32_t)num0 * 12u + 4u > size) {
+  if (!exif_region_fits(ifd0, 2u + (uint64_t)num0 * 12u + 4u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   uint32_t ifd1 = read_u32(buf + ifd0 + 2 + (size_t)num0 * 12, le);
-  if (ifd1 == 0 || ifd1 + 2 > size) {
+  if (ifd1 == 0 || !exif_region_fits(ifd1, 2u, size)) {
     return GIMG_OK;
   }
   uint16_t num1 = read_u16(buf + ifd1, le);
-  if (ifd1 + 2u + (uint32_t)num1 * 12u > size) {
+  if (!exif_region_fits(ifd1, 2u + (uint64_t)num1 * 12u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   int compression_1 = 0;
@@ -580,19 +595,19 @@ GIMG_Result gimg_exif_embedded_thumbnail_tiff_jpeg(
   }
   int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
-  if (ifd0 + 2 > size) {
+  if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   uint16_t num0 = read_u16(buf + ifd0, le);
-  if (ifd0 + 2u + (uint32_t)num0 * 12u + 4u > size) {
+  if (!exif_region_fits(ifd0, 2u + (uint64_t)num0 * 12u + 4u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   uint32_t ifd1 = read_u32(buf + ifd0 + 2 + (size_t)num0 * 12, le);
-  if (ifd1 == 0 || ifd1 + 2 > size) {
+  if (ifd1 == 0 || !exif_region_fits(ifd1, 2u, size)) {
     return GIMG_OK;
   }
   uint16_t num1 = read_u16(buf + ifd1, le);
-  if (ifd1 + 2u + (uint32_t)num1 * 12u > size) {
+  if (!exif_region_fits(ifd1, 2u + (uint64_t)num1 * 12u, size)) {
     return GIMG_ERR_CORRUPT;
   }
   int compression_7 = 0;

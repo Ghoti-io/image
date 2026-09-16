@@ -346,6 +346,7 @@ def main() -> None:
     _write_subbyte_and_interlace_fixtures()
     _write_zlib_integrity_fixtures()
     _write_suggested_palette_fixtures()
+    _write_filter_fixtures()
     _write_apng16_oracle_expected()
 
 
@@ -624,6 +625,33 @@ def _write_suggested_palette_fixtures() -> None:
         + png_chunk(b"PLTE", plte)
         + png_chunk(b"IDAT", idat_zlib(bytes(b"".join(
             bytes([0]) + bytes((x * 17) & 0xFF for x in range(4)) for _ in range(4)))))
+        + iend)
+
+
+# ---------------------------------------------------------------------------
+# An image with structure for the row filters to find (PNG 9).
+#
+# Filtering subtracts a prediction from each byte, so it only pays on data that
+# is predictable from the pixel above or to the left. A smooth gradient is the
+# clearest case: filter None leaves it as it is, while Sub, Up and Paeth reduce
+# most of it to small numbers that DEFLATE codes in far fewer bits. An encoder
+# choosing per row (PNG 12.8) should beat any single filter forced on all rows.
+# ---------------------------------------------------------------------------
+
+
+def _write_filter_fixtures() -> None:
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+    w = h = 64
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)  # stored unfiltered; the encoder's choice is the subject
+        for x in range(w):
+            raw += bytes([(x * 4) & 0xFF, (y * 4) & 0xFF, ((x + y) * 2) & 0xFF])
+    write_png("png_gradient_64x64_rgb.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+        + png_chunk(b"IDAT", idat_zlib(bytes(raw)))
         + iend)
 
 def _write_apng16_oracle_expected() -> None:

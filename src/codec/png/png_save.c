@@ -50,6 +50,7 @@
 #include <ghoti.io/image/stream.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 #include <string.h>
 
 #include <ghoti.io/compress/compress.h>
@@ -70,9 +71,118 @@
  * 2 (RGB) or 4 (grayscale+alpha), and the raster is RGBA with matching bit
  * depth, that color_type is used so round-trip preserves format.
  */
-static bool gimg_png_raster_to_ihdr(
-    const GIMG_Raster * raster, const gimg_png_doc_state_t * state,
-    uint8_t * color_type, uint8_t * bit_depth) {
+/**
+ * Can this raster's transparency be expressed by a tRNS chunk beside a
+ * colour type 2 image?
+ *
+ * PNG 11.3.2.1: for colour type 2, tRNS holds one RGB triple, and pixels of
+ * exactly that colour are fully transparent while all others are fully opaque.
+ * So the alpha channel qualifies only when every pixel is either fully opaque
+ * or fully transparent, every fully transparent pixel shares one colour, and
+ * no opaque pixel wears that same colour - otherwise writing the chunk would
+ * make opaque pixels vanish.
+ *
+ * On success @a out_trns receives the six-byte payload (three 16-bit samples,
+ * big-endian, as the chunk stores them at either bit depth).
+ */
+static bool gimg_png_alpha_fits_trns(const GIMG_Raster * raster,
+    uint8_t color_type, uint8_t bit_depth, unsigned char * out_trns,
+    size_t * out_trns_size) {
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  unsigned int opaque = (bit_depth == 16) ? 65535u : 255u;
+  int have_key = 0;
+  uint16_t key[3] = {0, 0, 0};
+
+  // First pass: every pixel must be wholly opaque or wholly transparent, and
+  // the transparent ones must agree on a colour.
+  for (uint32_t y = 0; y < h; y++) {
+    const unsigned char * row = pixels + (size_t)y * stride;
+    for (uint32_t x = 0; x < w; x++) {
+      uint16_t c[4];
+      if (bit_depth == 16) {
+        const uint16_t * p = (const uint16_t *)(const void *)row + (size_t)x * 4u;
+        c[0] = p[0];
+        c[1] = p[1];
+        c[2] = p[2];
+        c[3] = p[3];
+      }
+      else {
+        const unsigned char * p = row + (size_t)x * 4u;
+        c[0] = p[0];
+        c[1] = p[1];
+        c[2] = p[2];
+        c[3] = p[3];
+      }
+      // Colour type 0 stores one sample, so the three colour channels must
+      // agree for every pixel, transparent or not.
+      if (color_type == 0 && (c[0] != c[1] || c[1] != c[2])) {
+        return false;
+      }
+      if (c[3] == opaque) {
+        continue;
+      }
+      if (c[3] != 0) {
+        return false;  // partial transparency needs a real alpha channel
+      }
+      if (!have_key) {
+        key[0] = c[0];
+        key[1] = c[1];
+        key[2] = c[2];
+        have_key = 1;
+      }
+      else if (c[0] != key[0] || c[1] != key[1] || c[2] != key[2]) {
+        return false;  // more than one transparent colour
+      }
+    }
+  }
+  if (!have_key) {
+    *out_trns_size = 0;  // nothing transparent: colour type 2 needs no tRNS
+    return true;
+  }
+  // Second pass: no opaque pixel may share the key colour.
+  for (uint32_t y = 0; y < h; y++) {
+    const unsigned char * row = pixels + (size_t)y * stride;
+    for (uint32_t x = 0; x < w; x++) {
+      uint16_t c[4];
+      if (bit_depth == 16) {
+        const uint16_t * p = (const uint16_t *)(const void *)row + (size_t)x * 4u;
+        c[0] = p[0];
+        c[1] = p[1];
+        c[2] = p[2];
+        c[3] = p[3];
+      }
+      else {
+        const unsigned char * p = row + (size_t)x * 4u;
+        c[0] = p[0];
+        c[1] = p[1];
+        c[2] = p[2];
+        c[3] = p[3];
+      }
+      if (c[3] == opaque && c[0] == key[0] && c[1] == key[1] &&
+          c[2] == key[2]) {
+        return false;
+      }
+    }
+  }
+  // PNG 11.3.2.1 stores each sample as two bytes whatever the bit depth: one
+  // sample for colour type 0, three for colour type 2.
+  int samples = (color_type == 0) ? 1 : 3;
+  for (int i = 0; i < samples; i++) {
+    out_trns[i * 2] = (unsigned char)(key[i] >> 8);
+    out_trns[i * 2 + 1] = (unsigned char)(key[i] & 0xFFu);
+  }
+  *out_trns_size = (size_t)samples * 2u;
+  return true;
+}
+
+static bool gimg_png_raster_to_ihdr(const GIMG_Raster * raster,
+    const gimg_png_doc_state_t * state, uint8_t * color_type,
+    uint8_t * bit_depth, unsigned char * out_trns, size_t * out_trns_size) {
+  *out_trns_size = 0;
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   if (!fmt || fmt->layout != GIMG_LAYOUT_INTERLEAVED) {
     return false;
@@ -101,11 +211,32 @@ static bool gimg_png_raster_to_ihdr(
     else {
       return false;
     }
-    if (state && (state->ihdr.color_type == 2 || state->ihdr.color_type == 4) &&
-        state->ihdr.bit_depth == bd) {
-      *color_type = state->ihdr.color_type;
+    // A grayscale frame decodes to RGBA once tRNS gives it an alpha channel.
+    // It can go back the way it came when the colour channels still agree and
+    // the transparency is still one key value (PNG 11.3.2.1).
+    if (state && state->ihdr.color_type == 0 && state->ihdr.bit_depth == bd) {
+      if (gimg_png_alpha_fits_trns(raster, 0, bd, out_trns, out_trns_size)) {
+        *color_type = 0;
+        *bit_depth = bd;
+        return true;
+      }
+    }
+    // Colour type 4 carries alpha of its own, so keeping it loses nothing.
+    if (state && state->ihdr.color_type == 4 && state->ihdr.bit_depth == bd) {
+      *color_type = 4;
       *bit_depth = bd;
       return true;
+    }
+    // Colour type 2 has no alpha channel. PNG 11.3.2.1 lets a tRNS chunk name
+    // one fully transparent colour beside it, and nothing more: every other
+    // pixel is opaque. Keeping colour type 2 for a raster whose alpha does not
+    // fit that shape would drop transparency silently, so the alpha decides.
+    if (state && state->ihdr.color_type == 2 && state->ihdr.bit_depth == bd) {
+      if (gimg_png_alpha_fits_trns(raster, 2, bd, out_trns, out_trns_size)) {
+        *color_type = 2;
+        *bit_depth = bd;
+        return true;
+      }
     }
     *color_type = 6;
     *bit_depth = bd;
@@ -263,6 +394,151 @@ static void gimg_png_write_be16(unsigned char * out, uint16_t value) {
 /** Fill raw image rows (filter byte + row data) from raster. Caller allocates
  * raw_size = height * (1 + row_bytes). For palette (color_type 3), @a state
  * must be non-NULL with plte/trns; raster must be RGBA8. */
+//
+// Row filtering (PNG 9: filter method 0, types 0-4).
+//
+// Filtering works on bytes, not pixels (PNG 9.2), with bpp the number of bytes
+// in a complete pixel rounded up to one, so at depths below 8 the "pixel to
+// the left" is the byte to the left. Each filter subtracts a prediction from
+// the raw byte, modulo 256; the decoder adds it back.
+//
+// Rows are filtered in place from the last to the first, and within a row from
+// the last byte to the first. Every predictor reads only the bytes above
+// (a previous row, not yet filtered because we are moving upwards) and to the
+// left (a lower index, not yet filtered because we are moving leftwards), so
+// no copy of the unfiltered data is needed.
+//
+
+/** Paeth predictor (PNG 9.4). Same function the decoder reconstructs with. */
+static unsigned char gimg_png_paeth_predictor(int a, int b, int c) {
+  int p = a + b - c;
+  int pa = p > a ? p - a : a - p;
+  int pb = p > b ? p - b : b - p;
+  int pc = p > c ? p - c : c - p;
+  if (pa <= pb && pa <= pc) {
+    return (unsigned char)a;
+  }
+  if (pb <= pc) {
+    return (unsigned char)b;
+  }
+  return (unsigned char)c;
+}
+
+/** The value filter @a type subtracts from raw byte @a i. PNG 9.3, Table 9.1. */
+static unsigned int gimg_png_filter_prediction(unsigned int type,
+    const unsigned char * raw, const unsigned char * prior, size_t i,
+    unsigned int bpp) {
+  unsigned int left = (i >= (size_t)bpp) ? raw[i - bpp] : 0u;
+  unsigned int up = prior ? prior[i] : 0u;
+  switch (type) {
+  case 0: // None
+    return 0u;
+  case 1: // Sub
+    return left;
+  case 2: // Up
+    return up;
+  case 3: // Average
+    return (left + up) / 2u;
+  case 4: // Paeth
+  {
+    unsigned int up_left = (prior && i >= (size_t)bpp) ? prior[i - bpp] : 0u;
+    return gimg_png_paeth_predictor((int)left, (int)up, (int)up_left);
+  }
+  default:
+    return 0u;
+  }
+}
+
+/**
+ * Cost of filtering a row with @a type, as PNG 12.8 defines it: the sum of the
+ * absolute values of the filtered bytes read as signed. The smallest sum tends
+ * to leave the most for DEFLATE to work with, which is the whole point of
+ * choosing per row.
+ */
+static unsigned long gimg_png_filter_cost(unsigned int type,
+    const unsigned char * raw, const unsigned char * prior, size_t row_bytes,
+    unsigned int bpp) {
+  unsigned long sum = 0;
+  for (size_t i = 0; i < row_bytes; i++) {
+    unsigned int pred = gimg_png_filter_prediction(type, raw, prior, i, bpp);
+    unsigned char out = (unsigned char)((unsigned int)raw[i] - pred);
+    sum += (out < 128u) ? out : (unsigned long)(256u - out);
+  }
+  return sum;
+}
+
+/** Apply filter @a type to a row in place, right to left. PNG 9.3. */
+static void gimg_png_apply_filter(unsigned int type, unsigned char * raw,
+    const unsigned char * prior, size_t row_bytes, unsigned int bpp) {
+  if (type == 0) {
+    return;
+  }
+  for (size_t i = row_bytes; i-- > 0;) {
+    unsigned int pred = gimg_png_filter_prediction(type, raw, prior, i, bpp);
+    raw[i] = (unsigned char)((unsigned int)raw[i] - pred);
+  }
+}
+
+/**
+ * Filter @a row_count consecutive rows laid out as a filter byte followed by
+ * @a row_bytes of data, which is how both a whole non-interlaced image and one
+ * Adam7 pass are stored. @a filter_choice is a GIMG_PNG_FILTER_* value.
+ */
+static void gimg_png_filter_rows(unsigned char * rows, size_t row_count,
+    size_t row_bytes, unsigned int bpp, unsigned int filter_choice) {
+  if (row_count == 0 || row_bytes == 0) {
+    return;
+  }
+  size_t row_stride = 1u + row_bytes;
+  for (size_t y = row_count; y-- > 0;) {
+    unsigned char * row = rows + y * row_stride;
+    // PNG 9.2: the row above the first one in a pass is treated as all zeroes.
+    const unsigned char * prior =
+        (y == 0) ? NULL : (rows + (y - 1u) * row_stride + 1u);
+    unsigned int chosen = 0;
+    if (filter_choice == GIMG_PNG_FILTER_ADAPTIVE) {
+      unsigned long best = ULONG_MAX;
+      for (unsigned int type = 0; type <= 4; type++) {
+        unsigned long cost =
+            gimg_png_filter_cost(type, row + 1, prior, row_bytes, bpp);
+        if (cost < best) {
+          best = cost;
+          chosen = type;
+        }
+      }
+    }
+    else {
+      chosen = filter_choice - 1u; // NONE == 1 maps to filter type 0.
+    }
+    gimg_png_apply_filter(chosen, row + 1, prior, row_bytes, bpp);
+    row[0] = (unsigned char)chosen;
+  }
+}
+
+/** Bytes per complete pixel, rounded up to one (PNG 9.2). */
+static unsigned int gimg_png_save_bpp(uint8_t color_type, uint8_t bit_depth) {
+  unsigned int channels;
+  switch (color_type) {
+  case 0:
+  case 3:
+    channels = 1u;
+    break;
+  case 2:
+    channels = 3u;
+    break;
+  case 4:
+    channels = 2u;
+    break;
+  case 6:
+    channels = 4u;
+    break;
+  default:
+    return 1u;
+  }
+  unsigned int bits = channels * (unsigned int)bit_depth;
+  return (bits + 7u) / 8u;
+}
+
 /** Palette index for a raster pixel; false when no entry matches. PNG 11.2.2. */
 static bool gimg_png_palette_index_at(const GIMG_Raster * raster,
     const gimg_png_doc_state_t * state, uint32_t x, uint32_t y,
@@ -275,7 +551,7 @@ static bool gimg_png_sub_byte_sample_at(const GIMG_Raster * raster,
 
 static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
     uint8_t color_type, uint8_t bit_depth, const gimg_png_doc_state_t * state,
-    unsigned char * raw, size_t raw_size) {
+    unsigned char * raw, size_t raw_size, unsigned int filter_choice) {
   uint32_t w = gimg_raster_width(raster);
   uint32_t h = gimg_raster_height(raster);
   size_t row_bytes = gimg_png_row_bytes(color_type, bit_depth, w);
@@ -288,6 +564,9 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
   size_t stride = gimg_raster_stride_bytes(raster);
   const unsigned char * pixels =
       (const unsigned char *)gimg_raster_pixels_const(raster);
+  const GIMG_Pixel_Format * src_fmt = gimg_raster_format(raster);
+  bool gray_source =
+      src_fmt && src_fmt->channel_model == GIMG_CHANNEL_GRAY;
 
   if (color_type == 3) {
     if (!state || !state->plte || state->plte_size == 0) {
@@ -313,6 +592,8 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
         }
       }
     }
+    gimg_png_filter_rows(raw, (size_t)h, row_bytes,
+        gimg_png_save_bpp(color_type, bit_depth), filter_choice);
     return GIMG_OK;
   }
 
@@ -321,14 +602,27 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
     row[0] = 0;
     const unsigned char * src = pixels + (size_t)y * stride;
     if (color_type == 0) {
+      // The source is a GRAY raster, or an RGBA one whose colour channels
+      // agree - which is how a grayscale frame comes back when tRNS gave it an
+      // alpha channel on the way in (PNG 11.3.2.1). Either way only the first
+      // channel is written.
+      size_t src_pixel_bytes = gray_source ? (bit_depth == 8 ? 1u : 2u)
+                                           : (bit_depth == 8 ? 4u : 8u);
       if (bit_depth == 8) {
-        memcpy(row + 1, src, row_bytes);
+        if (gray_source) {
+          memcpy(row + 1, src, row_bytes);
+        }
+        else {
+          for (uint32_t x = 0; x < w; x++) {
+            row[1u + (size_t)x] = src[(size_t)x * src_pixel_bytes];
+          }
+        }
       }
       else {
         for (uint32_t x = 0; x < w; x++) {
-          uint16_t v = (uint16_t)(src[0] | (src[1] << 8));
-          gimg_png_write_be16(row + 1 + (size_t)x * 2u, v);
-          src += 2;
+          const unsigned char * p = src + (size_t)x * src_pixel_bytes;
+          gimg_png_write_be16(
+              row + 1 + (size_t)x * 2u, (uint16_t)(p[0] | (p[1] << 8)));
         }
       }
     }
@@ -390,6 +684,8 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
       }
     }
   }
+  gimg_png_filter_rows(raw, (size_t)h, row_bytes,
+      gimg_png_save_bpp(color_type, bit_depth), filter_choice);
   return GIMG_OK;
 }
 
@@ -471,12 +767,18 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
   }
 
   if (color_type == 0) {
+    // As in the non-interlaced filler: the source may be GRAY, or RGBA whose
+    // colour channels agree because tRNS gave the frame an alpha channel.
+    const GIMG_Pixel_Format * src_fmt = gimg_raster_format(raster);
+    bool gray_source = src_fmt && src_fmt->channel_model == GIMG_CHANNEL_GRAY;
+    size_t src_pixel_bytes = gray_source ? (bit_depth == 8 ? 1u : 2u)
+                                         : (bit_depth == 8 ? 4u : 8u);
+    const unsigned char * p = src + (size_t)x * src_pixel_bytes;
     if (bit_depth == 8) {
-      dest[0] = src[x];
+      dest[0] = p[0];
       return 1;
     }
-    uint16_t v = (uint16_t)(src[x * 2u] | (src[x * 2u + 1u] << 8));
-    gimg_png_write_be16(dest, v);
+    gimg_png_write_be16(dest, (uint16_t)(p[0] | (p[1] << 8)));
     return 2;
   }
   if (color_type == 2) {
@@ -522,7 +824,7 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
  * row). */
 static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
     uint8_t color_type, uint8_t bit_depth, const gimg_png_doc_state_t * state,
-    unsigned char * raw, size_t raw_size) {
+    unsigned char * raw, size_t raw_size, unsigned int filter_choice) {
   uint32_t w = gimg_raster_width(raster);
   uint32_t h = gimg_raster_height(raster);
   size_t expected = 0;
@@ -548,6 +850,7 @@ static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
     if (pass_row_bytes == 0) {
       return GIMG_ERR_FORMAT;
     }
+    size_t pass_start = raw_off;
     for (uint32_t j = 0; j < ph; j++) {
       unsigned char * row = raw + raw_off;
       row[0] = 0;  // filter byte
@@ -577,6 +880,11 @@ static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
       }
       raw_off += 1u + pass_row_bytes;
     }
+    // PNG 9.2: each pass is filtered as its own image, so the row above the
+    // first row of a pass is all zeroes rather than the last row of the
+    // previous pass.
+    gimg_png_filter_rows(raw + pass_start, (size_t)ph, pass_row_bytes,
+        gimg_png_save_bpp(color_type, bit_depth), filter_choice);
   }
   return GIMG_OK;
 }
@@ -587,7 +895,8 @@ static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
  */
 static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
     uint8_t color_type, uint8_t bit_depth, const gimg_png_doc_state_t * state,
-    int do_interlaced, const GIMG_Allocator * allocator,
+    int do_interlaced, unsigned int filter_choice,
+    const GIMG_Allocator * allocator,
     unsigned char ** out_zlib, size_t * out_zlib_len) {
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
@@ -616,11 +925,11 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
   GIMG_Result r;
   if (do_interlaced) {
     r = gimg_png_raster_to_raw_rows_adam7(
-        raster, color_type, bit_depth, state, raw, raw_size);
+        raster, color_type, bit_depth, state, raw, raw_size, filter_choice);
   }
   else {
     r = gimg_png_raster_to_raw_rows(
-        raster, color_type, bit_depth, state, raw, raw_size);
+        raster, color_type, bit_depth, state, raw, raw_size, filter_choice);
   }
   if (r != GIMG_OK) {
     gimg_free(gimg_alloc_or_default(allocator), raw);
@@ -695,6 +1004,14 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return GIMG_ERR_INTERNAL;
   }
   report->bytes_written = 0;
+  // PNG 12.8 recommends choosing a filter per row; that is the default. A
+  // caller may pin one instead, which is how the tests reach each of the five.
+  // Checked here, before anything is allocated, so a refusal frees nothing.
+  unsigned int filter_choice =
+      options ? (unsigned int)options->png_filter : GIMG_PNG_FILTER_ADAPTIVE;
+  if (filter_choice > GIMG_PNG_FILTER_PAETH) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
   if (gimg_doc_item_count(doc) == 0) {
     return GIMG_ERR_FORMAT;
   }
@@ -759,8 +1076,14 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
   }
+  // A tRNS the writer derives from the raster's alpha, when colour type 2 can
+  // carry it (PNG 11.3.2.1). Empty when the image needs no transparency, or
+  // needs more than one transparent colour and so gets an alpha channel.
+  unsigned char derived_trns[6];
+  size_t derived_trns_size = 0;
   if (!use_palette &&
-      !gimg_png_raster_to_ihdr(raster, state, &color_type, &bit_depth)) {
+      !gimg_png_raster_to_ihdr(raster, state, &color_type, &bit_depth,
+          derived_trns, &derived_trns_size)) {
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -776,8 +1099,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   unsigned char * zlib_buf = NULL;
   size_t zlib_len = 0;
   r = gimg_png_raster_to_zlib(raster, color_type, bit_depth,
-      use_palette ? state : NULL, do_interlaced, codec->allocator, &zlib_buf,
-      &zlib_len);
+      use_palette ? state : NULL, do_interlaced, filter_choice,
+      codec->allocator, &zlib_buf, &zlib_len);
   if (raster_owned) {
     gimg_raster_destroy(raster);
   }
@@ -1070,6 +1393,19 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += 8 + state->plte_size + 4;
   }
 
+  // A truecolour image whose alpha is one fully transparent colour keeps it in
+  // tRNS rather than growing an alpha channel (PNG 11.3.2.1). Written whatever
+  // the metadata policy: it is part of the image, not metadata about it.
+  if ((color_type == 2 || color_type == 0) && derived_trns_size > 0) {
+    r = gimg_png_write_chunk(
+        stream, GIMG_PNG_tRNS, derived_trns, derived_trns_size);
+    if (r != GIMG_OK) {
+      gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+      return r;
+    }
+    report->bytes_written += 8 + derived_trns_size + 4;
+  }
+
   // Palette: PLTE and tRNS before IDAT per PNG spec.
   if (color_type == 3 && state && state->plte && state->plte_size > 0) {
     r = gimg_png_write_chunk(
@@ -1182,7 +1518,10 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (!use_palette) {
       uint8_t ct = 0;
       uint8_t bd = 0;
-      if (!gimg_png_raster_to_ihdr(frame_raster, state, &ct, &bd) ||
+      unsigned char frame_trns[6];
+      size_t frame_trns_size = 0;
+      if (!gimg_png_raster_to_ihdr(
+              frame_raster, state, &ct, &bd, frame_trns, &frame_trns_size) ||
           ct != color_type || bd != bit_depth) {
         if (frame_raster_owned) {
           gimg_raster_destroy(frame_raster);
@@ -1215,8 +1554,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     unsigned char * frame_zlib = NULL;
     size_t frame_zlib_len = 0;
     r = gimg_png_raster_to_zlib(frame_raster, color_type, bit_depth,
-        use_palette ? state : NULL, do_interlaced, codec->allocator,
-        &frame_zlib, &frame_zlib_len);
+        use_palette ? state : NULL, do_interlaced, filter_choice,
+        codec->allocator, &frame_zlib, &frame_zlib_len);
     if (frame_raster_owned) {
       gimg_raster_destroy(frame_raster);
     }

@@ -17,6 +17,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Usable from C++ (the unit tests reach these directly), as png_internal.h is.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /** TIFF/Exif orientation tag (IFD0). Type SHORT (3), count 1. */
 #define GIMG_EXIF_TAG_ORIENTATION UINT16_C(0x0112)
 /** GPS IFD pointer tag (IFD0). Type LONG (4), count 1; value = offset to GPS
@@ -179,5 +184,9 @@ GIMG_Result gimg_exif_build_with_thumbnail_uncompressed(
 GIMG_Result gimg_exif_build_with_thumbnail_tiff_jpeg(
     const GIMG_Allocator * allocator, const void * base_exif, size_t base_size,
     const void * jpeg_data, size_t jpeg_size, void ** out, size_t * out_size);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif // GHOTI_IO_GIMG_SRC_META_EXIF_INTERNAL_H

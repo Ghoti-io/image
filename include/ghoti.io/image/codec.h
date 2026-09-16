@@ -330,7 +330,22 @@ typedef struct {
    * generated from the very coefficients it codes and so cannot be written
    * before them.  Ignored for non-JPEG. */
   uint8_t jpeg_abbreviated;
+  /** PNG row filter (11.2.4, filter method 0). GIMG_PNG_FILTER_ADAPTIVE (0,
+   * default) chooses per row by the heuristic PNG 12.8 recommends; the other
+   * values force one filter on every row, which is mainly useful for testing
+   * that each of the five reconstructs. */
+  uint8_t png_filter;
 } GIMG_Save_Options;
+
+/** @name PNG row filters (PNG 9.2, Table 9.1)
+ * @{ */
+#define GIMG_PNG_FILTER_ADAPTIVE 0u ///< Choose per row (PNG 12.8). Default.
+#define GIMG_PNG_FILTER_NONE 1u     ///< Filter type 0 on every row.
+#define GIMG_PNG_FILTER_SUB 2u      ///< Filter type 1 on every row.
+#define GIMG_PNG_FILTER_UP 3u       ///< Filter type 2 on every row.
+#define GIMG_PNG_FILTER_AVERAGE 4u  ///< Filter type 3 on every row.
+#define GIMG_PNG_FILTER_PAETH 5u    ///< Filter type 4 on every row.
+/** @} */
 
 /**
  * @brief Save report (warnings, bytes written, etc.).
