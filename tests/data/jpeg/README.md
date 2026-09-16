@@ -879,3 +879,62 @@ Two faults, from opposite sides:
 
 TEM has no length field, so reading a two-byte length after it swallows the
 start of whatever follows.  libjpeg skips it.
+
+## Four-component fixtures, read and written
+
+`cmyk_ours_*.jpg` and `ycck_ours_*.jpg` are this encoder's own output, each
+with libjpeg's decode of that exact file beside it as a `.raw`.  Both halves
+matter: the committed bytes pin the encoder, and the `.raw` pins what those
+bytes mean to another implementation.  `mk_cmyk.c` writes the other direction —
+`ycck_ljt_420.jpg`, `ycck_ljt_422.jpg` and `cmyk_ljt_sub.jpg` are
+libjpeg-turbo's own output, subsampled, which is the case that needs the
+triangle filter of `jdsample.c` and had no fixture at all before.
+
+```bash
+cc -O1 -o mk_cmyk $D/mk_cmyk.c -I<libjpeg-turbo-src> -I<build> <build>/libjpeg.a
+cd $D && ./mk_cmyk
+for f in ycck_ljt_420 ycck_ljt_422 cmyk_ljt_sub; do ./cmyk_ref $f.raw $f.jpg; done
+```
+
+`mk_cmyk12.c` is the same idea at twelve bits, through libjpeg's separate
+twelve-bit entry points (`jpeg12_*`).  Its `.raw` files carry 16-bit samples —
+mode 3 of the oracle format — because twelve-bit values do not fit in bytes.
+
+## Wide frames
+
+T.81 B.2.2 allows Nf from 1 to 255.  libjpeg cannot read such a frame back:
+`jdmarker.c` `get_sos` matches a scan's Cs against only the first
+MAX_COMPS_IN_SCAN components of the frame, so it refuses any file whose scan
+names the fifth or later, however well formed.  That is a limit of that
+implementation, not of the standard, and it means the oracle has to be built
+rather than run.
+
+`mk_wide.py` builds it.  A frame of N components, all 1x1, written as N
+single-component scans is — block for block, with the DC predictor reset at
+every SOS — exactly N grayscale JPEGs sharing one quantisation table and one
+set of Huffman tables.  The script writes those N files with `cjpeg`, checks
+that their tables really are identical, splices their scans into one
+N-component frame, and keeps libjpeg's decode of each grayscale file as the
+expected plane.  Both ends of the comparison are libjpeg's.
+
+```bash
+cd $D && python3 mk_wide.py <build>/cjpeg <build>/djpeg
+```
+
+The `.raw` files here use a header of their own (byte 0 = 4, byte 1 = the
+channel count, then width and height as little-endian 32-bit), because the
+channel count is not implied by a mode.
+
+## The abbreviated formats of B.4
+
+`mk_abbrev.c` writes a table-specification stream and an image with no tables,
+from **one** libjpeg compress object: `jpeg_write_tables()` marks the tables as
+sent and `jpeg_start_compress(..., FALSE)` then leaves them out.  Two objects
+would each think its tables had never been written, and the "abbreviated" image
+would quietly carry a full set — which is worth knowing, because the fixture
+would then prove nothing.
+
+```bash
+cc -O1 -o mk_abbrev $D/mk_abbrev.c -I<libjpeg-turbo-src> -I<build> <build>/libjpeg.a
+cd $D && ./mk_abbrev
+```
