@@ -373,6 +373,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
     // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    const int frame_is_rgb = jpeg_frame_is_rgb(state, sof);
     jpeg_plane_t pl_cb = {comp_buf[1], comp_stride_el[1], 1};
     jpeg_plane_t pl_cr = {comp_buf[2], comp_stride_el[2], 1};
     for (uint32_t y = 0; y < height; y++) {
@@ -391,8 +392,19 @@ static GIMG_Result jpeg_decode_baseline_extended(
         // reconstructed sample is in 0..2^P-1), then widen once to the 16-bit
         // raster.
         int r_val, g_val, b_val;
-        jpeg_ycbcr_to_rgb(
-            yy, cb, cr, level_shift, max_val, &r_val, &g_val, &b_val);
+        // T.81 describes no colour space at all; jpeg_frame_is_rgb reads the
+        // conventions that do (JFIF, Adobe APP14, the component identifiers).
+        // A frame that already carries R, G, B is passed through: converting it
+        // as though it were YCbCr turns every pixel into a different colour.
+        if (frame_is_rgb) {
+          r_val = yy;
+          g_val = cb;
+          b_val = cr;
+        }
+        else {
+          jpeg_ycbcr_to_rgb(
+              yy, cb, cr, level_shift, max_val, &r_val, &g_val, &b_val);
+        }
         if (precision == 12) {
           r_val = (int)gimg_bitdepth_12_to_16((uint16_t)r_val);
           g_val = (int)gimg_bitdepth_12_to_16((uint16_t)g_val);
@@ -993,6 +1005,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    const int frame_is_rgb = jpeg_frame_is_rgb(state, sof);
     jpeg_plane_t pl_cb = {comp_buf[1], comp_stride[1], 0};
     jpeg_plane_t pl_cr = {comp_buf[2], comp_stride[2], 0};
     for (uint32_t y = 0; y < height; y++) {
@@ -1006,7 +1019,18 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
         int cr = jpeg_chroma_sample(&pl_cr, cw2, ch2, x, y, width, height,
             sof->h_samp[2], sof->v_samp[2], h_max, v_max, use_fancy);
         int r_val, g_val, b_val;
-        jpeg_ycbcr_to_rgb(yy, cb, cr, 128, 255, &r_val, &g_val, &b_val);
+        // T.81 describes no colour space at all; jpeg_frame_is_rgb reads the
+        // conventions that do (JFIF, Adobe APP14, the component identifiers).
+        // A frame that already carries R, G, B is passed through: converting it
+        // as though it were YCbCr turns every pixel into a different colour.
+        if (frame_is_rgb) {
+          r_val = yy;
+          g_val = cb;
+          b_val = cr;
+        }
+        else {
+          jpeg_ycbcr_to_rgb(yy, cb, cr, 128, 255, &r_val, &g_val, &b_val);
+        }
         pixels[y * stride + x * 4 + 0] = (unsigned char)r_val;
         pixels[y * stride + x * 4 + 1] = (unsigned char)g_val;
         pixels[y * stride + x * 4 + 2] = (unsigned char)b_val;
@@ -1766,6 +1790,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    const int frame_is_rgb = jpeg_frame_is_rgb(state, sof);
     uint32_t cw1 = comp_w[1];
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
@@ -1792,7 +1817,18 @@ static GIMG_Result jpeg_decode_progressive_extended(
         int cr = jpeg_chroma_sample(&pl_cr, cw2, ch2, x, y, width, height,
             sof->h_samp[2], sof->v_samp[2], h_max, v_max, use_fancy);
         int r_val, g_val, b_val;
-        jpeg_ycbcr_to_rgb(yy, cb, cr, 128, 255, &r_val, &g_val, &b_val);
+        // T.81 describes no colour space at all; jpeg_frame_is_rgb reads the
+        // conventions that do (JFIF, Adobe APP14, the component identifiers).
+        // A frame that already carries R, G, B is passed through: converting it
+        // as though it were YCbCr turns every pixel into a different colour.
+        if (frame_is_rgb) {
+          r_val = yy;
+          g_val = cb;
+          b_val = cr;
+        }
+        else {
+          jpeg_ycbcr_to_rgb(yy, cb, cr, 128, 255, &r_val, &g_val, &b_val);
+        }
         pixels[y * stride + x * 4 + 0] = (unsigned char)r_val;
         pixels[y * stride + x * 4 + 1] = (unsigned char)g_val;
         pixels[y * stride + x * 4 + 2] = (unsigned char)b_val;
@@ -1844,6 +1880,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    const int frame_is_rgb = jpeg_frame_is_rgb(state, sof);
     jpeg_plane_t pl_cb = {comp_buf[1], comp_stride_el[1], 1};
     jpeg_plane_t pl_cr = {comp_buf[2], comp_stride_el[2], 1};
     for (uint32_t y = 0; y < height; y++) {
@@ -1858,8 +1895,19 @@ static GIMG_Result jpeg_decode_progressive_extended(
         // T.81 A.3.1: a reconstructed sample lies in 0..2^P-1.  Clamp there,
         // then widen once to the 16-bit raster.
         int r_val, g_val, b_val;
-        jpeg_ycbcr_to_rgb(
-            yy, cb, cr, level_shift, max_val, &r_val, &g_val, &b_val);
+        // T.81 describes no colour space at all; jpeg_frame_is_rgb reads the
+        // conventions that do (JFIF, Adobe APP14, the component identifiers).
+        // A frame that already carries R, G, B is passed through: converting it
+        // as though it were YCbCr turns every pixel into a different colour.
+        if (frame_is_rgb) {
+          r_val = yy;
+          g_val = cb;
+          b_val = cr;
+        }
+        else {
+          jpeg_ycbcr_to_rgb(
+              yy, cb, cr, level_shift, max_val, &r_val, &g_val, &b_val);
+        }
         if (precision == 12) {
           r_val = (int)gimg_bitdepth_12_to_16((uint16_t)r_val);
           g_val = (int)gimg_bitdepth_12_to_16((uint16_t)g_val);

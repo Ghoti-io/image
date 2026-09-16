@@ -1112,6 +1112,90 @@ TEST(JpegLoad, DecodeRespectsMaxDecodedPixels) {
   gimg_stream_destroy(s);
 }
 
+// A three-component frame is not automatically YCbCr.
+//
+// T.81 describes no colour space at all - a component is a component, and the
+// frame header names them only by identifier.  What three of them mean is
+// settled by the conventions layered on top, and libjpeg's rule (jdapimin.c,
+// default_decompress_parms) is the one every decoder follows: JFIF means
+// YCbCr and outranks everything; failing that an Adobe APP14 says outright
+// which was used; failing that the component identifiers are the only evidence
+// left, and 'R', 'G', 'B' is the one spelling that means what it says.
+//
+// This library converted every three-component frame as though it were YCbCr,
+// so an RGB-coded JPEG - which is what the ISO reference codec writes with -c,
+// and what a good deal of scientific and print imagery is - came out with every
+// pixel a different colour.
+//
+// The four fixtures are one encode, altered four ways, so the only thing that
+// varies is the evidence: keep the Adobe marker, drop it, drop it and retag the
+// components 'R' 'G' 'B', or add a JFIF APP0 in front of the Adobe marker to
+// see which wins.  Two should decode as RGB and two as YCbCr, and the pairs
+// differ from each other by up to 255, so reading the rule wrongly anywhere
+// changes every pixel of at least one fixture.  The expected output is
+// libjpeg-turbo's own decode and the match is exact, not within a tolerance.
+TEST(JpegLoad, ThreeComponentColourSpaceFollowsTheMarkers) {
+  struct Case {
+    const char * jpg;
+    const char * ref;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"rgb_adobe0.jpg", "rgb_adobe0_ref.ppm",
+          "Adobe APP14 transform 0: the components are R, G, B"},
+      {"rgb_no_marker.jpg", "rgb_no_marker_ref.ppm",
+          "no marker and unrevealing identifiers: YCbCr, the common case"},
+      {"rgb_by_comp_id.jpg", "rgb_by_comp_id_ref.ppm",
+          "no marker, identifiers 'R' 'G' 'B': RGB on that evidence alone"},
+      {"rgb_jfif_wins.jpg", "rgb_jfif_wins_ref.ppm",
+          "JFIF before an Adobe transform 0: JFIF wins, so YCbCr"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    uint32_t rw = 0, rh = 0;
+    int rchan = 0, rbits = 0;
+    std::vector<uint32_t> ref;
+    ASSERT_TRUE(jpeg_test::load_pnm_file(c.ref, &rw, &rh, &rchan, &rbits, ref));
+    ASSERT_EQ(rchan, 3);
+    ASSERT_EQ(rbits, 8);
+
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    ASSERT_EQ(gimg_raster_width(raster), rw);
+    ASSERT_EQ(gimg_raster_height(raster), rh);
+    const unsigned char * px =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    size_t mismatches = 0;
+    for (uint32_t y = 0; y < rh && mismatches == 0; y++) {
+      for (uint32_t x = 0; x < rw && mismatches == 0; x++) {
+        for (int ch = 0; ch < 3; ch++) {
+          int a = (int)px[(size_t)y * stride + (size_t)x * 4 + ch];
+          int b = (int)ref[((size_t)y * rw + x) * 3 + ch];
+          if (a != b) {
+            mismatches++;
+            ADD_FAILURE() << "first difference at (" << x << ", " << y
+                          << ") channel " << ch << ": ours " << a
+                          << ", libjpeg " << b;
+            break;
+          }
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
 // Hierarchical mode (T.81 Annex J): a pyramid of frames rather than one image.
 //
 // Every fixture here was produced by the ISO reference codec, which is the

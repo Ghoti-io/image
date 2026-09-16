@@ -411,6 +411,7 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
     size_t stride = gimg_raster_stride_bytes(*out_raster);
     uint32_t max_val = (sample_bits >= 32) ? 0xFFFFFFFFu
                                            : ((1u << sample_bits) - 1u);
+    const int frame_is_rgb = jpeg_frame_is_rgb(state, sof);
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
         uint32_t v[3] = {0, 0, 0};
@@ -420,7 +421,24 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
           if (sv > max_val) {
             sv = max_val;
           }
-          v[c] = jpeg_sample_widen(sv, sample_bits, out_bits);
+          v[c] = sv;
+        }
+        // A lossless frame's three components are no more inherently RGB than
+        // any other frame's: T.81 describes no colour space, and the same
+        // conventions decide it here as in the DCT paths.  Most lossless files
+        // in the wild do carry RGB - they say so with an Adobe APP14 whose
+        // transform is zero, or with 'R', 'G', 'B' as the component
+        // identifiers - but a JFIF one is YCbCr and has to be converted.
+        if (num_comp == 3 && !frame_is_rgb) {
+          int rr = 0, gg = 0, bb = 0;
+          jpeg_ycbcr_to_rgb((int)v[0], (int)v[1], (int)v[2],
+              1 << (sample_bits - 1), (int)max_val, &rr, &gg, &bb);
+          v[0] = (uint32_t)rr;
+          v[1] = (uint32_t)gg;
+          v[2] = (uint32_t)bb;
+        }
+        for (uint8_t c = 0; c < num_comp; c++) {
+          v[c] = jpeg_sample_widen(v[c], sample_bits, out_bits);
         }
         if (out_bits == 8) {
           unsigned char * p = (unsigned char *)pixels + (size_t)y * stride;

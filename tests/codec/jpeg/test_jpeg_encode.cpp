@@ -4426,3 +4426,114 @@ int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// An Adobe APP14 describes the frame it accompanies, so it cannot be copied
+// across a re-encode unexamined.
+//
+// Its transform byte says which colour space the components are in.  A source
+// that carried RGB says transform 0; this encoder writes YCbCr for three
+// components, and preserving the marker unchanged left the file asserting both
+// at once, alongside a JFIF APP0 that asserts YCbCr a third time.  Nothing here
+// decodes it wrongly - JFIF outranks Adobe, for this library and for libjpeg -
+// but a decoder that reads Adobe first gets a picture in the wrong colours out
+// of a file this library wrote.
+//
+// The lossless path has the opposite problem.  It keeps RGB, and writes its own
+// Adobe marker saying so, so a preserved one is not contradictory but
+// duplicated: two Adobe segments in one file.
+TEST(JpegEncode, AdobeMarkerDescribesTheFrameThatWasWritten) {
+  struct Segment {
+    uint8_t marker;
+    size_t offset;
+    size_t payload_len;
+  };
+  auto segments = [](const std::vector<uint8_t> & d) {
+    std::vector<Segment> out;
+    size_t i = 2;
+    while (i + 1 < d.size()) {
+      if (d[i] != 0xFF) {
+        i++;
+        continue;
+      }
+      uint8_t m = d[i + 1];
+      if (m == 0xD8 || m == 0xD9 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) {
+        i += 2;
+        continue;
+      }
+      if (i + 3 >= d.size()) break;
+      size_t len = (size_t)((d[i + 2] << 8) | d[i + 3]);
+      if (len < 2) break;
+      out.push_back({m, i + 4, len - 2});
+      i += 2 + len;
+      if (m == 0xDA) break; // Entropy data follows; the headers are all above.
+    }
+    return out;
+  };
+
+  // The fixture's metadata carries an Adobe APP14 with transform 0 (RGB).
+  std::vector<uint8_t> src;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("rgb_adobe0.jpg", src));
+  {
+    int found = 0;
+    for (const Segment & seg : segments(src)) {
+      if (seg.marker == 0xEE && seg.payload_len >= 12 &&
+          memcmp(&src[seg.offset], "Adobe\0", 6) == 0) {
+        found++;
+        EXPECT_EQ((int)src[seg.offset + 11], 0) << "fixture must say RGB";
+      }
+    }
+    ASSERT_EQ(found, 1) << "fixture must carry exactly one Adobe APP14";
+  }
+
+  struct Case {
+    uint8_t lossless_predictor;
+    int want_adobe_count;
+    int want_transform;   // -1 when no Adobe segment is expected
+    bool want_jfif;
+    const char * what;
+  };
+  const Case cases[] = {
+      {0, 1, 1, true,
+          "baseline: one Adobe marker, saying the YCbCr that was written"},
+      {4, 1, 0, false,
+          "lossless: one Adobe marker, the body's, still saying RGB"},
+  };
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    DocStreamGuard in;
+    ASSERT_EQ(gimg_stream_create_memory(src.data(), src.size(), &in.s),
+        GIMG_OK);
+    ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options so = {};
+    so.metadata_policy = GIMG_META_PRESERVE_ALL;
+    so.jpeg_lossless_predictor = c.lossless_predictor;
+    GIMG_Save_Report rep = {};
+    ASSERT_EQ(gimg_doc_save(in.d, out, "jpeg", &so, &rep), GIMG_OK);
+    const void * data = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &data, &size);
+    std::vector<uint8_t> enc(
+        (const uint8_t *)data, (const uint8_t *)data + size);
+    gimg_stream_destroy(out);
+
+    int adobe = 0, jfif = 0, transform = -1;
+    for (const Segment & seg : segments(enc)) {
+      if (seg.marker == 0xEE && seg.payload_len >= 12 &&
+          memcmp(&enc[seg.offset], "Adobe\0", 6) == 0) {
+        adobe++;
+        transform = (int)enc[seg.offset + 11];
+      }
+      if (seg.marker == 0xE0 && seg.payload_len >= 5 &&
+          memcmp(&enc[seg.offset], "JFIF\0", 5) == 0) {
+        jfif++;
+      }
+    }
+    EXPECT_EQ(adobe, c.want_adobe_count);
+    EXPECT_EQ(transform, c.want_transform);
+    EXPECT_EQ(jfif > 0, c.want_jfif);
+  }
+}

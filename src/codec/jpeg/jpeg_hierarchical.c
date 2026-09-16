@@ -896,6 +896,7 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
     // Fancy unless the caller explicitly asked for SIMPLE, as everywhere else.
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    const int frame_is_rgb = jpeg_frame_is_rgb(state, dhp);
     jpeg_plane_t pl[GIMG_JPEG_MAX_COMPONENTS];
     for (uint8_t i = 0; i < num_comp; i++) {
       pl[i].data = cbuf[i];
@@ -933,9 +934,10 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
         }
         else if (num_comp == 3u) {
           int rv, gv, bv;
-          if (lossless_sequence) {
-            // As in the single-frame lossless path: a lossless frame's three
-            // components are the output components, with no colour transform.
+          if (frame_is_rgb) {
+            // T.81 describes no colour space; jpeg_frame_is_rgb reads the
+            // conventions that do.  A sequence whose components are already
+            // R, G, B is passed through.
             rv = sample[0];
             gv = sample[1];
             bv = sample[2];

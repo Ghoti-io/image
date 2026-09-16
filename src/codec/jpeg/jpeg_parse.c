@@ -58,6 +58,40 @@ int jpeg_sof_is_arithmetic(uint8_t m) {
   return (m >= 0xC9u && m <= 0xCBu) || (m >= 0xCDu && m <= 0xCFu);
 }
 
+/**
+ * Decide whether a three-component frame carries R, G, B rather than Y, Cb, Cr.
+ *
+ * T.81 says nothing about colour: a component is a component, and the frame
+ * header names them only by identifier.  What a decoder does with three of them
+ * is settled by the application conventions layered on top - JFIF, which
+ * defines its images to be YCbCr, and Adobe's APP14, whose transform byte says
+ * outright which of the two the encoder used.  This is libjpeg's rule
+ * (jdapimin.c, default_decompress_parms), and following it is what makes the
+ * two libraries agree on files neither standard covers:
+ *
+ *   - a JFIF APP0 means YCbCr, and outranks everything else;
+ *   - otherwise an Adobe APP14 decides, transform 0 being RGB and 1 YCbCr;
+ *   - otherwise the component identifiers are the only evidence left, and
+ *     'R', 'G', 'B' is the one spelling that means what it says.
+ *
+ * Everything else falls to YCbCr, which is what the overwhelming majority of
+ * three-component JPEGs are.
+ */
+int jpeg_frame_is_rgb(
+    const gimg_jpeg_doc_state_t * state, const gimg_jpeg_sof_t * sof) {
+  if (!state || !sof || sof->num_components != 3u) {
+    return 0;
+  }
+  if (state->app0_jfif && state->app0_jfif_len > 0u) {
+    return 0;
+  }
+  if (state->app14 && state->app14_len > 0u) {
+    return state->adobe_transform == 0u;
+  }
+  return sof->comp_id[0] == (uint8_t)'R' && sof->comp_id[1] == (uint8_t)'G' &&
+      sof->comp_id[2] == (uint8_t)'B';
+}
+
 GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
     uint8_t sof_marker, gimg_jpeg_sof_t * sof) {
   if (len < 8) {

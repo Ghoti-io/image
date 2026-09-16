@@ -1047,6 +1047,18 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
  * from the marker code rather than listed case by case. */
 /** @{ */
 int jpeg_marker_is_sof(uint8_t m);
+/** @} */
+
+/**
+ * True when a three-component frame carries R, G, B rather than Y, Cb, Cr.
+ * Defined in jpeg_parse.c; see the comment there for the rule and where it
+ * comes from, since T.81 itself does not describe colour at all.
+ */
+int jpeg_frame_is_rgb(
+    const gimg_jpeg_doc_state_t * state, const gimg_jpeg_sof_t * sof);
+
+/** @name More frame header marker classification */
+/** @{ */
 int jpeg_sof_is_differential(uint8_t m);
 int jpeg_sof_is_progressive(uint8_t m);
 int jpeg_sof_is_lossless(uint8_t m);

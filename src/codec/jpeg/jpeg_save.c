@@ -3161,8 +3161,20 @@ lossless_have_scan:
           return r;
         }
       }
+      // APP14: preserved from the source, but its transform byte describes the
+      // colour space of the frame it accompanies, and that is this encoder's
+      // frame now, not the one it came from.  A source that carried RGB with
+      // transform 0 re-encodes here as YCbCr, and copying the marker across
+      // unchanged leaves the file saying two contradictory things at once -
+      // harmless to a decoder that reads JFIF first, as this one and libjpeg
+      // do, but wrong for one that trusts Adobe.  A three-component lossless
+      // frame is skipped entirely: it keeps RGB, and its body writes the
+      // matching marker itself, so re-emitting this one would put two Adobe
+      // segments in the file.
       size_t app14_size = 0;
-      if (meta_raw &&
+      const int lossless_rgb_writes_its_own =
+          (lossless_psv != 0 && num_components == 3);
+      if (!lossless_rgb_writes_its_own && meta_raw &&
           gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP14, NULL,
               &app14_size) == GIMG_OK &&
           app14_size > 0) {
@@ -3172,6 +3184,12 @@ lossless_have_scan:
           r = gimg_meta_raw_get(
               meta_raw, "jpeg", GIMG_JPEG_RAW_APP14, app14_buf, &app14_size);
           if (r == GIMG_OK) {
+            // The payload is "Adobe\0", version, flags0, flags1, transform -
+            // the transform is the twelfth byte (index 11).
+            if (num_components == 3 && app14_size >= 12u &&
+                memcmp(app14_buf, "Adobe\0", 6) == 0) {
+              app14_buf[11] = 1u; // YCbCr, which is what was written above.
+            }
             r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP14,
                 app14_buf, app14_size, &report->bytes_written);
           }
