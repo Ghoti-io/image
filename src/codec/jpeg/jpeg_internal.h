@@ -566,7 +566,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(gimg_jpeg_bitstream_t * bs,
 GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * ac_tbl, int16_t * block, int ss, int se,
     int al, int do_trace, int trace_block_id, int log_sanity, int trace_all,
-    int trace_scan_idx, int is_last_block);
+    int trace_scan_idx, unsigned int * out_eobrun, int is_last_block);
 /** @} */
 
 /** Chroma upsampling: fancy 2h2v (triangle filter). Call when width==cw*2,

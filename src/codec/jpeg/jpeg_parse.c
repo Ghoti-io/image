@@ -93,31 +93,20 @@ void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
     }
     size_t table_len = GIMG_JPEG_DHT_HEADER_LEN + num_symbols;
     if (tc) {
-      // AC: 17- or 18-symbol DHT is refinement (Ah!=0); store separately so
-      // initial table (162 symbols, T.81 K.4) is not overwritten. T.81 K.6.
-      if (num_symbols == 17 || num_symbols == 18) {
-        unsigned char ** dest = &state->huff_ac_refine[th];
-        size_t * dest_len = &state->huff_ac_refine_len[th];
-        if (*dest) {
-          gimg_free(alloc, *dest);
-        }
-        *dest = (unsigned char *)gimg_malloc(alloc, table_len);
-        if (*dest) {
-          memcpy(*dest, p, table_len);
-          *dest_len = table_len;
-        }
+      // T.81 B.2.4: one AC table per Th, replaced by each DHT that names it.
+      // There is no separate "refinement" table in the spec.  Sorting tables by
+      // symbol count (17 or 18 meaning refinement) misfiles any refinement
+      // table of another size - a 15-symbol one is perfectly legal and common -
+      // and then a scan that wanted it found the wrong table or none.
+      unsigned char ** dest = &state->huff_ac[th];
+      size_t * dest_len = &state->huff_ac_len[th];
+      if (*dest) {
+        gimg_free(alloc, *dest);
       }
-      else {
-        unsigned char ** dest = &state->huff_ac[th];
-        size_t * dest_len = &state->huff_ac_len[th];
-        if (*dest) {
-          gimg_free(alloc, *dest);
-        }
-        *dest = (unsigned char *)gimg_malloc(alloc, table_len);
-        if (*dest) {
-          memcpy(*dest, p, table_len);
-          *dest_len = table_len;
-        }
+      *dest = (unsigned char *)gimg_malloc(alloc, table_len);
+      if (*dest) {
+        memcpy(*dest, p, table_len);
+        *dest_len = table_len;
       }
     }
     else {

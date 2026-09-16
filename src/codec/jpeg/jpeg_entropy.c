@@ -1157,26 +1157,38 @@ static GIMG_Result jpeg_decode_progressive_extended(
   const GIMG_Allocator * alloc = state->allocator;
   alloc = gimg_alloc_or_default(alloc);
 
+  // One block grid per component, in raster order, used by every scan and by
+  // the IDCT alike.  T.81 A.2: a component covers ceil(X_i/8) x ceil(Y_i/8)
+  // blocks of real samples (blk_w/blk_h), but an interleaved scan walks whole
+  // MCUs and so addresses mcu_per_row*H_i x mcu_per_col*V_i blocks, padding the
+  // grid out at the right and bottom edges.  The array is allocated to the
+  // larger of the two (grid_w/grid_h) and grid_w is the row stride everywhere.
+  //
+  // Keeping these separate matters: the blocks the IDCT reads are blk_w x
+  // blk_h, while the stride between rows is grid_w.  Conflating them is what
+  // made this decoder write past the end of the buffer and read coefficients
+  // from the wrong blocks.
+  uint32_t blk_w[GIMG_JPEG_MAX_COMPONENTS];
+  uint32_t blk_h[GIMG_JPEG_MAX_COMPONENTS];
+  uint32_t grid_w[GIMG_JPEG_MAX_COMPONENTS];
+  uint32_t grid_h[GIMG_JPEG_MAX_COMPONENTS];
+  for (uint8_t i = 0; i < num_comp; i++) {
+    blk_w[i] = (comp_w[i] + 7u) / 8u;
+    blk_h[i] = (comp_h[i] + 7u) / 8u;
+    grid_w[i] = mcu_per_row * (uint32_t)sof->h_samp[i];
+    grid_h[i] = mcu_per_col * (uint32_t)sof->v_samp[i];
+    if (blk_w[i] > grid_w[i])
+      grid_w[i] = blk_w[i];
+    if (blk_h[i] > grid_h[i])
+      grid_h[i] = blk_h[i];
+  }
+
   size_t blocks_per_comp[GIMG_JPEG_MAX_COMPONENTS];
   int16_t * coef_blocks[GIMG_JPEG_MAX_COMPONENTS];
   memset(coef_blocks, 0, sizeof(coef_blocks));
   for (uint8_t i = 0; i < num_comp; i++) {
-    // Two different block grids address this buffer and the allocation has to
-    // cover both.  The IDCT reads it in raster order over the blocks that hold
-    // real samples, ceil(comp/8) each way.  The scan loop writes it in
-    // MCU-sequential order over the whole MCU grid, which for a component whose
-    // size is not a multiple of 8*sampling is the larger of the two: a 129x97
-    // 4:2:0 image gives ceil(129/8) x ceil(97/8) = 17x13 = 221 blocks against
-    // 9x2 x 7x2 = 252, and the scan wrote 31 blocks past the end of a
-    // 28288-byte allocation.  Take the larger.
-    size_t bw = (size_t)(comp_w[i] + 7) / 8;
-    size_t bh = (size_t)(comp_h[i] + 7) / 8;
-    size_t mcu_bw = (size_t)mcu_per_row * (size_t)sof->h_samp[i];
-    size_t mcu_bh = (size_t)mcu_per_col * (size_t)sof->v_samp[i];
-    if (mcu_bw > bw)
-      bw = mcu_bw;
-    if (mcu_bh > bh)
-      bh = mcu_bh;
+    size_t bw = (size_t)grid_w[i];
+    size_t bh = (size_t)grid_h[i];
     if (!gcu_safe_mul_size(bw, bh, &blocks_per_comp[i])) {
       for (uint8_t j = 0; j < i; j++)
         gimg_free(alloc, coef_blocks[j]);
@@ -1223,97 +1235,82 @@ static GIMG_Result jpeg_decode_progressive_extended(
       size_t dc_len = (scan->huff_dc[dc_id] && scan->huff_dc_len[dc_id] > 0)
           ? scan->huff_dc_len[dc_id]
           : state->huff_dc_len[dc_id];
-      const unsigned char * ac_src;
-      size_t ac_len;
-      // AC table selection per T.81 B.2.4: table for a scan is the one most
-      // recently defined before that scan's entropy-coded segment. Use default
-      // (K.4) only when neither scan nor state has a table. For scan 1
-      // AC-initial, use Pillow-compat 2-symbol (0,4)+EOB only when there is
-      // no table at all; otherwise use scan or state table.
-      if ((!scan->huff_ac[ac_id] || scan->huff_ac_len[ac_id] == 0) &&
-          (int)scan->ah == 0 &&
-          (!state->huff_ac[ac_id] || state->huff_ac_len[ac_id] == 0)) {
+      // T.81 B.2.4: the table for this scan is the one most recently defined
+      // before its entropy-coded segment, which is exactly what the SOS
+      // snapshot holds.  Fall back to the Annex K.4 default only when the file
+      // never defined one.  Refinement scans take the same table; there is no
+      // second kind.
+      const unsigned char * ac_src =
+          (scan->huff_ac[ac_id] && scan->huff_ac_len[ac_id] > 0)
+          ? scan->huff_ac[ac_id]
+          : state->huff_ac[ac_id];
+      size_t ac_len = (scan->huff_ac[ac_id] && scan->huff_ac_len[ac_id] > 0)
+          ? scan->huff_ac_len[ac_id]
+          : state->huff_ac_len[ac_id];
+      if (!ac_src || ac_len == 0) {
         ac_src = jpeg_default_ac_dht_payload(&ac_len);
       }
-      // Scan 1 AC-initial: Pillow-compat 2-symbol only when no DHT exists;
-      // otherwise use file's table (T.81 B.2.4).
-      else if (scan_idx == 1 && (int)scan->ah == 0 &&
-          (!scan->huff_ac[ac_id] || scan->huff_ac_len[ac_id] == 0) &&
-          (!state->huff_ac[ac_id] || state->huff_ac_len[ac_id] == 0)) {
-        jpeg_build_pillow_compat_ac_scan1_table(&ac_tables[ac_id]);
-        ac_src = NULL;
-        ac_len = 0;
-      }
-      else {
-        ac_src = (scan->huff_ac[ac_id] && scan->huff_ac_len[ac_id] > 0)
-            ? scan->huff_ac[ac_id]
-            : state->huff_ac[ac_id];
-        ac_len = (scan->huff_ac[ac_id] && scan->huff_ac_len[ac_id] > 0)
-            ? scan->huff_ac_len[ac_id]
-            : state->huff_ac_len[ac_id];
-      }
-      const unsigned char * ac_refine_src =
-          (scan->huff_ac_refine[ac_id] && scan->huff_ac_refine_len[ac_id] > 0)
-          ? scan->huff_ac_refine[ac_id]
-          : state->huff_ac_refine[ac_id];
-      size_t ac_refine_len =
-          (scan->huff_ac_refine[ac_id] && scan->huff_ac_refine_len[ac_id] > 0)
-          ? scan->huff_ac_refine_len[ac_id]
-          : state->huff_ac_refine_len[ac_id];
       if (dc_id >= 4 || !dc_src || dc_len == 0 ||
           jpeg_build_huff_table(dc_src, dc_len, &dc_tables[dc_id]) != 0) {
         goto prog_ext_fail;
       }
-      if (ac_id >= 4) {
+      if (ac_id >= 4 || !ac_src || ac_len == 0 ||
+          jpeg_build_huff_table(ac_src, ac_len, &ac_tables[ac_id]) != 0) {
         goto prog_ext_fail;
-      }
-      if (ac_src && ac_len > 0) {
-        if (jpeg_build_huff_table(ac_src, ac_len, &ac_tables[ac_id]) != 0) {
-          goto prog_ext_fail;
-        }
-      }
-      else if (!ac_src && ac_len == 0 && ac_tables[ac_id].num_values == 0) {
-        // Refinement scans (Ah!=0) use only the AC refinement table (Ta=2);
-        // no initial AC table is required (T.81 G.1.1.2.2).
-        if ((int)scan->ah == 0) {
-          goto prog_ext_fail;
-        }
-      }
-      // T.81 B.2.4: DHT defines tables for following scans. Refinement scan
-      // (Ah!=0) requires a valid AC refinement table (G.1.1.2.2); reject if build fails.
-      if (ac_refine_src && ac_refine_len > 0) {
-        if (jpeg_build_huff_table(
-                ac_refine_src, ac_refine_len, &ac_refine_tables[ac_id]) != 0) {
-          goto prog_ext_fail;
-        }
-      }
-      else if ((int)scan->ah != 0) {
-        // T.81 Table K.6: default AC refinement table when no DHT in file.
-        if (jpeg_build_huff_table(gimg_jpeg_default_ac_refine_dht_payload,
-                sizeof(gimg_jpeg_default_ac_refine_dht_payload),
-                &ac_refine_tables[ac_id]) != 0) {
-          goto prog_ext_fail;
-        }
       }
     }
     // T.81 B.2.2: segment ends at next marker; padding bit value unspecified.
     // We track expected block count and treat underflow in the last block as EOB/0
     // so we do not assume 0 or 1 for padding (spec compliance, third-party files).
     // Do not set pad_at_eob — use last-block underflow handling instead.
-    size_t blocks_per_mcu_prog = 0;
-    for (uint8_t s = 0; s < scan->comp_count; s++) {
-      uint8_t comp_idx = 0;
-      for (; comp_idx < num_comp; comp_idx++) {
-        if (sof->comp_id[comp_idx] == scan->comp_id[s])
+    // T.81 A.2: what an MCU *is* depends on how many components the scan has.
+    //
+    // With one component (A.2.2) the scan is non-interleaved and an MCU is a
+    // single block, so the scan covers that component's own block grid:
+    // ceil(X_i/8) x ceil(Y_i/8) MCUs, in raster order, with no MCU padding.
+    // With several (A.2.3) an MCU is H_i x V_i blocks of each component and the
+    // scan covers mcu_per_row x mcu_per_col MCUs.
+    //
+    // Every progressive AC scan is non-interleaved - G.1.2.2 allows no other
+    // arrangement - so the one-component case is the common one, not the
+    // exception.  Walking the image MCU grid for those scans decoded blocks in
+    // the wrong order and in the wrong quantity, which is why progressive
+    // decode failed or returned wrong pixels on anything past a single MCU row.
+    int scan_interleaved = (scan->comp_count > 1);
+    uint8_t solo_comp = 0;
+    if (!scan_interleaved) {
+      for (; solo_comp < num_comp; solo_comp++) {
+        if (sof->comp_id[solo_comp] == scan->comp_id[0])
           break;
       }
-      if (comp_idx < num_comp)
-        blocks_per_mcu_prog +=
-            (size_t)sof->h_samp[comp_idx] * (size_t)sof->v_samp[comp_idx];
+      if (solo_comp >= num_comp) {
+        goto prog_ext_fail;
+      }
+    }
+    uint32_t scan_mcus_x =
+        scan_interleaved ? mcu_per_row : blk_w[solo_comp];
+    uint32_t scan_mcus_y =
+        scan_interleaved ? mcu_per_col : blk_h[solo_comp];
+
+    size_t blocks_per_mcu_prog = 0;
+    if (scan_interleaved) {
+      for (uint8_t s = 0; s < scan->comp_count; s++) {
+        uint8_t comp_idx = 0;
+        for (; comp_idx < num_comp; comp_idx++) {
+          if (sof->comp_id[comp_idx] == scan->comp_id[s])
+            break;
+        }
+        if (comp_idx < num_comp)
+          blocks_per_mcu_prog +=
+              (size_t)sof->h_samp[comp_idx] * (size_t)sof->v_samp[comp_idx];
+      }
+    }
+    else {
+      blocks_per_mcu_prog = 1;
     }
     size_t mcu_total_prog = 0;
     if (!gcu_safe_mul_size(
-            (size_t)mcu_per_row, (size_t)mcu_per_col, &mcu_total_prog)) {
+            (size_t)scan_mcus_x, (size_t)scan_mcus_y, &mcu_total_prog)) {
       goto prog_ext_fail;
     }
     size_t total_blocks_prog = 0;
@@ -1338,9 +1335,9 @@ static GIMG_Result jpeg_decode_progressive_extended(
     unsigned int eobrun = 0;
     size_t block_counter_prog = 0;
 
-    for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
-      for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
-        uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
+    for (uint32_t mcu_y = 0; mcu_y < scan_mcus_y; mcu_y++) {
+      for (uint32_t mcu_x = 0; mcu_x < scan_mcus_x; mcu_x++) {
+        uint32_t mcu_index = mcu_y * scan_mcus_x + mcu_x;
         if (restart_interval > 0) {
           if (bs.rst_just_skipped) {
             memset(dc_pred, 0, sizeof(dc_pred));
@@ -1361,11 +1358,15 @@ static GIMG_Result jpeg_decode_progressive_extended(
           if (comp_idx >= num_comp) {
             goto prog_ext_fail;
           }
-          uint8_t h_samp = sof->h_samp[comp_idx];
-          uint8_t v_samp = sof->v_samp[comp_idx];
-          size_t blocks_per_mcu_comp = (size_t)h_samp * (size_t)v_samp;
-          size_t mcu_block_start =
-              (size_t)(mcu_y * mcu_per_row + mcu_x) * blocks_per_mcu_comp;
+          // A non-interleaved scan contributes one block per MCU, at the MCU's
+          // own raster position in this component's grid.  An interleaved scan
+          // contributes H_i x V_i blocks, the MCU's top-left corner being at
+          // (mcu_x*H_i, mcu_y*V_i).
+          uint8_t h_samp = scan_interleaved ? sof->h_samp[comp_idx] : 1;
+          uint8_t v_samp = scan_interleaved ? sof->v_samp[comp_idx] : 1;
+          uint32_t blk_col0 = scan_interleaved ? mcu_x * h_samp : mcu_x;
+          uint32_t blk_row0 = scan_interleaved ? mcu_y * v_samp : mcu_y;
+          uint32_t row_stride = grid_w[comp_idx];
 
           for (uint8_t by = 0; by < v_samp; by++) {
             for (uint8_t bx = 0; bx < h_samp; bx++) {
@@ -1375,7 +1376,8 @@ static GIMG_Result jpeg_decode_progressive_extended(
                   ? 1
                   : 0;
               size_t block_idx =
-                  mcu_block_start + (size_t)by * (size_t)h_samp + (size_t)bx;
+                  (size_t)(blk_row0 + (uint32_t)by) * (size_t)row_stride +
+                  (size_t)(blk_col0 + (uint32_t)bx);
               int16_t * block = coef_blocks[comp_idx] + block_idx * 64;
               if (is_dc) {
                 GIMG_Result r;
@@ -1413,16 +1415,20 @@ static GIMG_Result jpeg_decode_progressive_extended(
                   }
                 }
                 else {
-                  // T.81 G.1.1.2.2: AC refinement uses only the refinement table (Ta selects it).
-                  // Do not fall back to initial AC table (may be unbuilt for Ta=2). Require valid table.
+                  // T.81 G.1.1.2.2: a refinement scan uses the AC table its
+                  // SOS names through Ta, which is the same table any other
+                  // scan would get.  The table is usually small - refinement
+                  // only ever emits symbols with s in {0,1} - but small is not
+                  // a different kind of table.
                   const gimg_jpeg_huff_table_t * ac_ref_tbl =
-                      &ac_refine_tables[scan->ac_tbl[s]];
+                      &ac_tables[scan->ac_tbl[s]];
                   if (ac_ref_tbl->num_values == 0) {
                     goto prog_ext_fail;
                   }
                   GIMG_Result r =
                       jpeg_decode_block_progressive_ac_refine(&bs, ac_ref_tbl,
-                          block, ss, se, al, 0, -1, 0, 0, -1, is_last_prog);
+                          block, ss, se, al, 0, -1, 0, 0, -1, &eobrun,
+                          is_last_prog);
                   if (r != GIMG_OK) {
                     goto prog_ext_fail;
                   }
@@ -1471,11 +1477,16 @@ static GIMG_Result jpeg_decode_progressive_extended(
       goto prog_ext_fail_buf;
     }
     const uint16_t * quant = state->quant_tbl[qid];
-    uint32_t blocks_w = comp_w[comp_idx] / 8;
-    uint32_t blocks_h = comp_h[comp_idx] / 8;
+    // Read the blocks that hold real samples, addressed with the grid's row
+    // stride.  These are two different numbers whenever the component is not a
+    // whole number of MCUs wide, and the truncating comp_w/8 used here before
+    // dropped the last partial block column entirely.
+    uint32_t blocks_w = blk_w[comp_idx];
+    uint32_t blocks_h = blk_h[comp_idx];
+    uint32_t row_stride = grid_w[comp_idx];
     for (uint32_t by = 0; by < blocks_h; by++) {
       for (uint32_t bx = 0; bx < blocks_w; bx++) {
-        size_t block_idx = (size_t)by * (size_t)blocks_w + (size_t)bx;
+        size_t block_idx = (size_t)by * (size_t)row_stride + (size_t)bx;
         const int16_t * block_zig = coef_blocks[comp_idx] + block_idx * 64;
         jpeg_dezigzag(block_zig, block_rz);
         uint32_t dst_x = bx * 8;

@@ -462,7 +462,14 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(gimg_jpeg_bitstream_t * bs,
               (void)fflush(stderr);
             }
           }
-          *out_eobrun = eobrun;
+          // T.81 G.1.2.2: EOBRUN counts the blocks the run covers *including*
+          // this one, which is zeroed just below.  What carries to the blocks
+          // that follow is therefore one less.  Storing the full count zeroed
+          // one block too many for every EOB run, and the symbols belonging to
+          // that block were never read - the scan then ended with bits to
+          // spare and every later scan, which depends on these coefficients,
+          // decoded against the wrong block state.
+          *out_eobrun = eobrun - 1u;
           for (; k <= se; k++) {
             block[k] = 0;
           }
@@ -608,7 +615,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(gimg_jpeg_bitstream_t * bs,
 GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * ac_tbl, int16_t * block, int ss, int se,
     int al, int do_trace, int trace_block_id, int log_sanity, int trace_all,
-    int trace_scan_idx, int is_last_block) {
+    int trace_scan_idx, unsigned int * out_eobrun, int is_last_block) {
   // Full dump for compare with ref: every byte/bit/block
   // (GIMG_JPEG_DUMP_AC_REFINE_FULL=1).
   const int dump_full = GIMG_JPEG_DUMP_AC_REFINE_FULL;
@@ -622,6 +629,39 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
   }
   int bitpos = (al >= 0 && al <= 15) ? al : 0;
   int k = ss;
+
+  // T.81 G.1.2.3: an EOB run spans whole blocks, exactly as it does in an
+  // AC-initial scan.  A block covered by a running EOB still carries one
+  // correction bit for each coefficient already nonzero in the band - the run
+  // says "no new coefficients here", not "no bits here".  This decoder used to
+  // read the run length and throw it away ("EOBRUN value not needed for
+  // single-block decode"), which is only ever right when every run has length
+  // one.  Any longer run left the following blocks reading bits that belonged
+  // to a later block, and the scan desynchronised from there on.
+  if (out_eobrun && *out_eobrun > 0) {
+    (*out_eobrun)--;
+    for (; k <= se; k++) {
+      if (block[k] == 0) {
+        continue;
+      }
+      int rbit = jpeg_bitstream_read_bit(bs);
+      if (rbit < 0) {
+        if (is_last_block || bs->recover_stuff_zero) {
+          rbit = 0; // T.81 B.2.2: padding bit value is unspecified.
+        }
+        else {
+          return GIMG_ERR_CORRUPT;
+        }
+      }
+      if ((rbit & 1) && (block[k] & (1 << bitpos)) == 0) {
+        int16_t delta =
+            (int16_t)(block[k] >= 0 ? (1 << bitpos) : -(1 << bitpos));
+        block[k] += delta;
+      }
+    }
+    return GIMG_OK;
+  }
+
   while (k <= se) {
     int k_at_iter_start = k;
     // Break-the-circle: log start of first two blocks (position + nz count).
@@ -936,10 +976,11 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
         k++;
       }
       if (k > se) {
-        if (bs->recover_stuff_zero) {
-          break; // Stop this block; match recovery behavior.
-        }
-        return GIMG_ERR_CORRUPT;
+        // The run asked for more still-zero coefficients than the band holds.
+        // libjpeg tolerates this (its zigzag table is padded so the index
+        // clamps to 63) rather than rejecting the file, so do the same: put the
+        // new coefficient in the last position of the band and carry on.
+        k = se;
       }
       if (do_trace) {
         if (trace_block_id >= 0)
@@ -981,6 +1022,9 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
       if (run != 15) {
         // EOB run: consume r appended bits, then correction bits for nonzero in
         // band.
+        // EOBRUN = 2^r + the r appended bits (T.81 G.1.2.3).  This block is
+        // the first of the run, so the rest carries to later blocks.
+        unsigned int eobrun_extra = 0u;
         int eobrun_bits = run;
         if (eobrun_bits > 0) {
           for (int bi = 0; bi < eobrun_bits; bi++) {
@@ -1004,8 +1048,13 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
                 return GIMG_ERR_CORRUPT;
               }
             }
-            (void)b; // EOBRUN value not needed for single-block decode
+            eobrun_extra = (eobrun_extra << 1) | (unsigned int)(b & 1);
           }
+        }
+        if (out_eobrun) {
+          unsigned int eobrun_val =
+              (1u << (unsigned int)run) + eobrun_extra;
+          *out_eobrun = eobrun_val - 1u; // this block is the first of the run
         }
         for (; k <= se; k++) {
           if (block[k] != 0) {
@@ -1042,11 +1091,33 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
         }
         break; // EOB: done with this block
       }
-      // run == 15: ZRL — skip 16 zero coefficients
+      // run == 15: ZRL.  T.81 G.1.2.3: skip 16 coefficients that are still
+      // zero at this precision - and read one correction bit for every
+      // already-nonzero coefficient passed along the way, exactly as the
+      // run-skip above does.  libjpeg routes ZRL through that same loop for
+      // this reason.  Skipping the nonzeroes silently, as this did, drops one
+      // bit per nonzero coefficient and desynchronises the rest of the scan;
+      // chroma refinement, which is dense in ZRL, never survived it.
       int left = 16;
       while (left > 0 && k <= se) {
         if (block[k] == 0) {
           left--;
+        }
+        else {
+          int rbit = jpeg_bitstream_read_bit(bs);
+          if (rbit < 0) {
+            if (is_last_block || bs->recover_stuff_zero) {
+              rbit = 0; // T.81 B.2.2: padding bit value is unspecified.
+            }
+            else {
+              return GIMG_ERR_CORRUPT;
+            }
+          }
+          if ((rbit & 1) && (block[k] & (1 << bitpos)) == 0) {
+            int16_t delta =
+                (int16_t)(block[k] >= 0 ? (1 << bitpos) : -(1 << bitpos));
+            block[k] += delta;
+          }
         }
         k++;
       }

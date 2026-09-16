@@ -545,172 +545,36 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           scan->ah = (ah_al >> 4) & 0x0Fu;
           scan->al = ah_al & 0x0Fu;
         }
-        // Snapshot Huffman tables for this scan. T.81 B.2.4: DHT defines tables
-        // for the following scans. Use the *first* DHT (Th,Tc) after the previous
-        // scan's data (see task doc: "first" matches this fixture; "last" to match
-        // libjpeg caused scan 5 to diverge—root cause TBD). Scan 0 uses tables
-        // in effect at first SOS.
+        // T.81 B.2.4: a DHT segment defines the Huffman table for its (Tc, Th) and
+        // replaces any previous definition of that pair.  The tables a scan uses are
+        // therefore simply the ones most recently defined when its SOS is read - so
+        // snapshot the current state and nothing more.
+        //
+        // What stood here instead searched for "the first DHT after the previous
+        // scan's data", with four layers of fallback, and carried the note: '"first"
+        // matches this fixture; "last" to match libjpeg caused scan 5 to diverge -
+        // root cause TBD'.  The root cause was one layer down: the parser sorted AC
+        // tables into "initial" and "refinement" by symbol count, so a refinement
+        // table that happened not to have 17 or 18 symbols landed in the wrong slot
+        // and the search had to be bent to compensate.  T.81 has one kind of AC
+        // table; see jpeg_parse.c.
         for (int ti = 0; ti < 4; ti++) {
-          const unsigned char * src = NULL;
-          size_t src_len = 0;
-          if (state->num_scans == 0) {
-            if (state->huff_dc[ti] && state->huff_dc_len[ti] > 0) {
-              src = state->huff_dc[ti];
-              src_len = state->huff_dc_len[ti];
-            }
-          }
-          else {
-            for (size_t j = state->last_scan_data_end_dht_index;
-                 j < state->num_dht_entries; j++) {
-              if (state->dht_entries[j].tc == 0 &&
-                  state->dht_entries[j].th == (unsigned)ti) {
-                src = state->dht_entries[j].payload;
-                src_len = state->dht_entries[j].len;
-                break;
-              }
-            }
-            if (!src && state->huff_dc[ti] && state->huff_dc_len[ti] > 0) {
-              src = state->huff_dc[ti];
-              src_len = state->huff_dc_len[ti];
-            }
-            if (!src) {
-              for (size_t j = state->num_dht_entries; j > 0; j--) {
-                if (state->dht_entries[j - 1].tc == 0 &&
-                    state->dht_entries[j - 1].th == (unsigned)ti) {
-                  src = state->dht_entries[j - 1].payload;
-                  src_len = state->dht_entries[j - 1].len;
-                  break;
-                }
-              }
-            }
-            if (!src && state->scans[state->num_scans - 1].huff_dc[ti]) {
-              src = state->scans[state->num_scans - 1].huff_dc[ti];
-              src_len = state->scans[state->num_scans - 1].huff_dc_len[ti];
-            }
-          }
-          if (src && src_len > 0) {
-            scan->huff_dc[ti] = (unsigned char *)gimg_malloc(alloc, src_len);
+          if (state->huff_dc[ti] && state->huff_dc_len[ti] > 0) {
+            scan->huff_dc[ti] =
+                (unsigned char *)gimg_malloc(alloc, state->huff_dc_len[ti]);
             if (scan->huff_dc[ti]) {
-              memcpy(scan->huff_dc[ti], src, src_len);
-              scan->huff_dc_len[ti] = src_len;
+              memcpy(scan->huff_dc[ti], state->huff_dc[ti], state->huff_dc_len[ti]);
+              scan->huff_dc_len[ti] = state->huff_dc_len[ti];
             }
           }
-        }
-        for (int ti = 0; ti < 4; ti++) {
-          const unsigned char * src = NULL;
-          size_t src_len = 0;
-          if (state->num_scans == 0) {
-            if (state->huff_ac[ti] && state->huff_ac_len[ti] > 0) {
-              src = state->huff_ac[ti];
-              src_len = state->huff_ac_len[ti];
-            }
-          }
-          else {
-            // First DHT (Th,Tc) after previous scan's data for AC initial.
-            for (size_t j = state->last_scan_data_end_dht_index;
-                 j < state->num_dht_entries; j++) {
-              if (state->dht_entries[j].tc == 1 &&
-                  state->dht_entries[j].th == (unsigned)ti &&
-                  state->dht_entries[j].is_ac_refine == 0) {
-                src = state->dht_entries[j].payload;
-                src_len = state->dht_entries[j].len;
-                break;
-              }
-            }
-            if (!src && state->huff_ac[ti] && state->huff_ac_len[ti] > 0) {
-              src = state->huff_ac[ti];
-              src_len = state->huff_ac_len[ti];
-            }
-            if (!src) {
-              for (size_t j = state->num_dht_entries; j > 0; j--) {
-                if (state->dht_entries[j - 1].tc == 1 &&
-                    state->dht_entries[j - 1].th == (unsigned)ti &&
-                    state->dht_entries[j - 1].is_ac_refine == 0) {
-                  src = state->dht_entries[j - 1].payload;
-                  src_len = state->dht_entries[j - 1].len;
-                  break;
-                }
-              }
-            }
-            if (!src && state->scans[state->num_scans - 1].huff_ac[ti]) {
-              src = state->scans[state->num_scans - 1].huff_ac[ti];
-              src_len = state->scans[state->num_scans - 1].huff_ac_len[ti];
-            }
-          }
-          if (src && src_len > 0) {
-            scan->huff_ac[ti] = (unsigned char *)gimg_malloc(alloc, src_len);
+          if (state->huff_ac[ti] && state->huff_ac_len[ti] > 0) {
+            scan->huff_ac[ti] =
+                (unsigned char *)gimg_malloc(alloc, state->huff_ac_len[ti]);
             if (scan->huff_ac[ti]) {
-              memcpy(scan->huff_ac[ti], src, src_len);
-              scan->huff_ac_len[ti] = src_len;
+              memcpy(scan->huff_ac[ti], state->huff_ac[ti], state->huff_ac_len[ti]);
+              scan->huff_ac_len[ti] = state->huff_ac_len[ti];
             }
           }
-        }
-        for (int ti = 0; ti < 4; ti++) {
-          const unsigned char * src = NULL;
-          size_t src_len = 0;
-          if (state->num_scans == 0) {
-            if (state->huff_ac_refine[ti] &&
-                state->huff_ac_refine_len[ti] > 0) {
-              src = state->huff_ac_refine[ti];
-              src_len = state->huff_ac_refine_len[ti];
-            }
-          }
-          else {
-            // T.81 B.2.4: table for this scan is the one most recently defined
-            // before this scan's entropy-coded segment. Use the last DHT in
-            // [last_scan_data_end_dht_index, num_dht_entries) with Tc=1 (AC) and Th=ti.
-            for (size_t j = state->num_dht_entries; j > state->last_scan_data_end_dht_index; j--) {
-              size_t idx = j - 1;
-              if (state->dht_entries[idx].tc == 1 &&
-                  state->dht_entries[idx].th == (unsigned)ti) {
-                src = state->dht_entries[idx].payload;
-                src_len = state->dht_entries[idx].len;
-                break;
-              }
-            }
-            if (!src && state->huff_ac_refine[ti] &&
-                state->huff_ac_refine_len[ti] > 0) {
-              src = state->huff_ac_refine[ti];
-              src_len = state->huff_ac_refine_len[ti];
-            }
-            if (!src) {
-              for (size_t j = state->num_dht_entries; j > 0; j--) {
-                if (state->dht_entries[j - 1].tc == 1 &&
-                    state->dht_entries[j - 1].th == (unsigned)ti &&
-                    state->dht_entries[j - 1].is_ac_refine) {
-                  src = state->dht_entries[j - 1].payload;
-                  src_len = state->dht_entries[j - 1].len;
-                  break;
-                }
-              }
-            }
-            if (!src && state->scans[state->num_scans - 1].huff_ac_refine[ti]) {
-              src = state->scans[state->num_scans - 1].huff_ac_refine[ti];
-              src_len =
-                  state->scans[state->num_scans - 1].huff_ac_refine_len[ti];
-            }
-          }
-          if (src && src_len > 0) {
-            scan->huff_ac_refine[ti] =
-                (unsigned char *)gimg_malloc(alloc, src_len);
-            if (scan->huff_ac_refine[ti]) {
-              memcpy(scan->huff_ac_refine[ti], src, src_len);
-              scan->huff_ac_refine_len[ti] = src_len;
-            }
-          }
-        }
-        if (scan->ah != 0 && GIMG_JPEG_PROGRESSIVE_DEBUG) {
-          (void)fprintf(stderr,
-              "LOADER scan %zu (refinement ah=%u) last_dht=%zu num_dht=%zu",
-              (size_t)state->num_scans, (unsigned)scan->ah,
-              (size_t)state->last_scan_data_end_dht_index,
-              (size_t)state->num_dht_entries);
-          for (int ti = 0; ti < 4; ti++) {
-            (void)fprintf(stderr, " ac_ref[%d]=%s", ti,
-                scan->huff_ac_refine[ti] ? "yes" : "no");
-          }
-          (void)fprintf(stderr, "\n");
-          (void)fflush(stderr);
         }
         state->num_scans++;
         state->inter_scan_dht_index_set = 0;  // Next scan data end will set index.
