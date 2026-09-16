@@ -913,11 +913,32 @@ GIMG_Result gimg_jpeg_encode_lossless_differential(const GIMG_Allocator * alloc,
     unsigned char ** out_scan_data, size_t * out_scan_size,
     unsigned char ** out_dht, size_t * out_dht_len);
 
+/**
+ * One scan of a lossless frame, with the Huffman table its own differences
+ * generated (Annex K.2; the fixed tables of Annex K stop short of a lossless
+ * difference's categories).
+ */
+typedef struct {
+  unsigned char * data;
+  size_t size;
+  unsigned char * dht;
+  size_t dht_len;
+  /** Which component this scan carries, or 0xFF for all of them interleaved. */
+  uint8_t component;
+} gimg_jpeg_lossless_scan_t;
+
+/**
+ * Encode a lossless frame (T.81 SOF3, or SOF11 with the arithmetic coder).
+ *
+ * Produces one interleaved scan for a frame of up to four components and one
+ * scan per component beyond that, because B.2.3 Table B.3 caps Ns at 4 whatever
+ * Nf is.  @p out_scans must have room for GIMG_JPEG_MAX_COMPONENTS entries.
+ */
 GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int psv, uint16_t restart_interval,
-    int arithmetic, unsigned char ** out_scan_data, size_t * out_scan_size,
-    unsigned char ** out_dht, size_t * out_dht_len, uint32_t * out_width,
-    uint32_t * out_height, int * out_num_components, int * out_precision);
+    int arithmetic, gimg_jpeg_lossless_scan_t * out_scans,
+    unsigned * out_num_scans, uint32_t * out_width, uint32_t * out_height,
+    int * out_num_components, int * out_precision);
 
 /** Decode a lossless frame (SOF3, T.81 Annex H). */
 /**

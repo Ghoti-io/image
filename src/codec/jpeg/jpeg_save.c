@@ -2501,9 +2501,8 @@ static void jpeg_gather_component_blocks(int16_t * interleaved,
  */
 static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components, int precision,
-    int psv, int arithmetic, const unsigned char * dht, size_t dht_len,
-    const unsigned char * scan_data, size_t scan_size,
-    uint16_t restart_interval, size_t * out_n) {
+    int psv, int arithmetic, const gimg_jpeg_lossless_scan_t * scans,
+    unsigned num_scans, uint16_t restart_interval, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   size_t written = 0;
   GIMG_Result r;
@@ -2547,8 +2546,12 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    unsigned char sof[6 + 3 * 4];
+    // Sized for T.81 B.2.2's widest frame.  At 6 + 3 * 4 this wrote past its
+    // own end for any frame of more than four components, which the lossless
+    // writer can now be handed.
+    unsigned char sof[6 + 3 * GIMG_JPEG_MAX_COMPONENTS];
     static const unsigned char rgb_ids[3] = {'R', 'G', 'B'};
+    memset(sof, 0, sizeof(sof));
     sof[0] = (unsigned char)precision;
     sof[1] = (unsigned char)(height >> 8);
     sof[2] = (unsigned char)(height & 0xFF);
@@ -2556,7 +2559,11 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     sof[4] = (unsigned char)(width & 0xFF);
     sof[5] = (unsigned char)num_components;
     for (int c = 0; c < num_components; c++) {
-      sof[6 + c * 3] = (num_components == 3) ? rgb_ids[c] : (unsigned char)1;
+      // B.2.2: the identifiers must be distinct, since a scan header selects
+      // components by identifier.  Three components carry 'R', 'G', 'B' to say
+      // they are RGB (see above); any other count numbers them from 1.
+      sof[6 + c * 3] =
+          (num_components == 3) ? rgb_ids[c] : (unsigned char)(c + 1);
       sof[7 + c * 3] = 0x11; // H = V = 1
       sof[8 + c * 3] = 0x00; // no quantisation table
     }
@@ -2590,29 +2597,38 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     }
     n += written;
   }
-  else {
-    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DHT, &n);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    r = jpeg_write_u16(stream, (uint16_t)(2 + dht_len), &n);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    r = gimg_stream_write(stream, dht, dht_len, &written);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    n += written;
-  }
+  // The Huffman tables are per scan now and are written with them below; an
+  // arithmetic frame's DAC is written once, above, because Annex D's
+  // conditioning does not vary between scans here.
 
   r = jpeg_write_dri(stream, restart_interval, &n);
   if (r != GIMG_OK) {
     return r;
   }
 
-  {
-    uint16_t sos_len = (uint16_t)(6 + 2 * num_components);
+  // One interleaved scan for a frame of up to four components, one scan per
+  // component beyond that (B.2.3 Table B.3 caps Ns at 4).  Each scan's own
+  // Huffman table is written before it; B.2.4.2 lets a table at the same
+  // destination stand until redefined, which is what makes that legal.
+  for (unsigned si = 0; si < num_scans; si++) {
+    const gimg_jpeg_lossless_scan_t * sc = &scans[si];
+    if (!arithmetic && sc->dht && sc->dht_len > 0) {
+      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DHT, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = jpeg_write_u16(stream, (uint16_t)(2 + sc->dht_len), &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = gimg_stream_write(stream, sc->dht, sc->dht_len, &written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += written;
+    }
+    int ns = (sc->component == 0xFFu) ? num_components : 1;
+    uint16_t sos_len = (uint16_t)(6 + 2 * ns);
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
     if (r != GIMG_OK) {
       return r;
@@ -2621,14 +2637,17 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    unsigned char sos[12];
-    static const unsigned char rgb_ids[3] = {'R', 'G', 'B'};
-    sos[0] = (unsigned char)num_components;
-    for (int c = 0; c < num_components; c++) {
-      sos[1 + c * 2] = (num_components == 3) ? rgb_ids[c] : (unsigned char)1;
+    unsigned char sos[4 + 2 * GIMG_JPEG_MAX_SCAN_COMPONENTS];
+    static const unsigned char rgb_ids2[3] = {'R', 'G', 'B'};
+    memset(sos, 0, sizeof(sos));
+    sos[0] = (unsigned char)ns;
+    for (int c = 0; c < ns; c++) {
+      int idx = (sc->component == 0xFFu) ? c : (int)sc->component;
+      sos[1 + c * 2] = (num_components == 3) ? rgb_ids2[idx]
+                                             : (unsigned char)(idx + 1);
       sos[2 + c * 2] = 0x00; // Td = 0, Ta unused
     }
-    size_t tail = 1 + 2 * (size_t)num_components;
+    size_t tail = 1 + 2 * (size_t)ns;
     sos[tail] = (unsigned char)psv; // Ss: predictor selection (H.1)
     sos[tail + 1] = 0x00;           // Se
     sos[tail + 2] = 0x00;           // Ah = 0, Al = point transform 0
@@ -2637,16 +2656,15 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
       return r;
     }
     n += written;
-  }
-
-  // The encoder has already stuffed its own 0x00 after every 0xFF and written
-  // the restart markers, so the bytes go out as they stand.
-  if (scan_size > 0) {
-    r = gimg_stream_write(stream, scan_data, scan_size, &written);
-    if (r != GIMG_OK) {
-      return r;
+    // The encoder has already stuffed its own 0x00 after every 0xFF and
+    // written the restart markers, so the bytes go out as they stand.
+    if (sc->size > 0) {
+      r = gimg_stream_write(stream, sc->data, sc->size, &written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += written;
     }
-    n += written;
   }
   r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
   if (r != GIMG_OK) {
@@ -3025,7 +3043,9 @@ after_prog_tables:
         gimg_free(alloc, ac_initial_state);
         return r;
       }
-      unsigned char sos[12];
+      // A DC scan names every component, so this is sized for B.2.3's widest
+      // scan rather than for the three-component case it used to assume.
+      unsigned char sos[4 + 2 * GIMG_JPEG_MAX_SCAN_COMPONENTS];
       memset(sos, 0, sizeof(sos));
       sos[0] = (unsigned char)scan_components;
       // Td is the high nibble, Ta the low one (T.81 B.2.3).  A DC scan needs
@@ -3162,10 +3182,13 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   // honour it.
   {
     const GIMG_Pixel_Format * wide_fmt = gimg_raster_format(raster);
+    // Not for a lossless frame or a hierarchical sequence: each of those
+    // writes its own scans and splits them itself where B.2.3 requires it.
     if (wide_fmt &&
         wide_fmt->channel_count > (uint8_t)GIMG_JPEG_MAX_SCAN_COMPONENTS &&
         wide_fmt->channel_model == GIMG_CHANNEL_UNKNOWN &&
-        !(options && options->jpeg_progressive)) {
+        !(options && options->jpeg_progressive) && lossless_psv == 0 &&
+        hier_levels == 0) {
       non_interleaved = 1;
     }
   }
@@ -3317,8 +3340,11 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   // the fallback below does not write a second one.
   int adobe_marker_written = 0;
   int precision = 8;
-  unsigned char * lossless_dht = NULL;
-  size_t lossless_dht_len = 0;
+  // T.81 Annex H: one interleaved scan, or one per component when the frame is
+  // wider than B.2.3 lets a scan name.
+  gimg_jpeg_lossless_scan_t lossless_scans[GIMG_JPEG_MAX_COMPONENTS];
+  unsigned lossless_num_scans = 0;
+  memset(lossless_scans, 0, sizeof(lossless_scans));
   // T.81 Annex J: a pyramid of frames rather than one.  Built here, before the
   // markers are written, because each frame depends on the reconstruction of
   // the one before it and they cannot be produced as they are emitted.
@@ -3367,8 +3393,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
     r = gimg_jpeg_encode_lossless(alloc, raster, lossless_psv, restart_interval,
-        arithmetic, &scan_data, &scan_size, &lossless_dht, &lossless_dht_len,
-        &width, &height, &num_components, &precision);
+        arithmetic, lossless_scans, &lossless_num_scans, &width, &height,
+        &num_components, &precision);
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -3409,12 +3435,14 @@ have_scan:
       return GIMG_ERR_OOM;
     }
   }
-  else if (hier_levels == 0) {
+  else if (hier_levels == 0 && lossless_psv == 0) {
     // A zero-byte arithmetic scan is legitimate; see jpeg_raster_to_scan_data.
     if (!scan_data && !(arithmetic && scan_size == 0)) {
       return GIMG_ERR_OOM;
     }
   }
+  // The lossless path keeps its scans in lossless_scans and frees them itself;
+  // scan_data is NULL there and there is nothing for this to own.
   void * to_free = (use_progressive_body || non_interleaved)
       ? (void *)coef_buffer
       : (void *)scan_data;
@@ -4072,9 +4100,12 @@ have_scan:
   }
   else if (lossless_psv != 0) {
     r = jpeg_write_image_body_lossless(stream, width, height, num_components,
-        precision, lossless_psv, arithmetic, lossless_dht, lossless_dht_len,
-        scan_data, scan_size, restart_interval, &report->bytes_written);
-    gimg_free(alloc, lossless_dht);
+        precision, lossless_psv, arithmetic, lossless_scans,
+        lossless_num_scans, restart_interval, &report->bytes_written);
+    for (unsigned si = 0; si < lossless_num_scans; si++) {
+      gimg_free(alloc, lossless_scans[si].data);
+      gimg_free(alloc, lossless_scans[si].dht);
+    }
     gimg_free(alloc, to_free);
   }
   else {

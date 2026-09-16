@@ -473,7 +473,11 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   // Undo the point transform (H.1.2) and widen to the raster's depth.
   int out_bits = (precision <= 8) ? 8 : 16;
   int sample_bits = precision; // after the point transform is undone
+  // T.81 Annex H has no colour concept of its own and B.2.2 counts components
+  // from 1 to 255, so a lossless frame of four or of forty is as legal as one
+  // of three.  Four-component lossless used to be refused outright.
   const GIMG_Pixel_Format * fmt;
+  GIMG_Pixel_Format fmt_n;
   if (num_comp == 1) {
     fmt = (out_bits == 8) ? &GIMG_PIXEL_GRAY8 : &GIMG_PIXEL_GRAY16;
   }
@@ -481,9 +485,18 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
     fmt = (out_bits == 8) ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_RGBA16;
   }
   else {
-    r = GIMG_ERR_UNSUPPORTED; // CMYK lossless is not handled here
-    goto fail;
+    r = gimg_pixel_format_multichannel(
+        (uint8_t)num_comp, (uint8_t)out_bits, &fmt_n);
+    if (r != GIMG_OK) {
+      goto fail;
+    }
+    fmt = &fmt_n;
   }
+  // Three components go into an RGBA raster with an opaque alpha added; every
+  // other count goes out as it came in, one channel per component.
+  const int packed_rgba = (num_comp == 3);
+  const size_t out_channels =
+      packed_rgba ? 4u : (size_t)num_comp;
   r = gimg_raster_create_with_allocator(
       alloc, width, height, fmt, GIMG_RASTER_OWNED, NULL, 0, out_raster);
   if (r != GIMG_OK) {
@@ -518,7 +531,8 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
     }
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
-        uint32_t v[3] = {0, 0, 0};
+        uint32_t v[GIMG_JPEG_MAX_COMPONENTS];
+        memset(v, 0, sizeof(v));
         for (uint8_t c = 0; c < num_comp; c++) {
           uint32_t sv;
           if (c > 0 && num_comp == 3 && !frame_is_rgb) {
@@ -557,27 +571,21 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
         }
         if (out_bits == 8) {
           unsigned char * p = (unsigned char *)pixels + (size_t)y * stride;
-          if (num_comp == 1) {
-            p[x] = (unsigned char)v[0];
+          for (uint8_t c = 0; c < num_comp; c++) {
+            p[(size_t)x * out_channels + c] = (unsigned char)v[c];
           }
-          else {
-            p[x * 4 + 0] = (unsigned char)v[0];
-            p[x * 4 + 1] = (unsigned char)v[1];
-            p[x * 4 + 2] = (unsigned char)v[2];
-            p[x * 4 + 3] = 255;
+          if (packed_rgba) {
+            p[(size_t)x * out_channels + 3] = 255;
           }
         }
         else {
           uint16_t * p =
               (uint16_t *)((unsigned char *)pixels + (size_t)y * stride);
-          if (num_comp == 1) {
-            p[x] = (uint16_t)v[0];
+          for (uint8_t c = 0; c < num_comp; c++) {
+            p[(size_t)x * out_channels + c] = (uint16_t)v[c];
           }
-          else {
-            p[x * 4 + 0] = (uint16_t)v[0];
-            p[x * 4 + 1] = (uint16_t)v[1];
-            p[x * 4 + 2] = (uint16_t)v[2];
-            p[x * 4 + 3] = 65535;
+          if (packed_rgba) {
+            p[(size_t)x * out_channels + 3] = 65535;
           }
         }
       }
@@ -711,17 +719,15 @@ static GIMG_Result jpeg_lossless_entropy_encode(const GIMG_Allocator * alloc,
 
 GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int psv, uint16_t restart_interval,
-    int arithmetic, unsigned char ** out_scan_data, size_t * out_scan_size,
-    unsigned char ** out_dht, size_t * out_dht_len, uint32_t * out_width,
-    uint32_t * out_height, int * out_num_components, int * out_precision) {
-  if (!alloc || !raster || !out_scan_data || !out_scan_size || !out_dht ||
-      !out_dht_len) {
+    int arithmetic, gimg_jpeg_lossless_scan_t * out_scans,
+    unsigned * out_num_scans, uint32_t * out_width, uint32_t * out_height,
+    int * out_num_components, int * out_precision) {
+  if (!alloc || !raster || !out_scans || !out_num_scans) {
     return GIMG_ERR_INTERNAL;
   }
-  *out_scan_data = NULL;
-  *out_scan_size = 0;
-  *out_dht = NULL;
-  *out_dht_len = 0;
+  memset(out_scans, 0,
+      sizeof(*out_scans) * (size_t)GIMG_JPEG_MAX_COMPONENTS);
+  *out_num_scans = 0;
 
   if (psv < 1 || psv > 7) {
     return GIMG_ERR_UNSUPPORTED;
@@ -737,17 +743,33 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
   // lossless frame, so there is no need to convert anything.
   int precision = (int)fmt->bits_per_channel[0];
   int channels = (int)fmt->channel_count;
-  int num_comp = (fmt->channel_model == GIMG_CHANNEL_GRAY) ? 1 : 3;
+  // T.81 Annex H has no colour concept and B.2.2 counts components from 1 to
+  // 255.  A three-channel raster is colour and goes out as RGB (see below); an
+  // RGBA one drops its alpha, because a JPEG frame has no alpha to put it in;
+  // anything else is written channel for channel.
+  int num_comp;
+  if (fmt->channel_model == GIMG_CHANNEL_GRAY) {
+    num_comp = 1;
+  }
+  else if (fmt->channel_model == GIMG_CHANNEL_RGB ||
+      fmt->channel_model == GIMG_CHANNEL_RGBA) {
+    num_comp = 3;
+  }
+  else if (fmt->channel_model == GIMG_CHANNEL_CMYK ||
+      fmt->channel_model == GIMG_CHANNEL_UNKNOWN) {
+    num_comp = channels;
+  }
+  else {
+    return GIMG_ERR_UNSUPPORTED;
+  }
   if (precision != 8 && precision != 12 && precision != 16) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (num_comp < 1 || num_comp > (int)GIMG_JPEG_MAX_COMPONENTS) {
     return GIMG_ERR_UNSUPPORTED;
   }
   if (num_comp == 3 && channels < 3) {
     return GIMG_ERR_UNSUPPORTED;
-  }
-  if (fmt->channel_model != GIMG_CHANNEL_GRAY &&
-      fmt->channel_model != GIMG_CHANNEL_RGB &&
-      fmt->channel_model != GIMG_CHANNEL_RGBA) {
-    return GIMG_ERR_UNSUPPORTED; // CMYK lossless is not handled here
   }
 
   // The samples become one signed plane per component and the prediction walk
@@ -794,9 +816,33 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
       }
     }
   }
-  GIMG_Result pr = gimg_jpeg_encode_lossless_planes(alloc, plane_ptr,
-      plane_stride, width, height, num_comp, precision, psv, restart_interval,
-      arithmetic, out_scan_data, out_scan_size, out_dht, out_dht_len);
+  // T.81 B.2.3 Table B.3 caps Ns at 4 whatever Nf is, so a frame of more than
+  // four components has to be written as several scans (A.2.3) - here one per
+  // component, each with the tables its own differences generated.  B.2.4.2
+  // lets a DHT at the same destination stand until redefined, which is what
+  // makes a table per scan legal.
+  GIMG_Result pr;
+  if (num_comp > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS) {
+    pr = GIMG_OK;
+    for (int c = 0; c < num_comp && pr == GIMG_OK; c++) {
+      const int32_t * one = plane_ptr[c];
+      size_t one_stride = plane_stride[c];
+      pr = gimg_jpeg_encode_lossless_planes(alloc, &one, &one_stride, width,
+          height, 1, precision, psv, restart_interval, arithmetic,
+          &out_scans[c].data, &out_scans[c].size, &out_scans[c].dht,
+          &out_scans[c].dht_len);
+      out_scans[c].component = (uint8_t)c;
+    }
+    *out_num_scans = (unsigned)num_comp;
+  }
+  else {
+    pr = gimg_jpeg_encode_lossless_planes(alloc, plane_ptr, plane_stride, width,
+        height, num_comp, precision, psv, restart_interval, arithmetic,
+        &out_scans[0].data, &out_scans[0].size, &out_scans[0].dht,
+        &out_scans[0].dht_len);
+    out_scans[0].component = 0xFFu; // every component, interleaved
+    *out_num_scans = 1u;
+  }
   for (int c = 0; c < num_comp; c++) {
     gimg_free(alloc, plane_mem[c]);
   }

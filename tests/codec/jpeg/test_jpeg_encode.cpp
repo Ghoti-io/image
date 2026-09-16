@@ -1186,6 +1186,149 @@ TEST(JpegEncode, SmallRestartIntervalsChangeNothingButWhereTheCoderResets) {
   }
 }
 
+// T.81 Annex H has no colour concept of its own and B.2.2 counts components
+// from 1 to 255, so a lossless frame of four is as legal as one of three and a
+// lossless CMYK file is an ordinary thing in prepress.  This codec refused
+// anything but one or three, on both sides: "CMYK lossless is not handled
+// here".
+//
+// Lossless is a claim about the pixels, so the test is equality and needs no
+// oracle.  B.2.3 Table B.3 still caps Ns at 4, so a frame wider than that is
+// written as one scan per component, each with the Huffman table its own
+// differences generated - which is legal because B.2.4.2 lets a table at the
+// same destination stand until redefined.
+TEST(JpegEncode, LosslessFramesOfAnyComponentCountAreExact) {
+  const int counts[] = {1, 2, 3, 4, 5, 8, 16};
+  const uint32_t w = 29, h = 19;
+  for (int n : counts) {
+    for (int bits : {8, 16}) {
+      for (int psv : {1, 4, 7}) {
+        for (int arithmetic = 0; arithmetic <= 1; arithmetic++) {
+          SCOPED_TRACE("channels " + std::to_string(n) + ", bits " +
+              std::to_string(bits) + ", predictor " + std::to_string(psv) +
+              ", arithmetic " + std::to_string(arithmetic));
+          GIMG_Pixel_Format fmt;
+          if (n == 4 && bits == 8) {
+            fmt = GIMG_PIXEL_CMYK8;
+          }
+          else if (n == 4) {
+            fmt = GIMG_PIXEL_CMYK16;
+          }
+          else {
+            ASSERT_EQ(gimg_pixel_format_multichannel(
+                          (uint8_t)n, (uint8_t)bits, &fmt),
+                GIMG_OK);
+          }
+          GIMG_Doc * doc = nullptr;
+          ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+          GIMG_Raster * raster = nullptr;
+          ASSERT_EQ(gimg_raster_create(
+                        w, h, &fmt, GIMG_RASTER_OWNED, NULL, 0, &raster),
+              GIMG_OK);
+          unsigned char * p8 = (unsigned char *)gimg_raster_pixels(raster);
+          uint16_t * p16 = (uint16_t *)p8;
+          size_t st = gimg_raster_stride_bytes(raster);
+          size_t st16 = st / sizeof(uint16_t);
+          for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+              for (int c = 0; c < n; c++) {
+                unsigned v = x * (7u + (unsigned)c * 13u) +
+                    y * (3u + (unsigned)c * 29u) + (unsigned)c * 41u;
+                if (bits == 8) {
+                  p8[y * st + (size_t)x * (size_t)n + (size_t)c] =
+                      (unsigned char)(v & 0xFFu);
+                }
+                else {
+                  p16[y * st16 + (size_t)x * (size_t)n + (size_t)c] =
+                      (uint16_t)(v & 0xFFFFu);
+                }
+              }
+            }
+          }
+          gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+          GIMG_Stream * os = nullptr;
+          ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+          GIMG_Save_Options so = {};
+          so.metadata_policy = GIMG_META_PRESERVE_ALL;
+          so.jpeg_lossless_predictor = (uint8_t)psv;
+          so.jpeg_arithmetic = (uint8_t)arithmetic;
+          GIMG_Save_Report rep = {};
+          ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_OK)
+              << "a lossless frame of " << n << " components is legal";
+          const void * buf = nullptr;
+          size_t bn = 0;
+          gimg_stream_output_buffer(os, &buf, &bn);
+          std::vector<uint8_t> written(
+              (const uint8_t *)buf, (const uint8_t *)buf + bn);
+
+          // No scan may name more than four components, whatever Nf is.
+          size_t i = 2;
+          int widest_ns = 0;
+          while (i + 4 <= written.size() && written[i] == 0xFF) {
+            uint8_t m = written[i + 1];
+            if (m == 0xD9) {
+              break;
+            }
+            size_t len = (size_t)((written[i + 2] << 8) | written[i + 3]);
+            if (m == 0xDA && written[i + 4] > widest_ns) {
+              widest_ns = written[i + 4];
+            }
+            i += 2 + len;
+            if (m == 0xDA) {
+              size_t j = i;
+              while (j + 1 < written.size()) {
+                if (written[j] == 0xFF && written[j + 1] != 0 &&
+                    !(written[j + 1] >= 0xD0 && written[j + 1] <= 0xD7)) {
+                  break;
+                }
+                j++;
+              }
+              i = j;
+            }
+          }
+          EXPECT_LE(widest_ns, 4) << "T.81 B.2.3 Table B.3 caps Ns at 4";
+
+          DocStreamGuard in;
+          ASSERT_EQ(gimg_stream_create_memory(written.data(), written.size(),
+                        &in.s),
+              GIMG_OK);
+          ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+          RasterGuard got;
+          ASSERT_EQ(
+              gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r),
+              GIMG_OK);
+          ASSERT_NE(got.r, nullptr);
+          const GIMG_Pixel_Format * gf = gimg_raster_format(got.r);
+          int oc = (int)gf->channel_count;
+          int ob = (int)gf->bits_per_channel[0];
+          const unsigned char * q8 =
+              (const unsigned char *)gimg_raster_pixels(got.r);
+          const uint16_t * q16 = (const uint16_t *)q8;
+          size_t gs = gimg_raster_stride_bytes(got.r);
+          size_t gs16 = gs / sizeof(uint16_t);
+          for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+              for (int c = 0; c < n && c < oc; c++) {
+                long want = (bits == 8)
+                    ? (long)p8[y * st + (size_t)x * (size_t)n + (size_t)c]
+                    : (long)p16[y * st16 + (size_t)x * (size_t)n + (size_t)c];
+                long gotv = (ob == 8)
+                    ? (long)q8[y * gs + (size_t)x * (size_t)oc + (size_t)c]
+                    : (long)q16[y * gs16 + (size_t)x * (size_t)oc + (size_t)c];
+                ASSERT_EQ(gotv, want)
+                    << "lossless must be lossless: pixel (" << x << "," << y
+                    << ") channel " << c;
+              }
+            }
+          }
+          gimg_doc_destroy(doc);
+          gimg_stream_destroy(os);
+        }
+      }
+    }
+  }
+}
+
 // A twelve-bit four-component frame decodes to GIMG_PIXEL_CMYK16, so it has to
 // be writable from one: a picture that loads and cannot be saved back is the
 // same gap this work set out to close, and adding the decode would otherwise
