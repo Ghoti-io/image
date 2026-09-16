@@ -627,9 +627,16 @@ TEST_LD_PATH := $(APP_DIR):$(LIB_INSTALL_PATH)/$(SUITE)
 check-symbols: ## Fail if any exported symbol lacks the version namespace
 check-symbols: $(APP_DIR)/$(TARGET)
 ifeq ($(OS_NAME), Linux)
+# mangle_path is gcov's, not ours: a --coverage build links it into the library
+# and it is the only symbol libgcov exports whose name does not begin with an
+# underscore, so it is the only one the '^_' filter below misses. Without this
+# line `make coverage` fails here - after the instrumented build and before the
+# clean that would undo it - leaving instrumented objects that a later plain
+# `make` silently links.
 	@leaked=$$(nm -D --defined-only $(APP_DIR)/$(TARGET) \
 		| awk '$$2 ~ /^[TDBR]$$/ {print $$3}' \
-		| grep -v '^$(LIBVER_SYMBOL)_' | grep -v '^_' || true); \
+		| grep -v '^$(LIBVER_SYMBOL)_' | grep -v '^_' \
+		| grep -v '^mangle_path$$' || true); \
 	if [ -n "$$leaked" ]; then \
 		printf "\033[0;31m\n### Exported symbols missing the $(LIBVER_SYMBOL)_ namespace ###\033[0m\n" >&2; \
 		printf "%s\n" "$$leaked" >&2; \
