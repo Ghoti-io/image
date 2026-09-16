@@ -1075,6 +1075,106 @@ TEST(JpegEncode, FourComponentFrameAlwaysCarriesItsAdobeMarker) {
   }
 }
 
+// A twelve-bit four-component frame decodes to GIMG_PIXEL_CMYK16, so it has to
+// be writable from one: a picture that loads and cannot be saved back is the
+// same gap this work set out to close, and adding the decode would otherwise
+// have opened it again one precision along.  The same goes for any other
+// component count, since T.81 Table B.2 and B.2.2 are independent.
+//
+// At quality 100 with no subsampling the DCT rounding is all that is left, and
+// on samples this smooth it is nothing: the round trip is exact, which is a
+// stronger statement than a tolerance and needs no oracle.
+TEST(JpegEncode, TwelveBitFramesOfAnyComponentCount) {
+  const int counts[] = {1, 3, 4, 5, 8};
+  for (int n : counts) {
+    for (int progressive = 0; progressive <= 1; progressive++) {
+      SCOPED_TRACE(
+          "channels " + std::to_string(n) + ", progressive " +
+          std::to_string(progressive));
+      GIMG_Pixel_Format fmt;
+      if (n == 4) {
+        fmt = GIMG_PIXEL_CMYK16;
+      }
+      else {
+        ASSERT_EQ(gimg_pixel_format_multichannel((uint8_t)n, 16, &fmt),
+            GIMG_OK);
+      }
+      GIMG_Doc * doc = nullptr;
+      ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+      GIMG_Raster * raster = nullptr;
+      ASSERT_EQ(gimg_raster_create(
+                    33, 17, &fmt, GIMG_RASTER_OWNED, NULL, 0, &raster),
+          GIMG_OK);
+      uint16_t * px = (uint16_t *)gimg_raster_pixels(raster);
+      size_t st = gimg_raster_stride_bytes(raster) / sizeof(uint16_t);
+      for (uint32_t y = 0; y < 17u; y++) {
+        for (uint32_t x = 0; x < 33u; x++) {
+          for (int c = 0; c < n; c++) {
+            int v = (int)((x * 3u + y * 5u) * 8u) + (c * 37) % 512 + 256;
+            if (v > 4095) {
+              v = 4095;
+            }
+            // Twelve bits left-justified into sixteen, as the decoder returns
+            // them (gimg_bitdepth_12_to_16).
+            px[y * st + (size_t)x * (size_t)n + (size_t)c] =
+                (uint16_t)((v << 4) | (v >> 8));
+          }
+        }
+      }
+      gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+      GIMG_Stream * os = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+      GIMG_Save_Options so = {};
+      so.quality = 100;
+      so.jpeg_precision = 12;
+      so.jpeg_progressive = (uint8_t)progressive;
+      GIMG_Save_Report rep = {};
+      ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_OK)
+          << "a twelve-bit frame of " << n << " components is legal";
+      const void * buf = nullptr;
+      size_t bn = 0;
+      gimg_stream_output_buffer(os, &buf, &bn);
+      std::vector<uint8_t> written(
+          (const uint8_t *)buf, (const uint8_t *)buf + bn);
+
+      DocStreamGuard in;
+      ASSERT_EQ(gimg_stream_create_memory(written.data(), written.size(),
+                    &in.s),
+          GIMG_OK);
+      ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+      RasterGuard got;
+      ASSERT_EQ(
+          gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+      ASSERT_NE(got.r, nullptr);
+      const GIMG_Pixel_Format * gf = gimg_raster_format(got.r);
+      EXPECT_EQ((int)gf->bits_per_channel[0], 16)
+          << "a twelve-bit frame decodes to sixteen, left-justified";
+      const uint16_t * gp = (const uint16_t *)gimg_raster_pixels(got.r);
+      size_t gs = gimg_raster_stride_bytes(got.r) / sizeof(uint16_t);
+      int oc = (int)gf->channel_count;
+      int worst = 0;
+      for (uint32_t y = 0; y < 17u; y++) {
+        for (uint32_t x = 0; x < 33u; x++) {
+          for (int c = 0; c < n && c < oc; c++) {
+            int want = (int)px[y * st + (size_t)x * (size_t)n + (size_t)c];
+            int d = (int)gp[y * gs + (size_t)x * (size_t)oc + (size_t)c] - want;
+            if (d < 0) {
+              d = -d;
+            }
+            if (d > worst) {
+              worst = d;
+            }
+          }
+        }
+      }
+      EXPECT_EQ(worst, 0) << "quality 100, 4:4:4, smooth samples: nothing to "
+                             "lose, so nothing may be lost";
+      gimg_doc_destroy(doc);
+      gimg_stream_destroy(os);
+    }
+  }
+}
+
 // The other half of T.81 B.4: writing the pair.  A tables stream and an
 // abbreviated image saved with the same options belong together, and reading
 // them together must give exactly what the complete file gives - not nearly,

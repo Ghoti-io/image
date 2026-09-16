@@ -326,12 +326,45 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     size_t * out_scan_size, int16_t ** out_coef_buffer, size_t * out_total_blocks,
     uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
-    uint32_t * out_height, int * out_num_components, uint8_t out_h_samp[3],
-    uint8_t out_v_samp[3]) {
+    uint32_t * out_height, int * out_num_components,
+    uint8_t out_h_samp[GIMG_JPEG_MAX_COMPONENTS],
+    uint8_t out_v_samp[GIMG_JPEG_MAX_COMPONENTS],
+    uint8_t out_tbl_sel[GIMG_JPEG_MAX_COMPONENTS]) {
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
-  int num_components = (fmt->channel_model == GIMG_CHANNEL_GRAY) ? 1 : 3;
+  // T.81 B.2.2 counts components from 1 to 255 and Table B.2 allows P = 12 in
+  // a DCT frame; the two are independent, so four components and more are as
+  // legal here as at eight bits.  Only the three-component case is colour, and
+  // only it converts.
+  const int is_colour = (fmt->channel_model == GIMG_CHANNEL_RGB ||
+      fmt->channel_model == GIMG_CHANNEL_RGBA);
+  int num_components;
+  if (fmt->channel_model == GIMG_CHANNEL_GRAY) {
+    num_components = 1;
+  }
+  else if (is_colour) {
+    num_components = 3;
+  }
+  else {
+    num_components = (int)fmt->channel_count;
+  }
+  if (num_components < 1 || num_components > (int)GIMG_JPEG_MAX_COMPONENTS) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (num_components > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS && !progressive) {
+    // B.2.3 caps Ns at 4, so such a frame has to be split; the twelve-bit path
+    // writes one interleaved scan, so it cannot carry one.
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (out_tbl_sel) {
+    for (int c = 0; c < num_components; c++) {
+      // No component of a frame with no colour convention is chrominance, so
+      // none of them wants the chrominance tables (see the eight-bit path).
+      out_tbl_sel[c] =
+          is_colour ? (uint8_t)(c == 0 ? 0 : 1) : (uint8_t)0;
+    }
+  }
   size_t comp_size = 0;
   if (!gcu_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
     return GIMG_ERR_LIMIT;
@@ -343,13 +376,29 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   }
   uint16_t * comp_cb = NULL;
   uint16_t * comp_cr = NULL;
-  if (num_components == 3) {
+  // Beyond the third, a component has no name here and no colour step; it is
+  // held in extra[] and handed to the coefficient walk beside the others.
+  uint16_t * extra[GIMG_JPEG_MAX_COMPONENTS];
+  memset(extra, 0, sizeof(extra));
+  if (num_components >= 3) {
     comp_cb = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
     comp_cr = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
     if (!comp_cb || !comp_cr) {
       gimg_free(alloc, comp_y);
       if (comp_cb) {
         gimg_free(alloc, comp_cb);
+      }
+      return GIMG_ERR_OOM;
+    }
+  }
+  for (int c = 3; c < num_components; c++) {
+    extra[c] = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
+    if (!extra[c]) {
+      gimg_free(alloc, comp_y);
+      gimg_free(alloc, comp_cb);
+      gimg_free(alloc, comp_cr);
+      for (int k = 3; k < c; k++) {
+        gimg_free(alloc, extra[k]);
       }
       return GIMG_ERR_OOM;
     }
@@ -372,7 +421,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
       }
     }
   }
-  else {
+  else if (is_colour) {
     int ch_count = (int)fmt->channel_count;
     if (ch_count < 3) {
       ch_count = 3;
@@ -394,14 +443,39 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
       }
     }
   }
-  uint8_t h_samp[3] = {1, 1, 1};
-  uint8_t v_samp[3] = {1, 1, 1};
+  else {
+    // CMYK, or channels with no colour convention: the samples go out as they
+    // came in, as they do at eight bits.
+    for (uint32_t y = 0; y < height; y++) {
+      const uint16_t * row = (const uint16_t *)(pixels + y * stride_bytes);
+      for (uint32_t x = 0; x < width; x++) {
+        for (int c = 0; c < num_components; c++) {
+          uint16_t v = row[x * (size_t)num_components + (size_t)c];
+          if (v > 4095u) {
+            v = 4095u;
+          }
+          uint16_t * dst = (c == 0) ? comp_y
+              : (c == 1)            ? comp_cb
+              : (c == 2)            ? comp_cr
+                                    : extra[c];
+          dst[y * (size_t)width + x] = v;
+        }
+      }
+    }
+  }
+  uint8_t h_samp[GIMG_JPEG_MAX_COMPONENTS];
+  uint8_t v_samp[GIMG_JPEG_MAX_COMPONENTS];
+  for (int c = 0; c < (int)GIMG_JPEG_MAX_COMPONENTS; c++) {
+    h_samp[c] = 1;
+    v_samp[c] = 1;
+  }
   size_t stride0 = (size_t)width;
   size_t stride1 = (size_t)width;
   size_t stride2 = (size_t)width;
   uint16_t * use_cb = comp_cb;
   uint16_t * use_cr = comp_cr;
-  if (num_components == 3 && chroma_subsampling != CHROMA_444) {
+  if (is_colour && num_components == 3 &&
+      chroma_subsampling != CHROMA_444) {
     if (chroma_subsampling == CHROMA_420) {
       uint32_t mcu_per_row = (width + 15u) / 16u;
       uint32_t cw = 8u * mcu_per_row;
@@ -609,12 +683,25 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     return GIMG_ERR_OOM;
   }
   size_t out_blocks = 0;
-  const uint16_t * comps12[GIMG_JPEG_MAX_COMPONENTS] = {
-      comp_y, use_cb, use_cr};
-  size_t strides12[GIMG_JPEG_MAX_COMPONENTS] = {stride0, stride1, stride2};
+  const uint16_t * comps12[GIMG_JPEG_MAX_COMPONENTS];
+  size_t strides12[GIMG_JPEG_MAX_COMPONENTS];
+  for (int c = 0; c < (int)GIMG_JPEG_MAX_COMPONENTS; c++) {
+    comps12[c] = (c == 0) ? comp_y
+        : (c == 1)        ? use_cb
+        : (c == 2)        ? use_cr
+                          : extra[c];
+    strides12[c] = (c == 0) ? stride0
+        : (c == 1)          ? stride1
+        : (c == 2)          ? stride2
+                            : (size_t)width;
+  }
   GIMG_Result r = gimg_jpeg_progressive_fill_coef_buffer_12bit(width, height,
-      num_components, comps12, strides12, h_ptr, v_ptr, NULL, quant_luma,
-      quant_chroma, coef_buf, &out_blocks);
+      num_components, comps12, strides12, h_ptr, v_ptr, out_tbl_sel,
+      quant_luma, quant_chroma, coef_buf, &out_blocks);
+  for (int c = 3; c < num_components; c++) {
+    gimg_free(alloc, extra[c]);
+    extra[c] = NULL;
+  }
   gimg_free(alloc, comp_y);
   if (use_cb != comp_cb) {
     gimg_free(alloc, use_cb);
@@ -622,12 +709,11 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   if (use_cr != comp_cr) {
     gimg_free(alloc, use_cr);
   }
-  if (num_components == 3 && comp_cb) {
-    gimg_free(alloc, comp_cb);
-  }
-  if (num_components == 3 && comp_cr) {
-    gimg_free(alloc, comp_cr);
-  }
+  // These are allocated for any frame of three or more components, not only
+  // for a three-component one; freeing them only at three leaked a plane pair
+  // for every wider frame.
+  gimg_free(alloc, comp_cb);
+  gimg_free(alloc, comp_cr);
   if (r != GIMG_OK) {
     gimg_free(alloc, coef_buf);
     return r;
@@ -649,15 +735,15 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     jpeg_arith_cond_t cond;
     jpeg_arith_cond_defaults(&cond);
     r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
-        num_components, coef_buf, out_blocks, h_samp, v_samp, NULL, &cond,
-        alloc, restart_interval, 0, &scan_data, &scan_size);
+        num_components, coef_buf, out_blocks, h_samp, v_samp, out_tbl_sel,
+        &cond, alloc, restart_interval, 0, &scan_data, &scan_size);
   }
   else {
     // T.81 Annex F: baseline sequential uses DC table for DC then AC table for
     // AC 1..63 per block.
     r = gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(width, height,
-        num_components, coef_buf, out_blocks, h_samp, v_samp, NULL, alloc,
-        restart_interval, &scan_data, &scan_size);
+        num_components, coef_buf, out_blocks, h_samp, v_samp, out_tbl_sel,
+        alloc, restart_interval, &scan_data, &scan_size);
   }
   gimg_free(alloc, coef_buf);
   if (r != GIMG_OK || (!scan_data && !(arithmetic && scan_size == 0))) {
@@ -803,17 +889,37 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     num_components = 3;
     precision = 12;
   }
+  else if ((fmt->channel_model == GIMG_CHANNEL_CMYK ||
+               fmt->channel_model == GIMG_CHANNEL_UNKNOWN) &&
+      fmt->channel_count >= 1 && fmt->bits_per_channel[0] == 12 &&
+      fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
+    // T.81 Table B.2 allows P = 12 in a DCT frame and B.2.2 allows Nf from 1
+    // to 255; the two are independent, so this is as legal as the eight-bit
+    // form and is what a twelve-bit CMYK file loads and saves back through.
+    num_components = (int)fmt->channel_count;
+    precision = 12;
+  }
   else {
     return GIMG_ERR_UNSUPPORTED;
   }
   if (precision == 12) {
     *out_precision = 12;
+    // A four-component frame needs its Adobe marker at either precision; see
+    // the note below.
+    if (out_adobe_transform && num_components == 4 &&
+        fmt->channel_model == GIMG_CHANNEL_CMYK) {
+      *out_adobe_transform = (cmyk_transform == 2u) ? 2 : 0;
+    }
+    else if (out_adobe_transform && num_components == 3 &&
+        fmt->channel_model == GIMG_CHANNEL_UNKNOWN) {
+      *out_adobe_transform = 0; // see below: three components must say so
+    }
     return jpeg_raster_to_scan_data_12bit(alloc, raster, quality,
         chroma_subsampling, progressive, arithmetic, restart_interval,
         out_scan_data,
         out_scan_size, out_coef_buffer, out_total_blocks, quant_luma,
         quant_chroma, out_width, out_height, out_num_components, out_h_samp,
-        out_v_samp);
+        out_v_samp, out_tbl_sel);
   }
   // A four-component frame is CMYK unless the caller asked for the YCCK
   // transform; either way it needs an Adobe APP14 marker, because that marker
@@ -822,6 +928,16 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   int adobe_transform = -1;
   if (num_components == 4 && fmt->channel_model == GIMG_CHANNEL_CMYK) {
     adobe_transform = (cmyk_transform == 2u) ? 2 : 0;
+  }
+  else if (num_components == 3 &&
+      fmt->channel_model == GIMG_CHANNEL_UNKNOWN) {
+    // Three components with no colour meaning still go out unchanged, and
+    // three components is the one count where a decoder will otherwise guess:
+    // RGB and YCbCr are both three, and without a marker the convention is
+    // YCbCr (jdapimin.c, and jpeg_frame_is_rgb here).  An Adobe APP14 with
+    // transform 0 says "not YCbCr", which is how the lossless writer marks the
+    // same thing, and without it such a frame does not survive a round trip.
+    adobe_transform = 0;
   }
 
   // Planes, all owned by this function and all freed through jpeg_planes_free.
@@ -1489,7 +1605,8 @@ static GIMG_Result jpeg_write_dqt_8bit_segment(GIMG_Stream * stream,
 }
 
 static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream,
-    int num_components, const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
+    int num_components, const uint8_t * tbl_sel,
+    const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
@@ -1514,7 +1631,8 @@ static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream,
     return r;
   }
   n += written;
-  if (num_components == 3) {
+  // T.81 B.2.4.1: a table is written because a component names it.
+  if (gimg_jpeg_uses_second_table(tbl_sel, num_components)) {
     unsigned char dqt1[GIMG_JPEG_DQT_16BIT_PAYLOAD];
     dqt1[0] = 0x11; // Pq=1, Tq=1
     for (int z = 0; z < 64; z++) {
@@ -2009,7 +2127,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
   }
   if (precision > 8) {
     r = jpeg_write_dqt_16bit(
-        stream, num_components, quant_luma, quant_chroma, &n);
+        stream, num_components, tbl_sel, quant_luma, quant_chroma, &n);
     if (r != GIMG_OK) {
       return r;
     }
@@ -2567,7 +2685,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
   }
   if (precision > 8) {
     r = jpeg_write_dqt_16bit(
-        stream, num_components, quant_luma, quant_chroma, &n);
+        stream, num_components, tbl_sel, quant_luma, quant_chroma, &n);
     if (r != GIMG_OK) {
       return r;
     }
@@ -3392,8 +3510,14 @@ have_scan:
     // writes none for a CMYK or YCCK file (jcparam.c sets write_JFIF_header
     // for JCS_GRAYSCALE and JCS_YCbCr only), and the Adobe marker below is
     // what carries the colour instead.
+    // JFIF declares three-component data to be YCbCr and says nothing about
+    // any other count, so it is written only for the frames it describes.
+    // adobe_transform >= 0 marks a frame that carries its meaning in an Adobe
+    // marker instead, and the two must not contradict each other: a decoder
+    // that sees JFIF takes it at its word ahead of Adobe.
     int suppress_jfif = (lossless_psv != 0 && num_components == 3) ||
-        num_components == 4 || num_components == 2 || num_components > 4;
+        num_components == 4 || num_components == 2 || num_components > 4 ||
+        adobe_transform >= 0;
     size_t app0_len = 0;
     bool have_app0 = !suppress_jfif &&
         (policy != GIMG_META_DROP_ALL &&

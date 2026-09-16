@@ -48,6 +48,7 @@
 #define gimg_pixel_format_channel_bits GHOTIIO_IMAGE(gimg_pixel_format_channel_bits)
 #define gimg_pixel_format_multichannel GHOTIIO_IMAGE(gimg_pixel_format_multichannel)
 #define GIMG_PIXEL_CMYK8 GHOTIIO_IMAGE(GIMG_PIXEL_CMYK8)
+#define GIMG_PIXEL_CMYK12 GHOTIIO_IMAGE(GIMG_PIXEL_CMYK12)
 #define GIMG_PIXEL_CMYK16 GHOTIIO_IMAGE(GIMG_PIXEL_CMYK16)
 #define GIMG_PIXEL_GRAY12 GHOTIIO_IMAGE(GIMG_PIXEL_GRAY12)
 #define GIMG_PIXEL_GRAY16 GHOTIIO_IMAGE(GIMG_PIXEL_GRAY16)

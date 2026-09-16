@@ -128,8 +128,15 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
 // Bit-depth conversion: same channel model, 8/12/16 bits per channel. Uses
 // library bitdepth sample-level functions (T.81 / codec-agnostic).
 //
+/**
+ * The format with the same channels as @p src at @p bits per channel.
+ *
+ * @p scratch is filled and returned for a channel count with no named format -
+ * anything under GIMG_CHANNEL_UNKNOWN - so the caller owns the storage.
+ */
 static const GIMG_Pixel_Format * format_for_bits(
-    GIMG_Channel_Model model, uint8_t bits) {
+    const GIMG_Pixel_Format * src, uint8_t bits, GIMG_Pixel_Format * scratch) {
+  GIMG_Channel_Model model = src->channel_model;
   if (model == GIMG_CHANNEL_GRAY) {
     if (bits == 8) return &GIMG_PIXEL_GRAY8;
     if (bits == 12) return &GIMG_PIXEL_GRAY12;
@@ -139,6 +146,17 @@ static const GIMG_Pixel_Format * format_for_bits(
     if (bits == 8) return &GIMG_PIXEL_RGBA8;
     if (bits == 12) return &GIMG_PIXEL_RGBA12;
     if (bits == 16) return &GIMG_PIXEL_RGBA16;
+  }
+  if (model == GIMG_CHANNEL_CMYK) {
+    if (bits == 8) return &GIMG_PIXEL_CMYK8;
+    if (bits == 12) return &GIMG_PIXEL_CMYK12;
+    if (bits == 16) return &GIMG_PIXEL_CMYK16;
+  }
+  if (model == GIMG_CHANNEL_UNKNOWN && scratch) {
+    if (gimg_pixel_format_multichannel(src->channel_count, bits, scratch) ==
+        GIMG_OK) {
+      return scratch;
+    }
   }
   return NULL;
 }
@@ -163,11 +181,14 @@ GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
     return GIMG_ERR_UNSUPPORTED;
   }
   if (src_f->channel_model != GIMG_CHANNEL_GRAY &&
-      src_f->channel_model != GIMG_CHANNEL_RGBA) {
+      src_f->channel_model != GIMG_CHANNEL_RGBA &&
+      src_f->channel_model != GIMG_CHANNEL_CMYK &&
+      src_f->channel_model != GIMG_CHANNEL_UNKNOWN) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  const GIMG_Pixel_Format * dst_f = format_for_bits(src_f->channel_model,
-      dst_bits);
+  GIMG_Pixel_Format dst_scratch;
+  const GIMG_Pixel_Format * dst_f =
+      format_for_bits(src_f, dst_bits, &dst_scratch);
   if (!dst_f) {
     return GIMG_ERR_UNSUPPORTED;
   }

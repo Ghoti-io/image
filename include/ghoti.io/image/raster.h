@@ -116,7 +116,8 @@ GIMG_API uint8_t gimg_pixel_format_channel_bits(
  * colour should name GIMG_PIXEL_RGBA8 or its kin instead.
  *
  * @param channel_count 1 to 255.
- * @param bits 8 or 16 (12-bit samples are carried left-justified in 16).
+ * @param bits 8, 12 or 16.  A 12-bit sample occupies a uint16_t and runs
+ *   0..4095; a JPEG frame at P=12 decodes to 16 bits, left-justified.
  * @return GIMG_ERR_UNSUPPORTED for any other count or depth.
  */
 GIMG_API GIMG_Result gimg_pixel_format_multichannel(
@@ -136,6 +137,9 @@ extern const GIMG_Pixel_Format GIMG_PIXEL_GRAY12;
 extern const GIMG_Pixel_Format GIMG_PIXEL_RGBA12;
 /** @brief Canonical CMYK 8-bit per channel (C, M, Y, K interleaved). */
 extern const GIMG_Pixel_Format GIMG_PIXEL_CMYK8;
+
+/** @brief CMYK 12 bits per channel (uint16_t per sample, value 0..4095). */
+extern const GIMG_Pixel_Format GIMG_PIXEL_CMYK12;
 
 /** @brief CMYK 16 bits per channel; carries 12-bit JPEG samples left-justified.
  */

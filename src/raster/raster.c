@@ -89,6 +89,16 @@ static const GIMG_Pixel_Format gimg_pixel_cmyk8 = {
 // frame, and B.2.2 allows Nf=4) decodes to this, left-justified in 16 bits the
 // way GRAY16 and RGBA16 carry their twelve-bit samples.  Without it such a
 // frame had nowhere to go and was refused.
+static const GIMG_Pixel_Format gimg_pixel_cmyk12 = {
+    .channel_model = GIMG_CHANNEL_CMYK,
+    .channel_type = GIMG_CHANNEL_UNORM,
+    .layout = GIMG_LAYOUT_INTERLEAVED,
+    .channel_count = 4,
+    .bits_per_channel = {12, 12, 12, 12, 0, 0, 0, 0},
+    .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    ._reserved = {0},
+};
+
 static const GIMG_Pixel_Format gimg_pixel_cmyk16 = {
     .channel_model = GIMG_CHANNEL_CMYK,
     .channel_type = GIMG_CHANNEL_UNORM,
@@ -106,6 +116,7 @@ GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY16 = gimg_pixel_gray16;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY12 = gimg_pixel_gray12;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA12 = gimg_pixel_rgba12;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK8 = gimg_pixel_cmyk8;
+GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK12 = gimg_pixel_cmyk12;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK16 = gimg_pixel_cmyk16;
 
 GIMG_API uint8_t gimg_pixel_format_channel_bits(
@@ -121,7 +132,8 @@ GIMG_API uint8_t gimg_pixel_format_channel_bits(
 
 GIMG_API GIMG_Result gimg_pixel_format_multichannel(
     uint8_t channel_count, uint8_t bits, GIMG_Pixel_Format * out_format) {
-  if (!out_format || channel_count == 0u || (bits != 8u && bits != 16u)) {
+  if (!out_format || channel_count == 0u ||
+      (bits != 8u && bits != 12u && bits != 16u)) {
     return GIMG_ERR_UNSUPPORTED;
   }
   memset(out_format, 0, sizeof(*out_format));
