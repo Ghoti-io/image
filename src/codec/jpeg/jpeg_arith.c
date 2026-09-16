@@ -503,3 +503,139 @@ GIMG_Result jpeg_arith_restart(
   jpeg_arith_stats_reset(stats);
   return GIMG_OK;
 }
+
+/**
+ * Progressive arithmetic decoding (T.81 G.2).
+ *
+ * The four procedures below are the arithmetic counterparts of the four
+ * Huffman ones in jpeg_block.c, and they map onto the same four cases: the DC
+ * coefficient's first scan and its refinements, and the AC coefficients' first
+ * scan and theirs.
+ *
+ * One difference is worth pointing out, because it removes a whole class of
+ * bookkeeping.  The Huffman progressive coder compresses long stretches of
+ * all-zero blocks into an EOB run spanning many blocks, which the decoder has
+ * to carry between blocks and reset at restarts (G.1.2.3).  The arithmetic
+ * coder has no EOB run at all: each block gets its own end-of-block decision,
+ * and the model learns that those decisions are nearly always the same.  There
+ * is no eobrun state here because there is nothing to keep.
+ */
+
+/** DC coefficient, first scan of a component (T.81 G.2, Figure G.4). */
+GIMG_Result jpeg_arith_decode_block_prog_dc_first(jpeg_arith_decoder_t * d,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
+    uint8_t dc_tbl, int al, int16_t * block) {
+  int16_t tmp[64];
+  memset(tmp, 0, sizeof(tmp));
+  GIMG_Result r = jpeg_arith_decode_dc(d, stats, cond, comp, dc_tbl, tmp);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  // G.1.1.1.2: a first scan sends the point transform of the coefficient, so
+  // the value belongs at bit position Al.
+  block[0] = (int16_t)GIMG_JPEG_LSHIFT(stats->dc_pred[comp], al);
+  return GIMG_OK;
+}
+
+/** DC coefficient, refinement scan (T.81 G.2, Figure G.5). */
+GIMG_Result jpeg_arith_decode_block_prog_dc_refine(
+    jpeg_arith_decoder_t * d, jpeg_arith_stats_t * stats, int al,
+    int16_t * block) {
+  // G.1.2.1: a DC refinement sends one bit of the coefficient and nothing else.
+  // It is coded against the fixed-probability bin, because a refinement bit
+  // carries no bias worth modelling.
+  if (jpeg_arith_decode(d, &stats->fixed)) {
+    block[0] = (int16_t)(block[0] | GIMG_JPEG_LSHIFT(1, al));
+  }
+  return GIMG_OK;
+}
+
+/** AC coefficients, first scan of a band (T.81 G.2, Figure G.6). */
+GIMG_Result jpeg_arith_decode_block_prog_ac_first(jpeg_arith_decoder_t * d,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t ac_tbl,
+    int ss, int se, int al, int16_t * block) {
+  uint8_t * area = stats->ac[ac_tbl];
+  uint8_t kx = cond->ac_k[ac_tbl];
+
+  for (int k = ss; k <= se; k++) {
+    uint8_t * st = area + 3 * (k - 1);
+    if (jpeg_arith_decode(d, st)) {
+      break; // end of block
+    }
+    while (jpeg_arith_decode(d, st + 1) == 0) {
+      st += 3;
+      k++;
+      if (k > se) {
+        return GIMG_ERR_CORRUPT;
+      }
+    }
+    int sign = jpeg_arith_decode(d, &stats->fixed);
+    st += 2;
+    int32_t m = jpeg_arith_decode(d, st);
+    if (m != 0) {
+      if (jpeg_arith_decode(d, st)) {
+        m <<= 1;
+        st = area + (k <= (int)kx ? 189 : 217);
+        while (jpeg_arith_decode(d, st)) {
+          m <<= 1;
+          if (m == 0x8000) {
+            return GIMG_ERR_CORRUPT;
+          }
+          st += 1;
+        }
+      }
+    }
+    int32_t v = jpeg_arith_decode_magnitude_bits(d, st + 14, m);
+    if (sign) {
+      v = -v;
+    }
+    block[k] = (int16_t)GIMG_JPEG_LSHIFT(v, al);
+  }
+  return GIMG_OK;
+}
+
+/** AC coefficients, refinement scan (T.81 G.2, Figure G.7). */
+GIMG_Result jpeg_arith_decode_block_prog_ac_refine(jpeg_arith_decoder_t * d,
+    jpeg_arith_stats_t * stats, uint8_t ac_tbl, int ss, int se, int al,
+    int16_t * block) {
+  uint8_t * area = stats->ac[ac_tbl];
+  int32_t p1 = GIMG_JPEG_LSHIFT(1, al);  // a 1 in the bit being refined
+  int32_t m1 = -GIMG_JPEG_LSHIFT(1, al); // and a -1 there
+
+  // G.1.2.3: the end-of-block decision is only sent for positions beyond the
+  // last coefficient that is already non-zero, because the coefficients before
+  // it must each be refined whether or not the band ends here.
+  int kex = se;
+  for (; kex > 0; kex--) {
+    if (block[kex] != 0) {
+      break;
+    }
+  }
+
+  for (int k = ss; k <= se; k++) {
+    uint8_t * st = area + 3 * (k - 1);
+    if (k > kex && jpeg_arith_decode(d, st)) {
+      break;
+    }
+    for (;;) {
+      if (block[k] != 0) {
+        // Already non-zero: one bit says whether it grows in this pass.
+        if (jpeg_arith_decode(d, st + 2)) {
+          block[k] = (int16_t)(block[k] + (block[k] < 0 ? m1 : p1));
+        }
+        break;
+      }
+      if (jpeg_arith_decode(d, st + 1)) {
+        // Becomes non-zero in this pass; its sign follows, at fixed odds.
+        block[k] = (int16_t)(jpeg_arith_decode(d, &stats->fixed) ? m1 : p1);
+        break;
+      }
+      st += 3;
+      k++;
+      if (k > se) {
+        return GIMG_ERR_CORRUPT;
+      }
+    }
+  }
+  return GIMG_OK;
+}

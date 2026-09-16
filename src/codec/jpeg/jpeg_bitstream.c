@@ -48,6 +48,26 @@ static int jpeg_marker_no_length(unsigned char m) {
 /** Skip marker at current position; current byte must be 0xFF. Skips 0xFF and
  * the marker byte; for markers with length, skips length bytes too. Return 1
  * if we skipped, 0 if next byte is 0x00 or 0xFF (entropy data, do not skip). */
+/**
+ * Forget every bit buffered ahead of the current position.
+ *
+ * A restart marker is a hard resynchronisation point (T.81 B.2.1): the encoder
+ * pads to a byte boundary, emits the marker, and starts the next interval with
+ * a clean slate.  Anything the decoder had read ahead of the marker belongs to
+ * the interval that just ended and must not be handed to the next one.
+ *
+ * The longest-match Huffman decode reads past the end of a codeword and pushes
+ * the surplus bits back for the next call, so those bits were being replayed
+ * after the marker - the first symbol of every interval after the first was
+ * decoded from bits that preceded the marker, and the scan fell apart from
+ * there.  Fixed-length reads leave nothing pushed back, which is why the DC
+ * scans of a progressive file survived this and the AC scans did not.
+ */
+static void jpeg_bitstream_drop_lookahead(gimg_jpeg_bitstream_t * bs) {
+  bs->pushback = -1;
+  bs->pushback_n = 0;
+}
+
 static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
   if (bs->byte_off >= bs->size || bs->data[bs->byte_off] != 0xFF) {
     return 0;
@@ -75,6 +95,7 @@ static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
 #endif
     bs->byte_off += 2; // skip 0xFF and marker byte (RST is on byte boundary)
     bs->bit_off = 0;
+    jpeg_bitstream_drop_lookahead(bs);
     bs->rst_just_skipped = 1;
     return 1;
   }
@@ -127,6 +148,7 @@ static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
 #endif
         bs->byte_off += 2;
         bs->bit_off = 0;
+        jpeg_bitstream_drop_lookahead(bs);
         bs->rst_just_skipped = 1;
       }
       break;
@@ -597,6 +619,7 @@ void jpeg_bitstream_align_skip_rst(gimg_jpeg_bitstream_t * bs) {
   bs->expect_rst = 0;
   bs->byte_off = pos + 2;
   bs->bit_off = 0;
+  jpeg_bitstream_drop_lookahead(bs);
   bs->rst_just_skipped = 1;
 #if GIMG_JPEG_DEBUG_RST_DEC
   (void)fprintf(stderr, "RST_DEC align_skip_rst at byte_off=%zu\n", pos);

@@ -170,6 +170,17 @@ typedef struct {
   uint8_t dc_tbl[GIMG_JPEG_MAX_COMPONENTS];  ///< DC Huffman table ID per comp.
   uint8_t ac_tbl[GIMG_JPEG_MAX_COMPONENTS];  ///< AC Huffman table ID per comp.
   uint8_t ss, se, ah, al; ///< Spectral selection and successive approximation.
+  /**
+   * Restart interval in force for this scan, in MCUs (T.81 B.2.4.4).
+   *
+   * DRI is not a property of the frame: it may appear between scans and change,
+   * and an encoder that measures its restart interval in MCU rows has to change
+   * it, because an interleaved scan and a single-component scan do not have the
+   * same number of MCUs in a row.  libjpeg writes a different DRI before nearly
+   * every scan of a subsampled progressive image for exactly that reason.
+   * Keeping only the frame's latest value made every such file undecodable.
+   */
+  uint16_t restart_interval;
   unsigned char * data;   ///< Concatenated entropy-coded segment data.
   size_t data_size;       ///< Length of data in bytes.
   /** Snapshot of Huffman tables at this SOS (progressive multi-DHT). NULL = use
@@ -257,6 +268,25 @@ GIMG_Result jpeg_arith_decode_block_sequential(jpeg_arith_decoder_t * d,
  * the statistics and predictors (T.81 F.2.4.1). */
 GIMG_Result jpeg_arith_restart(
     jpeg_arith_decoder_t * d, jpeg_arith_stats_t * stats);
+
+/** @name Progressive arithmetic decoding (T.81 G.2).  These are the arithmetic
+ * counterparts of the four progressive procedures in jpeg_block.c.  There is no
+ * EOB run to carry between blocks: the arithmetic coder sends an end-of-block
+ * decision per block rather than a run across blocks (G.1.2.3). */
+/** @{ */
+GIMG_Result jpeg_arith_decode_block_prog_dc_first(jpeg_arith_decoder_t * d,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
+    uint8_t dc_tbl, int al, int16_t * block);
+GIMG_Result jpeg_arith_decode_block_prog_dc_refine(
+    jpeg_arith_decoder_t * d, jpeg_arith_stats_t * stats, int al,
+    int16_t * block);
+GIMG_Result jpeg_arith_decode_block_prog_ac_first(jpeg_arith_decoder_t * d,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t ac_tbl,
+    int ss, int se, int al, int16_t * block);
+GIMG_Result jpeg_arith_decode_block_prog_ac_refine(jpeg_arith_decoder_t * d,
+    jpeg_arith_stats_t * stats, uint8_t ac_tbl, int ss, int se, int al,
+    int16_t * block);
+/** @} */
 /** @} */
 
 /**

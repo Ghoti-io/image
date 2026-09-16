@@ -210,7 +210,8 @@ static GIMG_Result jpeg_decode_baseline_extended(
   int32_t block_q[64];
   int32_t block_idct[64];
 
-  uint16_t restart_interval = state->restart_interval;
+  // The interval in force for this scan, not the frame's latest (B.2.4.4).
+  uint16_t restart_interval = scan0->restart_interval;
   size_t block_counter = 0;
   const int trace_baseline_sync =
       (GIMG_JPEG_TRACE_BASELINE_SYNC)
@@ -670,7 +671,8 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   memset(block_idct, 0, sizeof(block_idct));
 
   // Decode MCU by MCU. At each restart boundary (DRI), reset DC predictors.
-  uint16_t restart_interval = state->restart_interval;
+  // The interval in force for this scan, not the frame's latest (B.2.4.4).
+  uint16_t restart_interval = scan0->restart_interval;
   size_t block_counter_8 = 0;
   const int trace_baseline_sync_8 =
       (GIMG_JPEG_TRACE_BASELINE_SYNC)
@@ -1266,7 +1268,10 @@ static GIMG_Result jpeg_decode_progressive_extended(
 
   for (unsigned scan_idx = 0; scan_idx < state->num_scans; scan_idx++) {
     const gimg_jpeg_scan_t * scan = &state->scans[scan_idx];
-    if (!scan->data || scan->data_size == 0) {
+    // An arithmetic scan may legitimately be empty (T.81 D.2.9); see the
+    // sequential path for why.
+    if (state->is_arithmetic ? (scan->data_size != 0 && !scan->data)
+                             : (!scan->data || scan->data_size == 0)) {
       goto prog_ext_fail;
     }
     int is_dc = (scan->ss == 0 && scan->se == 0);
@@ -1277,6 +1282,10 @@ static GIMG_Result jpeg_decode_progressive_extended(
     memset(ac_tables, 0, sizeof(ac_tables));
     memset(ac_refine_tables, 0, sizeof(ac_refine_tables));
     for (uint8_t c = 0; c < scan->comp_count; c++) {
+      if (state->is_arithmetic) {
+        // SOF10 carries no DHT segments; see the sequential path.
+        break;
+      }
       uint8_t dc_id = scan->dc_tbl[c];
       uint8_t ac_id = scan->ac_tbl[c];
       const unsigned char * dc_src =
@@ -1372,13 +1381,24 @@ static GIMG_Result jpeg_decode_progressive_extended(
 
     gimg_jpeg_bitstream_t bs;
     jpeg_bitstream_init(&bs, scan->data, scan->data_size);
+    // SOF10 is the same progressive process as SOF2 with the arithmetic coder
+    // of Annex D.  Each scan starts its statistics afresh (T.81 F.2.4.1): the
+    // model is per scan, not per frame, because successive scans of the same
+    // band carry quite different decisions.
+    jpeg_arith_decoder_t ad;
+    jpeg_arith_stats_t astats;
+    if (state->is_arithmetic) {
+      jpeg_arith_decoder_init(&ad, scan->data, scan->data_size);
+      jpeg_arith_stats_reset(&astats);
+    }
     {
       const char * e = getenv("GIMG_JPEG_RECOVER_STUFF_ZERO");
       if (e && e[0] == '1') {
         bs.recover_stuff_zero = 1; // Opt-in recovery only; not from T.81.
       }
     }
-    uint16_t restart_interval = state->restart_interval;
+    // The interval in force for this scan, not the frame's latest (B.2.4.4).
+    uint16_t restart_interval = scan->restart_interval;
     int ss = (int)scan->ss;
     int se = (int)scan->se;
     int ah = (int)scan->ah;
@@ -1389,15 +1409,32 @@ static GIMG_Result jpeg_decode_progressive_extended(
     for (uint32_t mcu_y = 0; mcu_y < scan_mcus_y; mcu_y++) {
       for (uint32_t mcu_x = 0; mcu_x < scan_mcus_x; mcu_x++) {
         uint32_t mcu_index = mcu_y * scan_mcus_x + mcu_x;
-        if (restart_interval > 0) {
-          if (bs.rst_just_skipped) {
-            memset(dc_pred, 0, sizeof(dc_pred));
-            eobrun = 0;
-            bs.rst_just_skipped = 0;
+        if (restart_interval > 0 && mcu_index > 0 &&
+            mcu_index % (uint32_t)restart_interval == 0) {
+          if (state->is_arithmetic) {
+            // T.81 F.2.4.1: restart the coder and forget what it had learned.
+            if (jpeg_arith_restart(&ad, &astats) != GIMG_OK) {
+              goto prog_ext_fail;
+            }
           }
-          if (mcu_index > 0 && mcu_index % (uint32_t)restart_interval == 0) {
+          else {
+            // Consume the restart marker here, at the MCU boundary, by
+            // byte-aligning and reading it (T.81 B.2.1) - the same correction
+            // the sequential path needed.  Setting expect_rst and leaving the
+            // bitstream reader to notice the marker on its own does not work:
+            // the reader only looks when it next needs a byte, which is after
+            // it has already consumed bits belonging to the wrong side of the
+            // boundary, and the scan desynchronises from there on.  That is why
+            // every progressive file with a restart interval failed to decode.
+            bs.expect_rst = 1; // T.81 3.1.110: next 0xFF 0xD0..0xD7 is RST
+            jpeg_bitstream_align_skip_rst(&bs);
+            if (bs.rst_just_skipped) {
+              memset(dc_pred, 0, sizeof(dc_pred));
+              bs.rst_just_skipped = 0;
+            }
+            // G.1.2.3: an EOB run counts blocks within one restart interval and
+            // never continues across the marker.
             eobrun = 0;
-            bs.expect_rst = 1;
           }
         }
         for (uint8_t s = 0; s < scan->comp_count; s++) {
@@ -1432,7 +1469,15 @@ static GIMG_Result jpeg_decode_progressive_extended(
               int16_t * block = coef_blocks[comp_idx] + block_idx * 64;
               if (is_dc) {
                 GIMG_Result r;
-                if (ah == 0) {
+                if (state->is_arithmetic) {
+                  r = (ah == 0)
+                      ? jpeg_arith_decode_block_prog_dc_first(&ad, &astats,
+                            &state->arith_cond, comp_idx, scan->dc_tbl[s], al,
+                            block)
+                      : jpeg_arith_decode_block_prog_dc_refine(
+                            &ad, &astats, al, block);
+                }
+                else if (ah == 0) {
                   r = jpeg_decode_block_progressive_dc(&bs,
                       &dc_tables[scan->dc_tbl[s]], block, &dc_pred[comp_idx],
                       al, NULL, NULL, 0, is_last_prog);
@@ -1451,6 +1496,17 @@ static GIMG_Result jpeg_decode_progressive_extended(
                       "PROG_DEC_DC block=%zu comp=%u block[0]=%d\n",
                       block_counter_prog, (unsigned)comp_idx, (int)block[0]);
                   (void)fflush(stderr);
+                }
+              }
+              else if (state->is_arithmetic) {
+                GIMG_Result r = (ah == 0)
+                    ? jpeg_arith_decode_block_prog_ac_first(&ad, &astats,
+                          &state->arith_cond, scan->ac_tbl[s], ss, se, al,
+                          block)
+                    : jpeg_arith_decode_block_prog_ac_refine(
+                          &ad, &astats, scan->ac_tbl[s], ss, se, al, block);
+                if (r != GIMG_OK) {
+                  goto prog_ext_fail;
                 }
               }
               else {

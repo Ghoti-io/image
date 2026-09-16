@@ -216,6 +216,79 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
  *
  * Returns GIMG_OK on success, and sets *out_why on failure.
  */
+/**
+ * Apply a DRI segment (T.81 B.2.4.4).
+ *
+ * The restart interval is not a property of the frame.  B.2.4.4 lets DRI appear
+ * anywhere a marker segment may, including between scans, and an encoder that
+ * thinks of its restart interval in MCU rows has to change it from scan to
+ * scan, because an interleaved scan and a single-component scan do not have the
+ * same number of MCUs in a row.  libjpeg writes a different DRI before nearly
+ * every scan of a subsampled progressive image.
+ */
+static GIMG_Result jpeg_apply_dri(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload, size_t payload_size, const char ** out_why) {
+  *out_why = NULL;
+  if (payload_size != 2 || !payload) {
+    *out_why = "DRI payload must be 2 bytes";
+    return GIMG_ERR_FORMAT;
+  }
+  state->restart_interval = (uint16_t)((payload[0] << 8) | payload[1]);
+  return GIMG_OK;
+}
+
+/**
+ * Apply a DAC segment (T.81 B.2.4.3): conditioning for the arithmetic coder.
+ *
+ * One byte of table class and destination, then one byte of conditioning.  For
+ * a DC table (Tc = 0) that byte is U in the high nibble and L in the low one,
+ * and L must not exceed U; for an AC table (Tc = 1) it is Kx, which B.2.4.3
+ * bounds to 1..63.  Like DRI, this may appear between scans and change.
+ */
+static GIMG_Result jpeg_apply_dac(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload, size_t payload_size, const char ** out_why) {
+  *out_why = NULL;
+  if (!payload) {
+    *out_why = "DAC payload missing";
+    return GIMG_ERR_FORMAT;
+  }
+  const unsigned char * p = payload;
+  size_t remain = payload_size;
+  while (remain >= 2) {
+    uint8_t tc = (uint8_t)(p[0] >> 4);
+    uint8_t tb = (uint8_t)(p[0] & 0x0Fu);
+    uint8_t cs = p[1];
+    if (tc > 1 || tb >= GIMG_JPEG_ARITH_TABLES) {
+      *out_why = "DAC table class or destination out of range";
+      return GIMG_ERR_FORMAT;
+    }
+    if (tc == 0) {
+      uint8_t l = (uint8_t)(cs & 0x0Fu);
+      uint8_t u = (uint8_t)(cs >> 4);
+      if (l > u) {
+        *out_why = "DAC DC conditioning has L greater than U";
+        return GIMG_ERR_FORMAT;
+      }
+      state->arith_cond.dc_l[tb] = l;
+      state->arith_cond.dc_u[tb] = u;
+    }
+    else {
+      if (cs < 1u || cs > 63u) {
+        *out_why = "DAC AC conditioning Kx out of range";
+        return GIMG_ERR_FORMAT;
+      }
+      state->arith_cond.ac_k[tb] = cs;
+    }
+    p += 2;
+    remain -= 2;
+  }
+  if (remain != 0) {
+    *out_why = "DAC payload is not a whole number of entries";
+    return GIMG_ERR_FORMAT;
+  }
+  return GIMG_OK;
+}
+
 static GIMG_Result jpeg_apply_dnl(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload, size_t payload_size, const char ** out_why) {
   *out_why = NULL;
@@ -505,80 +578,29 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       break;
     }
     case GIMG_JPEG_MARKER_DAC: {
-      // DAC (T.81 B.2.4.3): conditioning for the arithmetic coder, one byte of
-      // table class and destination followed by one byte of conditioning.  For
-      // a DC table (Tc = 0) that byte is U in the high nibble and L in the low
-      // one, and L must not exceed U; for an AC table (Tc = 1) it is Kx, which
-      // B.2.4.3 bounds to 1..63.
-      const unsigned char * p = payload_buf;
-      size_t remain = payload_size;
-      if (!p) {
-        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-            "DAC payload missing");
-        gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
-      }
-      while (remain >= 2) {
-        uint8_t tc = (uint8_t)(p[0] >> 4);
-        uint8_t tb = (uint8_t)(p[0] & 0x0Fu);
-        uint8_t cs = p[1];
-        if (tc > 1 || tb >= GIMG_JPEG_ARITH_TABLES) {
-          gimg_free(alloc, payload_buf);
-          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-              "DAC table class or destination out of range");
-          gimg_jpeg_free_doc_state(codec, state);
-          return GIMG_ERR_FORMAT;
-        }
-        if (tc == 0) {
-          uint8_t l = (uint8_t)(cs & 0x0Fu);
-          uint8_t u = (uint8_t)(cs >> 4);
-          if (l > u) {
-            gimg_free(alloc, payload_buf);
-            jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-                "DAC DC conditioning has L greater than U");
-            gimg_jpeg_free_doc_state(codec, state);
-            return GIMG_ERR_FORMAT;
-          }
-          state->arith_cond.dc_l[tb] = l;
-          state->arith_cond.dc_u[tb] = u;
-        }
-        else {
-          if (cs < 1u || cs > 63u) {
-            gimg_free(alloc, payload_buf);
-            jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-                "DAC AC conditioning Kx out of range");
-            gimg_jpeg_free_doc_state(codec, state);
-            return GIMG_ERR_FORMAT;
-          }
-          state->arith_cond.ac_k[tb] = cs;
-        }
-        p += 2;
-        remain -= 2;
-      }
-      if (remain != 0) {
+      const char * why = NULL;
+      r = jpeg_apply_dac(state, payload_buf, payload_size, &why);
+      if (payload_buf) {
         gimg_free(alloc, payload_buf);
-        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-            "DAC payload is not a whole number of entries");
-        gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
       }
-      gimg_free(alloc, payload_buf);
+      if (r != GIMG_OK) {
+        jpeg_load_diag(diagnostics, seg_start, marker, r, why);
+        gimg_jpeg_free_doc_state(codec, state);
+        return r;
+      }
       break;
     }
     case GIMG_JPEG_MARKER_DRI: {
-      // DRI: length 2 + 2-byte payload (restart interval in MCUs,
-      // big-endian).
-      if (payload_size != 2 || !payload_buf) {
-        if (payload_buf)
-          gimg_free(alloc, payload_buf);
-        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-            "DRI payload must be 2 bytes");
-        gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
+      const char * why = NULL;
+      r = jpeg_apply_dri(state, payload_buf, payload_size, &why);
+      if (payload_buf) {
+        gimg_free(alloc, payload_buf);
       }
-      state->restart_interval =
-          (uint16_t)((payload_buf[0] << 8) | payload_buf[1]);
-      gimg_free(alloc, payload_buf);
+      if (r != GIMG_OK) {
+        jpeg_load_diag(diagnostics, seg_start, marker, r, why);
+        gimg_jpeg_free_doc_state(codec, state);
+        return r;
+      }
       break;
     }
     case GIMG_JPEG_MARKER_DNL: {
@@ -651,6 +673,9 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         }
         gimg_jpeg_scan_t * scan = &state->scans[state->num_scans];
         memset(scan, 0, sizeof(*scan));
+        // B.2.4.4: the restart interval in force is the one most recently
+        // defined before this scan, which is not necessarily the frame's last.
+        scan->restart_interval = state->restart_interval;
         scan->comp_count = ns;
         for (uint8_t i = 0; i < ns; i++) {
           scan->comp_id[i] = payload_buf[1 + i * 2];
@@ -939,6 +964,39 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               jpeg_load_diag(diagnostics, seg_start, b, r, why);
               gimg_jpeg_free_doc_state(codec, state);
               return r;
+            }
+          }
+          else if (b == GIMG_JPEG_MARKER_DRI || b == GIMG_JPEG_MARKER_DAC) {
+            // B.2.4.3 and B.2.4.4: both of these may appear between scans and
+            // change what the next scan uses, and both were being discarded
+            // here.  libjpeg writes a different DRI before nearly every scan of
+            // a subsampled progressive image - an interleaved scan and a
+            // single-component scan do not have the same number of MCUs in a
+            // row - so keeping the frame's first value made every such file
+            // decode against the wrong restart positions.
+            if (payload_size > 0) {
+              unsigned char * seg =
+                  (unsigned char *)gimg_malloc(alloc, payload_size);
+              if (!seg) {
+                gimg_jpeg_free_doc_state(codec, state);
+                return GIMG_ERR_OOM;
+              }
+              r = gimg_stream_read_exact(stream, seg, payload_size);
+              if (r != GIMG_OK) {
+                gimg_free(alloc, seg);
+                gimg_jpeg_free_doc_state(codec, state);
+                return r;
+              }
+              const char * why = NULL;
+              r = (b == GIMG_JPEG_MARKER_DRI)
+                  ? jpeg_apply_dri(state, seg, payload_size, &why)
+                  : jpeg_apply_dac(state, seg, payload_size, &why);
+              gimg_free(alloc, seg);
+              if (r != GIMG_OK) {
+                jpeg_load_diag(diagnostics, seg_start, b, r, why);
+                gimg_jpeg_free_doc_state(codec, state);
+                return r;
+              }
             }
           }
           else {

@@ -2195,12 +2195,26 @@ TEST(JpegLoad, DecodeBaseline640x480Ycbcr) {
   gimg_doc_destroy(doc);
 }
 
-/** Arithmetic-coded frames (SOF9) decode, and decode correctly.
+/** Arithmetic-coded frames decode, and decode correctly.
+ *
+ * SOF9 is sequential and SOF10 progressive; both are covered here, together
+ * with a Huffman progressive file carrying restart intervals.  That last one
+ * belongs with them because all three broke on the same thing: a progressive
+ * image with restart intervals was undecodable, whichever entropy coder it
+ * used, for two reasons that only show up together.  A restart marker is a hard
+ * resynchronisation point, so bits the longest-match Huffman decode had read
+ * ahead of it had to be discarded and were not; and DRI may appear between
+ * scans and change, which an encoder measuring its restart interval in MCU rows
+ * has to do, because an interleaved scan and a single-component scan do not
+ * have the same number of MCUs in a row.  libjpeg writes a different DRI before
+ * nearly every scan of a subsampled progressive image, and we kept only the
+ * first.
+ *
  *
  * T.81 Annex D defines arithmetic coding as one of the two entropy coders a
- * JPEG may use; Annex F defines the other.  A SOF9 frame is an ordinary
- * sequential DCT frame that happens to use the first rather than the second,
- * and this codec rejected every one of them outright until the coder existed.
+ * JPEG may use; Annex F defines the other.  A SOF9 or SOF10 frame is an
+ * ordinary DCT frame that happens to use the first rather than the second, and
+ * this codec rejected every one of them outright until the coder existed.
  *
  * The expectations are libjpeg-turbo 3.0.4's decode of the same files - it
  * builds with arithmetic support by default - reduced to a sum over the raster
@@ -2225,6 +2239,15 @@ TEST(JpegLoad, DecodeArithmeticSequential) {
           {114, 20, 10, 141, 183, 171, 180, 255, 255, 95, 0, 0, 96, 0, 0}},
       {"arith_rgb_17x9_422_restart.jpg", 17, 9, 3, 58315,
           {229, 1, 34, 148, 114, 130, 115, 249, 242, 194, 0, 20, 22, 29, 0}},
+      // SOF10: progressive, arithmetic.
+      {"arith_progressive_33x33_422.jpg", 33, 33, 3, 418185,
+          {248, 0, 10, 119, 96, 104, 147, 255, 255, 226, 23, 29, 198, 6, 5}},
+      {"arith_progressive_restart_420.jpg", 64, 64, 3, 1566364,
+          {114, 20, 10, 141, 183, 171, 180, 255, 255, 95, 0, 0, 96, 0, 0}},
+      // The Huffman progressive file is here for the same reason: it exercises
+      // the restart handling these fixtures share.
+      {"progressive_restart_420.jpg", 64, 64, 3, 1567281,
+          {110, 13, 4, 142, 173, 167, 173, 255, 255, 115, 0, 0, 89, 0, 0}},
   };
   for (const Case & c : cases) {
     std::vector<uint8_t> jpeg;

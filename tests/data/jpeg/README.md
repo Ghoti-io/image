@@ -248,6 +248,28 @@ expose; see the section above.
 | `arith_rgb_17x9_422_restart.jpg` | SOF9 colour, 4:2:2, restart interval 3, non-MCU-aligned |
 | `arith_gray_1x1_empty_scan.jpg` | SOF9 with an entropy-coded segment of zero bytes |
 | `arith_gray12_64x64.jpg` | SOF9 at P=12 |
+| `arith_progressive_33x33_422.jpg` | SOF10 progressive, 4:2:2, non-MCU-aligned |
+| `arith_progressive_restart_420.jpg` | SOF10 progressive, 4:2:0, restart intervals |
+| `progressive_restart_420.jpg` | SOF2 progressive, 4:2:0, restart intervals (Huffman) |
+
+The last three cover a hole the big corpus had: it contains 576 progressive
+files and 576 with restart intervals, and not one file that has both.  Every
+progressive image with a restart interval was undecodable, whichever entropy
+coder it used, and nothing noticed.  Two independent causes:
+
+- A restart marker is a hard resynchronisation point (B.2.1), so bits the
+  longest-match Huffman decode had read ahead of it have to be discarded.  They
+  were not, so the first symbol of every interval after the first was decoded
+  from bits belonging to the previous one.  Fixed-length reads push nothing
+  back, which is why the DC scans survived this and the AC scans did not.
+- DRI may appear between scans and change (B.2.4.4), and an encoder measuring
+  its restart interval in MCU rows has to change it, because an interleaved
+  scan and a single-component scan do not have the same number of MCUs in a
+  row.  libjpeg writes a different DRI before nearly every scan of a subsampled
+  progressive image; we kept the frame's first value and used it everywhere.
+
+When generating a corpus, cross restart intervals with everything else rather
+than testing them on their own.
 
 The empty-scan fixture is worth keeping: D.2.9 has the decoder supply zero bytes
 once it runs past the compressed data, so a frame whose every decision resolves
