@@ -114,8 +114,72 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
  */
 #define GIMG_JPEG_DEFAULT_MAX_SEGMENT_PAYLOAD (64u * 1024u)
 
-/** Max number of components (e.g. 4 for CMYK). */
-#define GIMG_JPEG_MAX_COMPONENTS 4u
+/**
+ * Max number of components in a frame.
+ *
+ * T.81 B.2.2 allows Nf from 1 to 255.  The ceiling here is the raster's, not
+ * the codec's: GIMG_Pixel_Format carries bits_per_channel[8], so eight is the
+ * widest picture this library can hand back, and a frame wider than that has
+ * nowhere to be decoded to.  Everything below this line - parse, entropy
+ * decode, the coefficient walk - is written against this constant rather than
+ * against four, so raising it is the only change a wider raster would need.
+ */
+#define GIMG_JPEG_MAX_COMPONENTS 8u
+
+/**
+ * Which of the two table sets a component uses: 0 for the set a luminance
+ * component gets, 1 for the set a chrominance component gets.
+ *
+ * T.81 B.2.2 gives every component its own Tq and B.2.3 its own Td and Ta;
+ * nothing in the standard ties either to the component's index.  The
+ * convention that component 0 takes table 0 and the rest take table 1 is a
+ * three-component YCbCr convention, and it is wrong for four components: a
+ * CMYK frame uses table 0 throughout and a YCCK frame uses 0,1,1,0, which is
+ * what libjpeg's jpeg_set_colorspace writes (jcparam.c).  Passing NULL for
+ * @p sel keeps the old rule, so a caller that has no opinion is unchanged.
+ */
+static inline uint8_t gimg_jpeg_tbl_of(const uint8_t * sel, int c) {
+  return sel ? sel[c] : (uint8_t)(c == 0 ? 0 : 1);
+}
+
+/** True when any component of the frame uses table set 1. */
+static inline int gimg_jpeg_uses_second_table(
+    const uint8_t * sel, int num_components) {
+  for (int c = 0; c < num_components; c++) {
+    if (gimg_jpeg_tbl_of(sel, c) != 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Largest H and V over the frame's components (T.81 A.1.1: H_max and V_max,
+ * which set the MCU size).  Written as a loop over Nf rather than over the
+ * first three components, which silently gave a four-component frame the MCU
+ * of its first three.
+ */
+static inline void gimg_jpeg_sampling_max(int num_components,
+    const uint8_t * h_samp, const uint8_t * v_samp, uint8_t * out_h_max,
+    uint8_t * out_v_max) {
+  uint8_t h_max = 1, v_max = 1;
+  for (int c = 0; c < num_components; c++) {
+    uint8_t h = h_samp ? h_samp[c] : 1u;
+    uint8_t v = v_samp ? v_samp[c] : 1u;
+    if (h > h_max) {
+      h_max = h;
+    }
+    if (v > v_max) {
+      v_max = v;
+    }
+  }
+  if (out_h_max) {
+    *out_h_max = h_max;
+  }
+  if (out_v_max) {
+    *out_v_max = v_max;
+  }
+}
 
 /** Quantization table size (8x8 = 64 entries). T.81 Annex B. */
 #define GIMG_JPEG_DQT_ENTRIES 64u
@@ -733,7 +797,8 @@ void jpeg_gen_huff_table(uint32_t * freq, int num_symbols,
  */
 GIMG_Result gimg_jpeg_fill_coef_buffer_differential(uint32_t width,
     uint32_t height, int num_components, const int32_t * const * planes,
-    const size_t * plane_stride, const uint16_t * quant_luma,
+    const size_t * plane_stride, const uint8_t * tbl_sel,
+    const uint16_t * quant_luma,
     const uint16_t * quant_chroma, int16_t * coef_buffer,
     size_t * out_total_blocks);
 
@@ -879,7 +944,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan(uint32_t width, uint32_t height,
 GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(
     uint32_t GIMG_MAYBE_UNUSED(width), uint32_t GIMG_MAYBE_UNUSED(height),
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
-    const uint8_t * h_samp, const uint8_t * v_samp,
+    const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size);
 
@@ -888,7 +953,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(
  * buffer and MCU walk as the Huffman version; see the definition. */
 GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
-    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
     uint16_t restart_interval, int differential,
     unsigned char ** out_scan_data, size_t * out_scan_size);
@@ -896,7 +961,7 @@ GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
 GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
     uint32_t width, uint32_t height, int num_components,
     const int16_t * coef_buffer, size_t total_blocks, const uint8_t * h_samp,
-    const uint8_t * v_samp, const GIMG_Allocator * alloc,
+    const uint8_t * v_samp, const uint8_t * tbl_sel, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
     size_t * out_scan_size);
 
@@ -905,10 +970,9 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
  * fdct_method: GIMG_JPEG_FDCT_LOEFFLER (0) or GIMG_JPEG_FDCT_REF (1).
  * quant_method: GIMG_JPEG_QUANT_RECIP (0) or GIMG_JPEG_QUANT_DIV (1). */
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
-    uint32_t height, int num_components, const unsigned char * comp0,
-    const unsigned char * comp1, const unsigned char * comp2, size_t stride0,
-    size_t stride1, size_t stride2, const uint8_t * h_samp,
-    const uint8_t * v_samp, const uint16_t * quant_luma,
+    uint32_t height, int num_components, const unsigned char * const * comps,
+    const size_t * strides, const uint8_t * h_samp, const uint8_t * v_samp,
+    const uint8_t * tbl_sel, const uint16_t * quant_luma,
     const uint16_t * quant_chroma, unsigned fdct_method, unsigned quant_method,
     int16_t * coef_buffer, size_t * out_total_blocks);
 
@@ -921,7 +985,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
  * definition; it needs no previous-scan state. */
 GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
-    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
@@ -929,7 +993,7 @@ GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
 
 GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
-    const uint8_t * h_samp, const uint8_t * v_samp, uint8_t Ss, uint8_t Se,
+    const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel, uint8_t Ss, uint8_t Se,
     uint8_t Ah, uint8_t Al, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
     size_t * out_scan_size, int16_t * state_after_scan_out,
@@ -957,17 +1021,16 @@ GIMG_Result gimg_jpeg_write_standard_dht_extended(
 
 /** Fill coefficient buffer for 12-bit (samples 0..4095, level shift 2048). */
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
-    uint32_t height, int num_components, const uint16_t * comp0,
-    const uint16_t * comp1, const uint16_t * comp2, size_t stride0,
-    size_t stride1, size_t stride2, const uint8_t * h_samp,
-    const uint8_t * v_samp, const uint16_t * quant_luma,
+    uint32_t height, int num_components, const uint16_t * const * comps,
+    const size_t * strides, const uint8_t * h_samp, const uint8_t * v_samp,
+    const uint8_t * tbl_sel, const uint16_t * quant_luma,
     const uint16_t * quant_chroma, int16_t * coef_buffer,
     size_t * out_total_blocks);
 
 /** Progressive scan encode with extended tables (12-bit). */
 GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
-    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size);

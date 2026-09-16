@@ -561,22 +561,8 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   const uint8_t * v_ptr =
       (num_components == 3 && (v_samp[0] != 1 || v_samp[1] != 1)) ? v_samp
                                                                   : NULL;
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    if (h_samp[1] > h_max) {
-      h_max = h_samp[1];
-    }
-    if (h_samp[2] > h_max) {
-      h_max = h_samp[2];
-    }
-    if (v_samp[1] > v_max) {
-      v_max = v_samp[1];
-    }
-    if (v_samp[2] > v_max) {
-      v_max = v_samp[2];
-    }
-  }
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   uint32_t mcu_w = (uint32_t)(8 * h_max);
   uint32_t mcu_h = (uint32_t)(8 * v_max);
   uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
@@ -623,9 +609,12 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     return GIMG_ERR_OOM;
   }
   size_t out_blocks = 0;
+  const uint16_t * comps12[GIMG_JPEG_MAX_COMPONENTS] = {
+      comp_y, use_cb, use_cr};
+  size_t strides12[GIMG_JPEG_MAX_COMPONENTS] = {stride0, stride1, stride2};
   GIMG_Result r = gimg_jpeg_progressive_fill_coef_buffer_12bit(width, height,
-      num_components, comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr,
-      v_ptr, quant_luma, quant_chroma, coef_buf, &out_blocks);
+      num_components, comps12, strides12, h_ptr, v_ptr, NULL, quant_luma,
+      quant_chroma, coef_buf, &out_blocks);
   gimg_free(alloc, comp_y);
   if (use_cb != comp_cb) {
     gimg_free(alloc, use_cb);
@@ -660,14 +649,14 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     jpeg_arith_cond_t cond;
     jpeg_arith_cond_defaults(&cond);
     r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
-        num_components, coef_buf, out_blocks, h_samp, v_samp, &cond, alloc,
-        restart_interval, 0, &scan_data, &scan_size);
+        num_components, coef_buf, out_blocks, h_samp, v_samp, NULL, &cond,
+        alloc, restart_interval, 0, &scan_data, &scan_size);
   }
   else {
     // T.81 Annex F: baseline sequential uses DC table for DC then AC table for
     // AC 1..63 per block.
     r = gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(width, height,
-        num_components, coef_buf, out_blocks, h_samp, v_samp, alloc,
+        num_components, coef_buf, out_blocks, h_samp, v_samp, NULL, alloc,
         restart_interval, &scan_data, &scan_size);
   }
   gimg_free(alloc, coef_buf);
@@ -682,21 +671,56 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   return GIMG_OK;
 }
 
-/** Encode raster to scan data (baseline) or coefficient buffer (progressive).
- * When !progressive: allocates *out_scan_data; caller must free. When
- * progressive: allocates *out_coef_buffer (out_total_blocks * 64 int16_t);
- * caller must free. Supports GRAY8, RGB 8-bit, GRAY12, RGB 12-bit.
- * *out_precision is set to 8 or 12. */
+/**
+ * Free the planes a frame's components were built into.
+ *
+ * Every plane is owned by jpeg_raster_to_scan_data - a subsampled chrominance
+ * plane replaces the full-size one rather than living beside it - so one loop
+ * releases the lot, whatever Nf is.
+ */
+static void jpeg_planes_free(
+    const GIMG_Allocator * alloc, unsigned char ** plane, int count) {
+  for (int c = 0; c < count; c++) {
+    gimg_free(alloc, plane[c]);
+    plane[c] = NULL;
+  }
+}
+
+/**
+ * Encode a raster to scan data (sequential) or to a coefficient buffer.
+ *
+ * When !progressive: allocates *out_scan_data; caller frees.  When progressive:
+ * allocates *out_coef_buffer (out_total_blocks * 64 int16_t); caller frees.
+ * Accepts GRAY8, RGB/RGBA 8-bit, GRAY12, RGB 12-bit and CMYK8.
+ * *out_precision is set to 8 or 12.
+ *
+ * The components are held in one array of planes rather than in comp_y /
+ * comp_cb / comp_cr, because T.81 B.2.2 counts components from 1 to 255 and
+ * nothing below this line cares which colour they carry: the DCT, the
+ * quantiser and the entropy coder see a list of planes and a list of sampling
+ * factors.  Naming three of them after YCbCr was what kept a four-component
+ * frame out.
+ *
+ * @param cmyk_transform  For a four-component raster, the Adobe APP14 transform
+ *                        to write: 0 for CMYK (the components go out as they
+ *                        came in) or 2 for YCCK (T.81 has no opinion; see
+ *                        jpeg_cmyk_to_ycck).
+ * @param out_adobe_transform  Out: the transform actually used, or -1 when the
+ *                        frame needs no Adobe marker.
+ */
 static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
     bool progressive, bool arithmetic, uint16_t restart_interval,
-    unsigned fdct_method,
-    unsigned quant_method, unsigned char ** out_scan_data,
+    unsigned fdct_method, unsigned quant_method, unsigned cmyk_transform,
+    unsigned char ** out_scan_data,
     size_t * out_scan_size, int16_t ** out_coef_buffer,
     size_t * out_total_blocks, uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
-    uint32_t * out_height, int * out_num_components, uint8_t out_h_samp[3],
-    uint8_t out_v_samp[3], int * out_precision) {
+    uint32_t * out_height, int * out_num_components,
+    uint8_t out_h_samp[GIMG_JPEG_MAX_COMPONENTS],
+    uint8_t out_v_samp[GIMG_JPEG_MAX_COMPONENTS],
+    uint8_t out_tbl_sel[GIMG_JPEG_MAX_COMPONENTS], int * out_precision,
+    int * out_adobe_transform) {
   if (!alloc || !raster || !out_width || !out_height || !out_num_components ||
       !out_precision) {
     return GIMG_ERR_INTERNAL;
@@ -719,6 +743,9 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   if (out_total_blocks) {
     *out_total_blocks = 0;
   }
+  if (out_adobe_transform) {
+    *out_adobe_transform = -1;
+  }
   *out_precision = 8;
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
@@ -738,6 +765,11 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       fmt->channel_count >= 3 && fmt->bits_per_channel[0] == 8 &&
       fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
     num_components = 3;
+  }
+  else if (fmt->channel_model == GIMG_CHANNEL_CMYK &&
+      fmt->channel_count == 4 && fmt->bits_per_channel[0] == 8 &&
+      fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
+    num_components = 4;
   }
   else if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count == 1 &&
       fmt->bits_per_channel[0] == 16) {
@@ -775,34 +807,62 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
         quant_chroma, out_width, out_height, out_num_components, out_h_samp,
         out_v_samp);
   }
+  // A four-component frame is CMYK unless the caller asked for the YCCK
+  // transform; either way it needs an Adobe APP14 marker, because that marker
+  // is the only thing in the file that says which (see jdapimin.c, and the
+  // colour section of documentation/format-references.md).
+  int adobe_transform = -1;
+  if (num_components == 4) {
+    adobe_transform = (cmyk_transform == 2u) ? 2 : 0;
+  }
+
+  // Planes, all owned by this function and all freed through jpeg_planes_free.
+  unsigned char * plane[GIMG_JPEG_MAX_COMPONENTS];
+  size_t plane_stride[GIMG_JPEG_MAX_COMPONENTS];
+  uint8_t h_samp[GIMG_JPEG_MAX_COMPONENTS];
+  uint8_t v_samp[GIMG_JPEG_MAX_COMPONENTS];
+  uint8_t tbl_sel[GIMG_JPEG_MAX_COMPONENTS];
+  for (int c = 0; c < (int)GIMG_JPEG_MAX_COMPONENTS; c++) {
+    plane[c] = NULL;
+    plane_stride[c] = 0;
+    h_samp[c] = 1;
+    v_samp[c] = 1;
+    tbl_sel[c] = (uint8_t)(c == 0 ? 0 : 1);
+  }
+  // T.81 B.2.2/B.2.3 leave Tq, Td and Ta free per component; these are
+  // libjpeg's choices (jcparam.c jpeg_set_colorspace), and they are what makes
+  // a CMYK frame use one table set throughout while YCCK keeps the chroma set
+  // for its two chrominance components only.
+  if (num_components == 4) {
+    if (adobe_transform == 2) {
+      tbl_sel[0] = 0;
+      tbl_sel[1] = 1;
+      tbl_sel[2] = 1;
+      tbl_sel[3] = 0;
+    }
+    else {
+      tbl_sel[0] = tbl_sel[1] = tbl_sel[2] = tbl_sel[3] = 0;
+    }
+  }
+
   size_t comp_size = 0;
   if (!gcu_safe_mul_size((size_t)width, (size_t)height, &comp_size)) {
     return GIMG_ERR_LIMIT;
   }
-  unsigned char * comp_y = (unsigned char *)gimg_malloc(alloc, comp_size);
-  if (!comp_y) {
-    return GIMG_ERR_OOM;
-  }
-  unsigned char * comp_cb = NULL;
-  unsigned char * comp_cr = NULL;
-  if (num_components == 3) {
-    comp_cb = (unsigned char *)gimg_malloc(alloc, comp_size);
-    comp_cr = (unsigned char *)gimg_malloc(alloc, comp_size);
-    if (!comp_cb || !comp_cr) {
-      gimg_free(alloc, comp_y);
-      if (comp_cb) {
-        gimg_free(alloc, comp_cb);
-      }
+  for (int c = 0; c < num_components; c++) {
+    plane[c] = (unsigned char *)gimg_malloc(alloc, comp_size);
+    if (!plane[c]) {
+      jpeg_planes_free(alloc, plane, num_components);
       return GIMG_ERR_OOM;
     }
+    plane_stride[c] = (size_t)width;
   }
+
   size_t stride_bytes = gimg_raster_stride_bytes(raster);
   const unsigned char * pixels =
       (const unsigned char *)gimg_raster_pixels_const(raster);
   if (!pixels) {
-    gimg_free(alloc, comp_y);
-    gimg_free(alloc, comp_cb);
-    gimg_free(alloc, comp_cr);
+    jpeg_planes_free(alloc, plane, num_components);
     return GIMG_ERR_UNSUPPORTED;
   }
   size_t bpp = gimg_raster_bytes_per_pixel(fmt);
@@ -810,11 +870,11 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     for (uint32_t y = 0; y < height; y++) {
       const unsigned char * row = pixels + y * stride_bytes;
       for (uint32_t x = 0; x < width; x++) {
-        comp_y[y * (size_t)width + x] = row[x * bpp];
+        plane[0][y * (size_t)width + x] = row[x * bpp];
       }
     }
   }
-  else {
+  else if (num_components == 3) {
     for (uint32_t y = 0; y < height; y++) {
       const unsigned char * row = pixels + y * stride_bytes;
       for (uint32_t x = 0; x < width; x++) {
@@ -823,54 +883,96 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
         uint8_t b = row[x * bpp + 2];
         uint8_t yv, cb, cr;
         jpeg_rgb_to_ycbcr(r, g, b, &yv, &cb, &cr);
-        comp_y[y * (size_t)width + x] = yv;
-        comp_cb[y * (size_t)width + x] = cb;
-        comp_cr[y * (size_t)width + x] = cr;
+        plane[0][y * (size_t)width + x] = yv;
+        plane[1][y * (size_t)width + x] = cb;
+        plane[2][y * (size_t)width + x] = cr;
+      }
+    }
+  }
+  else {
+    // Four components.  For transform 0 the samples go out exactly as they came
+    // in - that is what the decoder's raw-CMYK path (jdcolor.c null_convert)
+    // reads back, so a load/save round trip is the identity.  For transform 2
+    // the first three become YCbCr of the complement, which is what
+    // jpeg_emit_four_component undoes on the way in.
+    for (uint32_t y = 0; y < height; y++) {
+      const unsigned char * row = pixels + y * stride_bytes;
+      for (uint32_t x = 0; x < width; x++) {
+        uint8_t cc = row[x * bpp + 0];
+        uint8_t mm = row[x * bpp + 1];
+        uint8_t yy = row[x * bpp + 2];
+        uint8_t kk = row[x * bpp + 3];
+        if (adobe_transform == 2) {
+          uint8_t yv, cb, cr;
+          jpeg_rgb_to_ycbcr((uint8_t)(255 - cc), (uint8_t)(255 - mm),
+              (uint8_t)(255 - yy), &yv, &cb, &cr);
+          plane[0][y * (size_t)width + x] = yv;
+          plane[1][y * (size_t)width + x] = cb;
+          plane[2][y * (size_t)width + x] = cr;
+        }
+        else {
+          plane[0][y * (size_t)width + x] = cc;
+          plane[1][y * (size_t)width + x] = mm;
+          plane[2][y * (size_t)width + x] = yy;
+        }
+        plane[3][y * (size_t)width + x] = kk;
       }
     }
   }
 
-  uint8_t h_samp[3] = {1, 1, 1};
-  uint8_t v_samp[3] = {1, 1, 1};
-  size_t stride0 = (size_t)width;
-  size_t stride1 = (size_t)width;
-  size_t stride2 = (size_t)width;
-  unsigned char * use_cb = comp_cb;
-  unsigned char * use_cr = comp_cr;
-
-  if (num_components == 3 && chroma_subsampling != CHROMA_444) {
+  // Chroma subsampling applies to components 1 and 2 only, and only when the
+  // frame actually has chrominance there: three-component YCbCr, or the YCCK
+  // form of a four-component frame.  A raw CMYK frame has no chrominance and
+  // libjpeg does not subsample one either (jcparam.c gives all four 1x1).
+  int has_chroma = (num_components == 3) || (adobe_transform == 2);
+  if (has_chroma && chroma_subsampling != CHROMA_444) {
+    uint32_t cw = 0, ch = 0;
     if (chroma_subsampling == CHROMA_420) {
-      // T.81 Annex A: expand chroma to fill integral DCT blocks (output_cols = width_in_blocks*8).
+      // T.81 Annex A: expand chroma to fill integral DCT blocks
+      // (output_cols = width_in_blocks*8).
       uint32_t mcu_per_row = (width + 15u) / 16u;
-      uint32_t cw = 8u * mcu_per_row;
-      uint32_t ch = (height + 1u) / 2u;
+      cw = 8u * mcu_per_row;
+      ch = (height + 1u) / 2u;
       if (ch == 0u) {
         ch = 1u;
       }
       h_samp[0] = 2;
-      h_samp[1] = 1;
-      h_samp[2] = 1;
       v_samp[0] = 2;
-      v_samp[1] = 1;
-      v_samp[2] = 1;
-      size_t chroma_size = 0;
-      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
-        gimg_free(alloc, comp_y);
-        gimg_free(alloc, comp_cb);
-        gimg_free(alloc, comp_cr);
-        return GIMG_ERR_LIMIT;
-      }
-      use_cb = (unsigned char *)gimg_malloc(alloc, chroma_size);
-      use_cr = (unsigned char *)gimg_malloc(alloc, chroma_size);
-      if (!use_cb || !use_cr) {
-        gimg_free(alloc, comp_y);
-        gimg_free(alloc, comp_cb);
-        gimg_free(alloc, comp_cr);
-        if (use_cb) {
-          gimg_free(alloc, use_cb);
-        }
-        return GIMG_ERR_OOM;
-      }
+    }
+    else {
+      // 4:2:2: 2x1 horizontal, 8x1 vertical (one Cb 8x8 block per 16x8 MCU).
+      uint32_t mcu_per_row = (width + 15u) / 16u;
+      uint32_t mcu_per_col = (height + 7u) / 8u;
+      cw = 8u * mcu_per_row;
+      ch = 8u * mcu_per_col;
+      h_samp[0] = 2;
+      v_samp[0] = 1;
+    }
+    h_samp[1] = 1;
+    h_samp[2] = 1;
+    v_samp[1] = 1;
+    v_samp[2] = 1;
+    if (num_components == 4) {
+      // T.81 A.1.1: K is not chrominance, so it keeps the luminance grid; this
+      // is libjpeg's YCCK layout as well.
+      h_samp[3] = h_samp[0];
+      v_samp[3] = v_samp[0];
+    }
+    size_t chroma_size = 0;
+    if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
+      jpeg_planes_free(alloc, plane, num_components);
+      return GIMG_ERR_LIMIT;
+    }
+    unsigned char * sub[2] = {NULL, NULL};
+    sub[0] = (unsigned char *)gimg_malloc(alloc, chroma_size);
+    sub[1] = (unsigned char *)gimg_malloc(alloc, chroma_size);
+    if (!sub[0] || !sub[1]) {
+      gimg_free(alloc, sub[0]);
+      gimg_free(alloc, sub[1]);
+      jpeg_planes_free(alloc, plane, num_components);
+      return GIMG_ERR_OOM;
+    }
+    if (chroma_subsampling == CHROMA_420) {
       for (uint32_t cb_y = 0; cb_y < ch; cb_y++) {
         uint32_t y_lo = cb_y * 2u;
         uint32_t y1 = y_lo + 1u < height ? y_lo + 1u : y_lo;
@@ -889,59 +991,21 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
           if (x1 >= width) {
             x1 = width - 1u;
           }
-          unsigned sum_cb = (unsigned)comp_cb[y_lo * (size_t)width + x_lo] +
-              (unsigned)comp_cb[y_lo * (size_t)width + x1] +
-              (unsigned)comp_cb[y1 * (size_t)width + x_lo] +
-              (unsigned)comp_cb[y1 * (size_t)width + x1];
-          unsigned sum_cr = (unsigned)comp_cr[y_lo * (size_t)width + x_lo] +
-              (unsigned)comp_cr[y_lo * (size_t)width + x1] +
-              (unsigned)comp_cr[y1 * (size_t)width + x_lo] +
-              (unsigned)comp_cr[y1 * (size_t)width + x1];
-          // Ordered-dither rounding for 2×2 box: bias 1,2,1,2 per column (T.81 does not specify filter).
+          // Ordered-dither rounding for 2x2 box: bias 1,2,1,2 per column
+          // (T.81 does not specify the filter).
           unsigned bias = 1u + (cb_x % 2u);
-          use_cb[cb_y * (size_t)cw + cb_x] =
-              (unsigned char)((sum_cb + bias) / 4);
-          use_cr[cb_y * (size_t)cw + cb_x] =
-              (unsigned char)((sum_cr + bias) / 4);
+          for (int k = 0; k < 2; k++) {
+            const unsigned char * src = plane[1 + k];
+            unsigned sum = (unsigned)src[y_lo * (size_t)width + x_lo] +
+                (unsigned)src[y_lo * (size_t)width + x1] +
+                (unsigned)src[y1 * (size_t)width + x_lo] +
+                (unsigned)src[y1 * (size_t)width + x1];
+            sub[k][cb_y * (size_t)cw + cb_x] = (unsigned char)((sum + bias) / 4);
+          }
         }
       }
-      stride1 = (size_t)cw;
-      stride2 = (size_t)cw;
-      gimg_free(alloc, comp_cb);
-      gimg_free(alloc, comp_cr);
-      comp_cb = NULL;
-      comp_cr = NULL;
     }
     else {
-      // 4:2:2: 2x1 horizontal, 8x1 vertical (one Cb 8x8 block per 16x8 MCU).
-      uint32_t mcu_per_row = (width + 15u) / 16u;
-      uint32_t mcu_per_col = (height + 7u) / 8u;
-      uint32_t cw = 8u * mcu_per_row;
-      uint32_t ch = 8u * mcu_per_col;
-      h_samp[0] = 2;
-      h_samp[1] = 1;
-      h_samp[2] = 1;
-      v_samp[0] = 1;
-      v_samp[1] = 1;
-      v_samp[2] = 1;
-      size_t chroma_size = 0;
-      if (!gcu_safe_mul_size((size_t)cw, (size_t)ch, &chroma_size)) {
-        gimg_free(alloc, comp_y);
-        gimg_free(alloc, comp_cb);
-        gimg_free(alloc, comp_cr);
-        return GIMG_ERR_LIMIT;
-      }
-      use_cb = (unsigned char *)gimg_malloc(alloc, chroma_size);
-      use_cr = (unsigned char *)gimg_malloc(alloc, chroma_size);
-      if (!use_cb || !use_cr) {
-        gimg_free(alloc, comp_y);
-        gimg_free(alloc, comp_cb);
-        gimg_free(alloc, comp_cr);
-        if (use_cb) {
-          gimg_free(alloc, use_cb);
-        }
-        return GIMG_ERR_OOM;
-      }
       for (uint32_t cb_y = 0; cb_y < ch; cb_y++) {
         uint32_t y_src = (cb_y * height) / ch;
         if (y_src >= height) {
@@ -957,214 +1021,93 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
           if (x1 >= width) {
             x1 = width - 1u;
           }
-          unsigned sum_cb = (unsigned)comp_cb[row_off + x_lo] +
-              (unsigned)comp_cb[row_off + x1];
-          unsigned sum_cr = (unsigned)comp_cr[row_off + x_lo] +
-              (unsigned)comp_cr[row_off + x1];
-          use_cb[cb_y * (size_t)cw + cb_x] = (unsigned char)((sum_cb + 1) / 2);
-          use_cr[cb_y * (size_t)cw + cb_x] = (unsigned char)((sum_cr + 1) / 2);
+          for (int k = 0; k < 2; k++) {
+            const unsigned char * src = plane[1 + k];
+            unsigned sum = (unsigned)src[row_off + x_lo] +
+                (unsigned)src[row_off + x1];
+            sub[k][cb_y * (size_t)cw + cb_x] = (unsigned char)((sum + 1) / 2);
+          }
         }
       }
-      stride1 = (size_t)cw;
-      stride2 = (size_t)cw;
-      gimg_free(alloc, comp_cb);
-      gimg_free(alloc, comp_cr);
-      comp_cb = NULL;
-      comp_cr = NULL;
+    }
+    for (int k = 0; k < 2; k++) {
+      gimg_free(alloc, plane[1 + k]);
+      plane[1 + k] = sub[k];
+      plane_stride[1 + k] = (size_t)cw;
     }
   }
 
-  if (out_h_samp && out_v_samp && num_components >= 3) {
-    out_h_samp[0] = h_samp[0];
-    out_h_samp[1] = h_samp[1];
-    out_h_samp[2] = h_samp[2];
-    out_v_samp[0] = v_samp[0];
-    out_v_samp[1] = v_samp[1];
-    out_v_samp[2] = v_samp[2];
+  if (out_h_samp && out_v_samp) {
+    for (int c = 0; c < num_components; c++) {
+      out_h_samp[c] = h_samp[c];
+      out_v_samp[c] = v_samp[c];
+    }
+  }
+  if (out_tbl_sel) {
+    for (int c = 0; c < num_components; c++) {
+      out_tbl_sel[c] = tbl_sel[c];
+    }
+  }
+  if (out_adobe_transform) {
+    *out_adobe_transform = adobe_transform;
   }
 
   if (quality > 100) {
     quality = 100;
   }
   gimg_jpeg_default_quant_scaled(quality, quant_luma, quant_chroma);
-  const uint8_t * h_ptr =
-      (num_components == 3 && (h_samp[0] != 1 || h_samp[1] != 1)) ? h_samp
-                                                                  : NULL;
-  const uint8_t * v_ptr =
-      (num_components == 3 && (v_samp[0] != 1 || v_samp[1] != 1)) ? v_samp
-                                                                  : NULL;
-  GIMG_Result r;
-  if (progressive) {
-    uint8_t h_max = h_samp[0];
-    uint8_t v_max = v_samp[0];
-    if (num_components >= 3) {
-      if (h_samp[1] > h_max) {
-        h_max = h_samp[1];
-      }
-      if (h_samp[2] > h_max) {
-        h_max = h_samp[2];
-      }
-      if (v_samp[1] > v_max) {
-        v_max = v_samp[1];
-      }
-      if (v_samp[2] > v_max) {
-        v_max = v_samp[2];
-      }
+  int any_subsampled = 0;
+  for (int c = 0; c < num_components; c++) {
+    if (h_samp[c] != 1 || v_samp[c] != 1) {
+      any_subsampled = 1;
     }
-    uint32_t mcu_w = (uint32_t)(8 * h_max);
-    uint32_t mcu_h = (uint32_t)(8 * v_max);
-    uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
-    uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
-    size_t blocks_per_mcu = 0;
-    for (int c = 0; c < num_components; c++) {
-      blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
-    }
-    size_t total_blocks = 0;
-    if (!gcu_safe_mul_size(
-            (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-        !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
-      gimg_free(alloc, comp_y);
-      if (use_cb != comp_cb) {
-        gimg_free(alloc, use_cb);
-      }
-      else if (comp_cb) {
-        gimg_free(alloc, comp_cb);
-      }
-      if (use_cr != comp_cr) {
-        gimg_free(alloc, use_cr);
-      }
-      else if (comp_cr) {
-        gimg_free(alloc, comp_cr);
-      }
-      return GIMG_ERR_LIMIT;
-    }
-    int16_t * coef_buf =
-        (int16_t *)gimg_malloc(alloc, total_blocks * 64 * sizeof(int16_t));
-    if (!coef_buf) {
-      gimg_free(alloc, comp_y);
-      if (use_cb != comp_cb) {
-        gimg_free(alloc, use_cb);
-      }
-      else if (comp_cb) {
-        gimg_free(alloc, comp_cb);
-      }
-      if (use_cr != comp_cr) {
-        gimg_free(alloc, use_cr);
-      }
-      else if (comp_cr) {
-        gimg_free(alloc, comp_cr);
-      }
-      return GIMG_ERR_OOM;
-    }
-    r = gimg_jpeg_progressive_fill_coef_buffer(width, height, num_components,
-        comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
-        quant_luma, quant_chroma, fdct_method, quant_method, coef_buf,
-        out_total_blocks);
-    gimg_free(alloc, comp_y);
-    if (use_cb != comp_cb) {
-      gimg_free(alloc, use_cb);
-    }
-    else if (comp_cb) {
-      gimg_free(alloc, comp_cb);
-    }
-    if (use_cr != comp_cr) {
-      gimg_free(alloc, use_cr);
-    }
-    else if (comp_cr) {
-      gimg_free(alloc, comp_cr);
-    }
-    if (r != GIMG_OK) {
-      gimg_free(alloc, coef_buf);
-      return r;
-    }
-    *out_coef_buffer = coef_buf;
-    *out_total_blocks = total_blocks;
   }
-  else {
-    // Use same coefficient buffer path as progressive so baseline and
-    // progressive decode to identical pixels (only scan order differs).
-    uint8_t h_max = h_samp[0];
-    uint8_t v_max = v_samp[0];
-    if (num_components >= 3) {
-      if (h_samp[1] > h_max) {
-        h_max = h_samp[1];
-      }
-      if (h_samp[2] > h_max) {
-        h_max = h_samp[2];
-      }
-      if (v_samp[1] > v_max) {
-        v_max = v_samp[1];
-      }
-      if (v_samp[2] > v_max) {
-        v_max = v_samp[2];
-      }
+  const uint8_t * h_ptr = any_subsampled ? h_samp : NULL;
+  const uint8_t * v_ptr = any_subsampled ? v_samp : NULL;
+  const uint8_t * tbl_ptr = tbl_sel;
+  GIMG_Result r;
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
+  uint32_t mcu_w = (uint32_t)(8 * h_max);
+  uint32_t mcu_h = (uint32_t)(8 * v_max);
+  uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
+  uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
+  size_t blocks_per_mcu = 0;
+  for (int c = 0; c < num_components; c++) {
+    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
+  }
+  size_t total_blocks = 0;
+  if (!gcu_safe_mul_size(
+          (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
+      !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
+    jpeg_planes_free(alloc, plane, num_components);
+    return GIMG_ERR_LIMIT;
+  }
+  int16_t * coef_buf =
+      (int16_t *)gimg_malloc(alloc, total_blocks * 64 * sizeof(int16_t));
+  if (!coef_buf) {
+    jpeg_planes_free(alloc, plane, num_components);
+    return GIMG_ERR_OOM;
+  }
+  // The sequential path uses the same coefficient buffer as the progressive
+  // one, so that the two decode to identical pixels and only the scan order
+  // differs.
+  {
+    const unsigned char * comps[GIMG_JPEG_MAX_COMPONENTS];
+    for (int c = 0; c < (int)GIMG_JPEG_MAX_COMPONENTS; c++) {
+      comps[c] = plane[c];
     }
-    uint32_t mcu_w = (uint32_t)(8 * h_max);
-    uint32_t mcu_h = (uint32_t)(8 * v_max);
-    uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
-    uint32_t mcu_per_col = (height + mcu_h - 1) / mcu_h;
-    size_t blocks_per_mcu = 0;
-    for (int c = 0; c < num_components; c++) {
-      blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
-    }
-    size_t total_blocks = 0;
-    if (!gcu_safe_mul_size(
-            (size_t)mcu_per_row, (size_t)mcu_per_col, &total_blocks) ||
-        !gcu_safe_mul_size(total_blocks, blocks_per_mcu, &total_blocks)) {
-      gimg_free(alloc, comp_y);
-      if (use_cb != comp_cb) {
-        gimg_free(alloc, use_cb);
-      }
-      else if (comp_cb) {
-        gimg_free(alloc, comp_cb);
-      }
-      if (use_cr != comp_cr) {
-        gimg_free(alloc, use_cr);
-      }
-      else if (comp_cr) {
-        gimg_free(alloc, comp_cr);
-      }
-      return GIMG_ERR_LIMIT;
-    }
-    int16_t * coef_buf =
-        (int16_t *)gimg_malloc(alloc, total_blocks * 64 * sizeof(int16_t));
-    if (!coef_buf) {
-      gimg_free(alloc, comp_y);
-      if (use_cb != comp_cb) {
-        gimg_free(alloc, use_cb);
-      }
-      else if (comp_cb) {
-        gimg_free(alloc, comp_cb);
-      }
-      if (use_cr != comp_cr) {
-        gimg_free(alloc, use_cr);
-      }
-      else if (comp_cr) {
-        gimg_free(alloc, comp_cr);
-      }
-      return GIMG_ERR_OOM;
-    }
+    size_t filled = total_blocks;
     r = gimg_jpeg_progressive_fill_coef_buffer(width, height, num_components,
-        comp_y, use_cb, use_cr, stride0, stride1, stride2, h_ptr, v_ptr,
-        quant_luma, quant_chroma, fdct_method, quant_method, coef_buf,
-        &total_blocks);
-    gimg_free(alloc, comp_y);
-    if (use_cb != comp_cb) {
-      gimg_free(alloc, use_cb);
-    }
-    else if (comp_cb) {
-      gimg_free(alloc, comp_cb);
-    }
-    if (use_cr != comp_cr) {
-      gimg_free(alloc, use_cr);
-    }
-    else if (comp_cr) {
-      gimg_free(alloc, comp_cr);
-    }
+        comps, plane_stride, h_ptr, v_ptr, tbl_ptr, quant_luma, quant_chroma,
+        fdct_method, quant_method, coef_buf, &filled);
+    jpeg_planes_free(alloc, plane, num_components);
     if (r != GIMG_OK) {
       gimg_free(alloc, coef_buf);
       return r;
     }
+    total_blocks = filled;
+  }
 #if GIMG_JPEG_DUMP_FIRST_MCU_COEF
     {
       const char * mcu_coef_dir =
@@ -1230,30 +1173,38 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       }
     }
 #endif
-    unsigned char * scan_data = NULL;
-    size_t scan_size = 0;
-    if (arithmetic) {
-      // T.81 Annex D in place of Annex F; the coefficients are the same.
-      jpeg_arith_cond_t cond;
-      jpeg_arith_cond_defaults(&cond);
-      r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
-          num_components, coef_buf, total_blocks, h_ptr, v_ptr, &cond, alloc,
-          restart_interval, 0, &scan_data, &scan_size);
-    }
-    else {
-      r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(width, height,
-          num_components, coef_buf, total_blocks, h_ptr, v_ptr, alloc,
-          restart_interval, &scan_data, &scan_size);
-    }
-    gimg_free(alloc, coef_buf);
-    // An arithmetic scan of zero bytes is a real answer, not a failed
-    // allocation: T.81 D.1.8 drops trailing zero bytes on the grounds that a
-    // decoder past the end of the data supplies zeros anyway (D.2.9), so a
-    // frame whose every decision is the more probable symbol - a 1x1 image,
-    // say - needs no bytes at all.  libjpeg writes none for the same file.
-    if (r != GIMG_OK || (!scan_data && !(arithmetic && scan_size == 0))) {
-      return (r != GIMG_OK) ? r : GIMG_ERR_OOM;
-    }
+  if (progressive) {
+    *out_coef_buffer = coef_buf;
+    *out_total_blocks = total_blocks;
+    *out_width = width;
+    *out_height = height;
+    *out_num_components = num_components;
+    return GIMG_OK;
+  }
+  unsigned char * scan_data = NULL;
+  size_t scan_size = 0;
+  if (arithmetic) {
+    // T.81 Annex D in place of Annex F; the coefficients are the same.
+    jpeg_arith_cond_t cond;
+    jpeg_arith_cond_defaults(&cond);
+    r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
+        num_components, coef_buf, total_blocks, h_ptr, v_ptr, tbl_ptr, &cond,
+        alloc, restart_interval, 0, &scan_data, &scan_size);
+  }
+  else {
+    r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(width, height,
+        num_components, coef_buf, total_blocks, h_ptr, v_ptr, tbl_ptr, alloc,
+        restart_interval, &scan_data, &scan_size);
+  }
+  gimg_free(alloc, coef_buf);
+  // An arithmetic scan of zero bytes is a real answer, not a failed
+  // allocation: T.81 D.1.8 drops trailing zero bytes on the grounds that a
+  // decoder past the end of the data supplies zeros anyway (D.2.9), so a
+  // frame whose every decision is the more probable symbol - a 1x1 image,
+  // say - needs no bytes at all.  libjpeg writes none for the same file.
+  if (r != GIMG_OK || (!scan_data && !(arithmetic && scan_size == 0))) {
+    return (r != GIMG_OK) ? r : GIMG_ERR_OOM;
+  }
 #if GIMG_JPEG_DUMP_SCAN_BASELINE
     {
       const char * dump_path = getenv("GIMG_JPEG_DUMP_SCAN_BASELINE");
@@ -1266,9 +1217,8 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       }
     }
 #endif
-    *out_scan_data = scan_data;
-    *out_scan_size = scan_size;
-  }
+  *out_scan_data = scan_data;
+  *out_scan_size = scan_size;
   *out_width = width;
   *out_height = height;
   *out_num_components = num_components;
@@ -1585,6 +1535,7 @@ static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream,
  */
 static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components,
+    const uint8_t * tbl_sel,
     const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const gimg_jpeg_enc_frame_t * frames, unsigned num_frames,
@@ -1607,7 +1558,10 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    if (num_components == 3) {
+    // T.81 B.2.4.1: a table is written because a component names it, not
+    // because the frame has three components - a CMYK frame has four and uses
+    // one table.
+    if (gimg_jpeg_uses_second_table(tbl_sel, num_components)) {
       unsigned char dqt1[GIMG_JPEG_DQT_8BIT_PAYLOAD];
       memset(dqt1, 0, sizeof(dqt1));
       dqt1[0] = 0x01;
@@ -1707,7 +1661,7 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     }
     if (arithmetic) {
       // B.2.4.3 defaults, written out rather than left implicit.
-      int tables = (num_components == 1) ? 1 : 2;
+      int tables = gimg_jpeg_uses_second_table(tbl_sel, num_components) ? 2 : 1;
       r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
       if (r != GIMG_OK) {
         return r;
@@ -1842,9 +1796,11 @@ static void jpeg_gather_component_blocks(int16_t * interleaved,
  */
 static GIMG_Result jpeg_write_noninterleaved_scans(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components,
-    const uint8_t * h_samp, const uint8_t * v_samp, const int16_t * coef_buffer,
+    const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
+    const int16_t * coef_buffer,
     int precision, bool arithmetic, uint16_t restart_interval,
     const GIMG_Allocator * alloc, size_t * out_n) {
+  (void)tbl_sel;
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r = GIMG_OK;
   size_t written = 0;
@@ -1898,18 +1854,18 @@ static GIMG_Result jpeg_write_noninterleaved_scans(GIMG_Stream * stream,
       jpeg_arith_cond_t cond;
       jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_scan_from_coef_buffer(cw, ch, 1, packed,
-          nblocks, one_samp, one_samp, &cond, alloc, restart_interval, 0,
-          &scan_data, &scan_size);
+          nblocks, one_samp, one_samp, NULL, &cond, alloc, restart_interval,
+          0, &scan_data, &scan_size);
     }
     else if (precision > 8) {
       r = gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(cw, ch, 1,
-          packed, nblocks, one_samp, one_samp, alloc, restart_interval,
-          &scan_data, &scan_size);
+          packed, nblocks, one_samp, one_samp, NULL, alloc,
+          restart_interval, &scan_data, &scan_size);
     }
     else {
       r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(cw, ch, 1, packed,
-          nblocks, one_samp, one_samp, alloc, restart_interval, &scan_data,
-          &scan_size);
+          nblocks, one_samp, one_samp, NULL, alloc, restart_interval,
+          &scan_data, &scan_size);
     }
     gimg_free(alloc, packed);
     // A zero-byte arithmetic scan is legitimate (T.81 D.1.8); see
@@ -1969,7 +1925,8 @@ static GIMG_Result jpeg_write_noninterleaved_scans(GIMG_Stream * stream,
 
 static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     uint32_t height, int num_components, const uint8_t * h_samp,
-    const uint8_t * v_samp, const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
+    const uint8_t * v_samp, const uint8_t * tbl_sel,
+    const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const unsigned char * scan_data, size_t scan_size, int precision,
     uint16_t restart_interval, bool arithmetic, const int16_t * coef_buffer,
@@ -2004,7 +1961,10 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     if (r != GIMG_OK) {
       return r;
     }
-    if (num_components == 3) {
+    // T.81 B.2.4.1: a table is written because a component names it, not
+    // because the frame has three components - a CMYK frame has four and uses
+    // one table.
+    if (gimg_jpeg_uses_second_table(tbl_sel, num_components)) {
       unsigned char dqt1[GIMG_JPEG_DQT_8BIT_PAYLOAD];
       memset(dqt1, 0, sizeof(dqt1));
       dqt1[0] = 0x01;
@@ -2043,7 +2003,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     if (r != GIMG_OK) {
       return r;
     }
-    unsigned char sof[8 + 3 * 4];
+    unsigned char sof[6 + 3 * GIMG_JPEG_MAX_COMPONENTS];
     memset(sof, 0, sizeof(sof));
     sof[0] = prec_byte;
     sof[1] = (unsigned char)(height >> 8);
@@ -2052,8 +2012,8 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     sof[4] = (unsigned char)(width & 0xFF);
     sof[5] = (unsigned char)num_components;
     for (int c = 0; c < num_components; c++) {
-      uint8_t h = (h_samp && c < 3) ? h_samp[c] : 1;
-      uint8_t v = (v_samp && c < 3) ? v_samp[c] : 1;
+      uint8_t h = h_samp ? h_samp[c] : 1;
+      uint8_t v = v_samp ? v_samp[c] : 1;
       if (h == 0) {
         h = 1;
       }
@@ -2062,7 +2022,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
       }
       sof[6 + c * 3] = (unsigned char)(c + 1);
       sof[7 + c * 3] = (unsigned char)((h << 4) | v);
-      sof[8 + c * 3] = (unsigned char)(c == 0 ? 0 : 1);
+      sof[8 + c * 3] = gimg_jpeg_tbl_of(tbl_sel, c);
     }
     r = gimg_stream_write(stream, sof, sof_payload, &written);
     if (r != GIMG_OK) {
@@ -2074,7 +2034,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     // T.81 B.2.4.3: DAC in place of DHT.  These are the values B.2.4.3 gives as
     // defaults - L = 0 and U = 1 for DC, Kx = 5 for AC - written out rather
     // than left implicit, which is what libjpeg does as well.
-    int tables = (num_components == 1) ? 1 : 2;
+    int tables = gimg_jpeg_uses_second_table(tbl_sel, num_components) ? 2 : 1;
     uint16_t dac_len = (uint16_t)(2 + 2 * 2 * tables);
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
     if (r != GIMG_OK) {
@@ -2118,8 +2078,8 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
   // the same file either way; only the scans differ.
   if (coef_buffer) {
     r = jpeg_write_noninterleaved_scans(stream, width, height, num_components,
-        h_samp, v_samp, coef_buffer, precision, arithmetic, restart_interval,
-        alloc, &n);
+        h_samp, v_samp, tbl_sel, coef_buffer, precision, arithmetic,
+        restart_interval, alloc, &n);
     if (r != GIMG_OK) {
       return r;
     }
@@ -2142,20 +2102,16 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     if (r != GIMG_OK) {
       return r;
     }
-    unsigned char sos[12];
+    unsigned char sos[4 + 2 * GIMG_JPEG_MAX_COMPONENTS];
     memset(sos, 0, sizeof(sos));
     sos[0] = (unsigned char)num_components;
-    if (num_components == 1) {
-      sos[1] = 0x01;
-      sos[2] = 0x00;
-    }
-    else {
-      sos[1] = 0x01;
-      sos[2] = 0x00;
-      sos[3] = 0x02;
-      sos[4] = 0x11;
-      sos[5] = 0x03;
-      sos[6] = 0x11;
+    // T.81 B.2.3: Cs, then Td in the high nibble and Ta in the low one.  Both
+    // come from the same per-component selector the frame header used, so the
+    // tables a scan names are the tables its coefficients were coded with.
+    for (int c = 0; c < num_components; c++) {
+      uint8_t t = gimg_jpeg_tbl_of(tbl_sel, c);
+      sos[1 + c * 2] = (unsigned char)(c + 1);
+      sos[2 + c * 2] = (unsigned char)((t << 4) | t);
     }
     size_t tail = 1 + 2 * (size_t)num_components;
     sos[tail] = 0x00;
@@ -2500,7 +2456,8 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
  * coding it is SOF10 and the tables are DAC. */
 static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components, const uint8_t * h_samp,
-    const uint8_t * v_samp, const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
+    const uint8_t * v_samp, const uint8_t * tbl_sel,
+    const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const int16_t * coef_buffer, size_t total_blocks,
     const GIMG_JPEG_Progressive_Scan * scans, unsigned scan_count,
@@ -2536,7 +2493,10 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    if (num_components == 3) {
+    // T.81 B.2.4.1: a table is written because a component names it, not
+    // because the frame has three components - a CMYK frame has four and uses
+    // one table.
+    if (gimg_jpeg_uses_second_table(tbl_sel, num_components)) {
       unsigned char dqt1[GIMG_JPEG_DQT_8BIT_PAYLOAD];
       memset(dqt1, 0, sizeof(dqt1));
       dqt1[0] = 0x01;
@@ -2561,7 +2521,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
   if (arithmetic) {
     // T.81 B.2.4.3: DAC in place of DHT, with the B.2.4.3 default conditioning
     // written out explicitly.
-    int tables = (num_components == 1) ? 1 : 2;
+    int tables = gimg_jpeg_uses_second_table(tbl_sel, num_components) ? 2 : 1;
     uint16_t dac_len = (uint16_t)(2 + 2 * 2 * tables);
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
     if (r != GIMG_OK) {
@@ -2622,7 +2582,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    unsigned char sof[8 + 3 * 4];
+    unsigned char sof[6 + 3 * GIMG_JPEG_MAX_COMPONENTS];
     memset(sof, 0, sizeof(sof));
     sof[0] = prec_byte;
     sof[1] = (unsigned char)(height >> 8);
@@ -2631,8 +2591,8 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     sof[4] = (unsigned char)(width & 0xFF);
     sof[5] = (unsigned char)num_components;
     for (int c = 0; c < num_components; c++) {
-      uint8_t h = (h_samp && c < 3) ? h_samp[c] : 1;
-      uint8_t v = (v_samp && c < 3) ? v_samp[c] : 1;
+      uint8_t h = h_samp ? h_samp[c] : 1;
+      uint8_t v = v_samp ? v_samp[c] : 1;
       if (h == 0) {
         h = 1;
       }
@@ -2641,7 +2601,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       }
       sof[6 + c * 3] = (unsigned char)(c + 1);
       sof[7 + c * 3] = (unsigned char)((h << 4) | v);
-      sof[8 + c * 3] = (unsigned char)(c == 0 ? 0 : 1);
+      sof[8 + c * 3] = gimg_jpeg_tbl_of(tbl_sel, c);
     }
     r = gimg_stream_write(stream, sof, sof_payload, &written);
     if (r != GIMG_OK) {
@@ -2763,6 +2723,15 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
         }
       }
 
+      // T.81 B.2.3: the tables this scan's SOS names must be the tables the
+      // entropy coder used.  An AC scan is always one component encoded
+      // through the one-component path, which reads tbl_sel[0]; a DC scan
+      // carries every component and reads the frame's own selector.
+      uint8_t ac_scan_tbl[GIMG_JPEG_MAX_COMPONENTS] = {0};
+      const uint8_t * scan_tbl = tbl_sel;
+      if (is_ac_scan && num_components > 1) {
+        scan_tbl = ac_scan_tbl;
+      }
       int16_t * state_out = NULL;
       const int16_t * state_in = NULL;
       if (ac_initial_state) {
@@ -2777,21 +2746,21 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
         jpeg_arith_cond_t cond;
         jpeg_arith_cond_defaults(&cond);
         r = gimg_jpeg_encode_arith_progressive_scan(enc_w, enc_h_px,
-            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scans[s].Ss,
-            scans[s].Se, scans[s].Ah, scans[s].Al, &cond, alloc,
+            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scan_tbl,
+            scans[s].Ss, scans[s].Se, scans[s].Ah, scans[s].Al, &cond, alloc,
             restart_interval, &scan_data, &scan_size);
       }
       else if (precision > 8) {
         r = gimg_jpeg_encode_progressive_scan_extended(enc_w, enc_h_px,
-            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scans[s].Ss,
-            scans[s].Se, scans[s].Ah, scans[s].Al, alloc, restart_interval,
-            &scan_data, &scan_size);
+            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scan_tbl,
+            scans[s].Ss, scans[s].Se, scans[s].Ah, scans[s].Al, alloc,
+            restart_interval, &scan_data, &scan_size);
       }
       else {
         r = gimg_jpeg_encode_progressive_scan(enc_w, enc_h_px, scan_components,
-            enc_coef, enc_blocks, enc_h, enc_v, scans[s].Ss, scans[s].Se,
-            scans[s].Ah, scans[s].Al, alloc, restart_interval, &scan_data,
-            &scan_size, state_out, state_in, (int)s);
+            enc_coef, enc_blocks, enc_h, enc_v, scan_tbl, scans[s].Ss,
+            scans[s].Se, scans[s].Ah, scans[s].Al, alloc, restart_interval,
+            &scan_data, &scan_size, state_out, state_in, (int)s);
       }
       if (r == GIMG_OK && packed_state && this_ac_initial) {
         // Put the state this scan produced back where a later refinement scan
@@ -2840,7 +2809,8 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       else {
         for (int i = 0; i < num_components; i++) {
           sos[1 + i * 2] = (unsigned char)(i + 1);
-          sos[2 + i * 2] = (unsigned char)((i == 0 ? 0x00 : 0x01) << 4);
+          sos[2 + i * 2] =
+              (unsigned char)(gimg_jpeg_tbl_of(tbl_sel, i) << 4);
         }
       }
       size_t tail = 1 + 2 * (size_t)scan_components;
@@ -3008,6 +2978,17 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       (options && options->jpeg_chroma_subsampling <= 2)
       ? options->jpeg_chroma_subsampling
       : (unsigned)CHROMA_420;
+  // T.81 puts no colour space in a frame; for four components the Adobe APP14
+  // marker is the whole of it.  See GIMG_Save_Options.jpeg_cmyk_transform.
+  unsigned cmyk_transform =
+      (options && options->jpeg_cmyk_transform) ? options->jpeg_cmyk_transform
+                                                : 0u;
+  if (cmyk_transform != 0u && cmyk_transform != 2u) {
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    return GIMG_ERR_UNSUPPORTED;
+  }
   bool progressive = (options && options->jpeg_progressive) ? true : false;
   bool arithmetic = (options && options->jpeg_arithmetic) ? true : false;
   GIMG_Result r;
@@ -3057,8 +3038,17 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   size_t total_blocks = 0;
   uint32_t width = 0, height = 0;
   int num_components = 0;
-  uint8_t h_samp[3] = {1, 1, 1};
-  uint8_t v_samp[3] = {1, 1, 1};
+  uint8_t h_samp[GIMG_JPEG_MAX_COMPONENTS] = {1, 1, 1, 1, 1, 1, 1, 1};
+  uint8_t v_samp[GIMG_JPEG_MAX_COMPONENTS] = {1, 1, 1, 1, 1, 1, 1, 1};
+  // T.81 B.2.2/B.2.3: which table set each component names.  Filled by
+  // jpeg_raster_to_scan_data and used by every writer below, so that the
+  // frame header, the scan header and the entropy coder agree.
+  uint8_t tbl_sel[GIMG_JPEG_MAX_COMPONENTS] = {0, 1, 1, 1, 1, 1, 1, 1};
+  // -1 unless the frame needs an Adobe APP14 marker (four components).
+  int adobe_transform = -1;
+  // Set when the metadata pass re-emitted a preserved Adobe marker, so that
+  // the fallback below does not write a second one.
+  int adobe_marker_written = 0;
   int precision = 8;
   unsigned char * lossless_dht = NULL;
   size_t lossless_dht_len = 0;
@@ -3116,10 +3106,11 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   // a time.  That is the same buffer the progressive path asks for.
   r = jpeg_raster_to_scan_data(alloc, raster, quality, chroma_subsampling,
       progressive || non_interleaved, arithmetic, restart_interval,
-      fdct_method, quant_method,
+      fdct_method, quant_method, cmyk_transform,
       &scan_data,
       &scan_size, &coef_buffer, &total_blocks, quant_luma, quant_chroma, &width,
-      &height, &num_components, h_samp, v_samp, &precision);
+      &height, &num_components, h_samp, v_samp, tbl_sel, &precision,
+      &adobe_transform);
   if (raster_owned) {
     gimg_raster_destroy(raster);
   }
@@ -3238,7 +3229,13 @@ have_scan:
     // false: it made libjpeg refuse the file with "unsupported color
     // conversion request".  libjpeg's own lossless RGB output carries the
     // Adobe marker and no JFIF, and so does ours now.
-    int suppress_jfif = (lossless_psv != 0 && num_components == 3);
+    // A four-component frame gets no JFIF marker either.  JFIF describes
+    // grayscale or YCbCr data and says nothing about four components; libjpeg
+    // writes none for a CMYK or YCCK file (jcparam.c sets write_JFIF_header
+    // for JCS_GRAYSCALE and JCS_YCbCr only), and the Adobe marker below is
+    // what carries the colour instead.
+    int suppress_jfif =
+        (lossless_psv != 0 && num_components == 3) || num_components == 4;
     size_t app0_len = 0;
     bool have_app0 = !suppress_jfif &&
         (policy != GIMG_META_DROP_ALL &&
@@ -3430,10 +3427,10 @@ have_scan:
               // uses: it is read by viewers that may know nothing of Annex D,
               // and it is too small for the difference to matter.
               r = jpeg_raster_to_scan_data(alloc, thumb_raster, thumb_quality,
-                  CHROMA_444, false, false, 0, fdct_method, quant_method,
+                  CHROMA_444, false, false, 0, fdct_method, quant_method, 0u,
                   &thumb_scan,
                   &thumb_scan_size, NULL, NULL, tq_luma, tq_chroma, &tw, &th,
-                  &tnc, NULL, NULL, &thumb_prec);
+                  &tnc, NULL, NULL, NULL, &thumb_prec, NULL);
               if (thumb_raster_owned) {
                 gimg_raster_destroy(thumb_raster);
               }
@@ -3447,8 +3444,8 @@ have_scan:
                       mem_stream, GIMG_JPEG_MARKER_SOI, &mem_n);
                   if (r == GIMG_OK) {
                     r = jpeg_write_image_body(mem_stream, tw, th, tnc, NULL,
-                        NULL, tq_luma, tq_chroma, thumb_scan, thumb_scan_size,
-                        8, 0, false, NULL, alloc, &mem_n);
+                        NULL, NULL, tq_luma, tq_chroma, thumb_scan,
+                        thumb_scan_size, 8, 0, false, NULL, alloc, &mem_n);
                   }
                   if (r == GIMG_OK) {
                     const void * jpeg_buf = NULL;
@@ -3673,12 +3670,20 @@ have_scan:
           if (r == GIMG_OK) {
             // The payload is "Adobe\0", version, flags0, flags1, transform -
             // the transform is the twelfth byte (index 11).
-            if (num_components == 3 && app14_size >= 12u &&
-                memcmp(app14_buf, "Adobe\0", 6) == 0) {
-              app14_buf[11] = 1u; // YCbCr, which is what was written above.
+            if (app14_size >= 12u && memcmp(app14_buf, "Adobe\0", 6) == 0) {
+              if (num_components == 3) {
+                app14_buf[11] = 1u; // YCbCr, which is what was written above.
+              }
+              else if (adobe_transform >= 0) {
+                // Four components: the transform this frame was actually
+                // written with, which is the only thing that says whether the
+                // first three are CMY or YCbCr.
+                app14_buf[11] = (unsigned char)adobe_transform;
+              }
             }
             r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP14,
                 app14_buf, app14_size, &report->bytes_written);
+            adobe_marker_written = 1;
           }
           gimg_free(alloc, app14_buf);
         }
@@ -3732,6 +3737,32 @@ have_scan:
     }
   }
 
+  // A four-component frame that did not bring an Adobe marker with it gets one
+  // written here.  T.81 describes no colour space, so for four components this
+  // marker is the whole of it: without it a decoder has only libjpeg's
+  // fallback to go on (jdapimin.c reads four components with no Adobe marker
+  // as CMYK), and a YCCK frame would then be read as CMYK and come out wrong.
+  // It is written whatever the metadata policy says, because it is not
+  // metadata - dropping it changes what the pixels mean.  B.2.4 allows a
+  // table-or-misc segment anywhere before the frame header.
+  if (!adobe_marker_written && adobe_transform >= 0) {
+    unsigned char app14_new[12];
+    memcpy(app14_new, "Adobe", 5);
+    app14_new[5] = 0x00;
+    app14_new[6] = 100; // version, as libjpeg writes it
+    app14_new[7] = 0x00;
+    app14_new[8] = 0x00; // flags0
+    app14_new[9] = 0x00;
+    app14_new[10] = 0x00; // flags1
+    app14_new[11] = (unsigned char)adobe_transform;
+    r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP14, app14_new,
+        sizeof(app14_new), &report->bytes_written);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, to_free);
+      return r;
+    }
+  }
+
   if (use_progressive_body) {
     const GIMG_JPEG_Progressive_Scan * scans =
         gimg_jpeg_default_progressive_scans;
@@ -3742,8 +3773,8 @@ have_scan:
       scan_count = options->jpeg_progressive_config->scan_count;
     }
     r = jpeg_write_image_body_progressive(stream, width, height, num_components,
-        num_components == 3 ? h_samp : NULL,
-        num_components == 3 ? v_samp : NULL, quant_luma, quant_chroma,
+        num_components > 1 ? h_samp : NULL,
+        num_components > 1 ? v_samp : NULL, tbl_sel, quant_luma, quant_chroma,
         coef_buffer, total_blocks, scans, scan_count, precision, arithmetic,
         alloc,
         restart_interval, &report->bytes_written);
@@ -3751,8 +3782,9 @@ have_scan:
   }
   else if (hier_levels != 0) {
     r = jpeg_write_image_body_hierarchical(stream, width, height,
-        num_components, quant_luma, quant_chroma, hier_frames, hier_num_frames,
-        restart_interval, arithmetic, &report->bytes_written);
+        num_components, tbl_sel, quant_luma, quant_chroma, hier_frames,
+        hier_num_frames, restart_interval, arithmetic,
+        &report->bytes_written);
     gimg_jpeg_free_enc_frames(alloc, hier_frames, hier_num_frames);
   }
   else if (lossless_psv != 0) {
@@ -3764,8 +3796,8 @@ have_scan:
   }
   else {
     r = jpeg_write_image_body(stream, width, height, num_components,
-        num_components == 3 ? h_samp : NULL,
-        num_components == 3 ? v_samp : NULL, quant_luma, quant_chroma,
+        num_components > 1 ? h_samp : NULL,
+        num_components > 1 ? v_samp : NULL, tbl_sel, quant_luma, quant_chroma,
         scan_data, scan_size, precision, restart_interval, arithmetic,
         non_interleaved ? coef_buffer : NULL, alloc, &report->bytes_written);
     gimg_free(alloc, to_free);

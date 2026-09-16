@@ -248,6 +248,27 @@ typedef struct {
    * and its AC scans are non-interleaved already), with a lossless frame, and
    * with `jpeg_hierarchical_levels`.  Ignored for non-JPEG. */
   uint8_t jpeg_non_interleaved;
+
+  /** Adobe APP14 colour transform for a four-component (CMYK) raster.
+   *
+   * T.81 describes no colour space at all: a frame has Nf components and
+   * nothing says what they mean.  For four components the convention is
+   * Adobe's APP14 marker, and it is the only thing in the file that
+   * distinguishes the two readings - which is why this codec writes that
+   * marker for every four-component frame, and why a decoder (libjpeg's
+   * jdapimin.c included) has nothing to go on without it.
+   *
+   * 0 (the default) writes the four components unchanged, as CMYK.  A raster
+   * that came from a CMYK JPEG therefore survives a load and save unchanged.
+   * 2 writes YCCK: the first three components become the YCbCr of the
+   * complement of C, M and Y, which is more compressible, and K is untouched.
+   * Only 0 and 2 are accepted; anything else returns GIMG_ERR_UNSUPPORTED.
+   * Ignored unless the raster is GIMG_PIXEL_CMYK8, and for non-JPEG.
+   *
+   * Chroma subsampling applies to a YCCK frame's two chrominance components
+   * and to nothing else: a raw CMYK frame has no chrominance, and libjpeg does
+   * not subsample one either. */
+  uint8_t jpeg_cmyk_transform;
 } GIMG_Save_Options;
 
 /**

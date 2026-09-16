@@ -403,9 +403,12 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
       goto done;
     }
     size_t total_blocks = 0;
+    const unsigned char * base_ptr[GIMG_JPEG_MAX_COMPONENTS] = {
+        base_planes[0], base_planes[1], base_planes[2]};
+    size_t base_stride[GIMG_JPEG_MAX_COMPONENTS] = {
+        (size_t)w0, (size_t)w0, (size_t)w0};
     r = gimg_jpeg_progressive_fill_coef_buffer(w0, h0, num_components,
-        base_planes[0], base_planes[1], base_planes[2], (size_t)w0, (size_t)w0,
-        (size_t)w0, NULL, NULL, quant_luma, quant_chroma,
+        base_ptr, base_stride, NULL, NULL, NULL, quant_luma, quant_chroma,
         GIMG_JPEG_FDCT_LOEFFLER, GIMG_JPEG_QUANT_RECIP, coef, &total_blocks);
     if (r != GIMG_OK) {
       goto done;
@@ -414,12 +417,13 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
       jpeg_arith_cond_t cond;
       jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_scan_from_coef_buffer(w0, h0, num_components,
-          coef, total_blocks, NULL, NULL, &cond, alloc, restart_interval, 0,
+          coef, total_blocks, NULL, NULL, NULL, &cond, alloc,
+          restart_interval, 0,
           &frames[0].scan_data, &frames[0].scan_size);
     }
     else {
       r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(w0, h0,
-          num_components, coef, total_blocks, NULL, NULL, alloc,
+          num_components, coef, total_blocks, NULL, NULL, NULL, alloc,
           restart_interval, &frames[0].scan_data, &frames[0].scan_size);
     }
     if (r != GIMG_OK) {
@@ -473,7 +477,7 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     size_t plane_stride[3] = {diff[0].w, diff[1].w, diff[2].w};
     size_t total_blocks = 0;
     r = gimg_jpeg_fill_coef_buffer_differential(w, h, num_components, plane_ptr,
-        plane_stride, quant_luma, quant_chroma, coef, &total_blocks);
+        plane_stride, NULL, quant_luma, quant_chroma, coef, &total_blocks);
     if (r != GIMG_OK) {
       goto done;
     }
@@ -481,7 +485,8 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
       jpeg_arith_cond_t cond;
       jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_scan_from_coef_buffer(w, h, num_components,
-          coef, total_blocks, NULL, NULL, &cond, alloc, restart_interval, 1,
+          coef, total_blocks, NULL, NULL, NULL, &cond, alloc,
+          restart_interval, 1,
           &frames[k].scan_data, &frames[k].scan_size);
     }
     else {

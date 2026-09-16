@@ -809,26 +809,317 @@ TEST(JpegEncode, SaveUnsupportedFormatReturnsError) {
   EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
 }
 
-TEST(JpegEncode, SaveCmykRasterReturnsUnsupported) {
-  // JPEG encoder supports only grayscale and RGB/RGBA; CMYK returns
-  // GIMG_ERR_UNSUPPORTED.
-  GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
-  GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_raster_create(
-                8, 8, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0, &raster),
-      GIMG_OK);
-  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+// The picture the four-component fixtures were made from, and that the encode
+// tests below build again.  tests/data/jpeg/mk_cmyk.c fills the same pattern,
+// so libjpeg's files and this library's files carry the same image.
+static void fill_cmyk_pattern(GIMG_Raster * raster) {
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      px[y * stride + x * 4 + 0] = (unsigned char)((x * 7 + y * 3) & 0xFF);
+      px[y * stride + x * 4 + 1] = (unsigned char)((x * 3 + y * 11) & 0xFF);
+      px[y * stride + x * 4 + 2] = (unsigned char)((x * 13 + y * 5) & 0xFF);
+      px[y * stride + x * 4 + 3] = (unsigned char)((x + y * 2) & 0xFF);
+    }
+  }
+}
 
+// Save that pattern as JPEG with the given options; returns the file bytes.
+static bool save_cmyk_pattern(uint32_t w, uint32_t h, uint8_t transform,
+    uint8_t subsampling, uint8_t progressive, uint8_t arithmetic,
+    uint8_t non_interleaved, unsigned quality, std::vector<uint8_t> & out,
+    GIMG_Result * out_result) {
+  out.clear();
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_create(&doc) != GIMG_OK) {
+    return false;
+  }
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(
+          w, h, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0, &raster) !=
+      GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return false;
+  }
+  fill_cmyk_pattern(raster);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
   GIMG_Stream * out_stream = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
-  GIMG_Save_Options save_opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
+  if (gimg_stream_create_memory_output(&out_stream) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return false;
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  opts.quality = quality;
+  opts.jpeg_cmyk_transform = transform;
+  opts.jpeg_chroma_subsampling = subsampling;
+  opts.jpeg_progressive = progressive;
+  opts.jpeg_arithmetic = arithmetic;
+  opts.jpeg_non_interleaved = non_interleaved;
   GIMG_Save_Report report = {};
-  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
+  GIMG_Result r = gimg_doc_save(doc, out_stream, "jpeg", &opts, &report);
+  if (out_result) {
+    *out_result = r;
+  }
+  if (r == GIMG_OK) {
+    const void * buf = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out_stream, &buf, &n);
+    out.assign((const uint8_t *)buf, (const uint8_t *)buf + n);
+  }
   gimg_doc_destroy(doc);
   gimg_stream_destroy(out_stream);
-  EXPECT_NE(r, GIMG_OK);
-  EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+  return r == GIMG_OK;
+}
+
+// A four-component raster used to be refused outright, so a CMYK JPEG could be
+// read and never written back: load-and-save lost the picture.  T.81 B.2.2
+// counts components from 1 to 255 and says nothing about what they mean, so
+// there was never a reason in the standard for the encoder to stop at three;
+// the reason was that the encoder carried its components in comp_y, comp_cb
+// and comp_cr, and three names is where that ends.
+//
+// The oracle is libjpeg-turbo 3.0.4: each .jpg here is this encoder's own
+// output and each .raw beside it is libjpeg's decode of that exact file
+// (tests/data/jpeg/cmyk_ref.c).  So the test pins two things at once - that
+// re-encoding the pattern still produces the committed bytes, and that those
+// bytes mean to libjpeg what they mean here.
+TEST(JpegEncode, FourComponentFramesAreWrittenAndLibjpegTurboReadsThem) {
+  struct Case {
+    const char * base;
+    uint8_t transform;
+    uint8_t subsampling;
+    uint8_t progressive;
+    uint8_t arithmetic;
+    uint8_t non_interleaved;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"cmyk_ours_seq", 0, GIMG_JPEG_CHROMA_444, 0, 0, 0,
+          "CMYK, sequential (A.2.2)"},
+      {"cmyk_ours_prog", 0, GIMG_JPEG_CHROMA_444, 1, 0, 0,
+          "CMYK, progressive (Annex G with Nf=4)"},
+      {"cmyk_ours_arith", 0, GIMG_JPEG_CHROMA_444, 0, 1, 0,
+          "CMYK, arithmetic (SOF9, Annex D)"},
+      {"cmyk_ours_ni", 0, GIMG_JPEG_CHROMA_444, 0, 0, 1,
+          "CMYK, one scan per component (A.2.3)"},
+      {"ycck_ours_444", 2, GIMG_JPEG_CHROMA_444, 0, 0, 0, "YCCK, 4:4:4"},
+      {"ycck_ours_420", 2, GIMG_JPEG_CHROMA_420, 0, 0, 0, "YCCK, 4:2:0"},
+      {"ycck_ours_422", 2, GIMG_JPEG_CHROMA_422, 0, 0, 0, "YCCK, 4:2:2"},
+      {"ycck_ours_prog420", 2, GIMG_JPEG_CHROMA_420, 1, 0, 0,
+          "YCCK, 4:2:0, progressive"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.base) + ": " + c.what);
+    std::vector<uint8_t> written;
+    ASSERT_TRUE(save_cmyk_pattern(33, 17, c.transform, c.subsampling,
+        c.progressive, c.arithmetic, c.non_interleaved, 90, written, nullptr))
+        << "a four-component raster must be writable";
+
+    std::vector<uint8_t> committed;
+    std::string name = std::string(c.base) + ".jpg";
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name.c_str(), committed))
+        << "missing fixture " << name;
+    ASSERT_EQ(written.size(), committed.size())
+        << "the encoder no longer produces the file libjpeg was shown";
+    EXPECT_TRUE(written == committed)
+        << "the encoder no longer produces the file libjpeg was shown";
+
+    std::vector<uint8_t> oracle;
+    uint32_t ow = 0, oh = 0;
+    int omode = -1;
+    ASSERT_TRUE(
+        jpeg_test::load_jpeg_oracle_raw(c.base, oracle, &ow, &oh, &omode))
+        << "missing oracle " << c.base << ".raw";
+    ASSERT_EQ(omode, 2) << "the oracle must be a CMYK .raw";
+
+    DocStreamGuard in;
+    ASSERT_EQ(gimg_stream_create_memory(written.data(), written.size(), &in.s),
+        GIMG_OK);
+    ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+    RasterGuard got;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+    ASSERT_NE(got.r, nullptr);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(got.r);
+    ASSERT_NE(fmt, nullptr);
+    EXPECT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK);
+    ASSERT_EQ(gimg_raster_width(got.r), ow);
+    ASSERT_EQ(gimg_raster_height(got.r), oh);
+    const unsigned char * gp = (const unsigned char *)gimg_raster_pixels(got.r);
+    size_t gs = gimg_raster_stride_bytes(got.r);
+    for (uint32_t y = 0; y < oh; y++) {
+      for (uint32_t x = 0; x < ow; x++) {
+        for (int ch = 0; ch < 4; ch++) {
+          int a = (int)gp[y * gs + x * 4 + (size_t)ch];
+          int b = (int)oracle[((size_t)y * ow + x) * 4 + (size_t)ch];
+          ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << ch;
+        }
+      }
+    }
+  }
+}
+
+// Transform 0 writes the four components exactly as they arrived, which is
+// what libjpeg's JCS_CMYK does (jdcolor.c null_convert on the way back).  A
+// CMYK raster must therefore survive a save and a load unchanged apart from
+// the quantiser, and at quality 100 with no subsampling the only remaining
+// loss is the DCT rounding - small, bounded, and the same in both directions.
+//
+// This is the property the gap list called out: a CMYK JPEG that decodes but
+// cannot be saved does not round-trip at all.
+TEST(JpegEncode, CmykRasterSurvivesASaveAndLoad) {
+  std::vector<uint8_t> written;
+  ASSERT_TRUE(save_cmyk_pattern(
+      33, 17, 0, GIMG_JPEG_CHROMA_444, 0, 0, 0, 100, written, nullptr));
+  DocStreamGuard in;
+  ASSERT_EQ(gimg_stream_create_memory(written.data(), written.size(), &in.s),
+      GIMG_OK);
+  ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+  RasterGuard got;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+  ASSERT_NE(got.r, nullptr);
+  ASSERT_EQ(gimg_raster_width(got.r), 33u);
+  ASSERT_EQ(gimg_raster_height(got.r), 17u);
+  RasterGuard want;
+  ASSERT_EQ(gimg_raster_create(33, 17, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED,
+                NULL, 0, &want.r),
+      GIMG_OK);
+  fill_cmyk_pattern(want.r);
+  const unsigned char * gp = (const unsigned char *)gimg_raster_pixels(got.r);
+  const unsigned char * wp = (const unsigned char *)gimg_raster_pixels(want.r);
+  size_t gs = gimg_raster_stride_bytes(got.r);
+  size_t ws = gimg_raster_stride_bytes(want.r);
+  int worst = 0;
+  for (uint32_t y = 0; y < 17u; y++) {
+    for (uint32_t x = 0; x < 33u; x++) {
+      for (int ch = 0; ch < 4; ch++) {
+        int d = (int)gp[y * gs + x * 4 + (size_t)ch] -
+            (int)wp[y * ws + x * 4 + (size_t)ch];
+        if (d < 0) {
+          d = -d;
+        }
+        if (d > worst) {
+          worst = d;
+        }
+      }
+    }
+  }
+  EXPECT_LE(worst, 2) << "the components are meant to pass through unchanged "
+                         "apart from the quantiser";
+}
+
+// T.81 has no colour space, so the Adobe APP14 marker is the only thing that
+// says whether the first three components of a four-component frame are C, M
+// and Y or Y, Cb and Cr.  Writing the frame without it would leave a YCCK file
+// that every decoder reads as CMYK, so the marker goes in whatever the
+// metadata policy says - it is not metadata.
+TEST(JpegEncode, FourComponentFrameAlwaysCarriesItsAdobeMarker) {
+  for (uint8_t transform : {uint8_t(0), uint8_t(2)}) {
+    for (GIMG_Meta_Policy policy :
+        {GIMG_META_PRESERVE_ALL, GIMG_META_DROP_ALL}) {
+      SCOPED_TRACE("transform " + std::to_string((int)transform) + ", policy " +
+          std::to_string((int)policy));
+      GIMG_Doc * doc = nullptr;
+      ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+      GIMG_Raster * raster = nullptr;
+      ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_CMYK8,
+                    GIMG_RASTER_OWNED, NULL, 0, &raster),
+          GIMG_OK);
+      fill_cmyk_pattern(raster);
+      gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+      GIMG_Stream * out_stream = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+      GIMG_Save_Options opts = {};
+      opts.metadata_policy = policy;
+      opts.quality = 90;
+      opts.jpeg_cmyk_transform = transform;
+      GIMG_Save_Report report = {};
+      ASSERT_EQ(gimg_doc_save(doc, out_stream, "jpeg", &opts, &report),
+          GIMG_OK);
+      const void * buf = nullptr;
+      size_t n = 0;
+      gimg_stream_output_buffer(out_stream, &buf, &n);
+      const uint8_t * b = (const uint8_t *)buf;
+      // Find APP14 and read its transform byte (payload index 11).
+      int found_transform = -1;
+      int saw_jfif = 0;
+      size_t i = 2;
+      while (i + 4 <= n && b[i] == 0xFF) {
+        uint8_t m = b[i + 1];
+        if (m == 0xD9 || m == 0xDA) {
+          break;
+        }
+        size_t len = (size_t)((b[i + 2] << 8) | b[i + 3]);
+        const uint8_t * pay = b + i + 4;
+        size_t paylen = len >= 2 ? len - 2 : 0;
+        if (m == 0xEE && paylen >= 12 && memcmp(pay, "Adobe\0", 6) == 0) {
+          found_transform = pay[11];
+        }
+        if (m == 0xE0 && paylen >= 5 && memcmp(pay, "JFIF\0", 5) == 0) {
+          saw_jfif = 1;
+        }
+        i += 2 + len;
+      }
+      EXPECT_EQ(found_transform, (int)transform)
+          << "the Adobe marker must say which transform was used";
+      EXPECT_EQ(saw_jfif, 0) << "JFIF describes grayscale or YCbCr data and "
+                                "says nothing about four components; libjpeg "
+                                "writes none for a CMYK or YCCK file";
+      gimg_doc_destroy(doc);
+      gimg_stream_destroy(out_stream);
+    }
+  }
+}
+
+// Chroma subsampling has nothing to subsample in a raw CMYK frame.  C, M, Y
+// and K are four ink amounts; none of them is a chrominance difference, and
+// throwing away half the M samples throws away ink.  libjpeg agrees - its
+// jpeg_set_colorspace gives all four components 1x1 for JCS_CMYK - so the
+// option is ignored here, and a CMYK save produces the same file whatever it
+// says.  The default is 4:2:0, so this is the path an ordinary caller takes.
+//
+// A YCCK frame is the other way round: components 1 and 2 really are
+// chrominance, so they subsample and the files differ.
+TEST(JpegEncode, SubsamplingAppliesToYcckChrominanceAndNotToCmykInk) {
+  std::vector<uint8_t> cmyk444, cmyk422, cmyk420;
+  ASSERT_TRUE(save_cmyk_pattern(
+      33, 17, 0, GIMG_JPEG_CHROMA_444, 0, 0, 0, 90, cmyk444, nullptr));
+  ASSERT_TRUE(save_cmyk_pattern(
+      33, 17, 0, GIMG_JPEG_CHROMA_422, 0, 0, 0, 90, cmyk422, nullptr));
+  ASSERT_TRUE(save_cmyk_pattern(
+      33, 17, 0, GIMG_JPEG_CHROMA_420, 0, 0, 0, 90, cmyk420, nullptr));
+  EXPECT_TRUE(cmyk444 == cmyk422)
+      << "a raw CMYK frame has no chrominance to subsample";
+  EXPECT_TRUE(cmyk444 == cmyk420)
+      << "a raw CMYK frame has no chrominance to subsample";
+
+  std::vector<uint8_t> ycck444, ycck422, ycck420;
+  ASSERT_TRUE(save_cmyk_pattern(
+      33, 17, 2, GIMG_JPEG_CHROMA_444, 0, 0, 0, 90, ycck444, nullptr));
+  ASSERT_TRUE(save_cmyk_pattern(
+      33, 17, 2, GIMG_JPEG_CHROMA_422, 0, 0, 0, 90, ycck422, nullptr));
+  ASSERT_TRUE(save_cmyk_pattern(
+      33, 17, 2, GIMG_JPEG_CHROMA_420, 0, 0, 0, 90, ycck420, nullptr));
+  EXPECT_FALSE(ycck444 == ycck422) << "YCCK chrominance does subsample";
+  EXPECT_FALSE(ycck444 == ycck420) << "YCCK chrominance does subsample";
+}
+
+// Only 0 and 2 are transforms this encoder can carry out: 1 is the YCbCr of a
+// three-component frame and there is no fourth reading at all.  Naming one of
+// those would produce a file whose marker and whose samples disagree.
+TEST(JpegEncode, CmykTransformRefusesWhatItCannotMean) {
+  for (uint8_t bad : {uint8_t(1), uint8_t(3), uint8_t(255)}) {
+    SCOPED_TRACE("transform " + std::to_string((int)bad));
+    std::vector<uint8_t> written;
+    GIMG_Result r = GIMG_OK;
+    EXPECT_FALSE(save_cmyk_pattern(
+        16, 16, bad, GIMG_JPEG_CHROMA_444, 0, 0, 0, 90, written, &r));
+    EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+  }
 }
 
 TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat6) {

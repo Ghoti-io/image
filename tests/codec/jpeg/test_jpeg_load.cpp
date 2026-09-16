@@ -4034,6 +4034,68 @@ TEST(JpegLoad, HierarchicalLosslessFrameCodedAsNonInterleavedScans) {
 // writes a genuine YCCK file, and the resulting picture is not meaningful, but
 // the decode is well defined and libjpeg agrees with it byte for byte.  That
 // branch had no fixture at all before.
+// A four-component frame whose chrominance components are subsampled was
+// upsampled by nearest neighbour here, on the stated grounds that "four-
+// component files are not YCbCr and the filter does not apply to them".  That
+// was wrong: libjpeg picks its upsampler from the sampling factors alone -
+// jdsample.c's jinit_upsampler never looks at the colour space - so a 4:2:0
+// YCCK file gets the same triangle filter a 4:2:0 YCbCr file gets, and this
+// decoder disagreed with libjpeg on every pixel between chroma samples.
+//
+// Nothing caught it because every four-component fixture was 4:4:4, where the
+// box filter and the triangle filter give the same answer.  These three are
+// libjpeg-turbo's own output (tests/data/jpeg/mk_cmyk.c), so both the encoder
+// and the expected pixels come from outside this library.
+TEST(JpegLoad, SubsampledFourComponentFramesUpsampleAsLibjpegDoes) {
+  struct Case {
+    const char * base;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"ycck_ljt_420", "YCCK 4:2:0, written by libjpeg-turbo (h2v2 fancy)"},
+      {"ycck_ljt_422", "YCCK 4:2:2, written by libjpeg-turbo (h2v1 fancy)"},
+      {"cmyk_ljt_sub", "CMYK 4:2:0, written by libjpeg-turbo (transform 0)"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.base) + ": " + c.what);
+    std::vector<uint8_t> oracle;
+    uint32_t ow = 0, oh = 0;
+    int omode = -1;
+    ASSERT_TRUE(
+        jpeg_test::load_jpeg_oracle_raw(c.base, oracle, &ow, &oh, &omode))
+        << "missing oracle " << c.base << ".raw";
+    ASSERT_EQ(omode, 2) << "the oracle must be a CMYK .raw";
+    std::string name = std::string(c.base) + ".jpg";
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name.c_str(), jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    ASSERT_EQ(gimg_raster_width(raster), ow);
+    ASSERT_EQ(gimg_raster_height(raster), oh);
+    const unsigned char * gp =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t gs = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < oh; y++) {
+      for (uint32_t x = 0; x < ow; x++) {
+        for (int ch = 0; ch < 4; ch++) {
+          int a = (int)gp[y * gs + x * 4 + (size_t)ch];
+          int b = (int)oracle[((size_t)y * ow + x) * 4 + (size_t)ch];
+          ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << ch;
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
 TEST(JpegLoad, FourComponentFramesBeyondTheBaselineWalk) {
   struct Case {
     const char * base;

@@ -314,30 +314,24 @@ static void jpeg_comp_pixels(uint32_t width, uint32_t height, uint8_t h_samp,
 }
 
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
-    uint32_t height, int num_components, const unsigned char * comp0,
-    const unsigned char * comp1, const unsigned char * comp2, size_t stride0,
-    size_t stride1, size_t stride2, const uint8_t * h_samp,
-    const uint8_t * v_samp, const uint16_t * quant_luma,
+    uint32_t height, int num_components, const unsigned char * const * comps,
+    const size_t * strides, const uint8_t * h_samp, const uint8_t * v_samp,
+    const uint8_t * tbl_sel, const uint16_t * quant_luma,
     const uint16_t * quant_chroma, unsigned fdct_method, unsigned quant_method,
     int16_t * coef_buffer, size_t * out_total_blocks) {
   (void)fdct_method;
-  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!comps || !strides || num_components < 1 ||
+      num_components > (int)GIMG_JPEG_MAX_COMPONENTS) {
+    return GIMG_ERR_INTERNAL;
+  }
+  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
+      1, 1, 1, 1, 1, 1, 1, 1};
   if (!h_samp)
     h_samp = default_samp;
   if (!v_samp)
     v_samp = default_samp;
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    if (h_samp[1] > h_max)
-      h_max = h_samp[1];
-    if (h_samp[2] > h_max)
-      h_max = h_samp[2];
-    if (v_samp[1] > v_max)
-      v_max = v_samp[1];
-    if (v_samp[2] > v_max)
-      v_max = v_samp[2];
-  }
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   uint32_t mcu_w = (uint32_t)(8 * h_max);
   uint32_t mcu_h = (uint32_t)(8 * v_max);
   uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
@@ -370,10 +364,9 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
     }
   }
 
-  const unsigned char * comps[3] = {comp0, comp1, comp2};
-  size_t strides[3] = {stride0, stride1, stride2};
-  uint32_t comp_w[3], comp_h[3];
-  uint32_t comp_pix_w[3], comp_pix_h[3];
+  uint32_t comp_w[GIMG_JPEG_MAX_COMPONENTS], comp_h[GIMG_JPEG_MAX_COMPONENTS];
+  uint32_t comp_pix_w[GIMG_JPEG_MAX_COMPONENTS];
+  uint32_t comp_pix_h[GIMG_JPEG_MAX_COMPONENTS];
   for (int c = 0; c < num_components; c++) {
     jpeg_comp_blocks(width, height, h_samp[c], v_samp[c], h_max, v_max,
         &comp_w[c], &comp_h[c]);
@@ -385,12 +378,15 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
   int32_t block[64];
   // Per-component last DC for dummy blocks (T.81 Annex A: padding blocks use
   // zero AC and DC = previous block DC so diff = 0).
-  int16_t last_dc[3] = {0, 0, 0};
+  int16_t last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
 
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
     for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
       for (int c = 0; c < num_components; c++) {
-        const uint16_t * quant = (c == 0) ? quant_luma : quant_chroma;
+        // T.81 B.2.2: Tq is chosen per component, not by index; see
+        // gimg_jpeg_tbl_of.
+        const int tsel = gimg_jpeg_tbl_of(tbl_sel, c);
+        const uint16_t * quant = (tsel == 0) ? quant_luma : quant_chroma;
         const unsigned char * comp = comps[c];
         size_t stride = strides[c];
         uint32_t cw = comp_w[c];
@@ -466,7 +462,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
             }
 #endif
             if (quant_method == GIMG_JPEG_QUANT_RECIP) {
-              const int16_t * rtbl = (c == 0) ? recip_luma : recip_chroma;
+              const int16_t * rtbl = (tsel == 0) ? recip_luma : recip_chroma;
               jpeg_quantize_block_recip(block, rtbl, out);
             }
             else {
@@ -753,7 +749,7 @@ static int jpeg_nbits(int val) {
 
 GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
-    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size) {
   if (!alloc || !out_scan_data || !out_scan_size) {
@@ -762,23 +758,14 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   *out_scan_data = NULL;
   *out_scan_size = 0;
 
-  static const uint8_t default_samp[3] = {1, 1, 1};
+  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
+      1, 1, 1, 1, 1, 1, 1, 1};
   if (!h_samp)
     h_samp = default_samp;
   if (!v_samp)
     v_samp = default_samp;
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    if (h_samp[1] > h_max)
-      h_max = h_samp[1];
-    if (h_samp[2] > h_max)
-      h_max = h_samp[2];
-    if (v_samp[1] > v_max)
-      v_max = v_samp[1];
-    if (v_samp[2] > v_max)
-      v_max = v_samp[2];
-  }
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   size_t blocks_per_mcu = 0;
   for (int c = 0; c < num_components; c++) {
     blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
@@ -804,7 +791,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   }
 
   jpeg_bit_writer w = {0};
-  int last_dc[3] = {0, 0, 0};
+  int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
   size_t block_off = 0;
   uint16_t next_restart = 0;
   size_t mcu_index = 0;
@@ -839,14 +826,16 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
       next_restart++;
       w.bitbuf = 0;
       w.nbits = 0;
-      last_dc[0] = 0;
-      last_dc[1] = 0;
-      last_dc[2] = 0;
+      for (int rc = 0; rc < num_components; rc++) {
+        last_dc[rc] = 0;
+      }
     }
 
     for (int c = 0; c < num_components; c++) {
-      const jpeg_derived_tbl * dc_tbl = (c == 0) ? &dc_lum_tbl : &dc_chr_tbl;
-      const jpeg_derived_tbl * ac_tbl = (c == 0) ? &ac_lum_tbl : &ac_chr_tbl;
+      // T.81 B.2.3: Td and Ta are per component; see gimg_jpeg_tbl_of.
+      const int tsel = gimg_jpeg_tbl_of(tbl_sel, c);
+      const jpeg_derived_tbl * dc_tbl = (tsel == 0) ? &dc_lum_tbl : &dc_chr_tbl;
+      const jpeg_derived_tbl * ac_tbl = (tsel == 0) ? &ac_lum_tbl : &ac_chr_tbl;
       size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
       for (size_t b = 0; b < nblocks; b++) {
         size_t block_idx = block_off + b;
@@ -1076,7 +1065,7 @@ static void jpeg_arith_sink_emit(void * ctx, unsigned char b) {
  */
 GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
-    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
     uint16_t restart_interval, int differential,
     unsigned char ** out_scan_data, size_t * out_scan_size) {
@@ -1086,25 +1075,16 @@ GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
   *out_scan_data = NULL;
   *out_scan_size = 0;
 
-  static const uint8_t default_samp[3] = {1, 1, 1};
+  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
+      1, 1, 1, 1, 1, 1, 1, 1};
   if (!h_samp) {
     h_samp = default_samp;
   }
   if (!v_samp) {
     v_samp = default_samp;
   }
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    for (int c = 1; c < 3; c++) {
-      if (h_samp[c] > h_max) {
-        h_max = h_samp[c];
-      }
-      if (v_samp[c] > v_max) {
-        v_max = v_samp[c];
-      }
-    }
-  }
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   uint32_t mcu_per_row =
       (width + (uint32_t)(8 * h_max) - 1) / (uint32_t)(8 * h_max);
   uint32_t mcu_per_col =
@@ -1144,7 +1124,7 @@ GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
     for (int c = 0; c < num_components; c++) {
       // The scan header gives component 0 table 0 and the others table 1, the
       // same split the Huffman path uses for its DC and AC tables.
-      uint8_t tbl = (c == 0) ? 0u : 1u;
+      uint8_t tbl = gimg_jpeg_tbl_of(tbl_sel, c);
       size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
       for (size_t b = 0; b < nblocks; b++) {
         const int16_t * block = coef_buffer + (block_off + b) * 64;
@@ -1189,7 +1169,7 @@ GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
 GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
     uint32_t width, uint32_t height, int num_components,
     const int16_t * coef_buffer, size_t total_blocks, const uint8_t * h_samp,
-    const uint8_t * v_samp, const GIMG_Allocator * alloc,
+    const uint8_t * v_samp, const uint8_t * tbl_sel, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
     size_t * out_scan_size) {
   if (!alloc || !out_scan_data || !out_scan_size) {
@@ -1197,23 +1177,14 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
   }
   *out_scan_data = NULL;
   *out_scan_size = 0;
-  static const uint8_t default_samp[3] = {1, 1, 1};
+  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
+      1, 1, 1, 1, 1, 1, 1, 1};
   if (!h_samp)
     h_samp = default_samp;
   if (!v_samp)
     v_samp = default_samp;
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    if (h_samp[1] > h_max)
-      h_max = h_samp[1];
-    if (h_samp[2] > h_max)
-      h_max = h_samp[2];
-    if (v_samp[1] > v_max)
-      v_max = v_samp[1];
-    if (v_samp[2] > v_max)
-      v_max = v_samp[2];
-  }
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   size_t blocks_per_mcu = 0;
   for (int c = 0; c < num_components; c++) {
     blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
@@ -1242,7 +1213,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
     ext_baseline_tables_built = 1;
   }
   jpeg_bit_writer w = {0};
-  int last_dc[3] = {0, 0, 0};
+  int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
   size_t block_off = 0;
   uint16_t next_restart = 0;
   size_t mcu_index = 0;
@@ -1259,15 +1230,17 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
       next_restart++;
       w.bitbuf = 0;
       w.nbits = 0;
-      last_dc[0] = 0;
-      last_dc[1] = 0;
-      last_dc[2] = 0;
+      for (int rc = 0; rc < num_components; rc++) {
+        last_dc[rc] = 0;
+      }
     }
     for (int c = 0; c < num_components; c++) {
       const jpeg_derived_tbl * dc_tbl =
-          (c == 0) ? &ext_dc_lum_tbl : &ext_dc_chr_tbl;
+          (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? &ext_dc_lum_tbl
+                                             : &ext_dc_chr_tbl;
       const jpeg_derived_tbl * ac_tbl =
-          (c == 0) ? &ext_ac_lum_tbl : &ext_ac_chr_tbl;
+          (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? &ext_ac_lum_tbl
+                                             : &ext_ac_chr_tbl;
       size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
       for (size_t b = 0; b < nblocks; b++) {
         size_t block_idx = block_off + b;
@@ -1364,29 +1337,23 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
 
 /** 12-bit variant: samples 0..4095, level shift 2048 (T.81). */
 GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
-    uint32_t height, int num_components, const uint16_t * comp0,
-    const uint16_t * comp1, const uint16_t * comp2, size_t stride0,
-    size_t stride1, size_t stride2, const uint8_t * h_samp,
-    const uint8_t * v_samp, const uint16_t * quant_luma,
+    uint32_t height, int num_components, const uint16_t * const * comps,
+    const size_t * strides, const uint8_t * h_samp, const uint8_t * v_samp,
+    const uint8_t * tbl_sel, const uint16_t * quant_luma,
     const uint16_t * quant_chroma, int16_t * coef_buffer,
     size_t * out_total_blocks) {
-  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!comps || !strides || num_components < 1 ||
+      num_components > (int)GIMG_JPEG_MAX_COMPONENTS) {
+    return GIMG_ERR_INTERNAL;
+  }
+  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
+      1, 1, 1, 1, 1, 1, 1, 1};
   if (!h_samp)
     h_samp = default_samp;
   if (!v_samp)
     v_samp = default_samp;
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    if (h_samp[1] > h_max)
-      h_max = h_samp[1];
-    if (h_samp[2] > h_max)
-      h_max = h_samp[2];
-    if (v_samp[1] > v_max)
-      v_max = v_samp[1];
-    if (v_samp[2] > v_max)
-      v_max = v_samp[2];
-  }
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   uint32_t mcu_w = (uint32_t)(8 * h_max);
   uint32_t mcu_h = (uint32_t)(8 * v_max);
   uint32_t mcu_per_row = (width + mcu_w - 1) / mcu_w;
@@ -1403,10 +1370,10 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
   }
   *out_total_blocks = total_blocks;
 
-  const uint16_t * comps[3] = {comp0, comp1, comp2};
-  size_t strides_el[3] = {stride0, stride1, stride2};
-  uint32_t comp_w[3], comp_h[3];
-  uint32_t comp_pix_w[3], comp_pix_h[3];
+  const size_t * strides_el = strides;
+  uint32_t comp_w[GIMG_JPEG_MAX_COMPONENTS], comp_h[GIMG_JPEG_MAX_COMPONENTS];
+  uint32_t comp_pix_w[GIMG_JPEG_MAX_COMPONENTS];
+  uint32_t comp_pix_h[GIMG_JPEG_MAX_COMPONENTS];
   for (int c = 0; c < num_components; c++) {
     jpeg_comp_blocks(width, height, h_samp[c], v_samp[c], h_max, v_max,
         &comp_w[c], &comp_h[c]);
@@ -1416,13 +1383,14 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
 
   int16_t * out = coef_buffer;
   int32_t block[64];
-  int16_t last_dc[3] = {0, 0, 0};
+  int16_t last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
   const int32_t level_shift = 2048;
 
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
     for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
       for (int c = 0; c < num_components; c++) {
-        const uint16_t * quant = (c == 0) ? quant_luma : quant_chroma;
+        const uint16_t * quant =
+            (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? quant_luma : quant_chroma;
         const uint16_t * comp = comps[c];
         size_t stride_el = strides_el[c];
         uint32_t cw = comp_w[c];
@@ -1482,7 +1450,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
  */
 GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
-    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
@@ -1493,25 +1461,16 @@ GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
   *out_scan_data = NULL;
   *out_scan_size = 0;
 
-  static const uint8_t default_samp[3] = {1, 1, 1};
+  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
+      1, 1, 1, 1, 1, 1, 1, 1};
   if (!h_samp) {
     h_samp = default_samp;
   }
   if (!v_samp) {
     v_samp = default_samp;
   }
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    for (int c = 1; c < 3; c++) {
-      if (h_samp[c] > h_max) {
-        h_max = h_samp[c];
-      }
-      if (v_samp[c] > v_max) {
-        v_max = v_samp[c];
-      }
-    }
-  }
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   uint32_t mcu_per_row =
       (width + (uint32_t)(8 * h_max) - 1) / (uint32_t)(8 * h_max);
   uint32_t mcu_per_col =
@@ -1549,7 +1508,7 @@ GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
     }
 
     for (int c = 0; c < num_components; c++) {
-      uint8_t tbl = (c == 0) ? 0u : 1u;
+      uint8_t tbl = gimg_jpeg_tbl_of(tbl_sel, c);
       size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
       for (size_t b = 0; b < nblocks; b++) {
         const int16_t * block = coef_buffer + (block_off + b) * 64;
@@ -1596,7 +1555,7 @@ GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
 
 GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
-    const uint8_t * h_samp, const uint8_t * v_samp, uint8_t Ss, uint8_t Se,
+    const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel, uint8_t Ss, uint8_t Se,
     uint8_t Ah, uint8_t Al, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
     size_t * out_scan_size, int16_t * state_after_scan_out,
@@ -1608,23 +1567,14 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
   *out_scan_data = NULL;
   *out_scan_size = 0;
 
-  static const uint8_t default_samp[3] = {1, 1, 1};
+  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
+      1, 1, 1, 1, 1, 1, 1, 1};
   if (!h_samp)
     h_samp = default_samp;
   if (!v_samp)
     v_samp = default_samp;
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    if (h_samp[1] > h_max)
-      h_max = h_samp[1];
-    if (h_samp[2] > h_max)
-      h_max = h_samp[2];
-    if (v_samp[1] > v_max)
-      v_max = v_samp[1];
-    if (v_samp[2] > v_max)
-      v_max = v_samp[2];
-  }
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   size_t blocks_per_mcu = 0;
   for (int c = 0; c < num_components; c++) {
     blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
@@ -1650,7 +1600,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
   }
 
   jpeg_bit_writer w = {0};
-  int last_dc[3] = {0, 0, 0};
+  int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
   size_t block_off = 0;
   uint16_t next_restart = 0;
   size_t mcu_index = 0;
@@ -1671,14 +1621,15 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
           next_restart++;
           w.bitbuf = 0;
           w.nbits = 0;
-          last_dc[0] = 0;
-          last_dc[1] = 0;
-          last_dc[2] = 0;
+          for (int rc = 0; rc < num_components; rc++) {
+            last_dc[rc] = 0;
+          }
         }
         size_t mcu_block_off = 0;
         for (int c = 0; c < num_components; c++) {
           const jpeg_derived_tbl * dc_tbl =
-              (c == 0) ? &dc_lum_tbl : &dc_chr_tbl;
+              (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? &dc_lum_tbl
+                                                 : &dc_chr_tbl;
           size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
           for (size_t b = 0; b < nblocks; b++) {
             size_t block_idx = block_off + mcu_block_off + b;
@@ -1885,7 +1836,8 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
       }
       size_t mcu_block_off = 0;
       for (int c = 0; c < num_components; c++) {
-        const jpeg_derived_tbl * ac_tbl = (c == 0) ? &ac_lum_tbl : &ac_chr_tbl;
+        const jpeg_derived_tbl * ac_tbl =
+            (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? &ac_lum_tbl : &ac_chr_tbl;
         size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
         for (size_t b = 0; b < nblocks; b++) {
           size_t block_idx = block_off + mcu_block_off + b;
@@ -1959,7 +1911,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
 // 16-bit progressive: DC size 0..16, AC 242 symbols. No refinement (Ah!=0).
 GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
-    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size) {
@@ -1972,23 +1924,14 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
   if (Ah != 0) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  static const uint8_t default_samp[3] = {1, 1, 1};
+  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
+      1, 1, 1, 1, 1, 1, 1, 1};
   if (!h_samp)
     h_samp = default_samp;
   if (!v_samp)
     v_samp = default_samp;
-  uint8_t h_max = h_samp[0];
-  uint8_t v_max = v_samp[0];
-  if (num_components >= 3) {
-    if (h_samp[1] > h_max)
-      h_max = h_samp[1];
-    if (h_samp[2] > h_max)
-      h_max = h_samp[2];
-    if (v_samp[1] > v_max)
-      v_max = v_samp[1];
-    if (v_samp[2] > v_max)
-      v_max = v_samp[2];
-  }
+  uint8_t h_max, v_max;
+  gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   size_t blocks_per_mcu = 0;
   for (int c = 0; c < num_components; c++) {
     blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
@@ -2019,7 +1962,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
   }
 
   jpeg_bit_writer w = {0};
-  int last_dc[3] = {0, 0, 0};
+  int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
   size_t block_off = 0;
   uint16_t next_restart = 0;
   size_t mcu_index = 0;
@@ -2038,14 +1981,15 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
         next_restart++;
         w.bitbuf = 0;
         w.nbits = 0;
-        last_dc[0] = 0;
-        last_dc[1] = 0;
-        last_dc[2] = 0;
+        for (int rc = 0; rc < num_components; rc++) {
+          last_dc[rc] = 0;
+        }
       }
       size_t mcu_block_off = 0;
       for (int c = 0; c < num_components; c++) {
         const jpeg_derived_tbl * dc_tbl =
-            (c == 0) ? &ext_dc_lum_tbl : &ext_dc_chr_tbl;
+            (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? &ext_dc_lum_tbl
+                                               : &ext_dc_chr_tbl;
         size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
         for (size_t b = 0; b < nblocks; b++) {
           size_t block_idx = block_off + mcu_block_off + b;
@@ -2097,7 +2041,8 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
       size_t mcu_block_off = 0;
       for (int c = 0; c < num_components; c++) {
         const jpeg_derived_tbl * ac_tbl =
-            (c == 0) ? &ext_ac_lum_tbl : &ext_ac_chr_tbl;
+            (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? &ext_ac_lum_tbl
+                                               : &ext_ac_chr_tbl;
         size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
         for (size_t b = 0; b < nblocks; b++) {
           size_t block_idx = block_off + mcu_block_off + b;
@@ -2318,7 +2263,8 @@ GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
   *out_dht = NULL;
   *out_dht_len = 0;
 
-  static const uint8_t default_samp[3] = {1, 1, 1};
+  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
+      1, 1, 1, 1, 1, 1, 1, 1};
   if (!h_samp) {
     h_samp = default_samp;
   }
@@ -2400,7 +2346,8 @@ GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
  */
 GIMG_Result gimg_jpeg_fill_coef_buffer_differential(uint32_t width,
     uint32_t height, int num_components, const int32_t * const * planes,
-    const size_t * plane_stride, const uint16_t * quant_luma,
+    const size_t * plane_stride, const uint8_t * tbl_sel,
+    const uint16_t * quant_luma,
     const uint16_t * quant_chroma, int16_t * coef_buffer,
     size_t * out_total_blocks) {
   if (!planes || !plane_stride || !coef_buffer || !out_total_blocks ||
@@ -2421,7 +2368,8 @@ GIMG_Result gimg_jpeg_fill_coef_buffer_differential(uint32_t width,
   for (uint32_t by = 0; by < blocks_h; by++) {
     for (uint32_t bx = 0; bx < blocks_w; bx++) {
       for (int c = 0; c < num_components; c++) {
-        const uint16_t * quant = (c == 0) ? quant_luma : quant_chroma;
+        const uint16_t * quant =
+            (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? quant_luma : quant_chroma;
         const int32_t * plane = planes[c];
         size_t stride = plane_stride[c];
         for (int row = 0; row < 8; row++) {

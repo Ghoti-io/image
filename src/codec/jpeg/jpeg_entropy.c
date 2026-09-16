@@ -465,48 +465,55 @@ ext_fail:
  * it here was not a decision, just the two paths having been written at
  * different times; they now assemble the picture with the same code.
  *
- * The components are 8-bit here whichever walk produced them, and the resample
- * is the nearest-neighbour one the baseline path has always used rather than
- * the chroma filter of A.2 - four-component files are not YCbCr and the filter
- * does not apply to them.
+ * Upsampling is the same as for three components.  This used to resample by
+ * nearest neighbour on the grounds that "four-component files are not YCbCr
+ * and the filter does not apply to them", which was wrong: libjpeg chooses its
+ * upsampler from the sampling factors alone (jdsample.c jinit_upsampler never
+ * looks at the colour space), so a subsampled YCCK frame gets the triangle
+ * filter there.  Nearest neighbour disagreed with libjpeg on every 4:2:0 and
+ * 4:2:2 YCCK file; nothing caught it because every four-component fixture was
+ * 4:4:4, where the two agree exactly.
+ *
+ * @param comp_buf   8-bit component planes, whichever walk produced them.
+ * @param h_samp,v_samp  Per-component Hi and Vi from the frame header.
+ * @param fancy      0 selects the box filter, as GIMG_JPEG_CHROMA_UPSAMPLE_
+ *                   SIMPLE asks for.
  */
 static GIMG_Result jpeg_emit_four_component(const GIMG_Allocator * alloc,
     int adobe_transform, uint32_t width, uint32_t height,
     unsigned char * const * comp_buf, const size_t * comp_stride,
-    const uint32_t * comp_w, const uint32_t * comp_h,
-    GIMG_Raster ** out_raster) {
+    const uint32_t * comp_w, const uint32_t * comp_h, const uint8_t * h_samp,
+    const uint8_t * v_samp, int fancy, GIMG_Raster ** out_raster) {
   GIMG_Result r;
-  const uint32_t * cw = comp_w;
-  const uint32_t * ch = comp_h;
-  // APP14 Adobe transform 2 = YCCK: Y,Cb,Cr,K -> convert to CMYK (raw CMYK
-  // output format).
-  if (adobe_transform == 2) {
-    r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
-        (uint32_t)height, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0,
-        out_raster);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
-    size_t stride = gimg_raster_stride_bytes(*out_raster);
-    for (uint32_t y = 0; y < height; y++) {
-      uint32_t cy[4];
+  uint8_t h_max = 1, v_max = 1;
+  gimg_jpeg_sampling_max(4, h_samp, v_samp, &h_max, &v_max);
+  jpeg_plane_t pl[4];
+  for (int i = 0; i < 4; i++) {
+    pl[i].data = comp_buf[i];
+    pl[i].stride = comp_stride[i];
+    pl[i].wide = 0;
+  }
+  r = gimg_raster_create_with_allocator(alloc, width, height,
+      &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0, out_raster);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
+  size_t stride = gimg_raster_stride_bytes(*out_raster);
+  for (uint32_t y = 0; y < height; y++) {
+    for (uint32_t x = 0; x < width; x++) {
+      int s[4];
       for (int i = 0; i < 4; i++) {
-        cy[i] =
-            (ch[i] > 1 && height > 1) ? (y * (ch[i] - 1) / (height - 1)) : 0;
+        s[i] = jpeg_chroma_sample(&pl[i], comp_w[i], comp_h[i], x, y, width,
+            height, h_samp[i], v_samp[i], h_max, v_max, fancy);
       }
-      for (uint32_t x = 0; x < width; x++) {
-        uint32_t cx[4];
-        for (int i = 0; i < 4; i++) {
-          cx[i] =
-              (cw[i] > 1 && width > 1) ? (x * (cw[i] - 1) / (width - 1)) : 0;
-        }
-        int yy = comp_buf[0][cy[0] * comp_stride[0] + cx[0]];
-        int cb_x = comp_buf[1][cy[1] * comp_stride[1] + cx[1]] - 128;
-        int cr_x = comp_buf[2][cy[2] * comp_stride[2] + cx[2]] - 128;
-        int k = comp_buf[3][cy[3] * comp_stride[3] + cx[3]];
-        // YCCK -> CMYK: YCbCr -> RGB (BT.601 integer), then C=255-R, M=255-G,
-        // Y=255-B, K=K.
+      if (adobe_transform == 2) {
+        // YCCK -> CMYK: YCbCr -> RGB (BT.601 integer), then C = 255 - R,
+        // M = 255 - G, Y = 255 - B, K unchanged.  This is jdcolor.c's
+        // ycck_cmyk_convert.
+        int yy = s[0];
+        int cb_x = s[1] - 128;
+        int cr_x = s[2] - 128;
         int r_val = yy + (int)((91881L * cr_x + 32768) >> 16);
         int g_val = yy +
             (int)(((int32_t)(-22554) * cb_x + (int32_t)(-46802) * cr_x +
@@ -528,43 +535,16 @@ static GIMG_Result jpeg_emit_four_component(const GIMG_Allocator * alloc,
         pixels[y * stride + x * 4 + 0] = (unsigned char)(255 - r_val);
         pixels[y * stride + x * 4 + 1] = (unsigned char)(255 - g_val);
         pixels[y * stride + x * 4 + 2] = (unsigned char)(255 - b_val);
-        pixels[y * stride + x * 4 + 3] = (unsigned char)k;
       }
-    }
-  }
-  else {
-    // Raw CMYK: output decompressed components unchanged to match libjpeg
-    // (jdcolor.c null_convert for JCS_CMYK). Decode*PillowOracle uses
-    // dump_jpeg_pixels_ref (libjpeg) as oracle; libjpeg does not invert.
-    r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
-        (uint32_t)height, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0,
-        out_raster);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
-    size_t stride = gimg_raster_stride_bytes(*out_raster);
-    for (uint32_t y = 0; y < height; y++) {
-      uint32_t cy[4];
-      for (int i = 0; i < 4; i++) {
-        cy[i] =
-            (ch[i] > 1 && height > 1) ? (y * (ch[i] - 1) / (height - 1)) : 0;
+      else {
+        // Raw CMYK: the components go out unchanged, to match libjpeg
+        // (jdcolor.c null_convert for JCS_CMYK).  libjpeg does not invert
+        // Adobe CMYK; Pillow does, which is why Pillow is not the oracle here.
+        pixels[y * stride + x * 4 + 0] = (unsigned char)s[0];
+        pixels[y * stride + x * 4 + 1] = (unsigned char)s[1];
+        pixels[y * stride + x * 4 + 2] = (unsigned char)s[2];
       }
-      for (uint32_t x = 0; x < width; x++) {
-        uint32_t cx[4];
-        for (int i = 0; i < 4; i++) {
-          cx[i] =
-              (cw[i] > 1 && width > 1) ? (x * (cw[i] - 1) / (width - 1)) : 0;
-        }
-        pixels[y * stride + x * 4 + 0] =
-            (unsigned char)comp_buf[0][cy[0] * comp_stride[0] + cx[0]];
-        pixels[y * stride + x * 4 + 1] =
-            (unsigned char)comp_buf[1][cy[1] * comp_stride[1] + cx[1]];
-        pixels[y * stride + x * 4 + 2] =
-            (unsigned char)comp_buf[2][cy[2] * comp_stride[2] + cx[2]];
-        pixels[y * stride + x * 4 + 3] =
-            (unsigned char)comp_buf[3][cy[3] * comp_stride[3] + cx[3]];
-      }
+      pixels[y * stride + x * 4 + 3] = (unsigned char)s[3];
     }
   }
   return GIMG_OK;
@@ -1171,9 +1151,13 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     }
   }
   else if (num_comp == 4) {
+    // GIMG_JPEG_CHROMA_UPSAMPLE_DEFAULT is 0 and means FANCY, so absent
+    // options and zero-initialised options agree.
+    int use_fancy_4 = (!options ||
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
     r = jpeg_emit_four_component(alloc, state->adobe_transform,
         (uint32_t)width, (uint32_t)height, comp_buf, comp_stride, comp_w,
-        comp_h, out_raster);
+        comp_h, sof->h_samp, sof->v_samp, use_fancy_4, out_raster);
     if (r != GIMG_OK) {
       goto fail_decode;
     }
@@ -1944,9 +1928,11 @@ static GIMG_Result jpeg_decode_progressive_extended(
       }
     }
     if (!alloc_failed) {
+      int use_fancy_4 = (!options ||
+          options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
       r = jpeg_emit_four_component(alloc, state->adobe_transform,
           (uint32_t)width, (uint32_t)height, comp_buf_8, comp_stride_el,
-          comp_w, comp_h, out_raster);
+          comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_4, out_raster);
     }
     else {
       r = GIMG_ERR_OOM;
