@@ -1075,6 +1075,117 @@ TEST(JpegEncode, FourComponentFrameAlwaysCarriesItsAdobeMarker) {
   }
 }
 
+// A restart interval changes where the entropy coder resets and nothing else:
+// the coefficients either side of an RST marker are the same coefficients
+// (T.81 F.1.1 and the note in B.2.4.4), so the same image written with any
+// interval must decode to the same pixels as one written with none.  An
+// interval of 1 is the extreme of that - a marker after every MCU - and the
+// edge-case table used to say it was not tested.
+//
+// The equality needs no oracle, and it covers what an oracle would not: the
+// interval is counted in MCUs, and an MCU is a different thing in an
+// interleaved scan, a non-interleaved one (A.2.3, where it is a single block)
+// and each band of a progressive one.
+TEST(JpegEncode, SmallRestartIntervalsChangeNothingButWhereTheCoderResets) {
+  const uint32_t w = 37, h = 21;
+  for (int subsampling = 0; subsampling <= 2; subsampling++) {
+    for (int progressive = 0; progressive <= 1; progressive++) {
+      for (int arithmetic = 0; arithmetic <= 1; arithmetic++) {
+        for (int non_interleaved = 0; non_interleaved <= 1;
+            non_interleaved++) {
+          if (progressive && non_interleaved) {
+            continue; // Annex G owns the scan script; the encoder refuses it
+          }
+          SCOPED_TRACE("subsampling " + std::to_string(subsampling) +
+              ", progressive " + std::to_string(progressive) +
+              ", arithmetic " + std::to_string(arithmetic) +
+              ", non-interleaved " + std::to_string(non_interleaved));
+          std::vector<uint8_t> decoded[4];
+          const uint16_t intervals[4] = {0, 1, 2, 3};
+          for (int k = 0; k < 4; k++) {
+            GIMG_Doc * doc = nullptr;
+            ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+            GIMG_Raster * raster = nullptr;
+            ASSERT_EQ(gimg_raster_create(w, h, &GIMG_PIXEL_RGBA8,
+                          GIMG_RASTER_OWNED, NULL, 0, &raster),
+                GIMG_OK);
+            unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+            size_t stride = gimg_raster_stride_bytes(raster);
+            for (uint32_t y = 0; y < h; y++) {
+              for (uint32_t x = 0; x < w; x++) {
+                unsigned char * p = px + y * stride + x * 4;
+                p[0] = (unsigned char)((x * 7 + y * 5) & 0xFF);
+                p[1] = (unsigned char)((x * 3 + y * 11) & 0xFF);
+                p[2] = (unsigned char)((x * 13 + y * 2) & 0xFF);
+                p[3] = 255;
+              }
+            }
+            gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+            GIMG_Stream * os = nullptr;
+            ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+            GIMG_Save_Options so = {};
+            so.metadata_policy = GIMG_META_DROP_ALL;
+            so.quality = 85;
+            so.jpeg_restart_interval = intervals[k];
+            so.jpeg_chroma_subsampling = (uint8_t)subsampling;
+            so.jpeg_progressive = (uint8_t)progressive;
+            so.jpeg_arithmetic = (uint8_t)arithmetic;
+            so.jpeg_non_interleaved = (uint8_t)non_interleaved;
+            GIMG_Save_Report rep = {};
+            ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_OK);
+            const void * buf = nullptr;
+            size_t bn = 0;
+            gimg_stream_output_buffer(os, &buf, &bn);
+            std::vector<uint8_t> written(
+                (const uint8_t *)buf, (const uint8_t *)buf + bn);
+            gimg_doc_destroy(doc);
+            gimg_stream_destroy(os);
+
+            // An interval must actually put RST markers in the file, or the
+            // equality below would hold for the dullest reason.
+            if (intervals[k] != 0) {
+              bool saw_rst = false;
+              for (size_t i = 0; i + 1 < written.size(); i++) {
+                if (written[i] == 0xFF && written[i + 1] >= 0xD0 &&
+                    written[i + 1] <= 0xD7) {
+                  saw_rst = true;
+                  break;
+                }
+              }
+              EXPECT_TRUE(saw_rst) << "no RST marker for interval "
+                                   << intervals[k];
+            }
+
+            DocStreamGuard in;
+            ASSERT_EQ(gimg_stream_create_memory(written.data(), written.size(),
+                          &in.s),
+                GIMG_OK);
+            ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+            RasterGuard got;
+            ASSERT_EQ(gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r),
+                GIMG_OK);
+            ASSERT_NE(got.r, nullptr);
+            const unsigned char * gp =
+                (const unsigned char *)gimg_raster_pixels(got.r);
+            size_t gs = gimg_raster_stride_bytes(got.r);
+            decoded[k].resize((size_t)w * h * 4);
+            for (uint32_t y = 0; y < h; y++) {
+              memcpy(decoded[k].data() + (size_t)y * w * 4, gp + y * gs,
+                  (size_t)w * 4);
+            }
+          }
+          for (int k = 1; k < 4; k++) {
+            EXPECT_TRUE(decoded[k] == decoded[0])
+                << "restart interval " << intervals[k]
+                << " changed the picture, and it only changes where the "
+                   "entropy coder resets";
+          }
+        }
+      }
+    }
+  }
+}
+
 // A twelve-bit four-component frame decodes to GIMG_PIXEL_CMYK16, so it has to
 // be writable from one: a picture that loads and cannot be saved back is the
 // same gap this work set out to close, and adding the decode would otherwise
