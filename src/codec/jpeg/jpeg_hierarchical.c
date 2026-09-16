@@ -946,7 +946,12 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
           // 17x9 DHP whose only frame was 9x5.  Falling back to the map keeps
           // such a sequence decodable - it is the smaller picture, scaled -
           // and the map is in bounds for a plane of any size.
-          if (ref[i].w == want_w[i] && ref[i].h == want_h[i]) {
+          // Four components are CMYK, where the first three are not chroma
+          // and the fourth is ink, so the triangle filter has nothing to say
+          // about any of them and they all take the map.  It changes nothing
+          // for an unsubsampled frame, which is what such a file would be.
+          if (num_comp == 3u && ref[i].w == want_w[i] &&
+              ref[i].h == want_h[i]) {
             sample[i] = jpeg_chroma_sample(&pl[i], ref[i].w, ref[i].h, x, y,
                 width, height, dhp->h_samp[i], dhp->v_samp[i], h_max, v_max,
                 use_fancy);
