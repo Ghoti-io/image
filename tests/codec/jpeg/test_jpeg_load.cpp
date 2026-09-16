@@ -1112,44 +1112,126 @@ TEST(JpegLoad, DecodeRespectsMaxDecodedPixels) {
   gimg_stream_destroy(s);
 }
 
-// T.81 B.3.2: a hierarchical stream is a pyramid of frames, and DHP announces
-// it.  The fixture is `jpeg -y 2 -h` from the ISO reference codec and its
-// markers run DQT DHP SOF1 DHT SOS EXP SOF5 DHT SOS - so the first frame is an
-// ordinary SOF1 carrying the smallest image in the pyramid.
+// Hierarchical mode (T.81 Annex J): a pyramid of frames rather than one image.
 //
-// An unrecognised marker is skipped, and DHP used to be one, so the loader
-// walked past it, accepted that SOF1 and would have returned the base layer as
-// though it were the image.  It escaped only because the SOF5 further on is
-// refused, which is luck rather than a decision: it depends on a later frame
-// being differential.  Refusing DHP itself is the decision.
-TEST(JpegLoad, HierarchicalFrameIsRefusedAtTheDhpMarker) {
-  std::vector<uint8_t> jpeg;
-  ASSERT_TRUE(jpeg_test::load_jpeg_file("hierarchical_2level.jpg", jpeg));
-  size_t dhp_at = 0, sof5_at = 0;
-  for (size_t i = 0; i + 1 < jpeg.size(); i++) {
-    if (jpeg[i] != 0xFF) continue;
-    if (jpeg[i + 1] == 0xDE && dhp_at == 0) dhp_at = i;
-    if (jpeg[i + 1] == 0xC5 && sof5_at == 0) sof5_at = i;
-  }
-  ASSERT_NE(dhp_at, 0u) << "fixture must carry DHP";
-  ASSERT_NE(sof5_at, 0u) << "fixture must carry a differential frame after it";
-  ASSERT_LT(dhp_at, sof5_at);
+// Every fixture here was produced by the ISO reference codec, which is the
+// only implementation at hand that writes hierarchical JPEG at all, so these
+// compare against an independent encoder rather than against our own.
+//
+// The comparison carries a tolerance because that codec's IDCT and chroma
+// upsampler are not libjpeg's, and this library matches libjpeg: a plain
+// single-frame file from the same encoder already needs one.  The plain_*
+// cases at the end of the table are that control.  They are what the
+// tolerances mean: a hierarchical file must land as close to the reference as
+// an ordinary file of the same shape does, give or take the one extra frame of
+// rounding a pyramid adds.  A tolerance of 8 on a 4:2:0 fixture is not
+// slackness about hierarchical decoding - it is the same 8 the single-frame
+// 4:2:0 control needs, and every structural mistake this test is here to catch
+// (ignoring the EXP, dropping the differential frame, clamping the reference
+// between frames, adding without the level shift) moves pixels by far more.
+//
+// See tests/data/jpeg/README.md for the commands that produced each fixture.
+TEST(JpegLoad, DecodeHierarchicalMatchesReferenceCodec) {
+  struct Case {
+    const char * jpg;
+    const char * ref;
+    int tolerance;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"hier_rgb_2level.jpg", "hier_rgb_2level_ref.ppm", 3,
+          "SOF1 base + SOF5 differential sequential DCT, 4:4:4"},
+      {"hier_rgb_2level_arith.jpg", "hier_rgb_2level_arith_ref.ppm", 3,
+          "SOF9 base + SOF13 differential, arithmetic (Annex D)"},
+      {"hier_gray_2level.jpg", "hier_gray_2level_ref.pgm", 2,
+          "SOF1 + SOF5, single component"},
+      {"hier_gray_2level_arith.jpg", "hier_gray_2level_arith_ref.pgm", 2,
+          "SOF9 + SOF13, single component"},
+      {"hier_rgb_420.jpg", "hier_rgb_420_ref.ppm", 8,
+          "SOF1 + SOF5 with 4:2:0 chroma, so each component expands"},
+      {"hier_rgb_422.jpg", "hier_rgb_422_ref.ppm", 13,
+          "SOF1 + SOF5 with 4:2:2 chroma"},
+      {"hier_gray_lossless.jpg", "hier_gray_lossless_ref.pgm", 1,
+          "SOF1 base + SOF7 differential lossless (J.1.3.2: Ss = 0)"},
+      {"hier_gray_lossless_ar.jpg", "hier_gray_lossless_ar_ref.pgm", 1,
+          "SOF9 base + SOF15 differential lossless, arithmetic"},
+      {"hier_rgb_lossless.jpg", "hier_rgb_lossless_ref.ppm", 3,
+          "SOF1 + SOF7 differential lossless, three components"},
+      {"hier_gray_noexp.jpg", "hier_gray_noexp_ref.pgm", 1,
+          "EXP(0,0): a refining frame at the same resolution (B.3.3)"},
+      {"hier_gray_noexp_arith.jpg", "hier_gray_noexp_arith_ref.pgm", 1,
+          "EXP(0,0), arithmetic"},
+      // Controls: the same encoder, the same source, no hierarchy.
+      {"plain_rgb_444.jpg", "plain_rgb_444_ref.ppm", 2,
+          "control: single-frame 4:4:4"},
+      {"plain_rgb_420.jpg", "plain_rgb_420_ref.ppm", 8,
+          "control: single-frame 4:2:0"},
+      {"plain_rgb_422.jpg", "plain_rgb_422_ref.ppm", 13,
+          "control: single-frame 4:2:2"},
+      {"plain_gray.jpg", "plain_gray_ref.pgm", 1,
+          "control: single-frame grayscale"},
+  };
 
-  GIMG_Stream * s = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
-  GIMG_Diagnostics diag = {};
-  gimg_diagnostics_init(&diag, nullptr);
-  GIMG_Doc * doc = nullptr;
-  EXPECT_EQ(gimg_doc_load(s, nullptr, &diag, &doc), GIMG_ERR_UNSUPPORTED);
-  EXPECT_EQ(doc, nullptr);
-  // Stopping at DHP rather than at the frame after it is the whole point: the
-  // offset says which marker was refused.
-  ASSERT_GT(diag.count, 0u);
-  EXPECT_EQ(diag.items[0].chunk_or_tag_id, 0xDEu)
-      << "should refuse at DHP, not at whatever frame followed";
-  EXPECT_EQ(diag.items[0].offset, dhp_at);
-  gimg_diagnostics_destroy(&diag);
-  gimg_stream_destroy(s);
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    uint32_t rw = 0, rh = 0;
+    int rchan = 0, rbits = 0;
+    std::vector<uint32_t> ref;
+    ASSERT_TRUE(jpeg_test::load_pnm_file(c.ref, &rw, &rh, &rchan, &rbits, ref))
+        << "missing reference " << c.ref;
+    ASSERT_EQ(rbits, 8);
+
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    ASSERT_NE(doc, nullptr);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+        GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+
+    // The DHP segment declares the size of the completed image (B.3.2), and
+    // that is what the sequence must decode to - not the size of its first,
+    // smallest frame.
+    EXPECT_EQ(gimg_raster_width(raster), rw);
+    EXPECT_EQ(gimg_raster_height(raster), rh);
+
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    ASSERT_NE(fmt, nullptr);
+    const unsigned char * px =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    int ours_chan = (int)fmt->channel_count;
+    ASSERT_EQ((int)fmt->bits_per_channel[0], 8);
+    ASSERT_TRUE(ours_chan == 1 || ours_chan == 4) << "unexpected channel count";
+    ASSERT_EQ(rchan, (ours_chan == 1) ? 1 : 3);
+
+    int worst = 0;
+    uint32_t worst_x = 0, worst_y = 0;
+    for (uint32_t y = 0; y < rh; y++) {
+      for (uint32_t x = 0; x < rw; x++) {
+        for (int ch = 0; ch < rchan; ch++) {
+          int a = (int)px[(size_t)y * stride + (size_t)x * ours_chan + ch];
+          int b = (int)ref[((size_t)y * rw + x) * rchan + ch];
+          int d = a > b ? a - b : b - a;
+          if (d > worst) {
+            worst = d;
+            worst_x = x;
+            worst_y = y;
+          }
+        }
+      }
+    }
+    EXPECT_LE(worst, c.tolerance)
+        << "worst difference " << worst << " at (" << worst_x << ", "
+        << worst_y << ")";
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
 }
 
 // SOF11, the lossless arithmetic process (T.81 Annex H coded with Annex D).

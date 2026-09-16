@@ -191,6 +191,23 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
       gimg_free(alloc, sc->huff_ac_refine[j]);
     }
   }
+  // Hierarchical sequence: every frame owns its scans the same way (B.3.1).
+  for (unsigned i = 0; i < state->num_frames; i++) {
+    gimg_jpeg_frame_t * f = state->frames[i];
+    if (!f) {
+      continue;
+    }
+    for (unsigned k = 0; k < f->num_scans; k++) {
+      gimg_jpeg_scan_t * sc = &f->scans[k];
+      gimg_free(alloc, sc->data);
+      for (int j = 0; j < 4; j++) {
+        gimg_free(alloc, sc->huff_dc[j]);
+        gimg_free(alloc, sc->huff_ac[j]);
+        gimg_free(alloc, sc->huff_ac_refine[j]);
+      }
+    }
+    gimg_free(alloc, f);
+  }
   gimg_free(alloc, state->app0_jfif);
   gimg_free(alloc, state->app0_jfxx);
   gimg_free(alloc, state->app1_exif);
@@ -315,6 +332,92 @@ static GIMG_Result jpeg_apply_dnl(gimg_jpeg_doc_state_t * state,
   return GIMG_OK;
 }
 
+/**
+ * Start another frame of a hierarchical sequence (T.81 B.3.1, Annex J).
+ *
+ * The frame takes a copy of the quantization tables and arithmetic
+ * conditioning in force at its header, because a hierarchical file normally
+ * redefines them between frames and the frame is decoded long after the loader
+ * has moved past them.  Huffman tables are not copied: each scan already
+ * snapshots the tables in force at its own SOS, which B.2.4 makes the finer
+ * and correct granularity.
+ *
+ * Returns GIMG_OK and sets *out_frame, or an error with *out_why set.
+ */
+static GIMG_Result jpeg_begin_hierarchical_frame(gimg_jpeg_doc_state_t * state,
+    uint8_t marker, const gimg_jpeg_sof_t * sof, unsigned char exp_h,
+    unsigned char exp_v, gimg_jpeg_frame_t ** out_frame, const char ** out_why) {
+  *out_frame = NULL;
+  *out_why = NULL;
+  // B.3.1: "The first frame for each component or group of components in a
+  // hierarchical process shall be encoded by a non-differential frame."  A
+  // sequence that opens with a differential frame has nothing to difference
+  // against, so the first frame decides what the reference components are.
+  if (state->num_frames == 0 && jpeg_sof_is_differential(marker)) {
+    *out_why = "hierarchical sequence starts with a differential frame "
+               "(T.81 B.3.1: the first frame shall be non-differential)";
+    return GIMG_ERR_FORMAT;
+  }
+  // B.3.1: "The sample precision (P) shall be constant for all frames and have
+  // the identical value as that coded in the DHP marker segment."
+  if (sof->precision != state->dhp.precision) {
+    *out_why = "frame precision differs from DHP (T.81 B.3.1: P shall be "
+               "constant for all frames)";
+    return GIMG_ERR_FORMAT;
+  }
+  // B.3.1: "The number of samples per line (X) for all frames shall not exceed
+  // the value coded in the DHP marker segment.  If the number of lines (Y) is
+  // non-zero in the DHP marker segment, then the number of lines for all
+  // frames shall not exceed the value in the DHP marker segment."
+  if (sof->width > state->dhp.width) {
+    *out_why = "frame is wider than DHP declares (T.81 B.3.1)";
+    return GIMG_ERR_FORMAT;
+  }
+  if (state->dhp.height != 0u && sof->height > state->dhp.height) {
+    *out_why = "frame is taller than DHP declares (T.81 B.3.1)";
+    return GIMG_ERR_FORMAT;
+  }
+  // Annex J: either every non-differential frame is DCT-based or every one is
+  // lossless, and a lossless sequence admits only lossless frames.  Mixing the
+  // two would mean adding a difference produced by one coding model to a
+  // reference produced by the other.
+  if (state->num_frames > 0) {
+    int first_lossless = state->frames[0]->is_lossless;
+    if (jpeg_sof_is_lossless(marker) != first_lossless && first_lossless) {
+      *out_why = "DCT frame in a lossless hierarchical sequence (T.81 J: if "
+                 "the non-differential frames use lossless processes, all "
+                 "differential frames shall use lossless processes)";
+      return GIMG_ERR_FORMAT;
+    }
+  }
+  if (state->num_frames >= GIMG_JPEG_MAX_FRAMES) {
+    *out_why = "too many frames in the hierarchical sequence";
+    return GIMG_ERR_LIMIT;
+  }
+  const GIMG_Allocator * alloc = gimg_alloc_or_default(state->allocator);
+  gimg_jpeg_frame_t * f =
+      (gimg_jpeg_frame_t *)gimg_malloc(alloc, sizeof(gimg_jpeg_frame_t));
+  if (!f) {
+    return GIMG_ERR_OOM;
+  }
+  memset(f, 0, sizeof(*f));
+  f->sof = *sof;
+  f->sof_marker = marker;
+  f->is_differential = (unsigned char)jpeg_sof_is_differential(marker);
+  f->is_progressive = (unsigned char)jpeg_sof_is_progressive(marker);
+  f->is_lossless = (unsigned char)jpeg_sof_is_lossless(marker);
+  f->is_arithmetic = (unsigned char)jpeg_sof_is_arithmetic(marker);
+  f->exp_h = exp_h;
+  f->exp_v = exp_v;
+  memcpy(f->quant_tbl_present, state->quant_tbl_present,
+      sizeof(f->quant_tbl_present));
+  memcpy(f->quant_tbl, state->quant_tbl, sizeof(f->quant_tbl));
+  f->arith_cond = state->arith_cond;
+  state->frames[state->num_frames++] = f;
+  *out_frame = f;
+  return GIMG_OK;
+}
+
 GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc) {
@@ -352,6 +455,12 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   bool seen_sof = false;
   bool have_pending_marker = false;
   uint8_t pending_marker = 0;
+  // Hierarchical sequence bookkeeping (T.81 B.3): the frame whose scans are
+  // being read, and any EXP segment waiting to be handed to the next frame.
+  gimg_jpeg_frame_t * cur_frame = NULL;
+  int pending_exp = 0;
+  unsigned char pending_exp_h = 0;
+  unsigned char pending_exp_v = 0;
 
   for (;;) {
     size_t seg_start = 0;
@@ -435,104 +544,150 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
 
     switch (marker) {
+    // T.81 B.3.2: DHP announces hierarchical mode.  It has the syntax of a
+    // frame header but introduces no frame: it declares the size and sampling
+    // factors the sequence of frames adds up to, which is what the decoded
+    // image measures, and what B.3.1 then bounds every frame header against.
+    case GIMG_JPEG_MARKER_DHP: {
+      if (state->is_hierarchical || seen_sof) {
+        gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            state->is_hierarchical
+                ? "a second DHP segment (T.81 B.3.2 allows one)"
+                : "DHP after a frame header (T.81 B.3.2: it shall precede "
+                  "the first frame)");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      r = jpeg_parse_sof(payload_buf, payload_size, marker, &state->dhp);
+      gimg_free(alloc, payload_buf);
+      if (r != GIMG_OK) {
+        jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid DHP");
+        gimg_jpeg_free_doc_state(codec, state);
+        return r;
+      }
+      state->is_hierarchical = 1;
+      // The completed image is what this document is: everything downstream
+      // that asks how big the image is - the pixel-count limit below, the
+      // item's dimensions, the raster the decoder allocates - means the DHP
+      // size, not whatever the first (smallest) frame in the pyramid says.
+      state->sof = state->dhp;
+      break;
+    }
+    // T.81 B.3.3: EXP asks for the reference components to be expanded by two
+    // before the next frame uses them.  It applies to that one frame, so it is
+    // held here and handed to the next frame header rather than kept on the
+    // document.
+    case GIMG_JPEG_MARKER_EXP: {
+      if (!state->is_hierarchical) {
+        gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "EXP outside a hierarchical sequence (T.81 B.3.3)");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      // Table B.11: Le is 3, so the payload is the single Eh|Ev byte.
+      if (payload_size != 1u || !payload_buf) {
+        gimg_free(alloc, payload_buf);
+        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+            "EXP payload is not one byte (T.81 Table B.11: Le = 3)");
+        gimg_jpeg_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
+      {
+        uint8_t eh = (uint8_t)((payload_buf[0] >> 4) & 0x0Fu);
+        uint8_t ev = (uint8_t)(payload_buf[0] & 0x0Fu);
+        gimg_free(alloc, payload_buf);
+        if (eh > 1u || ev > 1u) {
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "EXP Eh/Ev must be 0 or 1 (T.81 Table B.11)");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        if (pending_exp) {
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "two EXP segments before one frame (T.81 B.3.1: no more than "
+              "one shall precede a given frame)");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        pending_exp = 1;
+        pending_exp_h = eh;
+        pending_exp_v = ev;
+      }
+      break;
+    }
     case GIMG_JPEG_MARKER_SOF0:
     case GIMG_JPEG_MARKER_SOF1:
-    case GIMG_JPEG_MARKER_SOF9: {
-      if (seen_sof) {
-        jpeg_load_fmt_debug("duplicate SOF0/SOF1/SOF9", seg_start, marker);
-        gimg_free(alloc, payload_buf);
-        gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
-      }
-      r = jpeg_parse_sof(payload_buf, payload_size, marker, &state->sof);
-      gimg_free(alloc, payload_buf);
-      if (r != GIMG_OK) {
-        jpeg_load_diag(diagnostics, seg_start, marker, r,
-            marker == GIMG_JPEG_MARKER_SOF0 ? "invalid SOF0" : "invalid SOF1");
-        gimg_jpeg_free_doc_state(codec, state);
-        return r;
-      }
-      state->is_progressive = 0;
-      // T.81 Table B.1: SOF9 is the same sequential DCT process as SOF1 with
-      // the arithmetic entropy coder of Annex D in place of the Huffman coder
-      // of Annex F.  Everything above this line is identical for both.
-      state->is_arithmetic = (marker == GIMG_JPEG_MARKER_SOF9);
-      seen_sof = true;
-      break;
-    }
     case GIMG_JPEG_MARKER_SOF2:
-    case GIMG_JPEG_MARKER_SOF10: {
-      if (seen_sof) {
-        jpeg_load_fmt_debug("duplicate SOF2/SOF10", seg_start, marker);
-        gimg_free(alloc, payload_buf);
-        gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
-      }
-      r = jpeg_parse_sof(payload_buf, payload_size, marker, &state->sof);
-      gimg_free(alloc, payload_buf);
-      if (r != GIMG_OK) {
-        jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF2");
-        gimg_jpeg_free_doc_state(codec, state);
-        return r;
-      }
-      state->is_progressive = 1;
-      state->is_arithmetic = (marker == GIMG_JPEG_MARKER_SOF10);
-      seen_sof = true;
-      break;
-    }
     case GIMG_JPEG_MARKER_SOF3:
-    case GIMG_JPEG_MARKER_SOF11: {
-      if (seen_sof) {
-        jpeg_load_fmt_debug("duplicate SOF3/SOF11", seg_start, marker);
+    case GIMG_JPEG_MARKER_SOF5:
+    case GIMG_JPEG_MARKER_SOF6:
+    case GIMG_JPEG_MARKER_SOF7:
+    case GIMG_JPEG_MARKER_SOF9:
+    case GIMG_JPEG_MARKER_SOF10:
+    case GIMG_JPEG_MARKER_SOF11:
+    case GIMG_JPEG_MARKER_SOF13:
+    case GIMG_JPEG_MARKER_SOF14:
+    case GIMG_JPEG_MARKER_SOF15: {
+      // Outside a hierarchical sequence a file holds exactly one frame
+      // (B.2.1), and a differential frame has nothing to be differential
+      // against.
+      if (!state->is_hierarchical) {
+        if (seen_sof) {
+          jpeg_load_fmt_debug("duplicate SOF", seg_start, marker);
+          gimg_free(alloc, payload_buf);
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        if (jpeg_sof_is_differential(marker)) {
+          gimg_free(alloc, payload_buf);
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "differential frame outside a hierarchical sequence (T.81 "
+              "B.3.1: it shall follow a DHP segment)");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        r = jpeg_parse_sof(payload_buf, payload_size, marker, &state->sof);
         gimg_free(alloc, payload_buf);
-        gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
+        if (r != GIMG_OK) {
+          jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF");
+          gimg_jpeg_free_doc_state(codec, state);
+          return r;
+        }
+        state->is_progressive = jpeg_sof_is_progressive(marker);
+        state->is_lossless = jpeg_sof_is_lossless(marker);
+        state->is_arithmetic = jpeg_sof_is_arithmetic(marker);
+        seen_sof = true;
+        break;
       }
-      r = jpeg_parse_sof(payload_buf, payload_size, marker, &state->sof);
-      gimg_free(alloc, payload_buf);
-      if (r != GIMG_OK) {
-        jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF3/SOF11");
-        gimg_jpeg_free_doc_state(codec, state);
-        return r;
+
+      // Hierarchical: this SOF starts another frame of the sequence (B.3.1).
+      {
+        gimg_jpeg_sof_t fsof;
+        r = jpeg_parse_sof(payload_buf, payload_size, marker, &fsof);
+        gimg_free(alloc, payload_buf);
+        if (r != GIMG_OK) {
+          jpeg_load_diag(
+              diagnostics, seg_start, marker, r, "invalid frame header");
+          gimg_jpeg_free_doc_state(codec, state);
+          return r;
+        }
+        const char * why = NULL;
+        r = jpeg_begin_hierarchical_frame(state, marker, &fsof, pending_exp_h,
+            pending_exp_v, &cur_frame, &why);
+        pending_exp = 0;
+        pending_exp_h = 0;
+        pending_exp_v = 0;
+        if (r != GIMG_OK) {
+          jpeg_load_diag(diagnostics, seg_start, marker, r,
+              why ? why : "invalid frame in hierarchical sequence");
+          gimg_jpeg_free_doc_state(codec, state);
+          return r;
+        }
+        seen_sof = true;
       }
-      // T.81 Annex H: predictive coding, not DCT.  Everything downstream that
-      // assumes 8x8 blocks is bypassed for such a frame.  Table B.1: SOF11 is
-      // the same process with the arithmetic coder of Annex D, so it differs
-      // only in how a difference is read.
-      state->is_lossless = 1;
-      state->is_progressive = 0;
-      state->is_arithmetic = (marker == GIMG_JPEG_MARKER_SOF11);
-      seen_sof = true;
       break;
-    }
-    // T.81 B.3.2: DHP announces hierarchical mode.  The frames that follow it
-    // are a sequence of progressively larger images, and the ones after the
-    // first are usually differential (SOF5-SOF7, SOF13-SOF15), which is why
-    // such a file happens to be refused a few markers later.  Refuse it here
-    // instead: DHP is what declares the mode, and stopping at it names the
-    // real reason rather than pointing at whatever frame came next.  Skipping
-    // it - which is what an unrecognised marker gets - would risk returning
-    // the first frame, the smallest one in the pyramid, as though it were the
-    // image.
-    case GIMG_JPEG_MARKER_DHP:
-    // Unsupported SOF (T.81: SOF5-SOF7 differential, SOF13-SOF15
-    // hierarchical).  Reject explicitly so the caller gets a clear error
-    // instead of "no SOF".
-    case 0xC5:
-    case 0xC6:
-    case 0xC7:
-    case 0xCD:
-    case 0xCE:
-    case 0xCF: {
-      if (payload_buf) {
-        gimg_free(alloc, payload_buf);
-      }
-      jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_UNSUPPORTED,
-          marker == GIMG_JPEG_MARKER_DHP
-              ? "hierarchical mode (DHP) is not supported"
-              : "unsupported SOF marker");
-      gimg_jpeg_free_doc_state(codec, state);
-      return GIMG_ERR_UNSUPPORTED;
     }
     case GIMG_JPEG_MARKER_DQT: {
       // DQT: one or more tables. Each table: 1 byte (Pq<<4|Tq), then 64 or 128
@@ -666,7 +821,17 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
-      if (!state->is_progressive && state->num_scans > 0) {
+      // In a hierarchical sequence the scan belongs to the frame whose header
+      // we last read, not to the document; everything below is otherwise the
+      // same, because B.3.1 makes the frame structure identical to the
+      // non-hierarchical one.
+      gimg_jpeg_scan_t * sos_scans = cur_frame ? cur_frame->scans : state->scans;
+      unsigned * sos_num_scans =
+          cur_frame ? &cur_frame->num_scans : &state->num_scans;
+      const gimg_jpeg_sof_t * sos_sof = cur_frame ? &cur_frame->sof : &state->sof;
+      const int sos_progressive =
+          cur_frame ? (int)cur_frame->is_progressive : state->is_progressive;
+      if (!sos_progressive && *sos_num_scans > 0) {
         if (payload_buf)
           gimg_free(alloc, payload_buf);
         jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
@@ -674,7 +839,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
-      if (state->num_scans >= GIMG_JPEG_MAX_SCANS) {
+      if (*sos_num_scans >= GIMG_JPEG_MAX_SCANS) {
         if (payload_buf)
           gimg_free(alloc, payload_buf);
         jpeg_load_diag(
@@ -697,7 +862,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       {
         uint8_t ns = payload_buf[0];
-        if (ns == 0 || ns > state->sof.num_components ||
+        if (ns == 0 || ns > sos_sof->num_components ||
             (size_t)(4 + ns * 2) > payload_size) {
           if (payload_buf)
             gimg_free(alloc, payload_buf);
@@ -706,7 +871,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           gimg_jpeg_free_doc_state(codec, state);
           return GIMG_ERR_FORMAT;
         }
-        gimg_jpeg_scan_t * scan = &state->scans[state->num_scans];
+        gimg_jpeg_scan_t * scan = &sos_scans[*sos_num_scans];
         memset(scan, 0, sizeof(*scan));
         // B.2.4.4: the restart interval in force is the one most recently
         // defined before this scan, which is not necessarily the frame's last.
@@ -732,9 +897,14 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         // whatever that implied.
         {
           const char * why = NULL;
-          int progressive =
-              state->is_progressive ? 1 : 0;
-          int lossless = state->is_lossless ? 1 : 0;
+          // In a hierarchical sequence the scan belongs to the frame whose
+          // header we last read, and it is that frame's coding process which
+          // decides what these four fields mean (B.3.1).
+          int progressive = cur_frame ? (cur_frame->is_progressive ? 1 : 0)
+                                      : (state->is_progressive ? 1 : 0);
+          int lossless = cur_frame ? (cur_frame->is_lossless ? 1 : 0)
+                                   : (state->is_lossless ? 1 : 0);
+          int differential = cur_frame ? (cur_frame->is_differential ? 1 : 0) : 0;
           // B.2.3: 0 <= Ss <= 63, Ss <= Se <= 63; Td and Ta select one of four
           // tables.  A lossless scan reads these three fields quite
           // differently (H.1): Ss is the predictor selection value, Se is zero,
@@ -750,8 +920,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             // B.2.3: every Cs in the scan must be one of the frame's
             // components, and a component may appear only once.
             int found = 0;
-            for (uint8_t c = 0; c < state->sof.num_components; c++) {
-              if (state->sof.comp_id[c] == scan->comp_id[i]) {
+            for (uint8_t c = 0; c < sos_sof->num_components; c++) {
+              if (sos_sof->comp_id[c] == scan->comp_id[i]) {
                 found = 1;
                 break;
               }
@@ -793,8 +963,17 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             // is only meaningful in the differential frames of Annex J); Se is
             // zero; Ah is zero; and Al is the point transform, which cannot
             // discard every bit of a sample.
-            if (scan->ss < 1u || scan->ss > 7u) {
-              why = "lossless predictor selection out of range (T.81 H.1)";
+            // T.81 Table H.1 and J.1.3.2: selection value 0 is "no
+            // prediction", "shall only be used for differential coding in the
+            // hierarchical mode of operation", and is required there - "The
+            // prediction selection parameter in the scan header shall be set
+            // to zero."  So the permitted set is exactly one value or the
+            // other, depending on which kind of frame this is.
+            if (differential ? (scan->ss != 0u)
+                             : (scan->ss < 1u || scan->ss > 7u)) {
+              why = differential
+                  ? "differential lossless scan must have Ss=0 (T.81 J.1.3.2)"
+                  : "lossless predictor selection out of range (T.81 H.1)";
             }
             else if (scan->se != 0u) {
               why = "lossless scan must have Se=0 (T.81 B.2.3)";
@@ -802,7 +981,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             else if (scan->ah != 0u) {
               why = "lossless scan must have Ah=0 (T.81 B.2.3)";
             }
-            else if (scan->al >= state->sof.precision) {
+            else if (scan->al >= sos_sof->precision) {
               why = "lossless point transform discards the whole sample "
                     "(T.81 H.1)";
             }
@@ -855,7 +1034,9 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             }
           }
         }
-        state->num_scans++;
+        (*sos_num_scans)++;
+        // Entropy bytes read below belong to this scan wherever it lives.
+        state->cur_scan = scan;
         state->inter_scan_dht_index_set = 0;  // Next scan data end will set index.
       }
       gimg_free(alloc, payload_buf);
@@ -918,7 +1099,15 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         // End of this scan's entropy data only at next SOS or EOI (T.81 B.2.4:
         // marker segments such as DHT may appear between scans; 0xFF before
         // them is the start of the marker, not entropy — do not append it).
-        if (b == GIMG_JPEG_MARKER_SOS || b == GIMG_JPEG_MARKER_EOI) {
+        // A frame header, a DHP or an EXP ends the scan just as firmly as the
+        // next SOS does, and none of the three is a table-specification
+        // segment that this loop may quietly apply and read past.  Before
+        // hierarchical mode was understood they were read and discarded here,
+        // which is how the EXP that expands a reference component - and the
+        // frame header it belongs to - went missing from a pyramid.
+        if (b == GIMG_JPEG_MARKER_SOS || b == GIMG_JPEG_MARKER_EOI ||
+            b == GIMG_JPEG_MARKER_DHP || b == GIMG_JPEG_MARKER_EXP ||
+            jpeg_marker_is_sof(b)) {
           // T.81 B.2.4: 0xFF that starts the next marker is not scan entropy.
           // Do not overwrite last_scan_data_end_dht_index here; it was set when
           // we first exited this scan's data (before any inter-scan DHT).
@@ -1352,6 +1541,20 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_FORMAT, "no SOF found");
     gimg_jpeg_free_doc_state(codec, state);
     return GIMG_ERR_FORMAT;
+  }
+  // T.81 B.3.1 allows Y to be zero in DHP, in which case it places no bound on
+  // the frames and the completed image is as tall as the tallest of them.  A
+  // frame header that is itself zero-height still needs DNL, which the loop
+  // above applied, so by here every frame knows its own height.
+  if (state->is_hierarchical && state->sof.height == 0u) {
+    uint16_t tallest = 0;
+    for (unsigned i = 0; i < state->num_frames; i++) {
+      if (state->frames[i]->sof.height > tallest) {
+        tallest = state->frames[i]->sof.height;
+      }
+    }
+    state->sof.height = tallest;
+    state->dhp.height = tallest;
   }
   if (state->sof.height == 0) {
     jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_FORMAT,

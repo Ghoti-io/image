@@ -32,23 +32,38 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 /** Marker bytes (after 0xFF). Per ISO/IEC 10918-1 (ITU-T T.81) Annex B, the
  * only Start-of-Frame (SOF) marker bytes are 0xC0, 0xC1, 0xC2, 0xC3, 0xC5,
  * 0xC6, 0xC7, 0xC9, 0xCA, 0xCB (and 0xCD, 0xCE, 0xCF for SOF13–SOF15). 0xC4 is
- * DHT, 0xC8 is reserved, 0xCC is DAC — not SOF. We support SOF0, SOF1, SOF2
- * only. */
+ * DHT, 0xC8 is reserved, 0xCC is DAC — not SOF.  All fourteen are supported:
+ * the six differential ones only within a hierarchical sequence, which is
+ * where T.81 Annex J allows them. */
 #define GIMG_JPEG_MARKER_SOI 0xD8
 #define GIMG_JPEG_MARKER_EOI 0xD9
 #define GIMG_JPEG_MARKER_SOF0 0xC0 // Baseline DCT (8-bit only)
 #define GIMG_JPEG_MARKER_SOF1 0xC1 // Extended sequential DCT (8- or 12-bit)
 #define GIMG_JPEG_MARKER_SOF2 0xC2 // Progressive DCT
 #define GIMG_JPEG_MARKER_SOF3 0xC3 // Lossless, Huffman (T.81 Annex H)
-// 0xC4 = DHT (Define Huffman Tables), not SOF
-// 0xC5 = SOF5 differential sequential DCT; 0xC6 = SOF6; 0xC7 = SOF7
-// differential lossless; 0xC8 = reserved;
-// 0xCD = SOF13; 0xCE = SOF14; 0xCF = SOF15
+// 0xC4 = DHT (Define Huffman Tables), not SOF; 0xC8 = reserved.
+/** @name Differential frame headers (T.81 Annex J, Table B.1).
+ *
+ * These appear only inside a hierarchical sequence, after the DHP segment and
+ * after at least one non-differential frame.  Each is the differential
+ * counterpart of the frame header four codes below it: SOF5 of SOF1, SOF6 of
+ * SOF2, SOF7 of SOF3, and likewise SOF13/SOF14/SOF15 of SOF9/SOF10/SOF11 for
+ * the arithmetic coder.  The header itself has the same shape (B.2.2); what
+ * changes is the coding model (J.1.3), not the syntax. */
+/** @{ */
+#define GIMG_JPEG_MARKER_SOF5 0xC5  // Differential sequential DCT, Huffman
+#define GIMG_JPEG_MARKER_SOF6 0xC6  // Differential progressive DCT, Huffman
+#define GIMG_JPEG_MARKER_SOF7 0xC7  // Differential lossless, Huffman
+#define GIMG_JPEG_MARKER_SOF13 0xCD // Differential sequential DCT, arithmetic
+#define GIMG_JPEG_MARKER_SOF14 0xCE // Differential progressive DCT, arithmetic
+#define GIMG_JPEG_MARKER_SOF15 0xCF // Differential lossless, arithmetic
+/** @} */
 #define GIMG_JPEG_MARKER_SOF9 0xC9  // Extended sequential DCT, arithmetic
 #define GIMG_JPEG_MARKER_SOF10 0xCA // Progressive DCT, arithmetic
 #define GIMG_JPEG_MARKER_SOF11 0xCB // Lossless, arithmetic (Annex H + Annex D)
 #define GIMG_JPEG_MARKER_DAC 0xCC   // Define Arithmetic Coding conditioning
 #define GIMG_JPEG_MARKER_DHP 0xDE   // Define Hierarchical Progression (B.3.2)
+#define GIMG_JPEG_MARKER_EXP 0xDF   // Expand reference components (B.3.3)
 #define GIMG_JPEG_MARKER_DHT 0xC4
 #define GIMG_JPEG_MARKER_DQT 0xDB
 #define GIMG_JPEG_MARKER_SOS 0xDA
@@ -409,6 +424,53 @@ typedef struct {
 } gimg_jpeg_sof_t;
 
 /**
+ * Upper bound on frames in one hierarchical sequence (T.81 B.3.1).
+ *
+ * The standard sets no limit.  Each frame at least doubles a dimension when it
+ * expands, so a pyramid reaching the 32768-sample cap needs 16 frames; the
+ * rest of the allowance covers sequences that refine at constant resolution.
+ * A bound is needed at all because each frame owns a scan array, and a file
+ * that repeats SOF forever would otherwise allocate without end.
+ */
+#define GIMG_JPEG_MAX_FRAMES 32u
+
+/**
+ * One frame of a hierarchical sequence (T.81 Annex J).
+ *
+ * Outside hierarchical mode a JPEG file holds exactly one frame, and the doc
+ * state below carries it directly.  Inside a hierarchical sequence the file is
+ * a list of frames that build on one another, so each needs its own header,
+ * scans, and the tables that were in force when its header was read.  Huffman
+ * tables are not repeated here: each scan already snapshots the tables in force
+ * at its own SOS, which is what B.2.4 requires and is finer-grained than the
+ * frame.
+ */
+typedef struct {
+  gimg_jpeg_sof_t sof;
+  uint8_t sof_marker; ///< The SOFn code this frame was introduced by.
+  /** T.81 J.1.3: the frame codes two's complement differences against the
+   * reference components rather than the samples themselves.  True for SOF5,
+   * SOF6, SOF7, SOF13, SOF14 and SOF15. */
+  unsigned char is_differential;
+  unsigned char is_progressive; ///< SOF2/SOF6/SOF10/SOF14.
+  unsigned char is_lossless;    ///< SOF3/SOF7/SOF11/SOF15.
+  unsigned char is_arithmetic;  ///< SOF9..SOF11, SOF13..SOF15.
+  /** T.81 B.3.3: an EXP segment immediately before this frame header asks for
+   * the reference components to be expanded by two before use.  The segment
+   * applies to one frame only, so these are per-frame and not carried on. */
+  unsigned char exp_h, exp_v;
+  /** Quantization tables in force at this frame header.  A hierarchical file
+   * usually redefines them between frames, so the frame cannot read them from
+   * the document at decode time. */
+  int quant_tbl_present[GIMG_JPEG_MAX_QUANT_TABLES];
+  uint16_t quant_tbl[GIMG_JPEG_MAX_QUANT_TABLES][GIMG_JPEG_DQT_ENTRIES];
+  /** Arithmetic conditioning in force at this frame header (B.2.4.3). */
+  jpeg_arith_cond_t arith_cond;
+  unsigned num_scans;
+  gimg_jpeg_scan_t scans[GIMG_JPEG_MAX_SCANS];
+} gimg_jpeg_frame_t;
+
+/**
  * Codec-private document state for JPEG (baseline or progressive).
  */
 typedef struct gimg_jpeg_doc_state {
@@ -424,6 +486,29 @@ typedef struct gimg_jpeg_doc_state {
   int is_arithmetic;
   /** Conditioning from DAC, or the B.2.4.3 defaults when there is none. */
   jpeg_arith_cond_t arith_cond;
+
+  /** @name Hierarchical mode (T.81 Annex J, B.3)
+   *
+   * A DHP segment before the first frame header turns the file into a sequence
+   * of frames rather than a single one.  When that happens the fields above
+   * that describe *the* frame - sof, is_progressive, is_lossless,
+   * is_arithmetic, scans, num_scans - are left as the first frame's, so that
+   * anything reading them sees something sane, but decoding goes through
+   * frames[] instead and ignores them. */
+  /** @{ */
+  int is_hierarchical; ///< A DHP segment was seen (B.3.2).
+  /** The DHP header: the size and sampling factors of the completed image
+   * (B.3.2).  A frame header may describe something smaller; this is what the
+   * sequence adds up to, and so what the decoded raster measures. */
+  gimg_jpeg_sof_t dhp;
+  gimg_jpeg_frame_t * frames[GIMG_JPEG_MAX_FRAMES];
+  unsigned num_frames;
+  /** @} */
+
+  /** Scan currently being read, so that entropy bytes land in the right place
+   * whether the scan belongs to the document (single-frame) or to one of
+   * frames[] (hierarchical). */
+  gimg_jpeg_scan_t * cur_scan;
 
   // Quantization tables: 64 entries each; -1 = not present.
   int quant_tbl_present[GIMG_JPEG_MAX_QUANT_TABLES];
@@ -619,7 +704,46 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     uint32_t * out_height, int * out_num_components, int * out_precision);
 
 /** Decode a lossless frame (SOF3, T.81 Annex H). */
+/**
+ * Widen a sample from one precision to another by bit replication.
+ *
+ * The rule the rest of the library uses (src/ops/bitdepth.c), generalised: a
+ * lossless frame may declare any precision from 2 to 16 (T.81 Table B.2), so
+ * the fixed 8-to-16 and 12-to-16 helpers are not enough.  Replication maps the
+ * full source range onto the full destination range - all-ones stays all-ones -
+ * which left-justification does not.  Defined in jpeg_lossless.c.
+ */
+uint32_t jpeg_sample_widen(uint32_t v, int from, int to);
+
+/**
+ * Decode one lossless difference value (T.81 H.1.2.2).  Defined in
+ * jpeg_lossless.c.
+ *
+ * The categories are the DC ones of F.1.2.1 extended by one: SSSS runs to 16,
+ * and 16 is a special case that carries no additional bits and always means
+ * 32768.
+ */
+GIMG_Result jpeg_lossless_decode_diff(gimg_jpeg_bitstream_t * bs,
+    const gimg_jpeg_huff_table_t * tbl, int32_t * out_diff);
+
+/** Predict a sample from its neighbours (T.81 H.1.2.1, Table H.1).  Defined in
+ * jpeg_lossless.c; the hierarchical path needs it for the non-differential
+ * lossless frames of a sequence. */
+int32_t jpeg_lossless_predict(int psv, int32_t ra, int32_t rb, int32_t rc);
+
 GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
+    const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
+
+/**
+ * Decode a hierarchical sequence (T.81 Annex J).
+ *
+ * The frames are decoded in order into reference components, each frame either
+ * replacing them (non-differential) or being added to them (differential,
+ * J.2.1), with the reference expanded by two beforehand where an EXP segment
+ * asked for it.  The completed components are then converted to a raster at
+ * the DHP size.
+ */
+GIMG_Result gimg_jpeg_decode_hierarchical(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
 GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
@@ -900,6 +1024,18 @@ static inline size_t jpeg_component_index(uint32_t cw, uint32_t ch, size_t strid
  */
 GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
     uint8_t sof_marker, gimg_jpeg_sof_t * sof);
+
+/** @name Frame header marker classification (T.81 Table B.1, B.3.1).
+ *
+ * Defined in jpeg_parse.c; see the comment there for why these are derived
+ * from the marker code rather than listed case by case. */
+/** @{ */
+int jpeg_marker_is_sof(uint8_t m);
+int jpeg_sof_is_differential(uint8_t m);
+int jpeg_sof_is_progressive(uint8_t m);
+int jpeg_sof_is_lossless(uint8_t m);
+int jpeg_sof_is_arithmetic(uint8_t m);
+/** @} */
 /** Apply DHT payload to state (store DC/AC tables). Uses alloc for storage. */
 void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload_buf, size_t payload_size,

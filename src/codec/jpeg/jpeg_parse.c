@@ -18,6 +18,46 @@
 #include "../../core/alloc_internal.h"
 #include "jpeg_internal.h"
 
+/**
+ * Classify a frame header marker (T.81 Table B.1).
+ *
+ * The fourteen SOFn codes are laid out so that each property is a property of
+ * the code itself: 0xC5-0xC7 and 0xCD-0xCF are the differential frames of
+ * Annex J, 0xC9-0xCF use the arithmetic coder of Annex D, and within each group
+ * of four the second is progressive and the third lossless.  Reading them off
+ * the marker keeps the fourteen cases from having to be spelled out at each
+ * place that asks one of these questions.
+ */
+int jpeg_marker_is_sof(uint8_t m) {
+  if (m < 0xC0u || m > 0xCFu) {
+    return 0;
+  }
+  // 0xC4 is DHT, 0xC8 is reserved, 0xCC is DAC: not frame headers.
+  return (m != 0xC4u && m != 0xC8u && m != 0xCCu);
+}
+
+int jpeg_sof_is_differential(uint8_t m) {
+  // T.81 B.3.1: SOF5-SOF7 and SOF13-SOF15.
+  return (m >= 0xC5u && m <= 0xC7u) || (m >= 0xCDu && m <= 0xCFu);
+}
+
+int jpeg_sof_is_progressive(uint8_t m) {
+  // SOF2, SOF6, SOF10, SOF14.
+  return m == GIMG_JPEG_MARKER_SOF2 || m == GIMG_JPEG_MARKER_SOF6 ||
+      m == GIMG_JPEG_MARKER_SOF10 || m == GIMG_JPEG_MARKER_SOF14;
+}
+
+int jpeg_sof_is_lossless(uint8_t m) {
+  // SOF3, SOF7, SOF11, SOF15.
+  return m == GIMG_JPEG_MARKER_SOF3 || m == GIMG_JPEG_MARKER_SOF7 ||
+      m == GIMG_JPEG_MARKER_SOF11 || m == GIMG_JPEG_MARKER_SOF15;
+}
+
+int jpeg_sof_is_arithmetic(uint8_t m) {
+  // SOF9-SOF11 and SOF13-SOF15.
+  return (m >= 0xC9u && m <= 0xCBu) || (m >= 0xCDu && m <= 0xCFu);
+}
+
 GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
     uint8_t sof_marker, gimg_jpeg_sof_t * sof) {
   if (len < 8) {
@@ -33,29 +73,18 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
   if (sof_marker == GIMG_JPEG_MARKER_SOF0 && precision != 8) {
     return GIMG_ERR_FORMAT; // Baseline is 8-bit only per spec.
   }
-  if (sof_marker == GIMG_JPEG_MARKER_SOF1 &&
-      (precision != 8 && precision != 12)) {
-    return GIMG_ERR_UNSUPPORTED; // Extended sequential: 8 or 12-bit.
-  }
-  if (sof_marker == GIMG_JPEG_MARKER_SOF2 &&
-      (precision != 8 && precision != 12)) {
-    return GIMG_ERR_UNSUPPORTED; // Progressive: 8 or 12-bit.
-  }
-  // SOF9 and SOF10 are the arithmetic-coded counterparts of SOF1 and SOF2
-  // (T.81 Table B.1).  The frame header is identical; only the entropy coder
-  // differs, so the same precision rule applies.
-  if ((sof_marker == GIMG_JPEG_MARKER_SOF9 ||
-          sof_marker == GIMG_JPEG_MARKER_SOF10) &&
-      (precision != 8 && precision != 12)) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
   // T.81 Table B.2: a lossless frame may use any precision from 2 to 16, and a
-  // DCT-based one exactly 8 or 12.  This is the only place 16-bit samples are
-  // legal in a JPEG.
-  if (sof_marker == GIMG_JPEG_MARKER_SOF3 ||
-      sof_marker == GIMG_JPEG_MARKER_SOF11) {
-    // SOF11 is the same lossless process as SOF3 with the arithmetic coder of
-    // Annex D, so the precision rule is the frame's, not the coder's.
+  // DCT-based one exactly 8 or 12.  A lossless frame is the only place 16-bit
+  // samples are legal in a JPEG.  The rule follows the coding process, not the
+  // entropy coder: SOF11 is SOF3 with the arithmetic coder of Annex D, and
+  // SOF7 and SOF15 are their differential counterparts (Annex J), so all four
+  // take the wider range.
+  //
+  // DHP is not a frame header but has the same syntax (B.3.2), and describes
+  // the completed image of a sequence that may be lossless, so it is given the
+  // wider range too; B.3.1 then requires every frame in the sequence to repeat
+  // the same precision, which jpeg_load.c checks against this value.
+  if (jpeg_sof_is_lossless(sof_marker) || sof_marker == GIMG_JPEG_MARKER_DHP) {
     if (precision < 2 || precision > 16) {
       return GIMG_ERR_UNSUPPORTED;
     }
@@ -89,6 +118,12 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
       return GIMG_ERR_FORMAT;
     }
     if (sof->quant_tbl_id[i] >= GIMG_JPEG_MAX_QUANT_TABLES) {
+      return GIMG_ERR_FORMAT;
+    }
+    // T.81 B.3.2: "the quantization table destination selector parameter shall
+    // be set to zero in the DHP segment".  DHP describes the completed image,
+    // not a frame to be decoded, so it selects no table.
+    if (sof_marker == GIMG_JPEG_MARKER_DHP && sof->quant_tbl_id[i] != 0u) {
       return GIMG_ERR_FORMAT;
     }
     // T.81 B.2.2: component identifiers are distinct, since a scan header
@@ -206,10 +241,13 @@ void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
 
 GIMG_Result jpeg_append_scan_data(gimg_jpeg_doc_state_t * state,
     const unsigned char * data, size_t len) {
-  if (state->num_scans == 0) {
+  // In a hierarchical sequence the scan being read belongs to one of frames[],
+  // not to state->scans, so the loader records which one rather than letting
+  // this recompute it (T.81 B.3.1).
+  gimg_jpeg_scan_t * scan = state->cur_scan;
+  if (!scan) {
     return GIMG_ERR_FORMAT;
   }
-  gimg_jpeg_scan_t * scan = &state->scans[state->num_scans - 1];
   const GIMG_Allocator * alloc = state->allocator;
   alloc = gimg_alloc_or_default(alloc);
   size_t new_size = scan->data_size + len;

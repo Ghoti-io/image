@@ -38,7 +38,7 @@
  * onto the full destination range - all-ones stays all-ones - which
  * left-justification does not.
  */
-static uint32_t jpeg_lossless_widen(uint32_t v, int from, int to) {
+uint32_t jpeg_sample_widen(uint32_t v, int from, int to) {
   if (from >= to) {
     return v >> (from - to);
   }
@@ -56,7 +56,7 @@ static uint32_t jpeg_lossless_widen(uint32_t v, int from, int to) {
 }
 
 /** Predict a sample from its neighbours (T.81 H.1.2.1, Table H.1). */
-static int32_t jpeg_lossless_predict(
+int32_t jpeg_lossless_predict(
     int psv, int32_t ra, int32_t rb, int32_t rc) {
   switch (psv) {
   case 1:
@@ -86,7 +86,7 @@ static int32_t jpeg_lossless_predict(
  * 32768.  That is the only value which would otherwise need seventeen bits to
  * distinguish from its negative counterpart.
  */
-static GIMG_Result jpeg_lossless_decode_diff(gimg_jpeg_bitstream_t * bs,
+GIMG_Result jpeg_lossless_decode_diff(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * tbl, int32_t * out_diff) {
   int s = jpeg_huff_decode(bs, tbl, 0, 1, 0);
   if (s < 0 || s > 16) {
@@ -420,7 +420,7 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
           if (sv > max_val) {
             sv = max_val;
           }
-          v[c] = jpeg_lossless_widen(sv, sample_bits, out_bits);
+          v[c] = jpeg_sample_widen(sv, sample_bits, out_bits);
         }
         if (out_bits == 8) {
           unsigned char * p = (unsigned char *)pixels + (size_t)y * stride;

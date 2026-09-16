@@ -32,6 +32,9 @@ GIMG_Result gimg_jpeg_decode(GIMG_Codec * codec, const GIMG_Item * item,
   }
   gimg_jpeg_doc_state_t * state =
       (gimg_jpeg_doc_state_t *)doc->codec_private;
+  if (state->is_hierarchical) {
+    return gimg_jpeg_decode_hierarchical(state, options, out_raster);
+  }
   if (state->is_lossless) {
     return gimg_jpeg_decode_lossless(state, options, out_raster);
   }

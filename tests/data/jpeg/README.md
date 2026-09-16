@@ -433,3 +433,83 @@ MCUs in an MCU row"), and invisible to this library's own output, which snaps
 the interval to whole rows for exactly that reason.  It took a mid-row interval
 from the reference codec to expose it, and it was wrong here for both entropy
 coders until then.
+
+## Hierarchical fixtures (`hier_*.jpg`, `plain_*.jpg`)
+
+T.81 Annex J.  A hierarchical JPEG is a sequence of frames: a DHP segment
+(B.3.2) declares the size of the completed image, the first frame carries a
+small version of it, and later frames either repeat it at a new resolution or
+code the difference against what has been reconstructed so far.  An EXP segment
+(B.3.3) before a frame doubles the reference first.
+
+The ISO reference codec is the only implementation here that writes these, so
+it produced every fixture and its expected decode.  The source images are
+`hier_src_rgb.ppm` (17x9) and `hier_src_gray.pgm`, both committed beside the
+fixtures; they are odd-sized on purpose, because doubling an odd dimension
+overshoots by one and the surplus row and column have to be dropped (J.1.1.2).
+
+```sh
+J=/path/to/thorfdbg-libjpeg/jpeg
+D=tests/data/jpeg
+
+# frame sequence            source                  options
+$J -y 2 -q 85 -h                $D/hier_src_rgb.ppm  $D/hier_rgb_2level.jpg
+$J -y 2 -q 85 -a                $D/hier_src_rgb.ppm  $D/hier_rgb_2level_arith.jpg
+$J -y 2 -q 85 -h                $D/hier_src_gray.pgm $D/hier_gray_2level.jpg
+$J -y 2 -q 85 -a                $D/hier_src_gray.pgm $D/hier_gray_2level_arith.jpg
+$J -y 2 -q 85 -h -s 1x1,2x2,2x2 $D/hier_src_rgb.ppm  $D/hier_rgb_420.jpg
+$J -y 2 -q 85 -h -s 1x1,2x1,2x1 $D/hier_src_rgb.ppm  $D/hier_rgb_422.jpg
+$J -y 1 -q 85 -h                $D/hier_src_gray.pgm $D/hier_gray_lossless.jpg
+$J -y 1 -q 85 -a                $D/hier_src_gray.pgm $D/hier_gray_lossless_ar.jpg
+$J -y 1 -q 85 -h                $D/hier_src_rgb.ppm  $D/hier_rgb_lossless.jpg
+$J -y 0 -q 85 -h                $D/hier_src_gray.pgm $D/hier_gray_noexp.jpg
+$J -y 0 -q 85 -a                $D/hier_src_gray.pgm $D/hier_gray_noexp_arith.jpg
+
+# Controls: same encoder, same source, one frame.
+$J -q 85 -h                     $D/hier_src_rgb.ppm  $D/plain_rgb_444.jpg
+$J -q 85 -h -s 1x1,2x2,2x2      $D/hier_src_rgb.ppm  $D/plain_rgb_420.jpg
+$J -q 85 -h -s 1x1,2x1,2x1      $D/hier_src_rgb.ppm  $D/plain_rgb_422.jpg
+$J -q 85 -h                     $D/hier_src_gray.pgm $D/plain_gray.jpg
+
+# The expected decode of each, from the same codec.  It writes P5 for a
+# single-component image and P6 for three, hence the two extensions.
+for f in $D/hier_*.jpg $D/plain_*.jpg; do
+  b=${f%.jpg}; $J $f $b.tmp
+  case $(head -c2 $b.tmp) in P5) mv $b.tmp ${b}_ref.pgm;; *) mv $b.tmp ${b}_ref.ppm;; esac
+done
+```
+
+`-h` (optimised Huffman tables) is not optional: without it the encoder refuses
+every hierarchical Huffman combination with "Huffman table is unsuitable for
+selected coding mode".  `-a` selects the arithmetic coder, and the two together
+are not needed - `-a` implies its own conditioning.
+
+What each `-y` produces:
+
+| option | frames |
+| --- | --- |
+| `-y 2` | SOF1/SOF9 at half size, EXP(1,1), then differential SOF5/SOF13 |
+| `-y 1` | SOF1/SOF9 at half size, EXP(1,1), then differential **lossless** SOF7/SOF15 |
+| `-y 0` | SOF1/SOF9 at full size, EXP(0,0), then differential lossless SOF7/SOF15 |
+
+### Why the comparison has a tolerance
+
+This codec's IDCT and chroma upsampler are not libjpeg's, and this library
+matches libjpeg byte for byte.  A *single-frame* file from this encoder
+therefore already needs a tolerance - 2 at 4:4:4, 8 at 4:2:0, 13 at 4:2:2 - and
+that is what the `plain_*` controls in the test are for: the hierarchical
+fixtures are held to the same numbers their single-frame counterparts need,
+plus the one extra frame of rounding a pyramid adds.
+
+### What it settled: the reference components are not clamped
+
+J.2.1 has the differential components "added, modulo 2^16, to the upsampled
+reference components".  The modulo is the clue: it would be pointless if the
+intermediate were clipped to 0..2^P-1 first, and A.3.1's sample range is a rule
+about *output*, not about the running reconstruction.
+
+`hier_gray_noexp.jpg` is what proved it.  Its base frame undershoots to -9 at a
+near-black pixel and the differential lossless frame corrects it by +13, for a
+final value of 4 - which is unreachable if the -9 was flattened to 0 on the way.
+Clipping between frames leaves that pixel at 13, nine too high, and it is the
+only pixel in the whole fixture set that says so.
