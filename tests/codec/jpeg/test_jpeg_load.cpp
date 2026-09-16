@@ -4279,3 +4279,74 @@ TEST(JpegLoad, ExifFieldWithAHighTopByteIsReadWithoutUndefinedBehaviour) {
   gimg_stream_destroy(s);
   SUCCEED() << "the assertion is the sanitizer's, not gtest's";
 }
+
+// T.81 B.1.1.2 fill bytes and the B.1.1.3 TEM marker.
+//
+// B.1.1.2: "any marker may optionally be preceded by any number of fill bytes,
+// which are bytes assigned code X'FF'".  The marker reader consumed exactly one
+// byte after the first 0xFF and took whatever it found, so 0xFF 0xFF 0xC0
+// returned a marker of 0xFF and the file was refused - one pad byte anywhere
+// was enough.  The scan-data scanner had the same fault from the other side:
+// inside entropy-coded data a 0xFF is always followed by the 0x00 of byte
+// stuffing (B.2.2), so 0xFF 0xFF is padding ahead of a marker and never data,
+// but it was appended to the scan, which would have handed the entropy decoder
+// eight bits that were never coded.
+//
+// B.1.1.3 Table B.1 lists TEM (0xFF01) among the markers that stand alone, with
+// no length field.  Reading a two-byte length after it swallows the start of
+// whatever comes next, so such a file was refused outright.
+//
+// Every one of these is the same picture as baseline_8x8_gray.jpg with padding
+// added, so the expected answer is that file's decode, and libjpeg accepts all
+// six.  That is what makes them a test rather than a guess: this decoder
+// rejected all six and no fixture here had ever contained a pad byte.
+TEST(JpegLoad, FillBytesAndTemMarkerAreSkipped) {
+  struct Case {
+    const char * jpg;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"marker_fill_before_sof.jpg", "three fill bytes before the frame header"},
+      {"marker_fill_single_byte.jpg", "one fill byte, the smallest case"},
+      {"marker_fill_first_segment.jpg", "fill before the first segment after SOI"},
+      {"marker_fill_before_sos.jpg", "fill before SOS"},
+      {"marker_fill_before_eoi.jpg",
+          "fill between the entropy data and EOI, which the scan scanner sees"},
+      {"marker_tem.jpg", "a TEM marker before the frame header (B.1.1.3)"},
+  };
+  uint32_t rw = 0, rh = 0;
+  int rchan = 0, rbits = 0;
+  std::vector<uint32_t> ref;
+  ASSERT_TRUE(jpeg_test::load_pnm_file(
+      "marker_padding_ref.pgm", &rw, &rh, &rchan, &rbits, ref));
+  ASSERT_EQ(rchan, 1);
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK)
+        << "padding a marker must not make the file unreadable";
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    ASSERT_EQ(gimg_raster_width(raster), rw);
+    ASSERT_EQ(gimg_raster_height(raster), rh);
+    const unsigned char * gp =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t gs = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < rh; y++) {
+      for (uint32_t x = 0; x < rw; x++) {
+        ASSERT_EQ((int)gp[y * gs + x], (int)ref[(size_t)y * rw + x])
+            << "padding must not change a pixel: (" << x << "," << y << ")";
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}

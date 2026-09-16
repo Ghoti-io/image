@@ -845,3 +845,37 @@ fixtures need.  So one codec vouches for the pixels and the other for the file.
 The three DNL cases already covered here - a DNL agreeing with a stated height,
 one contradicting it, one arriving before the first scan - are all about
 rejecting or ignoring DNL.  This is the only one where it decides anything.
+
+## Fill bytes and TEM (`marker_fill_*.jpg`, `marker_tem.jpg`)
+
+T.81 B.1.1.2: "any marker may optionally be preceded by any number of fill
+bytes, which are bytes assigned code X'FF'".  B.1.1.3 Table B.1 lists TEM
+(X'FF01') among the markers that stand alone, carrying no length field.
+
+No encoder here emits either, and no fixture had ever contained a pad byte, so
+none of this was exercised and all six of these files were refused outright.
+They are assembled from an ordinary baseline file by `mk_fill_tem.py`:
+
+```sh
+D=tests/data/jpeg
+python3 $D/mk_fill_tem.py $D/baseline_8x8_gray.jpg $D
+$DJ -pnm -outfile $D/marker_padding_ref.pgm $D/baseline_8x8_gray.jpg
+```
+
+Each is the same picture with padding added, so the expected answer is the
+unpadded file's decode, and libjpeg accepts all six — that is what made them
+worth building rather than guessing at.
+
+Two faults, from opposite sides:
+
+- **The marker reader** consumed exactly one byte after the first 0xFF and took
+  whatever it found, so `FF FF C0` returned a marker of 0xFF.  One pad byte
+  anywhere was enough to make a file unreadable.
+- **The scan-data scanner** would have appended that second 0xFF to the entropy
+  data.  Inside a scan a 0xFF is always followed by the 0x00 of byte stuffing
+  (B.2.2), so `FF FF` there is padding ahead of a marker and never data;
+  appending it hands the entropy decoder eight bits that were never coded.
+  `marker_fill_before_eoi.jpg` is the one that reaches this path.
+
+TEM has no length field, so reading a two-byte length after it swallows the
+start of whatever follows.  libjpeg skips it.

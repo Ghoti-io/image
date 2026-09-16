@@ -63,9 +63,17 @@ static void jpeg_load_diag(GIMG_Diagnostics * d, size_t offset, uint8_t marker,
   (void)r;
 }
 
-/** Return true if marker has no length/payload (SOI, EOI, RST0..RST7). */
+/**
+ * True when a marker stands alone, carrying no length field and no payload.
+ *
+ * T.81 B.1.1.3 Table B.1: SOI, EOI, RST0..RST7 and TEM.  TEM (0xFF01) is the
+ * one that gets forgotten - "temporary private use in arithmetic coding" - and
+ * reading a two-byte length after it consumes the start of whatever follows,
+ * so a file carrying one was refused outright.  libjpeg skips it.
+ */
 static bool jpeg_marker_has_no_length(uint8_t marker) {
-  if (marker == GIMG_JPEG_MARKER_SOI || marker == GIMG_JPEG_MARKER_EOI) {
+  if (marker == GIMG_JPEG_MARKER_SOI || marker == GIMG_JPEG_MARKER_EOI ||
+      marker == GIMG_JPEG_MARKER_TEM) {
     return true;
   }
   if (marker >= 0xD0 && marker <= 0xD7) { // RST0..RST7
@@ -1076,6 +1084,32 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             return r;
           }
           break;
+        }
+        // T.81 B.1.1.2: a marker may be preceded by any number of fill bytes,
+        // each 0xFF.  Inside entropy-coded data a 0xFF is always followed by
+        // the 0x00 of byte stuffing (B.2.2), so 0xFF 0xFF is padding ahead of
+        // the marker that follows and never data - drop it rather than append
+        // it, or the entropy decoder gains eight bits that were never coded.
+        {
+          int fill_ran_out = 0;
+          while (b == 0xFF) {
+            unsigned char fill = 0;
+            size_t fn = 0;
+            (void)gimg_stream_read(stream, &fill, 1, &fn);
+            r = gimg_stream_peek(stream, &b, 1, &n);
+            if (r != GIMG_OK || n == 0) {
+              fill_ran_out = 1;
+              break;
+            }
+          }
+          if (fill_ran_out) {
+            r = jpeg_append_scan_data(state, (const unsigned char *)"\xFF", 1);
+            if (r != GIMG_OK) {
+              gimg_jpeg_free_doc_state(codec, state);
+              return r;
+            }
+            break;
+          }
         }
         if (b == 0x00) {
           // T.81 B.2.2: 0x00 after 0xFF is stuffing; include both in scan data

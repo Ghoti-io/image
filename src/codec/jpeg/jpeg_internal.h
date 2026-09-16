@@ -69,6 +69,9 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MARKER_SOS 0xDA
 #define GIMG_JPEG_MARKER_DRI 0xDD
 #define GIMG_JPEG_MARKER_DNL 0xDC ///< Define Number of Lines; after first scan.
+/** Temporary private use in arithmetic coding (T.81 B.1.1.3); stands alone,
+ * carrying no length field and no payload. */
+#define GIMG_JPEG_MARKER_TEM 0x01
 #define GIMG_JPEG_MARKER_APP0 0xE0
 #define GIMG_JPEG_MARKER_APP1 0xE1
 #define GIMG_JPEG_MARKER_APP2 0xE2

@@ -39,10 +39,19 @@ GIMG_Result gimg_jpeg_read_marker(GIMG_Stream * stream, uint8_t * out_marker) {
     if (b != 0xFF) {
       continue; // Skip until 0xFF.
     }
-    r = gimg_stream_read(stream, &b, 1, &n);
-    if (r != GIMG_OK || n == 0) {
-      return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
-    }
+    // T.81 B.1.1.2: "any marker may optionally be preceded by any number of
+    // fill bytes, which are bytes assigned code X'FF'".  So a run of 0xFF is
+    // not a marker of its own; the marker is the first byte after it that is
+    // neither 0xFF nor the 0x00 of byte stuffing.  This used to read exactly
+    // one byte and take whatever it found, so 0xFF 0xFF 0xC0 returned a marker
+    // of 0xFF and the file was refused - a single pad byte anywhere was enough,
+    // and libjpeg accepts all of them.
+    do {
+      r = gimg_stream_read(stream, &b, 1, &n);
+      if (r != GIMG_OK || n == 0) {
+        return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
+      }
+    } while (b == 0xFF);
     if (b == 0x00) {
       continue; // Byte stuffing: 0xFF 0x00 is data.
     }
