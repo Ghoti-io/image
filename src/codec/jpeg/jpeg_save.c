@@ -291,7 +291,7 @@ static void jpeg_rgb_to_ycbcr_at(int32_t r, int32_t g, int32_t b,
 }
 
 /** RGB to YCbCr at 8 bits. See jpeg_rgb_to_ycbcr_at. */
-static void jpeg_rgb_to_ycbcr(
+void jpeg_rgb_to_ycbcr(
     uint8_t r, uint8_t g, uint8_t b, uint8_t * y, uint8_t * cb, uint8_t * cr) {
   int32_t yv, cbv, crv;
   jpeg_rgb_to_ycbcr_at(
@@ -661,7 +661,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     jpeg_arith_cond_defaults(&cond);
     r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
         num_components, coef_buf, out_blocks, h_samp, v_samp, &cond, alloc,
-        restart_interval, &scan_data, &scan_size);
+        restart_interval, 0, &scan_data, &scan_size);
   }
   else {
     // T.81 Annex F: baseline sequential uses DC table for DC then AC table for
@@ -1238,7 +1238,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
           num_components, coef_buf, total_blocks, h_ptr, v_ptr, &cond, alloc,
-          restart_interval, &scan_data, &scan_size);
+          restart_interval, 0, &scan_data, &scan_size);
     }
     else {
       r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(width, height,
@@ -1572,6 +1572,241 @@ static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream,
  * With Huffman coding the frame is SOF0 at 8-bit or SOF1 at 12-bit and the
  * tables are DHT; with arithmetic coding (T.81 Annex D) it is SOF9 at either
  * precision and the tables are DAC. */
+/**
+ * Write a hierarchical sequence (T.81 B.3.1, Annex J).
+ *
+ * The order is the one Figure B.13 gives: tables, the DHP segment that declares
+ * the size of the completed image, then the frames.  Each frame after the first
+ * is preceded by the EXP that doubles the reference it will be differenced
+ * against (B.3.3), and carries its own tables - the standard ones for the
+ * non-differential frame, and for a differential frame the table its own
+ * coefficients generated, because Table J.2's extra AC category is in no Annex
+ * K table.
+ */
+static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
+    uint32_t width, uint32_t height, int num_components,
+    const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
+    const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
+    const gimg_jpeg_enc_frame_t * frames, unsigned num_frames,
+    uint16_t restart_interval, bool arithmetic, size_t * out_n) {
+  size_t n = (out_n ? *out_n : 0);
+  size_t written = 0;
+  GIMG_Result r;
+
+  // One set of quantization tables for the whole sequence: every frame uses
+  // the same quality, and B.2.4.1 lets them stand until redefined.
+  {
+    unsigned char dqt0[GIMG_JPEG_DQT_8BIT_PAYLOAD];
+    memset(dqt0, 0, sizeof(dqt0));
+    dqt0[0] = 0x00;
+    for (int z = 0; z < 64; z++) {
+      uint16_t v = quant_luma[gimg_jpeg_zigzag[z]];
+      dqt0[1 + z] = (unsigned char)(v > 255 ? 255 : v);
+    }
+    r = jpeg_write_dqt_8bit_segment(stream, dqt0, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    if (num_components == 3) {
+      unsigned char dqt1[GIMG_JPEG_DQT_8BIT_PAYLOAD];
+      memset(dqt1, 0, sizeof(dqt1));
+      dqt1[0] = 0x01;
+      for (int z = 0; z < 64; z++) {
+        uint16_t v = quant_chroma[gimg_jpeg_zigzag[z]];
+        dqt1[1 + z] = (unsigned char)(v > 255 ? 255 : v);
+      }
+      r = jpeg_write_dqt_8bit_segment(stream, dqt1, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+    }
+  }
+
+  // B.3.2: DHP has the frame header's syntax and the completed image's size,
+  // "except that the quantization table destination selector parameter shall
+  // be set to zero".
+  {
+    uint16_t len = (uint16_t)(8 + 3 * num_components);
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DHP, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, len, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    unsigned char dhp[6 + 3 * 4];
+    memset(dhp, 0, sizeof(dhp));
+    dhp[0] = 8;
+    dhp[1] = (unsigned char)(height >> 8);
+    dhp[2] = (unsigned char)(height & 0xFF);
+    dhp[3] = (unsigned char)(width >> 8);
+    dhp[4] = (unsigned char)(width & 0xFF);
+    dhp[5] = (unsigned char)num_components;
+    for (int c = 0; c < num_components; c++) {
+      dhp[6 + c * 3] = (unsigned char)(c + 1);
+      dhp[7 + c * 3] = 0x11; // 4:4:4 throughout the sequence
+      dhp[8 + c * 3] = 0x00; // B.3.2: Tq shall be zero here
+    }
+    r = gimg_stream_write(stream, dhp, (size_t)(6 + 3 * num_components),
+        &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+
+  for (unsigned f = 0; f < num_frames; f++) {
+    const gimg_jpeg_enc_frame_t * fr = &frames[f];
+    if (fr->exp_h || fr->exp_v) {
+      // B.3.3 Table B.11: Le is 3, so the payload is one byte of Eh | Ev.
+      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EXP, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = jpeg_write_u16(stream, 3u, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      unsigned char exp = (unsigned char)((fr->exp_h << 4) | fr->exp_v);
+      r = gimg_stream_write(stream, &exp, 1, &written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += written;
+    }
+    {
+      uint16_t sof_len = (uint16_t)(8 + 3 * num_components);
+      r = jpeg_write_marker(stream, fr->sof_marker, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = jpeg_write_u16(stream, sof_len, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      unsigned char sof[6 + 3 * 4];
+      memset(sof, 0, sizeof(sof));
+      sof[0] = 8;
+      sof[1] = (unsigned char)(fr->height >> 8);
+      sof[2] = (unsigned char)(fr->height & 0xFF);
+      sof[3] = (unsigned char)(fr->width >> 8);
+      sof[4] = (unsigned char)(fr->width & 0xFF);
+      sof[5] = (unsigned char)num_components;
+      for (int c = 0; c < num_components; c++) {
+        sof[6 + c * 3] = (unsigned char)(c + 1);
+        sof[7 + c * 3] = 0x11;
+        sof[8 + c * 3] = (unsigned char)(c == 0 ? 0 : 1);
+      }
+      r = gimg_stream_write(stream, sof, (size_t)(6 + 3 * num_components),
+          &written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += written;
+    }
+    if (arithmetic) {
+      // B.2.4.3 defaults, written out rather than left implicit.
+      int tables = (num_components == 1) ? 1 : 2;
+      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = jpeg_write_u16(stream, (uint16_t)(2 + 2 * 2 * tables), &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      unsigned char dac[8];
+      size_t dl = 0;
+      for (int t = 0; t < tables; t++) {
+        dac[dl++] = (unsigned char)(0x00 | t);
+        dac[dl++] = 0x10;
+      }
+      for (int t = 0; t < tables; t++) {
+        dac[dl++] = (unsigned char)(0x10 | t);
+        dac[dl++] = 0x05;
+      }
+      r = gimg_stream_write(stream, dac, dl, &written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += written;
+    }
+    else if (fr->dht && fr->dht_len > 0) {
+      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DHT, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = jpeg_write_u16(stream, (uint16_t)(2 + fr->dht_len), &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = gimg_stream_write(stream, fr->dht, fr->dht_len, &written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += written;
+    }
+    else {
+      size_t dht_written = 0;
+      r = gimg_jpeg_write_standard_dht(stream, &dht_written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += dht_written;
+    }
+    r = jpeg_write_dri(stream, restart_interval, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    {
+      uint16_t sos_len = (uint16_t)(6 + 2 * num_components);
+      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      r = jpeg_write_u16(stream, sos_len, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      unsigned char sos[12];
+      memset(sos, 0, sizeof(sos));
+      sos[0] = (unsigned char)num_components;
+      // A differential frame's tables were generated for it and both live at
+      // destination 0; the non-differential frame uses the standard split.
+      int own_tables = (fr->dht && fr->dht_len > 0);
+      for (int c = 0; c < num_components; c++) {
+        uint8_t td_ta = (own_tables || c == 0) ? 0x00u : 0x11u;
+        sos[1 + c * 2] = (unsigned char)(c + 1);
+        sos[2 + c * 2] = td_ta;
+      }
+      size_t tail = 1 + 2 * (size_t)num_components;
+      sos[tail] = 0x00;     // Ss
+      sos[tail + 1] = 0x3F; // Se
+      sos[tail + 2] = 0x00; // Ah | Al
+      r = gimg_stream_write(stream, sos, tail + 3, &written);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      n += written;
+    }
+    r = jpeg_write_scan_data_with_stuffing(
+        stream, fr->scan_data, fr->scan_size, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+  }
+
+  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (out_n) {
+    *out_n = n;
+  }
+  return GIMG_OK;
+}
+
 static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     uint32_t height, int num_components, const uint8_t * h_samp,
     const uint8_t * v_samp, const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
@@ -2498,6 +2733,28 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   int lossless_psv = (options && options->jpeg_lossless_predictor)
       ? (int)options->jpeg_lossless_predictor
       : 0;
+  // T.81 Annex J.  Refused rather than silently ignored when combined with
+  // something it cannot be: a hierarchical sequence here is built out of the
+  // sequential DCT process at 8 bits, and each of these asks for a different
+  // process for the frames.
+  int hier_levels = (options && options->jpeg_hierarchical_levels)
+      ? (int)options->jpeg_hierarchical_levels
+      : 0;
+  if (hier_levels != 0 &&
+      (lossless_psv != 0 || (options && options->jpeg_progressive) ||
+          (options && options->jpeg_precision != 0 &&
+              options->jpeg_precision != 8))) {
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (hier_levels < 0 || hier_levels + 1 > (int)GIMG_JPEG_MAX_FRAMES) {
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    return GIMG_ERR_UNSUPPORTED;
+  }
   if (options && options->jpeg_precision == 16 && lossless_psv == 0) {
     if (raster_owned) {
       gimg_raster_destroy(raster);
@@ -2609,6 +2866,28 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   int precision = 8;
   unsigned char * lossless_dht = NULL;
   size_t lossless_dht_len = 0;
+  // T.81 Annex J: a pyramid of frames rather than one.  Built here, before the
+  // markers are written, because each frame depends on the reconstruction of
+  // the one before it and they cannot be produced as they are emitted.
+  gimg_jpeg_enc_frame_t hier_frames[GIMG_JPEG_MAX_FRAMES];
+  unsigned hier_num_frames = 0;
+  memset(hier_frames, 0, sizeof(hier_frames));
+  if (hier_levels != 0) {
+    gimg_jpeg_default_quant_scaled(quality, quant_luma, quant_chroma);
+    width = gimg_raster_width(raster);
+    height = gimg_raster_height(raster);
+    precision = 8;
+    r = gimg_jpeg_encode_hierarchical(alloc, raster, hier_levels, arithmetic,
+        restart_interval, quant_luma, quant_chroma, hier_frames,
+        &hier_num_frames, &num_components);
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    if (r != GIMG_OK) {
+      return r;
+    }
+    goto have_scan;
+  }
   if (lossless_psv != 0) {
     // T.81 does not say a restart interval must begin at the start of a row,
     // but a lossless interval resets the prediction, and what "the first row of
@@ -2634,7 +2913,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (r != GIMG_OK) {
       return r;
     }
-    goto lossless_have_scan;
+    goto have_scan;
   }
   r = jpeg_raster_to_scan_data(alloc, raster, quality, chroma_subsampling,
       progressive, arithmetic, restart_interval, fdct_method, quant_method,
@@ -2647,7 +2926,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   if (r != GIMG_OK) {
     return r;
   }
-lossless_have_scan:
+have_scan:
   // Use progressive image body when we have coefficient buffer (8-bit progressive, or 12/16-bit
   // which use coef path for both baseline and progressive).
   bool use_progressive_body = (coef_buffer != NULL);
@@ -2656,7 +2935,7 @@ lossless_have_scan:
       return GIMG_ERR_OOM;
     }
   }
-  else {
+  else if (hier_levels == 0) {
     // A zero-byte arithmetic scan is legitimate; see jpeg_raster_to_scan_data.
     if (!scan_data && !(arithmetic && scan_size == 0)) {
       return GIMG_ERR_OOM;
@@ -3261,6 +3540,12 @@ lossless_have_scan:
         alloc,
         restart_interval, &report->bytes_written);
     gimg_free(alloc, coef_buffer);
+  }
+  else if (hier_levels != 0) {
+    r = jpeg_write_image_body_hierarchical(stream, width, height,
+        num_components, quant_luma, quant_chroma, hier_frames, hier_num_frames,
+        restart_interval, arithmetic, &report->bytes_written);
+    gimg_jpeg_free_enc_frames(alloc, hier_frames, hier_num_frames);
   }
   else if (lossless_psv != 0) {
     r = jpeg_write_image_body_lossless(stream, width, height, num_components,

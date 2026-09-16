@@ -216,6 +216,21 @@ typedef struct {
    * 12-bit P=12, 16-bit P=16, all of which Table B.2 permits in a lossless
    * frame.  Ignored for non-JPEG. */
   uint8_t jpeg_lossless_predictor;
+  /** Write the image as a hierarchical sequence of frames (T.81 Annex J)
+   * rather than as one frame, with this many resolution doublings.  0
+   * (default) writes a single frame; 1 writes a half-size frame followed by a
+   * differential frame that restores full size, 2 a quarter-size frame and two
+   * differential frames, and so on.
+   *
+   * A hierarchical file decodes to a picture of the same size and much the
+   * same quality as an ordinary one, and is larger: what it buys is that a
+   * decoder can stop early and still have a smaller complete image, which is
+   * what multi-resolution environments want.  Sampling is 4:4:4 throughout -
+   * the pyramid is already doing the scaling - so `jpeg_chroma_subsampling` is
+   * ignored, and the raster must be 8-bit.  Combines with `jpeg_arithmetic`,
+   * which selects SOF9 and SOF13 in place of SOF1 and SOF5.  Ignored for
+   * non-JPEG. */
+  uint8_t jpeg_hierarchical_levels;
 } GIMG_Save_Options;
 
 /**

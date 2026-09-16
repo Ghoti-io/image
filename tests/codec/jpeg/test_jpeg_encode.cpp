@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -4535,5 +4536,240 @@ TEST(JpegEncode, AdobeMarkerDescribesTheFrameThatWasWritten) {
     EXPECT_EQ(adobe, c.want_adobe_count);
     EXPECT_EQ(transform, c.want_transform);
     EXPECT_EQ(jfif > 0, c.want_jfif);
+  }
+}
+
+// Writing a hierarchical sequence (T.81 Annex J, J.1).
+//
+// The encoder has to contain a decoder to work at all: every differential
+// frame codes the difference between the picture and what has been
+// reconstructed so far, so at each step the encoder must reconstruct exactly
+// what a decoder will, quantisation loss included.  Get that reconstruction
+// wrong and the file still decodes - it just decodes to the wrong picture,
+// consistently, in every decoder, which is why the round trip below compares
+// against the source rather than against another decode.
+//
+// The first version of this encoder handed its quantization table to the
+// decoder's dequantiser, which reads the table in the zigzag order a DQT
+// segment stores it in, while the encoder keeps it in natural order.  Every
+// coefficient was multiplied by the wrong element, the reference bore no
+// relation to the frame, and the differential frames spent their bits coding
+// nonsense: the file grew by 70% and the picture came out visibly wrong while
+// two independent decoders agreed with each other about it.
+TEST(JpegEncode, HierarchicalRoundTrip) {
+  const uint32_t kW = 129, kH = 77; // odd both ways: doubling overshoots
+  std::vector<uint8_t> src((size_t)kW * kH * 3);
+  for (uint32_t y = 0; y < kH; y++) {
+    for (uint32_t x = 0; x < kW; x++) {
+      // Smooth, so that quantisation error is the only thing being measured.
+      size_t k = ((size_t)y * kW + x) * 3;
+      src[k + 0] = (uint8_t)(128 + 100 * std::sin(x / 11.0) * std::cos(y / 9.0));
+      src[k + 1] = (uint8_t)(128 + 90 * std::sin((x + y) / 17.0));
+      src[k + 2] = (uint8_t)(128 + 80 * std::cos(x / 23.0));
+    }
+  }
+
+  for (int levels = 1; levels <= 3; levels++) {
+    for (int arith = 0; arith <= 1; arith++) {
+      SCOPED_TRACE("levels=" + std::to_string(levels) +
+          " arithmetic=" + std::to_string(arith));
+      GIMG_Doc * doc = nullptr;
+      ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+      GIMG_Raster * raster = nullptr;
+      ASSERT_EQ(gimg_raster_create(kW, kH, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                    NULL, 0, &raster),
+          GIMG_OK);
+      unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+      size_t stride = gimg_raster_stride_bytes(raster);
+      for (uint32_t y = 0; y < kH; y++) {
+        for (uint32_t x = 0; x < kW; x++) {
+          size_t k = ((size_t)y * kW + x) * 3;
+          px[y * stride + x * 4 + 0] = src[k + 0];
+          px[y * stride + x * 4 + 1] = src[k + 1];
+          px[y * stride + x * 4 + 2] = src[k + 2];
+          px[y * stride + x * 4 + 3] = 255;
+        }
+      }
+      gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+      GIMG_Stream * out = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+      GIMG_Save_Options so = {};
+      so.metadata_policy = GIMG_META_DROP_ALL;
+      so.quality = 85;
+      so.jpeg_hierarchical_levels = (uint8_t)levels;
+      so.jpeg_arithmetic = (uint8_t)arith;
+      GIMG_Save_Report rep = {};
+      ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &so, &rep), GIMG_OK);
+      const void * data = nullptr;
+      size_t size = 0;
+      gimg_stream_output_buffer(out, &data, &size);
+      std::vector<uint8_t> enc(
+          (const uint8_t *)data, (const uint8_t *)data + size);
+      gimg_stream_destroy(out);
+      gimg_doc_destroy(doc);
+
+      // The markers say it is a pyramid: a DHP, then one non-differential
+      // frame and `levels` differential ones, each with its own EXP.
+      int dhp = 0, non_diff = 0, diff = 0, exp_seg = 0;
+      std::vector<uint16_t> frame_w;
+      for (size_t i = 0; i + 3 < enc.size();) {
+        if (enc[i] != 0xFF) {
+          i++;
+          continue;
+        }
+        uint8_t m = enc[i + 1];
+        if (m == 0xD8 || m == 0xD9 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) {
+          i += 2;
+          continue;
+        }
+        size_t len = (size_t)((enc[i + 2] << 8) | enc[i + 3]);
+        if (m == 0xDE) {
+          dhp++;
+        }
+        if (m == 0xDF) {
+          exp_seg++;
+        }
+        if (m == 0xC1 || m == 0xC9) {
+          non_diff++;
+          frame_w.push_back((uint16_t)((enc[i + 7] << 8) | enc[i + 8]));
+        }
+        if (m == 0xC5 || m == 0xCD) {
+          diff++;
+          frame_w.push_back((uint16_t)((enc[i + 7] << 8) | enc[i + 8]));
+        }
+        i += 2 + len;
+        if (m == 0xDA) {
+          while (i + 1 < enc.size()) {
+            if (enc[i] == 0xFF && enc[i + 1] != 0 &&
+                !(enc[i + 1] >= 0xD0 && enc[i + 1] <= 0xD7)) {
+              break;
+            }
+            i++;
+          }
+        }
+      }
+      EXPECT_EQ(dhp, 1);
+      EXPECT_EQ(non_diff, 1);
+      EXPECT_EQ(diff, levels);
+      EXPECT_EQ(exp_seg, levels) << "each differential frame needs its EXP";
+      ASSERT_EQ((int)frame_w.size(), levels + 1);
+      EXPECT_EQ(frame_w.back(), kW) << "the last frame is the full image";
+      // Going down, each level is ceil(w / 2) - K.5: "If the image being
+      // downsampled has an odd width or length, the odd dimension is increased
+      // by 1 by sample replication ... before downsampling."  Going back up,
+      // J.1.1.2's expansion "always doubles the line length" and the odd
+      // column that overshoots is dropped, so the relation to assert is the
+      // halving, not an exact doubling.
+      for (size_t f = 1; f < frame_w.size(); f++) {
+        EXPECT_EQ(frame_w[f - 1], (uint16_t)((frame_w[f] + 1u) / 2u))
+            << "frame " << f << " must be the level above frame " << (f - 1);
+      }
+
+      // Decode it back and measure against the source.  A hierarchical encode
+      // at this quality should land where an ordinary one does; the bound is
+      // loose enough not to be a tripwire for a changed rounding and tight
+      // enough that a reference computed even slightly wrongly fails it - the
+      // zigzag-order bug above put the worst channel past 90.
+      DocStreamGuard in;
+      ASSERT_EQ(gimg_stream_create_memory(enc.data(), enc.size(), &in.s),
+          GIMG_OK);
+      ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+      RasterGuard got;
+      ASSERT_EQ(gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r),
+          GIMG_OK);
+      ASSERT_NE(got.r, nullptr);
+      ASSERT_EQ(gimg_raster_width(got.r), kW);
+      ASSERT_EQ(gimg_raster_height(got.r), kH);
+      const unsigned char * gp =
+          (const unsigned char *)gimg_raster_pixels(got.r);
+      size_t gs = gimg_raster_stride_bytes(got.r);
+      int worst = 0;
+      double se = 0;
+      for (uint32_t y = 0; y < kH; y++) {
+        for (uint32_t x = 0; x < kW; x++) {
+          for (int c = 0; c < 3; c++) {
+            int a = (int)gp[y * gs + x * 4 + c];
+            int b = (int)src[((size_t)y * kW + x) * 3 + c];
+            int d = a - b;
+            se += (double)d * d;
+            if (d < 0) {
+              d = -d;
+            }
+            if (d > worst) {
+              worst = d;
+            }
+          }
+        }
+      }
+      double mse = se / ((double)kW * kH * 3);
+      double psnr = 10.0 * std::log10(255.0 * 255.0 / mse);
+      EXPECT_LE(worst, 25) << "worst channel error";
+      EXPECT_GE(psnr, 40.0) << "PSNR " << psnr << " dB";
+    }
+  }
+}
+
+// The ISO reference codec reads what this encoder writes.
+//
+// The fixtures are this library's own hierarchical output and that codec's
+// decode of it, so the comparison is against an independent implementation of
+// Annex J reading our file - the half of interoperability that a round trip
+// through our own decoder cannot test, since a private misreading of the spec
+// would round-trip perfectly.  The tolerance is the usual one: that codec's
+// IDCT is not libjpeg's and this library matches libjpeg.
+//
+// See tests/data/jpeg/README.md for how to regenerate them.
+TEST(JpegEncode, HierarchicalOutputIsReadByTheReferenceCodec) {
+  struct Case {
+    const char * jpg;
+    const char * ref;
+    int tolerance;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"hier_ours_l1.jpg", "hier_ours_l1_thor.ppm", 4, "one level, Huffman"},
+      {"hier_ours_l2.jpg", "hier_ours_l2_thor.ppm", 5, "two levels, Huffman"},
+      {"hier_ours_l1_arith.jpg", "hier_ours_l1_arith_thor.ppm", 4,
+          "one level, arithmetic"},
+      {"hier_ours_l3_arith.jpg", "hier_ours_l3_arith_thor.ppm", 6,
+          "three levels, arithmetic"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    uint32_t rw = 0, rh = 0;
+    int rchan = 0, rbits = 0;
+    std::vector<uint32_t> ref;
+    ASSERT_TRUE(jpeg_test::load_pnm_file(c.ref, &rw, &rh, &rchan, &rbits, ref))
+        << "missing reference " << c.ref;
+    ASSERT_EQ(rchan, 3);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    DocStreamGuard in;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in.s),
+        GIMG_OK);
+    ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+    RasterGuard got;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+    ASSERT_NE(got.r, nullptr);
+    ASSERT_EQ(gimg_raster_width(got.r), rw);
+    ASSERT_EQ(gimg_raster_height(got.r), rh);
+    const unsigned char * gp = (const unsigned char *)gimg_raster_pixels(got.r);
+    size_t gs = gimg_raster_stride_bytes(got.r);
+    int worst = 0;
+    for (uint32_t y = 0; y < rh; y++) {
+      for (uint32_t x = 0; x < rw; x++) {
+        for (int c2 = 0; c2 < 3; c2++) {
+          int a = (int)gp[y * gs + x * 4 + c2];
+          int b = (int)ref[((size_t)y * rw + x) * 3 + c2];
+          int d = a > b ? a - b : b - a;
+          if (d > worst) {
+            worst = d;
+          }
+        }
+      }
+    }
+    EXPECT_LE(worst, c.tolerance) << "worst channel difference " << worst;
   }
 }

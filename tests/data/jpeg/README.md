@@ -528,3 +528,31 @@ near-black pixel and the differential lossless frame corrects it by +13, for a
 final value of 4 - which is unreachable if the -9 was flattened to 0 on the way.
 Clipping between frames leaves that pixel at 13, nine too high, and it is the
 only pixel in the whole fixture set that says so.
+
+### Our own hierarchical output (`hier_ours_*.jpg`)
+
+The other half of interoperability: files this library wrote, decoded by the
+ISO reference codec.  A round trip through our own decoder cannot test this -
+a private misreading of Annex J would round-trip perfectly - so the expected
+output here is that codec's decode of our file, and the test compares our
+decode against it.
+
+`hier_enc_src.ppm` is the source, 129x77 so that every level of the pyramid
+has an odd dimension to overshoot on.
+
+```sh
+J=/path/to/thorfdbg-libjpeg/jpeg
+D=tests/data/jpeg
+
+# Written by this library: see JpegEncode.HierarchicalRoundTrip for the API.
+#   jpeg_hierarchical_levels = 1, 2, 3; jpeg_arithmetic = 0 or 1
+#   hier_ours_l1.jpg  hier_ours_l2.jpg  hier_ours_l1_arith.jpg
+#   hier_ours_l3_arith.jpg
+
+for f in $D/hier_ours_*.jpg; do $J $f ${f%.jpg}_thor.ppm; done
+```
+
+Regenerating these means re-encoding with this library, which makes them a
+weaker regression test than the fixtures above - they move when the encoder
+moves.  What they pin down is the thing that matters and that nothing else
+checks: that an independent Annex J decoder still reads the result.

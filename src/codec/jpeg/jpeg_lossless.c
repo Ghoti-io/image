@@ -489,115 +489,10 @@ fail:
  * Encoder
  * ------------------------------------------------------------------------ */
 
-/**
- * Build a Huffman table from symbol frequencies (T.81 Annex K.2, Figures K.1
- * to K.3).
- *
- * The fixed tables of Annex K are no use here: they cover DC categories 0 to 11
- * and a lossless difference reaches category 16.  K.2 gives the procedure for
- * generating one instead - ordinary Huffman code construction, followed by the
- * two adjustments a JPEG table needs.  Code lengths are limited to 16 bits by
- * repeatedly moving a pair of long codewords up the tree, and one codeword of
- * the longest length is then given up, because C.2 reserves the all-ones
- * codeword and a decoder is entitled to treat it as an error.
- *
- * @param freq   Frequency of each of the 17 symbols; modified.
- * @param bits   Out: number of codes of each length, bits[0] unused.
- * @param vals   Out: symbols in code-length order.
- * @param out_n  Out: how many symbols were used.
- */
+/** T.81 H.1.2.2: SSSS runs from 0 to 16 for a lossless difference, so the
+ * table has seventeen symbols rather than the DC table's twelve. */
 #define JPEG_LL_SYMBOLS 17
-#define JPEG_LL_MAX_CLEN 32
-static void jpeg_lossless_gen_table(uint32_t freq[JPEG_LL_SYMBOLS + 1],
-    unsigned char bits[17], unsigned char vals[JPEG_LL_SYMBOLS],
-    int * out_n) {
-  int codesize[JPEG_LL_SYMBOLS + 1];
-  int others[JPEG_LL_SYMBOLS + 1];
-  unsigned char cnt[JPEG_LL_MAX_CLEN + 1];
-  memset(codesize, 0, sizeof(codesize));
-  memset(cnt, 0, sizeof(cnt));
-  for (int i = 0; i <= JPEG_LL_SYMBOLS; i++) {
-    others[i] = -1;
-  }
-  // A reserved symbol with a frequency of one, so that the longest codeword is
-  // spent on something that never occurs and the all-ones codeword stays free.
-  freq[JPEG_LL_SYMBOLS] = 1;
 
-  for (;;) {
-    int c1 = -1, c2 = -1;
-    uint32_t v = 0xFFFFFFFFu;
-    for (int i = 0; i <= JPEG_LL_SYMBOLS; i++) {
-      if (freq[i] && freq[i] <= v) {
-        v = freq[i];
-        c1 = i;
-      }
-    }
-    v = 0xFFFFFFFFu;
-    for (int i = 0; i <= JPEG_LL_SYMBOLS; i++) {
-      if (freq[i] && freq[i] <= v && i != c1) {
-        v = freq[i];
-        c2 = i;
-      }
-    }
-    if (c2 < 0) {
-      break;
-    }
-    freq[c1] += freq[c2];
-    freq[c2] = 0;
-    codesize[c1]++;
-    while (others[c1] >= 0) {
-      c1 = others[c1];
-      codesize[c1]++;
-    }
-    others[c1] = c2;
-    codesize[c2]++;
-    while (others[c2] >= 0) {
-      c2 = others[c2];
-      codesize[c2]++;
-    }
-  }
-
-  for (int i = 0; i <= JPEG_LL_SYMBOLS; i++) {
-    if (codesize[i] > 0 && codesize[i] <= JPEG_LL_MAX_CLEN) {
-      cnt[codesize[i]]++;
-    }
-  }
-
-  // K.2 Figure K.3: bring every codeword within 16 bits.
-  int i = JPEG_LL_MAX_CLEN;
-  for (; i > 16; i--) {
-    while (cnt[i] > 0) {
-      int j = i - 2;
-      while (cnt[j] == 0) {
-        j--;
-      }
-      cnt[i] -= 2;
-      cnt[i - 1] += 1;
-      cnt[j + 1] += 2;
-      cnt[j] -= 1;
-    }
-  }
-  while (i > 0 && cnt[i] == 0) {
-    i--;
-  }
-  if (i > 0) {
-    cnt[i]--; // give up the all-ones codeword (T.81 C.2)
-  }
-
-  memset(bits, 0, 17);
-  for (int L = 1; L <= 16; L++) {
-    bits[L] = cnt[L];
-  }
-  int p = 0;
-  for (int L = 1; L <= JPEG_LL_MAX_CLEN; L++) {
-    for (int sym = 0; sym < JPEG_LL_SYMBOLS; sym++) {
-      if (codesize[sym] == L) {
-        vals[p++] = (unsigned char)sym;
-      }
-    }
-  }
-  *out_n = p;
-}
 
 /** Number of bits needed to hold the magnitude of a lossless difference
  * (T.81 H.1.2.2): the DC categories of F.1.2.1 with one more at the top. */
@@ -904,7 +799,7 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
   unsigned char bits[17];
   unsigned char vals[JPEG_LL_SYMBOLS];
   int nvals = 0;
-  jpeg_lossless_gen_table(freq, bits, vals, &nvals);
+  jpeg_gen_huff_table(freq, JPEG_LL_SYMBOLS, bits, vals, &nvals);
 
   // Build the encoding table: canonical codes in code-length order (C.2).
   unsigned int code_of[JPEG_LL_SYMBOLS];

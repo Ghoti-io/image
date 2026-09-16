@@ -697,6 +697,45 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
  * it; the caller writes the segments.  Precision follows the raster (8, 12 or
  * 16).  @p arithmetic selects SOF11 over SOF3, in which case no DHT is
  * produced because an arithmetic frame carries none. */
+/**
+ * Build a Huffman table from symbol frequencies (T.81 Annex K.2).  Defined in
+ * jpeg_encode.c; see the comment there for why the fixed tables of Annex K are
+ * not enough for a lossless or a differential frame.
+ */
+void jpeg_gen_huff_table(uint32_t * freq, int num_symbols,
+    unsigned char bits[17], unsigned char * vals, int * out_n);
+
+/**
+ * Encode the single scan of a differential sequential DCT frame (T.81 SOF5 or
+ * SOF13, Annex J), building the Huffman tables it needs as it goes.
+ *
+ * The coefficients come from a buffer laid out exactly as the sequential
+ * encoder's, but taken from a differential input: no level shift, and the DC
+ * coefficient is written directly rather than as a difference from the
+ * previous block (J.1.3.1).  The tables are optimised for this frame rather
+ * than taken from Annex K, because Table J.2's extra AC category is not in any
+ * Annex K table; *out_dht receives the DHT payload to write beside the scan,
+ * with the DC table as destination 0 and the AC table as destination 0.
+ */
+/**
+ * Forward-transform and quantise a differential frame's planes (T.81 J.1.3.1:
+ * the FDCT is taken without the level shift).  Defined in jpeg_encode.c.
+ * Sampling is 4:4:4, so the buffer is blocks in raster order with the
+ * components interleaved.
+ */
+GIMG_Result gimg_jpeg_fill_coef_buffer_differential(uint32_t width,
+    uint32_t height, int num_components, const int32_t * const * planes,
+    const size_t * plane_stride, const uint16_t * quant_luma,
+    const uint16_t * quant_chroma, int16_t * coef_buffer,
+    size_t * out_total_blocks);
+
+GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
+    int num_components, const int16_t * coef_buffer, size_t total_blocks,
+    const uint8_t * h_samp, const uint8_t * v_samp,
+    const GIMG_Allocator * alloc, uint16_t restart_interval,
+    unsigned char ** out_scan_data, size_t * out_scan_size,
+    unsigned char ** out_dht, size_t * out_dht_len);
+
 GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int psv, uint16_t restart_interval,
     int arithmetic, unsigned char ** out_scan_data, size_t * out_scan_size,
@@ -733,6 +772,45 @@ int32_t jpeg_lossless_predict(int psv, int32_t ra, int32_t rb, int32_t rc);
 
 GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
+
+/**
+ * One frame of a hierarchical encode, ready for the marker writer.
+ *
+ * The frames are produced together because each depends on the reconstruction
+ * of the one before it (J.1.1), so they cannot be written as they are made
+ * without the stream writer knowing about pyramids.
+ */
+typedef struct {
+  uint8_t sof_marker;    ///< SOF1/SOF9 for the first frame, SOF5/SOF13 after.
+  uint16_t width, height;
+  unsigned char exp_h, exp_v; ///< EXP to write before this frame (B.3.3).
+  unsigned char * scan_data;
+  size_t scan_size;
+  /** DHT payload for this frame, or NULL when the frame is arithmetic or uses
+   * the default tables.  A differential frame always carries one: Table J.2's
+   * extra AC category is in no Annex K table. */
+  unsigned char * dht;
+  size_t dht_len;
+} gimg_jpeg_enc_frame_t;
+
+/**
+ * Encode a raster as a hierarchical sequence (T.81 Annex J, J.1).
+ *
+ * Produces @p levels + 1 frames into @p frames, which must have room for that
+ * many: one non-differential frame at the smallest resolution and @p levels
+ * differential frames, each doubling it.  Sampling is 4:4:4 throughout and the
+ * raster must be 8-bit; see the file comment in jpeg_hierarchical_encode.c.
+ * The caller writes the markers and frees with gimg_jpeg_free_enc_frames.
+ */
+GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
+    const GIMG_Raster * raster, int levels, int arithmetic,
+    uint16_t restart_interval, const uint16_t * quant_luma,
+    const uint16_t * quant_chroma, gimg_jpeg_enc_frame_t * frames,
+    unsigned * out_num_frames, int * out_num_components);
+
+/** Free the scan data and tables of an encoded sequence. */
+void gimg_jpeg_free_enc_frames(const GIMG_Allocator * alloc,
+    gimg_jpeg_enc_frame_t * frames, unsigned num_frames);
 
 /**
  * Decode a hierarchical sequence (T.81 Annex J).
@@ -804,8 +882,8 @@ GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
     const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
-    uint16_t restart_interval, unsigned char ** out_scan_data,
-    size_t * out_scan_size);
+    uint16_t restart_interval, int differential,
+    unsigned char ** out_scan_data, size_t * out_scan_size);
 
 GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
     uint32_t width, uint32_t height, int num_components,
@@ -1008,6 +1086,11 @@ int jpeg_chroma_sample(const jpeg_plane_t * p, uint32_t cw, uint32_t ch,
  * 2^P - 1; the result is clamped to 0..max_val (T.81 A.3.1).  See the
  * definition for the arithmetic and why it is shared.
  */
+/** RGB to YCbCr at 8 bits (T.81 has no colour space; this is the JFIF/BT.601
+ * transform every 8-bit encoder uses).  Defined in jpeg_save.c. */
+void jpeg_rgb_to_ycbcr(
+    uint8_t r, uint8_t g, uint8_t b, uint8_t * y, uint8_t * cb, uint8_t * cr);
+
 void jpeg_ycbcr_to_rgb(int y, int cb, int cr, int centre, int max_val,
     int * out_r, int * out_g, int * out_b);
 

@@ -505,6 +505,128 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
   return GIMG_OK;
 }
 
+/**
+ * Build a Huffman table from symbol frequencies (T.81 Annex K.2, Figures K.1
+ * to K.3).
+ *
+ * The fixed tables of Annex K cover the symbols an ordinary 8-bit frame uses
+ * and no more: DC categories 0 to 11, and AC sizes up to 10.  Two things this
+ * codec writes reach past that - a lossless difference, whose SSSS runs to 16
+ * (H.1.2.2), and a differential frame, whose AC coefficients need the extra
+ * category Table J.2 adds - so those have to generate a table instead.
+ *
+ * K.2 gives the procedure: ordinary Huffman code construction, followed by the
+ * two adjustments a JPEG table needs.  Code lengths are limited to 16 bits by
+ * repeatedly moving a pair of long codewords up the tree, and one codeword of
+ * the longest length is then given up, because C.2 reserves the all-ones
+ * codeword and a decoder is entitled to treat it as an error.
+ *
+ * @param freq         Frequency of each symbol, @p num_symbols + 1 entries
+ *                     long; the last is the reserved one and is overwritten.
+ *                     The whole array is modified.
+ * @param num_symbols  How many real symbols there are (17 for a lossless
+ *                     difference, 256 for an AC table).
+ * @param bits         Out: number of codes of each length, bits[0] unused.
+ * @param vals         Out: symbols in code-length order, @p num_symbols long.
+ * @param out_n        Out: how many symbols were used.
+ */
+#define JPEG_GEN_MAX_SYMBOLS 256
+#define JPEG_GEN_MAX_CLEN 32
+void jpeg_gen_huff_table(uint32_t * freq, int num_symbols,
+    unsigned char bits[17], unsigned char * vals, int * out_n) {
+  int codesize[JPEG_GEN_MAX_SYMBOLS + 1];
+  int others[JPEG_GEN_MAX_SYMBOLS + 1];
+  unsigned char cnt[JPEG_GEN_MAX_CLEN + 1];
+  if (num_symbols < 1 || num_symbols > JPEG_GEN_MAX_SYMBOLS) {
+    *out_n = 0;
+    memset(bits, 0, 17);
+    return;
+  }
+  memset(codesize, 0, sizeof(codesize));
+  memset(cnt, 0, sizeof(cnt));
+  for (int i = 0; i <= num_symbols; i++) {
+    others[i] = -1;
+  }
+  // A reserved symbol with a frequency of one, so that the longest codeword is
+  // spent on something that never occurs and the all-ones codeword stays free.
+  freq[num_symbols] = 1;
+
+  for (;;) {
+    int c1 = -1, c2 = -1;
+    uint32_t v = 0xFFFFFFFFu;
+    for (int i = 0; i <= num_symbols; i++) {
+      if (freq[i] && freq[i] <= v) {
+        v = freq[i];
+        c1 = i;
+      }
+    }
+    v = 0xFFFFFFFFu;
+    for (int i = 0; i <= num_symbols; i++) {
+      if (freq[i] && freq[i] <= v && i != c1) {
+        v = freq[i];
+        c2 = i;
+      }
+    }
+    if (c2 < 0) {
+      break;
+    }
+    freq[c1] += freq[c2];
+    freq[c2] = 0;
+    codesize[c1]++;
+    while (others[c1] >= 0) {
+      c1 = others[c1];
+      codesize[c1]++;
+    }
+    others[c1] = c2;
+    codesize[c2]++;
+    while (others[c2] >= 0) {
+      c2 = others[c2];
+      codesize[c2]++;
+    }
+  }
+
+  for (int i = 0; i <= num_symbols; i++) {
+    if (codesize[i] > 0 && codesize[i] <= JPEG_GEN_MAX_CLEN) {
+      cnt[codesize[i]]++;
+    }
+  }
+
+  // K.2 Figure K.3: bring every codeword within 16 bits.
+  int i = JPEG_GEN_MAX_CLEN;
+  for (; i > 16; i--) {
+    while (cnt[i] > 0) {
+      int j = i - 2;
+      while (cnt[j] == 0) {
+        j--;
+      }
+      cnt[i] -= 2;
+      cnt[i - 1] += 1;
+      cnt[j + 1] += 2;
+      cnt[j] -= 1;
+    }
+  }
+  while (i > 0 && cnt[i] == 0) {
+    i--;
+  }
+  if (i > 0) {
+    cnt[i]--; // give up the all-ones codeword (T.81 C.2)
+  }
+
+  memset(bits, 0, 17);
+  for (int L = 1; L <= 16; L++) {
+    bits[L] = cnt[L];
+  }
+  int p = 0;
+  for (int L = 1; L <= JPEG_GEN_MAX_CLEN; L++) {
+    for (int sym = 0; sym < num_symbols; sym++) {
+      if (codesize[sym] == L) {
+        vals[p++] = (unsigned char)sym;
+      }
+    }
+  }
+  *out_n = p;
+}
+
 typedef struct {
   unsigned int code[256];
   int len[256];
@@ -956,8 +1078,8 @@ GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
     const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
-    uint16_t restart_interval, unsigned char ** out_scan_data,
-    size_t * out_scan_size) {
+    uint16_t restart_interval, int differential,
+    unsigned char ** out_scan_data, size_t * out_scan_size) {
   if (!alloc || !out_scan_data || !out_scan_size || !cond || !coef_buffer) {
     return GIMG_ERR_INTERNAL;
   }
@@ -1026,6 +1148,15 @@ GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
       size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
       for (size_t b = 0; b < nblocks; b++) {
         const int16_t * block = coef_buffer + (block_off + b) * 64;
+        if (differential) {
+          // T.81 J.1.3.1: "the DC coefficient of the DCT is coded directly -
+          // without prediction".  F.1.4.4.1 subtracts the value carried from
+          // the previous block, so clearing it leaves the coefficient itself
+          // as what gets coded, and the conditioning is untouched - J.1.4:
+          // "The arithmetic coding models are already defined for the
+          // precision needed in differential frames."
+          stats.dc_pred[c] = 0;
+        }
         jpeg_arith_encode_block_sequential(
             &e, &stats, cond, (uint8_t)c, tbl, tbl, 63, block);
         if (sink.oom) {
@@ -2018,5 +2149,299 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
   bit_writer_flush(&w, alloc);
   *out_scan_data = w.buf;
   *out_scan_size = w.len;
+  return GIMG_OK;
+}
+
+/* ------------------------------------------------------------------------
+ * Differential frames (T.81 Annex J)
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Write one block's DC and AC coefficients with the tables given.
+ *
+ * The only difference from an ordinary sequential block is the DC: J.1.3.1 has
+ * "the DC coefficient of the DCT ... coded directly - without prediction", so
+ * the value written is the coefficient itself rather than its difference from
+ * the previous block's.  Everything else is F.1.2: the category, the
+ * low-order bits, then run-length coded AC coefficients ending in EOB.
+ *
+ * When @p dc_freq is non-NULL this counts symbols instead of writing them,
+ * which is the first of the two passes an optimised table needs (K.2).
+ */
+static void jpeg_diff_encode_block(jpeg_bit_writer * w,
+    const GIMG_Allocator * alloc, const int16_t * block,
+    const jpeg_derived_tbl * dc_tbl, const jpeg_derived_tbl * ac_tbl,
+    uint32_t * dc_freq, uint32_t * ac_freq) {
+  const int counting = (dc_freq != NULL);
+  int dc = (int)block[0];
+  int nbits = jpeg_nbits(dc);
+  // T.81 Table F.1 extended: a differential DC is a two's complement value, and
+  // the widest category the 16-bit coefficient range can produce is 15.
+  if (nbits > 15) {
+    nbits = 15;
+  }
+  if (counting) {
+    dc_freq[nbits]++;
+  }
+  else {
+    if (dc_tbl->len[nbits] > 0) {
+      bit_writer_put_bits(w, alloc, dc_tbl->code[nbits], dc_tbl->len[nbits]);
+    }
+    if (nbits > 0) {
+      int extra = dc;
+      if (extra < 0) {
+        extra += (1 << nbits) - 1;
+      }
+      bit_writer_put_bits(w, alloc, (unsigned int)extra, nbits);
+    }
+  }
+
+  int k = 1;
+  while (k < 64) {
+    int run = 0;
+    while (k < 64 && block[k] == 0) {
+      run++;
+      k++;
+    }
+    if (k >= 64) {
+      if (counting) {
+        ac_freq[0]++;
+      }
+      else if (ac_tbl->len[0] > 0) {
+        bit_writer_put_bits(w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
+      }
+      break;
+    }
+    while (run >= 16) {
+      if (counting) {
+        ac_freq[0xF0]++;
+      }
+      else if (ac_tbl->len[0xF0] > 0) {
+        bit_writer_put_bits(w, alloc, ac_tbl->code[0xF0], ac_tbl->len[0xF0]);
+      }
+      run -= 16;
+    }
+    int val = (int)block[k];
+    int s = jpeg_nbits(val);
+    // T.81 Table J.2: a differential frame's AC coefficients need one more bit
+    // of precision than Table F.1 allows, so SSSS runs to 15.
+    if (s > 15) {
+      s = 15;
+    }
+    int sym = (run << 4) | s;
+    if (counting) {
+      ac_freq[sym]++;
+    }
+    else {
+      if (ac_tbl->len[sym] > 0) {
+        bit_writer_put_bits(w, alloc, ac_tbl->code[sym], ac_tbl->len[sym]);
+      }
+      int extra = val;
+      if (extra < 0) {
+        extra += (1 << s) - 1;
+      }
+      bit_writer_put_bits(w, alloc, (unsigned int)extra, s);
+    }
+    k++;
+  }
+}
+
+/**
+ * Walk the MCUs of a frame, handing each block to jpeg_diff_encode_block.
+ *
+ * Shared by the counting pass and the writing pass so that the two cannot
+ * disagree about which blocks exist or what order they come in; @p dc_freq
+ * non-NULL selects counting.
+ */
+static void jpeg_diff_walk(jpeg_bit_writer * w, const GIMG_Allocator * alloc,
+    int num_components, const int16_t * coef_buffer, size_t total_blocks,
+    const uint8_t * h_samp, const uint8_t * v_samp, size_t mcu_count,
+    uint16_t restart_interval, const jpeg_derived_tbl * dc_tbl,
+    const jpeg_derived_tbl * ac_tbl, uint32_t * dc_freq, uint32_t * ac_freq) {
+  const int counting = (dc_freq != NULL);
+  size_t block_off = 0;
+  uint16_t next_restart = 0;
+  for (size_t mcu_index = 0; mcu_index < mcu_count; mcu_index++) {
+    if (!counting && restart_interval > 0 && mcu_index > 0 &&
+        (mcu_index % (size_t)restart_interval) == 0) {
+      bit_writer_flush(w, alloc);
+      if (!bit_writer_ensure(w, alloc, 2)) {
+        return;
+      }
+      w->buf[w->len++] = 0xFF;
+      w->buf[w->len++] = (unsigned char)(0xD0 + (next_restart & 7));
+      next_restart++;
+      w->bitbuf = 0;
+      w->nbits = 0;
+      // Nothing to reset for the predictor: a differential frame has none.
+    }
+    for (int c = 0; c < num_components; c++) {
+      size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+      for (size_t b = 0; b < nblocks; b++) {
+        size_t block_idx = block_off + b;
+        if (block_idx >= total_blocks) {
+          return;
+        }
+        jpeg_diff_encode_block(w, alloc, coef_buffer + block_idx * 64, dc_tbl,
+            ac_tbl, dc_freq, ac_freq);
+      }
+      block_off += nblocks;
+    }
+  }
+}
+
+/** Serialise one Huffman table into a DHT payload (T.81 B.2.4.2). */
+static size_t jpeg_append_dht_table(unsigned char * out, uint8_t tc, uint8_t th,
+    const unsigned char bits[17], const unsigned char * vals, int nvals) {
+  size_t n = 0;
+  out[n++] = (unsigned char)((tc << 4) | th);
+  for (int i = 1; i <= 16; i++) {
+    out[n++] = bits[i];
+  }
+  for (int i = 0; i < nvals; i++) {
+    out[n++] = vals[i];
+  }
+  return n;
+}
+
+GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
+    int num_components, const int16_t * coef_buffer, size_t total_blocks,
+    const uint8_t * h_samp, const uint8_t * v_samp, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, unsigned char ** out_scan_data,
+    size_t * out_scan_size, unsigned char ** out_dht, size_t * out_dht_len) {
+  if (!alloc || !coef_buffer || !out_scan_data || !out_scan_size || !out_dht ||
+      !out_dht_len) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+  *out_dht = NULL;
+  *out_dht_len = 0;
+
+  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!h_samp) {
+    h_samp = default_samp;
+  }
+  if (!v_samp) {
+    v_samp = default_samp;
+  }
+  uint8_t h_max = 1, v_max = 1;
+  for (int c = 0; c < num_components; c++) {
+    if (h_samp[c] > h_max) {
+      h_max = h_samp[c];
+    }
+    if (v_samp[c] > v_max) {
+      v_max = v_samp[c];
+    }
+  }
+  uint32_t mcu_per_row = (width + (uint32_t)(8 * h_max) - 1u) / (uint32_t)(8 * h_max);
+  uint32_t mcu_per_col = (height + (uint32_t)(8 * v_max) - 1u) / (uint32_t)(8 * v_max);
+  size_t mcu_count = 0;
+  if (!gcu_safe_mul_size(
+          (size_t)mcu_per_row, (size_t)mcu_per_col, &mcu_count)) {
+    return GIMG_ERR_LIMIT;
+  }
+
+  // Pass one: count the symbols this frame actually uses, and build a table
+  // for them (K.2).  The fixed tables of Annex K would not do even if the
+  // ranges matched - they are tuned for level-shifted samples, and a
+  // differential frame's coefficients are centred on zero - but the ranges do
+  // not match either: Table J.2 adds SSSS 15, which no Annex K table contains.
+  uint32_t dc_freq[17];
+  uint32_t ac_freq[257];
+  memset(dc_freq, 0, sizeof(dc_freq));
+  memset(ac_freq, 0, sizeof(ac_freq));
+  jpeg_diff_walk(NULL, alloc, num_components, coef_buffer, total_blocks, h_samp,
+      v_samp, mcu_count, restart_interval, NULL, NULL, dc_freq, ac_freq);
+
+  unsigned char dc_bits[17], ac_bits[17];
+  unsigned char dc_vals[16], ac_vals[256];
+  int dc_nvals = 0, ac_nvals = 0;
+  jpeg_gen_huff_table(dc_freq, 16, dc_bits, dc_vals, &dc_nvals);
+  jpeg_gen_huff_table(ac_freq, 256, ac_bits, ac_vals, &ac_nvals);
+
+  jpeg_derived_tbl dc_tbl, ac_tbl;
+  build_derived_tbl(dc_bits + 1, dc_vals, dc_nvals, &dc_tbl);
+  build_derived_tbl(ac_bits + 1, ac_vals, ac_nvals, &ac_tbl);
+
+  // Pass two: write the scan.
+  jpeg_bit_writer w = {0};
+  jpeg_diff_walk(&w, alloc, num_components, coef_buffer, total_blocks, h_samp,
+      v_samp, mcu_count, restart_interval, &dc_tbl, &ac_tbl, NULL, NULL);
+  bit_writer_flush(&w, alloc);
+
+  size_t dht_len = (size_t)(17 + dc_nvals) + (size_t)(17 + ac_nvals);
+  unsigned char * dht = (unsigned char *)gimg_malloc(alloc, dht_len);
+  if (!dht) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
+  size_t n = jpeg_append_dht_table(dht, 0, 0, dc_bits, dc_vals, dc_nvals);
+  n += jpeg_append_dht_table(dht + n, 1, 0, ac_bits, ac_vals, ac_nvals);
+
+  *out_scan_data = w.buf;
+  *out_scan_size = w.len;
+  *out_dht = dht;
+  *out_dht_len = n;
+  return GIMG_OK;
+}
+
+/**
+ * Forward-transform and quantise a differential frame's planes (T.81 J.1.3.1).
+ *
+ * "The FDCT of the differential input is calculated without the level shift" -
+ * which is the whole difference from gimg_jpeg_progressive_fill_coef_buffer,
+ * whose input is a sample and so has 128 taken off it first.  Here the input is
+ * already a two's complement difference centred on zero.
+ *
+ * Sampling is 4:4:4, so an MCU is one block of each component and the buffer is
+ * blocks in MCU raster order with the components interleaved - the same layout
+ * the sequential encoders and the decoder both expect.
+ */
+GIMG_Result gimg_jpeg_fill_coef_buffer_differential(uint32_t width,
+    uint32_t height, int num_components, const int32_t * const * planes,
+    const size_t * plane_stride, const uint16_t * quant_luma,
+    const uint16_t * quant_chroma, int16_t * coef_buffer,
+    size_t * out_total_blocks) {
+  if (!planes || !plane_stride || !coef_buffer || !out_total_blocks ||
+      num_components < 1 || num_components > 3) {
+    return GIMG_ERR_INTERNAL;
+  }
+  uint32_t blocks_w = (width + 7u) / 8u;
+  uint32_t blocks_h = (height + 7u) / 8u;
+  size_t total = 0;
+  if (!gcu_safe_mul_size((size_t)blocks_w, (size_t)blocks_h, &total) ||
+      !gcu_safe_mul_size(total, (size_t)num_components, &total)) {
+    return GIMG_ERR_LIMIT;
+  }
+  *out_total_blocks = total;
+
+  int16_t * out = coef_buffer;
+  int32_t block[64];
+  for (uint32_t by = 0; by < blocks_h; by++) {
+    for (uint32_t bx = 0; bx < blocks_w; bx++) {
+      for (int c = 0; c < num_components; c++) {
+        const uint16_t * quant = (c == 0) ? quant_luma : quant_chroma;
+        const int32_t * plane = planes[c];
+        size_t stride = plane_stride[c];
+        for (int row = 0; row < 8; row++) {
+          uint32_t y = by * 8u + (uint32_t)row;
+          if (y >= height) {
+            y = height - 1u; // T.81 A.3.2: edge replication pads the block.
+          }
+          for (int col = 0; col < 8; col++) {
+            uint32_t x = bx * 8u + (uint32_t)col;
+            if (x >= width) {
+              x = width - 1u;
+            }
+            block[row * 8 + col] = plane[(size_t)y * stride + x];
+          }
+        }
+        jpeg_fdct_islow(block);
+        jpeg_quantize_block(block, quant, out);
+        out += 64;
+      }
+    }
+  }
   return GIMG_OK;
 }
