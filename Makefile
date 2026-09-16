@@ -12,6 +12,9 @@ BASE_NAME := lib$(SUITE)-$(PROJECT)$(BRANCH).so
 BASE_NAME_PREFIX := lib$(SUITE)-$(PROJECT)$(BRANCH)
 MAJOR_VERSION := 0
 MINOR_VERSION := 0.0
+# Substituted into the .pc file; an empty Version: field makes every
+# pkg-config version constraint fail.
+VERSION := $(MAJOR_VERSION).$(MINOR_VERSION)
 SO_NAME := $(BASE_NAME).$(MAJOR_VERSION)
 STATIC_TARGET := $(BASE_NAME_PREFIX).a
 ENV_VARS :=
@@ -90,6 +93,35 @@ else
 
 endif
 
+# ---------------------------------------------------------------------------
+# Installation prefix
+#
+# Defaults to the system location chosen above. Override it to install
+# somewhere else - the suite's bootstrap installs every library into a local
+# prefix so that each build resolves its dependencies through pkg-config,
+# exactly as a consumer would, rather than through a second code path that
+# only in-tree builds exercise. See CONVENTIONS.md section 1.
+#
+#     make install PREFIX=/path/to/prefix
+# ---------------------------------------------------------------------------
+ifdef PREFIX
+INCLUDE_INSTALL_PATH := $(PREFIX)/include
+LIB_INSTALL_PATH := $(PREFIX)/lib
+BIN_INSTALL_PATH := $(PREFIX)/bin
+PKG_CONFIG_PATH := $(PREFIX)/share/pkgconfig
+ifeq ($(OS_NAME), Windows)
+PC_INCLUDE_DIR = $(shell cygpath -m $(INCLUDE_INSTALL_PATH)/$(SUITE)/$(PROJECT)$(BRANCH))
+PC_LIB_DIR = $(shell cygpath -m $(LIB_INSTALL_PATH)/$(SUITE))
+else
+PC_INCLUDE_DIR := $(INCLUDE_INSTALL_PATH)/$(SUITE)/$(PROJECT)$(BRANCH)
+PC_LIB_DIR := $(LIB_INSTALL_PATH)/$(SUITE)
+endif
+# A non-system prefix has no /etc/ld.so.conf.d, and writing to it would need
+# root anyway. Everything built here carries an rpath to the prefix instead.
+LDCONF_INSTALL_PATH :=
+endif
+
+
 
 CXX := g++
 CXXFLAGS := -pedantic-errors -Wall -Wextra -Werror -Wno-error=unused-function -Wfatal-errors -std=c++20 -O1 -g $(EXTRA_CXXFLAGS)
@@ -100,6 +132,12 @@ CFLAGS := -pedantic-errors -Wall -Wextra -Werror -Wno-error=unused-function -Wfa
 # GIMG_TEST_BUILD enables export of internal functions for testing (checked by GIMG_INTERNAL_API macro)
 LIB_CFLAGS := $(CFLAGS) -DGIMG_BUILD -DGIMG_TEST_BUILD $(EXTRA_CFLAGS)
 LDFLAGS := -L /usr/lib -lstdc++ -lm $(EXTRA_LDFLAGS)
+ifdef PREFIX
+# So that a library, a test or an example finds its Ghoti.io dependencies in the
+# prefix at run time without LD_LIBRARY_PATH.
+LDFLAGS += -Wl,-rpath,$(LIB_INSTALL_PATH)/$(SUITE)
+endif
+
 BUILD_DIR := ./build/$(BUILD)
 OBJ_DIR := $(BUILD_DIR)/objects
 GEN_DIR := $(BUILD_DIR)/generated
@@ -129,23 +167,11 @@ INCLUDE := -I include/ -I $(GEN_DIR)/
 # the sibling fallback below was taken even when compress was properly
 # installed.
 COMPRESS_PC ?= ghoti.io-compress$(BRANCH)
-COMPRESS_CFLAGS := $(shell pkg-config --cflags $(COMPRESS_PC) 2>/dev/null)
-COMPRESS_LIBS := $(shell pkg-config --libs $(COMPRESS_PC) 2>/dev/null)
+COMPRESS_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags $(COMPRESS_PC) 2>/dev/null)
+COMPRESS_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs $(COMPRESS_PC) 2>/dev/null)
 # Use sibling path when pkg-config failed (empty) or returned unsubstituted placeholder.
-COMPRESS_PLACEHOLDER := (
-COMPRESS_NEED_FALLBACK := $(or $(findstring $(COMPRESS_PLACEHOLDER),$(COMPRESS_CFLAGS)),$(if $(COMPRESS_CFLAGS),,y))
-ifneq ($(COMPRESS_NEED_FALLBACK),)
-# compress generates its version header into its own build tree, so the sibling
-# fallback has to reach that as well as its include/ directory.
-COMPRESS_CFLAGS := -I../compress/include -I../compress/build/$(BUILD)/generated
-COMPRESS_LIBS := -L../compress/build/$(BUILD)/apps -lghoti.io-compress$(BRANCH)
-# Let linker resolve image .so's dependency on compress when linking tests.
-LDFLAGS += -Wl,-rpath-link,../compress/build/$(BUILD)/apps
-# compress links against cutil in turn, so the linker has to be able to find
-# that as well when it resolves compress's NEEDED entry. cutil's build tree is
-# one level shallower (build/<os>/apps, with no release/debug component), hence
-# just the leading OS component of BUILD here.
-LDFLAGS += -Wl,-rpath-link,../cutil/build/$(firstword $(subst /, ,$(BUILD)))/apps
+ifeq ($(strip $(COMPRESS_CFLAGS)),)
+$(error ghoti.io-compress was not found by pkg-config. Run ./bootstrap.sh in the parent folder to build and install the suite into a local prefix, then pass the same PREFIX here - or point PKG_CONFIG_PATH at the directory holding its .pc file. There is deliberately no sibling-checkout fallback: a second resolution path that only in-tree builds exercise is one that silently rots.)
 endif
 INCLUDE += $(COMPRESS_CFLAGS)
 
@@ -154,14 +180,10 @@ INCLUDE += $(COMPRESS_CFLAGS)
 # compress's .pc when that is installed; the fallback branch has to name it
 # itself, including cutil's generated include directory (float.h).
 CUTIL_PC ?= ghoti.io-cutil$(BRANCH)
-CUTIL_CFLAGS := $(shell pkg-config --cflags $(CUTIL_PC) 2>/dev/null)
-CUTIL_LIBS := $(shell pkg-config --libs $(CUTIL_PC) 2>/dev/null)
-CUTIL_PLACEHOLDER := (
-CUTIL_NEED_FALLBACK := $(or $(findstring $(CUTIL_PLACEHOLDER),$(CUTIL_CFLAGS)),$(if $(CUTIL_CFLAGS),,y))
-ifneq ($(CUTIL_NEED_FALLBACK),)
-CUTIL_SIBLING := ../cutil
-CUTIL_CFLAGS := -I$(CUTIL_SIBLING)/include -I$(CUTIL_SIBLING)/build/$(firstword $(subst /, ,$(BUILD)))/include
-CUTIL_LIBS := -L$(CUTIL_SIBLING)/build/$(firstword $(subst /, ,$(BUILD)))/apps -lghoti.io-cutil$(BRANCH)
+CUTIL_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags $(CUTIL_PC) 2>/dev/null)
+CUTIL_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs $(CUTIL_PC) 2>/dev/null)
+ifeq ($(strip $(CUTIL_CFLAGS)),)
+$(error ghoti.io-cutil was not found by pkg-config. Run ./bootstrap.sh in the parent folder to build and install the suite into a local prefix, then pass the same PREFIX here - or point PKG_CONFIG_PATH at the directory holding its .pc file. There is deliberately no sibling-checkout fallback: a second resolution path that only in-tree builds exercise is one that silently rots.)
 endif
 INCLUDE += $(CUTIL_CFLAGS)
 
@@ -510,7 +532,7 @@ endif
 # So tests can load image lib and its dependency (e.g. compress for PNG), plus
 # compress's own dependency on cutil. cutil's build tree has no release/debug
 # component, so only the leading OS component of BUILD applies to it.
-TEST_LD_PATH := $(APP_DIR):../compress/build/$(BUILD)/apps:../cutil/build/$(firstword $(subst /, ,$(BUILD)))/apps
+TEST_LD_PATH := $(APP_DIR):$(LIB_INSTALL_PATH)/$(SUITE)
 
 test: ## Make and run the Unit tests, then verify PNG and JPEG output with PIL
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
@@ -818,8 +840,8 @@ ifeq ($(OS_NAME), Linux)
 	@ln -f -s $(TARGET) $(LIB_INSTALL_PATH)/$(SUITE)/$(SO_NAME)
 	@ln -f -s $(SO_NAME) $(LIB_INSTALL_PATH)/$(SUITE)/$(BASE_NAME)
 	# Installing the ld configuration file.
-	@mkdir -p $(LDCONF_INSTALL_PATH)
-	@echo "$(LIB_INSTALL_PATH)/$(SUITE)" > $(LDCONF_INSTALL_PATH)/$(SUITE)-$(PROJECT)$(BRANCH).conf
+	@if [ -n "$(LDCONF_INSTALL_PATH)" ]; then mkdir -p $(LDCONF_INSTALL_PATH); fi
+	@if [ -n "$(LDCONF_INSTALL_PATH)" ]; then echo "$(LIB_INSTALL_PATH)/$(SUITE)" > $(LDCONF_INSTALL_PATH)/$(SUITE)-$(PROJECT)$(BRANCH).conf; fi
 endif
 ifeq ($(OS_NAME), Windows)
 # The .dll file and the .dll.a file
@@ -841,7 +863,7 @@ endif
 	@cat pkgconfig/$(SUITE)-$(PROJECT).pc | sed 's/(SUITE)/$(SUITE)/g; s/(PROJECT)/$(PROJECT)/g; s/(BRANCH)/$(BRANCH)/g; s/(VERSION)/$(VERSION)/g; s|(PC_LIB_DIR)|$(PC_LIB_DIR)|g; s|(PC_INCLUDE_DIR)|$(PC_INCLUDE_DIR)|g' > $(PKGCONFIG_INSTALL_PATH)/$(SUITE)-$(PROJECT)$(BRANCH).pc
 ifeq ($(OS_NAME), Linux)
 	# Running ldconfig.
-	@ldconfig >> /dev/null 2>&1
+	@if [ -n "$(LDCONF_INSTALL_PATH)" ]; then ldconfig >> /dev/null 2>&1; fi
 endif
 	@echo "Ghoti.io $(PROJECT)$(BRANCH) installed"
 
@@ -865,7 +887,7 @@ endif
 	@rmdir --ignore-fail-on-non-empty $(LIB_INSTALL_PATH)/$(SUITE)
 ifeq ($(OS_NAME), Linux)
 	# Running ldconfig.
-	@ldconfig >> /dev/null 2>&1
+	@if [ -n "$(LDCONF_INSTALL_PATH)" ]; then ldconfig >> /dev/null 2>&1; fi
 endif
 	@echo "Ghoti.io $(PROJECT)$(BRANCH) has been uninstalled"
 
