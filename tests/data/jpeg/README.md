@@ -464,12 +464,16 @@ $J -y 1 -q 85 -a                $D/hier_src_gray.pgm $D/hier_gray_lossless_ar.jp
 $J -y 1 -q 85 -h                $D/hier_src_rgb.ppm  $D/hier_rgb_lossless.jpg
 $J -y 0 -q 85 -h                $D/hier_src_gray.pgm $D/hier_gray_noexp.jpg
 $J -y 0 -q 85 -a                $D/hier_src_gray.pgm $D/hier_gray_noexp_arith.jpg
+$J -y 2 -q 85 -v -h             $D/hier_src_rgb.ppm  $D/hier_rgb_progressive.jpg
+$J -y 2 -q 85 -v -a             $D/hier_src_rgb.ppm  $D/hier_rgb_prog_arith.jpg
+$J -y 1 -q 85 -v -h             $D/hier_src_rgb.ppm  $D/hier_rgb_prog_lossless.jpg
 
 # Controls: same encoder, same source, one frame.
 $J -q 85 -h                     $D/hier_src_rgb.ppm  $D/plain_rgb_444.jpg
 $J -q 85 -h -s 1x1,2x2,2x2      $D/hier_src_rgb.ppm  $D/plain_rgb_420.jpg
 $J -q 85 -h -s 1x1,2x1,2x1      $D/hier_src_rgb.ppm  $D/plain_rgb_422.jpg
 $J -q 85 -h                     $D/hier_src_gray.pgm $D/plain_gray.jpg
+$J -q 85 -v -h                  $D/hier_src_rgb.ppm  $D/plain_rgb_progressive.jpg
 
 # The expected decode of each, from the same codec.  It writes P5 for a
 # single-component image and P6 for three, hence the two extensions.
@@ -491,6 +495,17 @@ What each `-y` produces:
 | `-y 2` | SOF1/SOF9 at half size, EXP(1,1), then differential SOF5/SOF13 |
 | `-y 1` | SOF1/SOF9 at half size, EXP(1,1), then differential **lossless** SOF7/SOF15 |
 | `-y 0` | SOF1/SOF9 at full size, EXP(0,0), then differential lossless SOF7/SOF15 |
+
+Adding `-v` makes the DCT frames progressive, so `-y 2 -v` gives SOF2 then
+SOF6 (or SOF10 then SOF14 with `-a`), and `-y 1 -v` gives SOF2 then a
+differential lossless SOF7 - which is J's "the final differential frame for
+each component may use a differential lossless process" in a DCT sequence.
+Between the three `-y` values, `-a`, and `-v`, the fixtures reach all fourteen
+SOFn codes of Table B.1.
+
+Watch for silent truncation: `-y 2 -v` without `-h` writes 2048 bytes and then
+fails with the Huffman-table error, leaving a file that is a valid prefix and
+looks plausible until a decoder reaches the cut.
 
 ### Why the comparison has a tolerance
 

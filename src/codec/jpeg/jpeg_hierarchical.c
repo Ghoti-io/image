@@ -662,6 +662,143 @@ fail:
 }
 
 /**
+ * Decode one progressive frame of the sequence into signed component planes
+ * (T.81 Annex G, with the modifications of J.2.3.1 when it is differential).
+ *
+ * The scans go through the same reader the single-frame progressive path uses;
+ * what is left here is the geometry, and the pass that turns the finished
+ * coefficients back into samples.  That pass is where the second half of
+ * J.2.3.1 lands: "the IDCT of the differential output is calculated without the
+ * level shift".
+ */
+static GIMG_Result hier_decode_progressive_frame(
+    const gimg_jpeg_doc_state_t * state, const gimg_jpeg_frame_t * f,
+    hier_plane_t * out) {
+  const gimg_jpeg_sof_t * sof = &f->sof;
+  const GIMG_Allocator * alloc = gimg_alloc_or_default(state->allocator);
+  uint8_t num_comp = sof->num_components;
+  int precision = (int)sof->precision;
+  if (precision != 8 && precision != 12) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (f->num_scans == 0u) {
+    return GIMG_ERR_CORRUPT;
+  }
+
+  uint8_t h_max = 0, v_max = 0;
+  hier_sampling_max(sof, &h_max, &v_max);
+  if (h_max == 0 || v_max == 0) {
+    return GIMG_ERR_FORMAT;
+  }
+  uint32_t cw[GIMG_JPEG_MAX_COMPONENTS], chh[GIMG_JPEG_MAX_COMPONENTS];
+  hier_component_dims(sof, h_max, v_max, cw, chh);
+  uint32_t mcu_per_row = ((uint32_t)sof->width + 8u * h_max - 1u) / (8u * h_max);
+  uint32_t mcu_per_col =
+      ((uint32_t)sof->height + 8u * v_max - 1u) / (8u * v_max);
+
+  // A.2: a component holds ceil(X_i/8) x ceil(Y_i/8) blocks of real samples,
+  // but an interleaved scan walks whole MCUs and so addresses a grid padded out
+  // at the right and bottom edges.  The buffer is the larger of the two, and
+  // grid_w is the row stride throughout - the same split the single-frame
+  // progressive path makes, and for the same reason.
+  uint32_t blk_w[GIMG_JPEG_MAX_COMPONENTS], blk_h[GIMG_JPEG_MAX_COMPONENTS];
+  uint32_t grid_w[GIMG_JPEG_MAX_COMPONENTS], grid_h[GIMG_JPEG_MAX_COMPONENTS];
+  for (uint8_t i = 0; i < num_comp; i++) {
+    blk_w[i] = (cw[i] + 7u) / 8u;
+    blk_h[i] = (chh[i] + 7u) / 8u;
+    grid_w[i] = mcu_per_row * (uint32_t)sof->h_samp[i];
+    grid_h[i] = mcu_per_col * (uint32_t)sof->v_samp[i];
+    if (blk_w[i] > grid_w[i]) {
+      grid_w[i] = blk_w[i];
+    }
+    if (blk_h[i] > grid_h[i]) {
+      grid_h[i] = blk_h[i];
+    }
+  }
+
+  int16_t * coef[GIMG_JPEG_MAX_COMPONENTS];
+  memset(coef, 0, sizeof(coef));
+  GIMG_Result r = GIMG_OK;
+  for (uint8_t i = 0; i < num_comp; i++) {
+    size_t n = 0;
+    if (!gcu_safe_mul_size((size_t)grid_w[i], (size_t)grid_h[i], &n) ||
+        !gcu_safe_mul_size(n, 64u * sizeof(int16_t), &n)) {
+      r = GIMG_ERR_LIMIT;
+      goto fail;
+    }
+    coef[i] = (int16_t *)gimg_malloc(alloc, n);
+    if (!coef[i]) {
+      r = GIMG_ERR_OOM;
+      goto fail;
+    }
+    memset(coef[i], 0, n);
+    r = hier_plane_alloc(alloc, &out[i], cw[i], chh[i]);
+    if (r != GIMG_OK) {
+      goto fail;
+    }
+  }
+
+  r = jpeg_decode_progressive_scans(state, sof, f->scans, f->num_scans,
+      f->is_arithmetic, &f->arith_cond, f->is_differential, mcu_per_row,
+      mcu_per_col, blk_w, blk_h, grid_w, coef);
+  if (r != GIMG_OK) {
+    goto fail;
+  }
+
+  {
+    const int32_t level_shift =
+        f->is_differential ? 0 : ((int32_t)1 << (precision - 1));
+    const int pass1_bits = (precision == 12) ? 1 : 2;
+    int16_t block_rz[64];
+    int32_t block_q[64], block_idct[64];
+    for (uint8_t ci = 0; ci < num_comp; ci++) {
+      uint8_t qid = sof->quant_tbl_id[ci];
+      if (qid >= GIMG_JPEG_MAX_QUANT_TABLES || !f->quant_tbl_present[qid]) {
+        r = GIMG_ERR_CORRUPT;
+        goto fail;
+      }
+      const uint16_t * quant = f->quant_tbl[qid];
+      for (uint32_t by = 0; by < blk_h[ci]; by++) {
+        for (uint32_t bx = 0; bx < blk_w[ci]; bx++) {
+          const int16_t * block =
+              coef[ci] + ((size_t)by * grid_w[ci] + bx) * 64u;
+          jpeg_dezigzag(block, block_rz);
+          jpeg_dequantise_32(block_rz, quant, block_q);
+          jpeg_idct_8x8_islow(block_q, block_idct, pass1_bits);
+          for (int dy = 0; dy < 8; dy++) {
+            uint32_t y = by * 8u + (uint32_t)dy;
+            if (y >= chh[ci]) {
+              break;
+            }
+            for (int dx = 0; dx < 8; dx++) {
+              uint32_t x = bx * 8u + (uint32_t)dx;
+              if (x >= cw[ci]) {
+                break;
+              }
+              // Unclamped, as in the sequential path: the bound of A.3.1 is
+              // imposed once, on the finished components.
+              out[ci].s[(size_t)y * cw[ci] + x] =
+                  block_idct[dy * 8 + dx] + level_shift;
+            }
+          }
+        }
+      }
+    }
+  }
+  for (uint8_t i = 0; i < num_comp; i++) {
+    gimg_free(alloc, coef[i]);
+  }
+  return GIMG_OK;
+
+fail:
+  for (uint8_t i = 0; i < num_comp; i++) {
+    gimg_free(alloc, coef[i]);
+    hier_plane_free(alloc, &out[i]);
+  }
+  return r;
+}
+
+/**
  * Turn the finished reference components into a raster.
  *
  * The components are narrowed to the frame precision first, so that the
@@ -921,7 +1058,7 @@ GIMG_Result gimg_jpeg_decode_hierarchical(const gimg_jpeg_doc_state_t * state,
       r = hier_decode_lossless_frame(state, f, cur);
     }
     else if (f->is_progressive) {
-      r = GIMG_ERR_UNSUPPORTED;
+      r = hier_decode_progressive_frame(state, f, cur);
     }
     else {
       r = hier_decode_dct_frame(state, f, cur);

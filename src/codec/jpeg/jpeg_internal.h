@@ -746,6 +746,22 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
 GIMG_Result gimg_jpeg_decode_hierarchical(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
+/**
+ * Decode every scan of a progressive frame into its coefficient buffers
+ * (T.81 Annex G).  Defined in jpeg_entropy.c; see the comment there.
+ *
+ * Shared with the hierarchical path, whose differential progressive frames
+ * (SOF6, SOF14) read their scans the same way and differ only in the two
+ * points of J.2.3.1 - @p differential covers the one that belongs here, the DC
+ * coefficient decoded directly rather than predicted.
+ */
+GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
+    const gimg_jpeg_sof_t * sof, const gimg_jpeg_scan_t * scans,
+    unsigned num_scans, int is_arithmetic, const jpeg_arith_cond_t * cond,
+    int differential, uint32_t mcu_per_row, uint32_t mcu_per_col,
+    const uint32_t * blk_w, const uint32_t * blk_h, const uint32_t * grid_w,
+    int16_t * const * coef_blocks);
+
 GIMG_Result gimg_jpeg_decode_progressive(const gimg_jpeg_doc_state_t * state,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 

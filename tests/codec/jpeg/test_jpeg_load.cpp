@@ -1161,6 +1161,12 @@ TEST(JpegLoad, DecodeHierarchicalMatchesReferenceCodec) {
           "EXP(0,0): a refining frame at the same resolution (B.3.3)"},
       {"hier_gray_noexp_arith.jpg", "hier_gray_noexp_arith_ref.pgm", 1,
           "EXP(0,0), arithmetic"},
+      {"hier_rgb_progressive.jpg", "hier_rgb_progressive_ref.ppm", 3,
+          "SOF2 base + SOF6 differential progressive (Annex G in a pyramid)"},
+      {"hier_rgb_prog_arith.jpg", "hier_rgb_prog_arith_ref.ppm", 3,
+          "SOF10 base + SOF14 differential progressive, arithmetic"},
+      {"hier_rgb_prog_lossless.jpg", "hier_rgb_prog_lossless_ref.ppm", 3,
+          "SOF2 base + SOF7: J allows a lossless frame to end a DCT sequence"},
       // Controls: the same encoder, the same source, no hierarchy.
       {"plain_rgb_444.jpg", "plain_rgb_444_ref.ppm", 2,
           "control: single-frame 4:4:4"},
@@ -1170,6 +1176,8 @@ TEST(JpegLoad, DecodeHierarchicalMatchesReferenceCodec) {
           "control: single-frame 4:2:2"},
       {"plain_gray.jpg", "plain_gray_ref.pgm", 1,
           "control: single-frame grayscale"},
+      {"plain_rgb_progressive.jpg", "plain_rgb_progressive_ref.ppm", 2,
+          "control: single-frame progressive"},
   };
 
   for (const Case & c : cases) {

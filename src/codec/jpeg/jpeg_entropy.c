@@ -1156,6 +1156,329 @@ fail_comp:
 }
 
 /** Progressive decode for 8- or 12-bit precision. Grayscale and YCbCr only. */
+/**
+ * Decode every scan of a progressive frame into its coefficient buffers
+ * (T.81 Annex G).
+ *
+ * Shared by the single-frame progressive decoders and the hierarchical one,
+ * because the scans of a differential progressive frame (SOF6, SOF14) are read
+ * exactly as an ordinary frame's are.  J.2.3.1 changes two things about such a
+ * frame, and only one of them happens here: "the DC coefficient of the DCT is
+ * decoded directly - without prediction", which @p differential asks for by
+ * clearing the predictor before each first-pass DC block.  The other - the IDCT
+ * taken without the level shift - belongs to whoever turns these coefficients
+ * back into samples.
+ *
+ * The caller owns @p coef_blocks and frees them whatever this returns.  The
+ * geometry arguments are the caller's, because it has already had to work them
+ * out to size those buffers.
+ */
+GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
+    const gimg_jpeg_sof_t * sof, const gimg_jpeg_scan_t * scans,
+    unsigned num_scans, int is_arithmetic, const jpeg_arith_cond_t * cond,
+    int differential, uint32_t mcu_per_row, uint32_t mcu_per_col,
+    const uint32_t * blk_w, const uint32_t * blk_h, const uint32_t * grid_w,
+    int16_t * const * coef_blocks) {
+  const uint8_t num_comp = sof->num_components;
+  int16_t dc_pred[GIMG_JPEG_MAX_COMPONENTS];
+  memset(dc_pred, 0, sizeof(dc_pred));
+
+  for (unsigned scan_idx = 0; scan_idx < num_scans; scan_idx++) {
+    const gimg_jpeg_scan_t * scan = &scans[scan_idx];
+    // An arithmetic scan may legitimately be empty (T.81 D.2.9); see the
+    // sequential path for why.
+    if (is_arithmetic ? (scan->data_size != 0 && !scan->data)
+                             : (!scan->data || scan->data_size == 0)) {
+      return GIMG_ERR_CORRUPT;
+    }
+    int is_dc = (scan->ss == 0 && scan->se == 0);
+    gimg_jpeg_huff_table_t dc_tables[4];
+    gimg_jpeg_huff_table_t ac_tables[4];
+    gimg_jpeg_huff_table_t ac_refine_tables[4];
+    memset(dc_tables, 0, sizeof(dc_tables));
+    memset(ac_tables, 0, sizeof(ac_tables));
+    memset(ac_refine_tables, 0, sizeof(ac_refine_tables));
+    for (uint8_t c = 0; c < scan->comp_count; c++) {
+      if (is_arithmetic) {
+        // SOF10 carries no DHT segments; see the sequential path.
+        break;
+      }
+      uint8_t dc_id = scan->dc_tbl[c];
+      uint8_t ac_id = scan->ac_tbl[c];
+      const unsigned char * dc_src =
+          (scan->huff_dc[dc_id] && scan->huff_dc_len[dc_id] > 0)
+          ? scan->huff_dc[dc_id]
+          : state->huff_dc[dc_id];
+      size_t dc_len = (scan->huff_dc[dc_id] && scan->huff_dc_len[dc_id] > 0)
+          ? scan->huff_dc_len[dc_id]
+          : state->huff_dc_len[dc_id];
+      // T.81 B.2.4: the table for this scan is the one most recently defined
+      // before its entropy-coded segment, which is exactly what the SOS
+      // snapshot holds.  Fall back to the Annex K.4 default only when the file
+      // never defined one.  Refinement scans take the same table; there is no
+      // second kind.
+      const unsigned char * ac_src =
+          (scan->huff_ac[ac_id] && scan->huff_ac_len[ac_id] > 0)
+          ? scan->huff_ac[ac_id]
+          : state->huff_ac[ac_id];
+      size_t ac_len = (scan->huff_ac[ac_id] && scan->huff_ac_len[ac_id] > 0)
+          ? scan->huff_ac_len[ac_id]
+          : state->huff_ac_len[ac_id];
+      if (!ac_src || ac_len == 0) {
+        ac_src = jpeg_default_ac_dht_payload(&ac_len);
+      }
+      if (dc_id >= 4 || !dc_src || dc_len == 0 ||
+          jpeg_build_huff_table(dc_src, dc_len, &dc_tables[dc_id]) != 0) {
+        return GIMG_ERR_CORRUPT;
+      }
+      if (ac_id >= 4 || !ac_src || ac_len == 0 ||
+          jpeg_build_huff_table(ac_src, ac_len, &ac_tables[ac_id]) != 0) {
+        return GIMG_ERR_CORRUPT;
+      }
+    }
+    // T.81 B.2.2: segment ends at next marker; padding bit value unspecified.
+    // We track expected block count and treat underflow in the last block as EOB/0
+    // so we do not assume 0 or 1 for padding (spec compliance, third-party files).
+    // Do not set pad_at_eob — use last-block underflow handling instead.
+    // T.81 A.2: what an MCU *is* depends on how many components the scan has.
+    //
+    // With one component (A.2.2) the scan is non-interleaved and an MCU is a
+    // single block, so the scan covers that component's own block grid:
+    // ceil(X_i/8) x ceil(Y_i/8) MCUs, in raster order, with no MCU padding.
+    // With several (A.2.3) an MCU is H_i x V_i blocks of each component and the
+    // scan covers mcu_per_row x mcu_per_col MCUs.
+    //
+    // Every progressive AC scan is non-interleaved - G.1.2.2 allows no other
+    // arrangement - so the one-component case is the common one, not the
+    // exception.  Walking the image MCU grid for those scans decoded blocks in
+    // the wrong order and in the wrong quantity, which is why progressive
+    // decode failed or returned wrong pixels on anything past a single MCU row.
+    int scan_interleaved = (scan->comp_count > 1);
+    uint8_t solo_comp = 0;
+    if (!scan_interleaved) {
+      for (; solo_comp < num_comp; solo_comp++) {
+        if (sof->comp_id[solo_comp] == scan->comp_id[0])
+          break;
+      }
+      if (solo_comp >= num_comp) {
+        return GIMG_ERR_CORRUPT;
+      }
+    }
+    uint32_t scan_mcus_x =
+        scan_interleaved ? mcu_per_row : blk_w[solo_comp];
+    uint32_t scan_mcus_y =
+        scan_interleaved ? mcu_per_col : blk_h[solo_comp];
+
+    size_t blocks_per_mcu_prog = 0;
+    if (scan_interleaved) {
+      for (uint8_t s = 0; s < scan->comp_count; s++) {
+        uint8_t comp_idx = 0;
+        for (; comp_idx < num_comp; comp_idx++) {
+          if (sof->comp_id[comp_idx] == scan->comp_id[s])
+            break;
+        }
+        if (comp_idx < num_comp)
+          blocks_per_mcu_prog +=
+              (size_t)sof->h_samp[comp_idx] * (size_t)sof->v_samp[comp_idx];
+      }
+    }
+    else {
+      blocks_per_mcu_prog = 1;
+    }
+    size_t mcu_total_prog = 0;
+    if (!gcu_safe_mul_size(
+            (size_t)scan_mcus_x, (size_t)scan_mcus_y, &mcu_total_prog)) {
+      return GIMG_ERR_CORRUPT;
+    }
+    size_t total_blocks_prog = 0;
+    if (!gcu_safe_mul_size(
+            mcu_total_prog, blocks_per_mcu_prog, &total_blocks_prog)) {
+      return GIMG_ERR_CORRUPT;
+    }
+
+    gimg_jpeg_bitstream_t bs;
+    jpeg_bitstream_init(&bs, scan->data, scan->data_size);
+    // SOF10 is the same progressive process as SOF2 with the arithmetic coder
+    // of Annex D.  Each scan starts its statistics afresh (T.81 F.2.4.1): the
+    // model is per scan, not per frame, because successive scans of the same
+    // band carry quite different decisions.
+    jpeg_arith_decoder_t ad;
+    jpeg_arith_stats_t astats;
+    if (is_arithmetic) {
+      jpeg_arith_decoder_init(&ad, scan->data, scan->data_size);
+      jpeg_arith_stats_reset(&astats);
+    }
+    {
+      const char * e = getenv("GIMG_JPEG_RECOVER_STUFF_ZERO");
+      if (e && e[0] == '1') {
+        bs.recover_stuff_zero = 1; // Opt-in recovery only; not from T.81.
+      }
+    }
+    // The interval in force for this scan, not the frame's latest (B.2.4.4).
+    uint16_t restart_interval = scan->restart_interval;
+    int ss = (int)scan->ss;
+    int se = (int)scan->se;
+    int ah = (int)scan->ah;
+    int al = (int)scan->al;
+    unsigned int eobrun = 0;
+    size_t block_counter_prog = 0;
+
+    for (uint32_t mcu_y = 0; mcu_y < scan_mcus_y; mcu_y++) {
+      for (uint32_t mcu_x = 0; mcu_x < scan_mcus_x; mcu_x++) {
+        uint32_t mcu_index = mcu_y * scan_mcus_x + mcu_x;
+        if (restart_interval > 0 && mcu_index > 0 &&
+            mcu_index % (uint32_t)restart_interval == 0) {
+          if (is_arithmetic) {
+            // T.81 F.2.4.1: restart the coder and forget what it had learned.
+            if (jpeg_arith_restart(&ad, &astats) != GIMG_OK) {
+              return GIMG_ERR_CORRUPT;
+            }
+          }
+          else {
+            // Consume the restart marker here, at the MCU boundary, by
+            // byte-aligning and reading it (T.81 B.2.1) - the same correction
+            // the sequential path needed.  Setting expect_rst and leaving the
+            // bitstream reader to notice the marker on its own does not work:
+            // the reader only looks when it next needs a byte, which is after
+            // it has already consumed bits belonging to the wrong side of the
+            // boundary, and the scan desynchronises from there on.  That is why
+            // every progressive file with a restart interval failed to decode.
+            bs.expect_rst = 1; // T.81 3.1.110: next 0xFF 0xD0..0xD7 is RST
+            jpeg_bitstream_align_skip_rst(&bs);
+            if (bs.rst_just_skipped) {
+              memset(dc_pred, 0, sizeof(dc_pred));
+              bs.rst_just_skipped = 0;
+            }
+            // G.1.2.3: an EOB run counts blocks within one restart interval and
+            // never continues across the marker.
+            eobrun = 0;
+          }
+        }
+        for (uint8_t s = 0; s < scan->comp_count; s++) {
+          uint8_t comp_idx = 0;
+          for (; comp_idx < num_comp; comp_idx++) {
+            if (sof->comp_id[comp_idx] == scan->comp_id[s])
+              break;
+          }
+          if (comp_idx >= num_comp) {
+            return GIMG_ERR_CORRUPT;
+          }
+          // A non-interleaved scan contributes one block per MCU, at the MCU's
+          // own raster position in this component's grid.  An interleaved scan
+          // contributes H_i x V_i blocks, the MCU's top-left corner being at
+          // (mcu_x*H_i, mcu_y*V_i).
+          uint8_t h_samp = scan_interleaved ? sof->h_samp[comp_idx] : 1;
+          uint8_t v_samp = scan_interleaved ? sof->v_samp[comp_idx] : 1;
+          uint32_t blk_col0 = scan_interleaved ? mcu_x * h_samp : mcu_x;
+          uint32_t blk_row0 = scan_interleaved ? mcu_y * v_samp : mcu_y;
+          uint32_t row_stride = grid_w[comp_idx];
+
+          for (uint8_t by = 0; by < v_samp; by++) {
+            for (uint8_t bx = 0; bx < h_samp; bx++) {
+              int is_last_prog =
+                  (total_blocks_prog > 0 &&
+                      block_counter_prog == total_blocks_prog - 1)
+                  ? 1
+                  : 0;
+              size_t block_idx =
+                  (size_t)(blk_row0 + (uint32_t)by) * (size_t)row_stride +
+                  (size_t)(blk_col0 + (uint32_t)bx);
+              int16_t * block = coef_blocks[comp_idx] + block_idx * 64;
+              if (is_dc) {
+                GIMG_Result r;
+                // J.2.3.1: in a differential frame the DC coefficient is
+                // decoded directly.  Only the first pass predicts - a
+                // refinement scan (Ah != 0) merely appends a bit - so this is
+                // the one place the predictor has to be taken out of play.
+                if (differential && ah == 0) {
+                  dc_pred[comp_idx] = 0;
+                  if (is_arithmetic) {
+                    astats.dc_pred[comp_idx] = 0;
+                  }
+                }
+                if (is_arithmetic) {
+                  r = (ah == 0)
+                      ? jpeg_arith_decode_block_prog_dc_first(&ad, &astats,
+                            cond, comp_idx, scan->dc_tbl[s], al,
+                            block)
+                      : jpeg_arith_decode_block_prog_dc_refine(
+                            &ad, &astats, al, block);
+                }
+                else if (ah == 0) {
+                  r = jpeg_decode_block_progressive_dc(&bs,
+                      &dc_tables[scan->dc_tbl[s]], block, &dc_pred[comp_idx],
+                      al, NULL, NULL, 0, is_last_prog);
+                }
+                else {
+                  r = jpeg_decode_block_progressive_dc_refine(&bs, block,
+                      &dc_pred[comp_idx], (unsigned int)al, NULL, 0,
+                      is_last_prog);
+                }
+                if (r != GIMG_OK) {
+                  return GIMG_ERR_CORRUPT;
+                }
+                if (block_counter_prog < 6 &&
+                    GIMG_JPEG_TRACE_PROG_FIRST_DC) {
+                  (void)fprintf(stderr,
+                      "PROG_DEC_DC block=%zu comp=%u block[0]=%d\n",
+                      block_counter_prog, (unsigned)comp_idx, (int)block[0]);
+                  (void)fflush(stderr);
+                }
+              }
+              else if (is_arithmetic) {
+                GIMG_Result r = (ah == 0)
+                    ? jpeg_arith_decode_block_prog_ac_first(&ad, &astats,
+                          cond, scan->ac_tbl[s], ss, se, al,
+                          block)
+                    : jpeg_arith_decode_block_prog_ac_refine(
+                          &ad, &astats, scan->ac_tbl[s], ss, se, al, block);
+                if (r != GIMG_OK) {
+                  return GIMG_ERR_CORRUPT;
+                }
+              }
+              else {
+                if (ah == 0) {
+                  int trace_blk = GIMG_JPEG_TRACE_PROG_FIRST_AC
+                      ? (int)block_counter_prog
+                      : -1;
+                  GIMG_Result r = jpeg_decode_block_progressive_ac_initial(&bs,
+                      &ac_tables[scan->ac_tbl[s]], block, ss, se, al, 0,
+                      trace_blk, 0u, &eobrun, 0, is_last_prog);
+                  if (r != GIMG_OK) {
+                    return GIMG_ERR_CORRUPT;
+                  }
+                }
+                else {
+                  // T.81 G.1.1.2.2: a refinement scan uses the AC table its
+                  // SOS names through Ta, which is the same table any other
+                  // scan would get.  The table is usually small - refinement
+                  // only ever emits symbols with s in {0,1} - but small is not
+                  // a different kind of table.
+                  const gimg_jpeg_huff_table_t * ac_ref_tbl =
+                      &ac_tables[scan->ac_tbl[s]];
+                  if (ac_ref_tbl->num_values == 0) {
+                    return GIMG_ERR_CORRUPT;
+                  }
+                  GIMG_Result r =
+                      jpeg_decode_block_progressive_ac_refine(&bs, ac_ref_tbl,
+                          block, ss, se, al, 0, -1, 0, 0, -1, &eobrun,
+                          is_last_prog);
+                  if (r != GIMG_OK) {
+                    return GIMG_ERR_CORRUPT;
+                  }
+                }
+              }
+              block_counter_prog++;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return GIMG_OK;
+}
+
 static GIMG_Result jpeg_decode_progressive_extended(
     const gimg_jpeg_doc_state_t * state, const GIMG_Decode_Options * options,
     GIMG_Raster ** out_raster) {
@@ -1269,289 +1592,12 @@ static GIMG_Result jpeg_decode_progressive_extended(
     memset(coef_blocks[i], 0, coef_size);
   }
 
-  int16_t dc_pred[GIMG_JPEG_MAX_COMPONENTS];
-  memset(dc_pred, 0, sizeof(dc_pred));
-
-  for (unsigned scan_idx = 0; scan_idx < state->num_scans; scan_idx++) {
-    const gimg_jpeg_scan_t * scan = &state->scans[scan_idx];
-    // An arithmetic scan may legitimately be empty (T.81 D.2.9); see the
-    // sequential path for why.
-    if (state->is_arithmetic ? (scan->data_size != 0 && !scan->data)
-                             : (!scan->data || scan->data_size == 0)) {
+  {
+    GIMG_Result rr = jpeg_decode_progressive_scans(state, sof, state->scans,
+        state->num_scans, state->is_arithmetic, &state->arith_cond, 0,
+        mcu_per_row, mcu_per_col, blk_w, blk_h, grid_w, coef_blocks);
+    if (rr != GIMG_OK) {
       goto prog_ext_fail;
-    }
-    int is_dc = (scan->ss == 0 && scan->se == 0);
-    gimg_jpeg_huff_table_t dc_tables[4];
-    gimg_jpeg_huff_table_t ac_tables[4];
-    gimg_jpeg_huff_table_t ac_refine_tables[4];
-    memset(dc_tables, 0, sizeof(dc_tables));
-    memset(ac_tables, 0, sizeof(ac_tables));
-    memset(ac_refine_tables, 0, sizeof(ac_refine_tables));
-    for (uint8_t c = 0; c < scan->comp_count; c++) {
-      if (state->is_arithmetic) {
-        // SOF10 carries no DHT segments; see the sequential path.
-        break;
-      }
-      uint8_t dc_id = scan->dc_tbl[c];
-      uint8_t ac_id = scan->ac_tbl[c];
-      const unsigned char * dc_src =
-          (scan->huff_dc[dc_id] && scan->huff_dc_len[dc_id] > 0)
-          ? scan->huff_dc[dc_id]
-          : state->huff_dc[dc_id];
-      size_t dc_len = (scan->huff_dc[dc_id] && scan->huff_dc_len[dc_id] > 0)
-          ? scan->huff_dc_len[dc_id]
-          : state->huff_dc_len[dc_id];
-      // T.81 B.2.4: the table for this scan is the one most recently defined
-      // before its entropy-coded segment, which is exactly what the SOS
-      // snapshot holds.  Fall back to the Annex K.4 default only when the file
-      // never defined one.  Refinement scans take the same table; there is no
-      // second kind.
-      const unsigned char * ac_src =
-          (scan->huff_ac[ac_id] && scan->huff_ac_len[ac_id] > 0)
-          ? scan->huff_ac[ac_id]
-          : state->huff_ac[ac_id];
-      size_t ac_len = (scan->huff_ac[ac_id] && scan->huff_ac_len[ac_id] > 0)
-          ? scan->huff_ac_len[ac_id]
-          : state->huff_ac_len[ac_id];
-      if (!ac_src || ac_len == 0) {
-        ac_src = jpeg_default_ac_dht_payload(&ac_len);
-      }
-      if (dc_id >= 4 || !dc_src || dc_len == 0 ||
-          jpeg_build_huff_table(dc_src, dc_len, &dc_tables[dc_id]) != 0) {
-        goto prog_ext_fail;
-      }
-      if (ac_id >= 4 || !ac_src || ac_len == 0 ||
-          jpeg_build_huff_table(ac_src, ac_len, &ac_tables[ac_id]) != 0) {
-        goto prog_ext_fail;
-      }
-    }
-    // T.81 B.2.2: segment ends at next marker; padding bit value unspecified.
-    // We track expected block count and treat underflow in the last block as EOB/0
-    // so we do not assume 0 or 1 for padding (spec compliance, third-party files).
-    // Do not set pad_at_eob — use last-block underflow handling instead.
-    // T.81 A.2: what an MCU *is* depends on how many components the scan has.
-    //
-    // With one component (A.2.2) the scan is non-interleaved and an MCU is a
-    // single block, so the scan covers that component's own block grid:
-    // ceil(X_i/8) x ceil(Y_i/8) MCUs, in raster order, with no MCU padding.
-    // With several (A.2.3) an MCU is H_i x V_i blocks of each component and the
-    // scan covers mcu_per_row x mcu_per_col MCUs.
-    //
-    // Every progressive AC scan is non-interleaved - G.1.2.2 allows no other
-    // arrangement - so the one-component case is the common one, not the
-    // exception.  Walking the image MCU grid for those scans decoded blocks in
-    // the wrong order and in the wrong quantity, which is why progressive
-    // decode failed or returned wrong pixels on anything past a single MCU row.
-    int scan_interleaved = (scan->comp_count > 1);
-    uint8_t solo_comp = 0;
-    if (!scan_interleaved) {
-      for (; solo_comp < num_comp; solo_comp++) {
-        if (sof->comp_id[solo_comp] == scan->comp_id[0])
-          break;
-      }
-      if (solo_comp >= num_comp) {
-        goto prog_ext_fail;
-      }
-    }
-    uint32_t scan_mcus_x =
-        scan_interleaved ? mcu_per_row : blk_w[solo_comp];
-    uint32_t scan_mcus_y =
-        scan_interleaved ? mcu_per_col : blk_h[solo_comp];
-
-    size_t blocks_per_mcu_prog = 0;
-    if (scan_interleaved) {
-      for (uint8_t s = 0; s < scan->comp_count; s++) {
-        uint8_t comp_idx = 0;
-        for (; comp_idx < num_comp; comp_idx++) {
-          if (sof->comp_id[comp_idx] == scan->comp_id[s])
-            break;
-        }
-        if (comp_idx < num_comp)
-          blocks_per_mcu_prog +=
-              (size_t)sof->h_samp[comp_idx] * (size_t)sof->v_samp[comp_idx];
-      }
-    }
-    else {
-      blocks_per_mcu_prog = 1;
-    }
-    size_t mcu_total_prog = 0;
-    if (!gcu_safe_mul_size(
-            (size_t)scan_mcus_x, (size_t)scan_mcus_y, &mcu_total_prog)) {
-      goto prog_ext_fail;
-    }
-    size_t total_blocks_prog = 0;
-    if (!gcu_safe_mul_size(
-            mcu_total_prog, blocks_per_mcu_prog, &total_blocks_prog)) {
-      goto prog_ext_fail;
-    }
-
-    gimg_jpeg_bitstream_t bs;
-    jpeg_bitstream_init(&bs, scan->data, scan->data_size);
-    // SOF10 is the same progressive process as SOF2 with the arithmetic coder
-    // of Annex D.  Each scan starts its statistics afresh (T.81 F.2.4.1): the
-    // model is per scan, not per frame, because successive scans of the same
-    // band carry quite different decisions.
-    jpeg_arith_decoder_t ad;
-    jpeg_arith_stats_t astats;
-    if (state->is_arithmetic) {
-      jpeg_arith_decoder_init(&ad, scan->data, scan->data_size);
-      jpeg_arith_stats_reset(&astats);
-    }
-    {
-      const char * e = getenv("GIMG_JPEG_RECOVER_STUFF_ZERO");
-      if (e && e[0] == '1') {
-        bs.recover_stuff_zero = 1; // Opt-in recovery only; not from T.81.
-      }
-    }
-    // The interval in force for this scan, not the frame's latest (B.2.4.4).
-    uint16_t restart_interval = scan->restart_interval;
-    int ss = (int)scan->ss;
-    int se = (int)scan->se;
-    int ah = (int)scan->ah;
-    int al = (int)scan->al;
-    unsigned int eobrun = 0;
-    size_t block_counter_prog = 0;
-
-    for (uint32_t mcu_y = 0; mcu_y < scan_mcus_y; mcu_y++) {
-      for (uint32_t mcu_x = 0; mcu_x < scan_mcus_x; mcu_x++) {
-        uint32_t mcu_index = mcu_y * scan_mcus_x + mcu_x;
-        if (restart_interval > 0 && mcu_index > 0 &&
-            mcu_index % (uint32_t)restart_interval == 0) {
-          if (state->is_arithmetic) {
-            // T.81 F.2.4.1: restart the coder and forget what it had learned.
-            if (jpeg_arith_restart(&ad, &astats) != GIMG_OK) {
-              goto prog_ext_fail;
-            }
-          }
-          else {
-            // Consume the restart marker here, at the MCU boundary, by
-            // byte-aligning and reading it (T.81 B.2.1) - the same correction
-            // the sequential path needed.  Setting expect_rst and leaving the
-            // bitstream reader to notice the marker on its own does not work:
-            // the reader only looks when it next needs a byte, which is after
-            // it has already consumed bits belonging to the wrong side of the
-            // boundary, and the scan desynchronises from there on.  That is why
-            // every progressive file with a restart interval failed to decode.
-            bs.expect_rst = 1; // T.81 3.1.110: next 0xFF 0xD0..0xD7 is RST
-            jpeg_bitstream_align_skip_rst(&bs);
-            if (bs.rst_just_skipped) {
-              memset(dc_pred, 0, sizeof(dc_pred));
-              bs.rst_just_skipped = 0;
-            }
-            // G.1.2.3: an EOB run counts blocks within one restart interval and
-            // never continues across the marker.
-            eobrun = 0;
-          }
-        }
-        for (uint8_t s = 0; s < scan->comp_count; s++) {
-          uint8_t comp_idx = 0;
-          for (; comp_idx < num_comp; comp_idx++) {
-            if (sof->comp_id[comp_idx] == scan->comp_id[s])
-              break;
-          }
-          if (comp_idx >= num_comp) {
-            goto prog_ext_fail;
-          }
-          // A non-interleaved scan contributes one block per MCU, at the MCU's
-          // own raster position in this component's grid.  An interleaved scan
-          // contributes H_i x V_i blocks, the MCU's top-left corner being at
-          // (mcu_x*H_i, mcu_y*V_i).
-          uint8_t h_samp = scan_interleaved ? sof->h_samp[comp_idx] : 1;
-          uint8_t v_samp = scan_interleaved ? sof->v_samp[comp_idx] : 1;
-          uint32_t blk_col0 = scan_interleaved ? mcu_x * h_samp : mcu_x;
-          uint32_t blk_row0 = scan_interleaved ? mcu_y * v_samp : mcu_y;
-          uint32_t row_stride = grid_w[comp_idx];
-
-          for (uint8_t by = 0; by < v_samp; by++) {
-            for (uint8_t bx = 0; bx < h_samp; bx++) {
-              int is_last_prog =
-                  (total_blocks_prog > 0 &&
-                      block_counter_prog == total_blocks_prog - 1)
-                  ? 1
-                  : 0;
-              size_t block_idx =
-                  (size_t)(blk_row0 + (uint32_t)by) * (size_t)row_stride +
-                  (size_t)(blk_col0 + (uint32_t)bx);
-              int16_t * block = coef_blocks[comp_idx] + block_idx * 64;
-              if (is_dc) {
-                GIMG_Result r;
-                if (state->is_arithmetic) {
-                  r = (ah == 0)
-                      ? jpeg_arith_decode_block_prog_dc_first(&ad, &astats,
-                            &state->arith_cond, comp_idx, scan->dc_tbl[s], al,
-                            block)
-                      : jpeg_arith_decode_block_prog_dc_refine(
-                            &ad, &astats, al, block);
-                }
-                else if (ah == 0) {
-                  r = jpeg_decode_block_progressive_dc(&bs,
-                      &dc_tables[scan->dc_tbl[s]], block, &dc_pred[comp_idx],
-                      al, NULL, NULL, 0, is_last_prog);
-                }
-                else {
-                  r = jpeg_decode_block_progressive_dc_refine(&bs, block,
-                      &dc_pred[comp_idx], (unsigned int)al, NULL, 0,
-                      is_last_prog);
-                }
-                if (r != GIMG_OK) {
-                  goto prog_ext_fail;
-                }
-                if (block_counter_prog < 6 &&
-                    GIMG_JPEG_TRACE_PROG_FIRST_DC) {
-                  (void)fprintf(stderr,
-                      "PROG_DEC_DC block=%zu comp=%u block[0]=%d\n",
-                      block_counter_prog, (unsigned)comp_idx, (int)block[0]);
-                  (void)fflush(stderr);
-                }
-              }
-              else if (state->is_arithmetic) {
-                GIMG_Result r = (ah == 0)
-                    ? jpeg_arith_decode_block_prog_ac_first(&ad, &astats,
-                          &state->arith_cond, scan->ac_tbl[s], ss, se, al,
-                          block)
-                    : jpeg_arith_decode_block_prog_ac_refine(
-                          &ad, &astats, scan->ac_tbl[s], ss, se, al, block);
-                if (r != GIMG_OK) {
-                  goto prog_ext_fail;
-                }
-              }
-              else {
-                if (ah == 0) {
-                  int trace_blk = GIMG_JPEG_TRACE_PROG_FIRST_AC
-                      ? (int)block_counter_prog
-                      : -1;
-                  GIMG_Result r = jpeg_decode_block_progressive_ac_initial(&bs,
-                      &ac_tables[scan->ac_tbl[s]], block, ss, se, al, 0,
-                      trace_blk, 0u, &eobrun, 0, is_last_prog);
-                  if (r != GIMG_OK) {
-                    goto prog_ext_fail;
-                  }
-                }
-                else {
-                  // T.81 G.1.1.2.2: a refinement scan uses the AC table its
-                  // SOS names through Ta, which is the same table any other
-                  // scan would get.  The table is usually small - refinement
-                  // only ever emits symbols with s in {0,1} - but small is not
-                  // a different kind of table.
-                  const gimg_jpeg_huff_table_t * ac_ref_tbl =
-                      &ac_tables[scan->ac_tbl[s]];
-                  if (ac_ref_tbl->num_values == 0) {
-                    goto prog_ext_fail;
-                  }
-                  GIMG_Result r =
-                      jpeg_decode_block_progressive_ac_refine(&bs, ac_ref_tbl,
-                          block, ss, se, al, 0, -1, 0, 0, -1, &eobrun,
-                          is_last_prog);
-                  if (r != GIMG_OK) {
-                    goto prog_ext_fail;
-                  }
-                }
-              }
-              block_counter_prog++;
-            }
-          }
-        }
-      }
     }
   }
 
