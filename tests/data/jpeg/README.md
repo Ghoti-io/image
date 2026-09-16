@@ -556,3 +556,27 @@ Regenerating these means re-encoding with this library, which makes them a
 weaker regression test than the fixtures above - they move when the encoder
 moves.  What they pin down is the thing that matters and that nothing else
 checks: that an independent Annex J decoder still reads the result.
+
+### Lossless frames with sampling factors above one
+
+`lossless_arith_h2v4.jpg` came out of the fuzzer; `lossless_huff_subsampled.jpg`
+and `lossless_arith_subsampled.jpg` were produced to pin down the interleaved
+case it implied:
+
+```sh
+J=/path/to/thorfdbg-libjpeg/jpeg
+$J -p -c -s 1x1,2x2,2x2 tests/data/jpeg/hier_src_rgb.ppm \
+    tests/data/jpeg/lossless_huff_subsampled.jpg
+$J -p -a -c -s 2x2,1x1,1x1 tests/data/jpeg/hier_src_rgb.ppm \
+    tests/data/jpeg/lossless_arith_subsampled.jpg
+```
+
+These are crash regressions, not correctness fixtures, and the difference
+matters.  Nothing available writes a *correct* subsampled lossless JPEG:
+libjpeg-turbo declines to subsample a lossless frame at all (it writes 1x1
+whatever `-sample` says, which for a process whose point is exactness is the
+defensible answer), and the reference codec's own decode of these files comes
+back nothing like the source - its round trip through them is off by 215 out of
+255.  So the test asserts only that they decode inside their buffers and at the
+declared size.  What the decoder does with them follows A.2.2, A.2.3 and H.1.1
+read directly; it is not checked against anything.

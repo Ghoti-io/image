@@ -245,6 +245,39 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
     size_t chunk_start = gimg_stream_tell(stream) - 8;
 
+    // A chunk header is a claim, not a fact, and every branch below buffers
+    // the payload whole before it has read a byte of it.  PNG's length field
+    // is four bytes, so twelve bytes of input can ask for a two-gigabyte
+    // allocation - which this loader used to make, and only then discover the
+    // file was 97 bytes long.  The fuzzer found it in both the load and the
+    // encode harness.
+    //
+    // The bound is the caller's max_chunk_size when they set one; otherwise it
+    // is what is left of the stream, because a chunk cannot be longer than the
+    // file that contains it, and no file that used to load is refused by that.
+    // Only a stream that does not know its own length falls back to a fixed
+    // figure, and there the point is simply that it be finite.
+    {
+      size_t max_payload;
+      if (limits && limits->max_chunk_size != 0) {
+        max_payload = (size_t)limits->max_chunk_size;
+      }
+      else {
+        size_t total = gimg_stream_size(stream);
+        size_t pos = gimg_stream_tell(stream);
+        max_payload = (total != (size_t)-1 && pos != (size_t)-1 && total >= pos)
+            ? (total - pos)
+            : (size_t)GIMG_PNG_DEFAULT_MAX_CHUNK_PAYLOAD;
+      }
+      if ((size_t)length > max_payload) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_LIMIT,
+            "chunk declares more data than there is; increase max_chunk_size "
+            "if this is deliberate");
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_LIMIT;
+      }
+    }
+
     if (type == GIMG_PNG_IHDR) {
       gimg_png_free_doc_state(codec, state);
       return GIMG_ERR_FORMAT; // Duplicate IHDR.

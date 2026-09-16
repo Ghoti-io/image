@@ -489,8 +489,16 @@ static GIMG_Result hier_decode_lossless_frame(
   GIMG_Result r = GIMG_OK;
   uint8_t * db_cat[GIMG_JPEG_MAX_COMPONENTS];
   int da_cat[GIMG_JPEG_MAX_COMPONENTS];
+  // One byte per line of each component, not one flag per component: see the
+  // note in jpeg_lossless.c.  An interleaved scan walks MCUs, so with Hi above
+  // one a single flag is read on a line other than the one it was set for, and
+  // on a first line that asks for the sample above the image.  Declared here
+  // with db_cat because the cleanup below frees both, and the allocations
+  // between here and there can fail.
+  unsigned char * row_1d[GIMG_JPEG_MAX_COMPONENTS];
   memset(db_cat, 0, sizeof(db_cat));
   memset(da_cat, 0, sizeof(da_cat));
+  memset(row_1d, 0, sizeof(row_1d));
   for (uint8_t i = 0; i < num_comp; i++) {
     cw[i] = mcu_per_row * sof->h_samp[i];
     chh[i] = mcu_per_col * sof->v_samp[i];
@@ -533,9 +541,13 @@ static GIMG_Result hier_decode_lossless_frame(
 
   const uint16_t restart_interval = scan->restart_interval;
   const int32_t initial_pred = (int32_t)1 << (precision - pt - 1);
-  int row_1d[GIMG_JPEG_MAX_COMPONENTS];
-  for (uint8_t i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
-    row_1d[i] = 1;
+  for (uint8_t i = 0; i < num_comp; i++) {
+    row_1d[i] = (unsigned char *)gimg_malloc(alloc, chh[i]);
+    if (!row_1d[i]) {
+      r = GIMG_ERR_OOM;
+      goto fail;
+    }
+    memset(row_1d[i], 1, chh[i]);
   }
   int restart_now = 0;
 
@@ -610,14 +622,14 @@ static GIMG_Result hier_decode_lossless_frame(
               if (x == 0) {
                 if (y == 0 || restart_now) {
                   pred = initial_pred;
-                  row_1d[ci] = 1;
+                  row_1d[ci][y] = 1;
                 }
                 else {
                   pred = out[ci].s[(size_t)(y - 1) * cw[ci]];
-                  row_1d[ci] = 0;
+                  row_1d[ci][y] = 0;
                 }
               }
-              else if (row_1d[ci]) {
+              else if (row_1d[ci][y]) {
                 pred = out[ci].s[(size_t)y * cw[ci] + (x - 1)];
               }
               else {
@@ -650,6 +662,7 @@ static GIMG_Result hier_decode_lossless_frame(
   }
   for (uint8_t i = 0; i < num_comp; i++) {
     gimg_free(alloc, db_cat[i]);
+    gimg_free(alloc, row_1d[i]);
   }
   return GIMG_OK;
 
@@ -657,6 +670,7 @@ fail:
   for (uint8_t i = 0; i < num_comp; i++) {
     hier_plane_free(alloc, &out[i]);
     gimg_free(alloc, db_cat[i]);
+    gimg_free(alloc, row_1d[i]);
   }
   return r;
 }

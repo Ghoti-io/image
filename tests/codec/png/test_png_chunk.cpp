@@ -308,3 +308,88 @@ int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// A chunk header is a claim, not a fact.
+//
+// PNG's length field is four bytes, so a twelve-byte chunk header can ask for
+// a two-gigabyte payload, and this loader buffers every payload whole - it
+// allocated what the header claimed and only then discovered the file had
+// ended.  The fuzzer found it twice over, in the load and the encode harness,
+// from inputs of 97 and 83 bytes.
+//
+// The bound is now the caller's max_chunk_size when they set one and what is
+// left of the stream otherwise, because a chunk cannot be longer than the file
+// containing it.  That refuses nothing a real file does: the same bytes used
+// to fail anyway, as a truncated payload, after the allocation.  The error
+// code is what says which happened - GIMG_ERR_LIMIT for a claim refused before
+// reading, not the GIMG_ERR_IO of a read that ran out.
+TEST(PngChunk, ChunkLongerThanTheFileIsRefusedBeforeAllocating) {
+  struct Case {
+    const char * type;
+    const char * what;
+  };
+  // One of each shape the loader buffers: ancillary, palette, and image data.
+  const Case cases[] = {
+      {"tEXt", "ancillary"},
+      {"PLTE", "palette"},
+      {"IDAT", "image data"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    std::vector<uint8_t> buf;
+    append(buf, kPngSignature, sizeof(kPngSignature));
+    append(buf, kIhdrChunk, sizeof(kIhdrChunk));
+    // Length 0x7FFFFFFF - the largest PNG permits - and then nothing.
+    const unsigned char header[8] = {0x7F, 0xFF, 0xFF, 0xFF,
+        (unsigned char)c.type[0], (unsigned char)c.type[1],
+        (unsigned char)c.type[2], (unsigned char)c.type[3]};
+    append(buf, header, sizeof(header));
+    append(buf, kIendChunk, sizeof(kIendChunk));
+
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+    GIMG_Diagnostics diag = {};
+    gimg_diagnostics_init(&diag, nullptr);
+    GIMG_Doc * doc = nullptr;
+    EXPECT_EQ(gimg_doc_load(s, nullptr, &diag, &doc), GIMG_ERR_LIMIT)
+        << "a chunk longer than the file must be refused, not allocated";
+    EXPECT_EQ(doc, nullptr);
+    gimg_diagnostics_destroy(&diag);
+    gimg_stream_destroy(s);
+  }
+}
+
+// The caller's own limit still bounds a chunk that the file does contain.
+TEST(PngChunk, MaxChunkSizeBoundsAChunkThatFits) {
+  std::vector<uint8_t> buf;
+  append(buf, kPngSignature, sizeof(kPngSignature));
+  append(buf, kIhdrChunk, sizeof(kIhdrChunk));
+  append(buf, kTextChunk, sizeof(kTextChunk)); // a 3-byte payload
+  append(buf, kIdatChunk1, sizeof(kIdatChunk1));
+  append(buf, kIendChunk, sizeof(kIendChunk));
+
+  // Without a limit it loads; with a limit of two bytes the tEXt does not.
+  for (uint32_t limit : {(uint32_t)0, (uint32_t)2}) {
+    SCOPED_TRACE("max_chunk_size=" + std::to_string(limit));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+    GIMG_Limits limits = {};
+    gimg_limits_default(&limits);
+    limits.max_chunk_size = limit;
+    GIMG_Load_Options opts = {};
+    opts.limits = &limits;
+    GIMG_Doc * doc = nullptr;
+    GIMG_Result r = gimg_doc_load(s, &opts, nullptr, &doc);
+    if (limit == 0) {
+      EXPECT_EQ(r, GIMG_OK);
+      if (doc) {
+        gimg_doc_destroy(doc);
+      }
+    }
+    else {
+      EXPECT_EQ(r, GIMG_ERR_LIMIT);
+      EXPECT_EQ(doc, nullptr);
+    }
+    gimg_stream_destroy(s);
+  }
+}

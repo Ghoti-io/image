@@ -1112,6 +1112,102 @@ TEST(JpegLoad, DecodeRespectsMaxDecodedPixels) {
   gimg_stream_destroy(s);
 }
 
+// A lossless frame whose sampling factors are not 1x1: two out-of-bounds
+// reads, both found by the fuzzer.
+//
+// T.81 H.1.1 makes a lossless MCU a group of samples rather than of 8x8
+// blocks, but the sampling factors still apply, and A.2.2 still says a scan
+// naming one component is non-interleaved and covers that component's samples
+// "left-to-right, top-to-bottom" with the factors playing no part in the walk.
+// This decoder did neither: it walked a grid of Hi x Vi samples per MCU
+// whatever the scan said, and it kept the "this line is predicted
+// one-dimensionally" state of H.1.2.1 as one flag per component rather than
+// one per line.
+//
+// With Hi above one those two combine badly.  An MCU covers several lines, so
+// the walk finishes the MCU's lines before returning to the first line in the
+// next MCU along, and the flag set for the last line of one MCU is then read
+// on the first line of the next.  On a first line that asks for the sample
+// above the image - a read off the front of the plane, which the fuzzer found
+// with this 110-byte file: a 17x9 SOF11 frame with one component at Hi = 2,
+// Vi = 4.
+//
+// The second fault is in the output stage: a subsampled component holds fewer
+// samples than the image has pixels, and it was indexed with the image's own
+// (x, y) - two samples past the end of every row for 9-wide chroma in a
+// 17-wide image, and eventually past the allocation.  It now reads through the
+// same map the DCT paths use.
+//
+// What these files are not is an oracle.  Nothing to hand writes a correct
+// subsampled lossless JPEG - libjpeg-turbo declines to subsample a lossless
+// frame at all, and the ISO reference codec's own decode of these comes back
+// nothing like the source - so the pixels are not asserted, only that the
+// decode stays inside its buffers and produces the declared size.
+TEST(JpegLoad, LosslessFrameWithNonUnitSamplingFactors) {
+  struct Case {
+    const char * jpg;
+    uint32_t w, h;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"lossless_arith_h2v4.jpg", 17, 9,
+          "one component at Hi = 2, Vi = 4, found by the fuzzer"},
+      {"lossless_huff_subsampled.jpg", 17, 9,
+          "three components, luma at 2x2: an interleaved MCU spanning lines"},
+      {"lossless_arith_subsampled.jpg", 17, 9,
+          "the same, arithmetic, with the chroma subsampled instead"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    // The fixture must keep the shape that matters, or the test guards nothing.
+    bool found = false;
+    for (size_t i = 0; i + 12 < jpeg.size(); i++) {
+      if (jpeg[i] != 0xFF) {
+        continue;
+      }
+      uint8_t m = jpeg[i + 1];
+      if (m != 0xC3 && m != 0xCB) { // SOF3, SOF11
+        continue;
+      }
+      int nf = (int)jpeg[i + 9];
+      int wide = 0;
+      for (int k = 0; k < nf; k++) {
+        uint8_t hv = jpeg[i + 11 + 3 * k];
+        if ((hv >> 4) > 1 || (hv & 0x0F) > 1) {
+          wide = 1;
+        }
+      }
+      EXPECT_TRUE(wide) << "a sampling factor must exceed one";
+      found = true;
+      break;
+    }
+    ASSERT_TRUE(found) << "fixture must carry a lossless frame header";
+
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    ASSERT_NE(doc, nullptr);
+    GIMG_Raster * raster = nullptr;
+    GIMG_Result r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+    // Either outcome is acceptable for files this unusual; reading out of
+    // bounds is not, which is what the sanitizer build turns into a failure.
+    if (r == GIMG_OK) {
+      ASSERT_NE(raster, nullptr);
+      EXPECT_EQ(gimg_raster_width(raster), c.w);
+      EXPECT_EQ(gimg_raster_height(raster), c.h);
+      gimg_raster_destroy(raster);
+    }
+    else {
+      EXPECT_EQ(raster, nullptr);
+    }
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
 // A three-component frame is not automatically YCbCr.
 //
 // T.81 describes no colour space at all - a component is a component, and the

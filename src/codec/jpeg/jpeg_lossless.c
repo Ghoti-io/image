@@ -173,6 +173,13 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   // than by eight times them.
   uint32_t mcu_per_row = (width + h_max - 1u) / h_max;
   uint32_t mcu_per_col = (height + v_max - 1u) / v_max;
+  // A.2.2: when a scan names one component it is non-interleaved, the data
+  // units are "left-to-right, top-to-bottom within the component", and the
+  // sampling factors say nothing about the walk - the scan simply covers that
+  // component's own samples in raster order.  Treating such a scan as a grid
+  // of Hi x Vi blocks visits the wrong samples, and for a one-component frame
+  // with Hi above one it visits samples that are not in the image at all.
+  const int scan_interleaved = (scan->comp_count > 1);
 
   uint32_t comp_w[GIMG_JPEG_MAX_COMPONENTS];
   uint32_t comp_h[GIMG_JPEG_MAX_COMPONENTS];
@@ -185,6 +192,23 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   int da_cat[GIMG_JPEG_MAX_COMPONENTS];
   memset(db_cat, 0, sizeof(db_cat));
   memset(da_cat, 0, sizeof(da_cat));
+  /**
+   * Whether each line is predicted one-dimensionally: one byte per line of
+   * each component, rather than one flag per component.
+   *
+   * It is a property of the line - H.1.2.1 speaks of "the first line of
+   * samples at the start of the scan and at the beginning of each restart
+   * interval" - and a single carried flag only behaves like one when the
+   * samples arrive in raster order.  They do not.  An interleaved scan walks
+   * MCUs, so with Hi above one it finishes the MCU's lines before returning to
+   * the first line in the next MCU along, by which time a flag set for the
+   * last line of the previous MCU is being read on the first line of this one.
+   * On the first line that asks for the sample above it, which is off the
+   * front of the plane: the fuzzer found a 110-byte file that read wild memory
+   * that way, on a 17x9 frame with Hi = 2.
+   */
+  unsigned char * row_1d[GIMG_JPEG_MAX_COMPONENTS];
+  memset(row_1d, 0, sizeof(row_1d));
   GIMG_Result r = GIMG_OK;
   for (uint8_t i = 0; i < num_comp; i++) {
     comp_w[i] = mcu_per_row * sof->h_samp[i];
@@ -274,15 +298,40 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   // A mid-row interval is left predicting as though no restart had happened,
   // which is what the reference codec produces and the only reading under
   // which such a file decodes at all.
-  int row_1d[GIMG_JPEG_MAX_COMPONENTS];
-  for (uint8_t i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
-    row_1d[i] = 1; // the first line of the scan is one-dimensional
+  for (uint8_t i = 0; i < num_comp; i++) {
+    row_1d[i] = (unsigned char *)gimg_malloc(alloc, comp_h[i]);
+    if (!row_1d[i]) {
+      r = GIMG_ERR_OOM;
+      goto fail;
+    }
+    memset(row_1d[i], 1, comp_h[i]); // until a line says otherwise
   }
   int restart_now = 0;
 
-  for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
-    for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
-      uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
+  // The scan's own grid: the image's MCU grid for an interleaved scan, the
+  // single component's sample grid for a non-interleaved one.
+  uint32_t solo = 0;
+  if (!scan_interleaved) {
+    for (; solo < num_comp; solo++) {
+      if (sof->comp_id[solo] == scan->comp_id[0]) {
+        break;
+      }
+    }
+    if (solo >= num_comp) {
+      r = GIMG_ERR_CORRUPT;
+      goto fail;
+    }
+  }
+  const uint32_t scan_mcus_x = scan_interleaved
+      ? mcu_per_row
+      : ((width * sof->h_samp[solo] + h_max - 1u) / h_max);
+  const uint32_t scan_mcus_y = scan_interleaved
+      ? mcu_per_col
+      : ((height * sof->v_samp[solo] + v_max - 1u) / v_max);
+
+  for (uint32_t mcu_y = 0; mcu_y < scan_mcus_y; mcu_y++) {
+    for (uint32_t mcu_x = 0; mcu_x < scan_mcus_x; mcu_x++) {
+      uint32_t mcu_index = mcu_y * scan_mcus_x + mcu_x;
       if (restart_interval > 0 && mcu_index > 0 &&
           mcu_index % (uint32_t)restart_interval == 0) {
         if (is_arith) {
@@ -323,10 +372,14 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
         }
         const gimg_jpeg_huff_table_t * tbl = &dc_tables[scan->dc_tbl[s]];
         uint32_t cw = comp_w[ci];
-        for (uint8_t sy = 0; sy < sof->v_samp[ci]; sy++) {
-          for (uint8_t sx = 0; sx < sof->h_samp[ci]; sx++) {
-            uint32_t x = mcu_x * sof->h_samp[ci] + sx;
-            uint32_t y = mcu_y * sof->v_samp[ci] + sy;
+        // A non-interleaved scan contributes one sample per MCU, at the MCU's
+        // own position in the component's grid (A.2.2).
+        uint8_t hs = scan_interleaved ? sof->h_samp[ci] : 1u;
+        uint8_t vs = scan_interleaved ? sof->v_samp[ci] : 1u;
+        for (uint8_t sy = 0; sy < vs; sy++) {
+          for (uint8_t sx = 0; sx < hs; sx++) {
+            uint32_t x = mcu_x * hs + sx;
+            uint32_t y = mcu_y * vs + sy;
             int32_t diff = 0;
             if (is_arith) {
               // H.1.2.3.1: at the start of each line the difference to the
@@ -361,14 +414,14 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
               // predictor selection says.
               if (y == 0 || restart_now) {
                 pred = initial_pred;
-                row_1d[ci] = 1;
+                row_1d[ci][y] = 1;
               }
               else {
                 pred = (int32_t)plane[ci][(size_t)(y - 1) * cw];
-                row_1d[ci] = 0;
+                row_1d[ci][y] = 0;
               }
             }
-            else if (row_1d[ci]) {
+            else if (row_1d[ci][y]) {
               pred = (int32_t)plane[ci][(size_t)y * cw + (x - 1)]; // Ra
             }
             else {
@@ -412,11 +465,41 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
     uint32_t max_val = (sample_bits >= 32) ? 0xFFFFFFFFu
                                            : ((1u << sample_bits) - 1u);
     const int frame_is_rgb = jpeg_frame_is_rgb(state, sof);
+    // A lossless frame may subsample (T.81 Table B.2 bounds Hi and Vi the same
+    // way it does for a DCT frame), in which case a component holds fewer
+    // samples than the image has pixels and has to be read through the map
+    // rather than indexed directly.  Reading it directly walked off the end of
+    // the plane - two samples per row for a 17-wide image with 9-wide chroma,
+    // and eventually past the allocation entirely.
+    //
+    // Which map: the same choice libjpeg makes.  A chroma component of a YCbCr
+    // frame gets the triangle filter, because that is what the rest of this
+    // codec does with chroma and what the caller's option selects; anything
+    // else - an RGB frame's components, or a grey one's - gets replication,
+    // which is libjpeg's int_upsample and the only defensible thing to do to a
+    // component that is not chroma.
+    int use_fancy = (!options ||
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    jpeg_plane_t pl[GIMG_JPEG_MAX_COMPONENTS];
+    for (uint8_t c = 0; c < num_comp; c++) {
+      pl[c].data = plane[c];
+      pl[c].stride = comp_w[c];
+      pl[c].wide = 1; // the lossless planes are uint16 whatever P says
+    }
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
         uint32_t v[3] = {0, 0, 0};
         for (uint8_t c = 0; c < num_comp; c++) {
-          uint32_t sv = plane[c][(size_t)y * comp_w[c] + x];
+          uint32_t sv;
+          if (c > 0 && num_comp == 3 && !frame_is_rgb) {
+            sv = (uint32_t)jpeg_chroma_sample(&pl[c], comp_w[c], comp_h[c], x,
+                y, width, height, sof->h_samp[c], sof->v_samp[c], h_max, v_max,
+                use_fancy);
+          }
+          else {
+            sv = plane[c][jpeg_component_index(
+                comp_w[c], comp_h[c], comp_w[c], x, y, width, height)];
+          }
           sv = (uint32_t)((uint64_t)sv << pt); // undo the point transform
           if (sv > max_val) {
             sv = max_val;
@@ -476,6 +559,9 @@ fail:
     }
     if (db_cat[i]) {
       gimg_free(alloc, db_cat[i]);
+    }
+    if (row_1d[i]) {
+      gimg_free(alloc, row_1d[i]);
     }
   }
   if (r != GIMG_OK && *out_raster) {
@@ -656,7 +742,10 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
           : (int32_t)(pixels + (size_t)(yy) * stride)[(size_t)(xx) *           \
                 (size_t)channels + (cc)])
 
-  // The same per-line predictor state the decoder keeps; see the note there.
+  // The same per-line predictor state the decoder keeps.  One flag per
+  // component is enough here, where the decoder needs one per line, because
+  // this walk is in raster order: sampling is 1x1, so an MCU is one sample and
+  // x = 0 of a line is always reached before the rest of it.
   int row_1d[GIMG_JPEG_MAX_COMPONENTS];
   for (unsigned i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
     row_1d[i] = 1;

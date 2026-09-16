@@ -24,6 +24,19 @@
  */
 
 #ifndef GHOTI_IO_GIMG_SRC_CODEC_PNG_PNG_INTERNAL_H
+/**
+ * Largest chunk payload this loader will buffer when neither the caller nor
+ * the stream says otherwise.
+ *
+ * A PNG chunk length is a four-byte field, so a header can claim nearly two
+ * gigabytes; the loader reads every payload into memory before it knows
+ * whether the bytes exist.  When the stream knows its own length that is the
+ * bound to use - a chunk cannot be longer than its file - and this is only the
+ * fallback for a stream that does not.  Generous enough for a single IDAT of a
+ * large photograph, which is the biggest chunk a real file has.
+ */
+#define GIMG_PNG_DEFAULT_MAX_CHUNK_PAYLOAD (64u * 1024u * 1024u)
+
 #define GHOTI_IO_GIMG_SRC_CODEC_PNG_PNG_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>
