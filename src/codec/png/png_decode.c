@@ -119,24 +119,16 @@ static bool gimg_png_fill_color_info_from_ancillary(
       const unsigned char * zlib_start = payload + name_len + 2;
       size_t zlib_len = payload_len - name_len - 2;
       if (comp == 0 && zlib_len > 6) {
-        const unsigned char * deflate_src = zlib_start + 2;
-        size_t deflate_len = zlib_len - 6;
         size_t max_out = GIMG_PNG_ICC_MAX_DECODED;
         void * decoded = gimg_malloc(alloc, max_out);
         if (!decoded) {
           return false;
         }
         size_t out_len = 0;
-        gcomp_options_t * gopts = NULL;
-        if (gimg_png_deflate_options_for_decode(max_out, &gopts) != GIMG_OK) {
-          gimg_free(alloc, decoded);
-          return false;
-        }
-        gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(),
-            "deflate", gopts, deflate_src, deflate_len, decoded, max_out,
-            &out_len);
-        gcomp_options_destroy(gopts);
-        if (gs != GCOMP_OK) {
+        // PNG 11.3.2.3: the profile is a zlib stream like any other, so the
+        // same wrapper and Adler-32 checks apply.
+        if (gimg_png_zlib_decode(zlib_start, zlib_len,
+                (unsigned char *)decoded, max_out, &out_len) != GIMG_OK) {
           gimg_free(alloc, decoded);
           return false;
         }

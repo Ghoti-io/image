@@ -438,9 +438,17 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
 
     if (type == GIMG_PNG_PLTE) {
-      if (state->ihdr.color_type != 3) {
+      // PNG 11.2.2: PLTE is required for colour type 3 and forbidden for 0 and
+      // 4, but it *may* appear for 2 and 6, where it is a suggested palette for
+      // a viewer that cannot show truecolour. A decoder that can show
+      // truecolour ignores it; rejecting the file is not one of the choices the
+      // spec offers.
+      if (state->ihdr.color_type == 0 || state->ihdr.color_type == 4) {
         gimg_png_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT; // PLTE only for palette.
+        return GIMG_ERR_FORMAT; // PLTE shall not appear for 0 or 4.
+      }
+      if (state->ihdr.color_type != 3) {
+        state->plte_is_suggested = 1;
       }
       if (seen_idat || have_plte) {
         gimg_png_free_doc_state(codec, state);

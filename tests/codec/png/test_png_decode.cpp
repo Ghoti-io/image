@@ -1103,3 +1103,119 @@ TEST(PngDecode, SubByteInterlacedDecodesToTheExpectedSamples) {
     gimg_stream_destroy(s);
   }
 }
+
+// ---------------------------------------------------------------------------
+// zlib wrapper integrity (PNG 10.3, RFC 1950).
+//
+// PNG carries two independent checks on every compressed payload: the chunk
+// CRC over the stored bytes, and the Adler-32 over the *uncompressed* bytes at
+// the end of the zlib stream. The second is the only one that catches a stream
+// which still inflates but to the wrong data, so skipping the two header bytes
+// and four trailer bytes without reading them leaves half the check in place.
+// The fixtures have correct chunk CRCs and differ from png_zlib_ok.png only in
+// the zlib wrapper.
+// ---------------------------------------------------------------------------
+
+TEST(PngDecode, ZlibWrapperIsCheckedNotSkipped) {
+  struct Case {
+    const char * filename;
+    GIMG_Result expect;
+    const char * why;
+  };
+  const Case cases[] = {
+      {"png_zlib_ok.png", GIMG_OK, "control: a correct zlib stream"},
+      {"png_zlib_bad_adler.png", GIMG_ERR_CORRUPT,
+          "Adler-32 of the wrong bytes (RFC 1950 2.2); DEFLATE alone accepts it"},
+      {"png_zlib_bad_header.png", GIMG_ERR_FORMAT,
+          "CMF/FLG not a multiple of 31 and method 9, not the 8 PNG 10.3 allows"},
+      {"png_zlib_preset_dict.png", GIMG_ERR_FORMAT,
+          "FDICT set, which PNG 10.3 forbids and which shifts the DEFLATE data"},
+  };
+  for (const Case & c : cases) {
+    std::vector<uint8_t> buf;
+    ASSERT_TRUE(png_test::load_png_file(c.filename, buf))
+        << c.filename << " missing; run tests/data/png/generate.py";
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+    GIMG_Raster * raster = nullptr;
+    if (r == GIMG_OK) {
+      r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+    }
+    EXPECT_EQ(r, c.expect) << c.filename << ": " << c.why;
+    if (raster) {
+      gimg_raster_destroy(raster);
+    }
+    if (doc) {
+      gimg_doc_destroy(doc);
+    }
+    gimg_stream_destroy(s);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A suggested palette on a truecolour image (PNG 11.2.2).
+//
+// PLTE is required for colour type 3 and "shall not appear" for colour types 0
+// and 4, but for 2 and 6 it may appear as a suggested palette for a viewer that
+// cannot display truecolour. A decoder that can display truecolour ignores it.
+// The published conformance suite carries two such files (pp0n2c16, pp0n6a08).
+// ---------------------------------------------------------------------------
+
+TEST(PngDecode, SuggestedPaletteOnTruecolourIsAcceptedAndIgnored) {
+  // The palette in the fixture does not contain the image's colours, so a
+  // decoder that used it would produce different pixels from the twin that
+  // carries no PLTE. Comparing the two needs no reference decoder.
+  GIMG_Stream * s_with = nullptr;
+  GIMG_Doc * doc_with = nullptr;
+  GIMG_Raster * with_palette = nullptr;
+  ASSERT_TRUE(DecodeFixture(
+      "png_rgb_suggested_palette.png", &s_with, &doc_with, &with_palette));
+
+  GIMG_Stream * s_without = nullptr;
+  GIMG_Doc * doc_without = nullptr;
+  GIMG_Raster * without_palette = nullptr;
+  ASSERT_TRUE(DecodeFixture(
+      "png_rgb_no_palette.png", &s_without, &doc_without, &without_palette));
+
+  EXPECT_TRUE(png_test::rasters_equal(with_palette, without_palette))
+      << "a suggested palette is advisory and must not change the pixels";
+
+  gimg_raster_destroy(without_palette);
+  gimg_doc_destroy(doc_without);
+  gimg_stream_destroy(s_without);
+  gimg_raster_destroy(with_palette);
+  gimg_doc_destroy(doc_with);
+  gimg_stream_destroy(s_with);
+
+  // Colour type 6 may carry one too.
+  GIMG_Stream * s_rgba = nullptr;
+  GIMG_Doc * doc_rgba = nullptr;
+  GIMG_Raster * rgba = nullptr;
+  EXPECT_TRUE(DecodeFixture(
+      "png_rgba_suggested_palette.png", &s_rgba, &doc_rgba, &rgba));
+  if (rgba) {
+    gimg_raster_destroy(rgba);
+    gimg_doc_destroy(doc_rgba);
+    gimg_stream_destroy(s_rgba);
+  }
+}
+
+TEST(PngDecode, PaletteOnGrayscaleIsRejected) {
+  // PNG 11.2.2: "This chunk shall not appear for colour types 0 and 4." Some
+  // decoders are more forgiving than the spec here - Pillow reads the file -
+  // but a critical chunk where the spec forbids one is a malformed file, and
+  // this library reports malformed files rather than guessing past them.
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(png_test::load_png_file("png_gray_forbidden_palette.png", buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_ERR_FORMAT);
+  if (doc) {
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(s);
+}

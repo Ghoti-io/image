@@ -143,6 +143,93 @@ bool gimg_png_adam7_raw_size(uint32_t width, uint32_t height, uint8_t color_type
 }
 
 //
+// zlib wrapper handling (PNG 10.3, RFC 1950).
+//
+// PNG stores IDAT, fdAT, zTXt, iTXt and iCCP payloads as a zlib stream: two
+// header bytes, the DEFLATE data, and a four-byte Adler-32 of the
+// *uncompressed* bytes.  Both of PNG's integrity checks matter - the chunk CRC
+// catches damage to the stored bytes, the Adler-32 catches a stream that
+// inflates without complaint but to the wrong thing - so neither the header
+// nor the trailer is taken on trust here.
+//
+
+/** Adler-32 modulus (RFC 1950 section 2.2). */
+#define GIMG_PNG_ADLER_MOD 65521u
+
+uint32_t gimg_png_adler32(const unsigned char * data, size_t len) {
+  uint32_t s1 = 1u;
+  uint32_t s2 = 0u;
+  for (size_t i = 0; i < len; i++) {
+    s1 = (s1 + (uint32_t)data[i]) % GIMG_PNG_ADLER_MOD;
+    s2 = (s2 + s1) % GIMG_PNG_ADLER_MOD;
+  }
+  return (s2 << 16) | s1;
+}
+
+GIMG_Result gimg_png_zlib_decode(const unsigned char * zlib_data,
+    size_t zlib_size, unsigned char * out, size_t out_capacity,
+    size_t * out_len) {
+  if (!zlib_data || !out_len) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_len = 0;
+  // Two header bytes plus a four-byte Adler-32; the DEFLATE data itself may be
+  // empty, so anything shorter than six bytes is not a zlib stream at all.
+  if (zlib_size < GIMG_PNG_ZLIB_MIN_BYTES) {
+    return GIMG_ERR_FORMAT;
+  }
+  unsigned int cmf = zlib_data[0];
+  unsigned int flg = zlib_data[1];
+  // RFC 1950 section 2.2: CM is the low nibble of CMF and PNG 10.3 allows only
+  // 8 (deflate); CINFO, the high nibble, may not exceed 7, which is a 32768
+  // byte window.
+  if ((cmf & 0x0Fu) != 8u || (cmf >> 4) > 7u) {
+    return GIMG_ERR_FORMAT;
+  }
+  // FCHECK: the two bytes as a big-endian 16-bit value are a multiple of 31.
+  if (((cmf << 8) | flg) % 31u != 0u) {
+    return GIMG_ERR_FORMAT;
+  }
+  // FDICT: PNG 10.3 forbids a preset dictionary. Beyond being disallowed, one
+  // would put a four-byte DICTID between the header and the DEFLATE data, so
+  // ignoring the flag would desynchronise the stream rather than merely admit
+  // a file the spec excludes.
+  if (flg & 0x20u) {
+    return GIMG_ERR_FORMAT;
+  }
+
+  const unsigned char * deflate_data = zlib_data + 2;
+  size_t deflate_size = zlib_size - GIMG_PNG_ZLIB_MIN_BYTES;
+
+  gcomp_options_t * opts = NULL;
+  GIMG_Result r = gimg_png_deflate_options_for_decode(out_capacity, &opts);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  size_t produced = 0;
+  gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate",
+      opts, deflate_data, deflate_size, out, out_capacity, &produced);
+  gcomp_options_destroy(opts);
+  if (gs != GCOMP_OK) {
+    return (gs == GCOMP_ERR_MEMORY) ? GIMG_ERR_OOM
+        : (gs == GCOMP_ERR_LIMIT)   ? GIMG_ERR_LIMIT
+                                    : GIMG_ERR_CORRUPT;
+  }
+
+  // Adler-32 of the uncompressed data, stored big-endian after the DEFLATE
+  // data. A stream whose bytes were altered in a way DEFLATE still accepts
+  // fails here and nowhere else.
+  const unsigned char * trailer = zlib_data + zlib_size - 4u;
+  uint32_t stored = ((uint32_t)trailer[0] << 24) | ((uint32_t)trailer[1] << 16) |
+      ((uint32_t)trailer[2] << 8) | (uint32_t)trailer[3];
+  if (stored != gimg_png_adler32(out, produced)) {
+    return GIMG_ERR_CORRUPT;
+  }
+  *out_len = produced;
+  return GIMG_OK;
+}
+
+//
 // Sub-byte sample access (PNG 7.2).
 //
 // Depths 1, 2 and 4 pack several samples into a byte, most significant bits
@@ -222,28 +309,17 @@ GIMG_Result gimg_png_text_chunk_decode(gimg_png_chunk_type_t type,
     if (zlib_len <= 6u) {
       return GIMG_ERR_FORMAT;
     }
-    const unsigned char * deflate_src = zlib_src + 2;
-    size_t deflate_len = zlib_len - 6u;
     size_t max_out = GIMG_PNG_TEXT_MAX_DECODED;
     void * decoded = gimg_malloc(alloc, max_out);
     if (!decoded) {
       return GIMG_ERR_OOM;
     }
     size_t out_len = 0;
-    gcomp_options_t * gopts = NULL;
-    GIMG_Result r = gimg_png_deflate_options_for_decode(max_out, &gopts);
+    GIMG_Result r = gimg_png_zlib_decode(
+        zlib_src, zlib_len, (unsigned char *)decoded, max_out, &out_len);
     if (r != GIMG_OK) {
       gimg_free(alloc, decoded);
       return r;
-    }
-    gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate",
-        gopts, deflate_src, deflate_len, decoded, max_out, &out_len);
-    gcomp_options_destroy(gopts);
-    if (gs != GCOMP_OK) {
-      gimg_free(alloc, decoded);
-      return (gs == GCOMP_ERR_MEMORY) ? GIMG_ERR_OOM
-          : (gs == GCOMP_ERR_LIMIT) ? GIMG_ERR_LIMIT
-          : GIMG_ERR_CORRUPT;
     }
     char * text = (char *)gimg_realloc(alloc, decoded, out_len + 1u);
     if (!text) {
@@ -293,28 +369,17 @@ GIMG_Result gimg_png_text_chunk_decode(gimg_png_chunk_type_t type,
     if (comp_method != 0 || text_src_len <= 6u) {
       return GIMG_ERR_FORMAT;
     }
-    const unsigned char * deflate_src = payload + pos + 2;
-    size_t deflate_len = text_src_len - 6u;
     size_t max_out = GIMG_PNG_TEXT_MAX_DECODED;
     void * decoded = gimg_malloc(alloc, max_out);
     if (!decoded) {
       return GIMG_ERR_OOM;
     }
     size_t out_len = 0;
-    gcomp_options_t * gopts = NULL;
-    GIMG_Result r = gimg_png_deflate_options_for_decode(max_out, &gopts);
+    GIMG_Result r = gimg_png_zlib_decode(payload + pos, text_src_len,
+        (unsigned char *)decoded, max_out, &out_len);
     if (r != GIMG_OK) {
       gimg_free(alloc, decoded);
       return r;
-    }
-    gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate",
-        gopts, deflate_src, deflate_len, decoded, max_out, &out_len);
-    gcomp_options_destroy(gopts);
-    if (gs != GCOMP_OK) {
-      gimg_free(alloc, decoded);
-      return (gs == GCOMP_ERR_MEMORY) ? GIMG_ERR_OOM
-          : (gs == GCOMP_ERR_LIMIT) ? GIMG_ERR_LIMIT
-          : GIMG_ERR_CORRUPT;
     }
     char * text = (char *)gimg_realloc(alloc, decoded, out_len + 1u);
     if (!text) {

@@ -344,6 +344,8 @@ def main() -> None:
     )
     write_png("png_apng_2frame_16bit_rgba.png", apng_16rgba)
     _write_subbyte_and_interlace_fixtures()
+    _write_zlib_integrity_fixtures()
+    _write_suggested_palette_fixtures()
     _write_apng16_oracle_expected()
 
 
@@ -505,6 +507,124 @@ def _write_subbyte_and_interlace_fixtures() -> None:
                     expected += plte[i * 3:i * 3 + 3] + b"\xff"
             _write_raw(base + ".raw", bytes(expected))
 
+
+
+# ---------------------------------------------------------------------------
+# zlib streams whose wrapper is wrong (PNG 10.3, RFC 1950).
+#
+# PNG carries two independent integrity checks: the CRC on each chunk, which
+# catches damage to the stored bytes, and the Adler-32 at the end of each zlib
+# stream, which catches a stream that still inflates but to the wrong bytes.
+# A decoder that skips the two header bytes and the four trailer bytes without
+# reading them implements only the first.
+#
+# All four files below have correct chunk CRCs, so nothing but the zlib wrapper
+# distinguishes them from the control.
+# ---------------------------------------------------------------------------
+
+
+def _gray_8x8_raw() -> bytes:
+    """Filter-None scanlines for an 8x8 grayscale ramp."""
+    out = bytearray()
+    for y in range(8):
+        out.append(0)
+        out += bytes((x * 8 + y * 3) & 0xFF for x in range(8))
+    return bytes(out)
+
+
+def _write_zlib_integrity_fixtures() -> None:
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+    ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 0, 0, 0, 0))
+    raw = _gray_8x8_raw()
+    body = deflate_stored_block(raw)
+
+    def emit(name: str, zlib_stream: bytes) -> None:
+        write_png(name, signature + ihdr + png_chunk(b"IDAT", zlib_stream) + iend)
+
+    # The control: everything correct. Every other file here differs from it
+    # only in the bytes named, so a test that rejects them all must accept this.
+    emit("png_zlib_ok.png", bytes([0x78, 0x01]) + body + adler32_be(raw))
+
+    # Adler-32 of the wrong bytes: inflates cleanly, produces the wrong image.
+    emit("png_zlib_bad_adler.png",
+        bytes([0x78, 0x01]) + body + adler32_be(raw + b"\x00"))
+
+    # CMF/FLG that is not a multiple of 31 (RFC 1950 FCHECK) and whose
+    # compression method is 9 rather than the 8 PNG 10.3 requires.
+    emit("png_zlib_bad_header.png", bytes([0x99, 0x99]) + body + adler32_be(raw))
+
+    # FDICT set. 0x7820 passes the FCHECK multiple-of-31 test, so only the flag
+    # itself marks this stream as one PNG 10.3 forbids - and a decoder that
+    # ignores it reads the DICTID as DEFLATE data.
+    emit("png_zlib_preset_dict.png",
+        bytes([0x78, 0x20]) + struct.pack(">I", 0x1234) + body + adler32_be(raw))
+
+
+# ---------------------------------------------------------------------------
+# A suggested palette on a truecolour image (PNG 11.2.2).
+#
+# PLTE is required for colour type 3 and "shall not appear" for colour types 0
+# and 4, but for 2 and 6 it *may* appear as a suggested palette for a viewer
+# that cannot display truecolour. A decoder that can display truecolour ignores
+# it. Rejecting such a file is not one of the choices the spec offers, and the
+# conformance suite carries two of them (pp0n2c16, pp0n6a08).
+# ---------------------------------------------------------------------------
+
+
+def _write_suggested_palette_fixtures() -> None:
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+    # A 4x4 RGB image whose pixels deliberately do *not* all appear in the
+    # suggested palette: if the palette were used to decode, the result would
+    # differ from the truecolour samples and the test would see it.
+    raw = bytearray()
+    for y in range(4):
+        raw.append(0)
+        for x in range(4):
+            raw += bytes([(x * 60 + 3) & 0xFF, (y * 70 + 9) & 0xFF, (x * y * 13 + 31) & 0xFF])
+    raw = bytes(raw)
+    plte = bytes([0, 0, 0, 255, 255, 255, 128, 64, 32])
+
+    write_png("png_rgb_suggested_palette.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
+        + png_chunk(b"PLTE", plte)
+        + png_chunk(b"IDAT", idat_zlib(raw))
+        + iend)
+
+    # The same suggested palette on colour type 6, which PNG 11.2.2 allows too.
+    raw_a = bytearray()
+    for y in range(4):
+        raw_a.append(0)
+        for x in range(4):
+            raw_a += bytes([(x * 60 + 3) & 0xFF, (y * 70 + 9) & 0xFF,
+                (x * y * 13 + 31) & 0xFF, (200 + x * 5) & 0xFF])
+    write_png("png_rgba_suggested_palette.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 6, 0, 0, 0))
+        + png_chunk(b"PLTE", plte)
+        + png_chunk(b"IDAT", idat_zlib(bytes(raw_a)))
+        + iend)
+
+    # The same image with no PLTE at all. A suggested palette is advisory, so
+    # this must decode to exactly what the file above does - a property that
+    # needs no reference decoder, and one the fixture is built to expose,
+    # because the pixels above are not all in the palette.
+    write_png("png_rgb_no_palette.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
+        + png_chunk(b"IDAT", idat_zlib(raw))
+        + iend)
+
+    # PLTE on colour type 0, which the spec forbids outright.
+    write_png("png_gray_forbidden_palette.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 0, 0, 0, 0))
+        + png_chunk(b"PLTE", plte)
+        + png_chunk(b"IDAT", idat_zlib(bytes(b"".join(
+            bytes([0]) + bytes((x * 17) & 0xFF for x in range(4)) for _ in range(4)))))
+        + iend)
 
 def _write_apng16_oracle_expected() -> None:
     """Write expected pixels for the 16-bit APNG blend test using Pillow as oracle.

@@ -22,24 +22,6 @@
 #include "../../raster/raster_internal.h"
 #include "png_internal.h"
 
-/** Map compress status to image result (decode path). */
-static GIMG_Result gimg_png_result_from_gcomp(gcomp_status_t s) {
-  switch (s) {
-  case GCOMP_OK:
-    return GIMG_OK;
-  case GCOMP_ERR_MEMORY:
-    return GIMG_ERR_OOM;
-  case GCOMP_ERR_LIMIT:
-    return GIMG_ERR_LIMIT;
-  case GCOMP_ERR_CORRUPT:
-    return GIMG_ERR_CORRUPT;
-  case GCOMP_ERR_IO:
-    return GIMG_ERR_IO;
-  default:
-    return GIMG_ERR_FORMAT;
-  }
-}
-
 /** Paeth predictor (W3C PNG-Filters §6.6). */
 static unsigned char gimg_png_paeth(int a, int b, int c) {
   int p = a + b - c;
@@ -188,24 +170,16 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
       pixel_count > limits->max_decoded_pixels) {
     return GIMG_ERR_LIMIT;
   }
-  gcomp_options_t * gopts = NULL;
-  GIMG_Result gr = gimg_png_deflate_options_for_decode(raw_size, &gopts);
-  if (gr != GIMG_OK) {
-    return gr;
-  }
   unsigned char * raw = (unsigned char *)gimg_malloc(alloc, raw_size);
   if (!raw) {
-    gcomp_options_destroy(gopts);
     return GIMG_ERR_OOM;
   }
   size_t out_len = 0;
-  gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate",
-      gopts, idat_ptr + 2, idat_len - GIMG_PNG_ZLIB_MIN_BYTES, raw, raw_size,
-      &out_len);
-  gcomp_options_destroy(gopts);
-  if (gs != GCOMP_OK || out_len != raw_size) {
+  GIMG_Result gr =
+      gimg_png_zlib_decode(idat_ptr, idat_len, raw, raw_size, &out_len);
+  if (gr != GIMG_OK || out_len != raw_size) {
     gimg_free(alloc, raw);
-    return (gs != GCOMP_OK) ? gimg_png_result_from_gcomp(gs) : GIMG_ERR_CORRUPT;
+    return (gr != GIMG_OK) ? gr : GIMG_ERR_CORRUPT;
   }
   unsigned int bpp = gimg_png_bpp(ihdr);
   size_t raw_full_size = 0;

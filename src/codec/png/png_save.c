@@ -63,20 +63,6 @@
 #include "../codec_internal.h"
 #include "png_internal.h"
 
-/** Adler-32 modulus (RFC 1950). */
-#define GIMG_PNG_ADLER_MOD 65521u
-
-/** Compute Adler-32 over data (RFC 1950). */
-static uint32_t gimg_png_adler32(const unsigned char * data, size_t len) {
-  uint32_t s1 = 1u;
-  uint32_t s2 = 0u;
-  for (size_t i = 0; i < len; i++) {
-    s1 = (s1 + (uint32_t)data[i]) % GIMG_PNG_ADLER_MOD;
-    s2 = (s2 + s1) % GIMG_PNG_ADLER_MOD;
-  }
-  return (s2 << 16) | s1;
-}
-
 /**
  * Map raster format to PNG color_type and bit_depth.
  * Returns 1 on success, 0 on unsupported. Does not handle palette (caller uses
@@ -1068,6 +1054,21 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
   // DROP_ALL: no ancillary (already skipped above).
+
+  // PNG 11.2.2 also lets a truecolour frame carry PLTE as a suggested palette.
+  // It plays no part in decoding, but it is content the file came with, so the
+  // policies that keep what was there keep it too.
+  if (color_type != 3 && state && state->plte && state->plte_size > 0 &&
+      state->plte_is_suggested && policy != GIMG_META_DROP_ALL &&
+      policy != GIMG_META_KEEP_COMMON_ONLY) {
+    r = gimg_png_write_chunk(
+        stream, GIMG_PNG_PLTE, state->plte, state->plte_size);
+    if (r != GIMG_OK) {
+      gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+      return r;
+    }
+    report->bytes_written += 8 + state->plte_size + 4;
+  }
 
   // Palette: PLTE and tRNS before IDAT per PNG spec.
   if (color_type == 3 && state && state->plte && state->plte_size > 0) {
