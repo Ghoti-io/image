@@ -702,6 +702,13 @@ static void jpeg_ll_flush(jpeg_ll_writer * w) {
   w->nbits = 0;
 }
 
+/** Entropy-code a frame's differences; see the definition below. */
+static GIMG_Result jpeg_lossless_entropy_encode(const GIMG_Allocator * alloc,
+    int32_t * diffs, size_t n_diffs, uint32_t width, int num_comp,
+    uint16_t restart_interval, int arithmetic, uint32_t * freq_in,
+    unsigned char ** out_scan_data, size_t * out_scan_size,
+    unsigned char ** out_dht, size_t * out_dht_len);
+
 GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int psv, uint16_t restart_interval,
     int arithmetic, unsigned char ** out_scan_data, size_t * out_scan_size,
@@ -743,86 +750,101 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     return GIMG_ERR_UNSUPPORTED; // CMYK lossless is not handled here
   }
 
+  // The samples become one signed plane per component and the prediction walk
+  // happens there, so that the hierarchical path - whose planes are differences
+  // and never were a raster - runs the identical code.  A lossless frame stores
+  // colour as RGB, because YCbCr is not reversible and "lossless" would then be
+  // a lie, so this is a copy and not a conversion.
   size_t n_samples = 0;
-  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &n_samples)) {
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &n_samples) ||
+      n_samples > SIZE_MAX / sizeof(int32_t)) {
     return GIMG_ERR_LIMIT;
   }
-  size_t n_diffs = 0;
-  if (!gcu_safe_mul_size(n_samples, (size_t)num_comp, &n_diffs) ||
-      n_diffs > SIZE_MAX / sizeof(int32_t)) {
-    return GIMG_ERR_LIMIT;
-  }
-  int32_t * diffs = (int32_t *)gimg_malloc(alloc, n_diffs * sizeof(int32_t));
-  if (!diffs) {
-    return GIMG_ERR_OOM;
-  }
-
   const unsigned char * pixels =
       (const unsigned char *)gimg_raster_pixels_const(raster);
+  if (!pixels) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
   size_t stride = gimg_raster_stride_bytes(raster);
   int wide = (precision > 8);
-  const int32_t initial_pred = (int32_t)1 << (precision - 1);
-  uint32_t freq[JPEG_LL_SYMBOLS + 1];
-  memset(freq, 0, sizeof(freq));
-
-  // Sample at (x, y) of component c, straight from the raster: a lossless frame
-  // stores colour as RGB, because YCbCr is not reversible and "lossless" would
-  // then be a lie.
-  #define LL_SAMPLE(cc, xx, yy)                                                \
-    (wide ? (int32_t)((const uint16_t *)(pixels +                              \
-                (size_t)(yy) * stride))[(size_t)(xx) * (size_t)channels + (cc)] \
-          : (int32_t)(pixels + (size_t)(yy) * stride)[(size_t)(xx) *           \
-                (size_t)channels + (cc)])
-
-  // The same per-line predictor state the decoder keeps.  One flag per
-  // component is enough here, where the decoder needs one per line, because
-  // this walk is in raster order: sampling is 1x1, so an MCU is one sample and
-  // x = 0 of a line is always reached before the rest of it.
-  int row_1d[GIMG_JPEG_MAX_COMPONENTS];
-  for (unsigned i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
-    row_1d[i] = 1;
+  int32_t * plane_mem[GIMG_JPEG_MAX_COMPONENTS];
+  const int32_t * plane_ptr[GIMG_JPEG_MAX_COMPONENTS];
+  size_t plane_stride[GIMG_JPEG_MAX_COMPONENTS];
+  memset(plane_mem, 0, sizeof(plane_mem));
+  for (int c = 0; c < num_comp; c++) {
+    plane_mem[c] = (int32_t *)gimg_malloc(alloc, n_samples * sizeof(int32_t));
+    if (!plane_mem[c]) {
+      for (int k = 0; k < c; k++) {
+        gimg_free(alloc, plane_mem[k]);
+      }
+      return GIMG_ERR_OOM;
+    }
+    plane_ptr[c] = plane_mem[c];
+    plane_stride[c] = (size_t)width;
   }
-  int restart_now = 0;
-  // Sampling is 1x1 for every component, so an MCU is one sample of each
-  // (T.81 H.1.1) and the MCU index is the raster index.
-  size_t di = 0;
   for (uint32_t y = 0; y < height; y++) {
     for (uint32_t x = 0; x < width; x++) {
-      size_t mcu_index = (size_t)y * width + x;
-      restart_now = (restart_interval > 0 && mcu_index > 0 &&
-          mcu_index % (size_t)restart_interval == 0);
       for (int c = 0; c < num_comp; c++) {
-        int32_t pred;
-        if (x == 0) {
-          if (y == 0 || restart_now) {
-            pred = initial_pred;
-            row_1d[c] = 1;
-          }
-          else {
-            pred = LL_SAMPLE(c, 0, y - 1);
-            row_1d[c] = 0;
-          }
-        }
-        else if (row_1d[c]) {
-          pred = LL_SAMPLE(c, x - 1, y);
-        }
-        else {
-          pred = jpeg_lossless_predict(psv, LL_SAMPLE(c, x - 1, y),
-              LL_SAMPLE(c, x, y - 1), LL_SAMPLE(c, x - 1, y - 1));
-        }
-        // H.1.2.1: the difference is taken modulo 2^16, so that it always fits
-        // the categories of H.1.2.2 whatever the prediction was.
-        int32_t d = (int32_t)(((uint32_t)LL_SAMPLE(c, x, y) - (uint32_t)pred) &
-            0xFFFFu);
-        if (d > 32768) {
-          d -= 65536;
-        }
-        diffs[di++] = d;
-        freq[jpeg_lossless_category(d)]++;
+        int32_t v = wide
+            ? (int32_t)((const uint16_t *)(pixels + (size_t)y * stride))
+                  [(size_t)x * (size_t)channels + (size_t)c]
+            : (int32_t)(pixels + (size_t)y * stride)[(size_t)x *
+                  (size_t)channels + (size_t)c];
+        plane_mem[c][(size_t)y * width + x] = v;
       }
     }
   }
-  #undef LL_SAMPLE
+  GIMG_Result pr = gimg_jpeg_encode_lossless_planes(alloc, plane_ptr,
+      plane_stride, width, height, num_comp, precision, psv, restart_interval,
+      arithmetic, out_scan_data, out_scan_size, out_dht, out_dht_len);
+  for (int c = 0; c < num_comp; c++) {
+    gimg_free(alloc, plane_mem[c]);
+  }
+  GIMG_Result er = pr;
+  if (er != GIMG_OK) {
+    return er;
+  }
+  if (out_width) {
+    *out_width = width;
+  }
+  if (out_height) {
+    *out_height = height;
+  }
+  if (out_num_components) {
+    *out_num_components = num_comp;
+  }
+  if (out_precision) {
+    *out_precision = precision;
+  }
+  return GIMG_OK;
+}
+
+/**
+ * Entropy-code a frame's differences (T.81 H.1.2.2 with Annex F, or H.1.2.3
+ * with Annex D).
+ *
+ * Split out of gimg_jpeg_encode_lossless because a differential lossless frame
+ * (J.1.3.2, predictor selection 0 - "no prediction") produces its differences
+ * a different way and codes them the same way.  @p diffs takes ownership: it
+ * is freed here whichever path runs.
+ *
+ * @param freq Symbol frequencies for the Huffman table, or NULL to count them
+ *             here.
+ */
+static GIMG_Result jpeg_lossless_entropy_encode(const GIMG_Allocator * alloc,
+    int32_t * diffs, size_t n_diffs, uint32_t width, int num_comp,
+    uint16_t restart_interval, int arithmetic, uint32_t * freq_in,
+    unsigned char ** out_scan_data, size_t * out_scan_size,
+    unsigned char ** out_dht, size_t * out_dht_len) {
+  uint32_t freq_local[JPEG_LL_SYMBOLS + 1];
+  uint32_t * freq = freq_in;
+  if (!freq) {
+    memset(freq_local, 0, sizeof(freq_local));
+    for (size_t i = 0; i < n_diffs; i++) {
+      freq_local[jpeg_lossless_category(diffs[i])]++;
+    }
+    freq = freq_local;
+  }
 
   // T.81 SOF11: the same differences, coded with Annex D instead of Annex F.
   // Both passes read one buffer, so a disagreement between them is a defect in
@@ -902,18 +924,6 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     *out_scan_size = aw.len;
     *out_dht = NULL; // an arithmetic frame carries no Huffman tables
     *out_dht_len = 0;
-    if (out_width) {
-      *out_width = width;
-    }
-    if (out_height) {
-      *out_height = height;
-    }
-    if (out_num_components) {
-      *out_num_components = num_comp;
-    }
-    if (out_precision) {
-      *out_precision = precision;
-    }
     return GIMG_OK;
   }
 
@@ -1001,9 +1011,135 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
   *out_scan_size = w.len;
   *out_dht = dht;
   *out_dht_len = dht_len;
-  if (out_width) *out_width = width;
-  if (out_height) *out_height = height;
-  if (out_num_components) *out_num_components = num_comp;
-  if (out_precision) *out_precision = precision;
   return GIMG_OK;
+}
+
+GIMG_Result gimg_jpeg_encode_lossless_differential(const GIMG_Allocator * alloc,
+    const int32_t * const * planes, const size_t * plane_stride, uint32_t width,
+    uint32_t height, int num_comp, uint16_t restart_interval, int arithmetic,
+    unsigned char ** out_scan_data, size_t * out_scan_size,
+    unsigned char ** out_dht, size_t * out_dht_len) {
+  if (!alloc || !planes || !plane_stride || !out_scan_data || !out_scan_size ||
+      !out_dht || !out_dht_len || num_comp < 1 ||
+      num_comp > (int)GIMG_JPEG_MAX_COMPONENTS || width == 0 || height == 0) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+  *out_dht = NULL;
+  *out_dht_len = 0;
+  size_t n_samples = 0, n_diffs = 0;
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &n_samples) ||
+      !gcu_safe_mul_size(n_samples, (size_t)num_comp, &n_diffs) ||
+      n_diffs > SIZE_MAX / sizeof(int32_t)) {
+    return GIMG_ERR_LIMIT;
+  }
+  int32_t * diffs = (int32_t *)gimg_malloc(alloc, n_diffs * sizeof(int32_t));
+  if (!diffs) {
+    return GIMG_ERR_OOM;
+  }
+  // T.81 J.1.3.2: a differential lossless frame sets the prediction selection
+  // to zero, which Table H.1 calls "no prediction".  The difference coded is
+  // the difference image's own sample, with nothing subtracted from it; H.1.2.1
+  // still takes it modulo 2^16 so that it fits the categories of H.1.2.2.
+  size_t di = 0;
+  for (uint32_t y = 0; y < height; y++) {
+    for (uint32_t x = 0; x < width; x++) {
+      for (int c = 0; c < num_comp; c++) {
+        int32_t v = planes[c][(size_t)y * plane_stride[c] + x];
+        int32_t d = (int32_t)((uint32_t)v & 0xFFFFu);
+        if (d > 32768) {
+          d -= 65536;
+        }
+        diffs[di++] = d;
+      }
+    }
+  }
+  return jpeg_lossless_entropy_encode(alloc, diffs, n_diffs, width, num_comp,
+      restart_interval, arithmetic, NULL, out_scan_data, out_scan_size,
+      out_dht, out_dht_len);
+}
+
+GIMG_Result gimg_jpeg_encode_lossless_planes(const GIMG_Allocator * alloc,
+    const int32_t * const * planes, const size_t * plane_stride, uint32_t width,
+    uint32_t height, int num_comp, int precision, int psv,
+    uint16_t restart_interval, int arithmetic, unsigned char ** out_scan_data,
+    size_t * out_scan_size, unsigned char ** out_dht, size_t * out_dht_len) {
+  if (!alloc || !planes || !plane_stride || !out_scan_data || !out_scan_size ||
+      !out_dht || !out_dht_len || num_comp < 1 ||
+      num_comp > (int)GIMG_JPEG_MAX_COMPONENTS || width == 0 || height == 0 ||
+      precision < 2 || precision > 16) {
+    return GIMG_ERR_INTERNAL;
+  }
+  if (psv < 1 || psv > 7) {
+    return GIMG_ERR_UNSUPPORTED; // T.81 Table H.1 defines 1..7
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+  *out_dht = NULL;
+  *out_dht_len = 0;
+  size_t n_samples = 0, n_diffs = 0;
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &n_samples) ||
+      !gcu_safe_mul_size(n_samples, (size_t)num_comp, &n_diffs) ||
+      n_diffs > SIZE_MAX / sizeof(int32_t)) {
+    return GIMG_ERR_LIMIT;
+  }
+  int32_t * diffs = (int32_t *)gimg_malloc(alloc, n_diffs * sizeof(int32_t));
+  if (!diffs) {
+    return GIMG_ERR_OOM;
+  }
+  const int32_t initial_pred = (int32_t)1 << (precision - 1);
+  uint32_t freq[JPEG_LL_SYMBOLS + 1];
+  memset(freq, 0, sizeof(freq));
+  #define LL_AT(cc, xx, yy)                                                    \
+    (planes[cc][(size_t)(yy) * plane_stride[cc] + (size_t)(xx)])
+  // The same per-line predictor state the decoder keeps.  One flag per
+  // component is enough here, where the decoder needs one per line, because
+  // this walk is in raster order: sampling is 1x1, so an MCU is one sample and
+  // x = 0 of a line is always reached before the rest of it.
+  int row_1d[GIMG_JPEG_MAX_COMPONENTS];
+  for (int i = 0; i < num_comp; i++) {
+    row_1d[i] = 1;
+  }
+  size_t di = 0;
+  for (uint32_t y = 0; y < height; y++) {
+    for (uint32_t x = 0; x < width; x++) {
+      size_t mcu_index = (size_t)y * width + x;
+      int restart_now = (restart_interval > 0 && mcu_index > 0 &&
+          mcu_index % (size_t)restart_interval == 0);
+      for (int c = 0; c < num_comp; c++) {
+        int32_t pred;
+        if (x == 0) {
+          if (y == 0 || restart_now) {
+            pred = initial_pred;
+            row_1d[c] = 1;
+          }
+          else {
+            pred = LL_AT(c, 0, y - 1);
+            row_1d[c] = 0;
+          }
+        }
+        else if (row_1d[c]) {
+          pred = LL_AT(c, x - 1, y);
+        }
+        else {
+          pred = jpeg_lossless_predict(psv, LL_AT(c, x - 1, y),
+              LL_AT(c, x, y - 1), LL_AT(c, x - 1, y - 1));
+        }
+        // H.1.2.1: the difference is taken modulo 2^16, so that it always fits
+        // the categories of H.1.2.2 whatever the prediction was.
+        int32_t d =
+            (int32_t)(((uint32_t)LL_AT(c, x, y) - (uint32_t)pred) & 0xFFFFu);
+        if (d > 32768) {
+          d -= 65536;
+        }
+        diffs[di++] = d;
+        freq[jpeg_lossless_category(d)]++;
+      }
+    }
+  }
+  #undef LL_AT
+  return jpeg_lossless_entropy_encode(alloc, diffs, n_diffs, width, num_comp,
+      restart_interval, arithmetic, freq, out_scan_data, out_scan_size, out_dht,
+      out_dht_len);
 }

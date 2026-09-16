@@ -845,6 +845,34 @@ GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
     unsigned char ** out_scan_data, size_t * out_scan_size,
     unsigned char ** out_dht, size_t * out_dht_len);
 
+/**
+ * Encode the scan of a non-differential lossless frame (T.81 SOF3 or SOF11)
+ * from signed component planes.
+ *
+ * The primitive the raster entry point is built on, so that the hierarchical
+ * path - whose planes are levels of a pyramid and never were a raster - runs
+ * the identical prediction walk.
+ */
+GIMG_Result gimg_jpeg_encode_lossless_planes(const GIMG_Allocator * alloc,
+    const int32_t * const * planes, const size_t * plane_stride, uint32_t width,
+    uint32_t height, int num_comp, int precision, int psv,
+    uint16_t restart_interval, int arithmetic, unsigned char ** out_scan_data,
+    size_t * out_scan_size, unsigned char ** out_dht, size_t * out_dht_len);
+
+/**
+ * Encode the scan of a differential lossless frame (T.81 SOF7 or SOF15).
+ *
+ * J.1.3.2 requires the prediction selection value to be zero there - Table
+ * H.1's "no prediction" - so the difference coded for each sample is the
+ * difference image's own value, and the frame reconstructs exactly.  The
+ * planes are signed because a difference is.
+ */
+GIMG_Result gimg_jpeg_encode_lossless_differential(const GIMG_Allocator * alloc,
+    const int32_t * const * planes, const size_t * plane_stride, uint32_t width,
+    uint32_t height, int num_comp, uint16_t restart_interval, int arithmetic,
+    unsigned char ** out_scan_data, size_t * out_scan_size,
+    unsigned char ** out_dht, size_t * out_dht_len);
+
 GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int psv, uint16_t restart_interval,
     int arithmetic, unsigned char ** out_scan_data, size_t * out_scan_size,
@@ -889,17 +917,42 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
  * of the one before it (J.1.1), so they cannot be written as they are made
  * without the stream writer knowing about pyramids.
  */
+/** Most scans one frame of a hierarchical sequence can carry.  A progressive
+ * frame writes one DC scan and one AC scan per component (G.1.2.2). */
+#define GIMG_JPEG_MAX_HIER_SCANS (1u + GIMG_JPEG_MAX_COMPONENTS)
+
+/** One entropy-coded scan of a hierarchical frame, with its scan header. */
 typedef struct {
-  uint8_t sof_marker;    ///< SOF1/SOF9 for the first frame, SOF5/SOF13 after.
+  unsigned char * data;
+  size_t size;
+  uint8_t ns; ///< Components in this scan; B.2.3 caps it at 4.
+  uint8_t comp[GIMG_JPEG_MAX_SCAN_COMPONENTS];  ///< Zero-based frame indices.
+  uint8_t td_ta[GIMG_JPEG_MAX_SCAN_COMPONENTS]; ///< Td high nibble, Ta low.
+  /** B.2.3 for a DCT frame, H.1 for a lossless one: there Ss is the predictor
+   * selection value (0 in a differential frame, J.1.3.2), Se is zero and Al is
+   * the point transform. */
+  uint8_t ss, se, ah, al;
+} gimg_jpeg_enc_scan_t;
+
+typedef struct {
+  uint8_t sof_marker; ///< SOF1/3/2 for the first frame, SOF5/7/6 after.
+  uint8_t precision;  ///< P for this frame (T.81 B.2.2).
+  /** Write the extended Huffman tables rather than Annex K's.  A differential
+   * frame's coefficients need a category Annex K does not have (J.1.3.1 gives
+   * the difference image samples one more bit than a level-shifted one), and
+   * the progressive scan encoder does not generate tables of its own, so a
+   * progressive pyramid uses the wider fixed set throughout. */
+  uint8_t extended_tables;
   uint16_t width, height;
   unsigned char exp_h, exp_v; ///< EXP to write before this frame (B.3.3).
-  unsigned char * scan_data;
-  size_t scan_size;
   /** DHT payload for this frame, or NULL when the frame is arithmetic or uses
-   * the default tables.  A differential frame always carries one: Table J.2's
-   * extra AC category is in no Annex K table. */
+   * the default tables.  A differential DCT frame always carries one: Table
+   * J.2's extra AC category is in no Annex K table, and so does a lossless
+   * frame, whose difference categories run to 16 (H.1.2.2). */
   unsigned char * dht;
   size_t dht_len;
+  unsigned num_scans;
+  gimg_jpeg_enc_scan_t scans[GIMG_JPEG_MAX_HIER_SCANS];
 } gimg_jpeg_enc_frame_t;
 
 /**
@@ -911,11 +964,23 @@ typedef struct {
  * raster must be 8-bit; see the file comment in jpeg_hierarchical_encode.c.
  * The caller writes the markers and frees with gimg_jpeg_free_enc_frames.
  */
+/**
+ * Which coding process the frames of a hierarchical sequence use (B.3.1: every
+ * frame of a sequence is the same process, differential or not).
+ */
+typedef enum {
+  GIMG_JPEG_HIER_SEQUENTIAL = 0, ///< SOF1/SOF5, or SOF9/SOF13 arithmetic.
+  GIMG_JPEG_HIER_PROGRESSIVE,    ///< SOF2/SOF6, or SOF10/SOF14 arithmetic.
+  GIMG_JPEG_HIER_LOSSLESS        ///< SOF3/SOF7, or SOF11/SOF15 arithmetic.
+} gimg_jpeg_hier_process_t;
+
 GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int levels, int arithmetic,
+    gimg_jpeg_hier_process_t process, int lossless_psv,
     uint16_t restart_interval, const uint16_t * quant_luma,
     const uint16_t * quant_chroma, gimg_jpeg_enc_frame_t * frames,
-    unsigned * out_num_frames, int * out_num_components);
+    unsigned * out_num_frames, int * out_num_components,
+    int * out_precision);
 
 /** Free the scan data and tables of an encoded sequence. */
 void gimg_jpeg_free_enc_frames(const GIMG_Allocator * alloc,
@@ -1022,7 +1087,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
 GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
-    uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
+    int differential, uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
     size_t * out_scan_size);
@@ -1067,7 +1132,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
 GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
-    uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
+    int differential, uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size);
 

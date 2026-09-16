@@ -1434,7 +1434,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
 GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
-    uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
+    int differential, uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
     size_t * out_scan_size) {
@@ -1491,6 +1491,13 @@ GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
       for (size_t b = 0; b < nblocks; b++) {
         const int16_t * block = coef_buffer + (block_off + b) * 64;
         if (is_dc) {
+          if (differential) {
+            // T.81 J.1.3.1: "the DC coefficient of the DCT is coded directly -
+            // without prediction".  Clearing the carried value leaves the
+            // coefficient itself as what gets coded; the conditioning is
+            // untouched (J.1.4).
+            stats.dc_pred[c] = 0;
+          }
           if (Ah == 0) {
             jpeg_arith_encode_block_prog_dc_first(
                 &e, &stats, cond, (uint8_t)c, tbl, (int)Al, block);
@@ -1887,7 +1894,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
 GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
-    uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
+    int differential, uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size) {
   (void)Al;
@@ -1967,7 +1974,12 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
           size_t block_idx = block_off + mcu_block_off + b;
           const int16_t * block = coef_buffer + block_idx * 64;
           int dc_val = (int)block[0];
-          int diff = dc_val - last_dc[c];
+          // T.81 J.1.3.1: a differential frame's DC coefficient "is coded
+          // directly - without prediction", so there is nothing to subtract.
+          // Predicting it here wrote a file that disagreed with every decoder
+          // that follows J.1.3.1, this library's own included, and the error
+          // accumulated down the pyramid.
+          int diff = differential ? dc_val : (dc_val - last_dc[c]);
           last_dc[c] = dc_val;
           int nbits = jpeg_nbits(diff);
           if (nbits > 16)

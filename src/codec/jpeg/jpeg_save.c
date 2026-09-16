@@ -1566,14 +1566,50 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const gimg_jpeg_enc_frame_t * frames, unsigned num_frames,
-    uint16_t restart_interval, bool arithmetic, size_t * out_n) {
+    uint16_t restart_interval, bool arithmetic, int precision, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   size_t written = 0;
   GIMG_Result r;
+  // A lossless sequence has no quantisation table to write at all: T.81 Annex
+  // H has no DCT, so DQT would describe nothing.  Which process the sequence
+  // uses is in the frames' own markers.
+  const int lossless = (num_frames > 0) &&
+      (frames[0].sof_marker == GIMG_JPEG_MARKER_SOF3 ||
+          frames[0].sof_marker == GIMG_JPEG_MARKER_SOF11);
+
+  // A lossless sequence carries RGB, because the YCbCr conversion is not
+  // reversible and "lossless" would then be a lie - so it needs the Adobe
+  // APP14 that says so, exactly as the single-frame lossless writer does.
+  // Without it a decoder reads three components as YCbCr (jdapimin.c, and
+  // jpeg_frame_is_rgb here) and every pixel comes out a different colour.
+  if (lossless && num_components == 3) {
+    unsigned char app14[12];
+    memcpy(app14, "Adobe", 5);
+    app14[5] = 0x00;
+    app14[6] = 100; // version
+    app14[7] = 0x00;
+    app14[8] = 0x00; // flags0
+    app14[9] = 0x00;
+    app14[10] = 0x00; // flags1
+    app14[11] = 0x00; // transform: none
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_APP14, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, (uint16_t)(2 + sizeof(app14)), &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = gimg_stream_write(stream, app14, sizeof(app14), &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
 
   // One set of quantization tables for the whole sequence: every frame uses
   // the same quality, and B.2.4.1 lets them stand until redefined.
-  {
+  if (!lossless) {
     unsigned char dqt0[GIMG_JPEG_DQT_8BIT_PAYLOAD];
     memset(dqt0, 0, sizeof(dqt0));
     dqt0[0] = 0x00;
@@ -1616,9 +1652,11 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    unsigned char dhp[6 + 3 * 4];
+    unsigned char dhp[6 + 3 * GIMG_JPEG_MAX_COMPONENTS];
     memset(dhp, 0, sizeof(dhp));
-    dhp[0] = 8;
+    // B.3.1: every frame of the sequence carries the same precision, so DHP
+    // states it once.
+    dhp[0] = (unsigned char)precision;
     dhp[1] = (unsigned char)(height >> 8);
     dhp[2] = (unsigned char)(height & 0xFF);
     dhp[3] = (unsigned char)(width >> 8);
@@ -1666,9 +1704,9 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
       if (r != GIMG_OK) {
         return r;
       }
-      unsigned char sof[6 + 3 * 4];
+      unsigned char sof[6 + 3 * GIMG_JPEG_MAX_COMPONENTS];
       memset(sof, 0, sizeof(sof));
-      sof[0] = 8;
+      sof[0] = (unsigned char)(fr->precision ? fr->precision : precision);
       sof[1] = (unsigned char)(fr->height >> 8);
       sof[2] = (unsigned char)(fr->height & 0xFF);
       sof[3] = (unsigned char)(fr->width >> 8);
@@ -1677,7 +1715,11 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
       for (int c = 0; c < num_components; c++) {
         sof[6 + c * 3] = (unsigned char)(c + 1);
         sof[7 + c * 3] = 0x11;
-        sof[8 + c * 3] = (unsigned char)(c == 0 ? 0 : 1);
+        // A lossless frame has no quantisation, so Tq is zero (B.2.2 still
+        // requires the field); a DCT frame uses the selector the tables were
+        // written under.
+        sof[8 + c * 3] =
+            lossless ? 0x00 : (unsigned char)gimg_jpeg_tbl_of(tbl_sel, c);
       }
       r = gimg_stream_write(stream, sof, (size_t)(6 + 3 * num_components),
           &written);
@@ -1730,7 +1772,9 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     }
     else {
       size_t dht_written = 0;
-      r = gimg_jpeg_write_standard_dht(stream, &dht_written);
+      r = fr->extended_tables
+          ? gimg_jpeg_write_standard_dht_extended(stream, &dht_written)
+          : gimg_jpeg_write_standard_dht(stream, &dht_written);
       if (r != GIMG_OK) {
         return r;
       }
@@ -1740,8 +1784,12 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     if (r != GIMG_OK) {
       return r;
     }
-    {
-      uint16_t sos_len = (uint16_t)(6 + 2 * num_components);
+    // A frame is one scan for a sequential or lossless process and several for
+    // a progressive one (G.1.2.2 puts each AC band in its own scan), so the
+    // scan headers come from the frame rather than being assumed here.
+    for (unsigned si = 0; si < fr->num_scans; si++) {
+      const gimg_jpeg_enc_scan_t * sc = &fr->scans[si];
+      uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)sc->ns);
       r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
       if (r != GIMG_OK) {
         return r;
@@ -1750,31 +1798,26 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
       if (r != GIMG_OK) {
         return r;
       }
-      unsigned char sos[12];
+      unsigned char sos[4 + 2 * GIMG_JPEG_MAX_SCAN_COMPONENTS];
       memset(sos, 0, sizeof(sos));
-      sos[0] = (unsigned char)num_components;
-      // A differential frame's tables were generated for it and both live at
-      // destination 0; the non-differential frame uses the standard split.
-      int own_tables = (fr->dht && fr->dht_len > 0);
-      for (int c = 0; c < num_components; c++) {
-        uint8_t td_ta = (own_tables || c == 0) ? 0x00u : 0x11u;
-        sos[1 + c * 2] = (unsigned char)(c + 1);
-        sos[2 + c * 2] = td_ta;
+      sos[0] = sc->ns;
+      for (int c = 0; c < (int)sc->ns; c++) {
+        sos[1 + c * 2] = (unsigned char)(sc->comp[c] + 1);
+        sos[2 + c * 2] = sc->td_ta[c];
       }
-      size_t tail = 1 + 2 * (size_t)num_components;
-      sos[tail] = 0x00;     // Ss
-      sos[tail + 1] = 0x3F; // Se
-      sos[tail + 2] = 0x00; // Ah | Al
+      size_t tail = 1 + 2 * (size_t)sc->ns;
+      sos[tail] = sc->ss;
+      sos[tail + 1] = sc->se;
+      sos[tail + 2] = (unsigned char)((sc->ah << 4) | (sc->al & 0x0Fu));
       r = gimg_stream_write(stream, sos, tail + 3, &written);
       if (r != GIMG_OK) {
         return r;
       }
       n += written;
-    }
-    r = jpeg_write_scan_data_with_stuffing(
-        stream, fr->scan_data, fr->scan_size, &n);
-    if (r != GIMG_OK) {
-      return r;
+      r = jpeg_write_scan_data_with_stuffing(stream, sc->data, sc->size, &n);
+      if (r != GIMG_OK) {
+        return r;
+      }
     }
   }
 
@@ -2770,13 +2813,13 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
         jpeg_arith_cond_t cond;
         jpeg_arith_cond_defaults(&cond);
         r = gimg_jpeg_encode_arith_progressive_scan(enc_w, enc_h_px,
-            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scan_tbl,
+            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scan_tbl, 0,
             scans[s].Ss, scans[s].Se, scans[s].Ah, scans[s].Al, &cond, alloc,
             restart_interval, &scan_data, &scan_size);
       }
       else if (precision > 8) {
         r = gimg_jpeg_encode_progressive_scan_extended(enc_w, enc_h_px,
-            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scan_tbl,
+            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scan_tbl, 0,
             scans[s].Ss, scans[s].Se, scans[s].Ah, scans[s].Al, alloc,
             restart_interval, &scan_data, &scan_size);
       }
@@ -2914,10 +2957,13 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   int hier_levels = (options && options->jpeg_hierarchical_levels)
       ? (int)options->jpeg_hierarchical_levels
       : 0;
+  // A hierarchical sequence is built out of the sequential, progressive or
+  // lossless process (B.3.1 requires every frame to use the same one), and all
+  // three are written here.  What it cannot do is change precision: the
+  // pyramid's reconstruction is built at 8 bits.
   if (hier_levels != 0 &&
-      (lossless_psv != 0 || (options && options->jpeg_progressive) ||
-          (options && options->jpeg_precision != 0 &&
-              options->jpeg_precision != 8))) {
+      (options && options->jpeg_precision != 0 &&
+          options->jpeg_precision != 8)) {
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -3101,9 +3147,18 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     width = gimg_raster_width(raster);
     height = gimg_raster_height(raster);
     precision = 8;
+    // B.3.1: every frame of a sequence uses the same process, so the option
+    // names it once for the whole pyramid.
+    gimg_jpeg_hier_process_t hier_process = GIMG_JPEG_HIER_SEQUENTIAL;
+    if (lossless_psv != 0) {
+      hier_process = GIMG_JPEG_HIER_LOSSLESS;
+    }
+    else if (options && options->jpeg_progressive) {
+      hier_process = GIMG_JPEG_HIER_PROGRESSIVE;
+    }
     r = gimg_jpeg_encode_hierarchical(alloc, raster, hier_levels, arithmetic,
-        restart_interval, quant_luma, quant_chroma, hier_frames,
-        &hier_num_frames, &num_components);
+        hier_process, lossless_psv, restart_interval, quant_luma, quant_chroma,
+        hier_frames, &hier_num_frames, &num_components, &precision);
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -3821,7 +3876,7 @@ have_scan:
   else if (hier_levels != 0) {
     r = jpeg_write_image_body_hierarchical(stream, width, height,
         num_components, tbl_sel, quant_luma, quant_chroma, hier_frames,
-        hier_num_frames, restart_interval, arithmetic,
+        hier_num_frames, restart_interval, arithmetic, precision,
         &report->bytes_written);
     gimg_jpeg_free_enc_frames(alloc, hier_frames, hier_num_frames);
   }

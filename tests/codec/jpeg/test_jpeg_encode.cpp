@@ -5271,6 +5271,259 @@ TEST(JpegEncode, HierarchicalRoundTrip) {
 // and this library reads them, but writing one means a different
 // reconstruction at every step - the part of a hierarchical encoder that
 // cannot be approximated - so the option combination has no meaning yet.
+// T.81 B.3.1 lets a hierarchical sequence be built out of any of the three
+// coding processes, as long as every frame uses the same one.  Only the
+// sequential DCT was written here; the gap list called the other two out.
+//
+// A lossless sequence is the one that can be checked without an oracle at all,
+// because "lossless" is a claim about the pixels and nothing else: the encoder
+// downsamples, codes each level's difference by Annex H, and reconstructs
+// exactly, so the decoded image must be the original bit for bit at every
+// level count, both predictors, and either entropy coder.  If the encoder's
+// idea of the reconstruction and the decoder's ever part company, this test
+// stops being exact - which is the whole failure mode a pyramid has.
+TEST(JpegEncode, LosslessHierarchicalSequenceIsExactlyLossless) {
+  for (int levels = 1; levels <= 3; levels++) {
+    for (int psv : {1, 4, 7}) {
+      for (int arithmetic = 0; arithmetic <= 1; arithmetic++) {
+        for (int gray = 0; gray <= 1; gray++) {
+          SCOPED_TRACE("levels " + std::to_string(levels) + ", predictor " +
+              std::to_string(psv) + ", arithmetic " +
+              std::to_string(arithmetic) + ", gray " + std::to_string(gray));
+          const uint32_t w = 41, h = 27;
+          GIMG_Doc * doc = nullptr;
+          ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+          GIMG_Raster * raster = nullptr;
+          ASSERT_EQ(gimg_raster_create(w, h,
+                        gray ? &GIMG_PIXEL_GRAY8 : &GIMG_PIXEL_RGBA8,
+                        GIMG_RASTER_OWNED, NULL, 0, &raster),
+              GIMG_OK);
+          unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+          size_t stride = gimg_raster_stride_bytes(raster);
+          size_t bpp = gray ? 1u : 4u;
+          for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+              unsigned char * p = px + y * stride + x * bpp;
+              p[0] = (unsigned char)((x * 5 + y * 3) & 0xFF);
+              if (!gray) {
+                p[1] = (unsigned char)((x * 2 + y * 7) & 0xFF);
+                p[2] = (unsigned char)((x * 9 + y * 11) & 0xFF);
+                p[3] = 255;
+              }
+            }
+          }
+          gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+          GIMG_Stream * out = nullptr;
+          ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+          GIMG_Save_Options so = {};
+          so.jpeg_hierarchical_levels = (uint8_t)levels;
+          so.jpeg_lossless_predictor = (uint8_t)psv;
+          so.jpeg_arithmetic = (uint8_t)arithmetic;
+          GIMG_Save_Report rep = {};
+          ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &so, &rep), GIMG_OK);
+          const void * buf = nullptr;
+          size_t bn = 0;
+          gimg_stream_output_buffer(out, &buf, &bn);
+          std::vector<uint8_t> written(
+              (const uint8_t *)buf, (const uint8_t *)buf + bn);
+          gimg_doc_destroy(doc);
+          gimg_stream_destroy(out);
+
+          // The frames must be the lossless ones of Table B.1: SOF3 (or SOF11)
+          // once, then SOF7 (or SOF15) for each differential level.
+          int first_sof = 0, diff_sofs = 0;
+          size_t i = 2;
+          while (i + 4 <= written.size() && written[i] == 0xFF) {
+            uint8_t m = written[i + 1];
+            if (m == 0xD9) {
+              break;
+            }
+            size_t len = (size_t)((written[i + 2] << 8) | written[i + 3]);
+            if (m == 0xC3 || m == 0xCB) {
+              if (!first_sof) {
+                first_sof = m;
+              }
+            }
+            if (m == 0xC7 || m == 0xCF) {
+              diff_sofs++;
+            }
+            i += 2 + len;
+            if (m == 0xDA) {
+              size_t j = i;
+              while (j + 1 < written.size()) {
+                if (written[j] == 0xFF && written[j + 1] != 0 &&
+                    !(written[j + 1] >= 0xD0 && written[j + 1] <= 0xD7)) {
+                  break;
+                }
+                j++;
+              }
+              i = j;
+            }
+          }
+          EXPECT_EQ(first_sof, arithmetic ? 0xCB : 0xC3);
+          EXPECT_EQ(diff_sofs, levels);
+
+          DocStreamGuard in;
+          ASSERT_EQ(
+              gimg_stream_create_memory(written.data(), written.size(), &in.s),
+              GIMG_OK);
+          ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+          RasterGuard got;
+          ASSERT_EQ(gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r),
+              GIMG_OK);
+          ASSERT_NE(got.r, nullptr);
+          ASSERT_EQ(gimg_raster_width(got.r), w);
+          ASSERT_EQ(gimg_raster_height(got.r), h);
+          const unsigned char * gp =
+              (const unsigned char *)gimg_raster_pixels(got.r);
+          size_t gs = gimg_raster_stride_bytes(got.r);
+          size_t gbpp = gimg_raster_bytes_per_pixel(gimg_raster_format(got.r));
+          for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+              int nc = gray ? 1 : 3;
+              int want[3] = {(int)((x * 5 + y * 3) & 0xFF),
+                  (int)((x * 2 + y * 7) & 0xFF),
+                  (int)((x * 9 + y * 11) & 0xFF)};
+              for (int c = 0; c < nc; c++) {
+                ASSERT_EQ((int)gp[y * gs + x * gbpp + (size_t)c], want[c])
+                    << "lossless must be lossless: pixel (" << x << "," << y
+                    << ") channel " << c;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// A progressive sequence carries the same coefficients as a sequential one and
+// differs only in the order its scans leave in (Annex G over the frames of
+// Annex J), so the two must decode to the *same* picture - not merely to a
+// similar one.  That equality is what caught the real fault here: T.81 J.1.3.1
+// says a differential frame's DC coefficient "is coded directly - without
+// prediction", and the progressive scan encoder was predicting it, so the
+// error grew with every level of the pyramid while the file still decoded.
+TEST(JpegEncode, ProgressiveHierarchicalSequenceMatchesTheSequentialOne) {
+  for (int levels = 1; levels <= 3; levels++) {
+    for (int gray = 0; gray <= 1; gray++) {
+      SCOPED_TRACE("levels " + std::to_string(levels) + ", gray " +
+          std::to_string(gray));
+      const uint32_t w = 41, h = 27;
+      std::vector<uint8_t> decoded[4];
+      // sequential, progressive, and the arithmetic form of each
+      const int progressive[4] = {0, 1, 0, 1};
+      const int arithmetic[4] = {0, 0, 1, 1};
+      const int want_first_sof[4] = {0xC1, 0xC2, 0xC9, 0xCA};
+      const int want_diff_sof[4] = {0xC5, 0xC6, 0xCD, 0xCE};
+      for (int k = 0; k < 4; k++) {
+        GIMG_Doc * doc = nullptr;
+        ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+        GIMG_Raster * raster = nullptr;
+        ASSERT_EQ(gimg_raster_create(w, h,
+                      gray ? &GIMG_PIXEL_GRAY8 : &GIMG_PIXEL_RGBA8,
+                      GIMG_RASTER_OWNED, NULL, 0, &raster),
+            GIMG_OK);
+        unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+        size_t stride = gimg_raster_stride_bytes(raster);
+        size_t bpp = gray ? 1u : 4u;
+        for (uint32_t y = 0; y < h; y++) {
+          for (uint32_t x = 0; x < w; x++) {
+            unsigned char * p = px + y * stride + x * bpp;
+            p[0] = (unsigned char)((x * 5 + y * 3) & 0xFF);
+            if (!gray) {
+              p[1] = (unsigned char)((x * 2 + y * 7) & 0xFF);
+              p[2] = (unsigned char)((x * 9 + y * 11) & 0xFF);
+              p[3] = 255;
+            }
+          }
+        }
+        gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+        GIMG_Stream * out = nullptr;
+        ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+        GIMG_Save_Options so = {};
+        so.quality = 85;
+        so.jpeg_hierarchical_levels = (uint8_t)levels;
+        so.jpeg_progressive = (uint8_t)progressive[k];
+        so.jpeg_arithmetic = (uint8_t)arithmetic[k];
+        GIMG_Save_Report rep = {};
+        ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &so, &rep), GIMG_OK);
+        const void * buf = nullptr;
+        size_t bn = 0;
+        gimg_stream_output_buffer(out, &buf, &bn);
+        std::vector<uint8_t> written(
+            (const uint8_t *)buf, (const uint8_t *)buf + bn);
+        gimg_doc_destroy(doc);
+        gimg_stream_destroy(out);
+
+        int first_sof = 0, diff_sofs = 0, scans = 0;
+        size_t i = 2;
+        while (i + 4 <= written.size() && written[i] == 0xFF) {
+          uint8_t m = written[i + 1];
+          if (m == 0xD9) {
+            break;
+          }
+          size_t len = (size_t)((written[i + 2] << 8) | written[i + 3]);
+          if (m == want_first_sof[k] && !first_sof) {
+            first_sof = m;
+          }
+          if (m == want_diff_sof[k]) {
+            diff_sofs++;
+          }
+          if (m == 0xDA) {
+            scans++;
+          }
+          i += 2 + len;
+          if (m == 0xDA) {
+            size_t j = i;
+            while (j + 1 < written.size()) {
+              if (written[j] == 0xFF && written[j + 1] != 0 &&
+                  !(written[j + 1] >= 0xD0 && written[j + 1] <= 0xD7)) {
+                break;
+              }
+              j++;
+            }
+            i = j;
+          }
+        }
+        EXPECT_EQ(first_sof, want_first_sof[k]) << "wrong process in the SOF";
+        EXPECT_EQ(diff_sofs, levels);
+        int comps = gray ? 1 : 3;
+        // A progressive frame is a DC scan plus one AC scan per component
+        // (G.1.2.2); a sequential frame is one scan.
+        EXPECT_EQ(scans,
+            progressive[k] ? (levels + 1) * (1 + comps) : (levels + 1));
+
+        DocStreamGuard in;
+        ASSERT_EQ(
+            gimg_stream_create_memory(written.data(), written.size(), &in.s),
+            GIMG_OK);
+        ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+        RasterGuard got;
+        ASSERT_EQ(gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r),
+            GIMG_OK);
+        ASSERT_NE(got.r, nullptr);
+        ASSERT_EQ(gimg_raster_width(got.r), w);
+        ASSERT_EQ(gimg_raster_height(got.r), h);
+        const unsigned char * gp =
+            (const unsigned char *)gimg_raster_pixels(got.r);
+        size_t gs = gimg_raster_stride_bytes(got.r);
+        size_t gbpp = gimg_raster_bytes_per_pixel(gimg_raster_format(got.r));
+        decoded[k].resize((size_t)w * h * gbpp);
+        for (uint32_t y = 0; y < h; y++) {
+          memcpy(decoded[k].data() + (size_t)y * w * gbpp, gp + y * gs,
+              (size_t)w * gbpp);
+        }
+      }
+      for (int k = 1; k < 4; k++) {
+        EXPECT_TRUE(decoded[k] == decoded[0])
+            << "the four processes carry the same coefficients and must decode "
+               "to the same pixels; only the scan order differs";
+      }
+    }
+  }
+}
+
 TEST(JpegEncode, HierarchicalRefusesACombinationItCannotWrite) {
   struct Case {
     uint8_t progressive;
@@ -5278,9 +5531,11 @@ TEST(JpegEncode, HierarchicalRefusesACombinationItCannotWrite) {
     uint8_t precision;
     const char * what;
   };
+  // Progressive and lossless sequences are written now (B.3.1 allows any of
+  // the three processes, as long as every frame of a sequence uses the same
+  // one), so the only combination left that cannot be honoured is a change of
+  // precision: a pyramid's reconstruction is built at 8 bits.
   const Case cases[] = {
-      {1, 0, 0, "progressive frames in a sequence (SOF6, SOF14)"},
-      {0, 4, 0, "lossless frames in a sequence (SOF7, SOF15)"},
       {0, 0, 12, "12-bit frames"},
   };
   for (const Case & c : cases) {
