@@ -48,6 +48,7 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MARKER_SOF10 0xCA // Progressive DCT, arithmetic
 #define GIMG_JPEG_MARKER_SOF11 0xCB // Lossless, arithmetic (Annex H + Annex D)
 #define GIMG_JPEG_MARKER_DAC 0xCC   // Define Arithmetic Coding conditioning
+#define GIMG_JPEG_MARKER_DHP 0xDE   // Define Hierarchical Progression (B.3.2)
 #define GIMG_JPEG_MARKER_DHT 0xC4
 #define GIMG_JPEG_MARKER_DQT 0xDB
 #define GIMG_JPEG_MARKER_SOS 0xDA

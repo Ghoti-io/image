@@ -505,6 +505,16 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       seen_sof = true;
       break;
     }
+    // T.81 B.3.2: DHP announces hierarchical mode.  The frames that follow it
+    // are a sequence of progressively larger images, and the ones after the
+    // first are usually differential (SOF5-SOF7, SOF13-SOF15), which is why
+    // such a file happens to be refused a few markers later.  Refuse it here
+    // instead: DHP is what declares the mode, and stopping at it names the
+    // real reason rather than pointing at whatever frame came next.  Skipping
+    // it - which is what an unrecognised marker gets - would risk returning
+    // the first frame, the smallest one in the pyramid, as though it were the
+    // image.
+    case GIMG_JPEG_MARKER_DHP:
     // Unsupported SOF (T.81: SOF5-SOF7 differential, SOF13-SOF15
     // hierarchical).  Reject explicitly so the caller gets a clear error
     // instead of "no SOF".
@@ -518,7 +528,9 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_free(alloc, payload_buf);
       }
       jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_UNSUPPORTED,
-          "unsupported SOF marker");
+          marker == GIMG_JPEG_MARKER_DHP
+              ? "hierarchical mode (DHP) is not supported"
+              : "unsupported SOF marker");
       gimg_jpeg_free_doc_state(codec, state);
       return GIMG_ERR_UNSUPPORTED;
     }

@@ -1112,6 +1112,46 @@ TEST(JpegLoad, DecodeRespectsMaxDecodedPixels) {
   gimg_stream_destroy(s);
 }
 
+// T.81 B.3.2: a hierarchical stream is a pyramid of frames, and DHP announces
+// it.  The fixture is `jpeg -y 2 -h` from the ISO reference codec and its
+// markers run DQT DHP SOF1 DHT SOS EXP SOF5 DHT SOS - so the first frame is an
+// ordinary SOF1 carrying the smallest image in the pyramid.
+//
+// An unrecognised marker is skipped, and DHP used to be one, so the loader
+// walked past it, accepted that SOF1 and would have returned the base layer as
+// though it were the image.  It escaped only because the SOF5 further on is
+// refused, which is luck rather than a decision: it depends on a later frame
+// being differential.  Refusing DHP itself is the decision.
+TEST(JpegLoad, HierarchicalFrameIsRefusedAtTheDhpMarker) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("hierarchical_2level.jpg", jpeg));
+  size_t dhp_at = 0, sof5_at = 0;
+  for (size_t i = 0; i + 1 < jpeg.size(); i++) {
+    if (jpeg[i] != 0xFF) continue;
+    if (jpeg[i + 1] == 0xDE && dhp_at == 0) dhp_at = i;
+    if (jpeg[i + 1] == 0xC5 && sof5_at == 0) sof5_at = i;
+  }
+  ASSERT_NE(dhp_at, 0u) << "fixture must carry DHP";
+  ASSERT_NE(sof5_at, 0u) << "fixture must carry a differential frame after it";
+  ASSERT_LT(dhp_at, sof5_at);
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Diagnostics diag = {};
+  gimg_diagnostics_init(&diag, nullptr);
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(gimg_doc_load(s, nullptr, &diag, &doc), GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(doc, nullptr);
+  // Stopping at DHP rather than at the frame after it is the whole point: the
+  // offset says which marker was refused.
+  ASSERT_GT(diag.count, 0u);
+  EXPECT_EQ(diag.items[0].chunk_or_tag_id, 0xDEu)
+      << "should refuse at DHP, not at whatever frame followed";
+  EXPECT_EQ(diag.items[0].offset, dhp_at);
+  gimg_diagnostics_destroy(&diag);
+  gimg_stream_destroy(s);
+}
+
 // SOF11, the lossless arithmetic process (T.81 Annex H coded with Annex D).
 // Every fixture here was produced by the ISO reference codec, not by this
 // library, so the test compares against an independent implementation rather
