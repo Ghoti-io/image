@@ -47,14 +47,14 @@ std::vector<uint8_t> make_minimal_jpeg() {
     buf.push_back(1);
   }
   // DHT: DC table 0, 16 bytes counts (all 0), 0 symbols. L=19.
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   // SOS: L=10, Ns=1, C0 Td=0 Ta=0, Ss=0 Se=0 Ah=0 Al=0
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   // EOI
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
@@ -75,13 +75,13 @@ std::vector<uint8_t> make_minimal_jpeg_with_dri() {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -100,13 +100,13 @@ std::vector<uint8_t> make_minimal_jpeg_with_rst_in_scan() {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   buf.push_back(0x00);
   append(buf, (const unsigned char *)"\xFF\xD5", 2); // RST5: consumed
   buf.push_back(0x00);
@@ -128,15 +128,15 @@ std::vector<uint8_t> make_minimal_jpeg_with_dnl_after_scan() {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
-  // SOS: L=10, Ns=1, Cs=0 Td=0 Ta=0, Ss=0 Se=0 Ah=0 Al=0 (10 bytes payload).
+  // SOS: Ls = 2 + 1 + 2*Ns + 3 = 8.  Ns=1, Cs=0, Td=Ta=0, and a sequential
+  // scan covers the whole block: Ss=0, Se=63, Ah=Al=0 (T.81 B.2.3).
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00"
-                             "\x00\x00",
-      14);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   // No scan bytes; next marker is DNL. DNL: 0xFF 0xDC, L=4, payload 0x00 0x08
   // (8).
   append(buf, (const unsigned char *)"\xFF\xDC\x00\x04\x00\x08", 6);
@@ -157,13 +157,13 @@ std::vector<uint8_t> make_minimal_jpeg_with_dnl_mismatch() {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(
       buf, (const unsigned char *)"\xFF\xDC\x00\x04\x00\x10", 6); // DNL says 16
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
@@ -185,13 +185,13 @@ std::vector<uint8_t> make_minimal_jpeg_dnl_before_scan() {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -211,18 +211,20 @@ std::vector<uint8_t> make_minimal_progressive_jpeg() {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
-  // First SOS: DC only (Ss=0, Se=0)
+  // First SOS: DC scan, Ss = Se = 0 (T.81 G.1.2).  Ls = 8.
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
-  // Second SOS: AC band (Ss=1, Se=63, Ah=0, Al=0)
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x00\x00",
+      10);
+  // Second SOS: AC band Ss=1..Se=63, Ah=0, Al=0.  Ls = 8.  This used to carry
+  // an extra byte, which shifted Se and Ah/Al into Ss=1 Se=0 Ah=3 Al=15 - a
+  // scan header no decoder should accept.
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x01\x00\x3F\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x01\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -387,13 +389,13 @@ std::vector<uint8_t> make_jpeg_with_exif_uncompressed_thumbnail(void) {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -419,13 +421,13 @@ std::vector<uint8_t> make_jpeg_with_app1_exif() {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -457,13 +459,13 @@ std::vector<uint8_t> make_jpeg_with_exif_thumbnail(
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -486,16 +488,17 @@ std::vector<uint8_t> make_minimal_four_component_jpeg() {
     buf.push_back(1);
   }
   // DHT: DC table 0, 16 counts (all 0), 0 symbols. L=19.
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
-  // SOS: L=15 (2 + 13 payload). Payload: Ns=4, then 4×(Cs,TdTa): 01 00, 02 00,
-  // 03 00, 04 00; then Ss=0 Se=0 Ah=0 Al=0. Total 1+8+4=13 bytes.
+  // SOS: Ls = 2 + 1 + 2*4 + 3 = 14.  Payload: Ns=4, then 4x(Cs,TdTa) -
+  // 01 00, 02 00, 03 00, 04 00 - then Ss=0, Se=63, Ah=Al=0 for a sequential
+  // scan (T.81 B.2.3).
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0F\x04\x01\x00\x02\x00\x03\x00\x04"
-                             "\x00\x00\x00\x00\x00",
-      17);
+      (const unsigned char *)"\xFF\xDA\x00\x0E\x04\x01\x00\x02\x00\x03\x00\x04"
+                             "\x00\x00\x3F\x00",
+      16);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -518,13 +521,13 @@ std::vector<uint8_t> make_jpeg_with_app0_jfif() {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -549,13 +552,13 @@ std::vector<uint8_t> make_jpeg_with_com(const char * comment) {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -629,13 +632,13 @@ std::vector<uint8_t> make_jpeg_with_jfif_thumbnail() {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
@@ -760,6 +763,146 @@ TEST(JpegLoad, Sof2Precision12Accepted) {
   gimg_stream_destroy(stream);
 }
 
+/**
+ * Build a progressive JPEG whose single SOS carries the given scan parameters,
+ * so each rule in T.81 Annex G.1.2 can be checked on its own.
+ */
+static std::vector<uint8_t> make_progressive_with_sos(
+    uint8_t ns, uint8_t ss, uint8_t se, uint8_t ah, uint8_t al) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF2, 8x8, three components 1..3, all 1x1, quant table 0.
+  append(buf,
+      (const unsigned char *)"\xFF\xC2\x00\x11\x08\x00\x08\x00\x08\x03\x01\x11"
+                             "\x00\x02\x11\x00\x03\x11\x00",
+      19);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) {
+    buf.push_back(1);
+  }
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
+  for (int i = 0; i < 16; i++) {
+    buf.push_back(0);
+  }
+  uint16_t ls = (uint16_t)(2 + 1 + 2 * ns + 3);
+  buf.push_back(0xFF);
+  buf.push_back(0xDA);
+  buf.push_back((unsigned char)(ls >> 8));
+  buf.push_back((unsigned char)(ls & 0xFF));
+  buf.push_back(ns);
+  for (uint8_t i = 0; i < ns; i++) {
+    buf.push_back((unsigned char)(i + 1)); // Cs
+    buf.push_back(0x00);                   // Td = Ta = 0
+  }
+  buf.push_back(ss);
+  buf.push_back(se);
+  buf.push_back((unsigned char)((ah << 4) | (al & 0x0F)));
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+static GIMG_Result load_result(const std::vector<uint8_t> & jpeg) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s) != GIMG_OK) {
+    return GIMG_ERR_INTERNAL;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (doc) {
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(s);
+  return r;
+}
+
+/**
+ * The scan header constrains the entropy decoder completely, so every field in
+ * it has to be checked before it is used.  None of these were, and a file could
+ * name a band running backwards or a refinement of any size and be followed
+ * wherever that led.
+ */
+TEST(JpegLoad, SosParametersValidated) {
+  // T.81 G.1.2.2: an AC scan names exactly one component.
+  EXPECT_NE(load_result(make_progressive_with_sos(3, 1, 63, 0, 0)), GIMG_OK)
+      << "AC scan with Ns=3 must be rejected (T.81 G.1.2.2)";
+  // A single-component AC scan with the same band is fine.
+  EXPECT_EQ(load_result(make_progressive_with_sos(1, 1, 63, 0, 0)), GIMG_OK)
+      << "AC scan with Ns=1 is well formed";
+  // T.81 G.1.2: a DC scan has Se = 0.
+  EXPECT_NE(load_result(make_progressive_with_sos(3, 0, 63, 0, 0)), GIMG_OK)
+      << "progressive DC scan with Se=63 must be rejected (T.81 G.1.2)";
+  EXPECT_EQ(load_result(make_progressive_with_sos(3, 0, 0, 0, 0)), GIMG_OK)
+      << "interleaved DC scan is well formed";
+  // T.81 B.2.3: Ss <= Se <= 63.
+  EXPECT_NE(load_result(make_progressive_with_sos(1, 10, 5, 0, 0)), GIMG_OK)
+      << "Ss > Se must be rejected (T.81 B.2.3)";
+  // T.81 G.1.1.1.2: successive approximation refines one bit per scan.
+  EXPECT_NE(load_result(make_progressive_with_sos(1, 1, 63, 3, 0)), GIMG_OK)
+      << "Ah != Al + 1 must be rejected (T.81 G.1.1.1.2)";
+  EXPECT_EQ(load_result(make_progressive_with_sos(1, 1, 63, 1, 0)), GIMG_OK)
+      << "Ah = Al + 1 is a well formed refinement";
+  // Al is bounded by the coefficient range.
+  EXPECT_NE(load_result(make_progressive_with_sos(1, 1, 63, 0, 15)), GIMG_OK)
+      << "Al = 15 must be rejected (T.81 G.1.1.1.2)";
+}
+
+/**
+ * A sequential frame has no spectral selection and no successive approximation
+ * (T.81 B.2.3), so a scan claiming either is not a sequential scan.
+ */
+TEST(JpegLoad, SequentialSosMustCoverWholeBlock) {
+  std::vector<uint8_t> good = make_minimal_jpeg();
+  EXPECT_EQ(load_result(good), GIMG_OK) << "minimal baseline JPEG should load";
+
+  // Find the SOS and bend Se to 5.
+  std::vector<uint8_t> bad = good;
+  for (size_t i = 0; i + 9 < bad.size(); i++) {
+    if (bad[i] == 0xFF && bad[i + 1] == 0xDA) {
+      bad[i + 8] = 5; // Se
+      break;
+    }
+  }
+  EXPECT_NE(load_result(bad), GIMG_OK)
+      << "sequential scan with Se=5 must be rejected (T.81 B.2.3)";
+
+  std::vector<uint8_t> bad_ah = good;
+  for (size_t i = 0; i + 9 < bad_ah.size(); i++) {
+    if (bad_ah[i] == 0xFF && bad_ah[i + 1] == 0xDA) {
+      bad_ah[i + 9] = 0x10; // Ah = 1
+      break;
+    }
+  }
+  EXPECT_NE(load_result(bad_ah), GIMG_OK)
+      << "sequential scan with Ah=1 must be rejected (T.81 B.2.3)";
+}
+
+/**
+ * T.81 B.2.3: every component a scan names must belong to the frame, and may
+ * appear only once.
+ */
+TEST(JpegLoad, SosComponentSelectorsChecked) {
+  std::vector<uint8_t> jpeg = make_progressive_with_sos(1, 0, 0, 0, 0);
+  // Point Cs at a component the frame does not declare.
+  for (size_t i = 0; i + 6 < jpeg.size(); i++) {
+    if (jpeg[i] == 0xFF && jpeg[i + 1] == 0xDA) {
+      jpeg[i + 5] = 0x09;
+      break;
+    }
+  }
+  EXPECT_NE(load_result(jpeg), GIMG_OK)
+      << "SOS naming an absent component must be rejected (T.81 B.2.3)";
+
+  std::vector<uint8_t> dup = make_progressive_with_sos(3, 0, 0, 0, 0);
+  for (size_t i = 0; i + 10 < dup.size(); i++) {
+    if (dup[i] == 0xFF && dup[i + 1] == 0xDA) {
+      dup[i + 7] = dup[i + 5]; // second Cs repeats the first
+      break;
+    }
+  }
+  EXPECT_NE(load_result(dup), GIMG_OK)
+      << "SOS naming the same component twice must be rejected (T.81 B.2.3)";
+}
+
 /** Task 2.3.3.2: Unsupported SOF markers (e.g. SOF3 lossless) must be rejected. */
 TEST(JpegLoad, UnsupportedSofRejected) {
   std::vector<uint8_t> buf;
@@ -793,13 +936,13 @@ TEST(JpegLoad, Sof1AcceptedFor8bit) {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   GIMG_Stream * stream = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &stream);
@@ -826,7 +969,7 @@ TEST(JpegLoad, TruncatedSosRejected) {
   append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
   for (int i = 0; i < 64; i++)
     buf.push_back(1);
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++)
     buf.push_back(0);
   // SOS: L=10, but only 2 bytes after length (truncated; need Ns=1 + 2*Ns + 3 = 6 more)
@@ -863,8 +1006,8 @@ TEST(JpegLoad, DhtValueBytesMismatchRejected) {
   for (int i = 0; i < 11; i++)
     buf.push_back((uint8_t)i);  // only 11 value bytes, not 12
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   GIMG_Stream * s = nullptr;
   gimg_stream_create_memory(buf.data(), buf.size(), &s);
@@ -1071,13 +1214,13 @@ TEST(JpegLoad, ExifEmbeddedThumbnailTiffJpegSecondItem) {
   for (int i = 0; i < 64; i++) {
     jpeg.push_back(1);
   }
-  append(jpeg, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(jpeg, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     jpeg.push_back(0);
   }
   append(jpeg,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(jpeg, (const unsigned char *)"\xFF\xD9", 2);
   GIMG_Stream * s = nullptr;
   ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
@@ -1391,13 +1534,13 @@ TEST(JpegLoad, UnknownAppOrderPreserved) {
   for (int i = 0; i < 64; i++) {
     buf.push_back(1);
   }
-  append(buf, (const unsigned char *)"\xFF\xC4\x00\x14\x00", 5);
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
   for (int i = 0; i < 16; i++) {
     buf.push_back(0);
   }
   append(buf,
-      (const unsigned char *)"\xFF\xDA\x00\x0A\x01\x00\x00\x00\x00\x00\x00\x00",
-      12);
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00",
+      10);
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
 
   GIMG_Stream * s = nullptr;

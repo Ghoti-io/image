@@ -206,6 +206,42 @@ void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   gimg_free(alloc, state);
 }
 
+/**
+ * Apply a DNL segment's payload to the frame height.
+ *
+ * T.81 B.2.5: DNL carries the number of lines as a 2-byte big-endian value and
+ * appears after the first scan.  When the frame header gave a height, DNL must
+ * agree with it; when the frame header gave zero (the streaming case), DNL
+ * supplies it.
+ *
+ * Returns GIMG_OK on success, and sets *out_why on failure.
+ */
+static GIMG_Result jpeg_apply_dnl(gimg_jpeg_doc_state_t * state,
+    const unsigned char * payload, size_t payload_size, const char ** out_why) {
+  *out_why = NULL;
+  if (state->num_scans < 1) {
+    *out_why = "DNL before first scan";
+    return GIMG_ERR_FORMAT;
+  }
+  if (payload_size != 2 || !payload) {
+    *out_why = "DNL payload must be 2 bytes";
+    return GIMG_ERR_FORMAT;
+  }
+  uint16_t dnl_lines = (uint16_t)((payload[0] << 8) | payload[1]);
+  if (dnl_lines == 0 || dnl_lines > GIMG_JPEG_MAX_DIMENSION) {
+    *out_why = "DNL number of lines out of range";
+    return GIMG_ERR_FORMAT;
+  }
+  if (state->sof.height != 0 && state->sof.height != dnl_lines) {
+    *out_why = "DNL number of lines does not match SOF height";
+    return GIMG_ERR_FORMAT;
+  }
+  if (state->sof.height == 0) {
+    state->sof.height = dnl_lines;
+  }
+  return GIMG_OK;
+}
+
 GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc) {
@@ -435,43 +471,16 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       break;
     }
     case GIMG_JPEG_MARKER_DNL: {
-      // DNL (Define Number of Lines): valid only after the first scan. Payload
-      // is 2 bytes (number of lines, big-endian). Validates or sets height.
-      if (state->num_scans < 1) {
-        if (payload_buf)
-          gimg_free(alloc, payload_buf);
-        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-            "DNL before first scan");
+      const char * why = NULL;
+      r = jpeg_apply_dnl(state, payload_buf, payload_size, &why);
+      if (payload_buf) {
+        gimg_free(alloc, payload_buf);
+      }
+      if (r != GIMG_OK) {
+        jpeg_load_diag(diagnostics, seg_start, marker, r, why);
         gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
+        return r;
       }
-      if (payload_size != 2 || !payload_buf) {
-        if (payload_buf)
-          gimg_free(alloc, payload_buf);
-        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-            "DNL payload must be 2 bytes");
-        gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
-      }
-      uint16_t dnl_lines = (uint16_t)((payload_buf[0] << 8) | payload_buf[1]);
-      gimg_free(alloc, payload_buf);
-      if (dnl_lines == 0 || dnl_lines > GIMG_JPEG_MAX_DIMENSION) {
-        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-            "DNL number of lines out of range");
-        gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
-      }
-      if (state->sof.height != 0 && state->sof.height == dnl_lines) {
-        // DNL matches SOF height; accept.
-        break;
-      }
-      if (state->sof.height != 0) {
-        jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
-            "DNL number of lines does not match SOF height");
-        gimg_jpeg_free_doc_state(codec, state);
-        return GIMG_ERR_FORMAT;
-      }
-      state->sof.height = dnl_lines;
       break;
     }
     case GIMG_JPEG_MARKER_DHT: {
@@ -544,6 +553,81 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               payload_buf[3 + ns * 2]; // T.81: Ah high nibble, Al low
           scan->ah = (ah_al >> 4) & 0x0Fu;
           scan->al = ah_al & 0x0Fu;
+        }
+        // Validate the scan header.  These four fields used to be read and
+        // never checked, so a file could name a spectral band running backwards,
+        // an AC scan covering several components, or a successive-approximation
+        // step of any size, and the entropy decoder would be steered by it into
+        // whatever that implied.
+        {
+          const char * why = NULL;
+          int progressive =
+              state->is_progressive ? 1 : 0;
+          // B.2.3: 0 <= Ss <= 63, Ss <= Se <= 63; Td and Ta select one of four
+          // tables.
+          if (scan->se > 63u || scan->ss > scan->se) {
+            why = "SOS spectral selection out of range (T.81 B.2.3)";
+          }
+          for (uint8_t i = 0; i < ns && !why; i++) {
+            if (scan->dc_tbl[i] > 3u || scan->ac_tbl[i] > 3u) {
+              why = "SOS names a Huffman table above 3 (T.81 B.2.3)";
+            }
+            // B.2.3: every Cs in the scan must be one of the frame's
+            // components, and a component may appear only once.
+            int found = 0;
+            for (uint8_t c = 0; c < state->sof.num_components; c++) {
+              if (state->sof.comp_id[c] == scan->comp_id[i]) {
+                found = 1;
+                break;
+              }
+            }
+            if (!found) {
+              why = "SOS names a component absent from the frame (T.81 B.2.3)";
+            }
+            for (uint8_t j = 0; j < i && !why; j++) {
+              if (scan->comp_id[j] == scan->comp_id[i]) {
+                why = "SOS names the same component twice (T.81 B.2.3)";
+              }
+            }
+          }
+          if (!why && progressive) {
+            // G.1.2: a DC scan is Ss = Se = 0; an AC scan has Ss >= 1.
+            if (scan->ss == 0u && scan->se != 0u) {
+              why = "progressive DC scan must have Se = 0 (T.81 G.1.2)";
+            }
+            // G.1.2.2: "In a scan with Ss not equal to zero, Ns shall be one."
+            else if (scan->ss != 0u && ns != 1u) {
+              why = "progressive AC scan must name one component "
+                    "(T.81 G.1.2.2)";
+            }
+            // G.1.1.1.2: successive approximation refines one bit per scan, so
+            // a refinement scan has Ah = Al + 1; Ah = 0 is the first pass.
+            else if (scan->ah != 0u && scan->ah != (uint8_t)(scan->al + 1u)) {
+              why = "progressive refinement must have Ah = Al + 1 "
+                    "(T.81 G.1.1.1.2)";
+            }
+            // G.1.1.1.2: Al is a point transform of the coefficients, bounded
+            // by the coefficient range.
+            else if (scan->al > 13u) {
+              why = "progressive Al out of range (T.81 G.1.1.1.2)";
+            }
+          }
+          else if (!why) {
+            // B.2.3: in a sequential frame the scan covers the whole block and
+            // there is no successive approximation.
+            if (scan->ss != 0u || scan->se != 63u || scan->ah != 0u ||
+                scan->al != 0u) {
+              why = "sequential scan must have Ss=0 Se=63 Ah=0 Al=0 "
+                    "(T.81 B.2.3)";
+            }
+          }
+          if (why) {
+            gimg_free(alloc, payload_buf);
+            jpeg_load_diag(
+                diagnostics, seg_start, marker, GIMG_ERR_FORMAT, why);
+            gimg_jpeg_free_doc_state(codec, state);
+            return GIMG_ERR_FORMAT;
+          }
         }
         // T.81 B.2.4: a DHT segment defines the Huffman table for its (Tc, Th) and
         // replaces any previous definition of that pair.  The tables a scan uses are
@@ -721,6 +805,30 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             // into the current scan; that would wrongly use this table for
             // the scan we just finished (e.g. first AC-initial would get the
             // next scan's table and desync).
+          }
+          else if (b == GIMG_JPEG_MARKER_DNL) {
+            // T.81 B.2.5: DNL follows the first scan, so this is where a legal
+            // one appears.  Reading it here rather than discarding it is what
+            // makes the height check above reachable at all.
+            unsigned char dnl_buf[2];
+            if (payload_size != 2) {
+              jpeg_load_diag(diagnostics, seg_start, b, GIMG_ERR_FORMAT,
+                  "DNL payload must be 2 bytes");
+              gimg_jpeg_free_doc_state(codec, state);
+              return GIMG_ERR_FORMAT;
+            }
+            r = gimg_stream_read_exact(stream, dnl_buf, 2);
+            if (r != GIMG_OK) {
+              gimg_jpeg_free_doc_state(codec, state);
+              return r;
+            }
+            const char * why = NULL;
+            r = jpeg_apply_dnl(state, dnl_buf, 2, &why);
+            if (r != GIMG_OK) {
+              jpeg_load_diag(diagnostics, seg_start, b, r, why);
+              gimg_jpeg_free_doc_state(codec, state);
+              return r;
+            }
           }
           else {
             for (size_t k = 0; k < payload_size; k++) {
