@@ -4572,8 +4572,12 @@ TEST(JpegEncode, HierarchicalRoundTrip) {
 
   for (int levels = 1; levels <= 3; levels++) {
     for (int arith = 0; arith <= 1; arith++) {
+      // A restart interval applies to every frame of the sequence, each
+      // counting it in its own MCUs (B.2.4.4).
+      for (uint16_t ri : {(uint16_t)0, (uint16_t)3}) {
       SCOPED_TRACE("levels=" + std::to_string(levels) +
-          " arithmetic=" + std::to_string(arith));
+          " arithmetic=" + std::to_string(arith) +
+          " restart_interval=" + std::to_string(ri));
       GIMG_Doc * doc = nullptr;
       ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
       GIMG_Raster * raster = nullptr;
@@ -4600,6 +4604,7 @@ TEST(JpegEncode, HierarchicalRoundTrip) {
       so.quality = 85;
       so.jpeg_hierarchical_levels = (uint8_t)levels;
       so.jpeg_arithmetic = (uint8_t)arith;
+      so.jpeg_restart_interval = ri;
       GIMG_Save_Report rep = {};
       ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &so, &rep), GIMG_OK);
       const void * data = nullptr;
@@ -4707,7 +4712,55 @@ TEST(JpegEncode, HierarchicalRoundTrip) {
       double psnr = 10.0 * std::log10(255.0 * 255.0 / mse);
       EXPECT_LE(worst, 25) << "worst channel error";
       EXPECT_GE(psnr, 40.0) << "PSNR " << psnr << " dB";
+      }
     }
+  }
+}
+
+// A hierarchical sequence is built out of one coding process, so asking for
+// another alongside it is refused rather than quietly downgraded.
+//
+// The frames this encoder writes are 8-bit sequential DCT (and their
+// arithmetic counterparts); Annex J allows progressive and lossless ones too,
+// and this library reads them, but writing one means a different
+// reconstruction at every step - the part of a hierarchical encoder that
+// cannot be approximated - so the option combination has no meaning yet.
+TEST(JpegEncode, HierarchicalRefusesACombinationItCannotWrite) {
+  struct Case {
+    uint8_t progressive;
+    uint8_t lossless_predictor;
+    uint8_t precision;
+    const char * what;
+  };
+  const Case cases[] = {
+      {1, 0, 0, "progressive frames in a sequence (SOF6, SOF14)"},
+      {0, 4, 0, "lossless frames in a sequence (SOF7, SOF15)"},
+      {0, 0, 12, "12-bit frames"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_raster_create(
+                  16, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+        GIMG_OK);
+    memset(gimg_raster_pixels(raster), 0x40,
+        gimg_raster_stride_bytes(raster) * 16);
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options so = {};
+    so.quality = 85;
+    so.jpeg_hierarchical_levels = 1;
+    so.jpeg_progressive = c.progressive;
+    so.jpeg_lossless_predictor = c.lossless_predictor;
+    so.jpeg_precision = c.precision;
+    GIMG_Save_Report rep = {};
+    EXPECT_EQ(gimg_doc_save(doc, out, "jpeg", &so, &rep), GIMG_ERR_UNSUPPORTED);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
   }
 }
 
