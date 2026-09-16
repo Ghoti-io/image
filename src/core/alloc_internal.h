@@ -9,6 +9,8 @@
 #ifndef GHOTI_IO_GIMG_ALLOC_INTERNAL_H
 #define GHOTI_IO_GIMG_ALLOC_INTERNAL_H
 
+#include <ghoti.io/image/macros.h>
+
 #include <ghoti.io/image/allocator.h>
 #include <stddef.h>
 

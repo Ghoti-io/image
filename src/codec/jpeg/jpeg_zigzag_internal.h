@@ -10,6 +10,8 @@
 #ifndef GHOTI_IO_GIMG_JPEG_ZIGZAG_INTERNAL_H
 #define GHOTI_IO_GIMG_JPEG_ZIGZAG_INTERNAL_H
 
+#include <ghoti.io/image/macros.h>
+
 #include <stdint.h>
 
 #ifdef __cplusplus

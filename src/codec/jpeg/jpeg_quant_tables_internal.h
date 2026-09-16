@@ -11,6 +11,8 @@
 #ifndef GHOTI_IO_GIMG_JPEG_QUANT_TABLES_INTERNAL_H
 #define GHOTI_IO_GIMG_JPEG_QUANT_TABLES_INTERNAL_H
 
+#include <ghoti.io/image/macros.h>
+
 /** Standard luminance quant table (T.81 Annex K.1). 64 entries, row-major. */
 extern const unsigned int gimg_jpeg_std_luminance_quant[64];
 /** Standard chrominance quant table (T.81 Annex K.1). 64 entries, row-major. */

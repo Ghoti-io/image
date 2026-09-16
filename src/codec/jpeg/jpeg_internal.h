@@ -13,6 +13,8 @@
 #ifndef GHOTI_IO_GIMG_JPEG_INTERNAL_H
 #define GHOTI_IO_GIMG_JPEG_INTERNAL_H
 
+#include <ghoti.io/image/macros.h>
+
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/stream.h>

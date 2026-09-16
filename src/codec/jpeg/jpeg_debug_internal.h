@@ -14,6 +14,8 @@
 #ifndef GHOTI_IO_GIMG_JPEG_DEBUG_INTERNAL_H
 #define GHOTI_IO_GIMG_JPEG_DEBUG_INTERNAL_H
 
+#include <ghoti.io/image/macros.h>
+
 // Default all to 0 if not already defined (e.g. -DGIMG_JPEG_DEBUG_LOAD=1).
 #ifndef GIMG_JPEG_DEBUG_LOAD
 #define GIMG_JPEG_DEBUG_LOAD 0
