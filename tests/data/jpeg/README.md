@@ -283,6 +283,29 @@ once it runs past the compressed data, so a frame whose every decision resolves
 to the more probable symbol needs no bytes at all, and libjpeg writes none.  A
 Huffman scan always has at least one.
 
+## One comparator for every frame type
+
+`compare_to_libjpeg_native.py` compares our decode against libjpeg at the
+frame's own sample precision, for any frame this codec reads - baseline,
+progressive, arithmetic, lossless, 8-, 12- or 16-bit.  It drives `ljdec.c`
+(here) rather than `djpeg`, for two reasons: `djpeg` does not expose
+`do_block_smoothing`, which libjpeg applies to progressive frames and we
+deliberately do not implement, and above 8 bits libjpeg needs
+`jpeg12_read_scanlines` or `jpeg16_read_scanlines` according to
+`cinfo.data_precision` rather than the 8-bit entry point.
+
+```sh
+cc -O2 -o ljdec ljdec.c -I libjpeg-turbo-3.0.4 -I ljt-build ljt-build/libjpeg.a
+GIMG_LJDEC=./ljdec python3 compare_to_libjpeg_native.py *.jpg
+```
+
+Note that it sets `GIMG_JPEG_FANCY_UPSAMPLE=1` for the dump tool.  That tool
+defaults to the box filter and libjpeg defaults to the triangle one, so
+comparing the two defaults reports a few counts of difference on every
+subsampled file and says nothing about the codec.  It looks exactly like a real
+defect, and it has been mistaken for one more than once in this codebase's
+history.
+
 ## Lossless fixtures
 
 T.81 Annex H is a predictive coding process, not a DCT one, and libjpeg-turbo
