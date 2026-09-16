@@ -1071,6 +1071,10 @@ int jpeg_chroma_sample_fancy_2h2v(
 int jpeg_chroma_sample_fancy_h2v1(
     const jpeg_plane_t * p, uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
 
+/** Chroma upsampling: fancy h1v2 (4:4:0, vertical triangle filter). */
+int jpeg_chroma_sample_fancy_h1v2(
+    const jpeg_plane_t * p, uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
+
 /**
  * Sample a chroma plane for output pixel (x, y).
  *

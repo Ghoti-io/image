@@ -4087,3 +4087,75 @@ TEST(JpegLoad, FourComponentFramesBeyondTheBaselineWalk) {
     gimg_stream_destroy(s);
   }
 }
+
+// T.81 B.2.2 allows H_i and V_i from 1 to 4, and A.2.3's ten-data-unit limit on
+// an MCU is what rules out the rest.  Everything here had only ever been tried
+// at the three combinations photographs use - 4:4:4, 4:2:2, 4:2:0 - and a sweep
+// of the twelve that libjpeg-turbo will write found two faults, both of them
+// wrong pixels rather than refusals:
+//
+//   - The box fallback scaled proportionally, x * cw / width, where libjpeg's
+//     int_upsample replicates each sample H_max/H_i times.  Those agree at a
+//     ratio of two, which is why 4:2:0 and 4:2:2 never showed it; at a ratio of
+//     four they disagree on half of every group of four pixels, by up to 47.
+//
+//   - 4:4:0 - full width, half height - had no fancy filter, so it was
+//     box-filtered whatever the caller asked for.  libjpeg 6b box-filters it
+//     too, but libjpeg-turbo has h1v2_fancy_upsample and that is what a current
+//     decoder produces.  cjpeg -sample 1x2 writes such a file directly, and
+//     losslessly transposing a 4:2:2 file is the other way to get one.
+//
+// The oracle is libjpeg-turbo 3.0.4's own decode, compared exactly; our IDCT is
+// its islow and, now, our upsamplers are its upsamplers.
+TEST(JpegLoad, EverySamplingFactorMatchesLibjpegTurbo) {
+  struct Case {
+    const char * base;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"sampling_s1x2", "4:4:0 - full width, half height, the fancy h1v2 case"},
+      {"sampling_s4x1", "H=4: a ratio the box fallback got wrong"},
+      {"sampling_s2x4", "V=4, and H=2 as well"},
+      {"sampling_s3x1", "H=3, a ratio with no fancy filter in any decoder"},
+      {"sampling_s1x4", "V=4 alone"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.base) + ": " + c.what);
+    uint32_t rw = 0, rh = 0;
+    int rchan = 0, rbits = 0;
+    std::vector<uint32_t> ref;
+    std::string refname = std::string(c.base) + ".ppm";
+    ASSERT_TRUE(jpeg_test::load_pnm_file(
+        refname.c_str(), &rw, &rh, &rchan, &rbits, ref))
+        << "missing reference " << refname;
+    ASSERT_EQ(rchan, 3);
+    std::string name = std::string(c.base) + ".jpg";
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name.c_str(), jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    ASSERT_EQ(gimg_raster_width(raster), rw);
+    ASSERT_EQ(gimg_raster_height(raster), rh);
+    const unsigned char * gp =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t gs = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < rh; y++) {
+      for (uint32_t x = 0; x < rw; x++) {
+        for (int ch = 0; ch < 3; ch++) {
+          int a = (int)gp[y * gs + x * 4 + (size_t)ch];
+          int b = (int)ref[((size_t)y * rw + x) * 3 + (size_t)ch];
+          ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << ch;
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}

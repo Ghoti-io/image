@@ -769,3 +769,49 @@ The oracle is libjpeg and not Pillow because libjpeg does not invert Adobe CMYK
 (jdcolor.c null_convert) and matching it was already the decision here.  Pillow
 does invert, so a Pillow decode of any of these is the exact complement of the
 `.raw` - worth knowing before concluding something is wrong.
+
+## Every sampling factor (`sampling_s*.jpg`)
+
+T.81 B.2.2 allows H_i and V_i from 1 to 4; A.2.3's limit of ten data units in
+an MCU rules out the rest.  Everything here had only been tried at the three
+combinations photographs actually use, and a sweep of the twelve libjpeg-turbo
+will write found two faults - both wrong pixels, not refusals.
+
+```sh
+C=/path/to/libjpeg-turbo-3.0.4/cjpeg   # 3.0.4, built static
+DJ=/path/to/libjpeg-turbo-3.0.4/djpeg
+D=tests/data/jpeg
+
+for hv in 1x2 4x1 2x4 3x1 1x4; do
+  $C -quality 80 -sample $hv -outfile $D/sampling_s$hv.jpg $D/hier_enc_src.ppm
+  $DJ -pnm -outfile $D/sampling_s$hv.ppm $D/sampling_s$hv.jpg
+done
+```
+
+What they caught:
+
+- **The box fallback scaled proportionally** - `x * cw / width` - where
+  libjpeg's `int_upsample` replicates each sample `H_max/H_i` times.  The plane
+  is `ceil(X x H_i / H_max)` wide, a little wider than `X / (H_max/H_i)`, and
+  the proportional map spreads that surplus along the row while replication
+  puts it all in the last group.  At a ratio of two the two maps agree exactly,
+  which is why 4:2:0 and 4:2:2 never showed it.  At a ratio of four they
+  disagree on half of every group of four pixels, by up to 47 out of 255.
+
+- **4:4:0 had no fancy filter.**  Full width, half height: the mirror of 4:2:2,
+  and the one that gets forgotten.  libjpeg 6b box-filters it too, so this was
+  right once; libjpeg-turbo added `h1v2_fancy_upsample` and that is what a
+  current decoder produces.  `cjpeg -sample 1x2` writes one directly, and
+  libjpeg-turbo's own comment notes the other way in - losslessly transposing a
+  4:2:2 file.  Note it has no `downsampled_width > 2` guard, unlike h2v1 and
+  h2v2: their triangle runs horizontally and needs interior columns, this one
+  runs vertically and does not care how wide the plane is.
+
+All twelve combinations are byte-exact against libjpeg-turbo 3.0.4 in both
+upsampling modes - 24 comparisons - which is what the sweep is for, even though
+only five are committed as fixtures.
+
+Ratios that do not divide (H_i = 3 against H_max = 4, say) keep the
+proportional map: libjpeg refuses those frames outright (jdmaster.c,
+`JERR_FRACT_SAMPLE_NOTIMPL`), so there is nothing to match and no oracle to
+match it with.

@@ -93,6 +93,41 @@ int jpeg_chroma_sample_fancy_h2v1(
   return (jpeg_plane_at(p, ci, y) * 3 + jpeg_plane_at(p, ci - 1u, y) + 1) >> 2;
 }
 
+/**
+ * Fancy chroma upsampling for 4:4:0 (h1v2): full width, triangle filter
+ * vertically.
+ *
+ * The mirror of h2v1, and the one everybody forgets, including this codec
+ * until a sweep of every sampling factor T.81 B.2.2 allows found it.  It turns
+ * up on its own - cjpeg -sample 1x2 writes it - and libjpeg-turbo notes the
+ * other way in: losslessly transposing a 4:2:2 file produces one.
+ *
+ * libjpeg 6b has no such upsampler and box-filters these; libjpeg-turbo added
+ * h1v2_fancy_upsample (jdsample.c) and that is what a current decoder produces,
+ * so it is what this matches.  Note the absent width guard: h2v1 and h2v2 fall
+ * back to the box filter when the plane is two samples or narrower, because
+ * their triangle runs horizontally and has nothing to interpolate between;
+ * this one runs vertically, so the width never matters and libjpeg does not
+ * check it.
+ *
+ * The bias differs between the two output rows - 1 for the upper, 2 for the
+ * lower - which is how libjpeg rounds the two halves of the pair in opposite
+ * directions so they average correctly.
+ */
+int jpeg_chroma_sample_fancy_h1v2(
+    const jpeg_plane_t * p, uint32_t cw, uint32_t ch, uint32_t x, uint32_t y) {
+  (void)cw;
+  uint32_t ri = y >> 1;
+  // The row on the other side, with the edge rows duplicated - which is what
+  // libjpeg's context-row buffer hands the filter at the top and bottom.
+  uint32_t ri_other =
+      (y & 1u) ? (ri + 1u < ch ? ri + 1u : ri) : (ri ? ri - 1u : 0u);
+  int bias = (y & 1u) ? 2 : 1;
+  int cur = jpeg_plane_at(p, x, ri);
+  int other = jpeg_plane_at(p, x, ri_other);
+  return (cur * 3 + other + bias) >> 2;
+}
+
 int jpeg_chroma_sample(const jpeg_plane_t * p, uint32_t cw, uint32_t ch,
     uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t h_samp,
     uint8_t v_samp, uint8_t h_max, uint8_t v_max, int fancy) {
@@ -122,9 +157,45 @@ int jpeg_chroma_sample(const jpeg_plane_t * p, uint32_t cw, uint32_t ch,
         return jpeg_chroma_sample_fancy_2h2v(p, cw, ch, x, y);
       }
     }
+    // 4:4:0, full width and half height.  No width guard here; see the filter.
+    if (h_samp == h_max && v_half) {
+      return jpeg_chroma_sample_fancy_h1v2(p, cw, ch, x, y);
+    }
   }
-  uint32_t cx = (cw > 1u && width > 1u) ? (x * cw / width) : 0u;
-  uint32_t cy = (ch > 1u && height > 1u) ? (y * ch / height) : 0u;
+  // The box filter, and what "box" has to mean: libjpeg's int_upsample
+  // (jdsample.c) replicates each sample H_max/H_i times across and V_max/V_i
+  // times down, so the sample covering pixel x is at x / (H_max/H_i).  This
+  // used to scale proportionally instead, x * cw / width, which is a different
+  // map whenever the ratio is not 1 or 2: the plane is ceil(X * H_i / H_max)
+  // wide, slightly wider than X / (H_max/H_i), and the proportional map spreads
+  // that surplus across the row while replication puts it all in the last
+  // group.  At 4:2:0 and 4:2:2 the two agree, which is why nothing noticed.  At
+  // a sampling factor of 4 - cjpeg -sample 4x1 writes one, and T.81 B.2.2
+  // allows H_i and V_i up to 4 - they disagree on half the pixels of every
+  // group of four, by up to 47 out of 255.
+  //
+  // Only when the factors divide.  libjpeg refuses a frame whose sampling
+  // factors do not (jdmaster.c, JERR_FRACT_SAMPLE_NOTIMPL), so there is nothing
+  // to match there and the proportional map stays as the answer for a file no
+  // other decoder will open at all.
+  uint32_t cx, cy;
+  if (h_samp > 0u && v_samp > 0u && h_max % h_samp == 0u &&
+      v_max % v_samp == 0u) {
+    uint32_t hx = (uint32_t)(h_max / h_samp);
+    uint32_t vy = (uint32_t)(v_max / v_samp);
+    cx = hx ? x / hx : x;
+    cy = vy ? y / vy : y;
+  }
+  else {
+    cx = (cw > 1u && width > 1u) ? (x * cw / width) : 0u;
+    cy = (ch > 1u && height > 1u) ? (y * ch / height) : 0u;
+  }
+  if (cw > 0u && cx >= cw) {
+    cx = cw - 1u;
+  }
+  if (ch > 0u && cy >= ch) {
+    cy = ch - 1u;
+  }
   return jpeg_plane_at(p, cx, cy);
 }
 
