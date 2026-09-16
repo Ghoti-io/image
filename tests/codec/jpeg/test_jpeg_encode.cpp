@@ -24,6 +24,7 @@
 
 extern "C" {
 #include "jpeg_huffman_tables_internal.h"
+#include "jpeg_internal.h"
 }
 
 namespace {
@@ -4772,4 +4773,82 @@ TEST(JpegEncode, HierarchicalOutputIsReadByTheReferenceCodec) {
     }
     EXPECT_LE(worst, c.tolerance) << "worst channel difference " << worst;
   }
+}
+
+
+// Entropy data must not be reallocated once per byte.
+//
+// T.81 B.2.2's stuffing has to be read a byte at a time - a 0xFF in the
+// entropy stream is followed by a 0x00 that is not data - so the loader
+// appends one or two bytes at a time, and the buffer used to be resized to fit
+// on every call.  That makes reading a scan quadratic in its length and leaves
+// one dead allocation per byte behind it.  The fuzzer is what noticed: a
+// 224-byte input describing a 64x9280 frame drove the address sanitizer's
+// quarantine to 3.5 GB, because it holds every freed block, and there were
+// half a million of them.  A megabyte of entropy data is an ordinary amount
+// for a photograph.
+//
+// Counting the allocator's calls rather than timing anything, and rather than
+// watching the pointer: realloc usually extends a growing buffer in place, so
+// the address stays put through a million resizes and says nothing at all.
+// What matters is that the buffer grows geometrically, which is a statement
+// about how often it is asked to grow.
+namespace {
+struct CountingAllocator {
+  GIMG_Allocator vt;
+  size_t reallocs = 0;
+  size_t mallocs = 0;
+};
+void * counting_malloc(void * ctx, size_t size) {
+  ((CountingAllocator *)ctx)->mallocs++;
+  return malloc(size ? size : 1);
+}
+void * counting_calloc(void * ctx, size_t n, size_t size) {
+  ((CountingAllocator *)ctx)->mallocs++;
+  return calloc(n ? n : 1, size ? size : 1);
+}
+void * counting_realloc(void * ctx, void * ptr, size_t size) {
+  ((CountingAllocator *)ctx)->reallocs++;
+  return realloc(ptr, size ? size : 1);
+}
+void counting_free(void *, void * ptr) {
+  free(ptr);
+}
+} // namespace
+
+TEST(JpegEncode, ScanDataGrowsGeometrically) {
+  CountingAllocator counter;
+  counter.vt.ctx = &counter;
+  counter.vt.malloc_fn = counting_malloc;
+  counter.vt.calloc_fn = counting_calloc;
+  counter.vt.realloc_fn = counting_realloc;
+  counter.vt.free_fn = counting_free;
+
+  gimg_jpeg_doc_state_t * state =
+      (gimg_jpeg_doc_state_t *)calloc(1, sizeof(gimg_jpeg_doc_state_t));
+  ASSERT_NE(state, nullptr);
+  state->allocator = &counter.vt;
+  state->num_scans = 1;
+  state->cur_scan = &state->scans[0];
+
+  const size_t kBytes = 1u << 20; // a megabyte, one or two bytes at a time
+  const unsigned char pair[2] = {0xFF, 0x00};
+  const unsigned char one = 0x5A;
+  size_t written = 0;
+  while (written < kBytes) {
+    // Alternate, so that both shapes of append are exercised.
+    bool two = (written & 1u) != 0;
+    ASSERT_EQ(jpeg_append_scan_data(state, two ? pair : &one, two ? 2u : 1u),
+        GIMG_OK);
+    written += two ? 2u : 1u;
+  }
+  EXPECT_EQ(state->scans[0].data_size, written);
+  // Doubling from 4 KiB reaches a megabyte in eight steps, so two dozen is
+  // generous; resizing to fit would be about seven hundred thousand.
+  EXPECT_LE(counter.reallocs, 24u)
+      << "buffer resized " << counter.reallocs << " times for " << written
+      << " bytes appended";
+
+  counting_free(nullptr, state->scans[0].data);
+  free(state);
 }

@@ -285,12 +285,31 @@ GIMG_Result jpeg_append_scan_data(gimg_jpeg_doc_state_t * state,
   const GIMG_Allocator * alloc = state->allocator;
   alloc = gimg_alloc_or_default(alloc);
   size_t new_size = scan->data_size + len;
-  unsigned char * new_buf =
-      (unsigned char *)gimg_realloc(alloc, scan->data, new_size);
-  if (!new_buf && new_size > 0) {
-    return GIMG_ERR_OOM;
+  if (new_size < scan->data_size) {
+    return GIMG_ERR_LIMIT; // Wrapped: the scan is longer than size_t can hold.
   }
-  scan->data = new_buf;
+  if (new_size > scan->data_cap) {
+    // Grow geometrically.  This is called once or twice per entropy byte -
+    // B.2.2's stuffing has to be read a byte at a time - so resizing to fit
+    // each call made loading a scan quadratic in its length, and every
+    // intermediate buffer a separate allocation.  A megabyte of entropy data
+    // meant a million reallocations.
+    size_t cap = scan->data_cap ? scan->data_cap : 4096u;
+    while (cap < new_size) {
+      if (cap > (size_t)-1 / 2u) {
+        cap = new_size;
+        break;
+      }
+      cap *= 2u;
+    }
+    unsigned char * new_buf =
+        (unsigned char *)gimg_realloc(alloc, scan->data, cap);
+    if (!new_buf) {
+      return GIMG_ERR_OOM;
+    }
+    scan->data = new_buf;
+    scan->data_cap = cap;
+  }
   if (len > 0 && data) {
     memcpy(scan->data + scan->data_size, data, len);
   }

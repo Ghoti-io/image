@@ -200,6 +200,11 @@ typedef struct {
   uint16_t restart_interval;
   unsigned char * data;   ///< Concatenated entropy-coded segment data.
   size_t data_size;       ///< Length of data in bytes.
+  /** Allocated size of data, which the loader grows geometrically.  Entropy
+   * bytes arrive one or two at a time - that is how B.2.2's 0xFF 0x00 stuffing
+   * has to be read - and resizing the buffer for each of them makes loading a
+   * scan quadratic in its length. */
+  size_t data_cap;
   /** Snapshot of Huffman tables at this SOS (progressive multi-DHT). NULL = use
    * state's. */
   unsigned char * huff_dc[4];
