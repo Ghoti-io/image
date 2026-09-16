@@ -4829,6 +4829,207 @@ TEST(JpegEncode, HierarchicalOutputIsReadByTheReferenceCodec) {
 }
 
 
+// T.81 A.2.3: this library can write a sequential frame as one non-interleaved
+// scan per component, and libjpeg-turbo reads the result.
+//
+// The oracle is that codec's decode of our file, committed alongside it, for
+// the same reason the hierarchical encoder has one: a round trip through our
+// own decoder would pass just as happily on a private misreading of A.2.3,
+// since the same misunderstanding would be on both sides of it.
+//
+// The comparison is exact.  Our IDCT is libjpeg's islow and our chroma
+// upsampler is its fancy one, so for a file both codecs agree is well formed
+// there is nothing left to differ about - and when the first version of this
+// writer named Huffman table 1 for the chroma scans while encoding them with
+// table 0, this is what said so: libjpeg refused the file outright with "bad
+// Huffman code".
+TEST(JpegEncode, NonInterleavedOutputIsReadByLibjpegTurbo) {
+  struct Case {
+    const char * jpg;
+    const char * ref;
+    int channels;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"ni_ours_444.jpg", "ni_ours_444_turbo.ppm", 3, "4:4:4"},
+      {"ni_ours_420.jpg", "ni_ours_420_turbo.ppm", 3, "4:2:0"},
+      {"ni_ours_422_restart.jpg", "ni_ours_422_restart_turbo.ppm", 3,
+          "4:2:2 with a restart interval of 3 blocks"},
+      {"ni_ours_arith_420.jpg", "ni_ours_arith_420_turbo.ppm", 3,
+          "4:2:0, arithmetic (SOF9)"},
+      {"ni_ours_gray.jpg", "ni_ours_gray_turbo.pgm", 1, "grayscale"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    uint32_t rw = 0, rh = 0;
+    int rchan = 0, rbits = 0;
+    std::vector<uint32_t> ref;
+    ASSERT_TRUE(jpeg_test::load_pnm_file(c.ref, &rw, &rh, &rchan, &rbits, ref))
+        << "missing reference " << c.ref;
+    ASSERT_EQ(rchan, c.channels);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg));
+    DocStreamGuard in;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in.s),
+        GIMG_OK);
+    ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+    RasterGuard got;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+    ASSERT_NE(got.r, nullptr);
+    ASSERT_EQ(gimg_raster_width(got.r), rw);
+    ASSERT_EQ(gimg_raster_height(got.r), rh);
+    const unsigned char * gp = (const unsigned char *)gimg_raster_pixels(got.r);
+    size_t gs = gimg_raster_stride_bytes(got.r);
+    size_t bpp = (c.channels == 3) ? 4u : 1u;
+    for (uint32_t y = 0; y < rh; y++) {
+      for (uint32_t x = 0; x < rw; x++) {
+        for (int ch = 0; ch < c.channels; ch++) {
+          int a = (int)gp[y * gs + x * bpp + (size_t)ch];
+          int b = (int)ref[((size_t)y * rw + x) * (size_t)c.channels + ch];
+          ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << ch;
+        }
+      }
+    }
+  }
+}
+
+// The two scan orders of A.2.2 and A.2.3 describe the same blocks, so the same
+// image written both ways must decode to the same pixels - not merely to
+// similar ones.  Nothing is requantised between them; only the order the
+// coefficients are written in changes.
+//
+// This also pins the thing the external oracle cannot see, because libjpeg
+// only ever gets one of the two files: that the non-interleaved writer is
+// reading the same coefficient buffer, and gathering from it correctly for a
+// subsampled component, whose block grid is smaller than the MCU grid it lives
+// in.
+TEST(JpegEncode, NonInterleavedAndInterleavedDecodeToTheSamePixels) {
+  struct Case {
+    uint8_t subsampling;
+    uint8_t arithmetic;
+    uint16_t restart;
+    const char * what;
+  };
+  const Case cases[] = {
+      {GIMG_JPEG_CHROMA_444, 0, 0, "4:4:4"},
+      {GIMG_JPEG_CHROMA_422, 0, 0, "4:2:2"},
+      {GIMG_JPEG_CHROMA_420, 0, 0, "4:2:0"},
+      {GIMG_JPEG_CHROMA_420, 0, 3, "4:2:0 with restarts"},
+      {GIMG_JPEG_CHROMA_420, 1, 0, "4:2:0, arithmetic"},
+      {GIMG_JPEG_CHROMA_422, 1, 5, "4:2:2, arithmetic, with restarts"},
+  };
+  // 37x23 so that neither dimension is a whole number of MCUs at any of the
+  // three samplings: the edge blocks are where a wrong gather shows up.
+  const uint32_t W = 37, H = 23;
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    std::vector<uint8_t> decoded[2];
+    uint32_t dw[2] = {0, 0}, dh[2] = {0, 0};
+    for (int pass = 0; pass < 2; pass++) {
+      RasterGuard src;
+      ASSERT_EQ(gimg_raster_create(W, H, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                    nullptr, 0, &src.r),
+          GIMG_OK);
+      size_t ss = gimg_raster_stride_bytes(src.r);
+      unsigned char * sp = (unsigned char *)gimg_raster_pixels(src.r);
+      for (uint32_t y = 0; y < H; y++) {
+        for (uint32_t x = 0; x < W; x++) {
+          unsigned char * p = sp + y * ss + x * 4;
+          p[0] = (unsigned char)(x * 7 + y * 3);
+          p[1] = (unsigned char)(y * 11 + 40);
+          p[2] = (unsigned char)((x ^ y) * 5);
+          p[3] = 0xFF;
+        }
+      }
+      GIMG_Doc * doc = nullptr;
+      ASSERT_EQ(gimg_doc_from_raster(src.r, &doc), GIMG_OK);
+      GIMG_Stream * os = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+      GIMG_Save_Options o = {};
+      o.quality = 88;
+      o.jpeg_chroma_subsampling = c.subsampling;
+      o.jpeg_arithmetic = c.arithmetic;
+      o.jpeg_restart_interval = c.restart;
+      o.jpeg_non_interleaved = (uint8_t)pass; // 0 = A.2.2, 1 = A.2.3
+      GIMG_Save_Report rep = {};
+      ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &o, &rep), GIMG_OK);
+      const void * d = nullptr;
+      size_t n = 0;
+      gimg_stream_output_buffer(os, &d, &n);
+      std::vector<uint8_t> file((const uint8_t *)d, (const uint8_t *)d + n);
+      gimg_stream_destroy(os);
+      gimg_doc_destroy(doc);
+
+      DocStreamGuard in;
+      ASSERT_EQ(
+          gimg_stream_create_memory(file.data(), file.size(), &in.s), GIMG_OK);
+      ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+      RasterGuard got;
+      ASSERT_EQ(
+          gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+      dw[pass] = gimg_raster_width(got.r);
+      dh[pass] = gimg_raster_height(got.r);
+      const unsigned char * gp =
+          (const unsigned char *)gimg_raster_pixels(got.r);
+      size_t gs = gimg_raster_stride_bytes(got.r);
+      decoded[pass].resize((size_t)dw[pass] * dh[pass] * 3u);
+      for (uint32_t y = 0; y < dh[pass]; y++) {
+        for (uint32_t x = 0; x < dw[pass]; x++) {
+          for (int ch = 0; ch < 3; ch++) {
+            decoded[pass][((size_t)y * dw[pass] + x) * 3 + (size_t)ch] =
+                gp[y * gs + x * 4 + (size_t)ch];
+          }
+        }
+      }
+    }
+    ASSERT_EQ(dw[0], dw[1]);
+    ASSERT_EQ(dh[0], dh[1]);
+    EXPECT_EQ(decoded[0], decoded[1]);
+  }
+}
+
+// A.2.3 is a sequential arrangement.  Where the standard already settles how
+// the scans are laid out, or where a different writer owns the frame, asking
+// for it is a contradiction rather than a request, and the encoder says so
+// instead of writing something that is not what was asked for.
+TEST(JpegEncode, NonInterleavedRefusesWhatItCannotMean) {
+  struct Case {
+    uint8_t progressive;
+    uint8_t lossless_predictor;
+    uint8_t hierarchical_levels;
+    const char * what;
+  };
+  const Case cases[] = {
+      {1, 0, 0, "progressive: Annex G carries its own scan script"},
+      {0, 1, 0, "lossless: written by the Annex H path"},
+      {0, 0, 2, "hierarchical: Annex J writes its own frames"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    RasterGuard src;
+    ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                  nullptr, 0, &src.r),
+        GIMG_OK);
+    memset(gimg_raster_pixels(src.r), 0x40,
+        gimg_raster_stride_bytes(src.r) * 16u);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_from_raster(src.r, &doc), GIMG_OK);
+    GIMG_Stream * os = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+    GIMG_Save_Options o = {};
+    o.jpeg_non_interleaved = 1;
+    o.jpeg_progressive = c.progressive;
+    o.jpeg_lossless_predictor = c.lossless_predictor;
+    o.jpeg_hierarchical_levels = c.hierarchical_levels;
+    GIMG_Save_Report rep = {};
+    EXPECT_EQ(gimg_doc_save(doc, os, "jpeg", &o, &rep), GIMG_ERR_UNSUPPORTED);
+    gimg_stream_destroy(os);
+    gimg_doc_destroy(doc);
+  }
+}
+
+
 // Entropy data must not be reallocated once per byte.
 //
 // T.81 B.2.2's stuffing has to be read a byte at a time - a 0xFF in the

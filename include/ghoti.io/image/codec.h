@@ -231,6 +231,23 @@ typedef struct {
    * which selects SOF9 and SOF13 in place of SOF1 and SOF5.  Ignored for
    * non-JPEG. */
   uint8_t jpeg_hierarchical_levels;
+
+  /** Write a sequential frame as one non-interleaved scan per component
+   * (T.81 A.2.3) rather than as a single interleaved scan (A.2.2).
+   *
+   * Both orders describe the same blocks and decode to the same picture; what
+   * differs is the order they are written in and, with it, which decoders and
+   * which pipelines can work on one component at a time.  A decoder that wants
+   * only the luminance of a colour image can stop after the first scan.
+   *
+   * A single-component image is already non-interleaved by definition, so the
+   * option changes nothing there.  It combines with `jpeg_arithmetic` and with
+   * `jpeg_restart_interval` - the restart interval then counts single blocks,
+   * because that is what an MCU is in a non-interleaved scan (A.2.3).  It is
+   * refused together with `jpeg_progressive` (Annex G has its own scan script,
+   * and its AC scans are non-interleaved already), with a lossless frame, and
+   * with `jpeg_hierarchical_levels`.  Ignored for non-JPEG. */
+  uint8_t jpeg_non_interleaved;
 } GIMG_Save_Options;
 
 /**

@@ -1807,12 +1807,173 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
   return GIMG_OK;
 }
 
+// Defined with the progressive writer, which needs the same two operations to
+// write its non-interleaved AC scans.
+static void jpeg_component_block_grid(uint32_t width, uint32_t height,
+    const uint8_t * h_samp, const uint8_t * v_samp, int num_components,
+    int comp, uint32_t * out_blk_w, uint32_t * out_blk_h);
+static void jpeg_gather_component_blocks(int16_t * interleaved,
+    int16_t * packed, uint32_t blk_w, uint32_t blk_h, const uint8_t * h_samp,
+    const uint8_t * v_samp, int num_components, int comp, uint32_t mcu_per_row,
+    int scatter);
+
+/**
+ * Write a sequential frame's entropy-coded data as one non-interleaved scan
+ * per component (T.81 A.2.3).
+ *
+ * A.2.2 and A.2.3 are two orders through the same blocks.  An interleaved scan
+ * walks MCUs, each holding H_i x V_i blocks of every component; a
+ * non-interleaved scan carries one component, and there "the MCU is defined to
+ * be one data unit", so the scan is that component's own block grid in raster
+ * order with no MCU padding.  That is exactly the shape the one-component
+ * encoder already produces, so each component is gathered out of the
+ * MCU-interleaved coefficient buffer into its own grid and handed to that
+ * encoder as if it were a one-component image - the same route the progressive
+ * writer takes for its AC scans, which G.1.2.2 requires to be non-interleaved.
+ *
+ * Each scan is encoded by its own call, so the DC predictor starts at zero in
+ * each of them, which is what F.2.1.3.1 requires: the prediction is reset "at
+ * the beginning of the scan", not once for the frame.
+ *
+ * A restart interval counts MCUs, so in these scans it counts single blocks
+ * (A.2.3, B.2.4.4).  Passing it through to the one-component encoder is what
+ * gives that meaning, and it is a different placement of RST markers from the
+ * interleaved scan of the same image - correctly so.
+ */
+static GIMG_Result jpeg_write_noninterleaved_scans(GIMG_Stream * stream,
+    uint32_t width, uint32_t height, int num_components,
+    const uint8_t * h_samp, const uint8_t * v_samp, const int16_t * coef_buffer,
+    int precision, bool arithmetic, uint16_t restart_interval,
+    const GIMG_Allocator * alloc, size_t * out_n) {
+  size_t n = (out_n ? *out_n : 0);
+  GIMG_Result r = GIMG_OK;
+  size_t written = 0;
+  static const uint8_t samp_111[3] = {1, 1, 1};
+  if (!h_samp) {
+    h_samp = samp_111;
+  }
+  if (!v_samp) {
+    v_samp = samp_111;
+  }
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  for (int i = 1; i < num_components; i++) {
+    if (h_samp[i] > h_max) {
+      h_max = h_samp[i];
+    }
+    if (v_samp[i] > v_max) {
+      v_max = v_samp[i];
+    }
+  }
+  uint32_t mcu_per_row =
+      (width + (uint32_t)(8 * h_max) - 1u) / (uint32_t)(8 * h_max);
+  (void)height;
+
+  for (int comp = 0; comp < num_components; comp++) {
+    uint32_t blk_w = 0, blk_h = 0;
+    jpeg_component_block_grid(
+        width, height, h_samp, v_samp, num_components, comp, &blk_w, &blk_h);
+    size_t nblocks = (size_t)blk_w * (size_t)blk_h;
+    size_t packed_bytes = 0;
+    if (!gcu_safe_mul_size(nblocks, 64u * sizeof(int16_t), &packed_bytes)) {
+      return GIMG_ERR_LIMIT;
+    }
+    int16_t * packed = (int16_t *)gimg_malloc(alloc, packed_bytes);
+    if (!packed) {
+      return GIMG_ERR_OOM;
+    }
+    jpeg_gather_component_blocks((int16_t *)coef_buffer, packed, blk_w, blk_h,
+        h_samp, v_samp, num_components, comp, mcu_per_row, 0);
+
+    // The component's grid described as a one-component image.  Rounding the
+    // dimensions up to whole blocks is not padding the picture: the gathered
+    // buffer is blk_w x blk_h blocks, and this is how that same count is
+    // spelled in pixels for an encoder that takes pixels.
+    uint32_t cw = blk_w * 8u;
+    uint32_t ch = blk_h * 8u;
+    unsigned char * scan_data = NULL;
+    size_t scan_size = 0;
+    static const uint8_t one_samp[3] = {1, 1, 1};
+    if (arithmetic) {
+      jpeg_arith_cond_t cond;
+      jpeg_arith_cond_defaults(&cond);
+      r = gimg_jpeg_encode_arith_scan_from_coef_buffer(cw, ch, 1, packed,
+          nblocks, one_samp, one_samp, &cond, alloc, restart_interval, 0,
+          &scan_data, &scan_size);
+    }
+    else if (precision > 8) {
+      r = gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(cw, ch, 1,
+          packed, nblocks, one_samp, one_samp, alloc, restart_interval,
+          &scan_data, &scan_size);
+    }
+    else {
+      r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(cw, ch, 1, packed,
+          nblocks, one_samp, one_samp, alloc, restart_interval, &scan_data,
+          &scan_size);
+    }
+    gimg_free(alloc, packed);
+    // A zero-byte arithmetic scan is legitimate (T.81 D.1.8); see
+    // jpeg_raster_to_scan_data.
+    if (r != GIMG_OK) {
+      return r;
+    }
+    if (!scan_data && !(arithmetic && scan_size == 0)) {
+      return GIMG_ERR_OOM;
+    }
+
+    // B.2.3: Ls = 6 + 2*Ns, Ns = 1, then Cs/Td/Ta, Ss, Se, Ah/Al.  Ss = 0 and
+    // Se = 63 say this scan carries the whole block, which is what makes it a
+    // sequential scan rather than one of Annex G's spectral bands.
+    unsigned char sos[8];
+    sos[0] = 0x01;
+    sos[1] = (unsigned char)(comp + 1);
+    // Td and Ta must name the tables the entropy coder actually used.  Each of
+    // these scans is encoded through the one-component path, which uses the
+    // luminance tables whichever component it is handed, so both selectors are
+    // 0 for every component.  B.2.3 lets any component select any table, so
+    // this is well formed; naming table 1 for chroma while encoding with table
+    // 0 is not, and produces a file libjpeg rejects with "bad Huffman code".
+    // The progressive writer's AC scans have the same constraint for the same
+    // reason.
+    sos[2] = 0x00;
+    sos[3] = 0x00;
+    sos[4] = 0x3F;
+    sos[5] = 0x00;
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, scan_data);
+      return r;
+    }
+    r = jpeg_write_u16(stream, 8, &n);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, scan_data);
+      return r;
+    }
+    r = gimg_stream_write(stream, sos, 6, &written);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, scan_data);
+      return r;
+    }
+    n += written;
+    r = jpeg_write_scan_data_with_stuffing(stream, scan_data, scan_size, &n);
+    gimg_free(alloc, scan_data);
+    if (r != GIMG_OK) {
+      return r;
+    }
+  }
+  if (out_n) {
+    *out_n = n;
+  }
+  return GIMG_OK;
+}
+
 static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     uint32_t height, int num_components, const uint8_t * h_samp,
     const uint8_t * v_samp, const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const unsigned char * scan_data, size_t scan_size, int precision,
-    uint16_t restart_interval, bool arithmetic, size_t * out_n) {
+    uint16_t restart_interval, bool arithmetic, const int16_t * coef_buffer,
+    const GIMG_Allocator * alloc, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
   size_t written = 0;
@@ -1951,6 +2112,25 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
   r = jpeg_write_dri(stream, restart_interval, &n);
   if (r != GIMG_OK) {
     return r;
+  }
+  // T.81 A.2.3: the same blocks, written one component at a time.  Everything
+  // above this point - the tables, the frame header, the restart interval - is
+  // the same file either way; only the scans differ.
+  if (coef_buffer) {
+    r = jpeg_write_noninterleaved_scans(stream, width, height, num_components,
+        h_samp, v_samp, coef_buffer, precision, arithmetic, restart_interval,
+        alloc, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    if (out_n) {
+      *out_n = n;
+    }
+    return GIMG_OK;
   }
   {
     uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)num_components);
@@ -2749,6 +2929,22 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
     return GIMG_ERR_UNSUPPORTED;
   }
+  // T.81 A.2.3: one non-interleaved scan per component instead of one
+  // interleaved scan.  Refused where the standard already fixes the scan
+  // arrangement or where a different writer owns it: Annex G's progressive
+  // scans carry their own script and its AC scans are non-interleaved by
+  // G.1.2.2 already, a lossless frame goes through the Annex H writer, and a
+  // hierarchical sequence writes its frames itself.
+  int non_interleaved =
+      (options && options->jpeg_non_interleaved) ? 1 : 0;
+  if (non_interleaved &&
+      (lossless_psv != 0 || hier_levels != 0 ||
+          (options && options->jpeg_progressive))) {
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    return GIMG_ERR_UNSUPPORTED;
+  }
   if (hier_levels < 0 || hier_levels + 1 > (int)GIMG_JPEG_MAX_FRAMES) {
     if (raster_owned) {
       gimg_raster_destroy(raster);
@@ -2915,8 +3111,12 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
     goto have_scan;
   }
+  // A non-interleaved frame is written from the coefficient buffer rather than
+  // from a finished scan, because it needs the blocks again, one component at
+  // a time.  That is the same buffer the progressive path asks for.
   r = jpeg_raster_to_scan_data(alloc, raster, quality, chroma_subsampling,
-      progressive, arithmetic, restart_interval, fdct_method, quant_method,
+      progressive || non_interleaved, arithmetic, restart_interval,
+      fdct_method, quant_method,
       &scan_data,
       &scan_size, &coef_buffer, &total_blocks, quant_luma, quant_chroma, &width,
       &height, &num_components, h_samp, v_samp, &precision);
@@ -2929,8 +3129,15 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 have_scan:
   // Use progressive image body when we have coefficient buffer (8-bit progressive, or 12/16-bit
   // which use coef path for both baseline and progressive).
-  bool use_progressive_body = (coef_buffer != NULL);
+  bool use_progressive_body = (coef_buffer != NULL) && !non_interleaved;
   if (use_progressive_body) {
+    if (!coef_buffer) {
+      return GIMG_ERR_OOM;
+    }
+  }
+  else if (non_interleaved) {
+    // The scans have not been encoded yet; the coefficients are what must have
+    // survived.
     if (!coef_buffer) {
       return GIMG_ERR_OOM;
     }
@@ -2941,8 +3148,9 @@ have_scan:
       return GIMG_ERR_OOM;
     }
   }
-  void * to_free =
-      use_progressive_body ? (void *)coef_buffer : (void *)scan_data;
+  void * to_free = (use_progressive_body || non_interleaved)
+      ? (void *)coef_buffer
+      : (void *)scan_data;
 
   size_t written = 0;
   r = gimg_stream_write(
@@ -3240,7 +3448,7 @@ have_scan:
                   if (r == GIMG_OK) {
                     r = jpeg_write_image_body(mem_stream, tw, th, tnc, NULL,
                         NULL, tq_luma, tq_chroma, thumb_scan, thumb_scan_size,
-                        8, 0, false, &mem_n);
+                        8, 0, false, NULL, alloc, &mem_n);
                   }
                   if (r == GIMG_OK) {
                     const void * jpeg_buf = NULL;
@@ -3559,7 +3767,7 @@ have_scan:
         num_components == 3 ? h_samp : NULL,
         num_components == 3 ? v_samp : NULL, quant_luma, quant_chroma,
         scan_data, scan_size, precision, restart_interval, arithmetic,
-        &report->bytes_written);
+        non_interleaved ? coef_buffer : NULL, alloc, &report->bytes_written);
     gimg_free(alloc, to_free);
   }
   if (r != GIMG_OK) {

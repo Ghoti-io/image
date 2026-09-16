@@ -629,3 +629,46 @@ format" and no hint as to which part it disliked.
 1, 2 and 7 - because H.1 puts the predictor selection in the scan header, not
 the frame header, and a decoder that reads it once per frame gets two of the
 three components wrong.
+
+### Our own non-interleaved output (`ni_ours_*.jpg`)
+
+The other direction: A.2.3 files this library *wrote*, decoded by
+libjpeg-turbo.  `jpeg_non_interleaved` writes one scan per component instead of
+one interleaved scan, and these pin down that an independent decoder reads the
+result.
+
+```sh
+DJ=/path/to/libjpeg-turbo/djpeg
+D=tests/data/jpeg
+
+# Written by this library at quality 85, jpeg_non_interleaved = 1:
+#   ni_ours_444.jpg          4:4:4                      from hier_enc_src.ppm
+#   ni_ours_420.jpg          4:2:0                      from hier_enc_src.ppm
+#   ni_ours_422_restart.jpg  4:2:2, restart interval 3  from hier_enc_src.ppm
+#   ni_ours_arith_420.jpg    4:2:0, arithmetic (SOF9)   from hier_enc_src.ppm
+#   ni_ours_gray.jpg         grayscale                  from hier_src_gray.pgm
+
+for f in $D/ni_ours_*.jpg; do $DJ -pnm -outfile ${f%.jpg}_turbo.ppm $f; done
+# (ni_ours_gray_turbo.pgm for the grayscale one; djpeg picks P5 itself.)
+```
+
+The comparison is **exact**, unlike the hierarchical one.  Our IDCT is
+libjpeg's islow and our chroma upsampler is its fancy one, so once both codecs
+agree the file is well formed there is nothing left for them to disagree about.
+The reference decode being the oracle rather than a round trip is what matters
+here: a private misreading of A.2.3 would round-trip through our own decoder
+perfectly, because the misunderstanding would be on both sides of it.
+
+It caught one immediately.  The first version of the writer named Huffman table
+1 for the chroma scans - copying the interleaved scan header, where that is
+right - while the one-component encoder underneath had coded them with table 0,
+because that is the only table it has.  libjpeg rejected the file outright:
+`Corrupt JPEG data: bad Huffman code`.  B.2.3 lets any component select any
+table, so the fix is to say 0 and mean it; the progressive writer's AC scans
+had already met the same trap and say so in a comment there.
+
+Being our own output, these move when the encoder moves, so they are a weaker
+regression test than the fixtures above.  `JpegEncode.NonInterleavedAndInter‐
+leavedDecodeToTheSamePixels` is the one that holds the encoder still: it writes
+the same image both ways at test time and requires the two to decode to
+identical pixels, at sizes where no dimension is a whole number of MCUs.
