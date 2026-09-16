@@ -117,8 +117,10 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
  */
 #define GIMG_JPEG_LSHIFT(x, n) ((int32_t)((uint32_t)(x) << (n)))
 
-/** Extended-precision AC table symbol count (12-bit: 162 + 80). */
-#define GIMG_JPEG_AC_SYMBOLS_EXTENDED 242u
+/** Extended-precision AC table symbol count.  T.81 F.1.2.2: at 12-bit an AC
+ * size category runs 1..14, so the alphabet is EOB, ZRL and RRRR/SSSS for
+ * RRRR 0..15 and SSSS 1..14 - 226 symbols. */
+#define GIMG_JPEG_AC_SYMBOLS_EXTENDED 226u
 
 /** Max number of quantization tables. */
 #define GIMG_JPEG_MAX_QUANT_TABLES 4u

@@ -998,13 +998,19 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
         int dc_val = (int)block[0];
         int diff = dc_val - last_dc[c];
         last_dc[c] = dc_val;
+        // T.81 F.1.2.1 Table F.1: at 12-bit precision a DC difference category
+        // runs 0..15.  Clamping a larger category, as this did, emits the code
+        // for a different category and then writes the original number of extra
+        // bits - the decoder reads the wrong width from there on.  A value this
+        // large means the quantiser produced a coefficient the format cannot
+        // represent, so refuse rather than write a stream that cannot be read.
         int nbits = jpeg_nbits(diff);
-        if (nbits > 16)
-          nbits = 16;
-        if (dc_tbl->len[nbits] > 0) {
-          bit_writer_put_bits(
-              &w, alloc, dc_tbl->code[nbits], dc_tbl->len[nbits]);
+        if (nbits > 15 || dc_tbl->len[nbits] == 0) {
+          gimg_free(alloc, w.buf);
+          return GIMG_ERR_UNSUPPORTED;
         }
+        bit_writer_put_bits(
+            &w, alloc, dc_tbl->code[nbits], dc_tbl->len[nbits]);
         if (nbits > 0) {
           int extra = diff;
           if (extra < 0)
@@ -1039,12 +1045,17 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
             ac_eob_emitted = 1;
             break;
           }
+          // T.81 F.1.2.2 Table F.2: at 12-bit precision an AC size category
+          // runs 1..14.  Same reasoning as the DC case above.
           int coeff = (int)block[k];
           int size = jpeg_nbits(coeff);
-          if (size > 15)
-            size = 15;
           int symbol = (run << 4) | size;
-          if (symbol >= 0 && symbol <= 255 && ac_tbl->len[symbol] > 0) {
+          if (size > 14 || symbol < 0 || symbol > 255 ||
+              ac_tbl->len[symbol] == 0) {
+            gimg_free(alloc, w.buf);
+            return GIMG_ERR_UNSUPPORTED;
+          }
+          {
             bit_writer_put_bits(
                 &w, alloc, ac_tbl->code[symbol], ac_tbl->len[symbol]);
             if (size > 0) {

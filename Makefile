@@ -281,6 +281,13 @@ JPEG_TEST_UTILS_OBJ := $(OBJ_DIR)/tests/jpeg_test_utils.o
 TEST_DEPFILES := $(foreach pair,$(TEST_PAIRS),$(OBJ_DIR)/tests/$(basename $(notdir $(word 1,$(subst |, ,$(pair))))).d)
 DEPFILES := $(LIBOBJECTS:.o=.d) $(TEST_HELPER_OBJ:.o=.d) $(TEST_DEPFILES) $(PNG_TEST_UTILS_OBJ:.o=.d) $(JPEG_TEST_UTILS_OBJ:.o=.d)
 -include $(DEPFILES)
+# The sanitizer build needs the same header dependencies.  Without them a
+# header change never rebuilt its objects, so `make test-asan` could run against
+# code several edits old and disagree with `make test` for no visible reason.
+ASAN_DEPFILES := $(wildcard ./build/*-asan/objects/*.d ./build/*/*-asan/objects/*.d \
+	./build/*-asan/objects/*/*.d ./build/*/*-asan/objects/*/*.d \
+	./build/*-asan/objects/*/*/*.d ./build/*/*-asan/objects/*/*/*.d)
+-include $(ASAN_DEPFILES)
 
 
 ####################################################################
@@ -854,10 +861,10 @@ ifeq ($(UNAME_S), Linux)
 	ASAN_CFLAGS += -fPIC
 endif
 
-$(ASAN_OBJ_DIR)/%.o: src/%.c
+$(ASAN_OBJ_DIR)/%.o: src/%.c | $(LIBVER_GEN)
 	@printf "\n### Compiling (ASan+UBSan): $< ###\n"
 	@mkdir -p $(@D)
-	$(CC) $(ASAN_CFLAGS) $(INCLUDE) -c $< -o $@
+	$(CC) $(ASAN_CFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_APP_DIR)/$(ASAN_TARGET): $(ASAN_LIBOBJECTS)
 	@printf "\n### Linking ASan+UBSan Image Library ###\n"
@@ -869,42 +876,42 @@ ASAN_TEST_HELPER_OBJ := $(patsubst $(OBJ_DIR)/%,$(ASAN_OBJ_DIR)/%,$(TEST_HELPER_
 ifneq ($(TEST_HELPER_SRC),)
 $(ASAN_TEST_HELPER_OBJ): $(TEST_HELPER_SRC)
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 endif
 
 # ASan test objects: generic and PNG-specific
 $(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/bmp/ (mirrors the non-ASan rule; without this the ASan
 # build has no way to make test_bmp_*.o and `make test-asan` does not build).
 $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_encode.o: tests/codec/png/test_png_encode.cpp
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/png_test_utils.o: tests/codec/png/png_test_utils.cpp
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 define asan-test-executable-rule
 ASAN_TEST_OBJ_$1 := $(ASAN_OBJ_DIR)/tests/$(basename $(notdir $1)).o
@@ -933,12 +940,12 @@ $(ASAN_APP_DIR)/testPng_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_png_e
 $(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp
 	@printf "\n### Compiling ASan Test: test_jpeg_encode ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Isrc/codec/jpeg -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Isrc/codec/jpeg -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o: tests/codec/jpeg/jpeg_test_utils.cpp
 	@printf "\n### Compiling ASan Test Helper: jpeg_test_utils ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o | $(ASAN_APP_DIR)/$(ASAN_TARGET)
 	@printf "\n### Linking ASan testJpeg_encode ###\n"
@@ -948,7 +955,7 @@ $(ASAN_APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_jpeg
 $(ASAN_OBJ_DIR)/tests/test_jpeg_load.o: tests/codec/jpeg/test_jpeg_load.cpp
 	@printf "\n### Compiling ASan Test: test_jpeg_load ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Isrc/codec/jpeg -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -o $@
+	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Isrc/codec/jpeg -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_APP_DIR)/testJpeg_load$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_jpeg_load.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o | $(ASAN_APP_DIR)/$(ASAN_TARGET)
 	@printf "\n### Linking ASan testJpeg_load ###\n"

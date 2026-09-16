@@ -66,7 +66,31 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
     sof->h_samp[i] = (payload[7 + i * 3] >> 4) & 0x0Fu;
     sof->v_samp[i] = payload[7 + i * 3] & 0x0Fu;
     sof->quant_tbl_id[i] = payload[8 + i * 3];
-    if (sof->h_samp[i] == 0 || sof->v_samp[i] == 0) {
+    // T.81 Table B.2: Hi and Vi are 1..4, and Tqi selects one of four tables.
+    if (sof->h_samp[i] < 1u || sof->h_samp[i] > 4u || sof->v_samp[i] < 1u ||
+        sof->v_samp[i] > 4u) {
+      return GIMG_ERR_FORMAT;
+    }
+    if (sof->quant_tbl_id[i] >= GIMG_JPEG_MAX_QUANT_TABLES) {
+      return GIMG_ERR_FORMAT;
+    }
+    // T.81 B.2.2: component identifiers are distinct, since a scan header
+    // selects components by identifier.  Duplicates make that ambiguous.
+    for (uint8_t j = 0; j < i; j++) {
+      if (sof->comp_id[j] == sof->comp_id[i]) {
+        return GIMG_ERR_FORMAT;
+      }
+    }
+  }
+  // T.81 A.1.1: the MCU holds Hi x Vi blocks of each component and may contain
+  // at most ten blocks, so a frame whose sampling factors exceed that cannot be
+  // interleaved and is not a valid multi-component frame.
+  if (num_components > 1) {
+    unsigned blocks_per_mcu = 0;
+    for (uint8_t i = 0; i < num_components; i++) {
+      blocks_per_mcu += (unsigned)sof->h_samp[i] * (unsigned)sof->v_samp[i];
+    }
+    if (blocks_per_mcu > 10u) {
       return GIMG_ERR_FORMAT;
     }
   }

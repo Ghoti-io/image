@@ -426,16 +426,45 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       while (remain >= 2) {
         uint8_t pq_tq = p[0];
         uint8_t tq = pq_tq & 0x0Fu;
-        int is_16bit = (pq_tq >> 4) != 0;
+        uint8_t pq = (uint8_t)(pq_tq >> 4);
+        int is_16bit = (pq != 0);
         size_t entry_bytes = is_16bit ? 128u : 64u;
-        if (tq >= GIMG_JPEG_MAX_QUANT_TABLES || remain < 1 + entry_bytes) {
-          break;
+        // T.81 B.2.4.1: Pq is 0 (8-bit elements) or 1 (16-bit), Tq selects one
+        // of four tables, and the segment must actually contain the elements it
+        // declares.  A malformed table used to end the loop silently, leaving
+        // whatever tables followed it undefined and the frame to fail later
+        // somewhere less informative.
+        if (pq > 1u) {
+          gimg_free(alloc, payload_buf);
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "DQT Pq must be 0 or 1 (T.81 B.2.4.1)");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        // B.2.4.1: "Pq shall be zero for 8-bit sample precision."
+        if (pq == 1u && seen_sof && state->sof.precision == 8u) {
+          gimg_free(alloc, payload_buf);
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "DQT Pq=1 with 8-bit sample precision (T.81 B.2.4.1)");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        if (tq >= GIMG_JPEG_MAX_QUANT_TABLES) {
+          gimg_free(alloc, payload_buf);
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "DQT Tq above 3 (T.81 B.2.4.1)");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        if (remain < 1 + entry_bytes) {
+          gimg_free(alloc, payload_buf);
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "DQT segment shorter than the table it declares (T.81 B.2.4.1)");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
         }
         p++;
         remain--;
-        if (remain < entry_bytes) {
-          break;
-        }
         state->quant_tbl_present[tq] = 1;
         if (is_16bit) {
           for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
@@ -446,6 +475,19 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         else {
           for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
             state->quant_tbl[tq][i] = (uint16_t)p[i];
+          }
+        }
+        // T.81 B.2.4.1 Table B.4: a quantization value is 1..255 (Pq=0) or
+        // 1..65535 (Pq=1).  Zero is not a permitted value, and dequantisation
+        // multiplies by it, so a zero element silently discards a coefficient
+        // rather than being caught anywhere downstream.
+        for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {
+          if (state->quant_tbl[tq][i] == 0u) {
+            gimg_free(alloc, payload_buf);
+            jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+                "DQT contains a zero quantization value (T.81 B.2.4.1)");
+            gimg_jpeg_free_doc_state(codec, state);
+            return GIMG_ERR_FORMAT;
           }
         }
         p += entry_bytes;

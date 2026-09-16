@@ -227,6 +227,12 @@ int jpeg_build_huff_table(
     return -1;
   }
   const unsigned char * vals = dht + GIMG_JPEG_DHT_HEADER_LEN;
+  // T.81 B.2.4.2: a Huffman table has at most 256 symbols, and Figure C.1
+  // (Generate_size) assigns codes in order of increasing length, so the code
+  // values must remain representable in their own length.
+  if (num_syms == 0 || num_syms > 256) {
+    return -1;
+  }
   tbl->num_values = (int)num_syms;
 
   uint32_t code = 0;
@@ -250,7 +256,24 @@ int jpeg_build_huff_table(
       tbl->min_code[len] = 1;
       tbl->base_index[len] = 0;
     }
-    code = (code + count) << 1;
+    code += count;
+    // T.81 Figure C.2 (Generate_code) and C.3: after the codes of length `len`
+    // are assigned, the next code must still fit in `len` bits.  If it does
+    // not, the bit counts describe more codes than that length can hold - an
+    // over-subscribed table, which has no canonical assignment.  libjpeg
+    // rejects the same condition as "Bogus Huffman table definition".  Without
+    // this, min_code/max_code silently wrap and the decoder matches codewords
+    // that the table never defined.
+    if (code > (uint32_t)(1u << len)) {
+      return -1;
+    }
+    code <<= 1;
+  }
+  // C.2: the all-ones codeword of the longest length is reserved, so a table
+  // that consumes the entire code space at 16 bits is still valid only if it
+  // leaves that one free.
+  if (code > (uint32_t)(1u << 17)) {
+    return -1;
   }
 #if GIMG_JPEG_DEBUG_DHT_DC
   if (dht[0] == 0x00) {
