@@ -335,6 +335,21 @@ typedef struct {
    * values force one filter on every row, which is mainly useful for testing
    * that each of the five reconstructs. */
   uint8_t png_filter;
+  /** Whether the PNG writer may build a palette for a raster that did not
+   * arrive with one (11.2.2, colour type 3).
+   *
+   * GIMG_PNG_PALETTE_AUTO (0, default) builds one when the image has no more
+   * than 256 distinct colours and the palette form is the smaller file.  That
+   * is a lossless choice and not colour quantisation: with 256 colours or
+   * fewer there is exactly one palette that reproduces the image, so nothing
+   * is decided about the picture - only about how it is stored.  An image with
+   * more colours than that is written as truecolour, because reducing it would
+   * be an image-processing decision and not a codec's.
+   *
+   * GIMG_PNG_PALETTE_NEVER refuses to build one.  A frame that arrived as a
+   * palette image is still written back as one either way: that is preserving
+   * what the file was, not creating something new.  Ignored for non-PNG. */
+  uint8_t png_palette;
 } GIMG_Save_Options;
 
 /** @name PNG row filters (PNG 9.2, Table 9.1)
@@ -345,6 +360,12 @@ typedef struct {
 #define GIMG_PNG_FILTER_UP 3u       ///< Filter type 2 on every row.
 #define GIMG_PNG_FILTER_AVERAGE 4u  ///< Filter type 3 on every row.
 #define GIMG_PNG_FILTER_PAETH 5u    ///< Filter type 4 on every row.
+/** @} */
+
+/** @name PNG palette creation (PNG 11.2.2, colour type 3)
+ * @{ */
+#define GIMG_PNG_PALETTE_AUTO 0u  ///< Build one when it is lossless and smaller. Default.
+#define GIMG_PNG_PALETTE_NEVER 1u ///< Never build one for a raster that had none.
 /** @} */
 
 /**

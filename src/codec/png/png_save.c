@@ -654,6 +654,187 @@ gimg_png_retarget_t gimg_png_retarget_ancillary(
   return GIMG_PNG_RETARGET_KEEP;
 }
 
+//
+// Building a palette (PNG 11.2.2, colour type 3)
+// ==============================================
+//
+// A palette is not written for an arbitrary raster, because choosing which
+// colours to keep is quantisation - an image-processing decision, and not a
+// codec's. But when an image already has 256 colours or fewer there is nothing
+// to choose: exactly one palette reproduces it, up to the order of its
+// entries. That is not quantisation, it is a way of storing what is already
+// there, and it is the same kind of decision as picking a row filter.
+//
+// So a palette is built only when it is lossless, and used only when it is
+// smaller. Screenshots, diagrams, icons and line art land here; photographs
+// exceed 256 colours in their first few hundred pixels and never do.
+//
+
+/** Pack an RGBA8 pixel into one comparable value. */
+static uint32_t gimg_png_rgba_key(const unsigned char * p) {
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+      ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+/** Slots in the colour lookup: twice the largest palette, so it stays sparse. */
+#define GIMG_PNG_LUT_SLOTS 512u
+
+/**
+ * Open-addressed map from an RGBA8 colour to a palette index.
+ *
+ * The writer needs a pixel's index for every pixel, and a palette holds up to
+ * 256 entries, so the obvious linear scan is 256 comparisons per pixel - a
+ * megapixel image spends a quarter of a billion comparisons deciding what it
+ * already knows. A `used` array rather than a sentinel key, because fully
+ * transparent black is a real colour and would make a poor "empty".
+ */
+typedef struct {
+  uint32_t key[GIMG_PNG_LUT_SLOTS];
+  uint8_t value[GIMG_PNG_LUT_SLOTS];
+  uint8_t used[GIMG_PNG_LUT_SLOTS];
+  size_t count;
+} gimg_png_color_lut_t;
+
+static void gimg_png_lut_init(gimg_png_color_lut_t * lut) {
+  memset(lut->used, 0, sizeof(lut->used));
+  lut->count = 0;
+}
+
+/** Fibonacci hashing: one multiply, then take the high bits. */
+static size_t gimg_png_lut_slot(uint32_t key) {
+  return (size_t)((key * UINT32_C(2654435761)) >> 23) & (GIMG_PNG_LUT_SLOTS - 1u);
+}
+
+static bool gimg_png_lut_get(
+    const gimg_png_color_lut_t * lut, uint32_t key, uint8_t * out_value) {
+  size_t i = gimg_png_lut_slot(key);
+  for (size_t probe = 0; probe < GIMG_PNG_LUT_SLOTS; probe++) {
+    if (!lut->used[i]) {
+      return false;
+    }
+    if (lut->key[i] == key) {
+      *out_value = lut->value[i];
+      return true;
+    }
+    i = (i + 1u) & (GIMG_PNG_LUT_SLOTS - 1u);
+  }
+  return false;
+}
+
+/** Insert, or leave an existing entry alone. False when the table is full. */
+static bool gimg_png_lut_put(
+    gimg_png_color_lut_t * lut, uint32_t key, uint8_t value) {
+  size_t i = gimg_png_lut_slot(key);
+  for (size_t probe = 0; probe < GIMG_PNG_LUT_SLOTS; probe++) {
+    if (!lut->used[i]) {
+      if (lut->count >= GIMG_PNG_PLTE_MAX_ENTRIES) {
+        return false;
+      }
+      lut->used[i] = 1;
+      lut->key[i] = key;
+      lut->value[i] = value;
+      lut->count++;
+      return true;
+    }
+    if (lut->key[i] == key) {
+      return true;
+    }
+    i = (i + 1u) & (GIMG_PNG_LUT_SLOTS - 1u);
+  }
+  return false;
+}
+
+/**
+ * Collect the distinct colours of an 8-bit RGBA raster into a palette, giving
+ * up as soon as a 257th appears.
+ *
+ * Entries with alpha below 255 are placed first. PNG 11.3.2.1 lets tRNS be
+ * shorter than the palette, every entry past its end being opaque, so putting
+ * the transparent ones first is what makes that saving available - and an
+ * image with no transparency then needs no tRNS at all.
+ *
+ * @param out_plte      Receives up to 256 RGB triples.
+ * @param out_trns      Receives the alpha of the leading non-opaque entries.
+ * @return false when the image has more than 256 colours, or is not RGBA8.
+ */
+static bool gimg_png_build_palette(const GIMG_Raster * raster,
+    unsigned char * out_plte, size_t * out_plte_size, unsigned char * out_trns,
+    size_t * out_trns_size) {
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  if (!fmt || fmt->layout != GIMG_LAYOUT_INTERLEAVED ||
+      fmt->channel_model != GIMG_CHANNEL_RGBA || fmt->channel_count != 4 ||
+      fmt->bits_per_channel[0] != 8) {
+    return false;
+  }
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  if (w == 0 || h == 0) {
+    return false;
+  }
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+
+  // First pass: the distinct colours, in the order they first appear.
+  gimg_png_color_lut_t seen;
+  gimg_png_lut_init(&seen);
+  uint32_t colors[GIMG_PNG_PLTE_MAX_ENTRIES];
+  size_t n = 0;
+  for (uint32_t y = 0; y < h; y++) {
+    const unsigned char * row = pixels + (size_t)y * stride;
+    for (uint32_t x = 0; x < w; x++) {
+      uint32_t key = gimg_png_rgba_key(row + (size_t)x * 4u);
+      uint8_t ignored = 0;
+      if (gimg_png_lut_get(&seen, key, &ignored)) {
+        continue;
+      }
+      if (n >= GIMG_PNG_PLTE_MAX_ENTRIES ||
+          !gimg_png_lut_put(&seen, key, (uint8_t)n)) {
+        return false; // a 257th colour: not a palette image
+      }
+      colors[n++] = key;
+    }
+  }
+
+  // Second pass: the non-opaque entries first, each group keeping the order it
+  // was found in, so the result is deterministic.
+  size_t out = 0;
+  size_t non_opaque = 0;
+  for (int opaque = 0; opaque <= 1; opaque++) {
+    for (size_t i = 0; i < n; i++) {
+      unsigned char a = (unsigned char)(colors[i] & 0xFFu);
+      if ((a == 255u) != (opaque != 0)) {
+        continue;
+      }
+      out_plte[out * 3u] = (unsigned char)(colors[i] >> 24);
+      out_plte[out * 3u + 1u] = (unsigned char)((colors[i] >> 16) & 0xFFu);
+      out_plte[out * 3u + 2u] = (unsigned char)((colors[i] >> 8) & 0xFFu);
+      if (opaque == 0) {
+        out_trns[out] = a;
+        non_opaque = out + 1u;
+      }
+      out++;
+    }
+  }
+  *out_plte_size = out * 3u;
+  *out_trns_size = non_opaque;
+  return true;
+}
+
+/** Smallest bit depth colour type 3 allows for @a entries indices (11.2.2). */
+static uint8_t gimg_png_palette_bit_depth(size_t entries) {
+  if (entries <= 2u) {
+    return 1u;
+  }
+  if (entries <= 4u) {
+    return 2u;
+  }
+  if (entries <= 16u) {
+    return 4u;
+  }
+  return 8u;
+}
+
 static bool gimg_png_chunk_is_known_semantic(gimg_png_chunk_type_t t) {
   return t == GIMG_PNG_iCCP || t == GIMG_PNG_sRGB || t == GIMG_PNG_gAMA ||
       t == GIMG_PNG_cHRM || t == GIMG_PNG_eXIf || t == GIMG_PNG_tEXt ||
@@ -887,6 +1068,13 @@ static bool gimg_png_palette_index_at(const GIMG_Raster * raster,
     const gimg_png_doc_state_t * state, uint32_t x, uint32_t y,
     uint8_t * out_index);
 
+/** Colour-to-index map for a palette, built once per image. */
+static void gimg_png_palette_lut_build(
+    const gimg_png_doc_state_t * state, gimg_png_color_lut_t * lut);
+static bool gimg_png_palette_index_lut(const GIMG_Raster * raster,
+    const gimg_png_color_lut_t * lut, uint32_t x, uint32_t y,
+    uint8_t * out_index);
+
 /** One sample at a bit depth below 8 (palette index or grayscale level). */
 static bool gimg_png_sub_byte_sample_at(const GIMG_Raster * raster,
     uint8_t color_type, uint8_t bit_depth, const gimg_png_doc_state_t * state,
@@ -915,6 +1103,10 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
     if (!state || !state->plte || state->plte_size == 0) {
       return GIMG_ERR_FORMAT;
     }
+    // Built once for the whole image rather than once per pixel: this is the
+    // inner loop of writing a palette image.
+    gimg_png_color_lut_t lut;
+    gimg_png_palette_lut_build(state, &lut);
     for (uint32_t y = 0; y < h; y++) {
       unsigned char * row = raw + (size_t)y * (1u + row_bytes);
       row[0] = 0;
@@ -924,7 +1116,7 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
       memset(row + 1, 0, row_bytes);
       for (uint32_t x = 0; x < w; x++) {
         uint8_t index = 0;
-        if (!gimg_png_palette_index_at(raster, state, x, y, &index)) {
+        if (!gimg_png_palette_index_lut(raster, &lut, x, y, &index)) {
           return GIMG_ERR_UNSUPPORTED;
         }
         if (bit_depth < 8) {
@@ -1052,35 +1244,57 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
  * 16-bit). Returns number of bytes written (1/2 for gray, 1 for palette, 4/8
  * for RGBA).
  */
+/**
+ * Build the colour-to-index map for a palette.
+ *
+ * PNG 11.3.2.1: tRNS gives the alpha of the leading entries and every entry
+ * past its end is opaque, so an entry's colour is its RGB together with that
+ * alpha - two entries with the same RGB and different alpha are different
+ * colours, and a pixel matches only one of them.
+ *
+ * A palette may legitimately hold the same colour twice. The first index wins,
+ * which is what a linear scan did as well.
+ */
+static void gimg_png_palette_lut_build(
+    const gimg_png_doc_state_t * state, gimg_png_color_lut_t * lut) {
+  gimg_png_lut_init(lut);
+  if (!state || !state->plte || state->plte_size == 0) {
+    return;
+  }
+  size_t entries = state->plte_size / 3u;
+  if (entries > GIMG_PNG_PLTE_MAX_ENTRIES) {
+    entries = GIMG_PNG_PLTE_MAX_ENTRIES;
+  }
+  size_t trns_count = state->trns ? state->trns_size : 0;
+  for (size_t i = 0; i < entries; i++) {
+    unsigned char rgba[4] = {state->plte[i * 3u], state->plte[i * 3u + 1u],
+        state->plte[i * 3u + 2u],
+        (i < trns_count) ? state->trns[i] : (unsigned char)255};
+    (void)gimg_png_lut_put(lut, gimg_png_rgba_key(rgba), (uint8_t)i);
+  }
+}
+
+/** One pixel's palette index, through a map built by the caller. */
+static bool gimg_png_palette_index_lut(const GIMG_Raster * raster,
+    const gimg_png_color_lut_t * lut, uint32_t x, uint32_t y,
+    uint8_t * out_index) {
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const unsigned char * pixels =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  return gimg_png_lut_get(
+      lut, gimg_png_rgba_key(pixels + (size_t)y * stride + (size_t)x * 4u),
+      out_index);
+}
+
 static bool gimg_png_palette_index_at(const GIMG_Raster * raster,
     const gimg_png_doc_state_t * state, uint32_t x, uint32_t y,
     uint8_t * out_index) {
   if (!state || !state->plte || state->plte_size == 0) {
     return false;
   }
-  size_t stride = gimg_raster_stride_bytes(raster);
-  const unsigned char * pixels =
-      (const unsigned char *)gimg_raster_pixels_const(raster);
-  const unsigned char * p = pixels + (size_t)y * stride + (size_t)x * 4u;
-  unsigned char r = p[0], g = p[1], b = p[2], a = p[3];
-  size_t plte_entries = state->plte_size / 3u;
-  size_t trns_count = state->trns ? state->trns_size : 0;
-  for (size_t i = 0; i < plte_entries; i++) {
-    if (state->plte[i * 3u] != r || state->plte[i * 3u + 1u] != g ||
-        state->plte[i * 3u + 2u] != b) {
-      continue;
-    }
-    // PNG 11.3.2.1: tRNS gives the alpha of the first entries; the rest are
-    // opaque. A raster pixel only maps to this entry if its alpha agrees.
-    unsigned char want_a =
-        (i < trns_count) ? state->trns[i] : (unsigned char)255;
-    if (a != want_a) {
-      continue;
-    }
-    *out_index = (uint8_t)i;
-    return true;
-  }
-  return false;
+  gimg_png_color_lut_t lut;
+  gimg_png_palette_lut_build(state, &lut);
+  return gimg_png_palette_index_lut(raster, &lut, x, y, out_index);
 }
 
 /**
@@ -1381,7 +1595,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   // or raster from synthetic doc. When attached, doc owns it; when from decode we own.
   GIMG_Raster * raster = NULL;
   int raster_owned = 0;
-  GIMG_Result r;
+  GIMG_Result r = GIMG_OK;
   raster = gimg_item_raster(item);
   if (raster) {
     raster_owned = 0;
@@ -1453,12 +1667,89 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   size_t num_items = gimg_doc_item_count(doc);
   int is_apng = (num_items > 1);
 
+  // The palette to write, which is the frame's own when it arrived with one.
+  const gimg_png_doc_state_t * palette_state = use_palette ? state : NULL;
+  gimg_png_doc_state_t built_state;
+  unsigned char built_plte[GIMG_PNG_PLTE_MAX_ENTRIES * 3u];
+  unsigned char built_trns[GIMG_PNG_PLTE_MAX_ENTRIES];
+
   // Encode frame 0 raster to zlib (used for IDAT or first APNG frame).
   unsigned char * zlib_buf = NULL;
   size_t zlib_len = 0;
-  r = gimg_png_raster_to_zlib(raster, color_type, bit_depth,
-      use_palette ? state : NULL, do_interlaced, filter_choice,
-      codec->allocator, &zlib_buf, &zlib_len);
+
+  //
+  // A palette for a raster that did not arrive with one (11.2.2).
+  //
+  // Only when it is lossless - 256 colours or fewer, so there is nothing to
+  // choose - and only when it is the smaller file, which is measured rather
+  // than guessed: both forms are encoded and the loser is discarded. DEFLATE
+  // makes the arithmetic hard to predict, and a small image can spend more on
+  // PLTE than it saves on pixels.
+  //
+  // Not attempted for an animation: every APNG frame must share one colour
+  // type, and a palette that suits frame 0 need not suit the rest.
+  //
+  bool try_palette = !use_palette && !is_apng &&
+      !(options && options->png_palette == GIMG_PNG_PALETTE_NEVER);
+  if (try_palette) {
+    size_t built_plte_size = 0;
+    size_t built_trns_size = 0;
+    if (gimg_png_build_palette(
+            raster, built_plte, &built_plte_size, built_trns,
+            &built_trns_size) &&
+        built_plte_size > 0) {
+      if (state) {
+        built_state = *state;
+      }
+      else {
+        memset(&built_state, 0, sizeof(built_state));
+      }
+      built_state.plte = built_plte;
+      built_state.plte_size = built_plte_size;
+      built_state.trns = built_trns_size > 0 ? built_trns : NULL;
+      built_state.trns_size = built_trns_size;
+
+      uint8_t pal_depth =
+          gimg_png_palette_bit_depth(built_plte_size / 3u);
+      unsigned char * pal_buf = NULL;
+      size_t pal_len = 0;
+      GIMG_Result pr = gimg_png_raster_to_zlib(raster, 3, pal_depth,
+          &built_state, do_interlaced, filter_choice, codec->allocator,
+          &pal_buf, &pal_len);
+      if (pr == GIMG_OK) {
+        unsigned char * dir_buf = NULL;
+        size_t dir_len = 0;
+        GIMG_Result dr = gimg_png_raster_to_zlib(raster, color_type, bit_depth,
+            NULL, do_interlaced, filter_choice, codec->allocator, &dir_buf,
+            &dir_len);
+        // Chunk overhead is 12 bytes each: length, type and CRC (5.3).
+        size_t pal_total = pal_len + 12u + built_plte_size +
+            (built_trns_size > 0 ? 12u + built_trns_size : 0u);
+        size_t dir_total =
+            dir_len + (derived_trns_size > 0 ? 12u + derived_trns_size : 0u);
+        if (dr != GIMG_OK || pal_total < dir_total) {
+          gimg_free(gimg_alloc_or_default(codec->allocator), dir_buf);
+          color_type = 3;
+          bit_depth = pal_depth;
+          use_palette = true;
+          palette_state = &built_state;
+          derived_trns_size = 0;
+          zlib_buf = pal_buf;
+          zlib_len = pal_len;
+        }
+        else {
+          gimg_free(gimg_alloc_or_default(codec->allocator), pal_buf);
+          zlib_buf = dir_buf;
+          zlib_len = dir_len;
+        }
+      }
+    }
+  }
+
+  if (!zlib_buf) {
+    r = gimg_png_raster_to_zlib(raster, color_type, bit_depth, palette_state,
+        do_interlaced, filter_choice, codec->allocator, &zlib_buf, &zlib_len);
+  }
   if (raster_owned) {
     gimg_raster_destroy(raster);
   }
@@ -1795,23 +2086,25 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += 8 + derived_trns_size + 4;
   }
 
-  // Palette: PLTE and tRNS before IDAT per PNG spec.
-  if (color_type == 3 && state && state->plte && state->plte_size > 0) {
+  // Palette: PLTE and tRNS before IDAT per PNG spec. This is the palette that
+  // was actually used - the frame's own, or one built for it here.
+  if (color_type == 3 && palette_state && palette_state->plte &&
+      palette_state->plte_size > 0) {
     r = gimg_png_write_chunk(
-        stream, GIMG_PNG_PLTE, state->plte, state->plte_size);
+        stream, GIMG_PNG_PLTE, palette_state->plte, palette_state->plte_size);
     if (r != GIMG_OK) {
       gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
       return r;
     }
-    report->bytes_written += 8 + state->plte_size + 4;
-    if (state->trns && state->trns_size > 0) {
+    report->bytes_written += 8 + palette_state->plte_size + 4;
+    if (palette_state->trns && palette_state->trns_size > 0) {
       r = gimg_png_write_chunk(
-          stream, GIMG_PNG_tRNS, state->trns, state->trns_size);
+          stream, GIMG_PNG_tRNS, palette_state->trns, palette_state->trns_size);
       if (r != GIMG_OK) {
         gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
         return r;
       }
-      report->bytes_written += 8 + state->trns_size + 4;
+      report->bytes_written += 8 + palette_state->trns_size + 4;
     }
   }
 

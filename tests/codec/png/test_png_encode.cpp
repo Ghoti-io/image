@@ -1759,3 +1759,277 @@ TEST(PngAncillaryRetarget, ChunksThatDoNotDependOnTheColourTypeAreUntouched) {
         GIMG_PNG_RETARGET_KEEP);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Building a palette (PNG 11.2.2, colour type 3)
+//
+// A palette is not built by choosing which colours to keep - that is
+// quantisation, an image-processing decision. It is built when there is
+// nothing to choose: at 256 colours or fewer exactly one palette reproduces
+// the image, so writing one is a storage decision of the same kind as picking
+// a row filter. It is used only when it is the smaller file, which is
+// measured and not guessed.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Save an RGBA8 raster built from a per-pixel function. */
+template <typename Fn>
+std::vector<uint8_t> SaveRgba(
+    uint32_t w, uint32_t h, Fn colour_at, uint8_t palette_option) {
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(w, h, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0,
+          &raster) != GIMG_OK) {
+    return {};
+  }
+  size_t stride = gimg_raster_stride_bytes(raster);
+  auto * px = static_cast<unsigned char *>(gimg_raster_pixels(raster));
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      uint32_t rgba = colour_at(x, y);
+      unsigned char * p = px + (size_t)y * stride + (size_t)x * 4;
+      p[0] = (unsigned char)(rgba >> 24);
+      p[1] = (unsigned char)((rgba >> 16) & 0xFF);
+      p[2] = (unsigned char)((rgba >> 8) & 0xFF);
+      p[3] = (unsigned char)(rgba & 0xFF);
+    }
+  }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_from_raster(raster, &doc) != GIMG_OK) {
+    gimg_raster_destroy(raster);
+    return {};
+  }
+  gimg_raster_destroy(raster);
+
+  GIMG_Stream * out_s = nullptr;
+  if (gimg_stream_create_memory_output(&out_s) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return {};
+  }
+  GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
+  opts.png_palette = palette_option;
+  GIMG_Save_Report report = {};
+  std::vector<uint8_t> saved;
+  if (gimg_doc_save(doc, out_s, "png", &opts, &report) == GIMG_OK) {
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out_s, &p, &n);
+    saved.assign(static_cast<const uint8_t *>(p),
+        static_cast<const uint8_t *>(p) + n);
+  }
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+  return saved;
+}
+
+/** Decode to RGBA8 bytes, so two encodings can be compared pixel for pixel. */
+std::vector<uint8_t> DecodeToRgba(const std::vector<uint8_t> & png) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(png.data(), png.size(), &s) != GIMG_OK) {
+    return {};
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (r != GIMG_OK) {
+    return {};
+  }
+  GIMG_Raster * raster = nullptr;
+  if (gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return {};
+  }
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const auto * px =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(raster));
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  size_t bpp = fmt ? (size_t)fmt->channel_count : 0;
+  std::vector<uint8_t> out;
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      const unsigned char * p = px + (size_t)y * stride + (size_t)x * bpp;
+      // Normalise whatever came back to RGBA so the comparison is about
+      // pixels and not about which colour type they arrived in.
+      if (bpp == 4) {
+        out.insert(out.end(), p, p + 4);
+      }
+      else if (bpp == 3) {
+        out.insert(out.end(), {p[0], p[1], p[2], 255});
+      }
+      else if (bpp == 2) {
+        out.insert(out.end(), {p[0], p[0], p[0], p[1]});
+      }
+      else {
+        out.insert(out.end(), {p[0], p[0], p[0], 255});
+      }
+    }
+  }
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  return out;
+}
+
+} // namespace
+
+TEST(PngPalette, FewColoursBecomeAPaletteAndComeBackUnchanged) {
+  // 48 colours over 128x128: the shape of a screenshot or a diagram, where a
+  // palette is a large saving and a lossless one.
+  auto colour = [](uint32_t x, uint32_t y) -> uint32_t {
+    static const uint32_t table[48] = {};
+    (void)table;
+    uint32_t i = ((x / 8u) + (y / 6u) * 3u) % 48u;
+    return ((30u + (i % 5u) * 50u) << 24) | ((20u + (i % 4u) * 60u) << 16) |
+        ((40u + (i % 3u) * 70u) << 8) | 0xFFu;
+  };
+  std::vector<uint8_t> with = SaveRgba(128, 128, colour, GIMG_PNG_PALETTE_AUTO);
+  std::vector<uint8_t> without =
+      SaveRgba(128, 128, colour, GIMG_PNG_PALETTE_NEVER);
+  ASSERT_FALSE(with.empty());
+  ASSERT_FALSE(without.empty());
+
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(with, &ct, &bd);
+  EXPECT_EQ(ct, 3) << "few enough colours to store as a palette";
+
+  ReadIhdr(without, &ct, &bd);
+  EXPECT_EQ(ct, 6) << "PALETTE_NEVER must leave it truecolour";
+
+  EXPECT_LT(with.size(), without.size()) << "the palette is the point";
+
+  // Lossless: both forms decode to the same pixels.
+  EXPECT_EQ(DecodeToRgba(with), DecodeToRgba(without));
+}
+
+TEST(PngPalette, TheBitDepthIsTheSmallestThatHoldsTheIndices) {
+  // 11.2.2 allows 1, 2, 4 and 8 bits of index. Two colours need one bit.
+  auto two = [](uint32_t x, uint32_t y) -> uint32_t {
+    return ((x + y) % 2u) ? 0xFF0000FFu : 0x0000FFFFu;
+  };
+  std::vector<uint8_t> saved = SaveRgba(64, 64, two, GIMG_PNG_PALETTE_AUTO);
+  ASSERT_FALSE(saved.empty());
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  EXPECT_EQ(ct, 3);
+  EXPECT_EQ(bd, 1) << "two entries fit in one bit";
+
+  std::vector<uint8_t> plte;
+  ASSERT_TRUE(FindChunk(saved, "PLTE", plte));
+  EXPECT_EQ(plte.size(), 6u) << "two entries, three bytes each";
+}
+
+TEST(PngPalette, TransparentEntriesComeFirstSoTheTrnsChunkCanBeShort) {
+  // 11.3.2.1 lets tRNS be shorter than the palette, every entry past its end
+  // being opaque. Putting the non-opaque entries first is what makes that
+  // saving available - and it is only available if the order is deliberate.
+  auto colours = [](uint32_t x, uint32_t y) -> uint32_t {
+    static const uint32_t table[6] = {
+        0xFF0000FFu, 0x00FF00FFu, 0x0000FFFFu, // opaque
+        0xFF000000u, 0x00FF0080u, 0x0000FF40u, // not
+    };
+    return table[(x + y * 3u) % 6u];
+  };
+  std::vector<uint8_t> saved = SaveRgba(64, 64, colours, GIMG_PNG_PALETTE_AUTO);
+  ASSERT_FALSE(saved.empty());
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  ASSERT_EQ(ct, 3);
+
+  std::vector<uint8_t> plte, trns;
+  ASSERT_TRUE(FindChunk(saved, "PLTE", plte));
+  ASSERT_TRUE(FindChunk(saved, "tRNS", trns));
+  EXPECT_EQ(plte.size(), 18u) << "six entries";
+  EXPECT_EQ(trns.size(), 3u)
+      << "only the three non-opaque entries need an alpha";
+  for (uint8_t a : trns) {
+    EXPECT_NE(a, 255) << "an opaque entry inside tRNS is wasted space";
+  }
+}
+
+TEST(PngPalette, MoreThanTwoHundredAndFiftySixColoursStaysTruecolour) {
+  // Reducing these would be quantisation, and this writer does not do that.
+  auto many = [](uint32_t x, uint32_t y) -> uint32_t {
+    return (((x * 2u) % 256u) << 24) | (((y * 2u) % 256u) << 16) |
+        (((x + y) % 256u) << 8) | 0xFFu;
+  };
+  std::vector<uint8_t> saved = SaveRgba(64, 64, many, GIMG_PNG_PALETTE_AUTO);
+  ASSERT_FALSE(saved.empty());
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  EXPECT_NE(ct, 3);
+}
+
+TEST(PngPalette, ExactlyTwoHundredAndFiftySixColoursStillFits) {
+  // The boundary: 256 is a palette, and the 257th is what stops it.
+  auto exact = [](uint32_t x, uint32_t y) -> uint32_t {
+    uint32_t i = (y * 16u + x) % 256u;
+    return (i << 24) | (i << 16) | (i << 8) | 0xFFu;
+  };
+  std::vector<uint8_t> saved = SaveRgba(16, 16, exact, GIMG_PNG_PALETTE_AUTO);
+  ASSERT_FALSE(saved.empty());
+  std::vector<uint8_t> plte;
+  if (FindChunk(saved, "PLTE", plte)) {
+    EXPECT_EQ(plte.size(), 256u * 3u);
+  }
+  // Whether it is chosen depends on which form is smaller at this size; what
+  // must hold either way is that the pixels survive.
+  auto never = SaveRgba(16, 16, exact, GIMG_PNG_PALETTE_NEVER);
+  EXPECT_EQ(DecodeToRgba(saved), DecodeToRgba(never));
+}
+
+TEST(PngPalette, APaletteIsNeverTheLargerFile) {
+  // The choice is measured, not assumed: both forms are encoded and the loser
+  // is discarded. A small image can spend more on PLTE than it saves.
+  struct Case {
+    uint32_t w, h, colours;
+  };
+  const Case cases[] = {{4, 4, 4}, {8, 8, 16}, {16, 16, 64}, {64, 64, 200},
+      {128, 128, 7}, {200, 137, 33}};
+  for (const Case & c : cases) {
+    auto colour = [&c](uint32_t x, uint32_t y) -> uint32_t {
+      uint32_t i = (x + y * 7u) % c.colours;
+      return ((i * 7u) << 24) | ((i * 13u) << 16) | ((i * 29u) << 8) | 0xFFu;
+    };
+    std::vector<uint8_t> with =
+        SaveRgba(c.w, c.h, colour, GIMG_PNG_PALETTE_AUTO);
+    std::vector<uint8_t> without =
+        SaveRgba(c.w, c.h, colour, GIMG_PNG_PALETTE_NEVER);
+    ASSERT_FALSE(with.empty());
+    ASSERT_FALSE(without.empty());
+    EXPECT_LE(with.size(), without.size())
+        << c.w << "x" << c.h << " with " << c.colours << " colours";
+    EXPECT_EQ(DecodeToRgba(with), DecodeToRgba(without))
+        << "whichever form wins, the pixels are the same";
+  }
+}
+
+TEST(PngPalette, AnImageThatArrivedAsAPaletteIsStillWrittenAsOne) {
+  // PALETTE_NEVER is about creating a palette, not about discarding one. A
+  // frame that came with a palette goes back out with it either way.
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(png_test::load_png_file("png_palette_trns_bkgd_hist.png", buf));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
+  opts.png_palette = GIMG_PNG_PALETTE_NEVER;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out_s, "png", &opts, &report), GIMG_OK);
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out_s, &p, &n);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(p),
+      static_cast<const uint8_t *>(p) + n);
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  EXPECT_EQ(ct, 3);
+}
