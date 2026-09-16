@@ -21,6 +21,11 @@
 #include <vector>
 
 #include "png_test_utils.h"
+
+// Reaches gimg_png_retarget_ancillary(), which is internal: the rules it
+// encodes are per-colour-type and there are more of them than an end-to-end
+// fixture per case would be a sensible way to cover.
+#include "../../../src/codec/png/png_internal.h"
 #include <fstream>
 #include <string>
 
@@ -1434,4 +1439,323 @@ TEST(PngEncode, AnUnknownFilterSettingIsRefused) {
   GIMG_Result r = GIMG_OK;
   (void)SaveWithFilter("png_gradient_64x64_rgb.png", 99, &r);
   EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+}
+
+// ---------------------------------------------------------------------------
+// Colour-type-dependent ancillary chunks on save
+//
+// bKGD, sBIT and hIST are laid out according to the colour type in the IHDR
+// beside them (PNG 11.3.4.1, 11.3.2.4, 11.3.4.2). The writer does not always
+// emit the colour type a frame arrived as, so copying them across unchanged
+// produces a chunk whose length contradicts the header in the same file -
+// which is what saving the conformance suite's tbbn0g04.png used to do, and
+// what libpng called "bKGD: invalid".
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A doc state standing in for a loaded file, for the retargeting rules. */
+struct SourceImage {
+  gimg_png_doc_state_t state {};
+  std::vector<unsigned char> palette;
+
+  SourceImage(uint8_t color_type, uint8_t bit_depth) {
+    state.ihdr.color_type = color_type;
+    state.ihdr.bit_depth = bit_depth;
+  }
+  void set_palette(std::initializer_list<unsigned char> rgb) {
+    palette.assign(rgb);
+    state.plte = palette.data();
+    state.plte_size = palette.size();
+  }
+};
+
+struct Retargeted {
+  gimg_png_retarget_t what;
+  std::vector<unsigned char> payload; // only meaningful when REPLACE
+};
+
+Retargeted Retarget(gimg_png_chunk_type_t type,
+    const std::vector<unsigned char> & payload, SourceImage & src,
+    uint8_t out_color_type, uint8_t out_bit_depth) {
+  unsigned char buf[6] = {};
+  size_t n = 0;
+  gimg_png_retarget_t what = gimg_png_retarget_ancillary(type, payload.data(),
+      payload.size(), &src.state, out_color_type, out_bit_depth, buf, &n);
+  return {what, std::vector<unsigned char>(buf, buf + n)};
+}
+
+} // namespace
+
+/** Find one chunk in an encoded PNG. Returns false when it is not there. */
+bool FindChunk(const std::vector<uint8_t> & png, const char (&type)[5],
+    std::vector<uint8_t> & payload) {
+  size_t i = 8; // past the signature
+  while (i + 8 <= png.size()) {
+    uint32_t len = ((uint32_t)png[i] << 24) | ((uint32_t)png[i + 1] << 16) |
+        ((uint32_t)png[i + 2] << 8) | (uint32_t)png[i + 3];
+    if (i + 12 + (size_t)len > png.size()) {
+      return false;
+    }
+    if (std::memcmp(&png[i + 4], type, 4) == 0) {
+      payload.assign(png.begin() + (long)i + 8,
+          png.begin() + (long)i + 8 + (long)len);
+      return true;
+    }
+    i += 12 + (size_t)len;
+  }
+  return false;
+}
+
+/** colour type and bit depth out of an encoded PNG's IHDR. */
+void ReadIhdr(const std::vector<uint8_t> & png, uint8_t * color_type,
+    uint8_t * bit_depth) {
+  std::vector<uint8_t> ihdr;
+  ASSERT_TRUE(FindChunk(png, "IHDR", ihdr));
+  ASSERT_EQ(ihdr.size(), 13u);
+  *bit_depth = ihdr[8];
+  *color_type = ihdr[9];
+}
+
+/** Load a fixture, save it whole, and hand back the encoded bytes. */
+std::vector<uint8_t> LoadAndSave(const char * fixture) {
+  GIMG_Result r = GIMG_OK;
+  return SaveWithFilter(fixture, GIMG_PNG_FILTER_ADAPTIVE, &r);
+}
+
+// -- bKGD -------------------------------------------------------------------
+
+TEST(PngAncillaryRetarget, AGreyBackgroundBecomesThreeEqualSamples) {
+  // 4-bit greyscale promoted to colour type 6 at 8 bits, which is what happens
+  // when a tRNS has to become an alpha channel. Grey 7 of 15 rescales to 119
+  // by 13.12 - round(7 * 255 / 15) - a value that is not 7, not 112 and not
+  // 127, so every plausible way of getting the rescaling wrong is visible.
+  SourceImage src(0, 4);
+  Retargeted got = Retarget(GIMG_PNG_bKGD, {0x00, 0x07}, src, 6, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  ASSERT_EQ(got.payload.size(), 6u);
+  const std::vector<unsigned char> want = {0, 119, 0, 119, 0, 119};
+  EXPECT_EQ(got.payload, want);
+}
+
+TEST(PngAncillaryRetarget, AnUnchangedColourTypeAndDepthKeepsTheChunk) {
+  // The control. A writer that rewrote unconditionally would pass the test
+  // above and fail this one.
+  SourceImage src(0, 8);
+  EXPECT_EQ(Retarget(GIMG_PNG_bKGD, {0x00, 0x80}, src, 0, 8).what,
+      GIMG_PNG_RETARGET_KEEP);
+}
+
+TEST(PngAncillaryRetarget, APaletteIndexBecomesTheColourItNames) {
+  SourceImage src(3, 8);
+  src.set_palette({0xFF, 0x00, 0x00, 0x20, 0x40, 0x60, 0x00, 0xFF, 0x00});
+  Retargeted got = Retarget(GIMG_PNG_bKGD, {1}, src, 6, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  const std::vector<unsigned char> want = {0, 0x20, 0, 0x40, 0, 0x60};
+  EXPECT_EQ(got.payload, want);
+}
+
+TEST(PngAncillaryRetarget, APaletteIndexPastTheEndOfThePaletteIsDropped) {
+  SourceImage src(3, 8);
+  src.set_palette({0xFF, 0x00, 0x00, 0x20, 0x40, 0x60});
+  EXPECT_EQ(Retarget(GIMG_PNG_bKGD, {7}, src, 6, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+}
+
+TEST(PngAncillaryRetarget, AColourBackgroundSurvivesOnlyIfItIsAlreadyGrey) {
+  SourceImage colour(2, 8);
+  // Three different samples: no grey level says this, so it goes.
+  EXPECT_EQ(
+      Retarget(GIMG_PNG_bKGD, {0, 0x20, 0, 0x40, 0, 0x60}, colour, 0, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+  // Three equal samples: the grey level is exactly that.
+  Retargeted got =
+      Retarget(GIMG_PNG_bKGD, {0, 0x44, 0, 0x44, 0, 0x44}, colour, 0, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  const std::vector<unsigned char> want = {0, 0x44};
+  EXPECT_EQ(got.payload, want);
+}
+
+TEST(PngAncillaryRetarget, ABackgroundOfTheWrongLengthIsNotCarriedForward) {
+  // Three bytes where colour type 0 calls for two. The file was already
+  // malformed; that is not a reason to write another one.
+  SourceImage src(0, 8);
+  EXPECT_EQ(Retarget(GIMG_PNG_bKGD, {0x00, 0x80, 0x00}, src, 6, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+}
+
+TEST(PngAncillaryRetarget, SixteenBitBackgroundsRescaleDownToEight) {
+  SourceImage src(2, 16);
+  Retargeted got = Retarget(
+      GIMG_PNG_bKGD, {0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00}, src, 2, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  // 65535 -> 255, 32768 -> 128, 0 -> 0.
+  const std::vector<unsigned char> want = {0, 255, 0, 128, 0, 0};
+  EXPECT_EQ(got.payload, want);
+}
+
+// -- sBIT -------------------------------------------------------------------
+
+TEST(PngAncillaryRetarget, SignificantBitsDoNotSurviveAChangeOfDepth) {
+  // Rescaling by 13.12 spreads a 4-bit value across all 8 bits of the new
+  // sample, so a count taken before that would tell a decoder to shift data
+  // that has already been scaled. Unlike a background colour, this cannot be
+  // translated - only dropped.
+  SourceImage src(0, 4);
+  EXPECT_EQ(Retarget(GIMG_PNG_sBIT, {3}, src, 6, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+}
+
+TEST(PngAncillaryRetarget, SignificantBitsSurviveAChangeOfChannelCount) {
+  // Same depth, more channels: a grey level repeated into R, G and B is
+  // significant in each to exactly the same degree, and the alpha channel the
+  // writer is adding is significant in all of its bits.
+  SourceImage src(0, 8);
+  Retargeted got = Retarget(GIMG_PNG_sBIT, {5}, src, 6, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  const std::vector<unsigned char> want = {5, 5, 5, 8};
+  EXPECT_EQ(got.payload, want);
+}
+
+TEST(PngAncillaryRetarget, AnAlphaChannelAlreadyPresentKeepsItsOwnCount) {
+  SourceImage src(4, 8); // grey + alpha
+  Retargeted got = Retarget(GIMG_PNG_sBIT, {5, 6}, src, 6, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  const std::vector<unsigned char> want = {5, 5, 5, 6};
+  EXPECT_EQ(got.payload, want);
+}
+
+TEST(PngAncillaryRetarget, SignificantBitsOutsideTheirLegalRangeAreDropped) {
+  // 11.3.2.4: each value is at least 1 and no more than the sample depth.
+  SourceImage src(0, 8);
+  EXPECT_EQ(
+      Retarget(GIMG_PNG_sBIT, {0}, src, 6, 8).what, GIMG_PNG_RETARGET_DROP);
+  EXPECT_EQ(
+      Retarget(GIMG_PNG_sBIT, {9}, src, 6, 8).what, GIMG_PNG_RETARGET_DROP);
+}
+
+TEST(PngAncillaryRetarget, UnequalColourCountsCannotBecomeOneGreyCount) {
+  SourceImage src(2, 8);
+  EXPECT_EQ(Retarget(GIMG_PNG_sBIT, {5, 6, 7}, src, 0, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+}
+
+TEST(PngAncillaryRetarget, PaletteSignificantBitsDescribeEightBitSamples) {
+  // 11.3.2.4: for colour type 3 the three values describe the palette's
+  // samples, which are always 8-bit, whatever the depth of the indices.
+  SourceImage src(3, 4);
+  Retargeted got = Retarget(GIMG_PNG_sBIT, {5, 6, 7}, src, 2, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  const std::vector<unsigned char> want = {5, 6, 7};
+  EXPECT_EQ(got.payload, want);
+}
+
+// -- hIST -------------------------------------------------------------------
+
+TEST(PngAncillaryRetarget, AHistogramWithoutItsPaletteIsDropped) {
+  // 11.3.4.2: one frequency per palette entry, and "shall not appear unless a
+  // PLTE chunk appears". A truecolour image has no palette for it to be about,
+  // and there is nothing to translate it into.
+  SourceImage src(3, 8);
+  src.set_palette({0xFF, 0, 0, 0x20, 0x40, 0x60});
+  EXPECT_EQ(Retarget(GIMG_PNG_hIST, {0, 100, 0, 50}, src, 6, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+}
+
+TEST(PngAncillaryRetarget, AHistogramThatStillMatchesItsPaletteIsKept) {
+  SourceImage src(3, 8);
+  src.set_palette({0xFF, 0, 0, 0x20, 0x40, 0x60});
+  EXPECT_EQ(Retarget(GIMG_PNG_hIST, {0, 100, 0, 50}, src, 3, 8).what,
+      GIMG_PNG_RETARGET_KEEP);
+}
+
+TEST(PngAncillaryRetarget, AHistogramOfTheWrongLengthIsDropped) {
+  SourceImage src(3, 8);
+  src.set_palette({0xFF, 0, 0, 0x20, 0x40, 0x60}); // two entries
+  EXPECT_EQ(Retarget(GIMG_PNG_hIST, {0, 100, 0, 50, 0, 25}, src, 3, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+}
+
+// -- everything else --------------------------------------------------------
+
+// -- end to end -------------------------------------------------------------
+//
+// The rules above, reached the way a caller reaches them: load a file, save
+// it, and read the chunks back out of what was written.
+
+TEST(PngAncillaryRetarget, APromotedGreyscaleFileGetsABackgroundThatFitsIt) {
+  // 4-bit greyscale with tRNS. The transparent grey level cannot survive as a
+  // tRNS against an 8-bit raster, so this is written as colour type 6 - and a
+  // 2-byte bKGD is not a bKGD for colour type 6.
+  std::vector<uint8_t> saved = LoadAndSave("png_gray4_trns_bkgd_sbit.png");
+  ASSERT_FALSE(saved.empty());
+
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  ASSERT_EQ(ct, 6) << "the fixture is meant to be promoted; it was not";
+  ASSERT_EQ(bd, 8);
+
+  std::vector<uint8_t> bkgd;
+  ASSERT_TRUE(FindChunk(saved, "bKGD", bkgd));
+  const std::vector<uint8_t> want = {0, 119, 0, 119, 0, 119};
+  EXPECT_EQ(bkgd, want) << "grey 7 of 15 rescales to 119 at 8 bits (13.12)";
+
+  // sBIT counted bits in 4-bit samples; the samples are 8-bit now.
+  std::vector<uint8_t> sbit;
+  EXPECT_FALSE(FindChunk(saved, "sBIT", sbit));
+}
+
+TEST(PngAncillaryRetarget, AFileThatKeepsItsColourTypeKeepsItsChunksVerbatim) {
+  // The control for the test above. No tRNS, nothing forces a change, so both
+  // chunks must come back byte for byte.
+  std::vector<uint8_t> saved = LoadAndSave("png_gray8_bkgd_sbit.png");
+  ASSERT_FALSE(saved.empty());
+
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  ASSERT_EQ(ct, 0);
+  ASSERT_EQ(bd, 8);
+
+  std::vector<uint8_t> bkgd, sbit;
+  ASSERT_TRUE(FindChunk(saved, "bKGD", bkgd));
+  const std::vector<uint8_t> want_bkgd = {0x00, 0x80};
+  EXPECT_EQ(bkgd, want_bkgd);
+  ASSERT_TRUE(FindChunk(saved, "sBIT", sbit));
+  const std::vector<uint8_t> want_sbit = {5};
+  EXPECT_EQ(sbit, want_sbit);
+}
+
+TEST(PngAncillaryRetarget, AMalformedBackgroundIsNotCopiedIntoTheNewFile) {
+  std::vector<uint8_t> saved = LoadAndSave("png_gray8_bad_bkgd.png");
+  ASSERT_FALSE(saved.empty());
+  std::vector<uint8_t> bkgd;
+  EXPECT_FALSE(FindChunk(saved, "bKGD", bkgd))
+      << "a three-byte bKGD is wrong for every colour type";
+}
+
+TEST(PngAncillaryRetarget, APaletteThatStaysAPaletteKeepsItsHistogram) {
+  std::vector<uint8_t> saved = LoadAndSave("png_palette_trns_bkgd_hist.png");
+  ASSERT_FALSE(saved.empty());
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  ASSERT_EQ(ct, 3) << "a palette frame is written back as one";
+
+  std::vector<uint8_t> bkgd, hist;
+  ASSERT_TRUE(FindChunk(saved, "bKGD", bkgd));
+  const std::vector<uint8_t> want_bkgd = {1};
+  EXPECT_EQ(bkgd, want_bkgd);
+  ASSERT_TRUE(FindChunk(saved, "hIST", hist));
+  EXPECT_EQ(hist.size(), 8u) << "one 16-bit frequency per palette entry";
+}
+
+TEST(PngAncillaryRetarget, ChunksThatDoNotDependOnTheColourTypeAreUntouched) {
+  // pHYs, tIME, gAMA, text, and anything unknown mean the same thing whatever
+  // the colour type, so a change of colour type must not disturb them.
+  SourceImage src(0, 4);
+  const gimg_png_chunk_type_t independent[] = {
+      GIMG_PNG_gAMA, GIMG_PNG_tEXt, GIMG_PNG_iCCP, GIMG_PNG_eXIf};
+  for (gimg_png_chunk_type_t t : independent) {
+    EXPECT_EQ(Retarget(t, {1, 2, 3, 4}, src, 6, 8).what,
+        GIMG_PNG_RETARGET_KEEP);
+  }
 }

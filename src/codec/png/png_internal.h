@@ -90,6 +90,15 @@ typedef uint32_t gimg_png_chunk_type_t;
 #define GIMG_PNG_cHRM UINT32_C(0x6348524D) // 'cHRM' §11.3.2.1
 #define GIMG_PNG_eXIf UINT32_C(0x65584966) // 'eXIf' §11.3.4
 
+/**
+ * Ancillary chunks whose payload layout is a function of the colour type, and
+ * so cannot be copied from one image to another that is written as a different
+ * one. See gimg_png_retarget_ancillary() in png_save.c.
+ */
+#define GIMG_PNG_sBIT UINT32_C(0x73424954) // 'sBIT' §11.3.2.4
+#define GIMG_PNG_bKGD UINT32_C(0x624B4744) // 'bKGD' §11.3.4.1
+#define GIMG_PNG_hIST UINT32_C(0x68495354) // 'hIST' §11.3.4.2
+
 /** PNG Third Edition colour chunks (W3C PNG 3rd ed., 2025). */
 #define GIMG_PNG_cICP UINT32_C(0x63494350) // 'cICP' coding-independent points
 #define GIMG_PNG_mDCv UINT32_C(0x6D444376) // 'mDCv' mastering display volume
@@ -237,6 +246,38 @@ size_t gimg_png_row_bytes_from_ihdr(const gimg_png_ihdr_t * ihdr,
  * Below 8 bits a pixel index is therefore a bit position and not a byte one.
  * @a depth must be 1, 2 or 4.
  */
+/**
+ * @brief What to do with one colour-type-dependent ancillary chunk on save.
+ * @see gimg_png_retarget_ancillary
+ */
+typedef enum {
+  GIMG_PNG_RETARGET_KEEP,    ///< Write the original payload unchanged.
+  GIMG_PNG_RETARGET_REPLACE, ///< Write the rewritten payload.
+  GIMG_PNG_RETARGET_DROP,    ///< Do not write it at all.
+} gimg_png_retarget_t;
+
+/**
+ * @brief Decide what to do with a preserved ancillary chunk, given the colour
+ * type and depth the image is actually being written as.
+ *
+ * bKGD, sBIT and hIST are laid out according to the colour type in the IHDR
+ * beside them (11.3.4.1, 11.3.2.4, 11.3.4.2), and the writer does not always
+ * emit the colour type a frame arrived as - a greyscale image whose tRNS
+ * cannot survive as one is promoted to truecolour with alpha. Copying those
+ * three across unchanged produces a chunk whose length contradicts the header
+ * in the same file.
+ *
+ * Every other chunk type returns ::GIMG_PNG_RETARGET_KEEP.
+ *
+ * @param out_buf Receives a rewritten payload when ::GIMG_PNG_RETARGET_REPLACE
+ *                is returned. Must have room for 6 bytes, the longest any of
+ *                these produces.
+ */
+gimg_png_retarget_t gimg_png_retarget_ancillary(gimg_png_chunk_type_t type,
+    const unsigned char * payload, size_t payload_size,
+    const gimg_png_doc_state_t * state, uint8_t out_color_type,
+    uint8_t out_bit_depth, unsigned char * out_buf, size_t * out_size);
+
 uint8_t gimg_png_get_sample_bits(
     const unsigned char * row, uint32_t x, uint8_t depth);
 

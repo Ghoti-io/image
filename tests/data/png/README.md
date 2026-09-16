@@ -70,3 +70,17 @@ To verify outputs manually:
 python3 tests/data/png/verify_png_output.py
 # Or: python3 tests/data/png/verify_png_output.py /path/to/tests/out/png
 ```
+
+### Colour-type-dependent ancillary chunks
+
+bKGD, sBIT and hIST are laid out according to the colour type in the IHDR
+beside them (PNG 11.3.4.1, 11.3.2.4, 11.3.4.2), so they cannot be copied into a
+file written as a different one - and the writer does write a different one
+whenever a tRNS has to become an alpha channel.
+
+| Fixture | What it is for |
+|---|---|
+| `png_gray4_trns_bkgd_sbit.png` | 4-bit greyscale with tRNS, so saving promotes it to colour type 6. bKGD must be rewritten from one 2-byte grey to three 16-bit samples, rescaled 4 bits to 8 by 13.12; sBIT must be dropped. The background is grey 7 of 15, which is 119 at 8 bits - not 7, not 112, not 127, so every plausible way of getting the rescaling wrong shows up |
+| `png_gray8_bkgd_sbit.png` | The control. Nothing forces a change of colour type, so both chunks must come back byte for byte. A writer that rewrote them unconditionally passes the fixture above and fails this one |
+| `png_palette_trns_bkgd_hist.png` | A palette image, written back as one, so bKGD and hIST are kept. libpng warns "hIST: out of place" on this file - and on PngSuite's own `ch1n3p04.png` and `ch2n3p08.png`, whose chunk order is identical, so the warning is that build's and not the fixture's |
+| `png_gray8_bad_bkgd.png` | A three-byte bKGD where colour type 0 calls for two. Already malformed; the point is that it is not carried into a new file. libpng agrees: "bKGD: invalid" |

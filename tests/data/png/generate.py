@@ -348,6 +348,7 @@ def main() -> None:
     _write_suggested_palette_fixtures()
     _write_filter_fixtures()
     _write_third_edition_fixtures()
+    _write_colour_typed_ancillary_fixtures()
     _write_apng16_oracle_expected()
 
 
@@ -702,6 +703,95 @@ def _write_third_edition_fixtures() -> None:
         + png_chunk(b"mDCv", mdcv)
         + png_chunk(b"cLLi", struct.pack(">II", 10000000, 1000000))
         + idat + iend)
+
+
+def _write_colour_typed_ancillary_fixtures() -> None:
+    """Images carrying bKGD, sBIT and hIST, for the save-side retargeting.
+
+    These three chunks are laid out according to the colour type in the IHDR
+    beside them (PNG 11.3.4.1, 11.3.2.4, 11.3.4.2), so they cannot be copied
+    across when the writer emits a different colour type than the frame arrived
+    as - and it does, whenever a tRNS has to become an alpha channel.
+
+    Each fixture is a case where that happens, or a control where it must not.
+    """
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+
+    # ---- 4-bit greyscale + tRNS + bKGD + sBIT ------------------------------
+    #
+    # Saving this promotes it to colour type 6: the transparent grey level has
+    # to become an alpha channel. bKGD must be rewritten from one 2-byte grey
+    # to three 16-bit samples, rescaled from 4 bits to 8 by 13.12, and sBIT
+    # must be dropped - rescaling spreads each 4-bit value over 8 bits, so a
+    # count taken before it no longer describes what is stored.
+    #
+    # The background is grey 7 of 15, which is 119 at 8 bits
+    # (round(7 * 255 / 15)) - a value that is wrong in every way the rescaling
+    # could be got wrong: not 7, not 112, not 127.
+    width, height, depth = 4, 4, 4
+    samples = [[(x + y) % 16 for x in range(width)] for y in range(height)]
+    ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, 0, 0, 0, 0))
+    write_png("png_gray4_trns_bkgd_sbit.png",
+        signature + ihdr
+        + png_chunk(b"tRNS", struct.pack(">H", 15))
+        + png_chunk(b"bKGD", struct.pack(">H", 7))
+        + png_chunk(b"sBIT", bytes([3]))
+        + png_chunk(b"IDAT", idat_zlib(raw_rows_plain(samples, width, height, depth)))
+        + iend)
+
+    # ---- 8-bit greyscale + bKGD + sBIT, no tRNS ---------------------------
+    #
+    # The control. Nothing forces a change of colour type, so both chunks must
+    # come back byte for byte. A writer that rewrote them unconditionally would
+    # pass the fixture above and fail this one.
+    gray8 = bytes([0x00] + [0x11, 0x22, 0x33, 0x44]) * 4
+    write_png("png_gray8_bkgd_sbit.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 0, 0, 0, 0))
+        + png_chunk(b"bKGD", struct.pack(">H", 0x0080))
+        + png_chunk(b"sBIT", bytes([5]))
+        + png_chunk(b"IDAT", idat_zlib(gray8))
+        + iend)
+
+    # ---- palette + tRNS + bKGD + hIST -------------------------------------
+    #
+    # A palette whose tRNS gives one entry partial alpha, which no tRNS on a
+    # truecolour image can express, so saving promotes this to colour type 6.
+    # bKGD names palette entry 1 and must become that entry's colour; hIST is
+    # one frequency per palette entry and has nothing to be about once the
+    # palette is gone, so it must be dropped (11.3.4.2 requires PLTE).
+    #
+    # Entry 1 is (0x20, 0x40, 0x60): three different samples, so a writer that
+    # collapsed the colour to grey, or took the wrong entry, is visible.
+    plte = bytes([0xFF, 0x00, 0x00,   # 0
+                  0x20, 0x40, 0x60,   # 1  <- bKGD names this one
+                  0x00, 0xFF, 0x00,   # 2
+                  0x00, 0x00, 0xFF])  # 3
+    indices = [[0, 1, 2, 3] for _ in range(4)]
+    write_png("png_palette_trns_bkgd_hist.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 3, 0, 0, 0))
+        + png_chunk(b"PLTE", plte)
+        + png_chunk(b"tRNS", bytes([0xFF, 0x80, 0xFF, 0xFF]))
+        + png_chunk(b"bKGD", bytes([1]))
+        + png_chunk(b"hIST", struct.pack(">4H", 100, 50, 25, 10))
+        + png_chunk(b"IDAT", idat_zlib(raw_rows_plain(indices, 4, 4, 8)))
+        + iend)
+
+    # ---- 8-bit greyscale + tRNS + a bKGD of the wrong length --------------
+    #
+    # Three bytes where colour type 0 calls for two. The file is already
+    # malformed; the point is that it is not carried forward into a new one.
+    # The tRNS forces a colour type change so the chunk is examined at all.
+    write_png("png_gray8_bad_bkgd.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 0, 0, 0, 0))
+        + png_chunk(b"tRNS", struct.pack(">H", 0x0011))
+        + png_chunk(b"bKGD", bytes([0x00, 0x80, 0x00]))
+        + png_chunk(b"IDAT", idat_zlib(gray8))
+        + iend)
+
 
 def _write_apng16_oracle_expected() -> None:
     """Write expected pixels for the 16-bit APNG blend test using Pillow as oracle.

@@ -354,6 +354,306 @@ static void gimg_png_build_fctl(unsigned char * out, uint32_t sequence_number,
 }
 
 /** Return true if chunk type is known semantic metadata (color, Exif, text). */
+//
+// Ancillary chunks whose shape depends on the colour type
+// =======================================================
+//
+// bKGD, sBIT and hIST are not self-describing: their length and meaning are a
+// function of the colour type in the IHDR beside them (11.3.4.1, 11.3.2.4,
+// 11.3.4.2). The writer does not always emit the colour type a frame arrived
+// as - a greyscale image whose tRNS cannot be expressed against an alpha
+// channel is promoted to truecolour with alpha, for one - and copying these
+// three across unchanged then produces a chunk whose length contradicts the
+// header in the same file.
+//
+// That is not a theoretical complaint. Saving the conformance suite's
+// tbbn0g04.png - 4-bit greyscale, tRNS, a 2-byte bKGD - correctly wrote
+// colour type 6 and kept the 2-byte bKGD, which needs 6 bytes there, and
+// libpng said so: "libpng warning: bKGD: invalid".
+//
+// So each is either translated, kept, or dropped. Translation is only done
+// where it is exact; where it would be a guess the chunk is dropped, because
+// an absent advisory chunk is a smaller lie than a wrong one.
+//
+
+/** Payload length bKGD must have for a colour type (11.3.4.1). */
+static size_t gimg_png_bkgd_len(uint8_t color_type) {
+  if (color_type == 3) {
+    return 1u; // a palette index
+  }
+  if (color_type == 0 || color_type == 4) {
+    return 2u; // one grey level
+  }
+  return 6u; // three 16-bit samples, colour types 2 and 6
+}
+
+/** Payload length sBIT must have for a colour type (11.3.2.4). */
+static size_t gimg_png_sbit_len(uint8_t color_type) {
+  switch (color_type) {
+  case 0:
+    return 1u; // grey
+  case 2:
+  case 3:
+    return 3u; // R, G, B - for colour type 3 these describe the palette
+  case 4:
+    return 2u; // grey, alpha
+  default:
+    return 4u; // R, G, B, alpha
+  }
+}
+
+/**
+ * The depth of the samples a chunk's values are expressed in. For colour type
+ * 3 that is the palette's 8 bits, whatever the bit depth of the indices
+ * (11.2.2: PLTE entries are always three 8-bit samples).
+ */
+static uint8_t gimg_png_sample_depth(uint8_t color_type, uint8_t bit_depth) {
+  return (color_type == 3) ? 8u : bit_depth;
+}
+
+/**
+ * Rescale one sample between depths, by the rule decoding uses in the other
+ * direction (PNG 13.12): round(v * (2^to - 1) / (2^from - 1)).
+ */
+static uint16_t gimg_png_rescale_sample(
+    uint32_t v, uint8_t from_depth, uint8_t to_depth) {
+  if (from_depth == to_depth) {
+    return (uint16_t)v;
+  }
+  uint32_t from_max = (1u << from_depth) - 1u;
+  uint32_t to_max = (1u << to_depth) - 1u;
+  if (from_max == 0u) {
+    return 0u;
+  }
+  return (uint16_t)(
+      ((uint64_t)v * (uint64_t)to_max + (uint64_t)from_max / 2u) / from_max);
+}
+
+/** Read a big-endian 16-bit value. */
+static uint32_t gimg_png_be16(const unsigned char * p) {
+  return ((uint32_t)p[0] << 8) | (uint32_t)p[1];
+}
+
+/** Write a big-endian 16-bit value. */
+static void gimg_png_put_be16(unsigned char * p, uint16_t v) {
+  p[0] = (unsigned char)(v >> 8);
+  p[1] = (unsigned char)(v & 0xFFu);
+}
+
+/**
+ * bKGD (11.3.4.1) from the colour type the frame arrived as to the one being
+ * written.
+ *
+ * The background is a colour, so it translates whenever the destination can
+ * hold it: grey becomes R=G=B, a palette index becomes the colour it names,
+ * and a colour becomes grey only when its three samples already agree. A
+ * change of bit depth rescales by 13.12, the same rule the pixels took.
+ */
+static gimg_png_retarget_t gimg_png_retarget_bkgd(const unsigned char * payload,
+    size_t payload_size, const gimg_png_doc_state_t * state,
+    uint8_t out_color_type, uint8_t out_bit_depth, unsigned char * out_buf,
+    size_t * out_size) {
+  uint8_t src_ct = state->ihdr.color_type;
+  uint8_t src_bd = state->ihdr.bit_depth;
+
+  // A chunk that was already the wrong length for the file it came from is not
+  // something to carry forward into a new one.
+  if (payload_size != gimg_png_bkgd_len(src_ct)) {
+    return GIMG_PNG_RETARGET_DROP;
+  }
+  if (src_ct == out_color_type && src_bd == out_bit_depth) {
+    return GIMG_PNG_RETARGET_KEEP;
+  }
+
+  // Resolve to R, G, B at whatever depth the source samples were in.
+  uint32_t r = 0, g = 0, b = 0;
+  uint8_t src_depth = gimg_png_sample_depth(src_ct, src_bd);
+  if (src_ct == 0 || src_ct == 4) {
+    r = g = b = gimg_png_be16(payload);
+  }
+  else if (src_ct == 2 || src_ct == 6) {
+    r = gimg_png_be16(payload);
+    g = gimg_png_be16(payload + 2);
+    b = gimg_png_be16(payload + 4);
+  }
+  else { // colour type 3: the byte is an index into PLTE
+    if (!state->plte || state->plte_size < 3u) {
+      return GIMG_PNG_RETARGET_DROP;
+    }
+    size_t entries = state->plte_size / 3u;
+    if ((size_t)payload[0] >= entries) {
+      return GIMG_PNG_RETARGET_DROP;
+    }
+    const unsigned char * e = state->plte + (size_t)payload[0] * 3u;
+    r = e[0];
+    g = e[1];
+    b = e[2];
+  }
+
+  if (out_color_type == 3) {
+    // Writing a palette means the frame arrived as one, so the index is still
+    // an index into the same palette; any other source has no index to give.
+    return (src_ct == 3) ? GIMG_PNG_RETARGET_KEEP : GIMG_PNG_RETARGET_DROP;
+  }
+  if (out_color_type == 0 || out_color_type == 4) {
+    if (r != g || g != b) {
+      return GIMG_PNG_RETARGET_DROP; // no grey level says this colour
+    }
+    gimg_png_put_be16(
+        out_buf, gimg_png_rescale_sample(r, src_depth, out_bit_depth));
+    *out_size = 2u;
+    return GIMG_PNG_RETARGET_REPLACE;
+  }
+  gimg_png_put_be16(
+      out_buf, gimg_png_rescale_sample(r, src_depth, out_bit_depth));
+  gimg_png_put_be16(
+      out_buf + 2, gimg_png_rescale_sample(g, src_depth, out_bit_depth));
+  gimg_png_put_be16(
+      out_buf + 4, gimg_png_rescale_sample(b, src_depth, out_bit_depth));
+  *out_size = 6u;
+  return GIMG_PNG_RETARGET_REPLACE;
+}
+
+/**
+ * sBIT (11.3.2.4) from the colour type the frame arrived as to the one being
+ * written.
+ *
+ * sBIT counts how many of the bits in each stored sample carry the original
+ * data, so unlike bKGD it does not survive a change of depth: rescaling by
+ * 13.12 spreads the original value across the whole of the new sample, and a
+ * count taken before that would tell a decoder to shift data that has already
+ * been scaled. Those are dropped. A change of channel count at the same depth
+ * is exact - a grey level repeated into R, G and B is significant in each to
+ * exactly the same degree - and an alpha channel this writer synthesised is
+ * significant in all of its bits.
+ */
+static gimg_png_retarget_t gimg_png_retarget_sbit(const unsigned char * payload,
+    size_t payload_size, const gimg_png_doc_state_t * state,
+    uint8_t out_color_type, uint8_t out_bit_depth, unsigned char * out_buf,
+    size_t * out_size) {
+  uint8_t src_ct = state->ihdr.color_type;
+  uint8_t src_bd = state->ihdr.bit_depth;
+
+  if (payload_size != gimg_png_sbit_len(src_ct)) {
+    return GIMG_PNG_RETARGET_DROP;
+  }
+  if (src_ct == out_color_type && src_bd == out_bit_depth) {
+    return GIMG_PNG_RETARGET_KEEP;
+  }
+  if (out_color_type == 3) {
+    return (src_ct == 3) ? GIMG_PNG_RETARGET_KEEP : GIMG_PNG_RETARGET_DROP;
+  }
+
+  uint8_t src_depth = gimg_png_sample_depth(src_ct, src_bd);
+  uint8_t out_depth = gimg_png_sample_depth(out_color_type, out_bit_depth);
+  if (src_depth != out_depth) {
+    return GIMG_PNG_RETARGET_DROP;
+  }
+
+  // Unpack to R, G, B, A significant-bit counts. Where the source had no alpha
+  // the writer is adding one, and what it adds is fully significant.
+  unsigned int sr, sg, sb, sa = out_depth;
+  switch (src_ct) {
+  case 0:
+    sr = sg = sb = payload[0];
+    break;
+  case 4:
+    sr = sg = sb = payload[0];
+    sa = payload[1];
+    break;
+  case 2:
+  case 3:
+    sr = payload[0];
+    sg = payload[1];
+    sb = payload[2];
+    break;
+  default: // 6
+    sr = payload[0];
+    sg = payload[1];
+    sb = payload[2];
+    sa = payload[3];
+    break;
+  }
+
+  // 11.3.2.4: each value is at least 1 and no more than the sample depth.
+  // A source that already broke that is not carried forward.
+  if (sr == 0u || sg == 0u || sb == 0u || sa == 0u || sr > out_depth ||
+      sg > out_depth || sb > out_depth || sa > out_depth) {
+    return GIMG_PNG_RETARGET_DROP;
+  }
+
+  if (out_color_type == 0 || out_color_type == 4) {
+    if (sr != sg || sg != sb) {
+      return GIMG_PNG_RETARGET_DROP; // no single grey count says this
+    }
+    out_buf[0] = (unsigned char)sr;
+    *out_size = 1u;
+    if (out_color_type == 4) {
+      out_buf[1] = (unsigned char)sa;
+      *out_size = 2u;
+    }
+    return GIMG_PNG_RETARGET_REPLACE;
+  }
+  out_buf[0] = (unsigned char)sr;
+  out_buf[1] = (unsigned char)sg;
+  out_buf[2] = (unsigned char)sb;
+  *out_size = 3u;
+  if (out_color_type == 6) {
+    out_buf[3] = (unsigned char)sa;
+    *out_size = 4u;
+  }
+  return GIMG_PNG_RETARGET_REPLACE;
+}
+
+/**
+ * hIST (11.3.4.2) carries one 16-bit frequency per palette entry and, by the
+ * same clause, "shall not appear unless a PLTE chunk appears". There is
+ * nothing to translate it into: a truecolour image has no palette for its
+ * entries to be about.
+ */
+static gimg_png_retarget_t gimg_png_retarget_hist(size_t payload_size,
+    const gimg_png_doc_state_t * state, uint8_t out_color_type) {
+  if (out_color_type != 3 || !state->plte || state->plte_size < 3u) {
+    return GIMG_PNG_RETARGET_DROP;
+  }
+  if (payload_size != (state->plte_size / 3u) * 2u) {
+    return GIMG_PNG_RETARGET_DROP; // one entry per palette entry, or nothing
+  }
+  return GIMG_PNG_RETARGET_KEEP;
+}
+
+/**
+ * Decide what to do with one preserved ancillary chunk, given the colour type
+ * and depth the image is actually being written as.
+ *
+ * @param out_buf Receives a rewritten payload when REPLACE is returned. Must
+ *                have room for at least 6 bytes, the longest any of these
+ *                produces.
+ * @return KEEP for every chunk whose meaning does not depend on the colour
+ *         type, which is most of them.
+ */
+gimg_png_retarget_t gimg_png_retarget_ancillary(
+    gimg_png_chunk_type_t type, const unsigned char * payload,
+    size_t payload_size, const gimg_png_doc_state_t * state,
+    uint8_t out_color_type, uint8_t out_bit_depth, unsigned char * out_buf,
+    size_t * out_size) {
+  if (!state || !payload || payload_size == 0) {
+    return GIMG_PNG_RETARGET_KEEP;
+  }
+  if (type == GIMG_PNG_bKGD) {
+    return gimg_png_retarget_bkgd(payload, payload_size, state, out_color_type,
+        out_bit_depth, out_buf, out_size);
+  }
+  if (type == GIMG_PNG_sBIT) {
+    return gimg_png_retarget_sbit(payload, payload_size, state, out_color_type,
+        out_bit_depth, out_buf, out_size);
+  }
+  if (type == GIMG_PNG_hIST) {
+    return gimg_png_retarget_hist(payload_size, state, out_color_type);
+  }
+  return GIMG_PNG_RETARGET_KEEP;
+}
+
 static bool gimg_png_chunk_is_known_semantic(gimg_png_chunk_type_t t) {
   return t == GIMG_PNG_iCCP || t == GIMG_PNG_sRGB || t == GIMG_PNG_gAMA ||
       t == GIMG_PNG_cHRM || t == GIMG_PNG_eXIf || t == GIMG_PNG_tEXt ||
@@ -1304,6 +1604,20 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         }
         const void * chunk_payload = state->ancillary[i].payload;
         size_t chunk_size = state->ancillary[i].payload_size;
+        // bKGD, sBIT and hIST are laid out according to the colour type, and
+        // the one being written is not always the one the frame arrived as.
+        unsigned char retargeted[6];
+        size_t retargeted_size = 0;
+        gimg_png_retarget_t what = gimg_png_retarget_ancillary(t,
+            state->ancillary[i].payload, state->ancillary[i].payload_size,
+            state, color_type, bit_depth, retargeted, &retargeted_size);
+        if (what == GIMG_PNG_RETARGET_DROP) {
+          continue;
+        }
+        if (what == GIMG_PNG_RETARGET_REPLACE) {
+          chunk_payload = retargeted;
+          chunk_size = retargeted_size;
+        }
         void * modified = NULL;
         size_t modified_size = 0;
         if (t == GIMG_PNG_eXIf && chunk_payload && chunk_size > 0) {
@@ -1425,13 +1739,30 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       if (gimg_png_chunk_is_known_semantic(t)) {
         continue;
       }
-      r = gimg_png_write_chunk(stream, state->ancillary[i].type,
-          state->ancillary[i].payload, state->ancillary[i].payload_size);
+      // Same colour-type dependence as above: these three reach this policy
+      // too, because none of them is semantic metadata in the sense
+      // gimg_png_chunk_is_known_semantic() means.
+      const void * raw_payload = state->ancillary[i].payload;
+      size_t raw_size = state->ancillary[i].payload_size;
+      unsigned char retargeted[6];
+      size_t retargeted_size = 0;
+      gimg_png_retarget_t what = gimg_png_retarget_ancillary(t,
+          state->ancillary[i].payload, state->ancillary[i].payload_size, state,
+          color_type, bit_depth, retargeted, &retargeted_size);
+      if (what == GIMG_PNG_RETARGET_DROP) {
+        continue;
+      }
+      if (what == GIMG_PNG_RETARGET_REPLACE) {
+        raw_payload = retargeted;
+        raw_size = retargeted_size;
+      }
+      r = gimg_png_write_chunk(
+          stream, state->ancillary[i].type, raw_payload, raw_size);
       if (r != GIMG_OK) {
         gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
         return r;
       }
-      report->bytes_written += 8 + state->ancillary[i].payload_size + 4;
+      report->bytes_written += 8 + raw_size + 4;
     }
   }
   // DROP_ALL: no ancillary (already skipped above).
