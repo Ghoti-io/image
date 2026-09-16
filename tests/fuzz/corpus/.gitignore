@@ -1,9 +1,0 @@
-# Seeds copied in by ../seed_corpus.sh are not stored twice: they live in
-# tests/data and can be put back at any time.  Everything libFuzzer discovers
-# on its own is named by content hash and carries no extension, so it is
-# tracked - a randomised search cannot be replayed.
-*.png
-*.jpg
-*.jpeg
-*.pgm
-*.ppm
