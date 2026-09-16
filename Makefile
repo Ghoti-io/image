@@ -324,6 +324,7 @@ $(APP_DIR)/$(STATIC_TARGET): \
 		$(LIBOBJECTS)
 	@printf "\n### Archiving Image Static Library ###\n"
 	@mkdir -p $(@D)
+	@rm -f $@
 	ar rcs $@ $^
 
 ####################################################################
