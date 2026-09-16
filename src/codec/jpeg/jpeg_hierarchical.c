@@ -845,6 +845,10 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
   if (h_max == 0 || v_max == 0) {
     return GIMG_ERR_FORMAT;
   }
+  // The size each component would have if the sequence reached the completed
+  // image (A.1.1 applied to the DHP header).
+  uint32_t want_w[GIMG_JPEG_MAX_COMPONENTS], want_h[GIMG_JPEG_MAX_COMPONENTS];
+  hier_component_dims(dhp, h_max, v_max, want_w, want_h);
 
   void * cbuf[GIMG_JPEG_MAX_COMPONENTS];
   memset(cbuf, 0, sizeof(cbuf));
@@ -931,10 +935,28 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
         }
         for (uint8_t i = 1; i < num_comp; i++) {
           // The chroma filters of jpeg_upsample.c for a subsampled component,
-          // which is also the right answer when it is not subsampled.
-          sample[i] = jpeg_chroma_sample(&pl[i], ref[i].w, ref[i].h, x, y,
-              width, height, dhp->h_samp[i], dhp->v_samp[i], h_max, v_max,
-              use_fancy);
+          // which is also the right answer when it is not subsampled - but
+          // only when the component is the size the DHP header implies.  A
+          // sequence may stop before it reaches the completed image: B.3.1
+          // bounds a frame by the DHP size and does not require any frame to
+          // attain it, and a truncated file simply has fewer frames than it
+          // meant to.  The filter works from the sampling factors and the
+          // image size, so pointing it at a plane of some other size reads
+          // past the end of it, which is how the fuzzer found this with a
+          // 17x9 DHP whose only frame was 9x5.  Falling back to the map keeps
+          // such a sequence decodable - it is the smaller picture, scaled -
+          // and the map is in bounds for a plane of any size.
+          if (ref[i].w == want_w[i] && ref[i].h == want_h[i]) {
+            sample[i] = jpeg_chroma_sample(&pl[i], ref[i].w, ref[i].h, x, y,
+                width, height, dhp->h_samp[i], dhp->v_samp[i], h_max, v_max,
+                use_fancy);
+          }
+          else {
+            size_t idx = jpeg_component_index(
+                ref[i].w, ref[i].h, ref[i].w, x, y, width, height);
+            sample[i] = wide ? (int)((const uint16_t *)cbuf[i])[idx]
+                             : (int)((const unsigned char *)cbuf[i])[idx];
+          }
         }
         if (num_comp == 1u) {
           uint32_t v = jpeg_sample_widen(

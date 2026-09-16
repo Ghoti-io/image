@@ -1176,6 +1176,60 @@ TEST(JpegLoad, NonInterleavedLosslessScans) {
   }
 }
 
+// A hierarchical sequence that stops before it reaches the completed image.
+//
+// T.81 B.3.1 bounds a frame by the DHP size and does not require any frame to
+// attain it, so a sequence may simply have fewer frames than it meant to - a
+// truncated file, or one that was only ever written as far as it got.  The
+// reference components are then smaller than the DHP header implies.
+//
+// The chroma filter works from the sampling factors and the image size, so
+// pointing it at a component of some other size reads past the end of it.  The
+// fuzzer found it with this 423-byte file: a 17x9 DHP at 4:2:0 whose only
+// frame is 9x5, so the chroma planes are 5x3 where the filter expects 9x5.
+//
+// What is asserted is that it decodes inside its buffers and at the DHP size -
+// the smaller picture, scaled up - rather than being refused: the file is
+// short, not malformed, and the frames it does carry are a picture.
+TEST(JpegLoad, HierarchicalSequenceShorterThanItsDhp) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("hier_truncated_sequence.jpg", jpeg));
+  // The fixture must keep the shape that matters: a DHP larger than its frame.
+  uint32_t dhp_w = 0, sof_w = 0;
+  for (size_t i = 0; i + 9 < jpeg.size(); i++) {
+    if (jpeg[i] != 0xFF) {
+      continue;
+    }
+    uint32_t w = (uint32_t)((jpeg[i + 7] << 8) | jpeg[i + 8]);
+    if (jpeg[i + 1] == 0xDE && dhp_w == 0) {
+      dhp_w = w;
+    }
+    if (jpeg[i + 1] == 0xC1 && sof_w == 0) {
+      sof_w = w;
+    }
+  }
+  ASSERT_GT(dhp_w, 0u);
+  ASSERT_GT(sof_w, 0u);
+  ASSERT_GT(dhp_w, sof_w) << "the sequence must fall short of its DHP";
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  GIMG_Result r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  if (r == GIMG_OK) {
+    ASSERT_NE(raster, nullptr);
+    EXPECT_EQ(gimg_raster_width(raster), dhp_w);
+    gimg_raster_destroy(raster);
+  }
+  else {
+    EXPECT_EQ(raster, nullptr);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
 // A sequential frame coded as several non-interleaved scans (T.81 A.2.3).
 //
 // A.2.3 lets a sequential frame be written as one scan per component instead
