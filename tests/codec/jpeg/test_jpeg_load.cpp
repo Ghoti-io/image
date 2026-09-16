@@ -2781,6 +2781,54 @@ TEST(JpegLoad, GoldenProgressive) {
       << "canonical pixel hash (reference produced with simple chroma upsampling)";
 }
 
+// Passing no options and passing a zero-initialised GIMG_Decode_Options must
+// decode identically.  They did not: GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE used to
+// be 0, so `GIMG_Decode_Options o = {};` selected the box filter while NULL
+// selected the triangle filter, and the natural way to write the struct
+// quietly produced different pixels.  The third decode is what gives this test
+// teeth - it proves the fixture actually distinguishes the two filters, so the
+// first two agreeing means something.
+TEST(JpegLoad, ZeroInitialisedDecodeOptionsMatchNullOptions) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("progressive_sample.jpg", jpeg))
+      << "Run tests/data/jpeg/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+
+  auto decode_hash = [&](const GIMG_Decode_Options * opts, uint64_t * out) {
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_item_decode(item, opts, &raster), GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    *out = jpeg_test::raster_pixel_hash(raster);
+    gimg_raster_destroy(raster);
+  };
+
+  uint64_t null_hash = 0;
+  decode_hash(nullptr, &null_hash);
+
+  GIMG_Decode_Options zeroed = {};
+  uint64_t zeroed_hash = 0;
+  decode_hash(&zeroed, &zeroed_hash);
+
+  GIMG_Decode_Options simple = {};
+  simple.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE;
+  uint64_t simple_hash = 0;
+  decode_hash(&simple, &simple_hash);
+
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+
+  EXPECT_EQ(zeroed_hash, null_hash)
+      << "a zero-initialised GIMG_Decode_Options must decode as NULL does";
+  EXPECT_NE(simple_hash, null_hash)
+      << "fixture must distinguish the two upsampling filters, or the check "
+         "above proves nothing";
+}
+
 /** Decode EXIF-orientation fixture and compare pixels to oracle; check meta orientation. */
 TEST(JpegLoad, DecodeExifOrientationPillowOracle) {
   std::string data_dir(GIMG_TEST_DATA_JPEG);

@@ -295,14 +295,11 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
       inherited = *options;
     }
     else {
-      // Careful: GIMG_Decode_Options is not symmetric with NULL.  A NULL
-      // pointer selects fancy chroma upsampling, but a zero-initialised struct
-      // selects simple, because GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE is 0.  So a
-      // struct substituted for NULL has to restore the defaults NULL implies,
-      // or this would silently decode with a different upsampling filter than
-      // the caller asked for.
+      // Safe to substitute a zeroed struct for NULL: every field of
+      // GIMG_Decode_Options takes its default at zero, so the two are
+      // equivalent.  Keep it that way when adding fields - a field whose
+      // default is not zero makes this silently decode differently.
       memset(&inherited, 0, sizeof(inherited));
-      inherited.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
     }
     inherited.limits = &doc->load_limits;
     options = &inherited;

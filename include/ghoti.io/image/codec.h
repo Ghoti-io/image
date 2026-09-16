@@ -238,8 +238,11 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
  * @brief JPEG chroma upsampling method (decode only).
  * @see api_options
  */
-#define GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE  0  /**< Box filter (replicate). */
+/** Codec default, which is FANCY.  Zero so that a zero-initialised
+ * GIMG_Decode_Options decodes exactly as a NULL one does - see below. */
+#define GIMG_JPEG_CHROMA_UPSAMPLE_DEFAULT 0
 #define GIMG_JPEG_CHROMA_UPSAMPLE_FANCY  1  /**< Triangle filter (smooth). */
+#define GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE  2  /**< Box filter (replicate). */
 
 /**
  * @brief Decode options.
@@ -247,7 +250,12 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
  */
 typedef struct {
   const GIMG_Limits * limits;
-  /** JPEG: chroma upsampling when decoding 4:2:0/4:2:2. GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE (0) or FANCY (1). When options is NULL, FANCY is used (default). */
+  /** JPEG: chroma upsampling when decoding 4:2:0/4:2:2.
+   * GIMG_JPEG_CHROMA_UPSAMPLE_DEFAULT (0), FANCY (1) or SIMPLE (2).
+   * DEFAULT means FANCY, so passing a zero-initialised GIMG_Decode_Options
+   * and passing NULL select the same filter.  SIMPLE deliberately does not
+   * live at zero: when it did, `GIMG_Decode_Options o = {};` quietly decoded
+   * with a different filter than passing no options at all. */
   uint8_t jpeg_chroma_upsampling;
   /** JPEG decode-to precision: 0 = use file precision (8→GRAY8/RGBA8;
    * 12/16→GRAY16/RGB16 with 12-bit left-justified); 8, 12, or 16 = decode to

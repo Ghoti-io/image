@@ -368,8 +368,11 @@ static GIMG_Result jpeg_decode_baseline_extended(
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
+    // Fancy unless the caller explicitly asked for SIMPLE, so that NULL
+    // options and zero-initialised options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
+    // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
-        options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
     jpeg_plane_t pl_cb = {comp_buf[1], comp_stride_el[1], 1};
     jpeg_plane_t pl_cr = {comp_buf[2], comp_stride_el[2], 1};
     for (uint32_t y = 0; y < height; y++) {
@@ -985,8 +988,11 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
+    // Fancy unless the caller explicitly asked for SIMPLE, so that NULL
+    // options and zero-initialised options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
+    // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
-        options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
     jpeg_plane_t pl_cb = {comp_buf[1], comp_stride[1], 0};
     jpeg_plane_t pl_cr = {comp_buf[2], comp_stride[2], 0};
     for (uint32_t y = 0; y < height; y++) {
@@ -1709,8 +1715,11 @@ static GIMG_Result jpeg_decode_progressive_extended(
         comp_buf_8[i][k] = (unsigned char)(v > 255u ? 255u : v);
       }
     }
+    // Fancy unless the caller explicitly asked for SIMPLE, so that NULL
+    // options and zero-initialised options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
+    // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
-        options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
     uint32_t cw1 = comp_w[1];
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
@@ -1784,8 +1793,11 @@ static GIMG_Result jpeg_decode_progressive_extended(
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
+    // Fancy unless the caller explicitly asked for SIMPLE, so that NULL
+    // options and zero-initialised options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
+    // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
-        options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
     jpeg_plane_t pl_cb = {comp_buf[1], comp_stride_el[1], 1};
     jpeg_plane_t pl_cr = {comp_buf[2], comp_stride_el[2], 1};
     for (uint32_t y = 0; y < height; y++) {
