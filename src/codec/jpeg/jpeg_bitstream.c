@@ -527,38 +527,47 @@ int16_t jpeg_extend(int val, int n) {
 }
 
 void jpeg_bitstream_align_skip_rst(gimg_jpeg_bitstream_t * bs) {
-  if (!bs->expect_rst || bs->byte_off >= bs->size) {
+  if (!bs->expect_rst) {
     return;
   }
-  if (bs->byte_off + 1 >= bs->size) {
+  // T.81 B.2.1: the encoder pads to a byte boundary before a restart marker, so
+  // the decoder discards whatever is left of the byte it is part-way through
+  // and the marker follows.  Finding the marker is not a matter of guessing an
+  // offset: it is wherever byte alignment lands.
+  size_t pos = bs->byte_off;
+  if (bs->bit_off > 0) {
+    // The partially-read byte is spent.  If it was 0xFF then B.1.1.5 stuffed a
+    // 0x00 after it, and that stuffing belongs to the byte being discarded.
+    // Missing this was the bug: the marker then began two bytes on rather than
+    // one, the search gave up, and the scan was declared corrupt - which is why
+    // restart intervals worked or failed depending on whether a 0xFF happened
+    // to fall last before the marker.
+    if (pos + 1 < bs->size && bs->data[pos] == 0xFF &&
+        bs->data[pos + 1] == 0x00) {
+      pos += 2;
+    }
+    else {
+      pos += 1;
+    }
+  }
+  // B.1.1.2: any number of 0xFF fill bytes may precede a marker.
+  while (pos + 1 < bs->size && bs->data[pos] == 0xFF &&
+      bs->data[pos + 1] == 0xFF) {
+    pos++;
+  }
+  if (pos + 1 >= bs->size) {
     return;
   }
-  size_t rst_start;
-  if (bs->data[bs->byte_off] == 0xFF && bs->data[bs->byte_off + 1] >= 0xD0 &&
-      bs->data[bs->byte_off + 1] <= 0xD7) {
-    rst_start = bs->byte_off;
-  }
-  else if (bs->bit_off > 0) {
-    size_t next_byte = bs->byte_off + 1;
-    if (next_byte + 1 >= bs->size) {
-      return;
-    }
-    if (bs->data[next_byte] != 0xFF || bs->data[next_byte + 1] < 0xD0 ||
-        bs->data[next_byte + 1] > 0xD7) {
-      return;
-    }
-    rst_start = next_byte;
-  }
-  else {
+  if (bs->data[pos] != 0xFF || bs->data[pos + 1] < 0xD0 ||
+      bs->data[pos + 1] > 0xD7) {
     return;
   }
   bs->expect_rst = 0;
-  bs->byte_off = rst_start + 2;
+  bs->byte_off = pos + 2;
   bs->bit_off = 0;
   bs->rst_just_skipped = 1;
 #if GIMG_JPEG_DEBUG_RST_DEC
-  (void)fprintf(
-      stderr, "RST_DEC align_skip_rst at byte_off=%zu\n", rst_start);
+  (void)fprintf(stderr, "RST_DEC align_skip_rst at byte_off=%zu\n", pos);
   (void)fflush(stderr);
 #endif
 }
