@@ -135,7 +135,9 @@ COMPRESS_LIBS := $(shell pkg-config --libs $(COMPRESS_PC) 2>/dev/null)
 COMPRESS_PLACEHOLDER := (
 COMPRESS_NEED_FALLBACK := $(or $(findstring $(COMPRESS_PLACEHOLDER),$(COMPRESS_CFLAGS)),$(if $(COMPRESS_CFLAGS),,y))
 ifneq ($(COMPRESS_NEED_FALLBACK),)
-COMPRESS_CFLAGS := -I../compress/include
+# compress generates its version header into its own build tree, so the sibling
+# fallback has to reach that as well as its include/ directory.
+COMPRESS_CFLAGS := -I../compress/include -I../compress/build/$(BUILD)/generated
 COMPRESS_LIBS := -L../compress/build/$(BUILD)/apps -lghoti.io-compress$(BRANCH)
 # Let linker resolve image .so's dependency on compress when linking tests.
 LDFLAGS += -Wl,-rpath-link,../compress/build/$(BUILD)/apps
