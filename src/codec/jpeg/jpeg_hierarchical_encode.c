@@ -290,11 +290,14 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
   }
   alloc = gimg_alloc_or_default(alloc);
   *out_num_frames = 0;
-  memset(frames, 0, sizeof(*frames) * (size_t)(levels + 1));
-
+  // Bound before clearing: the caller's array is GIMG_JPEG_MAX_FRAMES long,
+  // and clearing levels + 1 entries of it is only safe once that is known to
+  // fit.  jpeg_save.c checks this too; the one here is so that the function is
+  // safe to call on its own terms.
   if (levels < 1 || levels + 1 > (int)GIMG_JPEG_MAX_FRAMES) {
     return GIMG_ERR_UNSUPPORTED;
   }
+  memset(frames, 0, sizeof(*frames) * (size_t)(levels + 1));
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
