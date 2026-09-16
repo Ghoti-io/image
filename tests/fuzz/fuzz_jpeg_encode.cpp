@@ -18,33 +18,7 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/stream.h>
 
-// Cap the decoded size.  A JPEG header is a handful of bytes and can ask for an
-// image of any size the fields allow, so without a limit the fuzzer spends its
-// time rediscovering that a 160-byte file declaring 9217x14144 at 12 bits needs
-// gigabytes.  That is what GIMG_Limits is for, not a defect, and it behaves the
-// same whichever coding process the frame uses.
-static GIMG_Limits make_limits() {
-  GIMG_Limits l = {};
-  l.max_decoded_pixels = 4u * 1024u * 1024u;
-  return l;
-}
-static const GIMG_Limits kLimits = make_limits();
-static GIMG_Decode_Options make_opts() {
-  GIMG_Decode_Options o = {};
-  o.limits = &kLimits;
-  return o;
-}
-static const GIMG_Decode_Options kOpts = make_opts();
-// Set the same cap at load time.  gimg_*_save re-decodes its source item and
-// has no decode options to pass, so the limit it honours is the one recorded
-// on the document by gimg_doc_load - which is also how an application would
-// express the policy.
-static GIMG_Load_Options make_load_opts() {
-  GIMG_Load_Options o = {};
-  o.limits = &kLimits;
-  return o;
-}
-static const GIMG_Load_Options kLoadOpts = make_load_opts();
+#include "fuzz_limits.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   if (data == nullptr || size == 0) {
@@ -58,7 +32,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   }
 
   GIMG_Doc * doc = nullptr;
-  r = gimg_doc_load(s, &kLoadOpts, nullptr, &doc);
+  r = gimg_doc_load(s, fuzz_load_options(), nullptr, &doc);
   gimg_stream_destroy(s);
   s = nullptr;
 
@@ -70,7 +44,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   size_t n = gimg_doc_item_count(doc);
   for (size_t i = 0; i < n; i++) {
     GIMG_Raster * raster = nullptr;
-    (void)gimg_item_decode(gimg_doc_item(doc, i), &kOpts, &raster);
+    (void)gimg_item_decode(gimg_doc_item(doc, i), fuzz_decode_options(), &raster);
     if (raster != nullptr) {
       gimg_raster_destroy(raster);
     }
@@ -119,7 +93,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   doc = nullptr;
 
   GIMG_Doc * doc2 = nullptr;
-  r = gimg_doc_load(s2, &kLoadOpts, nullptr, &doc2);
+  r = gimg_doc_load(s2, fuzz_load_options(), nullptr, &doc2);
   gimg_stream_destroy(s2);
   s2 = nullptr;
   gimg_stream_destroy(out_s);
@@ -129,7 +103,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     size_t n2 = gimg_doc_item_count(doc2);
     for (size_t i = 0; i < n2; i++) {
       GIMG_Raster * raster = nullptr;
-      (void)gimg_item_decode(gimg_doc_item(doc2, i), &kOpts, &raster);
+      (void)gimg_item_decode(gimg_doc_item(doc2, i), fuzz_decode_options(), &raster);
       if (raster != nullptr) {
         gimg_raster_destroy(raster);
       }

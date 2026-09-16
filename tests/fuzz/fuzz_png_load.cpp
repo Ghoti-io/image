@@ -19,6 +19,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "fuzz_limits.h"
+
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   if (data == nullptr || size == 0) {
     return 0;
@@ -31,7 +33,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   }
 
   GIMG_Doc * doc = nullptr;
-  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  r = gimg_doc_load(s, fuzz_load_options(), nullptr, &doc);
   gimg_stream_destroy(s);
   s = nullptr;
 

@@ -178,6 +178,13 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   uint32_t comp_h[GIMG_JPEG_MAX_COMPONENTS];
   uint16_t * plane[GIMG_JPEG_MAX_COMPONENTS];
   memset(plane, 0, sizeof(plane));
+  // Declared here rather than beside the arithmetic setup below, because the
+  // allocation failures between here and there jump straight to the cleanup,
+  // which frees these.
+  uint8_t * db_cat[GIMG_JPEG_MAX_COMPONENTS];
+  int da_cat[GIMG_JPEG_MAX_COMPONENTS];
+  memset(db_cat, 0, sizeof(db_cat));
+  memset(da_cat, 0, sizeof(da_cat));
   GIMG_Result r = GIMG_OK;
   for (uint8_t i = 0; i < num_comp; i++) {
     comp_w[i] = mcu_per_row * sof->h_samp[i];
@@ -196,20 +203,49 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
     memset(plane[i], 0, n * sizeof(uint16_t));
   }
 
+  // T.81 Table B.1: SOF11 is this same predictive process with the arithmetic
+  // coder of Annex D in place of the Huffman coder.  Only the entropy layer
+  // differs - predictors, point transform, restart handling and the sample
+  // raster below are shared - so the two paths diverge at exactly one point,
+  // where a difference is read.
+  const int is_arith = state->is_arithmetic;
+
   gimg_jpeg_huff_table_t dc_tables[4];
   memset(dc_tables, 0, sizeof(dc_tables));
-  for (uint8_t c = 0; c < scan->comp_count; c++) {
-    uint8_t id = scan->dc_tbl[c];
-    if (id >= 4 || !state->huff_dc[id] ||
-        jpeg_build_huff_table(
-            state->huff_dc[id], state->huff_dc_len[id], &dc_tables[id]) != 0) {
-      r = GIMG_ERR_CORRUPT;
-      goto fail;
+  if (!is_arith) {
+    for (uint8_t c = 0; c < scan->comp_count; c++) {
+      uint8_t id = scan->dc_tbl[c];
+      if (id >= 4 || !state->huff_dc[id] ||
+          jpeg_build_huff_table(
+              state->huff_dc[id], state->huff_dc_len[id], &dc_tables[id]) != 0) {
+        r = GIMG_ERR_CORRUPT;
+        goto fail;
+      }
     }
   }
 
   gimg_jpeg_bitstream_t bs;
   jpeg_bitstream_init(&bs, scan->data, scan->data_size);
+
+  // H.1.2.3.1: the conditioning needs the category of the difference coded for
+  // the sample above, so one row of categories per component is carried from
+  // line to line.  Categories, not the differences themselves - five values is
+  // all the model looks at.
+  jpeg_arith_decoder_t ad;
+  jpeg_arith_lossless_stats_t astats;
+  if (is_arith) {
+    jpeg_arith_decoder_init(&ad, scan->data, scan->data_size);
+    jpeg_arith_lossless_stats_reset(&astats);
+    for (uint8_t i = 0; i < num_comp; i++) {
+      db_cat[i] = (uint8_t *)gimg_malloc(alloc, comp_w[i]);
+      if (!db_cat[i]) {
+        r = GIMG_ERR_OOM;
+        goto fail;
+      }
+      memset(db_cat[i], 0, comp_w[i]);
+    }
+  }
+
   uint16_t restart_interval = scan->restart_interval;
 
   // H.1.2.1: the first sample of the image predicts from 2^(P-Pt-1), and so
@@ -225,26 +261,54 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   // every interval after the first as noise.
   // Per component: in an interleaved scan every component starts its own
   // predictive context afresh at a restart, and each has its own first sample.
-  int restart_pending[GIMG_JPEG_MAX_COMPONENTS];
-  uint32_t restart_row[GIMG_JPEG_MAX_COMPONENTS];
+  // H.1.2.1 describes the predictor as a per-line state: the first line of the
+  // scan is predicted one-dimensionally from Ra, later lines use the selected
+  // predictor and take Rb at their start.  A restart puts the coder back into
+  // that first-line state - libjpeg does it by calling start_pass again from
+  // its restart handler, and the ISO reference codec behaves the same way.
+  //
+  // Because the state is per line, a restart only changes the prediction when
+  // it falls on a line boundary.  libjpeg refuses a restart interval that is
+  // not a whole number of MCU rows ("must be an integer multiple of the number
+  // of MCUs in an MCU row"), so for everything it will read, it always does.
+  // A mid-row interval is left predicting as though no restart had happened,
+  // which is what the reference codec produces and the only reading under
+  // which such a file decodes at all.
+  int row_1d[GIMG_JPEG_MAX_COMPONENTS];
   for (uint8_t i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
-    restart_pending[i] = 1;
-    restart_row[i] = 0;
+    row_1d[i] = 1; // the first line of the scan is one-dimensional
   }
+  int restart_now = 0;
 
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
     for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
       uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
       if (restart_interval > 0 && mcu_index > 0 &&
           mcu_index % (uint32_t)restart_interval == 0) {
-        bs.expect_rst = 1;
-        jpeg_bitstream_align_skip_rst(&bs);
-        if (bs.rst_just_skipped) {
-          bs.rst_just_skipped = 0;
+        if (is_arith) {
+          // D.2.9 and H.1.2.3.4: the decoder is primed afresh past the marker
+          // and every statistics bin goes back to its initial state.
+          r = jpeg_arith_lossless_restart(&ad, &astats);
+          if (r != GIMG_OK) {
+            goto fail;
+          }
+          // H.1.2.3.1: "At the beginning of the scan and each restart interval
+          // the conditioning derived from the line above is set to zero."
+          for (uint8_t i = 0; i < num_comp; i++) {
+            if (db_cat[i]) {
+              memset(db_cat[i], 0, comp_w[i]);
+            }
+            da_cat[i] = 0;
+          }
         }
-        for (uint8_t i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
-          restart_pending[i] = 1;
+        else {
+          bs.expect_rst = 1;
+          jpeg_bitstream_align_skip_rst(&bs);
+          if (bs.rst_just_skipped) {
+            bs.rst_just_skipped = 0;
+          }
         }
+        restart_now = 1;
       }
       for (uint8_t s = 0; s < scan->comp_count; s++) {
         uint8_t ci = 0;
@@ -264,25 +328,48 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
             uint32_t x = mcu_x * sof->h_samp[ci] + sx;
             uint32_t y = mcu_y * sof->v_samp[ci] + sy;
             int32_t diff = 0;
-            r = jpeg_lossless_decode_diff(&bs, tbl, &diff);
-            if (r != GIMG_OK) {
-              goto fail;
+            if (is_arith) {
+              // H.1.2.3.1: at the start of each line the difference to the
+              // left is taken as zero for conditioning purposes.
+              if (x == 0) {
+                da_cat[ci] = 0;
+              }
+              int cat = 0;
+              r = jpeg_arith_lossless_decode_diff(&ad, &astats,
+                  &state->arith_cond, scan->dc_tbl[s], da_cat[ci],
+                  (int)db_cat[ci][x], &diff, &cat);
+              if (r != GIMG_OK) {
+                goto fail;
+              }
+              // This difference becomes Da for the next sample on this line
+              // and Db for the sample below it.  db_cat[x] is read above and
+              // overwritten here, in that order.
+              da_cat[ci] = cat;
+              db_cat[ci][x] = (uint8_t)cat;
+            }
+            else {
+              r = jpeg_lossless_decode_diff(&bs, tbl, &diff);
+              if (r != GIMG_OK) {
+                goto fail;
+              }
             }
             int32_t pred;
-            if (restart_pending[ci]) {
-              // The first sample of the image or of a restart interval.
-              pred = initial_pred;
-              restart_row[ci] = y;
+            if (x == 0) {
+              // H.1.2.1: 2^(P-Pt-1) begins the first line, and a restart makes
+              // the line it lands on a first line again.  Otherwise a line
+              // starts from the sample above it, whatever the frame's
+              // predictor selection says.
+              if (y == 0 || restart_now) {
+                pred = initial_pred;
+                row_1d[ci] = 1;
+              }
+              else {
+                pred = (int32_t)plane[ci][(size_t)(y - 1) * cw];
+                row_1d[ci] = 0;
+              }
             }
-            else if (y == restart_row[ci]) {
-              // Still on the row the interval began: one-dimensional
-              // prediction, because there is no row above it to refer to.
-              pred = (int32_t)plane[ci][(size_t)y * cw + (x - 1)];
-            }
-            else if (x == 0) {
-              // H.1.2.1: the first sample of a line predicts from the sample
-              // above it, whatever the frame's predictor selection says.
-              pred = (int32_t)plane[ci][(size_t)(y - 1) * cw];
+            else if (row_1d[ci]) {
+              pred = (int32_t)plane[ci][(size_t)y * cw + (x - 1)]; // Ra
             }
             else {
               int32_t ra = (int32_t)plane[ci][(size_t)y * cw + (x - 1)];
@@ -290,13 +377,13 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
               int32_t rc = (int32_t)plane[ci][(size_t)(y - 1) * cw + (x - 1)];
               pred = jpeg_lossless_predict(psv, ra, rb, rc);
             }
-            restart_pending[ci] = 0;
             // H.1.2.1: the reconstruction is modulo 2^16.
             plane[ci][(size_t)y * cw + x] =
                 (uint16_t)((uint32_t)(pred + diff) & 0xFFFFu);
           }
         }
       }
+      restart_now = 0;
     }
   }
 
@@ -368,6 +455,9 @@ fail:
   for (uint8_t i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
     if (plane[i]) {
       gimg_free(alloc, plane[i]);
+    }
+    if (db_cat[i]) {
+      gimg_free(alloc, db_cat[i]);
     }
   }
   if (r != GIMG_OK && *out_raster) {
@@ -518,6 +608,12 @@ typedef struct {
   int oom;
 } jpeg_ll_writer;
 
+typedef struct {
+  jpeg_ll_writer * w;
+  const GIMG_Allocator * alloc;
+  int oom;
+} jpeg_arith_sink_t;
+
 static int jpeg_ll_ensure(jpeg_ll_writer * w, size_t extra) {
   if (w->len + extra <= w->cap) {
     return 1;
@@ -534,6 +630,17 @@ static int jpeg_ll_ensure(jpeg_ll_writer * w, size_t extra) {
   w->buf = p;
   w->cap = cap;
   return 1;
+}
+
+/** Byte sink for the arithmetic coder: D.1.6 already applies the B.1.1.5
+ * stuffing, so these bytes go straight into the scan. */
+static void jpeg_arith_lossless_sink_emit(void * ctx, unsigned char b) {
+  jpeg_arith_sink_t * sink = (jpeg_arith_sink_t *)ctx;
+  if (!jpeg_ll_ensure(sink->w, 1)) {
+    sink->oom = 1;
+    return;
+  }
+  sink->w->buf[sink->w->len++] = b;
 }
 
 static void jpeg_ll_put_bits(jpeg_ll_writer * w, uint32_t code, int n) {
@@ -566,7 +673,7 @@ static void jpeg_ll_flush(jpeg_ll_writer * w) {
 
 GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int psv, uint16_t restart_interval,
-    unsigned char ** out_scan_data, size_t * out_scan_size,
+    int arithmetic, unsigned char ** out_scan_data, size_t * out_scan_size,
     unsigned char ** out_dht, size_t * out_dht_len, uint32_t * out_width,
     uint32_t * out_height, int * out_num_components, int * out_precision) {
   if (!alloc || !raster || !out_scan_data || !out_scan_size || !out_dht ||
@@ -636,41 +743,39 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
           : (int32_t)(pixels + (size_t)(yy) * stride)[(size_t)(xx) *           \
                 (size_t)channels + (cc)])
 
-  uint32_t restart_row[GIMG_JPEG_MAX_COMPONENTS];
-  int restart_pending[GIMG_JPEG_MAX_COMPONENTS];
+  // The same per-line predictor state the decoder keeps; see the note there.
+  int row_1d[GIMG_JPEG_MAX_COMPONENTS];
   for (unsigned i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
-    restart_row[i] = 0;
-    restart_pending[i] = 1;
+    row_1d[i] = 1;
   }
+  int restart_now = 0;
   // Sampling is 1x1 for every component, so an MCU is one sample of each
   // (T.81 H.1.1) and the MCU index is the raster index.
   size_t di = 0;
   for (uint32_t y = 0; y < height; y++) {
     for (uint32_t x = 0; x < width; x++) {
       size_t mcu_index = (size_t)y * width + x;
-      if (restart_interval > 0 && mcu_index > 0 &&
-          mcu_index % (size_t)restart_interval == 0) {
-        for (unsigned i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {
-          restart_pending[i] = 1;
-        }
-      }
+      restart_now = (restart_interval > 0 && mcu_index > 0 &&
+          mcu_index % (size_t)restart_interval == 0);
       for (int c = 0; c < num_comp; c++) {
         int32_t pred;
-        if (restart_pending[c]) {
-          pred = initial_pred;
-          restart_row[c] = y;
+        if (x == 0) {
+          if (y == 0 || restart_now) {
+            pred = initial_pred;
+            row_1d[c] = 1;
+          }
+          else {
+            pred = LL_SAMPLE(c, 0, y - 1);
+            row_1d[c] = 0;
+          }
         }
-        else if (y == restart_row[c]) {
+        else if (row_1d[c]) {
           pred = LL_SAMPLE(c, x - 1, y);
-        }
-        else if (x == 0) {
-          pred = LL_SAMPLE(c, 0, y - 1);
         }
         else {
           pred = jpeg_lossless_predict(psv, LL_SAMPLE(c, x - 1, y),
               LL_SAMPLE(c, x, y - 1), LL_SAMPLE(c, x - 1, y - 1));
         }
-        restart_pending[c] = 0;
         // H.1.2.1: the difference is taken modulo 2^16, so that it always fits
         // the categories of H.1.2.2 whatever the prediction was.
         int32_t d = (int32_t)(((uint32_t)LL_SAMPLE(c, x, y) - (uint32_t)pred) &
@@ -684,6 +789,99 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     }
   }
   #undef LL_SAMPLE
+
+  // T.81 SOF11: the same differences, coded with Annex D instead of Annex F.
+  // Both passes read one buffer, so a disagreement between them is a defect in
+  // one of the two rather than something a decoder has to be built to notice.
+  if (arithmetic) {
+    jpeg_ll_writer aw;
+    memset(&aw, 0, sizeof(aw));
+    aw.alloc = alloc;
+    jpeg_arith_sink_t sink = {&aw, alloc, 0};
+    jpeg_arith_encoder_t e;
+    jpeg_arith_lossless_stats_t astats;
+    jpeg_arith_cond_t cond;
+    jpeg_arith_cond_defaults(&cond);
+    jpeg_arith_encoder_init(&e, jpeg_arith_lossless_sink_emit, &sink);
+    jpeg_arith_lossless_stats_reset(&astats);
+
+    // H.1.2.3.1: one row of difference categories per component, plus the
+    // category to the left, both cleared where the spec says to clear them.
+    uint8_t * db = (uint8_t *)gimg_malloc(
+        alloc, (size_t)width * (size_t)num_comp);
+    if (!db) {
+      gimg_free(alloc, diffs);
+      return GIMG_ERR_OOM;
+    }
+    memset(db, 0, (size_t)width * (size_t)num_comp);
+    int da[GIMG_JPEG_MAX_COMPONENTS];
+    memset(da, 0, sizeof(da));
+
+    GIMG_Result ar = GIMG_OK;
+    for (size_t i = 0; i < n_diffs; i++) {
+      size_t mcu_index = i / (size_t)num_comp;
+      int c = (int)(i % (size_t)num_comp);
+      uint32_t x = (uint32_t)(mcu_index % width);
+      if (restart_interval > 0 && c == 0 && mcu_index > 0 &&
+          mcu_index % (size_t)restart_interval == 0) {
+        // D.1.8 then B.2.1: flush the coder, align, write the marker, and
+        // start again with every bin at its initial state (H.1.2.3.4).
+        jpeg_arith_encoder_flush(&e);
+        if (!jpeg_ll_ensure(&aw, 2)) {
+          ar = GIMG_ERR_OOM;
+          break;
+        }
+        aw.buf[aw.len++] = 0xFF;
+        aw.buf[aw.len++] = (unsigned char)(0xD0 +
+            ((mcu_index / (size_t)restart_interval - 1u) & 7u));
+        jpeg_arith_encoder_init(&e, jpeg_arith_lossless_sink_emit, &sink);
+        jpeg_arith_lossless_stats_reset(&astats);
+        memset(db, 0, (size_t)width * (size_t)num_comp);
+        memset(da, 0, sizeof(da));
+      }
+      if (x == 0) {
+        da[c] = 0; // H.1.2.3.1: Da is zero at the start of every line.
+      }
+      int cat = 0;
+      jpeg_arith_lossless_encode_diff(&e, &astats, &cond, 0, da[c],
+          (int)db[(size_t)x * (size_t)num_comp + (size_t)c], diffs[i], &cat);
+      da[c] = cat;
+      db[(size_t)x * (size_t)num_comp + (size_t)c] = (uint8_t)cat;
+      if (sink.oom) {
+        ar = GIMG_ERR_OOM;
+        break;
+      }
+    }
+    gimg_free(alloc, db);
+    gimg_free(alloc, diffs);
+    if (ar == GIMG_OK) {
+      jpeg_arith_encoder_flush(&e);
+      if (sink.oom || aw.oom) {
+        ar = GIMG_ERR_OOM;
+      }
+    }
+    if (ar != GIMG_OK) {
+      gimg_free(alloc, aw.buf);
+      return ar;
+    }
+    *out_scan_data = aw.buf;
+    *out_scan_size = aw.len;
+    *out_dht = NULL; // an arithmetic frame carries no Huffman tables
+    *out_dht_len = 0;
+    if (out_width) {
+      *out_width = width;
+    }
+    if (out_height) {
+      *out_height = height;
+    }
+    if (out_num_components) {
+      *out_num_components = num_comp;
+    }
+    if (out_precision) {
+      *out_precision = precision;
+    }
+    return GIMG_OK;
+  }
 
   unsigned char bits[17];
   unsigned char vals[JPEG_LL_SYMBOLS];

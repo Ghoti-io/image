@@ -1920,7 +1920,7 @@ static void jpeg_gather_component_blocks(int16_t * interleaved,
  */
 static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components, int precision,
-    int psv, const unsigned char * dht, size_t dht_len,
+    int psv, int arithmetic, const unsigned char * dht, size_t dht_len,
     const unsigned char * scan_data, size_t scan_size,
     uint16_t restart_interval, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
@@ -1953,11 +1953,12 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     n += written;
   }
 
-  // SOF3 (B.2.2), with 1x1 sampling: a lossless MCU is made of samples, and
-  // subsampling would discard them.
+  // SOF3, or SOF11 for the arithmetic coder (Table B.1), with 1x1 sampling: a
+  // lossless MCU is made of samples, and subsampling would discard them.
   {
     uint16_t sof_len = (uint16_t)(8 + 3 * num_components);
-    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOF3, &n);
+    r = jpeg_write_marker(stream,
+        arithmetic ? GIMG_JPEG_MARKER_SOF11 : GIMG_JPEG_MARKER_SOF3, &n);
     if (r != GIMG_OK) {
       return r;
     }
@@ -1985,19 +1986,44 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     n += written;
   }
 
-  r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DHT, &n);
-  if (r != GIMG_OK) {
-    return r;
+  if (arithmetic) {
+    // B.2.4.3: DAC in place of DHT.  A lossless scan codes only differences,
+    // which use the DC conditioning (H.1.2.3.3 gives the defaults L = 0 and
+    // U = 1), so there is no AC entry to write.  One table serves every
+    // component because the scan names table 0 for all of them.
+    uint16_t dac_len = 4;
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, dac_len, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    unsigned char dac[2];
+    dac[0] = 0x00; // Tc = 0 (DC/lossless), Tb = 0
+    dac[1] = 0x10; // U = 1, L = 0
+    r = gimg_stream_write(stream, dac, sizeof(dac), &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
   }
-  r = jpeg_write_u16(stream, (uint16_t)(2 + dht_len), &n);
-  if (r != GIMG_OK) {
-    return r;
+  else {
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DHT, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, (uint16_t)(2 + dht_len), &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = gimg_stream_write(stream, dht, dht_len, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
   }
-  r = gimg_stream_write(stream, dht, dht_len, &written);
-  if (r != GIMG_OK) {
-    return r;
-  }
-  n += written;
 
   r = jpeg_write_dri(stream, restart_interval, &n);
   if (r != GIMG_OK) {
@@ -2539,10 +2565,10 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
       return GIMG_ERR_UNSUPPORTED; // T.81 Table H.1 defines 1..7
     }
-    if (progressive || arithmetic) {
-      // T.81 has SOF11 for arithmetic lossless and puts progression in the
-      // DCT-based processes only; neither is implemented, and quietly writing
-      // something else is worse than saying so.
+    if (progressive) {
+      // T.81 puts progression in the DCT-based processes only: there is no
+      // progressive lossless frame to write.  Arithmetic is fine - that is
+      // SOF11, Table B.1.
       if (raster_owned) {
         gimg_raster_destroy(raster);
       }
@@ -2600,8 +2626,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
     r = gimg_jpeg_encode_lossless(alloc, raster, lossless_psv, restart_interval,
-        &scan_data, &scan_size, &lossless_dht, &lossless_dht_len, &width,
-        &height, &num_components, &precision);
+        arithmetic, &scan_data, &scan_size, &lossless_dht, &lossless_dht_len,
+        &width, &height, &num_components, &precision);
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -3220,8 +3246,8 @@ lossless_have_scan:
   }
   else if (lossless_psv != 0) {
     r = jpeg_write_image_body_lossless(stream, width, height, num_components,
-        precision, lossless_psv, lossless_dht, lossless_dht_len, scan_data,
-        scan_size, restart_interval, &report->bytes_written);
+        precision, lossless_psv, arithmetic, lossless_dht, lossless_dht_len,
+        scan_data, scan_size, restart_interval, &report->bytes_written);
     gimg_free(alloc, lossless_dht);
     gimg_free(alloc, to_free);
   }

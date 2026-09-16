@@ -1112,6 +1112,87 @@ TEST(JpegLoad, DecodeRespectsMaxDecodedPixels) {
   gimg_stream_destroy(s);
 }
 
+// SOF11, the lossless arithmetic process (T.81 Annex H coded with Annex D).
+// Every fixture here was produced by the ISO reference codec, not by this
+// library, so the test compares against an independent implementation rather
+// than against our own encoder.  A lossless codec must return exactly what
+// went in, so the fixture's own source image is the expected output.
+TEST(JpegLoad, DecodeLosslessArithmeticMatchesReferenceCodec) {
+  struct Case {
+    const char * jpg;
+    const char * src;
+    const char * what;
+  };
+  static const Case cases[] = {
+      {"lossless_arith_gray.jpg", "lossless_arith_gray.pgm", "8-bit grey"},
+      {"lossless_arith_rgb.jpg", "lossless_arith_rgb.ppm", "8-bit RGB"},
+      {"lossless_arith_gray12.jpg", "lossless_arith_gray12.pgm", "12-bit grey"},
+      {"lossless_arith_gray16.jpg", "lossless_arith_gray16.pgm", "16-bit grey"},
+      // A restart interval of one whole MCU row.
+      {"lossless_arith_restart.jpg", "lossless_arith_restart.pgm",
+          "restart, row-aligned"},
+      // A restart interval that is not a whole number of rows.  libjpeg
+      // refuses these ("must be an integer multiple of the number of MCUs in
+      // an MCU row"), so the reference codec is the only source of one - and
+      // this is the shape that caught the predictor being reset at every
+      // interval instead of only where an interval starts a line.
+      {"lossless_arith_midrow.jpg", "lossless_arith_midrow.pgm",
+          "restart, mid-row"},
+      // The same interval with the Huffman coder: the predictor is shared, so
+      // a defect in it shows up under both and neither test alone says which.
+      {"lossless_huff_midrow.jpg", "lossless_huff_midrow.pgm",
+          "SOF3, restart mid-row"},
+  };
+  for (const Case & c : cases) {
+    uint32_t sw = 0, sh = 0;
+    int channels = 0, bits = 0;
+    std::vector<uint32_t> want;
+    ASSERT_TRUE(jpeg_test::load_pnm_file(c.src, &sw, &sh, &channels, &bits, want))
+        << c.src;
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg)) << c.jpg;
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK) << c.what;
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK)
+        << c.what;
+    ASSERT_NE(raster, nullptr);
+    EXPECT_EQ(gimg_raster_width(raster), sw) << c.what;
+    EXPECT_EQ(gimg_raster_height(raster), sh) << c.what;
+    int out_bits = (bits <= 8) ? 8 : 16;
+    const unsigned char * px =
+        (const unsigned char *)gimg_raster_pixels_const(raster);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    int rchan = (int)gimg_raster_format(raster)->channel_count;
+    int bad = 0;
+    for (uint32_t y = 0; y < sh && bad == 0; y++) {
+      for (uint32_t x = 0; x < sw && bad == 0; x++) {
+        for (int k = 0; k < channels; k++) {
+          uint32_t expect = jpeg_test::widen_sample(
+              want[((size_t)y * sw + x) * (size_t)channels + (size_t)k], bits,
+              out_bits);
+          uint32_t got = (out_bits == 8)
+              ? (uint32_t)px[(size_t)y * stride + (size_t)x * rchan + k]
+              : (uint32_t)((const uint16_t *)(px + (size_t)y * stride))
+                    [(size_t)x * rchan + k];
+          if (expect != got) {
+            ADD_FAILURE() << c.what << ": first diff at (" << x << "," << y
+                          << ") channel " << k << ": want " << expect
+                          << " got " << got;
+            bad = 1;
+            break;
+          }
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
 TEST(JpegLoad, App1ExifPopulatesMetaCommonOrientation) {
   std::vector<uint8_t> jpeg = make_jpeg_with_app1_exif();
   GIMG_Stream * s = nullptr;

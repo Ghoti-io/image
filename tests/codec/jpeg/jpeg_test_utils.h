@@ -45,6 +45,25 @@ std::string raster_first_diff(const GIMG_Raster * a, const GIMG_Raster * b);
 bool rasters_equal_with_tolerance(
     const GIMG_Raster * a, const GIMG_Raster * b, int max_diff);
 
+/**
+ * Read a binary PNM (P5 grey or P6 colour) from GIMG_TEST_DATA_JPEG.
+ *
+ * The lossless fixtures keep their source image beside them as a PNM rather
+ * than as an opaque .raw dump, because a lossless codec has to return exactly
+ * what went in: the source is the expected output, and in this form it can be
+ * viewed and regenerated without a tool.  @p out_bits is the sample precision
+ * implied by maxval, and samples come back one per channel, row-major.
+ */
+bool load_pnm_file(const char * filename, uint32_t * out_w, uint32_t * out_h,
+    int * out_channels, int * out_bits, std::vector<uint32_t> & out_samples);
+
+/**
+ * Widen a sample the way the JPEG decoder does when it puts a P-bit lossless
+ * sample into an 8- or 16-bit raster (bit replication, not a shift), so a
+ * fixture's own values can be compared with what the decoder produced.
+ */
+uint32_t widen_sample(uint32_t v, int from_bits, int to_bits);
+
 /** Output directory for encoded JPEGs (tests/out/jpeg). */
 std::string jpeg_output_dir(void);
 

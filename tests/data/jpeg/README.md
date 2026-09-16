@@ -359,3 +359,77 @@ APP0, because JFIF declares three-component data to be YCbCr and libjpeg takes
 that ahead of the Adobe marker.  A lossless frame stores RGB, so it carries the
 Adobe marker and no JFIF.  And libjpeg's lossless decoder requires a restart
 interval to be a whole number of MCU rows; ours rounds down to satisfy it.
+
+
+## The lossless arithmetic oracle (SOF11)
+
+libjpeg-turbo does not implement SOF11 - lossless coded with the arithmetic
+coder of Annex D - so for a long time nothing here could check it.  The one
+implementation that does is Thomas Richter's codec, the ISO group's own
+reference for T.81:
+
+```sh
+git clone --depth 1 https://github.com/thorfdbg/libjpeg.git
+cd libjpeg && ./configure && make final     # produces ./jpeg
+```
+
+It is used the way `cjpeg` and `djpeg` already are - a separate program run at
+test time to produce reference files.  Nothing links against it and none of its
+code is in this repository.
+
+Two things to know before it will work:
+
+- **It needs a patch to encode lossless at all.**  `Tables::InstallDefaultTables`
+  builds quantization tables only for the lossy frame types, but `Scan` calls
+  `Tables::QuantizationTableIndexOf` unconditionally to pick a DC table index,
+  so every `-p` encode - including the one its own README documents - dies with
+  "DQT marker missing, no quantization table defined".  Returning the index the
+  surrounding logic would give when no tables are present fixes it:
+
+  ```c++
+  // codestream/tables.cpp, Tables::QuantizationTableIndexOf
+  if (m_pQuant == NULL)
+    return (separatechroma && component > 0) ? 1 : 0;   // was: JPG_THROW(...)
+  ```
+
+- **The predictor is fixed at 4.**  There is no command-line selection, so the
+  other six are covered by round-trip and by libjpeg-turbo, which does let you
+  choose (`cjpeg -lossless <psv>,<pt>`).
+
+Encode and decode:
+
+```sh
+jpeg -p -a -c in.pgm out.jpg     # SOF11; -c keeps RGB out of YCbCr
+jpeg -p -c    in.pgm out.jpg     # SOF3, the Huffman counterpart
+jpeg -z 17 -p -a -c in.pgm out.jpg   # with a restart interval
+jpeg out.jpg back.pgm            # decode
+```
+
+### What it settled
+
+Lossless restart intervals are where the two reference codecs and a literal
+reading of the spec come apart, and the fixtures `lossless_arith_restart.jpg`,
+`lossless_arith_midrow.jpg` and `lossless_huff_midrow.jpg` exist to pin it down.
+
+H.1.2.1 says both of these:
+
+> The one-dimensional horizontal predictor (prediction sample Ra) is used for
+> the first line of samples at the start of the scan and at the beginning of
+> each restart interval.
+
+> At the beginning of the first line and at the beginning of each restart
+> interval the prediction value of 2^(P-1) is used.
+
+Taken literally the second sentence resets the predictor at every interval,
+wherever it falls.  Both reference codecs instead treat the predictor as **per
+line**: a restart puts the coder back into first-line state - libjpeg does it by
+calling `start_pass` again from `process_restart` in `jddiffct.c` - so it only
+changes the prediction when the interval begins at a line boundary.  An interval
+that starts mid-row predicts as though no restart had happened.
+
+That distinction is invisible to libjpeg, which refuses a restart interval that
+is not a whole number of MCU rows ("must be an integer multiple of the number of
+MCUs in an MCU row"), and invisible to this library's own output, which snaps
+the interval to whole rows for exactly that reason.  It took a mid-row interval
+from the reference codec to expose it, and it was wrong here for both entropy
+coders until then.

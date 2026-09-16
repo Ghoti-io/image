@@ -2791,6 +2791,10 @@ TEST(JpegEncode, LosslessRoundTripsExactly) {
   for (const Case & f : formats) {
     for (int psv = 1; psv <= 7; psv++) {
       for (uint16_t ri : {(uint16_t)0, (uint16_t)kW}) {
+      // T.81 Table B.1: SOF3 and SOF11 are the same predictive process with a
+      // different entropy coder, so everything below is shared and only the
+      // marker and the table segment differ.
+      for (int arith = 0; arith <= 1; arith++) {
         uint32_t maxv = (f.bits >= 32) ? 0xFFFFFFFFu : ((1u << f.bits) - 1u);
         std::vector<uint32_t> want((size_t)kW * kH * 3);
         GIMG_Doc * doc = nullptr;
@@ -2839,6 +2843,7 @@ TEST(JpegEncode, LosslessRoundTripsExactly) {
         opts.metadata_policy = GIMG_META_PRESERVE_ALL;
         opts.jpeg_lossless_predictor = (uint8_t)psv;
         opts.jpeg_restart_interval = ri;
+        opts.jpeg_arithmetic = (uint8_t)arith;
         GIMG_Save_Report report = {};
         ASSERT_EQ(gimg_doc_save(doc, st, "jpeg", &opts, &report), GIMG_OK)
             << f.what << " psv " << psv;
@@ -2853,19 +2858,26 @@ TEST(JpegEncode, LosslessRoundTripsExactly) {
         // The frame must announce itself as lossless at the raster's own
         // precision, and must carry no quantisation table - there is nothing
         // to quantise.
-        bool saw_sof3 = false, saw_dqt = false;
+        bool saw_sof = false, saw_dqt = false, saw_dht = false, saw_dac = false;
         int got_precision = 0;
+        const uint8_t want_sof = arith ? 0xCB : 0xC3;
         for (size_t i = 0; i + 3 < jpeg.size(); i++) {
           if (jpeg[i] != 0xFF) continue;
-          if (jpeg[i + 1] == 0xC3) {
-            saw_sof3 = true;
+          if (jpeg[i + 1] == want_sof) {
+            saw_sof = true;
             got_precision = jpeg[i + 4];
           }
           if (jpeg[i + 1] == 0xDB) saw_dqt = true;
+          if (jpeg[i + 1] == 0xC4) saw_dht = true;
+          if (jpeg[i + 1] == 0xCC) saw_dac = true;
           if (jpeg[i + 1] == 0xDA) break;
         }
-        EXPECT_TRUE(saw_sof3) << f.what;
+        EXPECT_TRUE(saw_sof) << f.what << (arith ? " SOF11" : " SOF3");
         EXPECT_FALSE(saw_dqt) << f.what << ": a lossless frame has no DQT";
+        // B.2.4.3: DAC replaces DHT in an arithmetic frame, and a Huffman one
+        // carries no conditioning.
+        EXPECT_EQ(saw_dac, arith != 0) << f.what;
+        EXPECT_EQ(saw_dht, arith == 0) << f.what;
         EXPECT_EQ(got_precision, f.bits) << f.what;
 
         GIMG_Stream * in = nullptr;
@@ -2908,13 +2920,15 @@ TEST(JpegEncode, LosslessRoundTripsExactly) {
                                    ((1ull << out_bits) - 1ull) / 2ull) /
                       ((1ull << out_bits) - 1ull));
               ASSERT_EQ(narrowed, want[((size_t)y * kW + x) * 3 + (size_t)c])
-                  << f.what << " psv " << psv << " ri " << ri << " at (" << x
-                  << ", " << y << ") channel " << c;
+                  << f.what << (arith ? " SOF11" : " SOF3") << " psv " << psv
+                  << " ri " << ri << " at (" << x << ", " << y << ") channel "
+                  << c;
             }
           }
         }
         gimg_raster_destroy(decoded);
         gimg_doc_destroy(back);
+      }
       }
     }
   }

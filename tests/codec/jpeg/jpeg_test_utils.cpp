@@ -6,11 +6,14 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <cctype>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <string>
+#include <vector>
 #include <ghoti.io/image/raster.h>
 
 #include "jpeg_test_utils.h"
@@ -729,3 +732,84 @@ bool raster_matches_oracle_raw(const GIMG_Raster * raster,
 }
 
 } // namespace jpeg_test
+
+bool jpeg_test::load_pnm_file(const char * filename, uint32_t * out_w,
+    uint32_t * out_h, int * out_channels, int * out_bits,
+    std::vector<uint32_t> & out_samples) {
+  std::string path = std::string(GIMG_TEST_DATA_JPEG) + "/" + filename;
+  std::ifstream f(path, std::ios::binary);
+  if (!f) {
+    return false;
+  }
+  std::vector<uint8_t> d((std::istreambuf_iterator<char>(f)),
+      std::istreambuf_iterator<char>());
+  if (d.size() < 3 || d[0] != 'P' || (d[1] != '5' && d[1] != '6')) {
+    return false;
+  }
+  int channels = (d[1] == '5') ? 1 : 3;
+  size_t i = 2;
+  long fields[3] = {0, 0, 0};
+  for (int k = 0; k < 3;) {
+    while (i < d.size() && isspace(d[i])) {
+      i++;
+    }
+    if (i < d.size() && d[i] == '#') {
+      while (i < d.size() && d[i] != '\n') {
+        i++;
+      }
+      continue;
+    }
+    size_t j = i;
+    while (j < d.size() && !isspace(d[j])) {
+      j++;
+    }
+    if (j == i) {
+      return false;
+    }
+    fields[k++] = strtol(std::string((const char *)&d[i], j - i).c_str(), nullptr, 10);
+    i = j;
+  }
+  i++; // the single whitespace byte after maxval
+  uint32_t w = (uint32_t)fields[0], h = (uint32_t)fields[1];
+  long maxv = fields[2];
+  if (w == 0 || h == 0 || maxv <= 0 || maxv > 65535) {
+    return false;
+  }
+  int bits = 0;
+  for (long m = maxv; m; m >>= 1) {
+    bits++;
+  }
+  size_t count = (size_t)w * h * (size_t)channels;
+  size_t need = count * (maxv < 256 ? 1u : 2u);
+  if (d.size() - i < need) {
+    return false;
+  }
+  out_samples.resize(count);
+  for (size_t k = 0; k < count; k++) {
+    out_samples[k] = (maxv < 256)
+        ? (uint32_t)d[i + k]
+        : (uint32_t)((d[i + k * 2] << 8) | d[i + k * 2 + 1]);
+  }
+  *out_w = w;
+  *out_h = h;
+  *out_channels = channels;
+  *out_bits = bits;
+  return true;
+}
+
+uint32_t jpeg_test::widen_sample(uint32_t v, int from_bits, int to_bits) {
+  if (from_bits >= to_bits) {
+    return v >> (from_bits - to_bits);
+  }
+  uint32_t r = v;
+  int have = from_bits;
+  while (have < to_bits) {
+    int take = to_bits - have;
+    if (take > from_bits) {
+      take = from_bits;
+    }
+    r = (r << take) | (v >> (from_bits - take));
+    have += take;
+  }
+  return r;
+}

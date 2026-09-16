@@ -476,6 +476,168 @@ GIMG_Result jpeg_arith_decode_block_sequential(jpeg_arith_decoder_t * d,
  * producing output as soon as it has the coefficients it was asked for, which
  * can be a byte or two early - so scan forward for it either way.
  */
+//
+// Lossless arithmetic coding (T.81 Annex H, SOF11).
+//
+// H.1.2.3: the DC model of F.1.4.4.1 generalised to two dimensions.  A DCT DC
+// difference is conditioned on the one difference that preceded it in the same
+// component; a lossless difference is conditioned on two - the sample to the
+// left and the sample above - because the data is a raster of samples rather
+// than a sequence of blocks, and both neighbours say something about how
+// active this part of the image is.  Each of the two is classified into the
+// same five categories (H.1.2.3.1), and the pair selects one of 25 states.
+//
+
+void jpeg_arith_lossless_stats_reset(jpeg_arith_lossless_stats_t * s) {
+  memset(s->ll, 0, sizeof(s->ll));
+}
+
+/**
+ * Classify a difference for use as conditioning (T.81 H.1.2.3.1).
+ *
+ * @p m is the leading bit of the magnitude, as the coding procedure
+ * established it, and @p sign is non-zero for a negative difference.  L and U
+ * come from the DAC segment (H.1.2.3.3 gives the defaults L = 0, U = 1) and
+ * say where "small" ends and "large" begins.
+ */
+static int jpeg_arith_lossless_classify(
+    int32_t m, int sign, const jpeg_arith_cond_t * cond, uint8_t tbl) {
+  if (m < ((int32_t)1 << cond->dc_l[tbl]) >> 1) {
+    return JPEG_LL_CAT_ZERO;
+  }
+  if (m > ((int32_t)1 << cond->dc_u[tbl]) >> 1) {
+    return sign ? JPEG_LL_CAT_LARGE_NEG : JPEG_LL_CAT_LARGE_POS;
+  }
+  return sign ? JPEG_LL_CAT_SMALL_NEG : JPEG_LL_CAT_SMALL_POS;
+}
+
+/** T.81 H.1.2.3.2: S0 = L_Context(Da,Db), read out of the Figure H.2 array -
+ * five rows of five entries, four bins apiece. */
+static size_t jpeg_arith_lossless_context(int da_cat, int db_cat) {
+  return (size_t)(20 * da_cat + 4 * db_cat);
+}
+
+/** T.81 H.1.2.3.2: X1_Context(Db).  The magnitude chain sits at 100 when the
+ * difference above was zero or small, and at 129 when it was large. */
+static size_t jpeg_arith_lossless_x1(int db_cat) {
+  return (db_cat == JPEG_LL_CAT_LARGE_POS || db_cat == JPEG_LL_CAT_LARGE_NEG)
+      ? 129u
+      : 100u;
+}
+
+GIMG_Result jpeg_arith_lossless_decode_diff(jpeg_arith_decoder_t * d,
+    jpeg_arith_lossless_stats_t * stats, const jpeg_arith_cond_t * cond,
+    uint8_t tbl, int da_cat, int db_cat, int32_t * out_diff, int * out_cat) {
+  uint8_t * area = stats->ll[tbl];
+  uint8_t * st = area + jpeg_arith_lossless_context(da_cat, db_cat);
+
+  // Table H.3, S0: is the difference zero?
+  if (jpeg_arith_decode(d, st) == 0) {
+    *out_diff = 0;
+    *out_cat = JPEG_LL_CAT_ZERO;
+    return GIMG_OK;
+  }
+
+  // Table H.3, SS = S0 + 1: the sign, which then picks SP or SN.
+  int sign = jpeg_arith_decode(d, st + 1);
+  uint8_t * stm = st + 2 + (size_t)sign;
+
+  // Table H.3, X1..X15: the magnitude category, as a run of decisions each
+  // saying "the magnitude needs another bit".
+  int32_t m = jpeg_arith_decode(d, stm);
+  if (m != 0) {
+    stm = area + jpeg_arith_lossless_x1(db_cat);
+    int k = 0;
+    while (jpeg_arith_decode(d, stm)) {
+      m <<= 1;
+      // The chain ends at X15, so a magnitude needing a sixteenth doubling is
+      // outside anything Table H.3 can express and the data is corrupt.  The
+      // bound also keeps stm inside the 158-bin area: X15 + 14 is M15, the
+      // last bin there is.
+      if (++k > 14) {
+        return GIMG_ERR_CORRUPT;
+      }
+      stm += 1;
+    }
+  }
+
+  *out_cat = jpeg_arith_lossless_classify(m, sign, cond, tbl);
+
+  // Table H.3, M2..M15: the remaining magnitude bits, 14 bins above the
+  // category bin that named them.
+  int32_t v = jpeg_arith_decode_magnitude_bits(d, stm + 14, m);
+  *out_diff = sign ? -v : v;
+  return GIMG_OK;
+}
+
+void jpeg_arith_lossless_encode_diff(jpeg_arith_encoder_t * e,
+    jpeg_arith_lossless_stats_t * stats, const jpeg_arith_cond_t * cond,
+    uint8_t tbl, int da_cat, int db_cat, int32_t diff, int * out_cat) {
+  uint8_t * area = stats->ll[tbl];
+  uint8_t * st = area + jpeg_arith_lossless_context(da_cat, db_cat);
+
+  if (diff == 0) {
+    jpeg_arith_encode(e, st, 0);
+    *out_cat = JPEG_LL_CAT_ZERO;
+    return;
+  }
+  jpeg_arith_encode(e, st, 1);
+
+  int sign = (diff < 0);
+  jpeg_arith_encode(e, st + 1, sign);
+  int32_t v = sign ? -diff : diff;
+  uint8_t * stm = st + 2 + (size_t)sign;
+
+  int32_t m = 0;
+  v -= 1; // Sz = |V| - 1, as in F.1.4.4.1.
+  if (v != 0) {
+    jpeg_arith_encode(e, stm, 1);
+    m = 1;
+    int32_t v2 = v;
+    stm = area + jpeg_arith_lossless_x1(db_cat);
+    while ((v2 >>= 1) != 0) {
+      jpeg_arith_encode(e, stm, 1);
+      m <<= 1;
+      stm += 1;
+    }
+  }
+  jpeg_arith_encode(e, stm, 0);
+
+  *out_cat = jpeg_arith_lossless_classify(m, sign, cond, tbl);
+
+  stm += 14;
+  while ((m >>= 1) != 0) {
+    jpeg_arith_encode(e, stm, (m & v) ? 1 : 0);
+  }
+}
+
+GIMG_Result jpeg_arith_lossless_restart(
+    jpeg_arith_decoder_t * d, jpeg_arith_lossless_stats_t * stats) {
+  size_t p = d->pos;
+  if (d->marker >= 0xD0u && d->marker <= 0xD7u) {
+    d->marker = 0;
+  }
+  else {
+    while (p + 1u < d->size) {
+      if (d->data[p] == 0xFFu && d->data[p + 1u] >= 0xD0u &&
+          d->data[p + 1u] <= 0xD7u) {
+        break;
+      }
+      p++;
+    }
+    if (p + 1u >= d->size) {
+      return GIMG_ERR_CORRUPT;
+    }
+    d->pos = p + 2u;
+    d->marker = 0;
+  }
+  d->c = 0;
+  d->a = 0;
+  d->ct = -16;
+  jpeg_arith_lossless_stats_reset(stats);
+  return GIMG_OK;
+}
+
 GIMG_Result jpeg_arith_restart(
     jpeg_arith_decoder_t * d, jpeg_arith_stats_t * stats) {
   size_t p = d->pos;

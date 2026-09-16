@@ -39,13 +39,14 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
 #define GIMG_JPEG_MARKER_SOF0 0xC0 // Baseline DCT (8-bit only)
 #define GIMG_JPEG_MARKER_SOF1 0xC1 // Extended sequential DCT (8- or 12-bit)
 #define GIMG_JPEG_MARKER_SOF2 0xC2 // Progressive DCT
-#define GIMG_JPEG_MARKER_SOF3 0xC3 // Lossless (not yet supported)
+#define GIMG_JPEG_MARKER_SOF3 0xC3 // Lossless, Huffman (T.81 Annex H)
 // 0xC4 = DHT (Define Huffman Tables), not SOF
 // 0xC5 = SOF5 differential sequential DCT; 0xC6 = SOF6; 0xC7 = SOF7
-// differential lossless; 0xC8 = reserved; 0xCB = SOF11 arithmetic lossless;
+// differential lossless; 0xC8 = reserved;
 // 0xCD = SOF13; 0xCE = SOF14; 0xCF = SOF15
 #define GIMG_JPEG_MARKER_SOF9 0xC9  // Extended sequential DCT, arithmetic
 #define GIMG_JPEG_MARKER_SOF10 0xCA // Progressive DCT, arithmetic
+#define GIMG_JPEG_MARKER_SOF11 0xCB // Lossless, arithmetic (Annex H + Annex D)
 #define GIMG_JPEG_MARKER_DAC 0xCC   // Define Arithmetic Coding conditioning
 #define GIMG_JPEG_MARKER_DHT 0xC4
 #define GIMG_JPEG_MARKER_DQT 0xDB
@@ -258,6 +259,54 @@ typedef struct {
   /** Per-component DC predictor (F.1.4.4.1.1). */
   int dc_pred[GIMG_JPEG_MAX_COMPONENTS];
 } jpeg_arith_stats_t;
+
+/**
+ * T.81 H.1.2.3.2: a lossless statistics area is 158 bins, not the 64 a DC area
+ * uses.  The first 100 are 25 sets of four, selected by the two-dimensional
+ * context of Figure H.2; the remaining 58 are two magnitude chains of 29, one
+ * at 100 and one at 129, chosen by how large the difference above was.
+ */
+#define GIMG_JPEG_ARITH_LOSSLESS_BINS 158
+
+/** Adaptive statistics for one lossless arithmetic scan (T.81 H.1.2.3.4:
+ * reset at the start of a scan and at every restart). */
+typedef struct {
+  uint8_t ll[GIMG_JPEG_ARITH_TABLES][GIMG_JPEG_ARITH_LOSSLESS_BINS];
+} jpeg_arith_lossless_stats_t;
+
+/** T.81 H.1.2.3.1 difference categories, in the order Figure H.2 indexes them.
+ * The conditioning is two-dimensional: the difference coded for the sample to
+ * the left and the one coded for the sample above both select a row and a
+ * column of that array. */
+#define JPEG_LL_CAT_ZERO 0
+#define JPEG_LL_CAT_SMALL_POS 1
+#define JPEG_LL_CAT_SMALL_NEG 2
+#define JPEG_LL_CAT_LARGE_POS 3
+#define JPEG_LL_CAT_LARGE_NEG 4
+
+/** Clear every bin (T.81 H.1.2.3.4, referring to Annex D). */
+void jpeg_arith_lossless_stats_reset(jpeg_arith_lossless_stats_t * s);
+
+/**
+ * Decode one modulo difference of a lossless arithmetic scan (T.81 H.1.2.3,
+ * Table H.3).  @p da_cat and @p db_cat are the categories of the differences
+ * coded to the left and above; @p out_cat receives this difference's category
+ * so the caller can carry it on.
+ */
+GIMG_Result jpeg_arith_lossless_decode_diff(jpeg_arith_decoder_t * d,
+    jpeg_arith_lossless_stats_t * stats, const jpeg_arith_cond_t * cond,
+    uint8_t tbl, int da_cat, int db_cat, int32_t * out_diff, int * out_cat);
+
+/** Encode one modulo difference (T.81 H.1.2.3, Table H.3): the mirror of
+ * jpeg_arith_lossless_decode_diff. */
+void jpeg_arith_lossless_encode_diff(jpeg_arith_encoder_t * e,
+    jpeg_arith_lossless_stats_t * stats, const jpeg_arith_cond_t * cond,
+    uint8_t tbl, int da_cat, int db_cat, int32_t diff, int * out_cat);
+
+/** Resynchronise at a restart marker in a lossless arithmetic scan
+ * (T.81 D.2.9 and H.1.2.3.4). */
+GIMG_Result jpeg_arith_lossless_restart(
+    jpeg_arith_decoder_t * d, jpeg_arith_lossless_stats_t * stats);
 
 /** Set the conditioning defaults of T.81 B.2.4.3. */
 void jpeg_arith_cond_defaults(jpeg_arith_cond_t * cond);
@@ -557,12 +606,14 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
  * Progressive decode: multiple scans (DC then AC spectral/approximation),
  * then dequant, IDCT, upsample, color convert. Internal.
  */
-/** Encode a raster as a lossless frame (SOF3, T.81 Annex H).  Produces the
- * entropy-coded scan and the DHT payload that goes with it; the caller writes
- * the segments.  Precision follows the raster (8, 12 or 16). */
+/** Encode a raster as a lossless frame (T.81 Annex H).  Produces the
+ * entropy-coded scan and, for a Huffman frame, the DHT payload that goes with
+ * it; the caller writes the segments.  Precision follows the raster (8, 12 or
+ * 16).  @p arithmetic selects SOF11 over SOF3, in which case no DHT is
+ * produced because an arithmetic frame carries none. */
 GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int psv, uint16_t restart_interval,
-    unsigned char ** out_scan_data, size_t * out_scan_size,
+    int arithmetic, unsigned char ** out_scan_data, size_t * out_scan_size,
     unsigned char ** out_dht, size_t * out_dht_len, uint32_t * out_width,
     uint32_t * out_height, int * out_num_components, int * out_precision);
 

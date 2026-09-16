@@ -480,9 +480,10 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       seen_sof = true;
       break;
     }
-    case GIMG_JPEG_MARKER_SOF3: {
+    case GIMG_JPEG_MARKER_SOF3:
+    case GIMG_JPEG_MARKER_SOF11: {
       if (seen_sof) {
-        jpeg_load_fmt_debug("duplicate SOF3", seg_start, marker);
+        jpeg_load_fmt_debug("duplicate SOF3/SOF11", seg_start, marker);
         gimg_free(alloc, payload_buf);
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
@@ -490,24 +491,26 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       r = jpeg_parse_sof(payload_buf, payload_size, marker, &state->sof);
       gimg_free(alloc, payload_buf);
       if (r != GIMG_OK) {
-        jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF3");
+        jpeg_load_diag(diagnostics, seg_start, marker, r, "invalid SOF3/SOF11");
         gimg_jpeg_free_doc_state(codec, state);
         return r;
       }
       // T.81 Annex H: predictive coding, not DCT.  Everything downstream that
-      // assumes 8x8 blocks is bypassed for such a frame.
+      // assumes 8x8 blocks is bypassed for such a frame.  Table B.1: SOF11 is
+      // the same process with the arithmetic coder of Annex D, so it differs
+      // only in how a difference is read.
       state->is_lossless = 1;
       state->is_progressive = 0;
+      state->is_arithmetic = (marker == GIMG_JPEG_MARKER_SOF11);
       seen_sof = true;
       break;
     }
-    // Unsupported SOF (T.81: SOF5-SOF7 differential, SOF11 arithmetic
-    // lossless, SOF13-SOF15 hierarchical).  Reject explicitly so the caller
-    // gets a clear error instead of "no SOF".
+    // Unsupported SOF (T.81: SOF5-SOF7 differential, SOF13-SOF15
+    // hierarchical).  Reject explicitly so the caller gets a clear error
+    // instead of "no SOF".
     case 0xC5:
     case 0xC6:
     case 0xC7:
-    case 0xCB:
     case 0xCD:
     case 0xCE:
     case 0xCF: {
