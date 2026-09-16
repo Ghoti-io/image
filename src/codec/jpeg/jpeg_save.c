@@ -771,6 +771,14 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
     num_components = 4;
   }
+  else if (fmt->channel_model == GIMG_CHANNEL_UNKNOWN &&
+      fmt->channel_count >= 1 && fmt->bits_per_channel[0] == 8 &&
+      fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
+    // Channels with no colour meaning: T.81 B.2.2 allows Nf from 1 to 255 and
+    // says nothing about what the components are, so they are written as they
+    // came in.  This is libjpeg's JCS_UNKNOWN.
+    num_components = (int)fmt->channel_count;
+  }
   else if (fmt->channel_model == GIMG_CHANNEL_GRAY && fmt->channel_count == 1 &&
       fmt->bits_per_channel[0] == 16) {
     // A 16-bit raster is converted to 12-bit before this point (T.81 has no
@@ -812,7 +820,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   // is the only thing in the file that says which (see jdapimin.c, and the
   // colour section of documentation/format-references.md).
   int adobe_transform = -1;
-  if (num_components == 4) {
+  if (num_components == 4 && fmt->channel_model == GIMG_CHANNEL_CMYK) {
     adobe_transform = (cmyk_transform == 2u) ? 2 : 0;
   }
 
@@ -833,7 +841,14 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   // libjpeg's choices (jcparam.c jpeg_set_colorspace), and they are what makes
   // a CMYK frame use one table set throughout while YCCK keeps the chroma set
   // for its two chrominance components only.
-  if (num_components == 4) {
+  if (fmt->channel_model == GIMG_CHANNEL_UNKNOWN) {
+    // No component of such a frame is chrominance, so none of them wants the
+    // chrominance tables; libjpeg gives every JCS_UNKNOWN component table 0.
+    for (int c = 0; c < num_components; c++) {
+      tbl_sel[c] = 0;
+    }
+  }
+  else if (num_components == 4) {
     if (adobe_transform == 2) {
       tbl_sel[0] = 0;
       tbl_sel[1] = 1;
@@ -889,6 +904,17 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       }
     }
   }
+  else if (fmt->channel_model == GIMG_CHANNEL_UNKNOWN) {
+    for (uint32_t y = 0; y < height; y++) {
+      const unsigned char * row = pixels + y * stride_bytes;
+      for (uint32_t x = 0; x < width; x++) {
+        for (int c = 0; c < num_components; c++) {
+          plane[c][y * (size_t)width + x] =
+              row[x * bpp + (size_t)c];
+        }
+      }
+    }
+  }
   else {
     // Four components.  For transform 0 the samples go out exactly as they came
     // in - that is what the decoder's raw-CMYK path (jdcolor.c null_convert)
@@ -924,7 +950,8 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   // frame actually has chrominance there: three-component YCbCr, or the YCCK
   // form of a four-component frame.  A raw CMYK frame has no chrominance and
   // libjpeg does not subsample one either (jcparam.c gives all four 1x1).
-  int has_chroma = (num_components == 3) || (adobe_transform == 2);
+  int has_chroma = (fmt->channel_model != GIMG_CHANNEL_UNKNOWN) &&
+      ((num_components == 3) || (adobe_transform == 2));
   if (has_chroma && chroma_subsampling != CHROMA_444) {
     uint32_t cw = 0, ch = 0;
     if (chroma_subsampling == CHROMA_420) {
@@ -1804,13 +1831,9 @@ static GIMG_Result jpeg_write_noninterleaved_scans(GIMG_Stream * stream,
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r = GIMG_OK;
   size_t written = 0;
-  static const uint8_t samp_111[3] = {1, 1, 1};
-  if (!h_samp) {
-    h_samp = samp_111;
-  }
-  if (!v_samp) {
-    v_samp = samp_111;
-  }
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max = h_samp[0];
   uint8_t v_max = v_samp[0];
   for (int i = 1; i < num_components; i++) {
@@ -2642,13 +2665,9 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
   // The sampling factors are optional at this interface; the scan encoders
   // substitute 1x1 when they are absent, so do the same here rather than
   // dereferencing a null pointer.
-  static const uint8_t jpeg_default_samp_111[3] = {1, 1, 1};
-  if (!h_samp) {
-    h_samp = jpeg_default_samp_111;
-  }
-  if (!v_samp) {
-    v_samp = jpeg_default_samp_111;
-  }
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint32_t mcu_per_row_enc = 1;
   {
     uint8_t hm = h_samp[0];
@@ -2672,14 +2691,19 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     int is_ac_scan = (scans[s].Ss != 0 || scans[s].Se != 0);
     int ac_refine = this_refinement;
 
-    // Components written in this script entry: all of them for a DC scan, one
-    // scan each for an AC scan.
+    // Components written in this script entry: one scan each for an AC scan
+    // (G.1.2.2 requires it), and all of them together for a DC scan - unless
+    // there are more of them than B.2.3 lets one scan name, in which case the
+    // DC scan splits the same way.  A frame of five or more components has no
+    // other legal arrangement (A.2.3).
+    int split =
+        is_ac_scan || num_components > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS;
     int first_comp = 0;
-    int last_comp = is_ac_scan ? (num_components - 1) : 0;
+    int last_comp = split ? (num_components - 1) : 0;
     for (int comp = first_comp; comp <= last_comp; comp++) {
       unsigned char * scan_data = NULL;
       size_t scan_size = 0;
-      int scan_components = is_ac_scan ? 1 : num_components;
+      int scan_components = split ? 1 : num_components;
       int16_t * packed = NULL;
       int16_t * packed_state = NULL;
       const int16_t * enc_coef = coef_buffer;
@@ -2692,7 +2716,7 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       uint32_t blk_w = 0;
       uint32_t blk_h = 0;
 
-      if (is_ac_scan && num_components > 1) {
+      if (split && num_components > 1) {
         jpeg_component_block_grid(width, height, h_samp, v_samp,
             num_components, comp, &blk_w, &blk_h);
         size_t nblocks = (size_t)blk_w * (size_t)blk_h;
@@ -2727,9 +2751,9 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       // entropy coder used.  An AC scan is always one component encoded
       // through the one-component path, which reads tbl_sel[0]; a DC scan
       // carries every component and reads the frame's own selector.
-      uint8_t ac_scan_tbl[GIMG_JPEG_MAX_COMPONENTS] = {0};
+      uint8_t ac_scan_tbl[GIMG_JPEG_MAX_SCAN_COMPONENTS] = {0};
       const uint8_t * scan_tbl = tbl_sel;
-      if (is_ac_scan && num_components > 1) {
+      if (split && num_components > 1) {
         scan_tbl = ac_scan_tbl;
       }
       int16_t * state_out = NULL;
@@ -2793,18 +2817,18 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
       sos[0] = (unsigned char)scan_components;
       // Td is the high nibble, Ta the low one (T.81 B.2.3).  A DC scan needs
       // only Td; an AC scan only Ta.  Component ids are 1..Nf in SOF order.
-      if (is_ac_scan) {
-        // Ta must name the table the entropy coder actually used.  A
+      if (split) {
+        // Td and Ta must name the tables the entropy coder actually used.  A
         // single-component scan is encoded through the one-component path,
-        // which uses the luminance AC table for whichever component it is
-        // given, so Ta is 0 here regardless of the component - T.81 B.2.3 lets
-        // any component select any table, so this is well formed, and the
+        // which uses the luminance tables for whichever component it is given,
+        // so both are 0 here regardless of the component - T.81 B.2.3 lets any
+        // component select any table, so this is well formed, and the
         // alternative (naming table 1 for chroma while encoding with table 0)
-        // produces a file that decodes to nonsense.  Refinement scans use the
-        // dedicated refinement table written at Th=2.
-        unsigned char ta = ac_refine ? 0x02 : 0x00;
+        // produces a file that decodes to nonsense.  An AC refinement scan
+        // uses the dedicated refinement table written at Th=2.
+        unsigned char td_ta = is_ac_scan ? (ac_refine ? 0x02 : 0x00) : 0x00;
         sos[1] = (unsigned char)(comp + 1);
-        sos[2] = ta;
+        sos[2] = td_ta;
       }
       else {
         for (int i = 0; i < num_components; i++) {
@@ -2914,6 +2938,20 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       gimg_raster_destroy(raster);
     }
     return GIMG_ERR_UNSUPPORTED;
+  }
+  // B.2.3 Table B.3 caps Ns at 4 however wide the frame is, so a frame of more
+  // than four components cannot be written as one interleaved scan at all: it
+  // is split whether or not the caller asked for it (A.2.3).  Not a refusal,
+  // because there is nothing wrong with the request - there is only one way to
+  // honour it.
+  {
+    const GIMG_Pixel_Format * wide_fmt = gimg_raster_format(raster);
+    if (wide_fmt &&
+        wide_fmt->channel_count > (uint8_t)GIMG_JPEG_MAX_SCAN_COMPONENTS &&
+        wide_fmt->channel_model == GIMG_CHANNEL_UNKNOWN &&
+        !(options && options->jpeg_progressive)) {
+      non_interleaved = 1;
+    }
   }
   if (hier_levels < 0 || hier_levels + 1 > (int)GIMG_JPEG_MAX_FRAMES) {
     if (raster_owned) {
@@ -3234,8 +3272,8 @@ have_scan:
     // writes none for a CMYK or YCCK file (jcparam.c sets write_JFIF_header
     // for JCS_GRAYSCALE and JCS_YCbCr only), and the Adobe marker below is
     // what carries the colour instead.
-    int suppress_jfif =
-        (lossless_psv != 0 && num_components == 3) || num_components == 4;
+    int suppress_jfif = (lossless_psv != 0 && num_components == 3) ||
+        num_components == 4 || num_components == 2 || num_components > 4;
     size_t app0_len = 0;
     bool have_app0 = !suppress_jfif &&
         (policy != GIMG_META_DROP_ALL &&

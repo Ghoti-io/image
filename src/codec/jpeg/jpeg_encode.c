@@ -324,12 +324,9 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
       num_components > (int)GIMG_JPEG_MAX_COMPONENTS) {
     return GIMG_ERR_INTERNAL;
   }
-  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
-      1, 1, 1, 1, 1, 1, 1, 1};
-  if (!h_samp)
-    h_samp = default_samp;
-  if (!v_samp)
-    v_samp = default_samp;
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   uint32_t mcu_w = (uint32_t)(8 * h_max);
@@ -758,12 +755,9 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   *out_scan_data = NULL;
   *out_scan_size = 0;
 
-  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
-      1, 1, 1, 1, 1, 1, 1, 1};
-  if (!h_samp)
-    h_samp = default_samp;
-  if (!v_samp)
-    v_samp = default_samp;
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   size_t blocks_per_mcu = 0;
@@ -1075,14 +1069,9 @@ GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
   *out_scan_data = NULL;
   *out_scan_size = 0;
 
-  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
-      1, 1, 1, 1, 1, 1, 1, 1};
-  if (!h_samp) {
-    h_samp = default_samp;
-  }
-  if (!v_samp) {
-    v_samp = default_samp;
-  }
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   uint32_t mcu_per_row =
@@ -1177,12 +1166,9 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
   }
   *out_scan_data = NULL;
   *out_scan_size = 0;
-  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
-      1, 1, 1, 1, 1, 1, 1, 1};
-  if (!h_samp)
-    h_samp = default_samp;
-  if (!v_samp)
-    v_samp = default_samp;
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   size_t blocks_per_mcu = 0;
@@ -1346,12 +1332,9 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
       num_components > (int)GIMG_JPEG_MAX_COMPONENTS) {
     return GIMG_ERR_INTERNAL;
   }
-  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
-      1, 1, 1, 1, 1, 1, 1, 1};
-  if (!h_samp)
-    h_samp = default_samp;
-  if (!v_samp)
-    v_samp = default_samp;
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   uint32_t mcu_w = (uint32_t)(8 * h_max);
@@ -1461,14 +1444,9 @@ GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
   *out_scan_data = NULL;
   *out_scan_size = 0;
 
-  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
-      1, 1, 1, 1, 1, 1, 1, 1};
-  if (!h_samp) {
-    h_samp = default_samp;
-  }
-  if (!v_samp) {
-    v_samp = default_samp;
-  }
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   uint32_t mcu_per_row =
@@ -1567,12 +1545,9 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
   *out_scan_data = NULL;
   *out_scan_size = 0;
 
-  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
-      1, 1, 1, 1, 1, 1, 1, 1};
-  if (!h_samp)
-    h_samp = default_samp;
-  if (!v_samp)
-    v_samp = default_samp;
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   size_t blocks_per_mcu = 0;
@@ -1924,12 +1899,9 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
   if (Ah != 0) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
-      1, 1, 1, 1, 1, 1, 1, 1};
-  if (!h_samp)
-    h_samp = default_samp;
-  if (!v_samp)
-    v_samp = default_samp;
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
   size_t blocks_per_mcu = 0;
@@ -2263,14 +2235,9 @@ GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
   *out_dht = NULL;
   *out_dht_len = 0;
 
-  static const uint8_t default_samp[GIMG_JPEG_MAX_COMPONENTS] = {
-      1, 1, 1, 1, 1, 1, 1, 1};
-  if (!h_samp) {
-    h_samp = default_samp;
-  }
-  if (!v_samp) {
-    v_samp = default_samp;
-  }
+  uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
+  h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
+  v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max = 1, v_max = 1;
   for (int c = 0; c < num_components; c++) {
     if (h_samp[c] > h_max) {

@@ -108,6 +108,37 @@ GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA12 = gimg_pixel_rgba12;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK8 = gimg_pixel_cmyk8;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK16 = gimg_pixel_cmyk16;
 
+GIMG_API uint8_t gimg_pixel_format_channel_bits(
+    const GIMG_Pixel_Format * format, uint8_t index) {
+  if (!format || index >= format->channel_count) {
+    return 0;
+  }
+  // Past the eighth channel every channel has the depth of the first; see the
+  // note on GIMG_Pixel_Format.bits_per_channel.
+  return (index < 8u) ? format->bits_per_channel[index]
+                      : format->bits_per_channel[0];
+}
+
+GIMG_API GIMG_Result gimg_pixel_format_multichannel(
+    uint8_t channel_count, uint8_t bits, GIMG_Pixel_Format * out_format) {
+  if (!out_format || channel_count == 0u || (bits != 8u && bits != 16u)) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  memset(out_format, 0, sizeof(*out_format));
+  out_format->channel_model = (channel_count == 1u) ? GIMG_CHANNEL_GRAY
+      : (channel_count == 4u)                       ? GIMG_CHANNEL_CMYK
+                                                    : GIMG_CHANNEL_UNKNOWN;
+  out_format->channel_type = GIMG_CHANNEL_UNORM;
+  out_format->layout = GIMG_LAYOUT_INTERLEAVED;
+  out_format->channel_count = channel_count;
+  for (uint8_t i = 0; i < channel_count && i < 8u; i++) {
+    out_format->bits_per_channel[i] = bits;
+  }
+  out_format->bits_per_channel[0] = bits;
+  out_format->alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT;
+  return GIMG_OK;
+}
+
 GIMG_API size_t gimg_raster_bytes_per_pixel(const GIMG_Pixel_Format * format) {
   if (!format || format->channel_count == 0) {
     return 0;
@@ -115,6 +146,16 @@ GIMG_API size_t gimg_raster_bytes_per_pixel(const GIMG_Pixel_Format * format) {
   // 12-bit is stored as uint16_t per sample (0..4095); 8- and 16-bit as usual.
   if (format->bits_per_channel[0] == 12) {
     return (size_t)format->channel_count * 2u;
+  }
+  // Past the eighth channel every channel has the depth of the first, so the
+  // sum is that depth times the count rather than a walk off the end of the
+  // array.  The loop used to stop at eight and return a pixel size for eight
+  // channels however many there were.
+  if (format->channel_count > 8u) {
+    return ((size_t)format->channel_count *
+               (size_t)format->bits_per_channel[0] +
+               7u) /
+        8u;
   }
   size_t bits = 0;
   for (uint8_t i = 0; i < format->channel_count && i < 8; i++) {

@@ -101,7 +101,9 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
   uint16_t height = (uint16_t)((payload[1] << 8) | payload[2]);
   uint16_t width = (uint16_t)((payload[3] << 8) | payload[4]);
   uint8_t num_components = payload[5];
-  if (num_components == 0 || num_components > GIMG_JPEG_MAX_COMPONENTS) {
+  // T.81 B.2.2: Nf is 1 to 255, which is the whole range of the byte it is
+  // read from, so only zero is out of range.
+  if (num_components == 0) {
     return GIMG_ERR_FORMAT;
   }
   if (sof_marker == GIMG_JPEG_MARKER_SOF0 && precision != 8) {
@@ -168,18 +170,16 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
       }
     }
   }
-  // T.81 A.1.1: the MCU holds Hi x Vi blocks of each component and may contain
-  // at most ten blocks, so a frame whose sampling factors exceed that cannot be
-  // interleaved and is not a valid multi-component frame.
-  if (num_components > 1) {
-    unsigned blocks_per_mcu = 0;
-    for (uint8_t i = 0; i < num_components; i++) {
-      blocks_per_mcu += (unsigned)sof->h_samp[i] * (unsigned)sof->v_samp[i];
-    }
-    if (blocks_per_mcu > 10u) {
-      return GIMG_ERR_FORMAT;
-    }
-  }
+  // T.81 A.2.2's ten-data-unit limit is a property of an interleaved MCU, and
+  // an MCU belongs to a scan, so it is checked at the scan header (see
+  // jpeg_load.c) and not here.  Checking it against the whole frame refused
+  // every frame of more than four components outright - B.2.2 allows Nf up to
+  // 255, and such a frame is not invalid, it merely cannot be interleaved:
+  // A.2.3 requires it to be written as several scans, each within the limit.
+  //
+  // A frame of four or fewer components could be interleaved, so the limit
+  // still applies to it as a whole when it is: that is the same check, made
+  // where the scan says how many components it carries.
   return GIMG_OK;
 }
 

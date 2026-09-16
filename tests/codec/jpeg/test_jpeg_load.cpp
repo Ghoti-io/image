@@ -4034,6 +4034,137 @@ TEST(JpegLoad, HierarchicalLosslessFrameCodedAsNonInterleavedScans) {
 // writes a genuine YCCK file, and the resulting picture is not meaningful, but
 // the decode is well defined and libjpeg agrees with it byte for byte.  That
 // branch had no fixture at all before.
+// T.81 B.2.2 lets a frame carry from 1 to 255 components and never says what
+// any of them mean; B.2.3 Table B.3 caps one scan at 4, so a frame wider than
+// four is legal and has to be written as several non-interleaved scans
+// (A.2.3).  This codec refused every such frame, and for the wrong reason: it
+// applied A.2.2's ten-data-unit limit to the frame as a whole, where that
+// limit belongs to an interleaved MCU and therefore to a scan.
+//
+// libjpeg cannot be the oracle directly - its decoder matches a scan's Cs
+// against only the first MAX_COMPS_IN_SCAN components of the frame
+// (jdmarker.c get_sos), so it refuses any file whose scan names the fifth
+// component or later, however well formed.  The fixtures are assembled from
+// files it did write: N grayscale JPEGs sharing one DQT and one set of Huffman
+// tables, spliced into one N-component frame, with libjpeg's own decode of
+// each grayscale file kept as the expected plane (tests/data/jpeg/mk_wide.py).
+// Both ends of the comparison are libjpeg's.
+TEST(JpegLoad, FramesWiderThanOneScanCanName) {
+  const int counts[] = {2, 5, 8, 10, 32, 255};
+  for (int n : counts) {
+    SCOPED_TRACE("Nf = " + std::to_string(n));
+    std::string base = "wide_" + std::to_string(n) + "comp";
+    std::vector<uint8_t> oracle;
+    uint32_t ow = 0, oh = 0;
+    int ochan = 0;
+    ASSERT_TRUE(jpeg_test::load_jpeg_multichannel_raw(
+        base.c_str(), oracle, &ow, &oh, &ochan))
+        << "missing oracle " << base << ".raw";
+    ASSERT_EQ(ochan, n);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file((base + ".jpg").c_str(), jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK)
+        << "a frame of " << n << " components is legal (T.81 B.2.2)";
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    ASSERT_NE(fmt, nullptr);
+    ASSERT_EQ((int)fmt->channel_count, n);
+    // One and four have colour conventions; the rest have none, which is what
+    // GIMG_CHANNEL_UNKNOWN records.
+    EXPECT_EQ(fmt->channel_model,
+        (n == 4) ? GIMG_CHANNEL_CMYK : GIMG_CHANNEL_UNKNOWN);
+    ASSERT_EQ(gimg_raster_width(raster), ow);
+    ASSERT_EQ(gimg_raster_height(raster), oh);
+    const unsigned char * gp =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t gs = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < oh; y++) {
+      for (uint32_t x = 0; x < ow; x++) {
+        for (int c = 0; c < n; c++) {
+          int a = (int)gp[y * gs + (size_t)x * (size_t)n + (size_t)c];
+          int b = (int)
+              oracle[((size_t)y * ow + x) * (size_t)n + (size_t)c];
+          ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << c;
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
+// T.81 B.2.3 Table B.3 gives Ns as 1 to 4 whatever Nf is, and A.2.2 caps an
+// interleaved MCU at ten data units.  Both are scan properties; a file that
+// breaks either is malformed even though the frame header is fine.
+TEST(JpegLoad, ScanHeaderLimitsAreEnforcedWhereTheyBelong) {
+  std::vector<uint8_t> good;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("wide_5comp.jpg", good));
+  // Find the first SOS and raise its Ns to 5, which B.2.3 forbids.  The
+  // payload grows with Ns, so lengthen the segment to match: the file is then
+  // wrong in exactly one way.
+  size_t i = 2;
+  size_t sos = 0;
+  while (i + 4 <= good.size() && good[i] == 0xFF) {
+    uint8_t m = good[i + 1];
+    size_t len = (size_t)((good[i + 2] << 8) | good[i + 3]);
+    if (m == 0xDA) {
+      sos = i;
+      break;
+    }
+    i += 2 + len;
+  }
+  ASSERT_NE(sos, 0u) << "fixture must have a scan";
+  std::vector<uint8_t> bad(good.begin(), good.begin() + (long)sos);
+  // Ls = 6 + 2*Ns with Ns = 5, then five component entries.
+  bad.push_back(0xFF);
+  bad.push_back(0xDA);
+  bad.push_back(0x00);
+  bad.push_back(0x10);
+  bad.push_back(0x05);
+  for (int c = 0; c < 5; c++) {
+    bad.push_back((uint8_t)(c + 1));
+    bad.push_back(0x00);
+  }
+  bad.push_back(0x00);
+  bad.push_back(0x3F);
+  bad.push_back(0x00);
+  bad.insert(bad.end(), good.begin() + (long)sos + 10, good.end());
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bad.data(), bad.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Diagnostics diag = {};
+  gimg_diagnostics_init(&diag, nullptr);
+  GIMG_Result r = gimg_doc_load(s, nullptr, &diag, &doc);
+  EXPECT_EQ(r, GIMG_ERR_FORMAT)
+      << "a scan naming five components breaks T.81 B.2.3";
+  // It must be refused for the reason it is wrong.  Without the Ns check the
+  // file is refused anyway, but only because the fifth component entry has
+  // already been written past the end of the scan header's four-entry arrays
+  // and lands on the Huffman table selector of the first - which is a buffer
+  // overrun that happens to produce an error, not a check.
+  bool said_ns = false;
+  for (size_t k = 0; k < diag.count; k++) {
+    const char * a = diag.items[k].recommended_action;
+    if (a && std::string(a).find("Ns") != std::string::npos) {
+      said_ns = true;
+    }
+  }
+  EXPECT_TRUE(said_ns)
+      << "the scan must be refused for naming too many components";
+  gimg_diagnostics_destroy(&diag);
+  if (r == GIMG_OK) {
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(s);
+}
+
 // T.81 Table B.2 allows a sample precision of 12 in a DCT-based frame and
 // B.2.2 allows Nf from 1 to 255.  The two are independent, so a twelve-bit
 // CMYK or YCCK frame is a legal file - but the twelve-bit walk here refused

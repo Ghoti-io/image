@@ -821,3 +821,44 @@ uint32_t jpeg_test::widen_sample(uint32_t v, int from_bits, int to_bits) {
   }
   return r;
 }
+
+bool jpeg_test::load_jpeg_multichannel_raw(const char * fixture_base,
+    std::vector<uint8_t> & out_pixels, uint32_t * out_width,
+    uint32_t * out_height, int * out_channels) {
+  if (!fixture_base || !out_width || !out_height || !out_channels) {
+    return false;
+  }
+  std::string path =
+      std::string(GIMG_TEST_DATA_JPEG) + "/" + fixture_base + ".raw";
+  std::ifstream f(path, std::ios::binary);
+  if (!f) {
+    return false;
+  }
+  unsigned char header[10];
+  if (!f.read(reinterpret_cast<char *>(header), 10) || f.gcount() != 10) {
+    return false;
+  }
+  if (header[0] != 4 || header[1] == 0) {
+    return false;
+  }
+  int n = header[1];
+  uint32_t w = static_cast<uint32_t>(header[2]) |
+      (static_cast<uint32_t>(header[3]) << 8) |
+      (static_cast<uint32_t>(header[4]) << 16) |
+      (static_cast<uint32_t>(header[5]) << 24);
+  uint32_t h = static_cast<uint32_t>(header[6]) |
+      (static_cast<uint32_t>(header[7]) << 8) |
+      (static_cast<uint32_t>(header[8]) << 16) |
+      (static_cast<uint32_t>(header[9]) << 24);
+  size_t bytes = static_cast<size_t>(w) * h * static_cast<size_t>(n);
+  out_pixels.resize(bytes);
+  if (!f.read(reinterpret_cast<char *>(out_pixels.data()),
+          static_cast<std::streamsize>(bytes)) ||
+      f.gcount() != static_cast<std::streamsize>(bytes)) {
+    return false;
+  }
+  *out_width = w;
+  *out_height = h;
+  *out_channels = n;
+  return true;
+}

@@ -55,6 +55,13 @@ static GIMG_Result jpeg_decode_progressive_extended(
     const gimg_jpeg_doc_state_t * state, const GIMG_Decode_Options * options,
     GIMG_Raster ** out_raster);
 
+/** Assemble a frame with no colour convention; see the definition below. */
+static GIMG_Result jpeg_emit_unknown_components(const GIMG_Allocator * alloc,
+    uint32_t width, uint32_t height, int num_comp, int precision,
+    int planes_wide, const void * const * comp_buf, const size_t * comp_stride,
+    const uint32_t * comp_w, const uint32_t * comp_h, const uint8_t * h_samp,
+    const uint8_t * v_samp, int fancy, GIMG_Raster ** out_raster);
+
 /** Assemble a four-component frame; see the definition below. */
 static GIMG_Result jpeg_emit_four_component(const GIMG_Allocator * alloc,
     int adobe_transform, uint32_t width, uint32_t height, int precision,
@@ -77,7 +84,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
   // to 255; the two are independent, so a twelve-bit four-component frame is a
   // legal file.  This walk assembles one and three components itself and hands
   // four to jpeg_emit_four_component, which writes GIMG_PIXEL_CMYK16.
-  if (num_comp != 1 && num_comp != 3 && num_comp != 4) {
+  if (num_comp < 1) {
     return GIMG_ERR_UNSUPPORTED;
   }
 
@@ -377,7 +384,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
       }
     }
   }
-  else {
+  else if (num_comp == 3) {
     r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
         (uint32_t)height, &GIMG_PIXEL_RGBA16, GIMG_RASTER_OWNED, NULL, 0,
         out_raster);
@@ -444,6 +451,20 @@ static GIMG_Result jpeg_decode_baseline_extended(
       }
     }
   }
+  else {
+    // Two components, or five to 255.  T.81 B.2.2 allows them and gives them
+    // no meaning, so they go out as they came in; see
+    // jpeg_emit_unknown_components.
+    int use_fancy_n = (!options ||
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    r = jpeg_emit_unknown_components(alloc, (uint32_t)width, (uint32_t)height,
+        (int)num_comp, (int)precision, 1, (const void * const *)comp_buf,
+        comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_n,
+        out_raster);
+    if (r != GIMG_OK) {
+      goto ext_fail;
+    }
+  }
 
   if (state->app2_icc && state->app2_icc_len > 0u) {
     GIMG_Color_Info color_info;
@@ -472,6 +493,82 @@ ext_fail:
     gimg_free(alloc, comp_buf[i]);
   }
   return GIMG_ERR_CORRUPT;
+}
+
+/**
+ * Assemble a frame whose component count carries no colour convention.
+ *
+ * T.81 B.2.2 lets a frame have from 1 to 255 components and never says what
+ * any of them mean.  One, three and four have conventions attached from
+ * outside the standard - JFIF, the Adobe APP14 marker, the component
+ * identifiers - and the walks above apply them.  Every other count has none,
+ * so the samples go out as they came in, which is what libjpeg does with
+ * JCS_UNKNOWN (jdcolor.c null_convert, and jdapimin.c's default branch).
+ *
+ * Components are read through jpeg_chroma_sample like any others, so one with
+ * a smaller sampling factor upsamples rather than being indexed out of range.
+ *
+ * @param precision   The frame's P: the raster is 8-bit below 9 and 16-bit
+ *                    above, with 12-bit samples left-justified.
+ * @param planes_wide Whether the planes themselves hold 16-bit samples, which
+ *                    depends on the walk rather than on the frame.
+ */
+static GIMG_Result jpeg_emit_unknown_components(const GIMG_Allocator * alloc,
+    uint32_t width, uint32_t height, int num_comp, int precision,
+    int planes_wide, const void * const * comp_buf, const size_t * comp_stride,
+    const uint32_t * comp_w, const uint32_t * comp_h, const uint8_t * h_samp,
+    const uint8_t * v_samp, int fancy, GIMG_Raster ** out_raster) {
+  if (num_comp < 1 || num_comp > (int)GIMG_JPEG_MAX_COMPONENTS) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  const int wide = (precision > 8);
+  GIMG_Pixel_Format fmt;
+  GIMG_Result r = gimg_pixel_format_multichannel(
+      (uint8_t)num_comp, (uint8_t)(wide ? 16 : 8), &fmt);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  uint8_t h_max = 1, v_max = 1;
+  gimg_jpeg_sampling_max(num_comp, h_samp, v_samp, &h_max, &v_max);
+  jpeg_plane_t * pl =
+      (jpeg_plane_t *)gimg_malloc(alloc, (size_t)num_comp * sizeof(*pl));
+  if (!pl) {
+    return GIMG_ERR_OOM;
+  }
+  for (int i = 0; i < num_comp; i++) {
+    pl[i].data = comp_buf[i];
+    pl[i].stride = comp_stride[i];
+    pl[i].wide = planes_wide;
+  }
+  r = gimg_raster_create_with_allocator(
+      alloc, width, height, &fmt, GIMG_RASTER_OWNED, NULL, 0, out_raster);
+  if (r != GIMG_OK) {
+    gimg_free(alloc, pl);
+    return r;
+  }
+  unsigned char * pix8 = (unsigned char *)gimg_raster_pixels(*out_raster);
+  uint16_t * pix16 = (uint16_t *)gimg_raster_pixels(*out_raster);
+  size_t stride8 = gimg_raster_stride_bytes(*out_raster);
+  size_t stride16 = stride8 / sizeof(uint16_t);
+  for (uint32_t y = 0; y < height; y++) {
+    for (uint32_t x = 0; x < width; x++) {
+      for (int i = 0; i < num_comp; i++) {
+        int v = jpeg_chroma_sample(&pl[i], comp_w[i], comp_h[i], x, y, width,
+            height, h_samp[i], v_samp[i], h_max, v_max, fancy);
+        if (wide) {
+          pix16[y * stride16 + (size_t)x * (size_t)num_comp + (size_t)i] =
+              (precision == 12) ? gimg_bitdepth_12_to_16((uint16_t)v)
+                                : (uint16_t)v;
+        }
+        else {
+          pix8[y * stride8 + (size_t)x * (size_t)num_comp + (size_t)i] =
+              (unsigned char)v;
+        }
+      }
+    }
+  }
+  gimg_free(alloc, pl);
+  return GIMG_OK;
 }
 
 /**
@@ -1195,8 +1292,16 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     }
   }
   else {
-    r = GIMG_ERR_UNSUPPORTED;
-    goto fail_decode;
+    // Two components, or five to 255: T.81 B.2.2 allows them and attaches no
+    // meaning to them, so they go out as they came in.
+    int use_fancy_n = (!options ||
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    r = jpeg_emit_unknown_components(alloc, (uint32_t)width, (uint32_t)height,
+        (int)num_comp, 8, 0, (const void * const *)comp_buf, comp_stride,
+        comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_n, out_raster);
+    if (r != GIMG_OK) {
+      goto fail_decode;
+    }
   }
 
   // Attach ICC profile from APP2 to raster color info (single or
@@ -1613,7 +1718,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
   // progressive frames, sequential frames written as several scans, and 12-bit
   // frames, and used to refuse all three of those with four components while
   // the baseline walk accepted them.
-  if (num_comp != 1 && num_comp != 3 && num_comp != 4) {
+  if (num_comp < 1) {
     return GIMG_ERR_UNSUPPORTED;
   }
 
@@ -1973,7 +2078,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
       }
     }
   }
-  else {
+  else if (num_comp == 3) {
     r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
         (uint32_t)height, &GIMG_PIXEL_RGBA16, GIMG_RASTER_OWNED, NULL, 0,
         out_raster);
@@ -2034,6 +2139,20 @@ static GIMG_Result jpeg_decode_progressive_extended(
         pixels[y * stride_el + x * 4 + 2] = (uint16_t)b_val;
         pixels[y * stride_el + x * 4 + 3] = (uint16_t)65535;
       }
+    }
+  }
+  else {
+    // Two components, or five to 255.  T.81 B.2.2 allows them and gives them
+    // no meaning, so they go out as they came in; see
+    // jpeg_emit_unknown_components.
+    int use_fancy_n = (!options ||
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    r = jpeg_emit_unknown_components(alloc, (uint32_t)width, (uint32_t)height,
+        (int)num_comp, (int)precision, 1, (const void * const *)comp_buf,
+        comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_n,
+        out_raster);
+    if (r != GIMG_OK) {
+      goto prog_ext_fail_buf;
     }
   }
 

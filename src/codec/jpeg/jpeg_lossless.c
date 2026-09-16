@@ -129,8 +129,8 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   if (precision < 2 || precision > 16) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  if (num_comp < 1 || num_comp > GIMG_JPEG_MAX_COMPONENTS) {
-    return GIMG_ERR_CORRUPT;
+  if (num_comp < 1) {
+    return GIMG_ERR_CORRUPT; // T.81 B.2.2: Nf is 1 to 255, and Nf is a byte.
   }
 
   size_t pixel_count = 0;

@@ -34,6 +34,19 @@ typedef enum {
   GIMG_CHANNEL_YCBCR,
   GIMG_CHANNEL_LAB,
   GIMG_CHANNEL_INDEXED,
+  /**
+   * Channels with no colour meaning attached: some number of samples per
+   * pixel, in the order the file gave them.
+   *
+   * A JPEG frame is the case this exists for.  ISO/IEC 10918-1 (T.81) B.2.2
+   * lets a frame carry from 1 to 255 components and says nothing anywhere
+   * about what they mean; one, three and four have conventions attached to
+   * them (JFIF, the Adobe APP14 marker, the component identifiers) and no
+   * other count has any.  libjpeg calls the same thing JCS_UNKNOWN and hands
+   * the components back untouched, which is what a raster in this model
+   * holds.
+   */
+  GIMG_CHANNEL_UNKNOWN,
   GIMG_CHANNEL_COUNT
 } GIMG_Channel_Model;
 
@@ -66,11 +79,48 @@ typedef struct {
   GIMG_Channel_Model channel_model; ///< Gray, RGB, RGBA, etc.
   GIMG_Channel_Type channel_type;   ///< UNORM, UINT, FLOAT, etc.
   GIMG_Pixel_Layout layout;         ///< Interleaved or planar.
-  uint8_t channel_count;            ///< Number of channels.
-  uint8_t bits_per_channel[8];      ///< Bits per channel (0 = unused).
+  uint8_t channel_count;            ///< Number of channels, 1 to 255.
+  /**
+   * Bits per channel; 0 marks an unused entry.
+   *
+   * A format with more than eight channels gives every channel the depth in
+   * bits_per_channel[0] and leaves the rest of the array zero.  That is not a
+   * loss: a format wide enough to need the rule is one whose samples all came
+   * from the same place, such as a JPEG frame, where T.81 B.2.2 gives the
+   * whole frame a single sample precision.  Use
+   * gimg_pixel_format_multichannel() to build one rather than filling this in
+   * by hand.
+   */
+  uint8_t bits_per_channel[8];
   uint8_t alignment;                ///< Row alignment in bytes (e.g. 16).
   uint8_t _reserved[5];
 } GIMG_Pixel_Format;
+
+/**
+ * @brief Bits in one channel of @p format, for any channel count.
+ *
+ * Reads bits_per_channel[index] for the first eight channels and
+ * bits_per_channel[0] beyond them; see the note on that field.
+ */
+GIMG_API uint8_t gimg_pixel_format_channel_bits(
+    const GIMG_Pixel_Format * format, uint8_t index);
+
+/**
+ * @brief Build a format for @p channel_count channels of @p bits each.
+ *
+ * The model is chosen from the count where there is a convention for it -
+ * GRAY for one, CMYK for four - and GIMG_CHANNEL_UNKNOWN otherwise, which is
+ * what a JPEG frame of two, or of five or more, components carries.  Three
+ * channels are ambiguous (RGB and YCbCr are both three) and are not guessed:
+ * they come back as GIMG_CHANNEL_UNKNOWN too, so a caller that knows they are
+ * colour should name GIMG_PIXEL_RGBA8 or its kin instead.
+ *
+ * @param channel_count 1 to 255.
+ * @param bits 8 or 16 (12-bit samples are carried left-justified in 16).
+ * @return GIMG_ERR_UNSUPPORTED for any other count or depth.
+ */
+GIMG_API GIMG_Result gimg_pixel_format_multichannel(
+    uint8_t channel_count, uint8_t bits, GIMG_Pixel_Format * out_format);
 
 /** @brief Canonical RGBA 8-bit per channel (sRGB). */
 extern const GIMG_Pixel_Format GIMG_PIXEL_RGBA8;

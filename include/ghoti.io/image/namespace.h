@@ -42,6 +42,8 @@
 #define GIMG_Meta_Policy GHOTIIO_IMAGE(GIMG_Meta_Policy)
 #define GIMG_Meta_Raw GHOTIIO_IMAGE(GIMG_Meta_Raw)
 #define GIMG_Orientation GHOTIIO_IMAGE(GIMG_Orientation)
+#define gimg_pixel_format_channel_bits GHOTIIO_IMAGE(gimg_pixel_format_channel_bits)
+#define gimg_pixel_format_multichannel GHOTIIO_IMAGE(gimg_pixel_format_multichannel)
 #define GIMG_PIXEL_CMYK8 GHOTIIO_IMAGE(GIMG_PIXEL_CMYK8)
 #define GIMG_PIXEL_CMYK16 GHOTIIO_IMAGE(GIMG_PIXEL_CMYK16)
 #define GIMG_PIXEL_GRAY12 GHOTIIO_IMAGE(GIMG_PIXEL_GRAY12)

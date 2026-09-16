@@ -881,7 +881,11 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
       {
         uint8_t ns = payload_buf[0];
-        if (ns == 0 || ns > sos_sof->num_components ||
+        // T.81 B.2.3 Table B.3: Ns is 1 to 4, whatever Nf is.  A frame of more
+        // than four components is legal (B.2.2) and is written as several
+        // scans; a scan that claims more than four is not.
+        if (ns == 0 || ns > GIMG_JPEG_MAX_SCAN_COMPONENTS ||
+            ns > sos_sof->num_components ||
             (size_t)(4 + ns * 2) > payload_size) {
           if (payload_buf)
             gimg_free(alloc, payload_buf);
@@ -952,6 +956,29 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               if (scan->comp_id[j] == scan->comp_id[i]) {
                 why = "SOS names the same component twice (T.81 B.2.3)";
               }
+            }
+          }
+          // T.81 A.2.2: an interleaved MCU holds Hi x Vi data units of each
+          // of the scan's components and may hold at most ten.  This is a
+          // property of the scan, not of the frame: a frame of five or more
+          // components exceeds ten between them and is still legal, because
+          // A.2.3 requires it to be written as several scans, each within the
+          // limit.  It used to be checked against the whole frame at the frame
+          // header, which refused every such frame outright.
+          if (!why && ns > 1u) {
+            unsigned data_units = 0;
+            for (uint8_t i = 0; i < ns; i++) {
+              for (uint8_t c = 0; c < sos_sof->num_components; c++) {
+                if (sos_sof->comp_id[c] == scan->comp_id[i]) {
+                  data_units += (unsigned)sos_sof->h_samp[c] *
+                      (unsigned)sos_sof->v_samp[c];
+                  break;
+                }
+              }
+            }
+            if (data_units > 10u) {
+              why = "interleaved MCU holds more than ten data units "
+                    "(T.81 A.2.2)";
             }
           }
           if (!why && progressive) {

@@ -114,17 +114,20 @@ extern const unsigned char gimg_jpeg_signature[GIMG_JPEG_SIGNATURE_LEN];
  */
 #define GIMG_JPEG_DEFAULT_MAX_SEGMENT_PAYLOAD (64u * 1024u)
 
+/** Max number of components in a frame: T.81 B.2.2 gives Nf as 1 to 255. */
+#define GIMG_JPEG_MAX_COMPONENTS 255u
+
 /**
- * Max number of components in a frame.
+ * Max number of components in one scan.
  *
- * T.81 B.2.2 allows Nf from 1 to 255.  The ceiling here is the raster's, not
- * the codec's: GIMG_Pixel_Format carries bits_per_channel[8], so eight is the
- * widest picture this library can hand back, and a frame wider than that has
- * nowhere to be decoded to.  Everything below this line - parse, entropy
- * decode, the coefficient walk - is written against this constant rather than
- * against four, so raising it is the only change a wider raster would need.
+ * T.81 B.2.3 Table B.3 gives Ns as 1 to 4, and A.2.2 caps an interleaved MCU
+ * at ten data units on top of that.  A frame wider than four components is
+ * therefore legal but cannot be interleaved: every scan of it carries a subset
+ * of at most four, and in practice one each (A.2.3).  Keeping the scan arrays
+ * at four rather than at Nf is what makes a 255-component frame cost nothing
+ * when it is not there.
  */
-#define GIMG_JPEG_MAX_COMPONENTS 8u
+#define GIMG_JPEG_MAX_SCAN_COMPONENTS 4u
 
 /**
  * Which of the two table sets a component uses: 0 for the set a luminance
@@ -151,6 +154,32 @@ static inline int gimg_jpeg_uses_second_table(
     }
   }
   return 0;
+}
+
+/**
+ * The sampling factors T.81 B.2.2 implies when a caller passes none: every Hi
+ * and Vi is 1.
+ *
+ * Deliberately not a static array of ones.  Nf runs to 255, and an array
+ * spelled out with eight ones and the rest left to the zero C fills in gave
+ * every component past the eighth a sampling factor of zero - which made the
+ * MCU of a nine-or-more-component frame the wrong shape, silently, and put
+ * every block of it in the wrong place.
+ *
+ * @param samp    The caller's array, or NULL.
+ * @param scratch Space for @p num_components entries, filled when @p samp is
+ *                NULL; must outlive the returned pointer.
+ */
+static inline const uint8_t * gimg_jpeg_samp_or_ones(
+    const uint8_t * samp, uint8_t * scratch, int num_components) {
+  if (samp) {
+    return samp;
+  }
+  for (int i = 0; i < num_components && i < (int)GIMG_JPEG_MAX_COMPONENTS;
+      i++) {
+    scratch[i] = 1u;
+  }
+  return scratch;
 }
 
 /**
@@ -217,8 +246,15 @@ static inline void gimg_jpeg_sampling_max(int num_components,
 /**
  * Max number of scans (progressive JPEG). Rationale: bomb protection; typical
  * progressive has on the order of 10–20 scans.
+ *
+ * The ceiling has to clear what a wide frame needs rather than what a familiar
+ * one uses.  T.81 B.2.3 caps a scan at four components, so a frame of Nf
+ * components needs at least ceil(Nf/4) scans sequentially and, progressively,
+ * one AC scan per component (G.1.2.2) plus its DC scans - so a 255-component
+ * progressive frame runs to several hundred.  At 128 such a file was refused
+ * for being long rather than for being wrong.
  */
-#define GIMG_JPEG_MAX_SCANS 128u
+#define GIMG_JPEG_MAX_SCANS 1024u
 
 /** Max DHT table entries we record (for "first DHT after previous scan" rule).
  */
@@ -250,9 +286,9 @@ static inline void gimg_jpeg_sampling_max(int num_components,
  */
 typedef struct {
   uint8_t comp_count;                        ///< Number of components in scan.
-  uint8_t comp_id[GIMG_JPEG_MAX_COMPONENTS]; ///< Component selector IDs.
-  uint8_t dc_tbl[GIMG_JPEG_MAX_COMPONENTS];  ///< DC Huffman table ID per comp.
-  uint8_t ac_tbl[GIMG_JPEG_MAX_COMPONENTS];  ///< AC Huffman table ID per comp.
+  uint8_t comp_id[GIMG_JPEG_MAX_SCAN_COMPONENTS]; ///< Component selector IDs.
+  uint8_t dc_tbl[GIMG_JPEG_MAX_SCAN_COMPONENTS];  ///< DC table ID per comp.
+  uint8_t ac_tbl[GIMG_JPEG_MAX_SCAN_COMPONENTS];  ///< AC table ID per comp.
   uint8_t ss, se, ah, al; ///< Spectral selection and successive approximation.
   /**
    * Restart interval in force for this scan, in MCUs (T.81 B.2.4.4).

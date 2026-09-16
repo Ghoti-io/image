@@ -1075,6 +1075,261 @@ TEST(JpegEncode, FourComponentFrameAlwaysCarriesItsAdobeMarker) {
   }
 }
 
+// T.81 B.2.2 lets a frame carry from 1 to 255 components; B.2.3 caps one scan
+// at 4, so a frame wider than that has exactly one legal arrangement - several
+// non-interleaved scans (A.2.3) - and the encoder writes it that way whether
+// or not the caller asked, because there is no other way to honour the
+// request.
+//
+// There is no oracle for the whole file: libjpeg's decoder matches a scan's Cs
+// against only the first four components of the frame (jdmarker.c get_sos), so
+// it cannot read one back.  It can read each scan on its own, though, and that
+// is what JpegLoad.FramesWiderThanOneScanCanName rests on; here the check is
+// the round trip, which is what a caller of this library actually gets.  The
+// error bound is the quantiser's: at quality 100 the DCT rounding is all that
+// is left.
+TEST(JpegEncode, FramesWiderThanOneScanCanNameAreWritten) {
+  const int counts[] = {2, 5, 8, 10, 32, 255};
+  for (int n : counts) {
+    SCOPED_TRACE("Nf = " + std::to_string(n));
+    GIMG_Pixel_Format fmt;
+    ASSERT_EQ(gimg_pixel_format_multichannel((uint8_t)n, 8, &fmt), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_raster_create(
+                  17, 9, &fmt, GIMG_RASTER_OWNED, NULL, 0, &raster),
+        GIMG_OK);
+    unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < 9u; y++) {
+      for (uint32_t x = 0; x < 17u; x++) {
+        for (int c = 0; c < n; c++) {
+          // Smooth in x and y so the quantiser has little to do, and offset
+          // per component so a mix-up between two of them shows.
+          int v = (int)(x * 3u + y * 5u) + (c * 37) % 96 + 32;
+          px[y * stride + (size_t)x * (size_t)n + (size_t)c] =
+              (unsigned char)(v > 255 ? 255 : v);
+        }
+      }
+    }
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+    GIMG_Stream * out_stream = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+    opts.quality = 100;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out_stream, "jpeg", &opts, &report), GIMG_OK)
+        << "a frame of " << n << " components is legal and must be writable";
+    const void * buf = nullptr;
+    size_t bn = 0;
+    gimg_stream_output_buffer(out_stream, &buf, &bn);
+    std::vector<uint8_t> written(
+        (const uint8_t *)buf, (const uint8_t *)buf + bn);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(out_stream);
+
+    // Every scan names one component when the frame is wider than B.2.3's Ns.
+    int scans = 0;
+    int sof_components = 0;
+    int widest_ns = 0;
+    size_t i = 2;
+    while (i + 4 <= written.size() && written[i] == 0xFF) {
+      uint8_t m = written[i + 1];
+      if (m == 0xD9) {
+        break;
+      }
+      size_t len = (size_t)((written[i + 2] << 8) | written[i + 3]);
+      const uint8_t * pay = written.data() + i + 4;
+      if (m == 0xC0 || m == 0xC1 || m == 0xC2) {
+        sof_components = pay[5];
+      }
+      if (m == 0xDA) {
+        scans++;
+        if (pay[0] > widest_ns) {
+          widest_ns = pay[0];
+        }
+      }
+      i += 2 + len;
+      if (m == 0xDA) {
+        size_t j = i;
+        while (j + 1 < written.size()) {
+          if (written[j] == 0xFF && written[j + 1] != 0 &&
+              !(written[j + 1] >= 0xD0 && written[j + 1] <= 0xD7)) {
+            break;
+          }
+          j++;
+        }
+        i = j;
+      }
+    }
+    EXPECT_EQ(sof_components, n);
+    EXPECT_LE(widest_ns, 4) << "T.81 B.2.3 Table B.3 caps Ns at 4";
+    if (n > 4) {
+      EXPECT_EQ(scans, n) << "a wide frame is one scan per component (A.2.3)";
+    }
+
+    DocStreamGuard in;
+    ASSERT_EQ(gimg_stream_create_memory(written.data(), written.size(), &in.s),
+        GIMG_OK);
+    ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+    RasterGuard got;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+    ASSERT_NE(got.r, nullptr);
+    const GIMG_Pixel_Format * gf = gimg_raster_format(got.r);
+    ASSERT_EQ((int)gf->channel_count, n);
+    ASSERT_EQ(gimg_raster_width(got.r), 17u);
+    ASSERT_EQ(gimg_raster_height(got.r), 9u);
+    const unsigned char * gp = (const unsigned char *)gimg_raster_pixels(got.r);
+    size_t gs = gimg_raster_stride_bytes(got.r);
+    int worst = 0;
+    for (uint32_t y = 0; y < 9u; y++) {
+      for (uint32_t x = 0; x < 17u; x++) {
+        for (int c = 0; c < n; c++) {
+          int want = (int)(x * 3u + y * 5u) + (c * 37) % 96 + 32;
+          if (want > 255) {
+            want = 255;
+          }
+          int d = (int)gp[y * gs + (size_t)x * (size_t)n + (size_t)c] - want;
+          if (d < 0) {
+            d = -d;
+          }
+          if (d > worst) {
+            worst = d;
+          }
+        }
+      }
+    }
+    EXPECT_LE(worst, 3) << "components must not be crossed or mis-shaped";
+  }
+}
+
+// The same frames again through the progressive process.  Annex G's AC scans
+// are one component each already (G.1.2.2); what a wide frame adds is that its
+// DC scan has to split too, because B.2.3 caps Ns at 4 in every scan and not
+// only in an AC one.
+TEST(JpegEncode, WideFramesProgressiveAndArithmetic) {
+  const int counts[] = {5, 10, 32};
+  for (int n : counts) {
+    for (int progressive = 0; progressive <= 1; progressive++) {
+      for (int arithmetic = 0; arithmetic <= 1; arithmetic++) {
+        SCOPED_TRACE("Nf = " + std::to_string(n) + ", progressive " +
+            std::to_string(progressive) + ", arithmetic " +
+            std::to_string(arithmetic));
+        GIMG_Pixel_Format fmt;
+        ASSERT_EQ(gimg_pixel_format_multichannel((uint8_t)n, 8, &fmt), GIMG_OK);
+        GIMG_Doc * doc = nullptr;
+        ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+        GIMG_Raster * raster = nullptr;
+        ASSERT_EQ(gimg_raster_create(
+                      17, 9, &fmt, GIMG_RASTER_OWNED, NULL, 0, &raster),
+            GIMG_OK);
+        unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+        size_t stride = gimg_raster_stride_bytes(raster);
+        for (uint32_t y = 0; y < 9u; y++) {
+          for (uint32_t x = 0; x < 17u; x++) {
+            for (int c = 0; c < n; c++) {
+              int v = (int)(x * 3u + y * 5u) + (c * 37) % 96 + 32;
+              px[y * stride + (size_t)x * (size_t)n + (size_t)c] =
+                  (unsigned char)(v > 255 ? 255 : v);
+            }
+          }
+        }
+        gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+        GIMG_Stream * out_stream = nullptr;
+        ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
+        GIMG_Save_Options opts = {};
+        opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+        opts.quality = 100;
+        opts.jpeg_progressive = (uint8_t)progressive;
+        opts.jpeg_arithmetic = (uint8_t)arithmetic;
+        GIMG_Save_Report report = {};
+        ASSERT_EQ(
+            gimg_doc_save(doc, out_stream, "jpeg", &opts, &report), GIMG_OK);
+        const void * buf = nullptr;
+        size_t bn = 0;
+        gimg_stream_output_buffer(out_stream, &buf, &bn);
+        std::vector<uint8_t> written(
+            (const uint8_t *)buf, (const uint8_t *)buf + bn);
+        gimg_doc_destroy(doc);
+        gimg_stream_destroy(out_stream);
+
+        // The frame header must say which process was actually used - a
+        // progressive request that quietly produced a sequential file is the
+        // failure this pins.
+        int sof = 0;
+        int widest_ns = 0;
+        size_t i = 2;
+        while (i + 4 <= written.size() && written[i] == 0xFF) {
+          uint8_t m = written[i + 1];
+          if (m == 0xD9) {
+            break;
+          }
+          size_t len = (size_t)((written[i + 2] << 8) | written[i + 3]);
+          if ((m >= 0xC0 && m <= 0xCF) && m != 0xC4 && m != 0xC8 &&
+              m != 0xCC) {
+            sof = m;
+          }
+          if (m == 0xDA && written[i + 4] > widest_ns) {
+            widest_ns = written[i + 4];
+          }
+          i += 2 + len;
+          if (m == 0xDA) {
+            size_t j = i;
+            while (j + 1 < written.size()) {
+              if (written[j] == 0xFF && written[j + 1] != 0 &&
+                  !(written[j + 1] >= 0xD0 && written[j + 1] <= 0xD7)) {
+                break;
+              }
+              j++;
+            }
+            i = j;
+          }
+        }
+        int want_sof = progressive ? (arithmetic ? 0xCA : 0xC2)
+                                   : (arithmetic ? 0xC9 : 0xC0);
+        EXPECT_EQ(sof, want_sof);
+        EXPECT_LE(widest_ns, 4) << "T.81 B.2.3 Table B.3 caps Ns at 4";
+
+        DocStreamGuard in;
+        ASSERT_EQ(
+            gimg_stream_create_memory(written.data(), written.size(), &in.s),
+            GIMG_OK);
+        ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+        RasterGuard got;
+        ASSERT_EQ(gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r),
+            GIMG_OK);
+        ASSERT_NE(got.r, nullptr);
+        const unsigned char * gp =
+            (const unsigned char *)gimg_raster_pixels(got.r);
+        size_t gs = gimg_raster_stride_bytes(got.r);
+        int worst = 0;
+        for (uint32_t y = 0; y < 9u; y++) {
+          for (uint32_t x = 0; x < 17u; x++) {
+            for (int c = 0; c < n; c++) {
+              int want = (int)(x * 3u + y * 5u) + (c * 37) % 96 + 32;
+              if (want > 255) {
+                want = 255;
+              }
+              int d =
+                  (int)gp[y * gs + (size_t)x * (size_t)n + (size_t)c] - want;
+              if (d < 0) {
+                d = -d;
+              }
+              if (d > worst) {
+                worst = d;
+              }
+            }
+          }
+        }
+        EXPECT_LE(worst, 3);
+      }
+    }
+  }
+}
+
 // Chroma subsampling has nothing to subsample in a raw CMYK frame.  C, M, Y
 // and K are four ink amounts; none of them is a chrominance difference, and
 // throwing away half the M samples throws away ink.  libjpeg agrees - its

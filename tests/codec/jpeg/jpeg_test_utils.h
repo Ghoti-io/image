@@ -116,6 +116,17 @@ enum JpegOracleRawMode {
 bool load_jpeg_oracle_raw(const char * fixture_base, std::vector<uint8_t> & out_pixels,
     uint32_t * out_width, uint32_t * out_height, int * out_mode);
 
+/**
+ * Load a multichannel oracle .raw (tests/data/jpeg/mk_wide.py).
+ *
+ * A different header from the one above, because the channel count is not
+ * implied by a mode: byte 0 is 4, byte 1 is the channel count, then width and
+ * height as little-endian 32-bit, then w * h * channels samples.
+ */
+bool load_jpeg_multichannel_raw(const char * fixture_base,
+    std::vector<uint8_t> & out_pixels, uint32_t * out_width,
+    uint32_t * out_height, int * out_channels);
+
 /** Load oracle .raw from an arbitrary path (same 9-byte header + pixels format). */
 bool load_jpeg_oracle_raw_from_path(const char * raw_path,
     std::vector<uint8_t> & out_pixels, uint32_t * out_width,
