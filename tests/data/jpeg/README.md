@@ -723,3 +723,49 @@ Every lossless file anything here can write is 1x1, because libjpeg-turbo
 declines to subsample a lossless frame.  So that distinction follows A.2.2 read
 directly, and is unverified - the same position as the subsampled lossless
 fixtures above, and said out loud in the test for the same reason.
+
+## Four-component frames (`cmyk_progressive.jpg`, `ycck_*.jpg`)
+
+T.81 allows Nf up to 255 and says nothing about colour; four components in
+practice means CMYK, or YCCK when an Adobe APP14 says transform 2, and that
+marker is the only thing in the file that tells them apart.
+
+`cmyk_sample.jpg` covered four components in a baseline frame.  Nothing covered
+them anywhere else, and the coefficient-buffer walk - progressive frames,
+sequential frames written as several scans, and 12-bit frames - refused them.
+
+```sh
+D=tests/data/jpeg
+python3 -c "
+from PIL import Image
+im = Image.open('$D/hier_enc_src.ppm').convert('CMYK')
+im.save('$D/cmyk_progressive.jpg', quality=88, progressive=True)
+"
+# ycck_baseline.jpg and ycck_progressive.jpg are the CMYK files with the APP14
+# transform byte set to 2 - see the note below.
+
+# References, libjpeg as always for CMYK.  cmyk_ref.c is committed here; build
+# it against libjpeg-turbo and it reproduces dump_jpeg_pixels_ref -o exactly
+# (checked against the committed cmyk_sample.raw, byte for byte).
+cc -O1 -o cmyk_ref $D/cmyk_ref.c -I<libjpeg-turbo-src> -I<build> <build>/libjpeg.a
+for b in cmyk_progressive ycck_baseline ycck_progressive; do
+  ./cmyk_ref $D/$b.raw $D/$b.jpg
+done
+```
+
+`cmyk_progressive.jpg` is a real progressive CMYK file: 18 scans, a
+four-component interleaved DC scan, successive approximation on both DC and AC,
+and one AC scan per component as G.1.2.2 requires.
+
+The two `ycck_` files are those images with the APP14 transform byte changed to
+2.  Nothing available writes a genuine YCCK file, so the picture they decode to
+is not meaningful - but the decode is well defined, and libjpeg produces the
+same bytes we do.  That is what a branch that had never been exercised needs.
+Disabling the YCCK conversion leaves `DecodeFixtureOraclesRaw` passing and only
+these failing, which is how it was confirmed that `cmyk_sample.jpg` was not
+reaching it.
+
+The oracle is libjpeg and not Pillow because libjpeg does not invert Adobe CMYK
+(jdcolor.c null_convert) and matching it was already the decision here.  Pillow
+does invert, so a Pillow decode of any of these is the exact complement of the
+`.raw` - worth knowing before concluding something is wrong.

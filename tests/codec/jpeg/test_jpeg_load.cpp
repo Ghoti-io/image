@@ -4011,3 +4011,79 @@ TEST(JpegLoad, HierarchicalLosslessFrameCodedAsNonInterleavedScans) {
     gimg_stream_destroy(s);
   }
 }
+
+// T.81 allows Nf up to 255, and four components in practice means CMYK, or
+// YCCK when an Adobe APP14 says transform 2.  The baseline walk had handled
+// them since early on; the coefficient-buffer walk - which serves progressive
+// frames, sequential frames written as several scans, and 12-bit frames -
+// refused anything that was not one or three, so the same picture decoded when
+// it was saved sequentially and came back UNSUPPORTED when it was saved
+// progressive.  Both walks now assemble four components with the same code.
+//
+// The oracle is libjpeg, as it is for every CMYK fixture here, because libjpeg
+// does not invert Adobe CMYK and the decision to match it was already made -
+// see jdcolor.c null_convert and the note in jpeg_entropy.c.  Pillow does
+// invert, so a Pillow decode of these files is the exact complement of the
+// .raw, which is a useful thing to know when one of them looks wrong.
+//
+// cmyk_progressive.jpg is a real progressive CMYK file: 18 scans, a
+// four-component interleaved DC scan, successive approximation on both DC and
+// AC, and one AC scan per component as G.1.2.2 requires.  The two ycck_ files
+// are the same images with the APP14 transform byte set to 2, which is the
+// only thing in a JPEG that distinguishes YCCK from CMYK; nothing available
+// writes a genuine YCCK file, and the resulting picture is not meaningful, but
+// the decode is well defined and libjpeg agrees with it byte for byte.  That
+// branch had no fixture at all before.
+TEST(JpegLoad, FourComponentFramesBeyondTheBaselineWalk) {
+  struct Case {
+    const char * base;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"cmyk_progressive", "progressive CMYK, 18 scans (Annex G with Nf=4)"},
+      {"ycck_baseline", "YCCK, Adobe transform 2, sequential"},
+      {"ycck_progressive", "YCCK, Adobe transform 2, progressive"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.base) + ": " + c.what);
+    std::vector<uint8_t> oracle;
+    uint32_t ow = 0, oh = 0;
+    int omode = -1;
+    ASSERT_TRUE(
+        jpeg_test::load_jpeg_oracle_raw(c.base, oracle, &ow, &oh, &omode))
+        << "missing oracle " << c.base << ".raw";
+    ASSERT_EQ(omode, 2) << "the oracle must be a CMYK .raw";
+    std::string name = std::string(c.base) + ".jpg";
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name.c_str(), jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK)
+        << "a four-component frame must decode outside the baseline walk too";
+    ASSERT_NE(raster, nullptr);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    ASSERT_NE(fmt, nullptr);
+    EXPECT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK);
+    ASSERT_EQ(gimg_raster_width(raster), ow);
+    ASSERT_EQ(gimg_raster_height(raster), oh);
+    const unsigned char * gp =
+        (const unsigned char *)gimg_raster_pixels(raster);
+    size_t gs = gimg_raster_stride_bytes(raster);
+    for (uint32_t y = 0; y < oh; y++) {
+      for (uint32_t x = 0; x < ow; x++) {
+        for (int ch = 0; ch < 4; ch++) {
+          int a = (int)gp[y * gs + x * 4 + (size_t)ch];
+          int b = (int)oracle[((size_t)y * ow + x) * 4 + (size_t)ch];
+          ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << ch;
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
