@@ -4244,3 +4244,38 @@ TEST(JpegLoad, DnlSuppliesAHeightTheFrameHeaderLeftAtZero) {
   gimg_doc_destroy(doc2);
   gimg_stream_destroy(s2);
 }
+
+// Reading a 32-bit EXIF field must not be undefined.
+//
+// exif.c's read_u32 built its value as (p[0] << 24) | ..., and an unsigned char
+// promotes to int, so any field with a top byte above 0x7F was a signed shift
+// that does not fit: undefined behaviour, not a wrap.  The same fault was in
+// the APP13 resource size in jpeg_load.c.  Every compiler anyone uses produces
+// the right number anyway, which is why no functional test could ever have
+// caught this, and why it sat in all four fuzz logs at once without anyone
+// acting on it - UBSan was in recover mode, so it printed and the suite passed.
+// The sanitizer build now aborts on undefined behaviour, which is what makes
+// this test a test: it loads a file whose EXIF has a high top byte, and under
+// the sanitizers that either returns or it does not.
+//
+// The file came from the fuzz corpus.  What it decodes to does not matter here
+// and is not asserted; it is malformed, and the loader is entitled to reject
+// it.  Reaching the EXIF parser at all is the point.
+TEST(JpegLoad, ExifFieldWithAHighTopByteIsReadWithoutUndefinedBehaviour) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("exif_u32_high_bit.jpg", jpeg));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r == GIMG_OK && doc) {
+    GIMG_Raster * raster = nullptr;
+    (void)gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+    if (raster) {
+      gimg_raster_destroy(raster);
+    }
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(s);
+  SUCCEED() << "the assertion is the sanitizer's, not gtest's";
+}

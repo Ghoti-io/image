@@ -35,10 +35,20 @@ static uint16_t read_u16(const unsigned char * p, int little) {
 }
 
 static uint32_t read_u32(const unsigned char * p, int little) {
+  // Each byte is widened before it is shifted.  An unsigned char promotes to
+  // int, so p[x] << 24 is a signed shift, and 255 << 24 does not fit an int:
+  // that is undefined behaviour, not merely a wrap, and every one of the four
+  // fuzz harnesses reported it - any file with 0xFF in the top byte of any
+  // 32-bit EXIF field reaches here, which includes every EXIF block a fuzzer
+  // has touched.  The value produced is the same on any compiler anyone uses;
+  // what changes is that the arithmetic is now defined.  read_u16 needs no
+  // such care: its widest shift is 255 << 8, which fits.
   if (little) {
-    return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+        ((uint32_t)p[3] << 24);
   }
-  return (uint32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+      ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
 static void write_u16(unsigned char * p, uint16_t v, int little) {

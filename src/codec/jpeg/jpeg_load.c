@@ -96,10 +96,14 @@ static bool jpeg_app13_iptc_caption(const unsigned char * app13,
     if (off + 6 + name_total + 4 > app13_len) {
       break;
     }
-    uint32_t data_size = (uint32_t)((app13[off + 6 + name_total] << 24) |
-        (app13[off + 6 + name_total + 1] << 16) |
-        (app13[off + 6 + name_total + 2] << 8) |
-        app13[off + 6 + name_total + 3]);
+    // Widen before shifting, not after: app13 is unsigned char, which promotes
+    // to int, so a top byte of 0xFF made this 255 << 24 - undefined, and the
+    // cast on the outside is far too late to help.  Same fault as read_u32 in
+    // exif.c, found the same way.
+    uint32_t data_size = ((uint32_t)app13[off + 6 + name_total] << 24) |
+        ((uint32_t)app13[off + 6 + name_total + 1] << 16) |
+        ((uint32_t)app13[off + 6 + name_total + 2] << 8) |
+        (uint32_t)app13[off + 6 + name_total + 3];
     size_t data_off = off + 6 + name_total + 4;
     if (data_off + data_size > app13_len) {
       break;

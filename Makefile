@@ -839,7 +839,12 @@ endif
 ####################################################################
 # Sanitizer builds (ASan + UBSan): separate build dir, run test suite
 ####################################################################
-ASAN_UBSAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -g
+# -fno-sanitize-recover=undefined makes UBSan abort instead of printing and
+# carrying on.  Without it a UBSan finding is a line in a log and the suite
+# still passes, which is exactly how a signed overflow in exif.c's read_u32
+# survived being reported by all four fuzz harnesses at once: nothing was
+# watching, because nothing failed.
+ASAN_UBSAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g
 ASAN_BUILD_DIR := ./build/$(BUILD)-asan
 ASAN_OBJ_DIR := $(ASAN_BUILD_DIR)/objects
 ASAN_APP_DIR := $(ASAN_BUILD_DIR)/apps
