@@ -2765,6 +2765,145 @@ TEST(JpegEncode, Save12BitQuality100RoundTrips) {
   gimg_doc_destroy(back);
 }
 
+/** Arithmetic and Huffman encoding of the same image must agree.
+ *
+ * T.81 defines two entropy coders, and they are exactly that: two ways of
+ * writing the same quantised coefficients.  Both encoders here are fed one
+ * coefficient buffer, so whatever a decoder reconstructs from one file it must
+ * reconstruct from the other, to the sample.  That makes each a check on the
+ * other, which is how the Huffman encoder's zero-run bug was found: it had been
+ * dropping the remainder of any run of sixteen or more zeros, so a coefficient
+ * after a long run was written up to fifteen positions too early.  No decoder
+ * could notice - the file faithfully said what the encoder meant - and a
+ * round trip through our own decoder agreed with libjpeg on the wrong answer.
+ *
+ * The qualities are not arbitrary: with this content the two encoders diverge
+ * at 60, 75 and 80 and agree at 70 and 85, so a test that picked one quality
+ * had every chance of picking one that hides the defect. */
+TEST(JpegEncode, ArithmeticAndHuffmanEncodeTheSameImage) {
+  static const uint32_t kW = 17u, kH = 9u;
+  auto encode = [](bool arithmetic, unsigned quality,
+                    std::vector<uint8_t> & out) {
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_raster_create(kW, kH, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                  NULL, 0, &raster),
+        GIMG_OK);
+    unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    // Noise in one channel and gradients in the others.  Noise is what produces
+    // blocks with a few scattered high-frequency coefficients separated by long
+    // runs of zeros, which is the case the zero-run bug fell over; smooth
+    // content does not reach it.  The generator is a plain congruential one so
+    // that the image is the same on every run and every platform.
+    uint32_t seed = 12345u;
+    for (uint32_t y = 0; y < kH; y++) {
+      for (uint32_t x = 0; x < kW; x++) {
+        seed = seed * 1103515245u + 12345u;
+        unsigned char * p = px + y * stride + x * 4;
+        p[0] = (unsigned char)((seed >> 16) & 0xFFu);
+        p[1] = (unsigned char)((y * 255u) / (kH - 1u));
+        p[2] = (unsigned char)(((x + y) * 255u) / (kW + kH - 2u));
+        p[3] = 255;
+      }
+    }
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+    GIMG_Stream * st = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&st), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+    opts.quality = quality;
+    opts.jpeg_arithmetic = arithmetic ? 1 : 0;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, st, "jpeg", &opts, &report), GIMG_OK);
+    const void * data = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(st, &data, &size);
+    out.assign((const uint8_t *)data, (const uint8_t *)data + size);
+    gimg_stream_destroy(st);
+    gimg_doc_destroy(doc);
+  };
+  auto decode = [](const std::vector<uint8_t> & jpeg,
+                    std::vector<uint8_t> & out) {
+    GIMG_Stream * st = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &st), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(st, nullptr, nullptr, &doc), GIMG_OK);
+    gimg_stream_destroy(st);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    uint32_t w = gimg_raster_width(raster), h = gimg_raster_height(raster);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    size_t bpp = gimg_raster_bytes_per_pixel(gimg_raster_format(raster));
+    const unsigned char * px =
+        (const unsigned char *)gimg_raster_pixels_const(raster);
+    out.clear();
+    for (uint32_t y = 0; y < h; y++) {
+      out.insert(out.end(), px + y * stride, px + y * stride + (size_t)w * bpp);
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+  };
+
+  for (unsigned q : {60u, 70u, 75u, 80u, 85u, 95u}) {
+    std::vector<uint8_t> ar, hu, ar_px, hu_px;
+    encode(true, q, ar);
+    encode(false, q, hu);
+    ASSERT_FALSE(ar.empty()) << "quality " << q;
+    ASSERT_FALSE(hu.empty()) << "quality " << q;
+    // The arithmetic file must announce itself as one: SOF9, and a DAC segment
+    // where the Huffman file has DHT (T.81 Table B.1 and B.2.4.3).
+    bool saw_sof9 = false, saw_dac = false, saw_dht = false;
+    for (size_t i = 0; i + 1 < ar.size(); i++) {
+      if (ar[i] != 0xFF) continue;
+      if (ar[i + 1] == 0xC9) saw_sof9 = true;
+      if (ar[i + 1] == 0xCC) saw_dac = true;
+      if (ar[i + 1] == 0xC4) saw_dht = true;
+      if (ar[i + 1] == 0xDA) break; // stop before the entropy-coded data
+    }
+    EXPECT_TRUE(saw_sof9) << "quality " << q;
+    EXPECT_TRUE(saw_dac) << "quality " << q;
+    EXPECT_FALSE(saw_dht) << "an arithmetic frame carries no Huffman tables";
+
+    decode(ar, ar_px);
+    decode(hu, hu_px);
+    ASSERT_EQ(ar_px.size(), hu_px.size()) << "quality " << q;
+    EXPECT_EQ(ar_px, hu_px)
+        << "the two entropy coders disagree about the same coefficients, at "
+           "quality "
+        << q;
+  }
+}
+
+/** Progressive plus arithmetic is refused rather than quietly downgraded.
+ *
+ * SOF10 decodes, but the encoder does not write it yet.  Silently producing a
+ * Huffman file would be worse than saying so. */
+TEST(JpegEncode, ProgressiveArithmeticIsRefusedForNow) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
+                NULL, 0, &raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  GIMG_Stream * st = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&st), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  opts.quality = 80;
+  opts.jpeg_progressive = 1;
+  opts.jpeg_arithmetic = 1;
+  GIMG_Save_Report report = {};
+  EXPECT_EQ(gimg_doc_save(doc, st, "jpeg", &opts, &report),
+      GIMG_ERR_UNSUPPORTED);
+  gimg_stream_destroy(st);
+  gimg_doc_destroy(doc);
+}
+
 TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
   struct Case {
     uint16_t sample;   // 12-bit input, 0..4095

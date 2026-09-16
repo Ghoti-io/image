@@ -639,3 +639,355 @@ GIMG_Result jpeg_arith_decode_block_prog_ac_refine(jpeg_arith_decoder_t * d,
   }
   return GIMG_OK;
 }
+
+/* ------------------------------------------------------------------------
+ * Encoder (T.81 D.1)
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Hand one finished byte to the output.
+ *
+ * The encoder does its own byte stuffing, because it has to: B.1.1.5 requires a
+ * 0x00 after any 0xFF in the entropy-coded data, and the arithmetic coder
+ * cannot know whether a 0xFF it has produced is final until it knows whether a
+ * carry will reach it.  So the sink here takes bytes literally and the stuffing
+ * is emitted below, unlike the Huffman writer, which can stuff as it goes.
+ */
+static void jpeg_arith_emit(jpeg_arith_encoder_t * e, unsigned char b) {
+  e->emit(e->ctx, b);
+}
+
+/** Release the pending zero bytes that were being held back for a carry. */
+static void jpeg_arith_flush_zeros(jpeg_arith_encoder_t * e) {
+  while (e->zc) {
+    jpeg_arith_emit(e, 0x00);
+    e->zc--;
+  }
+}
+
+/**
+ * Deal with the byte that has just fallen out of the C register.
+ *
+ * A carry out of C has to be added to bytes already produced, so a byte cannot
+ * be released the moment it is formed.  One byte is held in `buffer`, runs of
+ * 0xFF are counted in `sc` rather than emitted (a carry would turn every one of
+ * them into 0x00), and runs of 0x00 are counted in `zc` (they only need to be
+ * written once something after them is settled).  This is the bookkeeping T.81
+ * D.1.6 describes and that the Pennebaker and Mitchell book works through.
+ */
+static void jpeg_arith_byteout(jpeg_arith_encoder_t * e, int32_t temp) {
+  if (temp > 0xFF) {
+    // A carry: the held byte increments, and every stacked 0xFF becomes 0x00.
+    if (e->buffer >= 0) {
+      jpeg_arith_flush_zeros(e);
+      jpeg_arith_emit(e, (unsigned char)(e->buffer + 1));
+      if (e->buffer + 1 == 0xFF) {
+        jpeg_arith_emit(e, 0x00); // B.1.1.5 stuffing
+      }
+    }
+    e->zc += e->sc;
+    e->sc = 0;
+    // The three spacer bits in C guarantee the new byte cannot itself be 0xFF.
+    e->buffer = (int)(temp & 0xFF);
+  }
+  else if (temp == 0xFF) {
+    e->sc++; // stack it: a later carry may still turn it into 0x00
+  }
+  else {
+    // Nothing after this can carry into the stacked bytes, so release them.
+    if (e->buffer == 0) {
+      e->zc++;
+    }
+    else if (e->buffer > 0) {
+      jpeg_arith_flush_zeros(e);
+      jpeg_arith_emit(e, (unsigned char)e->buffer);
+    }
+    if (e->sc) {
+      jpeg_arith_flush_zeros(e);
+      while (e->sc) {
+        jpeg_arith_emit(e, 0xFF);
+        jpeg_arith_emit(e, 0x00); // B.1.1.5 stuffing
+        e->sc--;
+      }
+    }
+    e->buffer = (int)(temp & 0xFF);
+  }
+}
+
+/** INITENC (T.81 D.1.7, Figure D.11). */
+void jpeg_arith_encoder_init(
+    jpeg_arith_encoder_t * e, jpeg_arith_emit_fn emit, void * ctx) {
+  memset(e, 0, sizeof(*e));
+  e->emit = emit;
+  e->ctx = ctx;
+  e->a = 0x10000;
+  e->ct = 11;
+  e->buffer = -1; // nothing held yet
+}
+
+/**
+ * ENCODE (T.81 D.1.3), with CODELPS (D.1.4), CODEMPS (D.1.5) and RENORME
+ * (D.1.6).
+ *
+ * The mirror of jpeg_arith_decode: the MPS takes the lower subinterval
+ * [0, A-Qe) and the LPS the upper one, and the same conditional exchange
+ * applies when the LPS subinterval turns out to be the larger of the two.
+ */
+void jpeg_arith_encode(jpeg_arith_encoder_t * e, uint8_t * st, int val) {
+  uint8_t sv = *st;
+  const jpeg_arith_state_t * s = &jpeg_arith_qe[sv & 0x7Fu];
+  int32_t qe = (int32_t)s->qe;
+
+  e->a -= qe;
+  if (val != (sv >> 7)) {
+    // CODELPS.
+    if (e->a >= qe) {
+      // Conditional exchange: the LPS subinterval is the larger one.
+      e->c += (uint32_t)e->a;
+      e->a = qe;
+    }
+    *st = (uint8_t)((sv & 0x80u) | s->nlps);
+    if (s->switch_mps) {
+      *st ^= 0x80u;
+    }
+  }
+  else {
+    // CODEMPS.
+    if (e->a >= 0x8000) {
+      return; // the interval is still large enough; nothing to renormalise
+    }
+    if (e->a < qe) {
+      e->c += (uint32_t)e->a;
+      e->a = qe;
+    }
+    *st = (uint8_t)((sv & 0x80u) | s->nmps);
+  }
+
+  // RENORME.
+  do {
+    e->a = (int32_t)((uint32_t)e->a << 1);
+    e->c <<= 1;
+    if (--e->ct == 0) {
+      jpeg_arith_byteout(e, (int32_t)(e->c >> 19));
+      e->c &= 0x7FFFFu;
+      e->ct += 8;
+    }
+  } while (e->a < 0x8000);
+}
+
+/**
+ * FLUSH (T.81 D.1.8, Figure D.13) - terminate the entropy-coded segment.
+ *
+ * Choose the value in the remaining coding interval with the most trailing zero
+ * bits, so that as few bytes as possible have to be written, then release
+ * everything still held for a possible carry.  Trailing zero bytes are dropped:
+ * a decoder that runs past the end supplies zeros anyway (D.2.9), which is why
+ * an all-more-probable-symbol scan can end up with no bytes at all.
+ */
+void jpeg_arith_encoder_flush(jpeg_arith_encoder_t * e) {
+  uint32_t temp = (uint32_t)(e->a - 1 + (int32_t)e->c) & 0xFFFF0000u;
+  if (temp < e->c) {
+    e->c = temp + 0x8000u;
+  }
+  else {
+    e->c = temp;
+  }
+  e->c <<= e->ct;
+
+  if (e->c & 0xF8000000u) {
+    // One last carry to propagate.
+    if (e->buffer >= 0) {
+      jpeg_arith_flush_zeros(e);
+      jpeg_arith_emit(e, (unsigned char)(e->buffer + 1));
+      if (e->buffer + 1 == 0xFF) {
+        jpeg_arith_emit(e, 0x00);
+      }
+    }
+    e->zc += e->sc;
+    e->sc = 0;
+  }
+  else {
+    if (e->buffer == 0) {
+      e->zc++;
+    }
+    else if (e->buffer > 0) {
+      jpeg_arith_flush_zeros(e);
+      jpeg_arith_emit(e, (unsigned char)e->buffer);
+    }
+    if (e->sc) {
+      jpeg_arith_flush_zeros(e);
+      while (e->sc) {
+        jpeg_arith_emit(e, 0xFF);
+        jpeg_arith_emit(e, 0x00);
+        e->sc--;
+      }
+    }
+  }
+
+  // Write the final bytes, but only the ones that are not zero.
+  if (e->c & 0x7FFF800u) {
+    jpeg_arith_flush_zeros(e);
+    unsigned char b = (unsigned char)((e->c >> 19) & 0xFFu);
+    jpeg_arith_emit(e, b);
+    if (b == 0xFF) {
+      jpeg_arith_emit(e, 0x00);
+    }
+    if (e->c & 0x7F800u) {
+      b = (unsigned char)((e->c >> 11) & 0xFFu);
+      jpeg_arith_emit(e, b);
+      if (b == 0xFF) {
+        jpeg_arith_emit(e, 0x00);
+      }
+    }
+  }
+  // Whatever zero bytes are still pending are dropped on purpose.
+  e->zc = 0;
+}
+
+/**
+ * Encode a DC difference (T.81 F.1.4.1 and F.1.4.4.1, Figures F.4 and F.6-F.9).
+ *
+ * The mirror of jpeg_arith_decode_dc, including the conditioning category that
+ * is carried to the next block of this component.
+ */
+static void jpeg_arith_encode_dc(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
+    uint8_t dc_tbl, int coef) {
+  uint8_t * area = stats->dc[dc_tbl];
+  uint8_t * st = area + stats->dc_context[comp];
+
+  int32_t v = coef - stats->dc_pred[comp];
+  if (v == 0) {
+    jpeg_arith_encode(e, st, 0);
+    stats->dc_context[comp] = 0;
+    return;
+  }
+  stats->dc_pred[comp] = coef;
+  jpeg_arith_encode(e, st, 1);
+
+  // Figure F.7: the sign, which also picks the group of bins used below.
+  if (v > 0) {
+    jpeg_arith_encode(e, st + 1, 0);
+    st += 2; // Table F.4: SP = S0 + 2
+    stats->dc_context[comp] = 4;
+  }
+  else {
+    v = -v;
+    jpeg_arith_encode(e, st + 1, 1);
+    st += 3; // Table F.4: SN = S0 + 3
+    stats->dc_context[comp] = 8;
+  }
+
+  // Figure F.8: the magnitude category, as a run of "one more bit" decisions.
+  int32_t m = 0;
+  v -= 1;
+  if (v != 0) {
+    jpeg_arith_encode(e, st, 1);
+    m = 1;
+    int32_t v2 = v;
+    st = area + 20; // Table F.4: X1 = 20
+    while ((v2 >>= 1) != 0) {
+      jpeg_arith_encode(e, st, 1);
+      m <<= 1;
+      st += 1;
+    }
+  }
+  jpeg_arith_encode(e, st, 0);
+
+  // F.1.4.4.1.2: classify this difference for the next block's context.
+  if (m < ((int32_t)1 << cond->dc_l[dc_tbl]) >> 1) {
+    stats->dc_context[comp] = 0;
+  }
+  else if (m > ((int32_t)1 << cond->dc_u[dc_tbl]) >> 1) {
+    stats->dc_context[comp] += 8;
+  }
+
+  // Figure F.9: the remaining magnitude bits.
+  st += 14;
+  while ((m >>= 1) != 0) {
+    jpeg_arith_encode(e, st, (m & v) ? 1 : 0);
+  }
+}
+
+/**
+ * Encode the AC coefficients of a block (T.81 F.1.4.2, Figure F.5).
+ *
+ * @param block 64 coefficients in zigzag order.
+ */
+static void jpeg_arith_encode_ac(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t ac_tbl,
+    int ss, int se, const int16_t * block) {
+  uint8_t * area = stats->ac[ac_tbl];
+  uint8_t kx = cond->ac_k[ac_tbl];
+
+  // The last coefficient that is not zero; everything past it is the end of
+  // block, which is sent once rather than as a run of zeros.
+  int ke = se;
+  for (; ke > 0; ke--) {
+    if (block[ke] != 0) {
+      break;
+    }
+  }
+
+  int k = ss;
+  for (; k <= ke; k++) {
+    uint8_t * st = area + 3 * (k - 1);
+    jpeg_arith_encode(e, st, 0); // not the end of the block
+    int32_t temp = block[k];
+    while (temp == 0) {
+      jpeg_arith_encode(e, st + 1, 0); // this coefficient is zero
+      st += 3;
+      k++;
+      temp = block[k];
+    }
+    jpeg_arith_encode(e, st + 1, 1);
+
+    // F.1.4.4.2: the sign goes to the fixed-probability bin.
+    if (temp < 0) {
+      temp = -temp;
+      jpeg_arith_encode(e, &stats->fixed, 1);
+    }
+    else {
+      jpeg_arith_encode(e, &stats->fixed, 0);
+    }
+    st += 2;
+
+    int32_t m = 0;
+    temp -= 1;
+    if (temp != 0) {
+      jpeg_arith_encode(e, st, 1);
+      m = 1;
+      int32_t v = temp;
+      if ((v >>= 1) != 0) {
+        jpeg_arith_encode(e, st, 1);
+        m <<= 1;
+        // Table F.5: which magnitude chain depends on the block position.
+        st = area + (k <= (int)kx ? 189 : 217);
+        while ((v >>= 1) != 0) {
+          jpeg_arith_encode(e, st, 1);
+          m <<= 1;
+          st += 1;
+        }
+      }
+    }
+    jpeg_arith_encode(e, st, 0);
+
+    st += 14;
+    while ((m >>= 1) != 0) {
+      jpeg_arith_encode(e, st, (m & temp) ? 1 : 0);
+    }
+  }
+
+  // The end-of-block decision, unless the last coefficient of the band was
+  // itself non-zero, in which case there is nothing left to end.
+  if (k <= se) {
+    jpeg_arith_encode(e, area + 3 * (k - 1), 1);
+  }
+}
+
+void jpeg_arith_encode_block_sequential(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
+    uint8_t dc_tbl, uint8_t ac_tbl, int se, const int16_t * block) {
+  jpeg_arith_encode_dc(e, stats, cond, comp, dc_tbl, (int)block[0]);
+  jpeg_arith_encode_ac(e, stats, cond, ac_tbl, 1, se, block);
+}

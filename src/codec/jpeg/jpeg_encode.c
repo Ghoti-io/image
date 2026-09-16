@@ -816,7 +816,18 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
             ac_eob_emitted = 1;
             break;
           }
-          if (run >= 16) {
+          // T.81 F.1.2.2: a run of zeros longer than 15 is sent as one or more
+          // ZRL symbols, each standing for 16 zeros, and whatever is left over
+          // becomes the run of the symbol that carries the next coefficient.
+          //
+          // This used to `continue` after emitting ZRL, which returns to the
+          // top of the enclosing loop - where `run` is set back to 0.  The
+          // leftover zeros were therefore dropped, and the coefficient after a
+          // long run was written as though it sat up to 15 positions earlier
+          // than it does.  Every block with sixteen or more consecutive zeros
+          // followed by a non-zero coefficient came out wrong, and no decoder
+          // could tell, because the file says what the encoder meant to say.
+          while (run >= 16) {
             int len_f0 = ac_tbl->len[0xF0];
             if (entropy_trace_fp)
               (void)fprintf(entropy_trace_fp,
@@ -831,17 +842,22 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
             total_bits += (size_t)len_f0;
             bit_writer_put_bits(&w, alloc, ac_tbl->code[0xF0], len_f0);
             run -= 16;
-            continue;
           }
           int coeff = (int)block[k];
           int size = jpeg_nbits(coeff);
-          if (size > 10)
-            size = 10;
-          int symbol = (run << 4) | size;
-          if (symbol < 0 || symbol > 255 || ac_tbl->len[symbol] == 0) {
-            k++;
-            continue;
+          // T.81 Table F.2: at 8-bit precision an AC coefficient's magnitude
+          // category runs from 1 to 10, so a coefficient needing more bits than
+          // that cannot be written at all.  It should not arise - the largest
+          // magnitude an 8x8 DCT can produce from samples in -128..127 fits in
+          // ten bits, which is why libjpeg treats the same case as an error -
+          // but silently clamping the category, as this used to, would write a
+          // different coefficient from the one asked for and say nothing.
+          if (size > 10 || (run << 4) + size > 255 ||
+              ac_tbl->len[(run << 4) | size] == 0) {
+            gimg_free(alloc, w.buf);
+            return GIMG_ERR_UNSUPPORTED;
           }
+          int symbol = (run << 4) | size;
           int len_sym = ac_tbl->len[symbol];
           if (entropy_trace_fp)
             (void)fprintf(entropy_trace_fp,
@@ -901,6 +917,136 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   }
 
   bit_writer_flush(&w, alloc);
+  *out_scan_data = w.buf;
+  *out_scan_size = w.len;
+  return GIMG_OK;
+}
+
+/** Sink for the arithmetic encoder: append one byte literally.
+ *
+ * bit_writer_put_byte stuffs a 0x00 after every 0xFF, which is right for the
+ * Huffman writer and wrong here - the arithmetic coder emits its own stuffing
+ * as part of carry handling (T.81 D.1.6), because it cannot know whether a
+ * 0xFF is final until it knows whether a carry will reach it. */
+typedef struct {
+  jpeg_bit_writer * w;
+  const GIMG_Allocator * alloc;
+  int oom;
+} jpeg_arith_sink_t;
+
+static void jpeg_arith_sink_emit(void * ctx, unsigned char b) {
+  jpeg_arith_sink_t * sink = (jpeg_arith_sink_t *)ctx;
+  if (!bit_writer_ensure(sink->w, sink->alloc, 1)) {
+    sink->oom = 1;
+    return;
+  }
+  sink->w->buf[sink->w->len++] = b;
+}
+
+/**
+ * Sequential scan with arithmetic entropy coding (T.81 SOF9).
+ *
+ * The same MCU walk as the Huffman version above and the same coefficient
+ * buffer; only the entropy coder differs, which is the whole of what Annex D
+ * changes.  At a restart the coder is flushed, the marker written, and the
+ * statistics and predictors reset (F.2.4.1) - the arithmetic coder has no bit
+ * alignment to do, because its output is a byte stream already.
+ */
+GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
+    uint32_t height, int num_components, const int16_t * coef_buffer,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, unsigned char ** out_scan_data,
+    size_t * out_scan_size) {
+  if (!alloc || !out_scan_data || !out_scan_size || !cond || !coef_buffer) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_scan_data = NULL;
+  *out_scan_size = 0;
+
+  static const uint8_t default_samp[3] = {1, 1, 1};
+  if (!h_samp) {
+    h_samp = default_samp;
+  }
+  if (!v_samp) {
+    v_samp = default_samp;
+  }
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  if (num_components >= 3) {
+    for (int c = 1; c < 3; c++) {
+      if (h_samp[c] > h_max) {
+        h_max = h_samp[c];
+      }
+      if (v_samp[c] > v_max) {
+        v_max = v_samp[c];
+      }
+    }
+  }
+  uint32_t mcu_per_row =
+      (width + (uint32_t)(8 * h_max) - 1) / (uint32_t)(8 * h_max);
+  uint32_t mcu_per_col =
+      (height + (uint32_t)(8 * v_max) - 1) / (uint32_t)(8 * v_max);
+  size_t mcu_count = 0;
+  if (!gcu_safe_mul_size(
+          (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
+    return GIMG_ERR_LIMIT;
+  }
+
+  jpeg_bit_writer w = {0};
+  jpeg_arith_sink_t sink = {&w, alloc, 0};
+  jpeg_arith_encoder_t e;
+  jpeg_arith_stats_t stats;
+  jpeg_arith_encoder_init(&e, jpeg_arith_sink_emit, &sink);
+  jpeg_arith_stats_reset(&stats);
+
+  size_t block_off = 0;
+  size_t mcu_index = 0;
+  uint16_t next_restart = 0;
+  for (;;) {
+    if (restart_interval > 0 && mcu_index > 0 &&
+        (mcu_index % (size_t)restart_interval) == 0) {
+      // T.81 B.2.1 and F.2.4.1: end the segment, write the marker, start over.
+      jpeg_arith_encoder_flush(&e);
+      if (!bit_writer_ensure(&w, alloc, 2)) {
+        gimg_free(alloc, w.buf);
+        return GIMG_ERR_OOM;
+      }
+      w.buf[w.len++] = 0xFF;
+      w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+      next_restart++;
+      jpeg_arith_encoder_init(&e, jpeg_arith_sink_emit, &sink);
+      jpeg_arith_stats_reset(&stats);
+    }
+
+    for (int c = 0; c < num_components; c++) {
+      // The scan header gives component 0 table 0 and the others table 1, the
+      // same split the Huffman path uses for its DC and AC tables.
+      uint8_t tbl = (c == 0) ? 0u : 1u;
+      size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+      for (size_t b = 0; b < nblocks; b++) {
+        const int16_t * block = coef_buffer + (block_off + b) * 64;
+        jpeg_arith_encode_block_sequential(
+            &e, &stats, cond, (uint8_t)c, tbl, tbl, 63, block);
+        if (sink.oom) {
+          gimg_free(alloc, w.buf);
+          return GIMG_ERR_OOM;
+        }
+      }
+      block_off += nblocks;
+    }
+
+    mcu_index++;
+    if (block_off >= total_blocks || mcu_index >= mcu_count) {
+      break;
+    }
+  }
+
+  jpeg_arith_encoder_flush(&e);
+  if (sink.oom) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
   *out_scan_data = w.buf;
   *out_scan_size = w.len;
   return GIMG_OK;

@@ -199,7 +199,13 @@ typedef struct {
    * precision, the encoder uses library bit-depth conversion
    * (gimg_ops_convert_bit_depth or gimg_bitdepth_*). Ignored for non-JPEG. */
   uint8_t jpeg_precision;
-  uint8_t _jpeg_pad[1];
+  /** Write the frame with arithmetic entropy coding (T.81 Annex D) rather than
+   * Huffman (Annex F): SOF9 for a sequential frame, SOF10 for a progressive
+   * one, with a DAC segment and no DHT.  Both coders are normative parts of
+   * T.81 and produce equally valid JPEG; arithmetic is typically a few per cent
+   * smaller and is understood by far fewer decoders, so Huffman remains the
+   * default.  Ignored for non-JPEG. */
+  uint8_t jpeg_arithmetic;
 } GIMG_Save_Options;
 
 /**

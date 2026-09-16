@@ -321,7 +321,8 @@ static void jpeg_rgb12_to_ycbcr12(uint16_t r, uint16_t g, uint16_t b,
  * baseline: fill coef then encode one scan (Ss=0,Se=63) via extended tables. */
 static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
-    bool progressive, uint16_t restart_interval, unsigned char ** out_scan_data,
+    bool progressive, bool arithmetic, uint16_t restart_interval,
+    unsigned char ** out_scan_data,
     size_t * out_scan_size, int16_t ** out_coef_buffer, size_t * out_total_blocks,
     uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
@@ -652,12 +653,25 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   }
   unsigned char * scan_data = NULL;
   size_t scan_size = 0;
-  // T.81 Annex F: baseline sequential uses DC table for DC then AC table for AC 1..63 per block.
-  r = gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(width, height,
-      num_components, coef_buf, out_blocks, h_samp, v_samp, alloc,
-      restart_interval, &scan_data, &scan_size);
+  if (arithmetic) {
+    // T.81 Annex D.  The coder is the same at either precision: it codes binary
+    // decisions about coefficient magnitudes, and a wider coefficient simply
+    // makes the magnitude chain longer.
+    jpeg_arith_cond_t cond;
+    jpeg_arith_cond_defaults(&cond);
+    r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
+        num_components, coef_buf, out_blocks, h_samp, v_samp, &cond, alloc,
+        restart_interval, &scan_data, &scan_size);
+  }
+  else {
+    // T.81 Annex F: baseline sequential uses DC table for DC then AC table for
+    // AC 1..63 per block.
+    r = gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(width, height,
+        num_components, coef_buf, out_blocks, h_samp, v_samp, alloc,
+        restart_interval, &scan_data, &scan_size);
+  }
   gimg_free(alloc, coef_buf);
-  if (r != GIMG_OK || !scan_data) {
+  if (r != GIMG_OK || (!scan_data && !(arithmetic && scan_size == 0))) {
     return (r != GIMG_OK) ? r : GIMG_ERR_OOM;
   }
   *out_scan_data = scan_data;
@@ -675,7 +689,8 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
  * *out_precision is set to 8 or 12. */
 static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
-    bool progressive, uint16_t restart_interval, unsigned fdct_method,
+    bool progressive, bool arithmetic, uint16_t restart_interval,
+    unsigned fdct_method,
     unsigned quant_method, unsigned char ** out_scan_data,
     size_t * out_scan_size, int16_t ** out_coef_buffer,
     size_t * out_total_blocks, uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
@@ -754,7 +769,8 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   if (precision == 12) {
     *out_precision = 12;
     return jpeg_raster_to_scan_data_12bit(alloc, raster, quality,
-        chroma_subsampling, progressive, restart_interval, out_scan_data,
+        chroma_subsampling, progressive, arithmetic, restart_interval,
+        out_scan_data,
         out_scan_size, out_coef_buffer, out_total_blocks, quant_luma,
         quant_chroma, out_width, out_height, out_num_components, out_h_samp,
         out_v_samp);
@@ -1216,11 +1232,26 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
 #endif
     unsigned char * scan_data = NULL;
     size_t scan_size = 0;
-    r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(width, height,
-        num_components, coef_buf, total_blocks, h_ptr, v_ptr, alloc,
-        restart_interval, &scan_data, &scan_size);
+    if (arithmetic) {
+      // T.81 Annex D in place of Annex F; the coefficients are the same.
+      jpeg_arith_cond_t cond;
+      jpeg_arith_cond_defaults(&cond);
+      r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
+          num_components, coef_buf, total_blocks, h_ptr, v_ptr, &cond, alloc,
+          restart_interval, &scan_data, &scan_size);
+    }
+    else {
+      r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(width, height,
+          num_components, coef_buf, total_blocks, h_ptr, v_ptr, alloc,
+          restart_interval, &scan_data, &scan_size);
+    }
     gimg_free(alloc, coef_buf);
-    if (r != GIMG_OK || !scan_data) {
+    // An arithmetic scan of zero bytes is a real answer, not a failed
+    // allocation: T.81 D.1.8 drops trailing zero bytes on the grounds that a
+    // decoder past the end of the data supplies zeros anyway (D.2.9), so a
+    // frame whose every decision is the more probable symbol - a 1x1 image,
+    // say - needs no bytes at all.  libjpeg writes none for the same file.
+    if (r != GIMG_OK || (!scan_data && !(arithmetic && scan_size == 0))) {
       return (r != GIMG_OK) ? r : GIMG_ERR_OOM;
     }
 #if GIMG_JPEG_DUMP_SCAN_BASELINE
@@ -1534,15 +1565,19 @@ static GIMG_Result jpeg_write_dqt_16bit(GIMG_Stream * stream,
   return GIMG_OK;
 }
 
-/** Write DQT, [DRI if restart_interval>0], SOF0/SOF1/SOF2, DHT, SOS, scan
- * data, EOI to stream (SOF before DHT to match common decoders). Does not free
- * scan_data. precision 8 = SOF0; 12 = SOF1. */
+/** Write DQT, [DRI if restart_interval>0], the frame header, the table
+ * specifications, SOS, scan data and EOI (SOF before DHT to match common
+ * decoders). Does not free scan_data.
+ *
+ * With Huffman coding the frame is SOF0 at 8-bit or SOF1 at 12-bit and the
+ * tables are DHT; with arithmetic coding (T.81 Annex D) it is SOF9 at either
+ * precision and the tables are DAC. */
 static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     uint32_t height, int num_components, const uint8_t * h_samp,
     const uint8_t * v_samp, const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const unsigned char * scan_data, size_t scan_size, int precision,
-    uint16_t restart_interval, size_t * out_n) {
+    uint16_t restart_interval, bool arithmetic, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
   size_t written = 0;
@@ -1552,7 +1587,7 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     if (r != GIMG_OK) {
       return r;
     }
-    {
+    if (!arithmetic) { // DAC replaces DHT in an arithmetic frame
       size_t dht_written = 0;
       r = gimg_jpeg_write_standard_dht_extended(stream, &dht_written);
       if (r != GIMG_OK) {
@@ -1589,8 +1624,15 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
   }
   // T.81 B.2.2: frame header (SOF) before table specifications (DHT).
   {
+    // T.81 Table B.1: the marker says which coding process and which entropy
+    // coder.  SOF9 is the arithmetic counterpart of SOF1, and serves 8-bit data
+    // too - there is no arithmetic equivalent of the baseline process, because
+    // baseline is by definition Huffman.
     uint8_t sof_marker = GIMG_JPEG_MARKER_SOF0;
-    if (precision == 12) {
+    if (arithmetic) {
+      sof_marker = GIMG_JPEG_MARKER_SOF9;
+    }
+    else if (precision == 12) {
       sof_marker = GIMG_JPEG_MARKER_SOF1;
     }
     uint8_t prec_byte = (uint8_t)(precision < 8 ? 8 : precision);
@@ -1632,7 +1674,37 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     }
     n += written;
   }
-  if (precision <= 8) {
+  if (arithmetic) {
+    // T.81 B.2.4.3: DAC in place of DHT.  These are the values B.2.4.3 gives as
+    // defaults - L = 0 and U = 1 for DC, Kx = 5 for AC - written out rather
+    // than left implicit, which is what libjpeg does as well.
+    int tables = (num_components == 1) ? 1 : 2;
+    uint16_t dac_len = (uint16_t)(2 + 2 * 2 * tables);
+    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    r = jpeg_write_u16(stream, dac_len, &n);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    unsigned char dac[8];
+    size_t dl = 0;
+    for (int t = 0; t < tables; t++) {
+      dac[dl++] = (unsigned char)(0x00 | t); // Tc = 0 (DC), Tb = t
+      dac[dl++] = 0x10;                      // U = 1, L = 0
+    }
+    for (int t = 0; t < tables; t++) {
+      dac[dl++] = (unsigned char)(0x10 | t); // Tc = 1 (AC), Tb = t
+      dac[dl++] = 0x05;                      // Kx = 5
+    }
+    r = gimg_stream_write(stream, dac, dl, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    n += written;
+  }
+  else if (precision <= 8) {
     size_t dht_written = 0;
     r = gimg_jpeg_write_standard_dht(stream, &dht_written);
     if (r != GIMG_OK) {
@@ -2259,7 +2331,13 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       ? options->jpeg_chroma_subsampling
       : (unsigned)CHROMA_420;
   bool progressive = (options && options->jpeg_progressive) ? true : false;
+  bool arithmetic = (options && options->jpeg_arithmetic) ? true : false;
   GIMG_Result r;
+  if (arithmetic && progressive) {
+    // Progressive arithmetic (SOF10) decodes but is not yet written; say so
+    // rather than quietly producing a Huffman file the caller did not ask for.
+    return GIMG_ERR_UNSUPPORTED;
+  }
   if (progressive) {
     r = jpeg_validate_progressive_config(
         options ? options->jpeg_progressive_config : NULL);
@@ -2293,7 +2371,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   uint8_t v_samp[3] = {1, 1, 1};
   int precision = 8;
   r = jpeg_raster_to_scan_data(alloc, raster, quality, chroma_subsampling,
-      progressive, restart_interval, fdct_method, quant_method, &scan_data,
+      progressive, arithmetic, restart_interval, fdct_method, quant_method,
+      &scan_data,
       &scan_size, &coef_buffer, &total_blocks, quant_luma, quant_chroma, &width,
       &height, &num_components, h_samp, v_samp, &precision);
   if (raster_owned) {
@@ -2311,7 +2390,8 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
   else {
-    if (!scan_data) {
+    // A zero-byte arithmetic scan is legitimate; see jpeg_raster_to_scan_data.
+    if (!scan_data && !(arithmetic && scan_size == 0)) {
       return GIMG_ERR_OOM;
     }
   }
@@ -2581,8 +2661,12 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
               uint32_t tw = 0, th = 0;
               int tnc = 0;
               int thumb_prec = 8;
+              // The JFIF thumbnail stays Huffman whatever the main image
+              // uses: it is read by viewers that may know nothing of Annex D,
+              // and it is too small for the difference to matter.
               r = jpeg_raster_to_scan_data(alloc, thumb_raster, thumb_quality,
-                  CHROMA_444, false, 0, fdct_method, quant_method, &thumb_scan,
+                  CHROMA_444, false, false, 0, fdct_method, quant_method,
+                  &thumb_scan,
                   &thumb_scan_size, NULL, NULL, tq_luma, tq_chroma, &tw, &th,
                   &tnc, NULL, NULL, &thumb_prec);
               if (thumb_raster_owned) {
@@ -2599,7 +2683,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
                   if (r == GIMG_OK) {
                     r = jpeg_write_image_body(mem_stream, tw, th, tnc, NULL,
                         NULL, tq_luma, tq_chroma, thumb_scan, thumb_scan_size,
-                        8, 0, &mem_n);
+                        8, 0, false, &mem_n);
                   }
                   if (r == GIMG_OK) {
                     const void * jpeg_buf = NULL;
@@ -2885,7 +2969,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     r = jpeg_write_image_body(stream, width, height, num_components,
         num_components == 3 ? h_samp : NULL,
         num_components == 3 ? v_samp : NULL, quant_luma, quant_chroma,
-        scan_data, scan_size, precision, restart_interval,
+        scan_data, scan_size, precision, restart_interval, arithmetic,
         &report->bytes_written);
     gimg_free(alloc, to_free);
   }

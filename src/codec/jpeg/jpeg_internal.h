@@ -206,6 +206,22 @@ typedef struct {
 /** Arithmetic conditioning tables, four of each (T.81 B.2.4.3). */
 #define GIMG_JPEG_ARITH_TABLES 4
 
+/** Where the arithmetic encoder puts finished bytes.  It stuffs its own 0x00
+ * after a 0xFF (B.1.1.5), so this sink takes bytes literally. */
+typedef void (*jpeg_arith_emit_fn)(void * ctx, unsigned char b);
+
+/** State of the adaptive binary arithmetic encoder (T.81 D.1). */
+typedef struct {
+  uint32_t c;   /**< C register (D.1.2) */
+  int32_t a;    /**< A register: the current interval width */
+  int ct;       /**< shift counter */
+  int buffer;   /**< byte held back in case a carry reaches it; -1 = none */
+  uint32_t sc;  /**< stacked 0xFF bytes a carry would turn into 0x00 */
+  uint32_t zc;  /**< pending 0x00 bytes not yet written */
+  jpeg_arith_emit_fn emit;
+  void * ctx;
+} jpeg_arith_encoder_t;
+
 /** State of the adaptive binary arithmetic decoder (T.81 Annex D). */
 typedef struct {
   const unsigned char * data; /**< entropy-coded segment */
@@ -263,6 +279,23 @@ void jpeg_arith_stats_reset(jpeg_arith_stats_t * s);
 GIMG_Result jpeg_arith_decode_block_sequential(jpeg_arith_decoder_t * d,
     jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
     uint8_t dc_tbl, uint8_t ac_tbl, int se, int16_t * block);
+
+/** Begin an entropy-coded segment (INITENC, T.81 D.1.7). */
+void jpeg_arith_encoder_init(
+    jpeg_arith_encoder_t * e, jpeg_arith_emit_fn emit, void * ctx);
+
+/** Encode one binary decision against statistics bin @p st (ENCODE, D.1.3). */
+void jpeg_arith_encode(jpeg_arith_encoder_t * e, uint8_t * st, int val);
+
+/** Terminate the segment and release every byte held for a carry (FLUSH,
+ * D.1.8). */
+void jpeg_arith_encoder_flush(jpeg_arith_encoder_t * e);
+
+/** Encode one block of a sequential arithmetic scan (T.81 F.1.4.1 and
+ * F.1.4.2).  @p block is 64 coefficients in zigzag order. */
+void jpeg_arith_encode_block_sequential(jpeg_arith_encoder_t * e,
+    jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
+    uint8_t dc_tbl, uint8_t ac_tbl, int se, const int16_t * block);
 
 /** Resynchronise at a restart marker: skip it, restart the decoder and reset
  * the statistics and predictors (T.81 F.2.4.1). */
@@ -538,6 +571,15 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(
     unsigned char ** out_scan_data, size_t * out_scan_size);
 
 /** Baseline sequential from coef buffer with extended DHT (12-bit). */
+/** Sequential scan with arithmetic entropy coding (SOF9).  Same coefficient
+ * buffer and MCU walk as the Huffman version; see the definition. */
+GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
+    uint32_t height, int num_components, const int16_t * coef_buffer,
+    size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp,
+    const jpeg_arith_cond_t * cond, const GIMG_Allocator * alloc,
+    uint16_t restart_interval, unsigned char ** out_scan_data,
+    size_t * out_scan_size);
+
 GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
     uint32_t width, uint32_t height, int num_components,
     const int16_t * coef_buffer, size_t total_blocks, const uint8_t * h_samp,

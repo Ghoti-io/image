@@ -190,3 +190,20 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 | **GIMG_CMYK_POLARITY_REFLECTION** | 0 = no ink, 255 = full ink (reflection; e.g. many design-tool APIs). |
 
 Raster pixels are stored as raw values; `cmyk_polarity` tells consumers (e.g. display or CMYK→RGB conversion) whether to treat 0 as “no ink” or “full ink” when interpreting the channels.
+
+## `jpeg_arithmetic` (save)
+
+Write the frame with the arithmetic entropy coder of ITU-T T.81 Annex D rather
+than the Huffman coder of Annex F.  Both are normative parts of the standard and
+both produce valid JPEG; the frame header says which (SOF9 rather than SOF0 or
+SOF1), and the table specifications are DAC rather than DHT.
+
+Arithmetic coding typically produces a smaller file for the same coefficients -
+often noticeably so against the fixed tables of Annex K, which is what this
+encoder uses for Huffman - at the cost of being understood by far fewer
+decoders.  It is off by default for that reason.
+
+Sequential frames only for now, at 8- or 12-bit precision.  Setting this
+together with `jpeg_progressive` returns `GIMG_ERR_UNSUPPORTED`: progressive
+arithmetic (SOF10) decodes but is not yet written, and silently falling back to
+Huffman would be worse than saying so.
