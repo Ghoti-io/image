@@ -452,7 +452,7 @@ TEST_OBJ_$1 := $(OBJ_DIR)/tests/$(basename $(notdir $1)).o
 $(APP_DIR)/$2$(EXE_EXTENSION): \
 		$$(TEST_OBJ_$1) \
 		$(TEST_HELPER_OBJ) \
-		| $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET)
+		$(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking %s Test ###\n" "$2"
 	@mkdir -p $$(@D)
 	$$(CXX) $$(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $$(TEST_HELPER_OBJ) $$(LDFLAGS) $$(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
@@ -470,13 +470,13 @@ TEST_PAIRS_OTHER := $(filter-out tests/codec/png/test_png_decode.cpp|testPng_dec
 $(foreach pair,$(TEST_PAIRS_OTHER),$(eval $(call test-executable-rule,$(word 1,$(subst |, ,$(pair))),$(word 2,$(subst |, ,$(pair))))))
 
 # JPEG load test links jpeg_test_utils (load_jpeg_file, raster_pixel_hash, rasters_equal).
-$(APP_DIR)/testJpeg_load$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET)
+$(APP_DIR)/testJpeg_load$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testJpeg_load Test ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 
 # JPEG encode test links jpeg_test_utils (load_jpeg_file, raster_pixel_hash for round-trip test).
-$(APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET)
+$(APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testJpeg_encode Test ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
@@ -486,7 +486,7 @@ $(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp
 	@printf "\n### Compiling dump_jpeg_raster ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
-$(APP_DIR)/dump_jpeg_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_raster.o | $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET)
+$(APP_DIR)/dump_jpeg_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_raster.o $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking dump_jpeg_raster ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
@@ -521,12 +521,12 @@ jpeg-ijg10-build: ## Build IJG v10 (configure + make) in third_party/jpeg-10. Re
 	@echo "IJG v10 built. Run third_party/jpeg-10/djpeg for decode (8-12 bit only; not 16-bit oracle)."
 
 # PNG tests link the shared png_test_utils helper.
-$(APP_DIR)/testPng_decode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_decode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET)
+$(APP_DIR)/testPng_decode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_decode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testPng_decode Test ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_png_decode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY)
 
-$(APP_DIR)/testPng_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_encode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) | $(APP_DIR)/$(TARGET) $(APP_DIR)/$(STATIC_TARGET)
+$(APP_DIR)/testPng_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_encode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testPng_encode Test ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_png_encode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY)
