@@ -156,6 +156,87 @@ def read_sof_dimensions(path: str) -> Optional[tuple[int, int]]:
     return None
 
 
+def read_scan_headers(path: str) -> tuple[bool, list[tuple]]:
+    """
+    Return (is_progressive, [(Ns, Ss, Se, Ah, Al) for each SOS]).
+
+    Entropy-coded data is skipped by scanning to the next marker that is not a
+    stuffed 0x00 or a restart marker (T.81 B.1.1.2, B.1.1.5).
+    """
+    with open(path, "rb") as fh:
+        d = fh.read()
+    i = 2
+    progressive = False
+    out: list[tuple] = []
+    while i + 4 <= len(d):
+        if d[i] != 0xFF:
+            i += 1
+            continue
+        m = d[i + 1]
+        if m in (0xD8, 0xD9) or 0xD0 <= m <= 0xD7:
+            i += 2
+            continue
+        seg_len = (d[i + 2] << 8) | d[i + 3]
+        if m == 0xC2:
+            progressive = True
+        if m == 0xDA:
+            ns = d[i + 4]
+            tail = i + 5 + ns * 2
+            if tail + 2 >= len(d):
+                break
+            out.append((ns, d[tail], d[tail + 1], d[tail + 2] >> 4, d[tail + 2] & 0x0F))
+            j = i + 2 + seg_len
+            while j + 1 < len(d):
+                if d[j] == 0xFF and d[j + 1] != 0 and not (0xD0 <= d[j + 1] <= 0xD7):
+                    break
+                j += 1
+            i = j
+            continue
+        i += 2 + seg_len
+    return progressive, out
+
+
+def verify_progressive_scan_conformance(path: str, name: str) -> list[str]:
+    """
+    Check the scan script of a progressive file against T.81 Annex G.1.2.
+
+    - G.1.2.2: "In a scan with Ss not equal to zero, Ns shall be one."  An AC
+      scan is always non-interleaved; only a DC scan may carry several
+      components.  This encoder used to write every scan with every component,
+      producing files libjpeg rejects outright, and nothing noticed because our
+      own decoder had the same blind spot.
+    - G.1.2: a DC scan has Ss = Se = 0.
+    - G.1.1.1.2: successive approximation proceeds one bit at a time, so a
+      refinement scan has Ah = Al + 1.
+    - Ss <= Se <= 63 (B.2.3).
+    """
+    errors: list[str] = []
+    try:
+        progressive, scans = read_scan_headers(path)
+    except Exception as exc:  # pragma: no cover - unreadable file
+        return [f"{name}: could not read scan headers: {exc}"]
+    if not progressive:
+        return errors
+    for idx, (ns, ss, se, ah, al) in enumerate(scans):
+        if se > 63 or ss > se:
+            errors.append(f"{name}: scan {idx} has Ss={ss} Se={se} (T.81 B.2.3)")
+        if ss == 0 and se != 0:
+            errors.append(
+                f"{name}: scan {idx} is a DC scan (Ss=0) but Se={se} (T.81 G.1.2)"
+            )
+        if ss != 0 and ns != 1:
+            errors.append(
+                f"{name}: scan {idx} has Ss={ss} and Ns={ns}; an AC scan must name "
+                f"exactly one component (T.81 G.1.2.2)"
+            )
+        if ah != 0 and ah != al + 1:
+            errors.append(
+                f"{name}: scan {idx} has Ah={ah} Al={al}; successive approximation "
+                f"refines one bit at a time (T.81 G.1.1.1.2)"
+            )
+    return errors
+
+
 def verify_file_features(path: str, name: str, expect: dict) -> list[str]:
     """Verify file matches expected dimensions and SOF type (from SOF segment, no full decode)."""
     errors: list[str] = []
@@ -225,6 +306,11 @@ def verify_directory(dirpath: str) -> tuple[int, list[str]]:
             if read_sof_marker(path) is None:
                 errors.append(f"{name}: PIL could not open and no SOF marker found")
                 continue
+        # The scan script is checked for every progressive file we write, not
+        # only the ones with recorded expectations: T.81 Annex G constrains it
+        # regardless of what the file is for, and a violation makes the file
+        # unreadable to other decoders.
+        errors.extend(verify_progressive_scan_conformance(path, name))
         expect = EXPECTATIONS.get(name)
         if expect is not None:
             errors.extend(verify_file_features(path, name, expect))

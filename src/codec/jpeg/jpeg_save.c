@@ -1716,6 +1716,85 @@ static GIMG_Result jpeg_validate_progressive_config(
   return GIMG_OK;
 }
 
+/**
+ * Number of blocks a component owns in its own grid.
+ *
+ * T.81 A.2.2: a non-interleaved scan walks the component's own grid, which is
+ * ceil(X_i/8) by ceil(Y_i/8) blocks - not the MCU-padded grid an interleaved
+ * scan walks.
+ */
+static void jpeg_component_block_grid(uint32_t width, uint32_t height,
+    const uint8_t * h_samp, const uint8_t * v_samp, int num_components,
+    int comp, uint32_t * out_blk_w, uint32_t * out_blk_h) {
+  uint8_t h_max = h_samp[0];
+  uint8_t v_max = v_samp[0];
+  for (int i = 1; i < num_components; i++) {
+    if (h_samp[i] > h_max)
+      h_max = h_samp[i];
+    if (v_samp[i] > v_max)
+      v_max = v_samp[i];
+  }
+  uint32_t comp_w =
+      (width * (uint32_t)h_samp[comp] + h_max - 1u) / (uint32_t)h_max;
+  uint32_t comp_h =
+      (height * (uint32_t)v_samp[comp] + v_max - 1u) / (uint32_t)v_max;
+  *out_blk_w = (comp_w + 7u) / 8u;
+  *out_blk_h = (comp_h + 7u) / 8u;
+}
+
+/**
+ * Index of one component block inside the MCU-interleaved coefficient buffer.
+ *
+ * The buffer is filled MCU by MCU (T.81 A.2.3), so a component block at raster
+ * position (row, col) of its own grid lives in the MCU that covers it, at the
+ * sub-position that MCU gives it.
+ */
+static size_t jpeg_interleaved_block_index(uint32_t row, uint32_t col,
+    const uint8_t * h_samp, const uint8_t * v_samp, int num_components,
+    int comp, uint32_t mcu_per_row) {
+  size_t blocks_per_mcu = 0;
+  size_t comp_off = 0;
+  for (int i = 0; i < num_components; i++) {
+    if (i == comp) {
+      comp_off = blocks_per_mcu;
+    }
+    blocks_per_mcu += (size_t)h_samp[i] * (size_t)v_samp[i];
+  }
+  uint32_t mcu_row = row / v_samp[comp];
+  uint32_t mcu_col = col / h_samp[comp];
+  uint32_t sub =
+      (row % v_samp[comp]) * (uint32_t)h_samp[comp] + (col % h_samp[comp]);
+  return ((size_t)mcu_row * (size_t)mcu_per_row + mcu_col) * blocks_per_mcu +
+      comp_off + (size_t)sub;
+}
+
+/**
+ * Copy one component's blocks out of the interleaved buffer into its own
+ * raster order (or back again when scatter is set), so that a single-component
+ * scan can be encoded through the ordinary one-component path.
+ */
+static void jpeg_gather_component_blocks(int16_t * interleaved,
+    int16_t * packed, uint32_t blk_w, uint32_t blk_h, const uint8_t * h_samp,
+    const uint8_t * v_samp, int num_components, int comp, uint32_t mcu_per_row,
+    int scatter) {
+  for (uint32_t row = 0; row < blk_h; row++) {
+    for (uint32_t col = 0; col < blk_w; col++) {
+      size_t src = jpeg_interleaved_block_index(
+          row, col, h_samp, v_samp, num_components, comp, mcu_per_row);
+      size_t dst = (size_t)row * (size_t)blk_w + col;
+      if (scatter) {
+        memcpy(interleaved + src * 64, packed + dst * 64,
+            64 * sizeof(int16_t));
+      }
+      else {
+        memcpy(packed + dst * 64, interleaved + src * 64,
+            64 * sizeof(int16_t));
+      }
+    }
+  }
+}
+
+
 /** Write DQT, DHT, [DRI if restart_interval>0], SOF2, then for each scan: SOS
  * (Ss,Se,Ah,Al) + scan data; then EOI. precision 8 or 12. Frees scan data
  * after each write. */
@@ -1856,80 +1935,190 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
           (int16_t *)gimg_malloc(alloc, total_blocks * 64 * sizeof(int16_t));
     }
   }
+  // T.81 G.1.2.2: "In a scan with Ss not equal to zero, Ns shall be one" - an
+  // AC scan is always non-interleaved.  A DC scan (Ss = Se = 0) may carry all
+  // the components together.  This encoder used to write every scan with every
+  // component, so any multi-component progressive file it produced was not a
+  // JPEG: libjpeg reports "broken data stream" on them.  Our own decoder read
+  // them back because it shared the misunderstanding, so round-trip tests
+  // passed throughout.
+  //
+  // An AC scan is therefore written once per component.  The coefficient buffer
+  // is MCU-interleaved (A.2.3), so each component's blocks are gathered into
+  // their own raster order (A.2.2) first, encoded through the ordinary
+  // one-component path, and the refinement state scattered back.
+  // The sampling factors are optional at this interface; the scan encoders
+  // substitute 1x1 when they are absent, so do the same here rather than
+  // dereferencing a null pointer.
+  static const uint8_t jpeg_default_samp_111[3] = {1, 1, 1};
+  if (!h_samp) {
+    h_samp = jpeg_default_samp_111;
+  }
+  if (!v_samp) {
+    v_samp = jpeg_default_samp_111;
+  }
+  uint32_t mcu_per_row_enc = 1;
+  {
+    uint8_t hm = h_samp[0];
+    uint8_t vm = v_samp[0];
+    for (int i = 1; i < num_components; i++) {
+      if (h_samp[i] > hm)
+        hm = h_samp[i];
+      if (v_samp[i] > vm)
+        vm = v_samp[i];
+    }
+    mcu_per_row_enc = (width + (uint32_t)(8 * hm) - 1u) / (uint32_t)(8 * hm);
+    (void)vm;
+  }
   for (unsigned s = 0; s < scan_count; s++) {
-    unsigned char * scan_data = NULL;
-    size_t scan_size = 0;
     int this_ac_initial =
         (scans[s].Ah == 0 && (scans[s].Ss != 0 || scans[s].Se != 0));
     int this_refinement =
         (scans[s].Ah != 0 && (scans[s].Ss != 0 || scans[s].Se != 0));
     int prev_ac_initial = (s > 0 && scans[s - 1].Ah == 0 &&
         (scans[s - 1].Ss != 0 || scans[s - 1].Se != 0));
-    int16_t * state_out =
-        (ac_initial_state && this_ac_initial) ? ac_initial_state : NULL;
-    const int16_t * state_in =
-        (ac_initial_state && this_refinement && prev_ac_initial)
-        ? ac_initial_state
-        : NULL;
-    if (precision > 8) {
-      r = gimg_jpeg_encode_progressive_scan_extended(width, height, num_components,
-          coef_buffer, total_blocks, h_samp, v_samp, scans[s].Ss, scans[s].Se,
-          scans[s].Ah, scans[s].Al, alloc, restart_interval, &scan_data,
-          &scan_size);
-    }
-    else {
-      r = gimg_jpeg_encode_progressive_scan(width, height, num_components,
-          coef_buffer, total_blocks, h_samp, v_samp, scans[s].Ss, scans[s].Se,
-          scans[s].Ah, scans[s].Al, alloc, restart_interval, &scan_data,
-          &scan_size, state_out, state_in, (int)s);
-    }
-    if (r != GIMG_OK) {
-      return r;
-    }
-    uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)num_components);
-    r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
-    if (r != GIMG_OK) {
+    int is_ac_scan = (scans[s].Ss != 0 || scans[s].Se != 0);
+    int ac_refine = this_refinement;
+
+    // Components written in this script entry: all of them for a DC scan, one
+    // scan each for an AC scan.
+    int first_comp = 0;
+    int last_comp = is_ac_scan ? (num_components - 1) : 0;
+    for (int comp = first_comp; comp <= last_comp; comp++) {
+      unsigned char * scan_data = NULL;
+      size_t scan_size = 0;
+      int scan_components = is_ac_scan ? 1 : num_components;
+      int16_t * packed = NULL;
+      int16_t * packed_state = NULL;
+      const int16_t * enc_coef = coef_buffer;
+      size_t enc_blocks = total_blocks;
+      uint8_t one_samp[3] = {1, 1, 1};
+      const uint8_t * enc_h = h_samp;
+      const uint8_t * enc_v = v_samp;
+      uint32_t enc_w = width;
+      uint32_t enc_h_px = height;
+      uint32_t blk_w = 0;
+      uint32_t blk_h = 0;
+
+      if (is_ac_scan && num_components > 1) {
+        jpeg_component_block_grid(width, height, h_samp, v_samp,
+            num_components, comp, &blk_w, &blk_h);
+        size_t nblocks = (size_t)blk_w * (size_t)blk_h;
+        packed = (int16_t *)gimg_malloc(alloc, nblocks * 64 * sizeof(int16_t));
+        if (!packed) {
+          gimg_free(alloc, ac_initial_state);
+          return GIMG_ERR_OOM;
+        }
+        jpeg_gather_component_blocks((int16_t *)coef_buffer, packed, blk_w,
+            blk_h, h_samp, v_samp, num_components, comp, mcu_per_row_enc, 0);
+        enc_coef = packed;
+        enc_blocks = nblocks;
+        enc_h = one_samp;
+        enc_v = one_samp;
+        // One block per MCU: present the component's grid as its own image.
+        enc_w = blk_w * 8u;
+        enc_h_px = blk_h * 8u;
+        if (ac_initial_state) {
+          packed_state =
+              (int16_t *)gimg_malloc(alloc, nblocks * 64 * sizeof(int16_t));
+          if (!packed_state) {
+            gimg_free(alloc, packed);
+            gimg_free(alloc, ac_initial_state);
+            return GIMG_ERR_OOM;
+          }
+          jpeg_gather_component_blocks(ac_initial_state, packed_state, blk_w,
+              blk_h, h_samp, v_samp, num_components, comp, mcu_per_row_enc, 0);
+        }
+      }
+
+      int16_t * state_out = NULL;
+      const int16_t * state_in = NULL;
+      if (ac_initial_state) {
+        int16_t * state_base = packed_state ? packed_state : ac_initial_state;
+        state_out = this_ac_initial ? state_base : NULL;
+        state_in = (this_refinement && prev_ac_initial) ? state_base : NULL;
+      }
+
+      if (precision > 8) {
+        r = gimg_jpeg_encode_progressive_scan_extended(enc_w, enc_h_px,
+            scan_components, enc_coef, enc_blocks, enc_h, enc_v, scans[s].Ss,
+            scans[s].Se, scans[s].Ah, scans[s].Al, alloc, restart_interval,
+            &scan_data, &scan_size);
+      }
+      else {
+        r = gimg_jpeg_encode_progressive_scan(enc_w, enc_h_px, scan_components,
+            enc_coef, enc_blocks, enc_h, enc_v, scans[s].Ss, scans[s].Se,
+            scans[s].Ah, scans[s].Al, alloc, restart_interval, &scan_data,
+            &scan_size, state_out, state_in, (int)s);
+      }
+      if (r == GIMG_OK && packed_state && this_ac_initial) {
+        // Put the state this scan produced back where a later refinement scan
+        // over the interleaved buffer will find it.
+        jpeg_gather_component_blocks(ac_initial_state, packed_state, blk_w,
+            blk_h, h_samp, v_samp, num_components, comp, mcu_per_row_enc, 1);
+      }
+      gimg_free(alloc, packed_state);
+      gimg_free(alloc, packed);
+      if (r != GIMG_OK) {
+        gimg_free(alloc, ac_initial_state);
+        return r;
+      }
+
+      uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)scan_components);
+      r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
+      if (r != GIMG_OK) {
+        gimg_free(alloc, scan_data);
+        gimg_free(alloc, ac_initial_state);
+        return r;
+      }
+      r = jpeg_write_u16(stream, sos_len, &n);
+      if (r != GIMG_OK) {
+        gimg_free(alloc, scan_data);
+        gimg_free(alloc, ac_initial_state);
+        return r;
+      }
+      unsigned char sos[12];
+      memset(sos, 0, sizeof(sos));
+      sos[0] = (unsigned char)scan_components;
+      // Td is the high nibble, Ta the low one (T.81 B.2.3).  A DC scan needs
+      // only Td; an AC scan only Ta.  Component ids are 1..Nf in SOF order.
+      if (is_ac_scan) {
+        // Ta must name the table the entropy coder actually used.  A
+        // single-component scan is encoded through the one-component path,
+        // which uses the luminance AC table for whichever component it is
+        // given, so Ta is 0 here regardless of the component - T.81 B.2.3 lets
+        // any component select any table, so this is well formed, and the
+        // alternative (naming table 1 for chroma while encoding with table 0)
+        // produces a file that decodes to nonsense.  Refinement scans use the
+        // dedicated refinement table written at Th=2.
+        unsigned char ta = ac_refine ? 0x02 : 0x00;
+        sos[1] = (unsigned char)(comp + 1);
+        sos[2] = ta;
+      }
+      else {
+        for (int i = 0; i < num_components; i++) {
+          sos[1 + i * 2] = (unsigned char)(i + 1);
+          sos[2 + i * 2] = (unsigned char)((i == 0 ? 0x00 : 0x01) << 4);
+        }
+      }
+      size_t tail = 1 + 2 * (size_t)scan_components;
+      sos[tail] = scans[s].Ss;
+      sos[tail + 1] = scans[s].Se;
+      sos[tail + 2] =
+          (unsigned char)((scans[s].Ah << 4) | (scans[s].Al & 0x0F));
+      r = gimg_stream_write(stream, sos, tail + 3, &written);
+      if (r != GIMG_OK) {
+        gimg_free(alloc, scan_data);
+        gimg_free(alloc, ac_initial_state);
+        return r;
+      }
+      n += written;
+      r = jpeg_write_scan_data_with_stuffing(stream, scan_data, scan_size, &n);
       gimg_free(alloc, scan_data);
-      return r;
-    }
-    r = jpeg_write_u16(stream, sos_len, &n);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    unsigned char sos[12];
-    memset(sos, 0, sizeof(sos));
-    sos[0] = (unsigned char)num_components;
-    // AC refinement scans use Ta=2 (refinement table); else Ta=0/1.
-    int ac_refine =
-        (scans[s].Ah != 0 && !(scans[s].Ss == 0 && scans[s].Se == 0));
-    if (num_components == 1) {
-      sos[1] = 0x01;
-      sos[2] = (unsigned char)(ac_refine ? 0x02 : 0x00);
-    }
-    else {
-      sos[1] = 0x01;
-      sos[2] = (unsigned char)(ac_refine ? 0x02 : 0x00);
-      sos[3] = 0x02;
-      sos[4] = (unsigned char)(ac_refine ? 0x12 : 0x11);
-      sos[5] = 0x03;
-      sos[6] = (unsigned char)(ac_refine ? 0x12 : 0x11);
-    }
-    size_t tail = 1 + 2 * (size_t)num_components;
-    sos[tail] = scans[s].Ss;
-    sos[tail + 1] = scans[s].Se;
-    sos[tail + 2] = (unsigned char)((scans[s].Ah << 4) | (scans[s].Al & 0x0F));
-    r = gimg_stream_write(stream, sos, tail + 3, &written);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, scan_data);
-      return r;
-    }
-    n += written;
-    r = jpeg_write_scan_data_with_stuffing(stream, scan_data, scan_size, &n);
-    gimg_free(alloc, scan_data);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, ac_initial_state);
-      return r;
+      if (r != GIMG_OK) {
+        gimg_free(alloc, ac_initial_state);
+        return r;
+      }
     }
   }
   gimg_free(alloc, ac_initial_state);
