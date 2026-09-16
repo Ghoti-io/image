@@ -174,26 +174,36 @@ void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits) {
       continue;
     }
 
-    z2 = (int32_t)wsptr[2];
-    z3 = (int32_t)wsptr[6];
+    // The workspace is int64_t and pass 1 can legitimately fill its range for
+    // a hostile block: coefficients reach +-32767 and a quantiser value reaches
+    // 65535, so the dequantised input alone is a 31-bit quantity before this
+    // transform scales it further.  Narrowing to int32_t here - as this did -
+    // made the sums below overflow, which is undefined behaviour rather than
+    // merely a wrong pixel, and UBSan flagged it on a fuzzed round trip.  For
+    // any coefficient a real image produces the values fit either way, so
+    // keeping them wide changes no output; it only stops the arithmetic being
+    // undefined for input that was never valid.  The caller clamps the result
+    // to 0..2^P-1 (T.81 A.3.1), which is what bounds the final samples.
+    z2 = wsptr[2];
+    z3 = wsptr[6];
     z1 = IDCT_ISLOW_MULTIPLY(z2 + z3, idct_islow_fix_0_541196100);
     tmp2 = z1 + IDCT_ISLOW_MULTIPLY(z3, -idct_islow_fix_1_847759065);
     tmp3 = z1 + IDCT_ISLOW_MULTIPLY(z2, idct_islow_fix_0_765366865);
 
     tmp0 =
-        IDCT_ISLOW_LEFT_SHIFT((int32_t)wsptr[0] + (int32_t)wsptr[4], dct_bits);
+        IDCT_ISLOW_LEFT_SHIFT(wsptr[0] + wsptr[4], dct_bits);
     tmp1 =
-        IDCT_ISLOW_LEFT_SHIFT((int32_t)wsptr[0] - (int32_t)wsptr[4], dct_bits);
+        IDCT_ISLOW_LEFT_SHIFT(wsptr[0] - wsptr[4], dct_bits);
 
     tmp10 = tmp0 + tmp3;
     tmp13 = tmp0 - tmp3;
     tmp11 = tmp1 + tmp2;
     tmp12 = tmp1 - tmp2;
 
-    tmp0 = (int32_t)wsptr[7];
-    tmp1 = (int32_t)wsptr[5];
-    tmp2 = (int32_t)wsptr[3];
-    tmp3 = (int32_t)wsptr[1];
+    tmp0 = wsptr[7];
+    tmp1 = wsptr[5];
+    tmp2 = wsptr[3];
+    tmp3 = wsptr[1];
 
     z1 = tmp0 + tmp3;
     z2 = tmp1 + tmp2;
