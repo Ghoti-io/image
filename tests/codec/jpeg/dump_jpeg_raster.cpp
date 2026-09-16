@@ -4,8 +4,15 @@
  * decoder vs libjpeg/Pillow.
  *
  * Usage: dump_jpeg_raster [ -o out.raw ] <path-to.jpeg>
- * Output: 4 bytes width (LE), 4 bytes height (LE), then width*height*4 bytes (RGBA).
- * GRAY8 is expanded to R=G=B, A=255. With -o, write to file instead of stdout.
+ * Output: 4 bytes width (LE), 4 bytes height (LE), then the pixels as RGBA.
+ *   8-bit rasters  (GRAY8/RGBA8):   width*height*4 bytes,  GRAY8 as R=G=B, A=255.
+ *   16-bit rasters (GRAY16/RGBA16): width*height*4 uint16 LE, GRAY16 as R=G=B,
+ *                                   A=65535.
+ * A 12-bit JPEG decodes to a 16-bit raster (T.81 Table B.2 allows P=8 and
+ * P=12; the library widens 12-bit samples to its 16-bit raster), so the wide
+ * form is the only way to inspect what the 12-bit path actually produced.
+ * The consumer tells the two apart by file size: 8 + w*h*4 vs 8 + w*h*8.
+ * With -o, write to file instead of stdout.
  */
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
@@ -84,12 +91,13 @@ int main(int argc, char ** argv) {
   uint32_t h = gimg_raster_height(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   size_t bpp = fmt ? gimg_raster_bytes_per_pixel(fmt) : 0;
-  if (bpp == 0 || (bpp != 1 && bpp != 4)) {
+  if (bpp != 1 && bpp != 4 && bpp != 2 && bpp != 8) {
     gimg_raster_destroy(raster);
     gimg_doc_destroy(doc);
-    fprintf(stderr, "Unsupported format (need GRAY8 or RGBA8)\n");
+    fprintf(stderr, "Unsupported format (need GRAY8/RGBA8/GRAY16/RGBA16)\n");
     return 1;
   }
+  bool wide = (bpp == 2 || bpp == 8);
   size_t stride = gimg_raster_stride_bytes(raster);
   const void * pixels = gimg_raster_pixels_const(raster);
   size_t row_bytes = w * bpp;
@@ -119,8 +127,35 @@ int main(int argc, char ** argv) {
     gimg_doc_destroy(doc);
     return 1;
   }
-  /* Output RGBA (4 bytes per pixel). GRAY8 expanded to R=G=B, A=255 (T.81 level shift + output). */
-  if (bpp == 1) {
+  /* Output RGBA. Grayscale is replicated to R=G=B with an opaque alpha; the
+   * samples themselves are passed through untouched (T.81 A.3.1 level shift and
+   * clamping already happened in the decoder). */
+  if (wide) {
+    std::vector<uint16_t> row_out(static_cast<size_t>(w) * 4u);
+    for (uint32_t y = 0; y < h; y++) {
+      const uint16_t * row = reinterpret_cast<const uint16_t *>(
+          static_cast<const char *>(pixels) + static_cast<size_t>(y) * stride);
+      for (uint32_t x = 0; x < w; x++) {
+        if (bpp == 2) {
+          uint16_t v = row[x];
+          row_out[x * 4 + 0] = v;
+          row_out[x * 4 + 1] = v;
+          row_out[x * 4 + 2] = v;
+          row_out[x * 4 + 3] = 65535;
+        } else {
+          for (int c = 0; c < 4; c++) {
+            row_out[x * 4 + c] = row[x * 4 + c];
+          }
+        }
+      }
+      if (fwrite(row_out.data(), 2, row_out.size(), out) != row_out.size()) {
+        if (out_file) fclose(out_file);
+        gimg_raster_destroy(raster);
+        gimg_doc_destroy(doc);
+        return 1;
+      }
+    }
+  } else if (bpp == 1) {
     const unsigned char * row = static_cast<const unsigned char *>(pixels);
     for (uint32_t y = 0; y < h; y++) {
       for (uint32_t x = 0; x < w; x++) {

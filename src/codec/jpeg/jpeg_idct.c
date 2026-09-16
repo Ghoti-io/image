@@ -8,7 +8,6 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -21,13 +20,6 @@ void jpeg_dezigzag(const int16_t * block, int16_t * out) {
   }
 }
 
-void jpeg_dequantise(
-    const int16_t * block, const uint16_t * quant, int16_t * out) {
-  for (int i = 0; i < 64; i++) {
-    out[i] = (int16_t)((int)block[i] * (int)quant[gimg_jpeg_inv_zigzag[i]]);
-  }
-}
-
 void jpeg_dequantise_32(
     const int16_t * block, const uint16_t * quant, int32_t * out) {
   for (int i = 0; i < 64; i++) {
@@ -35,67 +27,7 @@ void jpeg_dequantise_32(
   }
 }
 
-static void jpeg_idct_1d(const int16_t * in, int16_t * out) {
-  static const int scale = 256;
-  for (int x = 0; x < 8; x++) {
-    double sum = 0.0;
-    for (int u = 0; u < 8; u++) {
-      int32_t c = (u == 0) ? 181 : 256;
-      double angle = (2 * x + 1) * u * 3.14159265358979323846 / 16.0;
-      sum += (double)in[u] * (double)c * cos(angle);
-    }
-    out[x] = (int16_t)(int)(sum / (double)scale + 0.5);
-  }
-}
-
-static void jpeg_idct_1d_32(const int32_t * in, int32_t * out, int scale) {
-  for (int x = 0; x < 8; x++) {
-    double sum = 0.0;
-    for (int u = 0; u < 8; u++) {
-      int32_t c = (u == 0) ? 181 : 256;
-      double angle = (2 * x + 1) * u * 3.14159265358979323846 / 16.0;
-      sum += (double)in[u] * (double)c * cos(angle);
-    }
-    out[x] = (int32_t)(int)(sum / (double)scale + 0.5);
-  }
-}
-
-void jpeg_idct_8x8(const int16_t * in, int16_t * out) {
-  int16_t row[8];
-  int16_t tmp[64];
-  for (int y = 0; y < 8; y++) {
-    jpeg_idct_1d(in + y * 8, row);
-    for (int x = 0; x < 8; x++) {
-      tmp[x * 8 + y] = row[x];
-    }
-  }
-  for (int x = 0; x < 8; x++) {
-    jpeg_idct_1d(tmp + x * 8, row);
-    for (int y = 0; y < 8; y++) {
-      out[y * 8 + x] = row[y];
-    }
-  }
-}
-
-void jpeg_idct_8x8_32(const int32_t * in, int32_t * out, int scale) {
-  int32_t row[8];
-  int32_t tmp[64];
-  for (int y = 0; y < 8; y++) {
-    jpeg_idct_1d_32(in + y * 8, row, scale);
-    for (int x = 0; x < 8; x++) {
-      tmp[x * 8 + y] = row[x];
-    }
-  }
-  for (int x = 0; x < 8; x++) {
-    jpeg_idct_1d_32(tmp + x * 8, row, scale);
-    for (int y = 0; y < 8; y++) {
-      out[y * 8 + x] = row[y];
-    }
-  }
-}
-
 #define IDCT_ISLOW_CONST_BITS 13
-#define IDCT_ISLOW_PASS1_BITS 2
 #define IDCT_ISLOW_ONE ((int64_t)1)
 #define IDCT_ISLOW_LEFT_SHIFT(x, n) ((int64_t)((uint64_t)(x) << (n)))
 #define IDCT_ISLOW_RIGHT_SHIFT(x, n) ((x) >> (n))
@@ -116,7 +48,28 @@ static const int32_t idct_islow_fix_2_053119869 = 16819;
 static const int32_t idct_islow_fix_2_562915447 = 20995;
 static const int32_t idct_islow_fix_3_072711026 = 25172;
 
-void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out) {
+/**
+ * Integer inverse DCT, the transform libjpeg calls "islow".
+ *
+ * T.81 A.3.3 specifies the inverse DCT mathematically and deliberately does not
+ * prescribe an implementation; conformance is measured against it statistically
+ * (ITU-T T.83).  Every practical decoder therefore uses a fixed-point
+ * approximation, and matching the one libjpeg uses is what makes our output
+ * comparable to every other decoder in the world, sample for sample.
+ *
+ * @param pass1_bits Fractional bits carried between the two passes.  libjpeg
+ *   (jidctint.c) uses 2 for 8-bit data and 1 for 12-bit - "lose a little
+ *   precision to avoid overflow" - because the first pass needs
+ *   BITS_IN_JSAMPLE + PASS1_BITS + 3 bits of headroom.  Pass 2 for P=8 and 1
+ *   for P=12; anything else will not agree with other decoders.
+ *
+ * Before this took a parameter, 12-bit frames went through a separate naive
+ * float transform (a cos() per term, rounded to an integer between passes) that
+ * no other decoder implements and that rounded negative values the wrong way -
+ * (int)(-2.7 + 0.5) is -2, not -3.  Every 12-bit sample we produced was
+ * therefore slightly wrong, and nothing external had ever checked it.
+ */
+void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits) {
   // The intermediates are 64-bit.  This transform assumes the coefficient
   // magnitudes a conformant stream produces, and a file that does not conform
   // can drive them past int32: fuzzing reached sums like
@@ -130,18 +83,17 @@ void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out) {
   int64_t z1, z2, z3, z4, z5;
   int64_t workspace[64];
   const int dct_bits = IDCT_ISLOW_CONST_BITS;
-  const int pass1_bits = IDCT_ISLOW_PASS1_BITS;
   const int descale_pass1 = dct_bits - pass1_bits;
   const int descale_pass2 = dct_bits + pass1_bits + 3;
   const int descale_dc_row = pass1_bits + 3;
 
   for (int ctr = 0; ctr < 8; ctr++) {
-    const int16_t * inptr = in + ctr;
+    const int32_t * inptr = in + ctr;
     int64_t * wsptr = workspace + ctr;
 
     if (inptr[8] == 0 && inptr[16] == 0 && inptr[24] == 0 && inptr[32] == 0 &&
         inptr[40] == 0 && inptr[48] == 0 && inptr[56] == 0) {
-      int32_t dcval = IDCT_ISLOW_LEFT_SHIFT((int32_t)inptr[0], pass1_bits);
+      int64_t dcval = IDCT_ISLOW_LEFT_SHIFT((int64_t)inptr[0], pass1_bits);
       for (int r = 0; r < 8; r++) {
         wsptr[r * 8] = (int)dcval;
       }
@@ -204,16 +156,18 @@ void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out) {
 
   for (int ctr = 0; ctr < 8; ctr++) {
     const int64_t * wsptr = workspace + ctr * 8;
-    int16_t * outptr = out + ctr * 8;
+    int32_t * outptr = out + ctr * 8;
 
     if (wsptr[1] == 0 && wsptr[2] == 0 && wsptr[3] == 0 && wsptr[4] == 0 &&
         wsptr[5] == 0 && wsptr[6] == 0 && wsptr[7] == 0) {
-      int32_t v = IDCT_ISLOW_DESCALE((int32_t)wsptr[0], descale_dc_row);
-      if (v < -128)
-        v = -128;
-      if (v > 127)
-        v = 127;
-      int16_t dcval = (int16_t)v;
+      // No clamp here.  The samples this transform produces are level-shifted
+      // by the caller, which clamps them to 0..2^P-1 (T.81 A.3.1) for whatever
+      // P the frame declared.  Clamping to the 8-bit range inside the transform
+      // - as this used to - happens to be invisible at P=8, because the caller's
+      // own clamp subsumes it, but it destroys a 12-bit frame, whose samples
+      // legitimately reach +-2048.
+      int32_t dcval =
+          (int32_t)IDCT_ISLOW_DESCALE((int64_t)wsptr[0], descale_dc_row);
       for (int c = 0; c < 8; c++) {
         outptr[c] = dcval;
       }
@@ -264,19 +218,18 @@ void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out) {
     tmp2 += z2 + z3;
     tmp3 += z1 + z4;
 
-    outptr[0] = (int16_t)IDCT_ISLOW_DESCALE(tmp10 + tmp3, descale_pass2);
-    outptr[7] = (int16_t)IDCT_ISLOW_DESCALE(tmp10 - tmp3, descale_pass2);
-    outptr[1] = (int16_t)IDCT_ISLOW_DESCALE(tmp11 + tmp2, descale_pass2);
-    outptr[6] = (int16_t)IDCT_ISLOW_DESCALE(tmp11 - tmp2, descale_pass2);
-    outptr[2] = (int16_t)IDCT_ISLOW_DESCALE(tmp12 + tmp1, descale_pass2);
-    outptr[5] = (int16_t)IDCT_ISLOW_DESCALE(tmp12 - tmp1, descale_pass2);
-    outptr[3] = (int16_t)IDCT_ISLOW_DESCALE(tmp13 + tmp0, descale_pass2);
-    outptr[4] = (int16_t)IDCT_ISLOW_DESCALE(tmp13 - tmp0, descale_pass2);
+    outptr[0] = (int32_t)IDCT_ISLOW_DESCALE(tmp10 + tmp3, descale_pass2);
+    outptr[7] = (int32_t)IDCT_ISLOW_DESCALE(tmp10 - tmp3, descale_pass2);
+    outptr[1] = (int32_t)IDCT_ISLOW_DESCALE(tmp11 + tmp2, descale_pass2);
+    outptr[6] = (int32_t)IDCT_ISLOW_DESCALE(tmp11 - tmp2, descale_pass2);
+    outptr[2] = (int32_t)IDCT_ISLOW_DESCALE(tmp12 + tmp1, descale_pass2);
+    outptr[5] = (int32_t)IDCT_ISLOW_DESCALE(tmp12 - tmp1, descale_pass2);
+    outptr[3] = (int32_t)IDCT_ISLOW_DESCALE(tmp13 + tmp0, descale_pass2);
+    outptr[4] = (int32_t)IDCT_ISLOW_DESCALE(tmp13 - tmp0, descale_pass2);
   }
 }
 
 #undef IDCT_ISLOW_CONST_BITS
-#undef IDCT_ISLOW_PASS1_BITS
 #undef IDCT_ISLOW_ONE
 #undef IDCT_ISLOW_LEFT_SHIFT
 #undef IDCT_ISLOW_RIGHT_SHIFT

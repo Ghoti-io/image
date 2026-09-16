@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ghoti.io/image/bitdepth.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
@@ -2194,6 +2195,119 @@ TEST(JpegLoad, DecodeBaseline640x480Ycbcr) {
   gimg_doc_destroy(doc);
 }
 
+/** A 12-bit colour frame must fill its whole raster.
+ *
+ * The fixture is a flat colour, so every decoded pixel has to be the same one;
+ * that makes this a check on addressing rather than on arithmetic.  It is here
+ * because the 12-bit colour path computed its row stride in pixels while
+ * indexing the row through a uint16_t * - so it wrote each frame into the first
+ * quarter of its own raster and left the rest at zero.  Every existing 12-bit
+ * test looked only at the dimensions and the pixel format, which were both
+ * correct, and none of them read a sample. */
+TEST(JpegLoad, Decode12BitColourFillsTheWholeRaster) {
+  std::vector<uint8_t> jpeg;
+  if (!jpeg_test::load_jpeg_file("baseline_rgb12_444.jpg", jpeg)) {
+    GTEST_SKIP() << "Fixture tests/data/jpeg/baseline_rgb12_444.jpg not found.";
+  }
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  ASSERT_EQ(gimg_raster_width(raster), 16u);
+  ASSERT_EQ(gimg_raster_height(raster), 16u);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  ASSERT_NE(fmt, nullptr);
+  ASSERT_EQ(fmt->bits_per_channel[0], 16);
+  const uint16_t * px =
+      static_cast<const uint16_t *>(gimg_raster_pixels_const(raster));
+  size_t stride_el = gimg_raster_stride_bytes(raster) / sizeof(uint16_t);
+  // The source was a flat (3000, 1000, 2000) at P=12, widened to 16 bits by
+  // replication (src/ops/bitdepth.c).  libjpeg reconstructs (3000, 1000, 2001).
+  const uint16_t want[3] = {
+      gimg_bitdepth_12_to_16(3000),
+      gimg_bitdepth_12_to_16(1000),
+      gimg_bitdepth_12_to_16(2001),
+  };
+  for (uint32_t y = 0; y < 16u; y++) {
+    for (uint32_t x = 0; x < 16u; x++) {
+      const uint16_t * p = px + y * stride_el + x * 4u;
+      ASSERT_EQ(p[0], want[0]) << "at (" << x << ", " << y << ")";
+      ASSERT_EQ(p[1], want[1]) << "at (" << x << ", " << y << ")";
+      ASSERT_EQ(p[2], want[2]) << "at (" << x << ", " << y << ")";
+      ASSERT_EQ(p[3], 65535u) << "at (" << x << ", " << y << ")";
+    }
+  }
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+/** A 4:2:2 frame one row tall must use the horizontal-only chroma filter.
+ *
+ * T.81 B.2.2 gives every component an Hi and a Vi, and those are what say how a
+ * plane was subsampled.  The upsampler used to infer it from the plane's shape
+ * instead, which cannot distinguish 2x1 from 2x2 when the image has a single
+ * row: both leave a chroma plane one row tall.  The wrong filter is close but
+ * not equal - it carries its own rounding constants - so such frames decoded
+ * one or two counts off across the row.
+ *
+ * The expected values are libjpeg-turbo 3.0.4 built with 12-bit support
+ * (-DWITH_12BIT); see tests/data/jpeg/README.md. */
+TEST(JpegLoad, Decode12Bit422SingleRowMatchesReference) {
+  std::vector<uint8_t> jpeg;
+  if (!jpeg_test::load_jpeg_file("baseline_rgb12_422_16x1.jpg", jpeg)) {
+    GTEST_SKIP()
+        << "Fixture tests/data/jpeg/baseline_rgb12_422_16x1.jpg not found.";
+  }
+  static const uint16_t expected[16][3] = {
+    { 177, 3997,   50},
+    { 271, 3818,   33},
+    { 544, 3549,   87},
+    { 815, 3275,  177},
+    {1089, 3001,  304},
+    {1363, 2728,  472},
+    {1635, 2455,  674},
+    {1910, 2181,  910},
+    {2182, 1907, 1178},
+    {2458, 1638, 1489},
+    {2725, 1363, 1835},
+    {3000, 1092, 2218},
+    {3272,  817, 2633},
+    {3548,  544, 3089},
+    {3821,  270, 3585},
+    {3951,  125, 3824},
+  };
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  ASSERT_NE(item, nullptr);
+  GIMG_Decode_Options opts = {};
+  opts.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(item, &opts, &raster), GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  ASSERT_EQ(gimg_raster_width(raster), 16u);
+  ASSERT_EQ(gimg_raster_height(raster), 1u);
+  const uint16_t * px =
+      static_cast<const uint16_t *>(gimg_raster_pixels_const(raster));
+  for (uint32_t x = 0; x < 16u; x++) {
+    for (int c = 0; c < 3; c++) {
+      EXPECT_EQ(px[x * 4u + (uint32_t)c], gimg_bitdepth_12_to_16(expected[x][c]))
+          << "x=" << x << " channel=" << c;
+    }
+  }
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
 /** Decode 12-bit JPEG fixture (SOF1 or SOF2, precision 12). Confirms 12-bit decode path.
  * Fixture: copy baseline_gray12.jpg from tests/out/jpeg/ (after JpegEncode.SaveGray12ThenLoadDecode)
  * to tests/data/jpeg/. See tests/data/jpeg/README.md. If fixture is absent, test is skipped. */
@@ -2218,7 +2332,7 @@ TEST(JpegLoad, Decode12BitFixture) {
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   ASSERT_NE(fmt, nullptr);
   EXPECT_EQ(fmt->bits_per_channel[0], 16)
-      << "12-bit decode outputs GRAY16 with 12-bit left-justified";
+      << "a 12-bit frame decodes to GRAY16, widened by replication";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
 }

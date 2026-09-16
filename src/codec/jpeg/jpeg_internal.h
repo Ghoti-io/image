@@ -499,18 +499,15 @@ GIMG_Result gimg_jpeg_write_ac_refine_dht(
 /** @{ */
 /** Reorder 64 coefficients from zigzag order to row-major 8×8. */
 void jpeg_dezigzag(const int16_t * block, int16_t * out);
-/** Dequantise block: out[i] = block[i] * quant[inv_zigzag[i]]. 8-bit path. */
-void jpeg_dequantise(
-    const int16_t * block, const uint16_t * quant, int16_t * out);
-/** Dequantise block into 32-bit (for 12-bit IDCT). */
+/** Dequantise block: out[i] = block[i] * quant[inv_zigzag[i]].  The result is
+ * 32-bit because it does not fit in 16: a quantised coefficient is itself up to
+ * 16 bits (T.81 F.1.2) and the quantisation value up to 16 bits at P=12
+ * (B.2.4.1), so the product needs the width libjpeg gives it (DCTELEM). */
 void jpeg_dequantise_32(
     const int16_t * block, const uint16_t * quant, int32_t * out);
-/** 8×8 inverse DCT (row-column). Input/output row-major. */
-void jpeg_idct_8x8(const int16_t * in, int16_t * out);
-/** 8×8 inverse DCT with scale factor (12-bit). */
-void jpeg_idct_8x8_32(const int32_t * in, int32_t * out, int scale);
-/** Reference integer IDCT (ISLOW); matches libjpeg. */
-void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out);
+/** Integer inverse DCT ("islow"), matching libjpeg for both supported sample
+ * precisions.  pass1_bits is 2 at P=8 and 1 at P=12; see the definition. */
+void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits);
 /** @} */
 
 /** @name Bitstream module (init, read bits, skip RST, Huffman table, decode;
@@ -571,26 +568,52 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
     int trace_scan_idx, unsigned int * out_eobrun, int is_last_block);
 /** @} */
 
+/**
+ * One decoded component plane, as the upsamplers and the colour converter see
+ * it.  A frame at P=8 holds its samples in bytes and one at P=12 in 16-bit
+ * words (T.81 Table B.2); naming the difference here lets the filters below be
+ * written once instead of once per precision.
+ */
+typedef struct {
+  const void * data; /**< uint8 samples when wide == 0, uint16 when wide == 1 */
+  size_t stride;     /**< row stride in samples, not bytes */
+  int wide;          /**< 0: 8-bit samples; 1: 16-bit samples */
+} jpeg_plane_t;
+
+/** Read one sample from a plane. */
+int jpeg_plane_at(const jpeg_plane_t * p, uint32_t x, uint32_t y);
+
 /** Chroma upsampling: fancy 2h2v (triangle filter). Call when width==cw*2,
  * height==ch*2. Returns sample at (x,y). */
-int jpeg_chroma_sample_fancy_2h2v(const unsigned char * buf, size_t stride,
-    uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
+int jpeg_chroma_sample_fancy_2h2v(
+    const jpeg_plane_t * p, uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
 
 /** Chroma upsampling: fancy h2v1 (4:2:2, horizontal triangle filter). */
-int jpeg_chroma_sample_fancy_h2v1(const unsigned char * buf, size_t stride,
-    uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
+int jpeg_chroma_sample_fancy_h2v1(
+    const jpeg_plane_t * p, uint32_t cw, uint32_t ch, uint32_t x, uint32_t y);
 
 /**
  * Sample a chroma plane for output pixel (x, y).
  *
- * Picks the fancy filter that matches the plane's ratio - 2h2v for 4:2:0, h2v1
- * for 4:2:2 - and falls back to nearest-neighbour when there is no filter for
- * the ratio or the caller asked for the box filter.  4:4:4 needs no filter: the
- * nearest-neighbour path is exact there.
+ * Picks the fancy filter that matches the component's sampling factors - 2h2v
+ * for 4:2:0, h2v1 for 4:2:2 - and falls back to nearest-neighbour when there is
+ * no filter for the ratio or the caller asked for the box filter.  4:4:4 needs
+ * no filter: the nearest-neighbour path is exact there.
+ *
+ * @param h_samp,v_samp This component's Hi and Vi (T.81 B.2.2).
+ * @param h_max,v_max The frame's largest Hi and Vi.
  */
-int jpeg_chroma_sample(const unsigned char * buf, size_t stride, uint32_t cw,
-    uint32_t ch, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
-    int fancy);
+int jpeg_chroma_sample(const jpeg_plane_t * p, uint32_t cw, uint32_t ch,
+    uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t h_samp,
+    uint8_t v_samp, uint8_t h_max, uint8_t v_max, int fancy);
+
+/**
+ * YCbCr -> RGB at the frame's own precision.  centre is 2^(P-1) and max_val is
+ * 2^P - 1; the result is clamped to 0..max_val (T.81 A.3.1).  See the
+ * definition for the arithmetic and why it is shared.
+ */
+void jpeg_ycbcr_to_rgb(int y, int cb, int cr, int centre, int max_val,
+    int * out_r, int * out_g, int * out_b);
 
 /**
  * Clamp an output coordinate onto a component's own plane.

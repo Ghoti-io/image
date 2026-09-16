@@ -181,7 +181,6 @@ static GIMG_Result jpeg_decode_baseline_extended(
   // which is a factor of (512/4096)^2 = 1/64: every 12-bit image decoded to a
   // band roughly 1/64 of its true contrast, clustered around mid-grey, and no
   // test noticed because none compared 12-bit sample values.
-  const int idct_scale = 512;
   (void)precision;
   int level_shift = (precision == 12) ? 2048 : 32768;
   int max_val = (precision == 12) ? 4095 : 65535;
@@ -260,7 +259,9 @@ static GIMG_Result jpeg_decode_baseline_extended(
             block_counter++;
             jpeg_dezigzag(block_zig, block_rz);
             jpeg_dequantise_32(block_rz, quant, block_q);
-            jpeg_idct_8x8_32(block_q, block_idct, idct_scale);
+            // pass1_bits 1 at P=12: one fewer fractional bit between passes,
+            // for the headroom the wider samples need (libjpeg jidctint.c).
+            jpeg_idct_8x8_islow(block_q, block_idct, 1);
 
             uint32_t dst_x = mcu_x * (uint32_t)(8 * h_samp) + (uint32_t)bx * 8;
             uint32_t dst_y = mcu_y * (uint32_t)(8 * v_samp) + (uint32_t)by * 8;
@@ -324,41 +325,38 @@ static GIMG_Result jpeg_decode_baseline_extended(
       goto ext_fail;
     }
     uint16_t * pixels = (uint16_t *)gimg_raster_pixels(*out_raster);
-    size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 8;
+    // uint16 elements, not pixels: the row is indexed as
+    // pixels[y * stride_el + x * 4 + c] through a uint16_t *, so the divisor is
+    // sizeof(uint16_t) and not the 8 bytes an RGBA16 pixel occupies.  Dividing
+    // by 8 made the stride a quarter of a row, so every 12-bit colour frame was
+    // written into the first quarter of its own raster and the rest left blank.
+    size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 2;
     uint32_t cw1 = comp_w[1];
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
-    int mid = level_shift;
+    int use_fancy = (!options ||
+        options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
+    jpeg_plane_t pl_cb = {comp_buf[1], comp_stride_el[1], 1};
+    jpeg_plane_t pl_cr = {comp_buf[2], comp_stride_el[2], 1};
     for (uint32_t y = 0; y < height; y++) {
-      uint32_t cy1 = (ch1 > 1 && height > 1) ? (y * ch1 / height) : 0;
-      uint32_t cy2 = (ch2 > 1 && height > 1) ? (y * ch2 / height) : 0;
       for (uint32_t x = 0; x < width; x++) {
-        uint32_t cx1 = (cw1 > 1 && width > 1) ? (x * cw1 / width) : 0;
-        uint32_t cx2 = (cw2 > 1 && width > 1) ? (x * cw2 / width) : 0;
         int yy = (int)comp_buf[0][jpeg_component_index(comp_w[0], comp_h[0],
-                      comp_stride_el[0], x, y, width, height)] -
-            mid;
-        int cb = (int)comp_buf[1][cy1 * comp_stride_el[1] + cx1] - mid;
-        int cr = (int)comp_buf[2][cy2 * comp_stride_el[2] + cx2] - mid;
-        int r_val = yy + (int)(1.40200 * cr + 0.5);
-        int g_val = yy - (int)(0.34414 * cb + 0.71414 * cr + 0.5);
-        int b_val = yy + (int)(1.77200 * cb + 0.5);
-        // Clamp at the frame's own precision (T.81 A.3.1: a reconstructed
-        // sample is in 0..2^P-1), then widen once to the 16-bit raster.
-        int out_max = max_val;
-        if (r_val < 0)
-          r_val = 0;
-        if (r_val > out_max)
-          r_val = out_max;
-        if (g_val < 0)
-          g_val = 0;
-        if (g_val > out_max)
-          g_val = out_max;
-        if (b_val < 0)
-          b_val = 0;
-        if (b_val > out_max)
-          b_val = out_max;
+            comp_stride_el[0], x, y, width, height)];
+        // The same filters the 8-bit path uses.  This used to read the chroma
+        // planes with a nearest-neighbour index of its own, so a 12-bit 4:2:0
+        // or 4:2:2 frame was always box-filtered no matter what the caller
+        // asked for.
+        int cb = jpeg_chroma_sample(&pl_cb, cw1, ch1, x, y, width, height,
+            sof->h_samp[1], sof->v_samp[1], h_max, v_max, use_fancy);
+        int cr = jpeg_chroma_sample(&pl_cr, cw2, ch2, x, y, width, height,
+            sof->h_samp[2], sof->v_samp[2], h_max, v_max, use_fancy);
+        // Convert and clamp at the frame's own precision (T.81 A.3.1: a
+        // reconstructed sample is in 0..2^P-1), then widen once to the 16-bit
+        // raster.
+        int r_val, g_val, b_val;
+        jpeg_ycbcr_to_rgb(
+            yy, cb, cr, level_shift, max_val, &r_val, &g_val, &b_val);
         if (precision == 12) {
           r_val = (int)gimg_bitdepth_12_to_16((uint16_t)r_val);
           g_val = (int)gimg_bitdepth_12_to_16((uint16_t)g_val);
@@ -607,10 +605,12 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
 
   int16_t block_zig[64];
   int16_t block_rz[64];
-  int16_t block_q[64];
+  int32_t block_q[64];
+  int32_t block_idct[64];
   memset(block_zig, 0, sizeof(block_zig));
   memset(block_rz, 0, sizeof(block_rz));
   memset(block_q, 0, sizeof(block_q));
+  memset(block_idct, 0, sizeof(block_idct));
 
   // Decode MCU by MCU. At each restart boundary (DRI), reset DC predictors.
   uint16_t restart_interval = state->restart_interval;
@@ -732,16 +732,17 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
               (void)fflush(stderr);
             }
             jpeg_dezigzag(block_zig, block_rz);
-            jpeg_dequantise(block_rz, quant, block_q);
-            jpeg_idct_8x8_islow(block_q, block_rz);
+            jpeg_dequantise_32(block_rz, quant, block_q);
+            // pass1_bits 2: the 8-bit setting (libjpeg jidctint.c).
+            jpeg_idct_8x8_islow(block_q, block_idct, 2);
 
             if (comp_idx == 1 && by == 0 && bx == 0 &&
                 GIMG_JPEG_TRACE_FIRST_CB) {
               (void)fprintf(stderr,
                   "BASELINE first Cb: quant[0]=%u dequant[0]=%d idct[0]=%d "
                   "stored=%d\n",
-                  (unsigned)quant[0], (int)block_q[0], (int)block_rz[0],
-                  (int)block_rz[0] + 128);
+                  (unsigned)quant[0], (int)block_q[0], (int)block_idct[0],
+                  (int)block_idct[0] + 128);
               (void)fflush(stderr);
             }
 
@@ -762,26 +763,11 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
               (void)fprintf(stderr, "\n");
               (void)fprintf(stderr, "BLOCK_DEC linear=%u IDCT:", linear);
               for (int i = 0; i < 64; i++)
-                (void)fprintf(stderr, " %d", (int)block_rz[i]);
+                (void)fprintf(stderr, " %d", (int)block_idct[i]);
               (void)fprintf(stderr, "\n");
-              // For chroma (Cr block linear==5), compare integer IDCT to float IDCT on same DEQUANT.
-              if (linear == 5) {
-                int16_t idct_float[64];
-                jpeg_idct_8x8(block_q, idct_float);
-                (void)fprintf(stderr, "BLOCK_DEC linear=5 IDCT_float:");
-                for (int i = 0; i < 64; i++)
-                  (void)fprintf(stderr, " %d", (int)idct_float[i]);
-                (void)fprintf(stderr, "\n");
-                (void)fprintf(
-                    stderr, "BLOCK_DEC linear=5 IDCT_diff_islow_minus_float:");
-                for (int i = 0; i < 64; i++)
-                  (void)fprintf(
-                      stderr, " %d", (int)block_rz[i] - (int)idct_float[i]);
-                (void)fprintf(stderr, "\n");
-              }
               (void)fprintf(stderr, "BLOCK_DEC linear=%u STORED:", linear);
               for (int i = 0; i < 64; i++) {
-                int v = block_rz[i] + 128;
+                int v = block_idct[i] + 128;
                 if (v < 0)
                   v = 0;
                 if (v > 255)
@@ -819,7 +805,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
                     fwrite(block_zig, 2, 64, f);
                     fwrite(quant, 2, 64, f);
                     for (int i = 0; i < 64; i++) {
-                      int v = block_rz[i] + 128;
+                      int v = block_idct[i] + 128;
                       if (v < 0)
                         v = 0;
                       if (v > 255)
@@ -848,7 +834,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
                 if (x >= comp_width) {
                   break;
                 }
-                int v = block_rz[dy * 8 + dx] + 128;
+                int v = block_idct[dy * 8 + dx] + 128;
                 if (v < 0) {
                   v = 0;
                 }
@@ -925,35 +911,20 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     uint32_t ch2 = comp_h[2];
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
+    jpeg_plane_t pl_cb = {comp_buf[1], comp_stride[1], 0};
+    jpeg_plane_t pl_cr = {comp_buf[2], comp_stride[2], 0};
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
-        int yy = comp_buf[0][jpeg_component_index(
+        // jpeg_component_index returns a flat offset into the plane, so this
+        // one is indexed directly rather than through the (x, y) accessor.
+        int yy = (int)comp_buf[0][jpeg_component_index(
             comp_w[0], comp_h[0], comp_stride[0], x, y, width, height)];
-        int cb = jpeg_chroma_sample(comp_buf[1], comp_stride[1], cw1, ch1, x, y,
-            width, height, use_fancy);
-        int cr = jpeg_chroma_sample(comp_buf[2], comp_stride[2], cw2, ch2, x, y,
-            width, height, use_fancy);
-        // YCbCr→RGB with scaled integer (SCALEBITS=16) per common practice.
-        int cb_x = cb - 128;
-        int cr_x = cr - 128;
-        int r_val = yy + (int)((91881L * cr_x + 32768) >> 16);
-        int g_val = yy +
-            (int)(((int32_t)(-22554) * cb_x + (int32_t)(-46802) * cr_x +
-                      32768) >>
-                16);
-        int b_val = yy + (int)((116130L * cb_x + 32768) >> 16);
-        if (r_val < 0)
-          r_val = 0;
-        if (r_val > 255)
-          r_val = 255;
-        if (g_val < 0)
-          g_val = 0;
-        if (g_val > 255)
-          g_val = 255;
-        if (b_val < 0)
-          b_val = 0;
-        if (b_val > 255)
-          b_val = 255;
+        int cb = jpeg_chroma_sample(&pl_cb, cw1, ch1, x, y, width, height,
+            sof->h_samp[1], sof->v_samp[1], h_max, v_max, use_fancy);
+        int cr = jpeg_chroma_sample(&pl_cr, cw2, ch2, x, y, width, height,
+            sof->h_samp[2], sof->v_samp[2], h_max, v_max, use_fancy);
+        int r_val, g_val, b_val;
+        jpeg_ycbcr_to_rgb(yy, cb, cr, 128, 255, &r_val, &g_val, &b_val);
         pixels[y * stride + x * 4 + 0] = (unsigned char)r_val;
         pixels[y * stride + x * 4 + 1] = (unsigned char)g_val;
         pixels[y * stride + x * 4 + 2] = (unsigned char)b_val;
@@ -1457,7 +1428,6 @@ static GIMG_Result jpeg_decode_progressive_extended(
   // which is a factor of (512/4096)^2 = 1/64: every 12-bit image decoded to a
   // band roughly 1/64 of its true contrast, clustered around mid-grey, and no
   // test noticed because none compared 12-bit sample values.
-  const int idct_scale = 512;
   (void)precision;
   int level_shift = (precision == 12) ? 2048 : 32768;
   int max_val = (precision == 12) ? 4095 : 65535;
@@ -1486,7 +1456,6 @@ static GIMG_Result jpeg_decode_progressive_extended(
   int16_t block_rz[64];
   int32_t block_q[64];
   int32_t block_idct[64];
-  int16_t block_q_16[64]; // 8-bit path: dequant output for islow IDCT
   for (uint8_t comp_idx = 0; comp_idx < num_comp; comp_idx++) {
     uint8_t qid = sof->quant_tbl_id[comp_idx];
     if (qid >= GIMG_JPEG_MAX_QUANT_TABLES || !state->quant_tbl_present[qid]) {
@@ -1510,15 +1479,16 @@ static GIMG_Result jpeg_decode_progressive_extended(
         if (precision == 8) {
           // Same pipeline as baseline 8-bit: dequant (int16_t) + islow IDCT.
           // Chroma may underflow/overflow (TBD: match baseline or use 32-bit).
-          jpeg_dequantise(block_rz, quant, block_q_16);
-          jpeg_idct_8x8_islow(block_q_16, block_rz);
+          jpeg_dequantise_32(block_rz, quant, block_q);
+          // pass1_bits 2: the 8-bit setting (libjpeg jidctint.c).
+          jpeg_idct_8x8_islow(block_q, block_idct, 2);
           if (comp_idx == 1 && by == 0 && bx == 0 &&
               GIMG_JPEG_TRACE_FIRST_CB) {
             (void)fprintf(stderr,
                 "PROGRESSIVE first Cb: quant[0]=%u dequant[0]=%d idct[0]=%d "
                 "stored=%d\n",
-                (unsigned)quant[0], (int)block_q_16[0], (int)block_rz[0],
-                (int)block_rz[0] + 128);
+                (unsigned)quant[0], (int)block_q[0], (int)block_idct[0],
+                (int)block_idct[0] + 128);
             (void)fflush(stderr);
           }
           for (int dy = 0; dy < 8; dy++) {
@@ -1529,7 +1499,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
               uint32_t x = dst_x + (uint32_t)dx;
               if (x >= comp_w[comp_idx])
                 break;
-              int v = (int)block_rz[dy * 8 + dx] + 128;
+              int v = block_idct[dy * 8 + dx] + 128;
               if (v < 0)
                 v = 0;
               if (v > 255)
@@ -1541,7 +1511,9 @@ static GIMG_Result jpeg_decode_progressive_extended(
         }
         else {
           jpeg_dequantise_32(block_rz, quant, block_q);
-          jpeg_idct_8x8_32(block_q, block_idct, idct_scale);
+          // pass1_bits 1 at P=12: one fewer fractional bit between passes,
+          // for the headroom the wider samples need (libjpeg jidctint.c).
+          jpeg_idct_8x8_islow(block_q, block_idct, 1);
           for (int dy = 0; dy < 8; dy++) {
             uint32_t y = dst_y + (uint32_t)dy;
             if (y >= comp_h[comp_idx])
@@ -1623,34 +1595,19 @@ static GIMG_Result jpeg_decode_progressive_extended(
     }
     unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
     size_t stride = gimg_raster_stride_bytes(*out_raster);
+    jpeg_plane_t pl_cb = {comp_buf_8[1], comp_stride_el[1], 0};
+    jpeg_plane_t pl_cr = {comp_buf_8[2], comp_stride_el[2], 0};
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
-        int yy = comp_buf_8[0][jpeg_component_index(comp_w[0], comp_h[0],
+        // Flat offset, as above.
+        int yy = (int)comp_buf_8[0][jpeg_component_index(comp_w[0], comp_h[0],
             comp_stride_el[0], x, y, width, height)];
-        int cb = jpeg_chroma_sample(comp_buf_8[1], comp_stride_el[1], cw1, ch1,
-            x, y, width, height, use_fancy);
-        int cr = jpeg_chroma_sample(comp_buf_8[2], comp_stride_el[2], cw2, ch2,
-            x, y, width, height, use_fancy);
-        int cb_x = cb - 128;
-        int cr_x = cr - 128;
-        int r_val = yy + (int)((91881L * cr_x + 32768) >> 16);
-        int g_val = yy +
-            (int)(((int32_t)(-22554) * cb_x + (int32_t)(-46802) * cr_x +
-                      32768) >>
-                16);
-        int b_val = yy + (int)((116130L * cb_x + 32768) >> 16);
-        if (r_val < 0)
-          r_val = 0;
-        if (r_val > 255)
-          r_val = 255;
-        if (g_val < 0)
-          g_val = 0;
-        if (g_val > 255)
-          g_val = 255;
-        if (b_val < 0)
-          b_val = 0;
-        if (b_val > 255)
-          b_val = 255;
+        int cb = jpeg_chroma_sample(&pl_cb, cw1, ch1, x, y, width, height,
+            sof->h_samp[1], sof->v_samp[1], h_max, v_max, use_fancy);
+        int cr = jpeg_chroma_sample(&pl_cr, cw2, ch2, x, y, width, height,
+            sof->h_samp[2], sof->v_samp[2], h_max, v_max, use_fancy);
+        int r_val, g_val, b_val;
+        jpeg_ycbcr_to_rgb(yy, cb, cr, 128, 255, &r_val, &g_val, &b_val);
         pixels[y * stride + x * 4 + 0] = (unsigned char)r_val;
         pixels[y * stride + x * 4 + 1] = (unsigned char)g_val;
         pixels[y * stride + x * 4 + 2] = (unsigned char)b_val;
@@ -1687,41 +1644,34 @@ static GIMG_Result jpeg_decode_progressive_extended(
       goto prog_ext_fail_buf;
     }
     uint16_t * pixels = (uint16_t *)gimg_raster_pixels(*out_raster);
-    size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 8;
+    // uint16 elements, not pixels: the row is indexed as
+    // pixels[y * stride_el + x * 4 + c] through a uint16_t *, so the divisor is
+    // sizeof(uint16_t) and not the 8 bytes an RGBA16 pixel occupies.  Dividing
+    // by 8 made the stride a quarter of a row, so every 12-bit colour frame was
+    // written into the first quarter of its own raster and the rest left blank.
+    size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 2;
     uint32_t cw1 = comp_w[1];
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
-    int mid = level_shift;
+    int use_fancy = (!options ||
+        options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
+    jpeg_plane_t pl_cb = {comp_buf[1], comp_stride_el[1], 1};
+    jpeg_plane_t pl_cr = {comp_buf[2], comp_stride_el[2], 1};
     for (uint32_t y = 0; y < height; y++) {
-      uint32_t cy1 = (ch1 > 1 && height > 1) ? (y * ch1 / height) : 0;
-      uint32_t cy2 = (ch2 > 1 && height > 1) ? (y * ch2 / height) : 0;
       for (uint32_t x = 0; x < width; x++) {
-        uint32_t cx1 = (cw1 > 1 && width > 1) ? (x * cw1 / width) : 0;
-        uint32_t cx2 = (cw2 > 1 && width > 1) ? (x * cw2 / width) : 0;
         int yy = (int)comp_buf[0][jpeg_component_index(comp_w[0], comp_h[0],
-                      comp_stride_el[0], x, y, width, height)] -
-            mid;
-        int cb = (int)comp_buf[1][cy1 * comp_stride_el[1] + cx1] - mid;
-        int cr = (int)comp_buf[2][cy2 * comp_stride_el[2] + cx2] - mid;
-        int r_val = yy + (int)(1.40200 * cr + 0.5);
-        int g_val = yy - (int)(0.34414 * cb + 0.71414 * cr + 0.5);
-        int b_val = yy + (int)(1.77200 * cb + 0.5);
+            comp_stride_el[0], x, y, width, height)];
+        // The same filters the 8-bit path uses; see the baseline extended path.
+        int cb = jpeg_chroma_sample(&pl_cb, cw1, ch1, x, y, width, height,
+            sof->h_samp[1], sof->v_samp[1], h_max, v_max, use_fancy);
+        int cr = jpeg_chroma_sample(&pl_cr, cw2, ch2, x, y, width, height,
+            sof->h_samp[2], sof->v_samp[2], h_max, v_max, use_fancy);
         // T.81 A.3.1: a reconstructed sample lies in 0..2^P-1.  Clamp there,
         // then widen once to the 16-bit raster.
-        int out_max = max_val;
-        if (r_val < 0)
-          r_val = 0;
-        if (r_val > out_max)
-          r_val = out_max;
-        if (g_val < 0)
-          g_val = 0;
-        if (g_val > out_max)
-          g_val = out_max;
-        if (b_val < 0)
-          b_val = 0;
-        if (b_val > out_max)
-          b_val = out_max;
+        int r_val, g_val, b_val;
+        jpeg_ycbcr_to_rgb(
+            yy, cb, cr, level_shift, max_val, &r_val, &g_val, &b_val);
         if (precision == 12) {
           r_val = (int)gimg_bitdepth_12_to_16((uint16_t)r_val);
           g_val = (int)gimg_bitdepth_12_to_16((uint16_t)g_val);

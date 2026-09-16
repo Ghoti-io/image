@@ -145,3 +145,39 @@ diff -u ours_ac_initial.txt ref_ac_initial.txt
 ```
 
 First line that differs (op, sym, run, size, k, val, eobrun, or byte/bit) is the first divergence; fix our decoder to match the spec (and ref) at that step. **Normalized diff (ignore byte/bit):** `sed 's/ byte=[0-9]* bit=[0-9]*//' ours_ac_initial.txt > ours_norm.txt` and same for ref; then `diff -u ref_norm.txt ours_norm.txt`. The only difference should be the prefix (REF_ vs OUR_); if so, AC-initial decode is in sync and any progressive failure is in a later scan (e.g. AC refinement).
+
+## The 12-bit oracle
+
+Nothing outside this library could read a 12-bit file we wrote, for a long
+time: the libjpeg that Pillow links is an 8-bit build and refuses a P=12 frame
+outright, so the 12-bit path had no external check of any kind.  Build one:
+
+```sh
+curl -LO https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.0.4/libjpeg-turbo-3.0.4.tar.gz
+tar xzf libjpeg-turbo-3.0.4.tar.gz
+cmake -S libjpeg-turbo-3.0.4 -B ljt-build -DCMAKE_BUILD_TYPE=Release \
+      -DENABLE_SHARED=OFF -DWITH_TURBOJPEG=OFF -DWITH_SIMD=OFF
+cmake --build ljt-build --target cjpeg-static djpeg-static jpeg-static
+```
+
+libjpeg-turbo 3.x carries 8-, 12- and 16-bit codecs in one library and picks by
+the frame's precision, so `cjpeg-static -precision 12` writes a 12-bit file and
+`djpeg-static -pnm` decodes one to a PNM with a maxval of 4095.  That is the
+reference the 12-bit fixtures here were generated against, and comparing
+against it is what found the defects the 12-bit path had been carrying: a
+colour conversion that subtracted the level shift from Y and never added it
+back, a row stride computed in the wrong unit, a chroma filter chosen from
+plane dimensions rather than sampling factors, and a naive float inverse DCT
+where every other decoder uses the integer one.
+
+Compare in the frame's own precision, not in the raster's: our decoder widens
+12-bit samples to its 16-bit raster (see `gimg_bitdepth_12_to_16`), so narrow
+the raster back with the exact inverse before comparing, or the widening rule
+gets tested instead of the codec.
+
+Fixtures generated this way:
+
+| File | Content |
+| ---- | ------- |
+| `baseline_rgb12_444.jpg` | 16x16 flat (3000, 1000, 2000) at P=12, 4:4:4, q95 |
+| `baseline_rgb12_422_16x1.jpg` | 16x1 gradient at P=12, 4:2:2, q90 - the single-row upsampling case |
