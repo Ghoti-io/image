@@ -24,12 +24,12 @@
 #include <ghoti.io/image/stream.h>
 #include <stdint.h>
 
-/**
- * @brief Library version information
+/*
+ * Library version information comes from libver.h, which takes it from the
+ * generated libver_gen.h: GIMG_VERSION_MAJOR / _MINOR / _PATCH, plus
+ * GIMG_VERSION_STRING and the packed GIMG_VERSION_NUMBER. It used to be
+ * written out here as three zeros that no build step ever updated.
  */
-#define GIMG_VERSION_MAJOR 0
-#define GIMG_VERSION_MINOR 0
-#define GIMG_VERSION_PATCH 0
 
 /**
  * @brief Get the major version number

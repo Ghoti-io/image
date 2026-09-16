@@ -4,4 +4,4 @@ Version: (VERSION)
 URL: https://github.com/Ghoti-io/image
 Libs: -L(PC_LIB_DIR) -l(SUITE)-(PROJECT)(BRANCH)
 CFlags: -I(PC_INCLUDE_DIR)
-Requires: (SUITE)-compress(BRANCH) (SUITE)-cutil(BRANCH)
+Requires: (REQUIRES)
