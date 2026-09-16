@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <ghoti.io/image/bitdepth.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
@@ -2587,6 +2588,139 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
   EXPECT_GT(size_50, 0u);
   EXPECT_GT(size_85, 0u);
   (void)size_100;
+}
+
+/**
+ * A flat 12-bit image must come back at the value it went in at, spread across
+ * the whole 16-bit output range - not squeezed into a band around mid-grey.
+ *
+ * This checks sample values, which nothing did before: every 12-bit test
+ * asserted dimensions, format and "decode succeeded", so a decoder whose
+ * inverse DCT was scaled wrong by a factor of 64 passed them all.  T.81 A.3.3
+ * fixes the transform exactly; there is no latitude in it beyond rounding.
+ */
+TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
+  struct Case {
+    uint16_t sample;   // 12-bit input, 0..4095
+    unsigned quality;
+  };
+  static const Case cases[] = {
+      {0, 85}, {1024, 85}, {2048, 85}, {3072, 85}, {4095, 85},
+      {0, 50}, {2048, 50}, {4095, 50},
+  };
+  for (const Case & c : cases) {
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_GRAY12, GIMG_RASTER_OWNED,
+                  NULL, 0, &raster),
+        GIMG_OK);
+    uint16_t * px = (uint16_t *)gimg_raster_pixels(raster);
+    size_t stride_el = gimg_raster_stride_bytes(raster) / 2;
+    for (uint32_t y = 0; y < 16; y++) {
+      for (uint32_t x = 0; x < 16; x++) {
+        px[y * stride_el + x] = c.sample;
+      }
+    }
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {
+        .metadata_policy = GIMG_META_PRESERVE_ALL,
+        .quality = c.quality,
+    };
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK)
+        << "sample " << c.sample << " quality " << c.quality;
+    const void * data = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out, &data, &n);
+
+    GIMG_Stream * in = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory((const uint8_t *)data, n, &in), GIMG_OK);
+    GIMG_Doc * loaded = nullptr;
+    ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &loaded), GIMG_OK);
+    GIMG_Raster * decoded = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(loaded, 0), nullptr, &decoded),
+        GIMG_OK)
+        << "sample " << c.sample << " quality " << c.quality;
+    const uint16_t * dp = (const uint16_t *)gimg_raster_pixels_const(decoded);
+    size_t dstride = gimg_raster_stride_bytes(decoded) / 2;
+
+    // A flat field is carried entirely by the DC coefficient, so the only loss
+    // is one quantisation step.  Allow 2 steps of the 12-bit quantiser, widened.
+    const int expect = (int)gimg_bitdepth_12_to_16(c.sample);
+    const int tolerance = 16 * 24;
+    for (uint32_t y = 0; y < 16; y += 5) {
+      for (uint32_t x = 0; x < 16; x += 5) {
+        int got = (int)dp[y * dstride + x];
+        EXPECT_NEAR(got, expect, tolerance)
+            << "sample " << c.sample << " quality " << c.quality << " at (" << x
+            << "," << y << ")";
+      }
+    }
+    gimg_raster_destroy(decoded);
+    gimg_doc_destroy(loaded);
+    gimg_stream_destroy(in);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+  }
+}
+
+/** A 12-bit ramp must stay a ramp: the decoded range has to span most of the
+ * output range, not collapse toward the middle. */
+TEST(JpegEncode, Save12BitRampKeepsItsContrast) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(64, 8, &GIMG_PIXEL_GRAY12, GIMG_RASTER_OWNED,
+                NULL, 0, &raster),
+      GIMG_OK);
+  uint16_t * px = (uint16_t *)gimg_raster_pixels(raster);
+  size_t stride_el = gimg_raster_stride_bytes(raster) / 2;
+  for (uint32_t y = 0; y < 8; y++) {
+    for (uint32_t x = 0; x < 64; x++) {
+      px[y * stride_el + x] = (uint16_t)(x * 65u);  // 0 .. 4095
+    }
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {
+      .metadata_policy = GIMG_META_PRESERVE_ALL,
+      .quality = 90,
+  };
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+  const void * data = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out, &data, &n);
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory((const uint8_t *)data, n, &in), GIMG_OK);
+  GIMG_Doc * loaded = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &loaded), GIMG_OK);
+  GIMG_Raster * decoded = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(loaded, 0), nullptr, &decoded),
+      GIMG_OK);
+  const uint16_t * dp = (const uint16_t *)gimg_raster_pixels_const(decoded);
+  size_t dstride = gimg_raster_stride_bytes(decoded) / 2;
+  int lo = 65535, hi = 0;
+  for (uint32_t x = 0; x < 64; x++) {
+    int v = (int)dp[4 * dstride + x];
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  EXPECT_GT(hi - lo, 60000)
+      << "decoded ramp spans " << (hi - lo) << " of 65535; a wrongly scaled "
+         "inverse DCT collapses it toward mid-grey";
+  EXPECT_LT(lo, 2000) << "dark end should stay dark";
+  EXPECT_GT(hi, 63000) << "bright end should stay bright";
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(loaded);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
 }
 
 /* Task 3.3.5: Native 12-bit format (GRAY12) → 12-bit JPEG (SOF1 baseline), round-trip. */

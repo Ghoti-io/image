@@ -77,10 +77,51 @@ TEST(Ops, BitdepthSampleConversions) {
   EXPECT_EQ(gimg_bitdepth_8_to_16(255), 65535u);
   EXPECT_EQ(gimg_bitdepth_12_to_8(0), 0);
   EXPECT_EQ(gimg_bitdepth_12_to_8(4095), 255);
-  EXPECT_EQ(gimg_bitdepth_12_to_16(4095), 65520u);
+  EXPECT_EQ(gimg_bitdepth_12_to_16(0), 0);
+  EXPECT_EQ(gimg_bitdepth_12_to_16(4095), 65535u);
   EXPECT_EQ(gimg_bitdepth_16_to_8(0), 0);
   EXPECT_EQ(gimg_bitdepth_16_to_8(65535), 255);
   EXPECT_EQ(gimg_bitdepth_16_to_12(65535), 4095u);
+}
+
+/** Every widening conversion replicates high bits, so each maps its maximum
+ * onto the destination maximum and is monotonic.  A conversion that merely
+ * left-justifies breaks both: it cannot reach the top of the range, and
+ * 8 -> 12 -> 16 then disagrees with 8 -> 16. */
+TEST(Ops, BitdepthWideningIsConsistent) {
+  EXPECT_EQ(gimg_bitdepth_8_to_16(255), gimg_bitdepth_12_to_16(4095))
+      << "widening 8 and 12 bit maxima must both reach 65535";
+  EXPECT_EQ(gimg_bitdepth_12_to_16(gimg_bitdepth_8_to_12(255)),
+      gimg_bitdepth_8_to_16(255))
+      << "8 -> 12 -> 16 must agree with 8 -> 16";
+  EXPECT_EQ(gimg_bitdepth_12_to_16(gimg_bitdepth_8_to_12(0)),
+      gimg_bitdepth_8_to_16(0));
+  unsigned prev = 0;
+  for (unsigned v = 0; v <= 4095u; v++) {
+    unsigned got = gimg_bitdepth_12_to_16((uint16_t)v);
+    ASSERT_GE(got, prev) << "12 -> 16 must be monotonic at " << v;
+    prev = got;
+  }
+  // Widening then narrowing returns the original sample.
+  for (unsigned v = 0; v <= 4095u; v++) {
+    ASSERT_EQ(gimg_bitdepth_16_to_12(gimg_bitdepth_12_to_16((uint16_t)v)), v)
+        << "12 -> 16 -> 12 must round-trip at " << v;
+  }
+  for (unsigned v = 0; v <= 255u; v++) {
+    ASSERT_EQ(gimg_bitdepth_16_to_8(gimg_bitdepth_8_to_16((uint8_t)v)), v)
+        << "8 -> 16 -> 8 must round-trip at " << v;
+    ASSERT_EQ(gimg_bitdepth_12_to_8(gimg_bitdepth_8_to_12((uint8_t)v)), v)
+        << "8 -> 12 -> 8 must round-trip at " << v;
+  }
+  // Narrowing maps the source maximum onto the destination maximum.
+  EXPECT_EQ(gimg_bitdepth_16_to_8(65535), 255);
+  EXPECT_EQ(gimg_bitdepth_16_to_12(65535), 4095u);
+  EXPECT_EQ(gimg_bitdepth_12_to_8(4095), 255);
+  EXPECT_EQ(gimg_bitdepth_16_to_8(0), 0);
+  EXPECT_EQ(gimg_bitdepth_16_to_12(0), 0);
+  // Mid-grey stays mid-grey across every widening.
+  EXPECT_NEAR(gimg_bitdepth_8_to_16(128) / 257.0, 128.0, 0.5);
+  EXPECT_NEAR(gimg_bitdepth_12_to_16(2048) / 16.0037, 2048.0, 1.0);
 }
 
 TEST(Ops, ConvertBitDepthGray8To16) {

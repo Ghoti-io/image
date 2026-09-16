@@ -26,6 +26,7 @@
 #include "../../raster/raster_internal.h"
 #include "jpeg_debug_internal.h"
 #include "jpeg_huffman_tables_internal.h"
+#include <ghoti.io/image/bitdepth.h>
 #include "jpeg_internal.h"
 
 /** When GIMG_JPEG_TRACE_ALL=1, dump block[0..63] (zigzag order) to stderr as
@@ -171,7 +172,17 @@ static GIMG_Result jpeg_decode_baseline_extended(
     memset(comp_buf[i], 0, comp_size[i]);
   }
 
-  int idct_scale = (precision == 12) ? 4096 : 65536;
+  // T.81 A.3.3 (equation 8.3): the inverse DCT is
+  //     s(x) = 1/2 * sum_u C(u) S(u) cos((2x+1) u pi / 16),  C(0) = 1/sqrt(2).
+  // jpeg_idct_1d_32 accumulates sum_u S(u) * c_u * cos(...) with c_u = 256, or
+  // 181 for u = 0 (181/256 is 1/sqrt(2)), then divides by this scale.  One pass
+  // therefore yields (512 / scale) * s(x), and the separable two-pass transform
+  // squares that, so only scale = 512 reproduces the transform.  It was 4096,
+  // which is a factor of (512/4096)^2 = 1/64: every 12-bit image decoded to a
+  // band roughly 1/64 of its true contrast, clustered around mid-grey, and no
+  // test noticed because none compared 12-bit sample values.
+  const int idct_scale = 512;
+  (void)precision;
   int level_shift = (precision == 12) ? 2048 : 32768;
   int max_val = (precision == 12) ? 4095 : 65535;
 
@@ -264,9 +275,11 @@ static GIMG_Result jpeg_decode_baseline_extended(
                   v = 0;
                 if (v > max_val)
                   v = max_val;
-                if (precision == 12) {
-                  v = v << 4; // left-justify 12-bit in 16-bit
-                }
+                // Keep the component plane at its native precision.  The
+                // widening to 16-bit output happens once, at the end, through
+                // gimg_bitdepth_12_to_16 - the library's rule for widening a
+                // sample - rather than being open-coded as a shift here and
+                // undone by a shift when the plane is read back.
                 comp_buf[comp_idx][y * comp_stride_el[comp_idx] + x] =
                     (uint16_t)v;
               }
@@ -292,7 +305,9 @@ static GIMG_Result jpeg_decode_baseline_extended(
     size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 2;
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
-        pixels[y * stride_el + x] = comp_buf[0][y * comp_stride_el[0] + x];
+        uint16_t v = comp_buf[0][y * comp_stride_el[0] + x];
+        pixels[y * stride_el + x] =
+            (precision == 12) ? gimg_bitdepth_12_to_16(v) : v;
       }
     }
   }
@@ -309,7 +324,6 @@ static GIMG_Result jpeg_decode_baseline_extended(
     uint32_t ch1 = comp_h[1];
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
-    // For 12-bit, comp_buf is left-justified (sample<<4).
     int mid = level_shift;
     for (uint32_t y = 0; y < height; y++) {
       uint32_t cy1 = (ch1 > 1 && height > 1) ? (y * ch1 / height) : 0;
@@ -317,27 +331,15 @@ static GIMG_Result jpeg_decode_baseline_extended(
       for (uint32_t x = 0; x < width; x++) {
         uint32_t cx1 = (cw1 > 1 && width > 1) ? (x * cw1 / width) : 0;
         uint32_t cx2 = (cw2 > 1 && width > 1) ? (x * cw2 / width) : 0;
-        int yy, cb, cr;
-        if (precision == 12) {
-          yy = (comp_buf[0][y * comp_stride_el[0] + x] >> 4) - mid;
-          cb = (comp_buf[1][cy1 * comp_stride_el[1] + cx1] >> 4) - mid;
-          cr = (comp_buf[2][cy2 * comp_stride_el[2] + cx2] >> 4) - mid;
-        }
-        else {
-          yy = (int)comp_buf[0][y * comp_stride_el[0] + x] - mid;
-          cb = (int)comp_buf[1][cy1 * comp_stride_el[1] + cx1] - mid;
-          cr = (int)comp_buf[2][cy2 * comp_stride_el[2] + cx2] - mid;
-        }
+        int yy = (int)comp_buf[0][y * comp_stride_el[0] + x] - mid;
+        int cb = (int)comp_buf[1][cy1 * comp_stride_el[1] + cx1] - mid;
+        int cr = (int)comp_buf[2][cy2 * comp_stride_el[2] + cx2] - mid;
         int r_val = yy + (int)(1.40200 * cr + 0.5);
         int g_val = yy - (int)(0.34414 * cb + 0.71414 * cr + 0.5);
         int b_val = yy + (int)(1.77200 * cb + 0.5);
-        // 12-bit: scale to 16-bit range (left-justified).
-        int out_max = (precision == 12) ? 65520 : 65535;
-        if (precision == 12) {
-          r_val = GIMG_JPEG_LSHIFT(r_val, 4);
-          g_val = GIMG_JPEG_LSHIFT(g_val, 4);
-          b_val = GIMG_JPEG_LSHIFT(b_val, 4);
-        }
+        // Clamp at the frame's own precision (T.81 A.3.1: a reconstructed
+        // sample is in 0..2^P-1), then widen once to the 16-bit raster.
+        int out_max = max_val;
         if (r_val < 0)
           r_val = 0;
         if (r_val > out_max)
@@ -350,6 +352,11 @@ static GIMG_Result jpeg_decode_baseline_extended(
           b_val = 0;
         if (b_val > out_max)
           b_val = out_max;
+        if (precision == 12) {
+          r_val = (int)gimg_bitdepth_12_to_16((uint16_t)r_val);
+          g_val = (int)gimg_bitdepth_12_to_16((uint16_t)g_val);
+          b_val = (int)gimg_bitdepth_12_to_16((uint16_t)b_val);
+        }
         pixels[y * stride_el + x * 4 + 0] = (uint16_t)r_val;
         pixels[y * stride_el + x * 4 + 1] = (uint16_t)g_val;
         pixels[y * stride_el + x * 4 + 2] = (uint16_t)b_val;
@@ -1428,7 +1435,17 @@ static GIMG_Result jpeg_decode_progressive_extended(
     }
   }
 
-  int idct_scale = (precision == 12) ? 4096 : 65536;
+  // T.81 A.3.3 (equation 8.3): the inverse DCT is
+  //     s(x) = 1/2 * sum_u C(u) S(u) cos((2x+1) u pi / 16),  C(0) = 1/sqrt(2).
+  // jpeg_idct_1d_32 accumulates sum_u S(u) * c_u * cos(...) with c_u = 256, or
+  // 181 for u = 0 (181/256 is 1/sqrt(2)), then divides by this scale.  One pass
+  // therefore yields (512 / scale) * s(x), and the separable two-pass transform
+  // squares that, so only scale = 512 reproduces the transform.  It was 4096,
+  // which is a factor of (512/4096)^2 = 1/64: every 12-bit image decoded to a
+  // band roughly 1/64 of its true contrast, clustered around mid-grey, and no
+  // test noticed because none compared 12-bit sample values.
+  const int idct_scale = 512;
+  (void)precision;
   int level_shift = (precision == 12) ? 2048 : 32768;
   int max_val = (precision == 12) ? 4095 : 65535;
 
@@ -1525,9 +1542,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
                 v = 0;
               if (v > max_val)
                 v = max_val;
-              if (precision == 12) {
-                v = v << 4;
-              }
+              // Native precision in the plane; widened once on output.
               comp_buf[comp_idx][y * comp_stride_el[comp_idx] + x] =
                   (uint16_t)v;
             }
@@ -1643,7 +1658,9 @@ static GIMG_Result jpeg_decode_progressive_extended(
     size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 2;
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
-        pixels[y * stride_el + x] = comp_buf[0][y * comp_stride_el[0] + x];
+        uint16_t v = comp_buf[0][y * comp_stride_el[0] + x];
+        pixels[y * stride_el + x] =
+            (precision == 12) ? gimg_bitdepth_12_to_16(v) : v;
       }
     }
   }
@@ -1667,26 +1684,15 @@ static GIMG_Result jpeg_decode_progressive_extended(
       for (uint32_t x = 0; x < width; x++) {
         uint32_t cx1 = (cw1 > 1 && width > 1) ? (x * cw1 / width) : 0;
         uint32_t cx2 = (cw2 > 1 && width > 1) ? (x * cw2 / width) : 0;
-        int yy, cb, cr;
-        if (precision == 12) {
-          yy = (comp_buf[0][y * comp_stride_el[0] + x] >> 4) - mid;
-          cb = (comp_buf[1][cy1 * comp_stride_el[1] + cx1] >> 4) - mid;
-          cr = (comp_buf[2][cy2 * comp_stride_el[2] + cx2] >> 4) - mid;
-        }
-        else {
-          yy = (int)comp_buf[0][y * comp_stride_el[0] + x] - mid;
-          cb = (int)comp_buf[1][cy1 * comp_stride_el[1] + cx1] - mid;
-          cr = (int)comp_buf[2][cy2 * comp_stride_el[2] + cx2] - mid;
-        }
+        int yy = (int)comp_buf[0][y * comp_stride_el[0] + x] - mid;
+        int cb = (int)comp_buf[1][cy1 * comp_stride_el[1] + cx1] - mid;
+        int cr = (int)comp_buf[2][cy2 * comp_stride_el[2] + cx2] - mid;
         int r_val = yy + (int)(1.40200 * cr + 0.5);
         int g_val = yy - (int)(0.34414 * cb + 0.71414 * cr + 0.5);
         int b_val = yy + (int)(1.77200 * cb + 0.5);
-        int out_max = (precision == 12) ? 65520 : 65535;
-        if (precision == 12) {
-          r_val = GIMG_JPEG_LSHIFT(r_val, 4);
-          g_val = GIMG_JPEG_LSHIFT(g_val, 4);
-          b_val = GIMG_JPEG_LSHIFT(b_val, 4);
-        }
+        // T.81 A.3.1: a reconstructed sample lies in 0..2^P-1.  Clamp there,
+        // then widen once to the 16-bit raster.
+        int out_max = max_val;
         if (r_val < 0)
           r_val = 0;
         if (r_val > out_max)
@@ -1699,6 +1705,11 @@ static GIMG_Result jpeg_decode_progressive_extended(
           b_val = 0;
         if (b_val > out_max)
           b_val = out_max;
+        if (precision == 12) {
+          r_val = (int)gimg_bitdepth_12_to_16((uint16_t)r_val);
+          g_val = (int)gimg_bitdepth_12_to_16((uint16_t)g_val);
+          b_val = (int)gimg_bitdepth_12_to_16((uint16_t)b_val);
+        }
         pixels[y * stride_el + x * 4 + 0] = (uint16_t)r_val;
         pixels[y * stride_el + x * 4 + 1] = (uint16_t)g_val;
         pixels[y * stride_el + x * 4 + 2] = (uint16_t)b_val;

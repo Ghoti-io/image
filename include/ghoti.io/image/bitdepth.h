@@ -29,7 +29,7 @@ GIMG_API uint16_t gimg_bitdepth_8_to_16(uint8_t v);
 /** @brief Convert 12-bit sample to 8-bit (0..4095 → 0..255). Round and clamp. */
 GIMG_API uint8_t gimg_bitdepth_12_to_8(uint16_t v);
 
-/** @brief Convert 12-bit to 16-bit left-justified (0..4095 → 0..65520). */
+/** @brief Convert 12-bit to 16-bit, replicating high bits (0..4095 → 0..65535). */
 GIMG_API uint16_t gimg_bitdepth_12_to_16(uint16_t v);
 
 /** @brief Convert 16-bit sample to 8-bit (0..65535 → 0..255). Round and clamp. */

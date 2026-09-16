@@ -1,9 +1,19 @@
 /**
  * @file
  *
- * Bit-depth conversion: 8↔12↔16 bits per sample (bitshift up/down, clamp).
+ * Bit-depth conversion: 8↔12↔16 bits per sample.
  * Library first-class API; codecs use these when raster depth differs from
  * codec precision.
+ *
+ * One rule throughout: a sample is a fraction of its range, so widening
+ * replicates high bits (0 stays 0, the maximum becomes the new maximum) and
+ * narrowing scales with rounding.  Each narrowing is the exact inverse of the
+ * matching widening, so depth -> wider -> depth returns the original sample for
+ * every value.  This is the same convention PNG 1.2 section 13.12 describes for
+ * its own sample depth scaling.  Left-justifying instead (v << 4) is a
+ * different convention - it treats the low bits as padding rather than as
+ * value - and mixing the two, as this file used to, means a caller cannot tell
+ * which they are getting.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -22,31 +32,42 @@ GIMG_API uint16_t gimg_bitdepth_8_to_16(uint8_t v) {
   return (uint16_t)(((uint16_t)v << 8) | (uint16_t)v);
 }
 
-// 12 → 8: round and clamp. (v*255+2048)/4095, clamp to 255.
+// 12 → 8: scale onto the destination range, rounding to nearest -
+// round(v * 255 / 4095).  This one was already right; 16_to_8 and 16_to_12
+// now follow it.
 GIMG_API uint8_t gimg_bitdepth_12_to_8(uint16_t v) {
   if (v >= 4095u) {
     return 255;
   }
-  return (uint8_t)((v * 255u + 2048u) / 4095u);
+  return (uint8_t)(((uint32_t)v * 255u + 2047u) / 4095u);
 }
 
-// 12 → 16: left-justify in 16-bit (value << 4).
+// 12 → 16: replicate the high bits so 0..4095 maps onto the full 0..65535,
+// the same rule 8_to_12 and 8_to_16 above use.  A plain v << 4 left-justifies
+// instead: it can never produce 65535, so 12-bit white decoded to 65520 and
+// 8 -> 12 -> 16 landed two steps from where 8 -> 16 landed.  Bit replication is
+// the usual spelling for widening a sample (PNG 1.2 section 13.12 gives the
+// same rule for its own depth conversions) and it keeps the endpoints exact:
+// 0 -> 0, 4095 -> 65535.
 GIMG_API uint16_t gimg_bitdepth_12_to_16(uint16_t v) {
-  return (uint16_t)(v << 4);
+  uint16_t x = (uint16_t)(v & 0x0FFFu);
+  return (uint16_t)((uint16_t)(x << 4) | (uint16_t)(x >> 8));
 }
 
-// 16 → 8: round and clamp. (v+128)>>8, clamp to 255.
+// 16 → 8: scale onto the destination range, rounding to nearest -
+// round(v * 255 / 65535) - which is the exact inverse of the replicating
+// widener above, so 8 -> 16 -> 8 returns the original sample for all 256
+// values.  The previous (v + 128) >> 8 is the inverse of left-justification
+// instead and disagreed for 127 of them: 8_to_16(128) is 32896, and
+// (32896 + 128) >> 8 is 129, not 128.  Same shape as 12_to_8 below.
 GIMG_API uint8_t gimg_bitdepth_16_to_8(uint16_t v) {
-  uint32_t x = (uint32_t)v + 128u;
-  if (x >= 65536u) {
-    return 255;
-  }
-  return (uint8_t)(x >> 8);
+  return (uint8_t)(((uint32_t)v * 255u + 32767u) / 65535u);
 }
 
-// 16 → 12: round and clamp. (v+8)>>4, clamp to 4095.
+// 16 → 12: scale onto the destination range, rounding to nearest -
+// round(v * 4095 / 65535) - the exact inverse of the replicating widener, so
+// 12 -> 16 -> 12 returns the original sample for all 4096 values.  (v + 8) >> 4
+// is the inverse of left-justification and lost 2047 of them.
 GIMG_API uint16_t gimg_bitdepth_16_to_12(uint16_t v) {
-  uint32_t x = (uint32_t)v + 8u;
-  x >>= 4;
-  return (uint16_t)(x > 4095u ? 4095u : x);
+  return (uint16_t)(((uint32_t)v * 4095u + 32767u) / 65535u);
 }
