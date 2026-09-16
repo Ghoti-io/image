@@ -4200,35 +4200,86 @@ TEST(JpegEncode, Large640x480BaselineWithRestart) {
   gimg_stream_destroy(in_stream);
 }
 
-/** Decode a libjpeg-produced JPEG with restart (DRI). Oracle: create with
- * cjpeg -restart 8 -grayscale -quality 85 -outfile <path> <pgm>.
- * If the file is missing, skip. Validates our RST decoder on known-good input. */
+/**
+ * Decode a libjpeg-produced JPEG that carries restart markers, and compare
+ * every sample to what libjpeg itself decoded from it.
+ *
+ * This used to look for a file someone might have generated into tests/out and
+ * skip when it was absent, which it always was, so it asserted nothing - and
+ * what it asserted when it did run was only that the decode returned OK, not
+ * that the pixels were right.  The fixture and libjpeg's own decode of it are
+ * committed instead, so it always runs and compares actual samples.
+ *
+ * The colour case is exact rather than approximate because a NULL
+ * GIMG_Decode_Options now selects fancy chroma upsampling, which is also
+ * libjpeg's default; before that the two defaults disagreed and a comparison
+ * like this reported a difference on every subsampled file.
+ */
 TEST(JpegEncode, DecodeLibjpegRestartOracle) {
-  std::vector<uint8_t> jpeg;
-  std::string path = jpeg_test::jpeg_output_dir() + "/oracle_restart.jpg";
-  if (!jpeg_test::load_jpeg_from_path(path.c_str(), jpeg)) {
-    path = "/tmp/oracle_restart.jpg";
-    if (!jpeg_test::load_jpeg_from_path(path.c_str(), jpeg)) {
-      GTEST_SKIP() << "Need oracle restart JPEG at " << jpeg_test::jpeg_output_dir()
-                   << "/oracle_restart.jpg or /tmp/oracle_restart.jpg (cjpeg -restart 8 ...)";
+  struct Case {
+    const char * jpg;
+    const char * decoded;
+    const char * what;
+  };
+  static const Case cases[] = {
+      {"libjpeg_restart_gray.jpg", "libjpeg_restart_gray.pgm", "grey, DRI 34"},
+      {"libjpeg_restart_rgb.jpg", "libjpeg_restart_rgb.ppm", "4:2:0, DRI 18"},
+  };
+  for (const Case & c : cases) {
+    uint32_t rw = 0, rh = 0;
+    int channels = 0, bits = 0;
+    std::vector<uint32_t> want;
+    ASSERT_TRUE(
+        jpeg_test::load_pnm_file(c.decoded, &rw, &rh, &channels, &bits, want))
+        << c.decoded;
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, jpeg)) << c.jpg;
+
+    // The point of the fixture is the restart markers; if a regenerated one
+    // ever loses them the test would still pass while covering nothing.
+    int rst = 0;
+    for (size_t i = 0; i + 1 < jpeg.size(); i++) {
+      if (jpeg[i] == 0xFF && jpeg[i + 1] >= 0xD0 && jpeg[i + 1] <= 0xD7) {
+        rst++;
+      }
     }
+    EXPECT_GT(rst, 0) << c.what << ": fixture carries no RST markers";
+
+    GIMG_Stream * in_stream = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in_stream),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * decoded = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &decoded), GIMG_OK)
+        << c.what;
+    ASSERT_NE(decoded, nullptr);
+    ASSERT_EQ(gimg_raster_width(decoded), rw) << c.what;
+    ASSERT_EQ(gimg_raster_height(decoded), rh) << c.what;
+    const unsigned char * px =
+        (const unsigned char *)gimg_raster_pixels_const(decoded);
+    size_t stride = gimg_raster_stride_bytes(decoded);
+    int rchan = (int)gimg_raster_format(decoded)->channel_count;
+    int bad = 0;
+    for (uint32_t y = 0; y < rh && bad == 0; y++) {
+      for (uint32_t x = 0; x < rw && bad == 0; x++) {
+        for (int k = 0; k < channels; k++) {
+          uint32_t got = px[(size_t)y * stride + (size_t)x * rchan + k];
+          uint32_t expect = want[((size_t)y * rw + x) * (size_t)channels + k];
+          if (got != expect) {
+            ADD_FAILURE() << c.what << ": first diff at (" << x << "," << y
+                          << ") channel " << k << ": libjpeg " << expect
+                          << ", ours " << got;
+            bad = 1;
+            break;
+          }
+        }
+      }
+    }
+    gimg_raster_destroy(decoded);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in_stream);
   }
-  GIMG_Stream * in_stream = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in_stream), GIMG_OK);
-  DocStreamGuard guard;
-  GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(gimg_doc_load(in_stream, nullptr, nullptr, &doc), GIMG_OK);
-  guard.d = doc;
-  guard.s = in_stream;
-  GIMG_Raster * decoded = nullptr;
-  GIMG_Result r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &decoded);
-  ASSERT_EQ(r, GIMG_OK) << "our decoder must decode libjpeg restart JPEG";
-  ASSERT_NE(decoded, nullptr);
-  gimg_raster_destroy(decoded);
-  guard.d = nullptr;
-  guard.s = nullptr;
-  gimg_doc_destroy(doc);
-  gimg_stream_destroy(in_stream);
 }
 
 TEST(JpegEncode, QualityZeroUsesDefault) {
