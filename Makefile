@@ -1126,44 +1126,67 @@ cloc: ## Count the lines of code used in the project
 # Fuzz target (libFuzzer): PNG/APNG load and decode
 ####################################################################
 FUZZ_CXX ?= clang++
-FUZZ_FLAGS := -fsanitize=fuzzer -g -O2
+# A fuzz harness without a sanitizer only reports hard crashes, so it walks past
+# every out-of-bounds read that happens to land on mapped memory and every
+# signed overflow.  Both were present in the JPEG decoder and neither was found
+# until address and undefined-behaviour checking were turned on here.
+FUZZ_FLAGS := -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -g -O1
+FUZZ_LIB_FLAGS := -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -g -O1
 # Check if clang++ is available for fuzz
 FUZZ_CXX_OK := $(shell which $(FUZZ_CXX) 2>/dev/null)
 
-fuzz-png: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for PNG/APNG (requires clang++)
+# The library itself must be instrumented, not just the harness.  ASan only
+# checks accesses made by instrumented code, so a harness linked against the
+# ordinary archive reports nothing for an out-of-bounds read inside the codec -
+# which is exactly where the bugs are.  Build the sources once with clang and
+# the same sanitizers, and link the harnesses against that.
+FUZZ_CC := $(shell command -v clang 2>/dev/null)
+FUZZ_OBJ_DIR := ./build/$(BUILD)-fuzz/objects
+FUZZ_LIBOBJECTS := $(patsubst src/%.c,$(FUZZ_OBJ_DIR)/%.o,$(SOURCES))
+
+$(FUZZ_OBJ_DIR)/%.o: src/%.c | $(LIBVER_GEN)
+	@mkdir -p $(@D)
+	$(FUZZ_CC) -std=c17 $(FUZZ_LIB_FLAGS) $(INCLUDE) -DGIMG_BUILD -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
+FUZZ_DEPFILES := $(FUZZ_LIBOBJECTS:.o=.d)
+-include $(FUZZ_DEPFILES)
+
+FUZZ_LIBS := $(FUZZ_LIBOBJECTS) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+
+fuzz-png: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for PNG/APNG (requires clang++)
 	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
 		echo "fuzz-png requires $(FUZZ_CXX); install clang or set FUZZ_CXX"; exit 1; \
 	fi
 	@mkdir -p $(OBJ_DIR) $(APP_DIR)
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_png_load.cpp -o $(OBJ_DIR)/fuzz_png_load.o
-	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_png_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_png_load.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_png_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_png_load.o $(LDFLAGS) $(FUZZ_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_png_load$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_png_load tests/fuzz/corpus"
 
-fuzz-png-encode: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for PNG round-trip load->save->load (requires clang++)
+fuzz-png-encode: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for PNG round-trip load->save->load (requires clang++)
 	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
 		echo "fuzz-png-encode requires $(FUZZ_CXX); install clang or set FUZZ_CXX"; exit 1; \
 	fi
 	@mkdir -p $(OBJ_DIR) $(APP_DIR)
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_png_encode.cpp -o $(OBJ_DIR)/fuzz_png_encode.o
-	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_png_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_png_encode.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_png_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_png_encode.o $(LDFLAGS) $(FUZZ_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_png_encode$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_png_encode tests/fuzz/corpus"
 
-fuzz-jpeg: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for JPEG load/decode (requires clang++)
+fuzz-jpeg: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for JPEG load/decode (requires clang++)
 	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
 		echo "fuzz-jpeg requires $(FUZZ_CXX); install clang or set FUZZ_CXX"; exit 1; \
 	fi
 	@mkdir -p $(OBJ_DIR) $(APP_DIR)
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_jpeg_load.cpp -o $(OBJ_DIR)/fuzz_jpeg_load.o
-	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_load.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_load.o $(LDFLAGS) $(FUZZ_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_jpeg_load$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_jpeg_load tests/fuzz/corpus"
 
-fuzz-jpeg-encode: $(APP_DIR)/$(TARGET) ## Build libFuzzer harness for JPEG round-trip load->save->load (requires clang++)
+fuzz-jpeg-encode: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for JPEG round-trip load->save->load (requires clang++)
 	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
 		echo "fuzz-jpeg-encode requires $(FUZZ_CXX); install clang or set FUZZ_CXX"; exit 1; \
 	fi
 	@mkdir -p $(OBJ_DIR) $(APP_DIR)
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_jpeg_encode.cpp -o $(OBJ_DIR)/fuzz_jpeg_encode.o
-	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_encode.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_encode.o $(LDFLAGS) $(FUZZ_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_jpeg_encode tests/fuzz/corpus"
 
 coverage: ## Build instrumented, run the tests, and report line coverage

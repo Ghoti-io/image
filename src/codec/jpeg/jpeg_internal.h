@@ -592,6 +592,29 @@ int jpeg_chroma_sample(const unsigned char * buf, size_t stride, uint32_t cw,
     uint32_t ch, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
     int fancy);
 
+/**
+ * Clamp an output coordinate onto a component's own plane.
+ *
+ * T.81 A.1.1: a component's sample grid is ceil(X * Hi / Hmax) by
+ * ceil(Y * Vi / Vmax), which equals the image size only when that component
+ * has the largest sampling factors.  Nothing in the frame header requires the
+ * first component to be the largest, so reading component 0 at (x, y) directly
+ * walks off its plane for a frame that says otherwise - which a fuzzer finds in
+ * seconds.
+ */
+static inline size_t jpeg_component_index(uint32_t cw, uint32_t ch, size_t stride,
+    uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
+  uint32_t cx = (cw > 1u && width > 1u) ? (x * cw / width) : 0u;
+  uint32_t cy = (ch > 1u && height > 1u) ? (y * ch / height) : 0u;
+  if (cx >= cw) {
+    cx = cw - 1u;
+  }
+  if (cy >= ch) {
+    cy = ch - 1u;
+  }
+  return (size_t)cy * stride + cx;
+}
+
 /** @name Parse module: segment payload → doc state (used by jpeg_load.c) */
 /** @{ */
 /** Parse SOF0/SOF1/SOF2 payload into sof. Validates dimensions and precision.

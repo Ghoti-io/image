@@ -202,15 +202,24 @@ int jpeg_bitstream_read_bit(gimg_jpeg_bitstream_t * bs) {
 }
 
 int jpeg_bitstream_read_bits(gimg_jpeg_bitstream_t * bs, int n) {
-  int v = 0;
+  // The width comes from a Huffman symbol, and a crafted DHT can carry any byte
+  // value there, so it has to be bounded here rather than trusted.  T.81 F.1.2
+  // caps a magnitude category at 15 even at 12-bit precision, so anything wider
+  // than a machine word is certainly invalid; fuzzing reached a 255-bit read,
+  // which shifted an int by more than its width.  Accumulate in unsigned so the
+  // shift is defined for every width this accepts.
+  if (n < 0 || n > 16) {
+    return -1;
+  }
+  uint32_t v = 0;
   for (int i = 0; i < n; i++) {
     int b = jpeg_bitstream_read_bit(bs);
     if (b < 0) {
       return -1;
     }
-    v = (v << 1) | b;
+    v = (v << 1) | (uint32_t)(b & 1);
   }
-  return v;
+  return (int)v;
 }
 
 int jpeg_build_huff_table(

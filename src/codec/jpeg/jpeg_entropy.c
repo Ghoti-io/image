@@ -309,7 +309,8 @@ static GIMG_Result jpeg_decode_baseline_extended(
     size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 2;
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
-        uint16_t v = comp_buf[0][y * comp_stride_el[0] + x];
+        uint16_t v = comp_buf[0][jpeg_component_index(comp_w[0], comp_h[0],
+            comp_stride_el[0], x, y, width, height)];
         pixels[y * stride_el + x] =
             (precision == 12) ? gimg_bitdepth_12_to_16(v) : v;
       }
@@ -335,7 +336,9 @@ static GIMG_Result jpeg_decode_baseline_extended(
       for (uint32_t x = 0; x < width; x++) {
         uint32_t cx1 = (cw1 > 1 && width > 1) ? (x * cw1 / width) : 0;
         uint32_t cx2 = (cw2 > 1 && width > 1) ? (x * cw2 / width) : 0;
-        int yy = (int)comp_buf[0][y * comp_stride_el[0] + x] - mid;
+        int yy = (int)comp_buf[0][jpeg_component_index(comp_w[0], comp_h[0],
+                      comp_stride_el[0], x, y, width, height)] -
+            mid;
         int cb = (int)comp_buf[1][cy1 * comp_stride_el[1] + cx1] - mid;
         int cr = (int)comp_buf[2][cy2 * comp_stride_el[2] + cx2] - mid;
         int r_val = yy + (int)(1.40200 * cr + 0.5);
@@ -924,7 +927,8 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
         options->jpeg_chroma_upsampling == GIMG_JPEG_CHROMA_UPSAMPLE_FANCY);
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
-        int yy = comp_buf[0][y * comp_stride[0] + x];
+        int yy = comp_buf[0][jpeg_component_index(
+            comp_w[0], comp_h[0], comp_stride[0], x, y, width, height)];
         int cb = jpeg_chroma_sample(comp_buf[1], comp_stride[1], cw1, ch1, x, y,
             width, height, use_fancy);
         int cr = jpeg_chroma_sample(comp_buf[2], comp_stride[2], cw2, ch2, x, y,
@@ -1621,7 +1625,8 @@ static GIMG_Result jpeg_decode_progressive_extended(
     size_t stride = gimg_raster_stride_bytes(*out_raster);
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
-        int yy = comp_buf_8[0][y * comp_stride_el[0] + x];
+        int yy = comp_buf_8[0][jpeg_component_index(comp_w[0], comp_h[0],
+            comp_stride_el[0], x, y, width, height)];
         int cb = jpeg_chroma_sample(comp_buf_8[1], comp_stride_el[1], cw1, ch1,
             x, y, width, height, use_fancy);
         int cr = jpeg_chroma_sample(comp_buf_8[2], comp_stride_el[2], cw2, ch2,
@@ -1667,7 +1672,8 @@ static GIMG_Result jpeg_decode_progressive_extended(
     size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 2;
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
-        uint16_t v = comp_buf[0][y * comp_stride_el[0] + x];
+        uint16_t v = comp_buf[0][jpeg_component_index(comp_w[0], comp_h[0],
+            comp_stride_el[0], x, y, width, height)];
         pixels[y * stride_el + x] =
             (precision == 12) ? gimg_bitdepth_12_to_16(v) : v;
       }
@@ -1693,7 +1699,9 @@ static GIMG_Result jpeg_decode_progressive_extended(
       for (uint32_t x = 0; x < width; x++) {
         uint32_t cx1 = (cw1 > 1 && width > 1) ? (x * cw1 / width) : 0;
         uint32_t cx2 = (cw2 > 1 && width > 1) ? (x * cw2 / width) : 0;
-        int yy = (int)comp_buf[0][y * comp_stride_el[0] + x] - mid;
+        int yy = (int)comp_buf[0][jpeg_component_index(comp_w[0], comp_h[0],
+                      comp_stride_el[0], x, y, width, height)] -
+            mid;
         int cb = (int)comp_buf[1][cy1 * comp_stride_el[1] + cx1] - mid;
         int cr = (int)comp_buf[2][cy2 * comp_stride_el[2] + cx2] - mid;
         int r_val = yy + (int)(1.40200 * cr + 0.5);

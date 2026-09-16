@@ -96,12 +96,12 @@ void jpeg_idct_8x8_32(const int32_t * in, int32_t * out, int scale) {
 
 #define IDCT_ISLOW_CONST_BITS 13
 #define IDCT_ISLOW_PASS1_BITS 2
-#define IDCT_ISLOW_ONE ((int32_t)1)
-#define IDCT_ISLOW_LEFT_SHIFT(x, n) GIMG_JPEG_LSHIFT(x, n)
+#define IDCT_ISLOW_ONE ((int64_t)1)
+#define IDCT_ISLOW_LEFT_SHIFT(x, n) ((int64_t)((uint64_t)(x) << (n)))
 #define IDCT_ISLOW_RIGHT_SHIFT(x, n) ((x) >> (n))
 #define IDCT_ISLOW_DESCALE(x, n)                                               \
   IDCT_ISLOW_RIGHT_SHIFT((x) + (IDCT_ISLOW_ONE << ((n)-1)), n)
-#define IDCT_ISLOW_MULTIPLY(var, c) ((int32_t)(var) * (int32_t)(c))
+#define IDCT_ISLOW_MULTIPLY(var, c) ((int64_t)(var) * (int64_t)(c))
 
 static const int32_t idct_islow_fix_0_298631336 = 2446;
 static const int32_t idct_islow_fix_0_390180644 = 3196;
@@ -117,10 +117,18 @@ static const int32_t idct_islow_fix_2_562915447 = 20995;
 static const int32_t idct_islow_fix_3_072711026 = 25172;
 
 void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out) {
-  int32_t tmp0, tmp1, tmp2, tmp3;
-  int32_t tmp10, tmp11, tmp12, tmp13;
-  int32_t z1, z2, z3, z4, z5;
-  int workspace[64];
+  // The intermediates are 64-bit.  This transform assumes the coefficient
+  // magnitudes a conformant stream produces, and a file that does not conform
+  // can drive them past int32: fuzzing reached sums like
+  // -1061895276 + -1342698149 here.  The result of such a file is meaningless
+  // either way, but it must not be undefined - and a decoder's arithmetic
+  // should not depend on its input being well formed.  Same reasoning, and the
+  // same fix, as the forward transform in jpeg_encode.c.  For conformant input
+  // nothing changes: those values never came close to overflowing.
+  int64_t tmp0, tmp1, tmp2, tmp3;
+  int64_t tmp10, tmp11, tmp12, tmp13;
+  int64_t z1, z2, z3, z4, z5;
+  int64_t workspace[64];
   const int dct_bits = IDCT_ISLOW_CONST_BITS;
   const int pass1_bits = IDCT_ISLOW_PASS1_BITS;
   const int descale_pass1 = dct_bits - pass1_bits;
@@ -129,7 +137,7 @@ void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out) {
 
   for (int ctr = 0; ctr < 8; ctr++) {
     const int16_t * inptr = in + ctr;
-    int * wsptr = workspace + ctr;
+    int64_t * wsptr = workspace + ctr;
 
     if (inptr[8] == 0 && inptr[16] == 0 && inptr[24] == 0 && inptr[32] == 0 &&
         inptr[40] == 0 && inptr[48] == 0 && inptr[56] == 0) {
@@ -195,7 +203,7 @@ void jpeg_idct_8x8_islow(const int16_t * in, int16_t * out) {
   }
 
   for (int ctr = 0; ctr < 8; ctr++) {
-    const int * wsptr = workspace + ctr * 8;
+    const int64_t * wsptr = workspace + ctr * 8;
     int16_t * outptr = out + ctr * 8;
 
     if (wsptr[1] == 0 && wsptr[2] == 0 && wsptr[3] == 0 && wsptr[4] == 0 &&

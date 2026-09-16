@@ -41,7 +41,14 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
   // chroma block after the first interval was decoded against a stale
   // prediction.  The caller now performs the reset, for all components at once,
   // where it can see them all.
+  // T.81 F.1.2.1 Table F.1: a DC difference category is 0..11 at 8-bit and
+  // 0..15 at 12-bit precision.  The category comes straight out of the Huffman
+  // table, so a crafted DHT can put any byte here; reject it rather than use it
+  // as a bit count.
   int nbits = sym;
+  if (nbits > 15) {
+    return GIMG_ERR_CORRUPT;
+  }
   int diff = 0;
   if (nbits > 0) {
     diff = jpeg_bitstream_read_bits(bs, nbits);
@@ -166,7 +173,13 @@ GIMG_Result jpeg_decode_block_progressive_dc(gimg_jpeg_bitstream_t * bs,
       return GIMG_ERR_CORRUPT;
     }
   }
+  // Same bound as the sequential decoder: the DC category comes from the
+  // Huffman table and must be a category, not an arbitrary byte
+  // (T.81 F.1.2.1 Table F.1).
   int nbits = sym;
+  if (nbits > 15) {
+    return GIMG_ERR_CORRUPT;
+  }
   int diff = 0;
   if (trace_all) {
     (void)fprintf(stderr,
