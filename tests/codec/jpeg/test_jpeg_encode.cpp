@@ -1186,6 +1186,144 @@ TEST(JpegEncode, SmallRestartIntervalsChangeNothingButWhereTheCoderResets) {
   }
 }
 
+// A hierarchical sequence's components are counted by B.2.2 like any other
+// frame's, so a CMYK pyramid is legal in all three processes.  The encoder
+// built one and three; four fell out of the raster's channel count and then
+// failed at the differential coefficient walk, which was still capped at
+// three components of its own.
+//
+// The lossless form is the one that can be checked without an oracle: it must
+// return the original bit for bit.
+TEST(JpegEncode, FourComponentHierarchicalSequences) {
+  const uint32_t w = 41, h = 27;
+  for (int levels = 1; levels <= 3; levels++) {
+    for (int progressive = 0; progressive <= 1; progressive++) {
+      for (int arithmetic = 0; arithmetic <= 1; arithmetic++) {
+        for (int psv : {0, 1}) {
+          if (psv && progressive) {
+            continue; // one process per sequence (B.3.1)
+          }
+          SCOPED_TRACE("levels " + std::to_string(levels) + ", progressive " +
+              std::to_string(progressive) + ", arithmetic " +
+              std::to_string(arithmetic) + ", predictor " +
+              std::to_string(psv));
+          GIMG_Doc * doc = nullptr;
+          ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+          GIMG_Raster * raster = nullptr;
+          ASSERT_EQ(gimg_raster_create(w, h, &GIMG_PIXEL_CMYK8,
+                        GIMG_RASTER_OWNED, NULL, 0, &raster),
+              GIMG_OK);
+          unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+          size_t stride = gimg_raster_stride_bytes(raster);
+          for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+              for (int c = 0; c < 4; c++) {
+                px[y * stride + x * 4 + (size_t)c] = (unsigned char)(
+                    (x * (5u + (unsigned)c * 7u) +
+                        y * (3u + (unsigned)c * 11u) + (unsigned)c * 23u) &
+                    0xFFu);
+              }
+            }
+          }
+          gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+          GIMG_Stream * os = nullptr;
+          ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+          GIMG_Save_Options so = {};
+          so.quality = 90;
+          so.jpeg_hierarchical_levels = (uint8_t)levels;
+          so.jpeg_progressive = (uint8_t)progressive;
+          so.jpeg_arithmetic = (uint8_t)arithmetic;
+          so.jpeg_lossless_predictor = (uint8_t)psv;
+          GIMG_Save_Report rep = {};
+          ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_OK)
+              << "a four-component sequence is legal in every process";
+          const void * buf = nullptr;
+          size_t bn = 0;
+          gimg_stream_output_buffer(os, &buf, &bn);
+          std::vector<uint8_t> written(
+              (const uint8_t *)buf, (const uint8_t *)buf + bn);
+          gimg_doc_destroy(doc);
+          gimg_stream_destroy(os);
+
+          DocStreamGuard in;
+          ASSERT_EQ(gimg_stream_create_memory(written.data(), written.size(),
+                        &in.s),
+              GIMG_OK);
+          ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+          RasterGuard got;
+          ASSERT_EQ(
+              gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r),
+              GIMG_OK);
+          ASSERT_NE(got.r, nullptr);
+          const GIMG_Pixel_Format * gf = gimg_raster_format(got.r);
+          EXPECT_EQ(gf->channel_model, GIMG_CHANNEL_CMYK);
+          ASSERT_EQ(gimg_raster_width(got.r), w);
+          ASSERT_EQ(gimg_raster_height(got.r), h);
+          const unsigned char * gp =
+              (const unsigned char *)gimg_raster_pixels(got.r);
+          size_t gs = gimg_raster_stride_bytes(got.r);
+          int worst = 0;
+          for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+              for (int c = 0; c < 4; c++) {
+                int want = (int)((x * (5u + (unsigned)c * 7u) +
+                                     y * (3u + (unsigned)c * 11u) +
+                                     (unsigned)c * 23u) &
+                    0xFFu);
+                int d = (int)gp[y * gs + x * 4 + (size_t)c] - want;
+                if (d < 0) {
+                  d = -d;
+                }
+                if (d > worst) {
+                  worst = d;
+                }
+              }
+            }
+          }
+          if (psv) {
+            EXPECT_EQ(worst, 0) << "a lossless pyramid returns the original";
+          }
+          else {
+            EXPECT_LE(worst, 60) << "the pyramid's own loss, and no more";
+          }
+        }
+      }
+    }
+  }
+}
+
+// A sequence wider than one scan can name is refused rather than half-written:
+// every frame of it would have to be split, in three entropy coders and two
+// processes, and there is no other implementation of Annex J here to check a
+// wide sequence against - libjpeg has no hierarchical mode and the reference
+// codec does not take one this wide.  A round trip through this library alone
+// cannot tell a private misreading from a correct one.
+TEST(JpegEncode, HierarchicalRefusesASequenceWiderThanAScan) {
+  for (int n : {5, 8}) {
+    SCOPED_TRACE("channels " + std::to_string(n));
+    GIMG_Pixel_Format fmt;
+    ASSERT_EQ(gimg_pixel_format_multichannel((uint8_t)n, 8, &fmt), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_raster_create(16, 16, &fmt, GIMG_RASTER_OWNED, NULL, 0, &raster),
+        GIMG_OK);
+    memset(gimg_raster_pixels(raster), 0x40,
+        gimg_raster_stride_bytes(raster) * 16);
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+    GIMG_Stream * os = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+    GIMG_Save_Options so = {};
+    so.quality = 85;
+    so.jpeg_hierarchical_levels = 1;
+    GIMG_Save_Report rep = {};
+    EXPECT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_ERR_UNSUPPORTED);
+    gimg_stream_destroy(os);
+    gimg_doc_destroy(doc);
+  }
+}
+
 // T.81 Annex H has no colour concept of its own and B.2.2 counts components
 // from 1 to 255, so a lossless frame of four is as legal as one of three and a
 // lossless CMYK file is an ordinary thing in prepress.  This codec refused

@@ -1684,7 +1684,8 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const gimg_jpeg_enc_frame_t * frames, unsigned num_frames,
-    uint16_t restart_interval, bool arithmetic, int precision, size_t * out_n) {
+    uint16_t restart_interval, bool arithmetic, int precision,
+    int hier_is_colour, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   size_t written = 0;
   GIMG_Result r;
@@ -1700,7 +1701,12 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
   // APP14 that says so, exactly as the single-frame lossless writer does.
   // Without it a decoder reads three components as YCbCr (jdapimin.c, and
   // jpeg_frame_is_rgb here) and every pixel comes out a different colour.
-  if (lossless && num_components == 3) {
+  // Three components, and not YCbCr: a lossless sequence keeps RGB, and a
+  // sequence of channels with no colour meaning keeps those.  Three is the
+  // count a decoder guesses at, so it has to be told (see the single-frame
+  // writers); the marker is harmless for any other count and is written only
+  // where it decides something.
+  if (num_components == 3 && (lossless || !hier_is_colour)) {
     unsigned char app14[12];
     memcpy(app14, "Adobe", 5);
     app14[5] = 0x00;
@@ -3350,6 +3356,9 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   // the one before it and they cannot be produced as they are emitted.
   gimg_jpeg_enc_frame_t hier_frames[GIMG_JPEG_MAX_FRAMES];
   unsigned hier_num_frames = 0;
+  // Whether the sequence's three components are colour, which decides whether
+  // it needs an Adobe marker saying they are not.
+  int hier_is_colour = 1;
   memset(hier_frames, 0, sizeof(hier_frames));
   if (hier_levels != 0) {
     gimg_jpeg_default_quant_scaled(quality, quant_luma, quant_chroma);
@@ -3358,6 +3367,11 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     precision = 8;
     // B.3.1: every frame of a sequence uses the same process, so the option
     // names it once for the whole pyramid.
+    {
+      const GIMG_Pixel_Format * hf = gimg_raster_format(raster);
+      hier_is_colour = hf && (hf->channel_model == GIMG_CHANNEL_RGB ||
+                                 hf->channel_model == GIMG_CHANNEL_RGBA);
+    }
     gimg_jpeg_hier_process_t hier_process = GIMG_JPEG_HIER_SEQUENTIAL;
     if (lossless_psv != 0) {
       hier_process = GIMG_JPEG_HIER_LOSSLESS;
@@ -3545,7 +3559,11 @@ have_scan:
     // that sees JFIF takes it at its word ahead of Adobe.
     int suppress_jfif = (lossless_psv != 0 && num_components == 3) ||
         num_components == 4 || num_components == 2 || num_components > 4 ||
-        adobe_transform >= 0;
+        adobe_transform >= 0 ||
+        // A hierarchical sequence writes its own Adobe marker where its three
+        // components are not YCbCr, and JFIF beside it would contradict it: a
+        // decoder that sees JFIF takes it at its word first.
+        (hier_levels != 0 && !hier_is_colour);
     size_t app0_len = 0;
     bool have_app0 = !suppress_jfif &&
         (policy != GIMG_META_DROP_ALL &&
@@ -4095,7 +4113,7 @@ have_scan:
     r = jpeg_write_image_body_hierarchical(stream, width, height,
         num_components, tbl_sel, quant_luma, quant_chroma, hier_frames,
         hier_num_frames, restart_interval, arithmetic, precision,
-        &report->bytes_written);
+        hier_is_colour, &report->bytes_written);
     gimg_jpeg_free_enc_frames(alloc, hier_frames, hier_num_frames);
   }
   else if (lossless_psv != 0) {

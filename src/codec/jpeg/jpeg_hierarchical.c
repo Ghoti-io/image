@@ -912,12 +912,19 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
   const int out_bits = wide ? 16 : 8;
   const int32_t max_val = ((int32_t)1 << precision) - 1;
 
+  // T.81 B.2.2 counts a hierarchical sequence's components exactly as it counts
+  // any other frame's, and Annex H has no colour concept at all, so neither a
+  // wide sequence nor a lossless four-component one is anything but ordinary.
+  // Both used to be refused here, the second of them because the single-frame
+  // lossless path refused it too.
+  // One, three and four are the counts a hierarchical sequence is written and
+  // checked at here; the assembly below handles any of them and the raster can
+  // hold more, but nothing available produces a wider sequence to test the
+  // reading of, so a wider one is refused rather than guessed at.
   if (num_comp != 1u && num_comp != 3u && num_comp != 4u) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  if (num_comp == 4u && lossless_sequence) {
-    return GIMG_ERR_UNSUPPORTED; // No CMYK lossless, as in the single-frame path.
-  }
+  (void)lossless_sequence;
 
   uint8_t h_max = 0, v_max = 0;
   hier_sampling_max(dhp, &h_max, &v_max);
@@ -973,6 +980,7 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
   }
 
   const GIMG_Pixel_Format * fmt;
+  GIMG_Pixel_Format fmt_n;
   if (num_comp == 1u) {
     fmt = wide ? &GIMG_PIXEL_GRAY16 : &GIMG_PIXEL_GRAY8;
   }
@@ -980,7 +988,14 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
     fmt = wide ? &GIMG_PIXEL_RGBA16 : &GIMG_PIXEL_RGBA8;
   }
   else {
-    fmt = &GIMG_PIXEL_CMYK8;
+    // Four components are CMYK; any other count carries no colour meaning at
+    // all.  Either way the samples go out as they came in.
+    r = gimg_pixel_format_multichannel(
+        num_comp, (uint8_t)out_bits, &fmt_n);
+    if (r != GIMG_OK) {
+      goto done;
+    }
+    fmt = &fmt_n;
   }
   r = gimg_raster_create_with_allocator(
       alloc, width, height, fmt, GIMG_RASTER_OWNED, NULL, 0, out_raster);
@@ -1085,11 +1100,21 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
           }
         }
         else {
-          // Raw CMYK, unchanged, as the single-frame path leaves it.
-          unsigned char * p = pixels + (size_t)y * stride;
-          for (uint8_t i = 0; i < 4u; i++) {
-            p[x * 4 + i] = (unsigned char)jpeg_sample_widen(
-                (uint32_t)sample[i], precision, 8);
+          // Raw CMYK, or components with no colour meaning: unchanged, as the
+          // single-frame paths leave them.
+          if (wide) {
+            uint16_t * p = (uint16_t *)(pixels + (size_t)y * stride);
+            for (uint8_t i = 0; i < num_comp; i++) {
+              p[(size_t)x * num_comp + i] = (uint16_t)jpeg_sample_widen(
+                  (uint32_t)sample[i], precision, out_bits);
+            }
+          }
+          else {
+            unsigned char * p = pixels + (size_t)y * stride;
+            for (uint8_t i = 0; i < num_comp; i++) {
+              p[(size_t)x * num_comp + i] = (unsigned char)jpeg_sample_widen(
+                  (uint32_t)sample[i], precision, out_bits);
+            }
           }
         }
       }

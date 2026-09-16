@@ -2330,7 +2330,8 @@ GIMG_Result gimg_jpeg_fill_coef_buffer_differential(uint32_t width,
     const uint16_t * quant_chroma, int16_t * coef_buffer,
     size_t * out_total_blocks) {
   if (!planes || !plane_stride || !coef_buffer || !out_total_blocks ||
-      num_components < 1 || num_components > 3) {
+      num_components < 1 ||
+      num_components > (int)GIMG_JPEG_MAX_COMPONENTS) {
     return GIMG_ERR_INTERNAL;
   }
   uint32_t blocks_w = (width + 7u) / 8u;

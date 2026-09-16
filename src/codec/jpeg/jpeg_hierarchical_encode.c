@@ -290,6 +290,90 @@ static void henc_set_whole_block_scan(
 }
 
 /**
+ * Write one frame of the pyramid as one scan per component (T.81 A.2.3).
+ *
+ * B.2.3 Table B.3 caps Ns at 4 whatever Nf is, so a sequence of more than four
+ * components cannot put a frame in one interleaved scan.  Sampling is 4:4:4
+ * throughout a pyramid, so a component's blocks are every num_components'th in
+ * the interleaved coefficient buffer and gathering one is a strided copy.
+ *
+ * @param differential  Selects the differential entropy coder, whose DC
+ *   coefficient is coded directly (J.1.3.1) and whose AC categories reach past
+ *   Annex K's tables - which is why a differential scan generates its own.
+ */
+static GIMG_Result henc_split_scans(const GIMG_Allocator * alloc,
+    uint32_t width, uint32_t height, int num_components, const int16_t * coef,
+    size_t total_blocks, int arithmetic, uint16_t restart_interval,
+    int differential, gimg_jpeg_enc_frame_t * fr) {
+  if (num_components < 1 ||
+      (unsigned)num_components > GIMG_JPEG_MAX_HIER_SCANS) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  (void)total_blocks;
+  GIMG_Result r = GIMG_OK;
+  uint32_t blk_w = (width + 7u) / 8u;
+  uint32_t blk_h = (height + 7u) / 8u;
+  size_t nblocks = (size_t)blk_w * (size_t)blk_h;
+  fr->num_scans = 0;
+  for (int comp = 0; comp < num_components && r == GIMG_OK; comp++) {
+    gimg_jpeg_enc_scan_t * sc = &fr->scans[comp];
+    int16_t * packed =
+        (int16_t *)gimg_malloc(alloc, nblocks * 64u * sizeof(int16_t));
+    if (!packed) {
+      return GIMG_ERR_OOM;
+    }
+    for (size_t b = 0; b < nblocks; b++) {
+      memcpy(packed + b * 64,
+          coef + (b * (size_t)num_components + (size_t)comp) * 64,
+          64 * sizeof(int16_t));
+    }
+    unsigned char * dht = NULL;
+    size_t dht_len = 0;
+    if (arithmetic) {
+      jpeg_arith_cond_t cond;
+      jpeg_arith_cond_defaults(&cond);
+      r = gimg_jpeg_encode_arith_scan_from_coef_buffer(blk_w * 8u, blk_h * 8u,
+          1, packed, nblocks, NULL, NULL, NULL, &cond, alloc, restart_interval,
+          differential, &sc->data, &sc->size);
+    }
+    else if (differential) {
+      r = gimg_jpeg_encode_differential_scan(blk_w * 8u, blk_h * 8u, 1, packed,
+          nblocks, NULL, NULL, alloc, restart_interval, &sc->data, &sc->size,
+          &dht, &dht_len);
+    }
+    else {
+      r = gimg_jpeg_encode_baseline_scan_from_coef_buffer(blk_w * 8u,
+          blk_h * 8u, 1, packed, nblocks, NULL, NULL, NULL, alloc,
+          restart_interval, &sc->data, &sc->size);
+    }
+    gimg_free(alloc, packed);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, dht);
+      return r;
+    }
+    // Every scan of a differential frame generates the same kind of table at
+    // the same destination; B.2.4.2 lets the last one written stand, so the
+    // frame keeps one and the rest are dropped.
+    if (dht && !fr->dht) {
+      fr->dht = dht;
+      fr->dht_len = dht_len;
+    }
+    else {
+      gimg_free(alloc, dht);
+    }
+    sc->ns = 1;
+    sc->comp[0] = (uint8_t)comp;
+    sc->td_ta[0] = 0x00; // the one-component path uses the luminance tables
+    sc->ss = 0;
+    sc->se = 63;
+    sc->ah = 0;
+    sc->al = 0;
+    fr->num_scans = (unsigned)(comp + 1);
+  }
+  return r;
+}
+
+/**
  * Write one frame of the pyramid as a progressive scan script (T.81 Annex G).
  *
  * The script is the same two-pass one a single-frame progressive JPEG uses
@@ -461,9 +545,39 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
   if (fmt->bits_per_channel[0] != 8) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  int num_components = (fmt->channel_model == GIMG_CHANNEL_GRAY) ? 1 : 3;
-  if (fmt->channel_count != 1 && fmt->channel_count != 3 &&
-      fmt->channel_count != 4) {
+  // T.81 B.2.2 counts a sequence's components as it counts any frame's.  Three
+  // channels are colour and convert; CMYK and channels with no colour meaning
+  // go through as they are; an RGBA raster drops its alpha, which a JPEG frame
+  // has nowhere to put.
+  const int is_colour = (fmt->channel_model == GIMG_CHANNEL_RGB ||
+      fmt->channel_model == GIMG_CHANNEL_RGBA);
+  int num_components;
+  if (fmt->channel_model == GIMG_CHANNEL_GRAY) {
+    num_components = 1;
+  }
+  else if (is_colour) {
+    num_components = 3;
+  }
+  else if (fmt->channel_model == GIMG_CHANNEL_CMYK ||
+      fmt->channel_model == GIMG_CHANNEL_UNKNOWN) {
+    num_components = (int)fmt->channel_count;
+  }
+  else {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (num_components < 1) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  // B.2.3 caps Ns at 4, so a wider sequence needs every frame of the pyramid
+  // split into one scan per component, in three entropy coders and two
+  // processes, and reconstructed from the split.  That is written but not
+  // trusted: there is no other implementation to check a wide hierarchical
+  // sequence against - libjpeg has no hierarchical mode at all and the ISO
+  // reference codec does not accept one this wide - and a round trip through
+  // this library alone cannot tell a private misreading from a correct one.
+  // Four components and fewer are checked against the reference codec, so that
+  // is what is offered.
+  if (num_components > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS) {
     return GIMG_ERR_UNSUPPORTED;
   }
   *out_num_components = num_components;
@@ -487,14 +601,15 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
 
   GIMG_Result r = GIMG_OK;
   // pyramid[k] holds the source at level k; level `levels` is full size.
-  henc_plane_t pyr[GIMG_JPEG_MAX_FRAMES][3];
-  henc_plane_t ref[3];
-  henc_plane_t diff[3];
+  henc_plane_t pyr[GIMG_JPEG_MAX_FRAMES][GIMG_JPEG_MAX_COMPONENTS];
+  henc_plane_t ref[GIMG_JPEG_MAX_COMPONENTS];
+  henc_plane_t diff[GIMG_JPEG_MAX_COMPONENTS];
   memset(pyr, 0, sizeof(pyr));
   memset(ref, 0, sizeof(ref));
   memset(diff, 0, sizeof(diff));
   int16_t * coef = NULL;
-  unsigned char * base_planes[3] = {NULL, NULL, NULL};
+  unsigned char * base_planes[GIMG_JPEG_MAX_COMPONENTS];
+  memset(base_planes, 0, sizeof(base_planes));
 
   size_t stride_bytes = gimg_raster_stride_bytes(raster);
   const unsigned char * pixels =
@@ -515,14 +630,16 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
       if (num_components == 1) {
         pyr[levels][0].s[(size_t)y * width + x] = row[x * bpp];
       }
-      else if (lossless) {
-        // A lossless sequence keeps RGB.  The YCbCr conversion is not
-        // reversible, so converting here would make "lossless" a lie - the
-        // same reason gimg_jpeg_encode_lossless stores RGB and marks it with
-        // an Adobe APP14 saying transform 0.
-        pyr[levels][0].s[(size_t)y * width + x] = row[x * bpp + 0];
-        pyr[levels][1].s[(size_t)y * width + x] = row[x * bpp + 1];
-        pyr[levels][2].s[(size_t)y * width + x] = row[x * bpp + 2];
+      else if (lossless || !is_colour) {
+        // A lossless sequence keeps RGB - the YCbCr conversion is not
+        // reversible, so converting here would make "lossless" a lie, the same
+        // reason gimg_jpeg_encode_lossless stores RGB and marks it with an
+        // Adobe APP14 saying transform 0 - and components with no colour
+        // meaning have nothing to convert either way.
+        for (int c = 0; c < num_components; c++) {
+          pyr[levels][c].s[(size_t)y * width + x] =
+              row[x * bpp + (size_t)c];
+        }
       }
       else {
         uint8_t yv, cb, cr;
@@ -555,10 +672,43 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
       pl[c] = pyr[0][c].s;
       pls[c] = pyr[0][c].w;
     }
-    r = gimg_jpeg_encode_lossless_planes(alloc, (const int32_t * const *)pl,
-        pls, w0, h0, num_components, precision, lossless_psv, restart_interval,
-        arithmetic, &frames[0].scans[0].data, &frames[0].scans[0].size,
-        &frames[0].dht, &frames[0].dht_len);
+    // B.2.3 caps Ns at 4, so a wider sequence carries one component per scan.
+    gimg_jpeg_lossless_scan_t ll_scans[GIMG_JPEG_MAX_COMPONENTS];
+    unsigned ll_num_scans = 0;
+    memset(ll_scans, 0, sizeof(ll_scans));
+    if (num_components > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS) {
+      for (int c = 0; c < num_components && r == GIMG_OK; c++) {
+        const int32_t * one = pl[c];
+        size_t one_stride = pls[c];
+        r = gimg_jpeg_encode_lossless_planes(alloc, &one, &one_stride, w0, h0,
+            1, precision, lossless_psv, restart_interval, arithmetic,
+            &ll_scans[c].data, &ll_scans[c].size, &ll_scans[c].dht,
+            &ll_scans[c].dht_len);
+        ll_scans[c].component = (uint8_t)c;
+      }
+      ll_num_scans = (unsigned)num_components;
+    }
+    else {
+      r = gimg_jpeg_encode_lossless_planes(alloc, (const int32_t * const *)pl,
+          pls, w0, h0, num_components, precision, lossless_psv,
+          restart_interval, arithmetic, &ll_scans[0].data, &ll_scans[0].size,
+          &ll_scans[0].dht, &ll_scans[0].dht_len);
+      ll_scans[0].component = 0xFFu;
+      ll_num_scans = 1u;
+    }
+    for (unsigned si = 0; si < ll_num_scans; si++) {
+      frames[0].scans[si].data = ll_scans[si].data;
+      frames[0].scans[si].size = ll_scans[si].size;
+      // Every scan generated a table at the same destination; B.2.4.2 lets the
+      // last one written stand, so the frame keeps one and the rest go.
+      if (ll_scans[si].dht && !frames[0].dht) {
+        frames[0].dht = ll_scans[si].dht;
+        frames[0].dht_len = ll_scans[si].dht_len;
+      }
+      else {
+        gimg_free(alloc, ll_scans[si].dht);
+      }
+    }
     if (r != GIMG_OK) {
       goto done;
     }
@@ -567,18 +717,24 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     frames[0].precision = (uint8_t)precision;
     frames[0].width = (uint16_t)w0;
     frames[0].height = (uint16_t)h0;
-    frames[0].num_scans = 1;
     // H.1: Ss carries the predictor selection value, Se is zero, and Al is the
-    // point transform, which is zero here.
-    frames[0].scans[0].ns = (uint8_t)num_components;
-    for (int c = 0; c < num_components; c++) {
-      frames[0].scans[0].comp[c] = (uint8_t)c;
-      frames[0].scans[0].td_ta[c] = 0x00;
+    // point transform, which is zero here.  B.2.3 caps Ns at 4, so a wider
+    // sequence carries one component per scan; that is what the lossless
+    // encoder produced above, and each scan says which component it is.
+    frames[0].num_scans = ll_num_scans;
+    for (unsigned si = 0; si < ll_num_scans; si++) {
+      int one = (ll_scans[si].component != 0xFFu);
+      frames[0].scans[si].ns = one ? 1u : (uint8_t)num_components;
+      for (int c = 0; c < (int)frames[0].scans[si].ns; c++) {
+        frames[0].scans[si].comp[c] =
+            one ? ll_scans[si].component : (uint8_t)c;
+        frames[0].scans[si].td_ta[c] = 0x00;
+      }
+      frames[0].scans[si].ss = (uint8_t)lossless_psv;
+      frames[0].scans[si].se = 0;
+      frames[0].scans[si].ah = 0;
+      frames[0].scans[si].al = 0;
     }
-    frames[0].scans[0].ss = (uint8_t)lossless_psv;
-    frames[0].scans[0].se = 0;
-    frames[0].scans[0].ah = 0;
-    frames[0].scans[0].al = 0;
     for (int c = 0; c < num_components; c++) {
       r = henc_plane_alloc(alloc, &ref[c], w0, h0);
       if (r != GIMG_OK) {
@@ -616,10 +772,12 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
       goto done;
     }
     size_t total_blocks = 0;
-    const unsigned char * base_ptr[GIMG_JPEG_MAX_COMPONENTS] = {
-        base_planes[0], base_planes[1], base_planes[2]};
-    size_t base_stride[GIMG_JPEG_MAX_COMPONENTS] = {
-        (size_t)w0, (size_t)w0, (size_t)w0};
+    const unsigned char * base_ptr[GIMG_JPEG_MAX_COMPONENTS];
+    size_t base_stride[GIMG_JPEG_MAX_COMPONENTS];
+    for (int c = 0; c < (int)GIMG_JPEG_MAX_COMPONENTS; c++) {
+      base_ptr[c] = base_planes[c];
+      base_stride[c] = (size_t)w0;
+    }
     r = gimg_jpeg_progressive_fill_coef_buffer(w0, h0, num_components,
         base_ptr, base_stride, NULL, NULL, NULL, quant_luma, quant_chroma,
         GIMG_JPEG_FDCT_LOEFFLER, GIMG_JPEG_QUANT_RECIP, coef, &total_blocks);
@@ -629,6 +787,10 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     if (progressive) {
       r = henc_progressive_scans(alloc, w0, h0, num_components, coef,
           total_blocks, arithmetic, restart_interval, 0, &frames[0]);
+    }
+    else if (num_components > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS) {
+      r = henc_split_scans(alloc, w0, h0, num_components, coef, total_blocks,
+          arithmetic, restart_interval, 0, &frames[0]);
     }
     else if (arithmetic) {
       jpeg_arith_cond_t cond;
@@ -706,25 +868,49 @@ differential_frames:
       // prediction selection value at zero for a differential lossless frame,
       // so the scan codes the difference image itself and reconstruction is
       // exact - which is the whole point of a lossless pyramid.
-      r = gimg_jpeg_encode_lossless_differential(alloc, plane_ptr, plane_stride,
-          w, h, num_components, restart_interval, arithmetic,
-          &frames[k].scans[0].data, &frames[k].scans[0].size, &frames[k].dht,
-          &frames[k].dht_len);
+      const int split_ll =
+          (num_components > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS);
+      unsigned nsc = split_ll ? (unsigned)num_components : 1u;
+      for (unsigned si = 0; si < nsc && r == GIMG_OK; si++) {
+        unsigned char * one_dht = NULL;
+        size_t one_dht_len = 0;
+        if (split_ll) {
+          const int32_t * one = plane_ptr[si];
+          size_t one_stride = plane_stride[si];
+          r = gimg_jpeg_encode_lossless_differential(alloc, &one, &one_stride,
+              w, h, 1, restart_interval, arithmetic, &frames[k].scans[si].data,
+              &frames[k].scans[si].size, &one_dht, &one_dht_len);
+        }
+        else {
+          r = gimg_jpeg_encode_lossless_differential(alloc, plane_ptr,
+              plane_stride, w, h, num_components, restart_interval, arithmetic,
+              &frames[k].scans[si].data, &frames[k].scans[si].size, &one_dht,
+              &one_dht_len);
+        }
+        if (one_dht && !frames[k].dht) {
+          frames[k].dht = one_dht;
+          frames[k].dht_len = one_dht_len;
+        }
+        else {
+          gimg_free(alloc, one_dht);
+        }
+        frames[k].scans[si].ns =
+            split_ll ? 1u : (uint8_t)num_components;
+        for (int c = 0; c < (int)frames[k].scans[si].ns; c++) {
+          frames[k].scans[si].comp[c] = split_ll ? (uint8_t)si : (uint8_t)c;
+          frames[k].scans[si].td_ta[c] = 0x00;
+        }
+        frames[k].scans[si].ss = 0; // J.1.3.2: "shall be set to zero"
+        frames[k].scans[si].se = 0;
+        frames[k].scans[si].ah = 0;
+        frames[k].scans[si].al = 0;
+        frames[k].num_scans = si + 1u;
+      }
       if (r != GIMG_OK) {
         goto done;
       }
       frames[k].sof_marker =
           arithmetic ? GIMG_JPEG_MARKER_SOF15 : GIMG_JPEG_MARKER_SOF7;
-      frames[k].num_scans = 1;
-      frames[k].scans[0].ns = (uint8_t)num_components;
-      for (int c = 0; c < num_components; c++) {
-        frames[k].scans[0].comp[c] = (uint8_t)c;
-        frames[k].scans[0].td_ta[c] = 0x00;
-      }
-      frames[k].scans[0].ss = 0; // J.1.3.2: "shall be set to zero"
-      frames[k].scans[0].se = 0;
-      frames[k].scans[0].ah = 0;
-      frames[k].scans[0].al = 0;
       // J.2.1: the reference for the next frame is this one added to it, and
       // there is nothing to lose on the way.
       for (int c = 0; c < num_components; c++) {
@@ -752,6 +938,10 @@ differential_frames:
     if (progressive) {
       r = henc_progressive_scans(alloc, w, h, num_components, coef,
           total_blocks, arithmetic, restart_interval, 1, &frames[k]);
+    }
+    else if (num_components > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS) {
+      r = henc_split_scans(alloc, w, h, num_components, coef, total_blocks,
+          arithmetic, restart_interval, 1, &frames[k]);
     }
     else if (arithmetic) {
       jpeg_arith_cond_t cond;
@@ -787,7 +977,7 @@ differential_frames:
 
 done:
   gimg_free(alloc, coef);
-  for (int c = 0; c < 3; c++) {
+  for (int c = 0; c < (int)GIMG_JPEG_MAX_COMPONENTS; c++) {
     gimg_free(alloc, base_planes[c]);
     henc_plane_free(alloc, &ref[c]);
     henc_plane_free(alloc, &diff[c]);
