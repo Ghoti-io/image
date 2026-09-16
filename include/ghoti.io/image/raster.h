@@ -87,6 +87,10 @@ extern const GIMG_Pixel_Format GIMG_PIXEL_RGBA12;
 /** @brief Canonical CMYK 8-bit per channel (C, M, Y, K interleaved). */
 extern const GIMG_Pixel_Format GIMG_PIXEL_CMYK8;
 
+/** @brief CMYK 16 bits per channel; carries 12-bit JPEG samples left-justified.
+ */
+extern const GIMG_Pixel_Format GIMG_PIXEL_CMYK16;
+
 /**
  * @brief Ownership of the pixel buffer.
  *

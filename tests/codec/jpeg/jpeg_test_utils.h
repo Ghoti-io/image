@@ -98,8 +98,15 @@ bool pillow_oracle_hash_from_path(const char * file_path, uint64_t * out_hash,
 /** Load a JPEG file from an arbitrary path (e.g. jpeg_output_dir() + filename). */
 bool load_jpeg_from_path(const char * file_path, std::vector<uint8_t> & out);
 
-/** Oracle .raw format: 1 byte mode (0=L, 1=RGB, 2=CMYK), 4 bytes width LE, 4 bytes height LE, then pixels. */
-enum JpegOracleRawMode { kOracleL = 0, kOracleRgb = 1, kOracleCmyk = 2 };
+/** Oracle .raw format: 1 byte mode, 4 bytes width LE, 4 bytes height LE, then
+ * pixels.  Mode 3 carries 16-bit samples, little endian, for a twelve-bit
+ * four-component frame; the others are one byte per sample. */
+enum JpegOracleRawMode {
+  kOracleL = 0,
+  kOracleRgb = 1,
+  kOracleCmyk = 2,
+  kOracleCmyk16 = 3
+};
 
 /**
  * Load oracle .raw file (Pillow decode of a JPEG). Returns true and fills

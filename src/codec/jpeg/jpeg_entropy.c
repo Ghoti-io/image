@@ -55,6 +55,13 @@ static GIMG_Result jpeg_decode_progressive_extended(
     const gimg_jpeg_doc_state_t * state, const GIMG_Decode_Options * options,
     GIMG_Raster ** out_raster);
 
+/** Assemble a four-component frame; see the definition below. */
+static GIMG_Result jpeg_emit_four_component(const GIMG_Allocator * alloc,
+    int adobe_transform, uint32_t width, uint32_t height, int precision,
+    int planes_wide, const void * const * comp_buf, const size_t * comp_stride,
+    const uint32_t * comp_w, const uint32_t * comp_h, const uint8_t * h_samp,
+    const uint8_t * v_samp, int fancy, GIMG_Raster ** out_raster);
+
 static GIMG_Result jpeg_decode_baseline_extended(
     const gimg_jpeg_doc_state_t * state, const GIMG_Decode_Options * options,
     GIMG_Raster ** out_raster) {
@@ -66,8 +73,12 @@ static GIMG_Result jpeg_decode_baseline_extended(
   uint16_t width = sof->width;
   uint16_t height = sof->height;
   uint8_t num_comp = sof->num_components;
-  if (num_comp != 1 && num_comp != 3) {
-    return GIMG_ERR_UNSUPPORTED; // 12-bit: grayscale or YCbCr only
+  // T.81 Table B.2 allows P=12 in a DCT-based frame and B.2.2 allows Nf from 1
+  // to 255; the two are independent, so a twelve-bit four-component frame is a
+  // legal file.  This walk assembles one and three components itself and hands
+  // four to jpeg_emit_four_component, which writes GIMG_PIXEL_CMYK16.
+  if (num_comp != 1 && num_comp != 3 && num_comp != 4) {
+    return GIMG_ERR_UNSUPPORTED;
   }
 
   size_t pixel_count = 0;
@@ -336,7 +347,19 @@ static GIMG_Result jpeg_decode_baseline_extended(
   }
 
   GIMG_Result r;
-  if (num_comp == 1) {
+  if (num_comp == 4) {
+    // A twelve-bit CMYK or YCCK frame; see jpeg_emit_four_component.
+    int use_fancy_4 = (!options ||
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    r = jpeg_emit_four_component(alloc, state->adobe_transform, (uint32_t)width,
+        (uint32_t)height, (int)precision, 1, (const void * const *)comp_buf,
+        comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_4,
+        out_raster);
+    if (r != GIMG_OK) {
+      goto ext_fail;
+    }
+  }
+  else if (num_comp == 1) {
     r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
         (uint32_t)height, &GIMG_PIXEL_GRAY16, GIMG_RASTER_OWNED, NULL, 0,
         out_raster);
@@ -480,26 +503,37 @@ ext_fail:
  *                   SIMPLE asks for.
  */
 static GIMG_Result jpeg_emit_four_component(const GIMG_Allocator * alloc,
-    int adobe_transform, uint32_t width, uint32_t height,
-    unsigned char * const * comp_buf, const size_t * comp_stride,
+    int adobe_transform, uint32_t width, uint32_t height, int precision,
+    int planes_wide, const void * const * comp_buf, const size_t * comp_stride,
     const uint32_t * comp_w, const uint32_t * comp_h, const uint8_t * h_samp,
     const uint8_t * v_samp, int fancy, GIMG_Raster ** out_raster) {
   GIMG_Result r;
+  // The raster's width follows the frame's precision; the planes' width
+  // follows the walk that produced them - the coefficient-buffer walk carries
+  // even an 8-bit frame in uint16_t so that a 12-bit one fits.
+  const int wide = (precision > 8);
+  // T.81 A.3.1: a reconstructed sample lies in 0..2^P-1, and the centre the
+  // chrominance components are offset about is 2^(P-1).
+  const int max_val = (1 << precision) - 1;
+  const int centre = 1 << (precision - 1);
   uint8_t h_max = 1, v_max = 1;
   gimg_jpeg_sampling_max(4, h_samp, v_samp, &h_max, &v_max);
   jpeg_plane_t pl[4];
   for (int i = 0; i < 4; i++) {
     pl[i].data = comp_buf[i];
     pl[i].stride = comp_stride[i];
-    pl[i].wide = 0;
+    pl[i].wide = planes_wide;
   }
   r = gimg_raster_create_with_allocator(alloc, width, height,
-      &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0, out_raster);
+      wide ? &GIMG_PIXEL_CMYK16 : &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL,
+      0, out_raster);
   if (r != GIMG_OK) {
     return r;
   }
-  unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
-  size_t stride = gimg_raster_stride_bytes(*out_raster);
+  unsigned char * pix8 = (unsigned char *)gimg_raster_pixels(*out_raster);
+  uint16_t * pix16 = (uint16_t *)gimg_raster_pixels(*out_raster);
+  size_t stride8 = gimg_raster_stride_bytes(*out_raster);
+  size_t stride16 = stride8 / sizeof(uint16_t);
   for (uint32_t y = 0; y < height; y++) {
     for (uint32_t x = 0; x < width; x++) {
       int s[4];
@@ -507,44 +541,41 @@ static GIMG_Result jpeg_emit_four_component(const GIMG_Allocator * alloc,
         s[i] = jpeg_chroma_sample(&pl[i], comp_w[i], comp_h[i], x, y, width,
             height, h_samp[i], v_samp[i], h_max, v_max, fancy);
       }
+      int out[4];
       if (adobe_transform == 2) {
-        // YCCK -> CMYK: YCbCr -> RGB (BT.601 integer), then C = 255 - R,
-        // M = 255 - G, Y = 255 - B, K unchanged.  This is jdcolor.c's
-        // ycck_cmyk_convert.
-        int yy = s[0];
-        int cb_x = s[1] - 128;
-        int cr_x = s[2] - 128;
-        int r_val = yy + (int)((91881L * cr_x + 32768) >> 16);
-        int g_val = yy +
-            (int)(((int32_t)(-22554) * cb_x + (int32_t)(-46802) * cr_x +
-                      32768) >>
-                16);
-        int b_val = yy + (int)((116130L * cb_x + 32768) >> 16);
-        if (r_val < 0)
-          r_val = 0;
-        if (r_val > 255)
-          r_val = 255;
-        if (g_val < 0)
-          g_val = 0;
-        if (g_val > 255)
-          g_val = 255;
-        if (b_val < 0)
-          b_val = 0;
-        if (b_val > 255)
-          b_val = 255;
-        pixels[y * stride + x * 4 + 0] = (unsigned char)(255 - r_val);
-        pixels[y * stride + x * 4 + 1] = (unsigned char)(255 - g_val);
-        pixels[y * stride + x * 4 + 2] = (unsigned char)(255 - b_val);
+        // YCCK -> CMYK: YCbCr -> RGB, then C = max - R, M = max - G,
+        // Y = max - B, K unchanged.  This is jdcolor.c's ycck_cmyk_convert,
+        // and the YCbCr step is the one the three-component path uses, so the
+        // two agree by construction at either precision.
+        int r_val, g_val, b_val;
+        jpeg_ycbcr_to_rgb(
+            s[0], s[1], s[2], centre, max_val, &r_val, &g_val, &b_val);
+        out[0] = max_val - r_val;
+        out[1] = max_val - g_val;
+        out[2] = max_val - b_val;
       }
       else {
         // Raw CMYK: the components go out unchanged, to match libjpeg
         // (jdcolor.c null_convert for JCS_CMYK).  libjpeg does not invert
         // Adobe CMYK; Pillow does, which is why Pillow is not the oracle here.
-        pixels[y * stride + x * 4 + 0] = (unsigned char)s[0];
-        pixels[y * stride + x * 4 + 1] = (unsigned char)s[1];
-        pixels[y * stride + x * 4 + 2] = (unsigned char)s[2];
+        out[0] = s[0];
+        out[1] = s[1];
+        out[2] = s[2];
       }
-      pixels[y * stride + x * 4 + 3] = (unsigned char)s[3];
+      out[3] = s[3];
+      if (wide) {
+        for (int i = 0; i < 4; i++) {
+          // Left-justify into the 16-bit raster, as GRAY16 and RGBA16 do.
+          pix16[y * stride16 + x * 4 + (size_t)i] = (precision == 12)
+              ? gimg_bitdepth_12_to_16((uint16_t)out[i])
+              : (uint16_t)out[i];
+        }
+      }
+      else {
+        for (int i = 0; i < 4; i++) {
+          pix8[y * stride8 + x * 4 + (size_t)i] = (unsigned char)out[i];
+        }
+      }
     }
   }
   return GIMG_OK;
@@ -1156,8 +1187,9 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     int use_fancy_4 = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
     r = jpeg_emit_four_component(alloc, state->adobe_transform,
-        (uint32_t)width, (uint32_t)height, comp_buf, comp_stride, comp_w,
-        comp_h, sof->h_samp, sof->v_samp, use_fancy_4, out_raster);
+        (uint32_t)width, (uint32_t)height, 8, 0,
+        (const void * const *)comp_buf, comp_stride, comp_w, comp_h,
+        sof->h_samp, sof->v_samp, use_fancy_4, out_raster);
     if (r != GIMG_OK) {
       goto fail_decode;
     }
@@ -1907,39 +1939,18 @@ static GIMG_Result jpeg_decode_progressive_extended(
       gimg_free(alloc, comp_buf_8[i]);
     }
   }
-  else if (prog_8bit && num_comp == 4) {
-    // The shared assembly takes 8-bit components; this walk carries them as
-    // uint16_t so that a 12-bit frame fits, so narrow them first, exactly as
-    // the three-component branch above does.
-    unsigned char * comp_buf_8[GIMG_JPEG_MAX_COMPONENTS];
-    size_t comp_size_8[GIMG_JPEG_MAX_COMPONENTS];
-    memset(comp_buf_8, 0, sizeof(comp_buf_8));
-    int alloc_failed = 0;
-    for (uint8_t i = 0; i < num_comp && !alloc_failed; i++) {
-      comp_size_8[i] = comp_stride_el[i] * (size_t)comp_h[i];
-      comp_buf_8[i] = (unsigned char *)gimg_malloc(alloc, comp_size_8[i]);
-      if (!comp_buf_8[i]) {
-        alloc_failed = 1;
-        break;
-      }
-      for (size_t k = 0; k < comp_size_8[i]; k++) {
-        uint16_t v = comp_buf[i][k];
-        comp_buf_8[i][k] = (unsigned char)(v > 255u ? 255u : v);
-      }
-    }
-    if (!alloc_failed) {
-      int use_fancy_4 = (!options ||
-          options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
-      r = jpeg_emit_four_component(alloc, state->adobe_transform,
-          (uint32_t)width, (uint32_t)height, comp_buf_8, comp_stride_el,
-          comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_4, out_raster);
-    }
-    else {
-      r = GIMG_ERR_OOM;
-    }
-    for (uint8_t i = 0; i < num_comp; i++) {
-      gimg_free(alloc, comp_buf_8[i]);
-    }
+  else if (num_comp == 4) {
+    // The planes go straight to the shared assembly, at either precision.
+    // They used to be narrowed to 8 bits first, which is why a twelve-bit
+    // four-component frame was refused outright: T.81 Table B.2 allows P=12 in
+    // a DCT frame and B.2.2 allows Nf=4, so the two together are a legal file
+    // that had nowhere to be decoded to until GIMG_PIXEL_CMYK16 existed.
+    int use_fancy_4 = (!options ||
+        options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    r = jpeg_emit_four_component(alloc, state->adobe_transform, (uint32_t)width,
+        (uint32_t)height, (int)precision, 1, (const void * const *)comp_buf,
+        comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_4,
+        out_raster);
     if (r != GIMG_OK) {
       goto prog_ext_fail_buf;
     }

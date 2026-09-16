@@ -555,7 +555,10 @@ bool load_jpeg_oracle_raw(const char * fixture_base,
     return false;
   }
   int mode = header[0];
-  if (mode != 0 && mode != 1 && mode != 2) {
+  // Mode 3 is CMYK at 16 bits per sample: a twelve-bit four-component frame
+  // (T.81 Table B.2 with B.2.2) decodes to GIMG_PIXEL_CMYK16, so its oracle
+  // cannot fit in bytes.
+  if (mode != 0 && mode != 1 && mode != 2 && mode != 3) {
     return false;
   }
   uint32_t w = static_cast<uint32_t>(header[1]) |
@@ -567,8 +570,9 @@ bool load_jpeg_oracle_raw(const char * fixture_base,
       (static_cast<uint32_t>(header[7]) << 16) |
       (static_cast<uint32_t>(header[8]) << 24);
   size_t pixel_bytes = (mode == 0) ? (size_t)w * h
-      : (mode == 1) ? (size_t)w * h * 3u
-      : (size_t)w * h * 4u;
+      : (mode == 1)                  ? (size_t)w * h * 3u
+      : (mode == 3)                  ? (size_t)w * h * 4u * 2u
+                                     : (size_t)w * h * 4u;
   out_pixels.resize(pixel_bytes);
   if (!f.read(reinterpret_cast<char *>(out_pixels.data()),
               static_cast<std::streamsize>(pixel_bytes)) ||
@@ -597,7 +601,10 @@ bool load_jpeg_oracle_raw_from_path(const char * raw_path,
     return false;
   }
   int mode = header[0];
-  if (mode != 0 && mode != 1 && mode != 2) {
+  // Mode 3 is CMYK at 16 bits per sample: a twelve-bit four-component frame
+  // (T.81 Table B.2 with B.2.2) decodes to GIMG_PIXEL_CMYK16, so its oracle
+  // cannot fit in bytes.
+  if (mode != 0 && mode != 1 && mode != 2 && mode != 3) {
     return false;
   }
   uint32_t w = static_cast<uint32_t>(header[1]) |
@@ -609,8 +616,9 @@ bool load_jpeg_oracle_raw_from_path(const char * raw_path,
       (static_cast<uint32_t>(header[7]) << 16) |
       (static_cast<uint32_t>(header[8]) << 24);
   size_t pixel_bytes = (mode == 0) ? (size_t)w * h
-      : (mode == 1) ? (size_t)w * h * 3u
-      : (size_t)w * h * 4u;
+      : (mode == 1)                  ? (size_t)w * h * 3u
+      : (mode == 3)                  ? (size_t)w * h * 4u * 2u
+                                     : (size_t)w * h * 4u;
   out_pixels.resize(pixel_bytes);
   if (!f.read(reinterpret_cast<char *>(out_pixels.data()),
               static_cast<std::streamsize>(pixel_bytes)) ||

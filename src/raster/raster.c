@@ -85,6 +85,20 @@ static const GIMG_Pixel_Format gimg_pixel_cmyk8 = {
     ._reserved = {0},
 };
 
+// A twelve-bit four-component frame (T.81 Table B.2 allows P=12 in a DCT
+// frame, and B.2.2 allows Nf=4) decodes to this, left-justified in 16 bits the
+// way GRAY16 and RGBA16 carry their twelve-bit samples.  Without it such a
+// frame had nowhere to go and was refused.
+static const GIMG_Pixel_Format gimg_pixel_cmyk16 = {
+    .channel_model = GIMG_CHANNEL_CMYK,
+    .channel_type = GIMG_CHANNEL_UNORM,
+    .layout = GIMG_LAYOUT_INTERLEAVED,
+    .channel_count = 4,
+    .bits_per_channel = {16, 16, 16, 16, 0, 0, 0, 0},
+    .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    ._reserved = {0},
+};
+
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA8 = gimg_pixel_rgba8;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA16 = gimg_pixel_rgba16;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY8 = gimg_pixel_gray8;
@@ -92,6 +106,7 @@ GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY16 = gimg_pixel_gray16;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY12 = gimg_pixel_gray12;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA12 = gimg_pixel_rgba12;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK8 = gimg_pixel_cmyk8;
+GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK16 = gimg_pixel_cmyk16;
 
 GIMG_API size_t gimg_raster_bytes_per_pixel(const GIMG_Pixel_Format * format) {
   if (!format || format->channel_count == 0) {

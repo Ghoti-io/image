@@ -4034,6 +4034,74 @@ TEST(JpegLoad, HierarchicalLosslessFrameCodedAsNonInterleavedScans) {
 // writes a genuine YCCK file, and the resulting picture is not meaningful, but
 // the decode is well defined and libjpeg agrees with it byte for byte.  That
 // branch had no fixture at all before.
+// T.81 Table B.2 allows a sample precision of 12 in a DCT-based frame and
+// B.2.2 allows Nf from 1 to 255.  The two are independent, so a twelve-bit
+// CMYK or YCCK frame is a legal file - but the twelve-bit walk here refused
+// anything but one or three components, because the four-component assembly
+// took 8-bit planes and there was no four-channel 16-bit raster to write.
+// Both are fixed: the assembly reads planes at either width, and the picture
+// comes back as GIMG_PIXEL_CMYK16 with the samples left-justified, which is
+// how GRAY16 and RGBA16 have always carried twelve-bit data.
+//
+// The fixtures are libjpeg-turbo's twelve-bit entry points (jpeg12_*, see
+// tests/data/jpeg/mk_cmyk12.c), so both the encoder and the expected samples
+// come from outside this library.
+TEST(JpegLoad, TwelveBitFourComponentFrames) {
+  struct Case {
+    const char * base;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"cmyk12_ljt_seq", "12-bit CMYK, sequential (SOF1)"},
+      {"cmyk12_ljt_prog", "12-bit CMYK, progressive (SOF2)"},
+      {"ycck12_ljt_420", "12-bit YCCK, 4:2:0"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.base) + ": " + c.what);
+    std::vector<uint8_t> oracle;
+    uint32_t ow = 0, oh = 0;
+    int omode = -1;
+    ASSERT_TRUE(
+        jpeg_test::load_jpeg_oracle_raw(c.base, oracle, &ow, &oh, &omode))
+        << "missing oracle " << c.base << ".raw";
+    ASSERT_EQ(omode, jpeg_test::kOracleCmyk16)
+        << "the oracle must carry 16-bit samples";
+    std::string name = std::string(c.base) + ".jpg";
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name.c_str(), jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK)
+        << "a twelve-bit four-component frame is legal and must decode";
+    ASSERT_NE(raster, nullptr);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    ASSERT_NE(fmt, nullptr);
+    EXPECT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK);
+    EXPECT_EQ((int)fmt->bits_per_channel[0], 16);
+    ASSERT_EQ(gimg_raster_width(raster), ow);
+    ASSERT_EQ(gimg_raster_height(raster), oh);
+    const uint16_t * gp = (const uint16_t *)gimg_raster_pixels(raster);
+    size_t gs = gimg_raster_stride_bytes(raster) / sizeof(uint16_t);
+    for (uint32_t y = 0; y < oh; y++) {
+      for (uint32_t x = 0; x < ow; x++) {
+        for (int ch = 0; ch < 4; ch++) {
+          size_t k = (((size_t)y * ow + x) * 4 + (size_t)ch) * 2;
+          int b = (int)oracle[k] | ((int)oracle[k + 1] << 8);
+          int a = (int)gp[y * gs + x * 4 + (size_t)ch];
+          ASSERT_EQ(a, b) << "pixel (" << x << "," << y << ") channel " << ch;
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
 // A four-component frame whose chrominance components are subsampled was
 // upsampled by nearest neighbour here, on the stated grounds that "four-
 // component files are not YCbCr and the filter does not apply to them".  That
