@@ -90,6 +90,14 @@ typedef uint32_t gimg_png_chunk_type_t;
 #define GIMG_PNG_cHRM UINT32_C(0x6348524D) // 'cHRM' §11.3.2.1
 #define GIMG_PNG_eXIf UINT32_C(0x65584966) // 'eXIf' §11.3.4
 
+/** PNG Third Edition colour chunks (W3C PNG 3rd ed., 2025). */
+#define GIMG_PNG_cICP UINT32_C(0x63494350) // 'cICP' coding-independent points
+#define GIMG_PNG_mDCv UINT32_C(0x6D444376) // 'mDCv' mastering display volume
+#define GIMG_PNG_cLLi UINT32_C(0x634C4C69) // 'cLLi' content light level
+
+/** cICP payload: colour primaries, transfer function, matrix, range flag. */
+#define GIMG_PNG_cICP_LEN 4
+
 /** APNG chunk type IDs (Mozilla APNG spec). */
 #define GIMG_PNG_acTL UINT32_C(0x6163544C) // 'acTL' animation control
 #define GIMG_PNG_fcTL UINT32_C(0x6663544C) // 'fcTL' frame control

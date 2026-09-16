@@ -1219,3 +1219,111 @@ TEST(PngDecode, PaletteOnGrayscaleIsRejected) {
   }
   gimg_stream_destroy(s);
 }
+
+// ---------------------------------------------------------------------------
+// PNG Third Edition colour chunks.
+//
+// cICP carries coding-independent code points (ITU-T H.273) and the Third
+// Edition puts it ahead of sRGB, iCCP and gAMA+cHRM: where it appears, it says
+// what the samples mean and the others do not get a say.
+//
+// GIMG_Color_Info can describe sRGB, Adobe RGB, linear and a plain gamma.
+// CICP names far more - BT.2020, PQ, HLG, limited range - so only the
+// combinations this model holds are translated. The rest leave the colour
+// unknown rather than being rounded to the nearest thing expressible, which
+// would assert something about the pixels the file never said. Every one of
+// these chunks is preserved on the way through regardless.
+// ---------------------------------------------------------------------------
+
+TEST(PngDecode, CicpOutranksTheOlderColourChunks) {
+  // The fixture carries cICP naming the sRGB pair and a gAMA claiming 1.0.
+  // Honouring the precedence and ignoring it give different answers.
+  GIMG_Stream * s = nullptr;
+  GIMG_Doc * doc = nullptr;
+  GIMG_Raster * raster = nullptr;
+  ASSERT_TRUE(DecodeFixture("png_cicp_srgb.png", &s, &doc, &raster));
+  const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(info->transfer, GIMG_TRANSFER_SRGB)
+      << "cICP names the sRGB transfer; the gAMA of 1.0 must not win";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(PngDecode, ACicpThisColourModelCannotHoldLeavesItUnknown) {
+  // BT.2020 primaries with the PQ transfer: a legal file, and nothing in
+  // GIMG_Color_Info can say what it means. Reporting sRGB would be a lie.
+  GIMG_Stream * s = nullptr;
+  GIMG_Doc * doc = nullptr;
+  GIMG_Raster * raster = nullptr;
+  ASSERT_TRUE(DecodeFixture("png_cicp_bt2020_pq.png", &s, &doc, &raster));
+  const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->primaries, GIMG_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(info->transfer, GIMG_TRANSFER_UNKNOWN);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(PngDecode, ThirdEditionChunksSurviveARoundTrip) {
+  // cICP, mDCv and cLLi are content the file came with. Whether or not this
+  // library can act on them, saving must not drop them.
+  struct Case {
+    const char * filename;
+    std::vector<uint32_t> expect_types;
+  };
+  const uint32_t kCicp = 0x63494350u;
+  const uint32_t kMdcv = 0x6D444376u;
+  const uint32_t kClli = 0x634C4C69u;
+  const Case cases[] = {
+      {"png_cicp_srgb.png", {kCicp}},
+      {"png_cicp_bt2020_pq.png", {kCicp}},
+      {"png_mdcv_clli.png", {kMdcv, kClli}},
+  };
+  for (const Case & c : cases) {
+    std::vector<uint8_t> buf;
+    ASSERT_TRUE(png_test::load_png_file(c.filename, buf)) << c.filename;
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK) << c.filename;
+    gimg_stream_destroy(s);
+
+    GIMG_Stream * out_s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out_s, "png", &opts, &report), GIMG_OK)
+        << c.filename;
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out_s, &p, &n);
+    std::vector<uint8_t> saved(static_cast<const uint8_t *>(p),
+        static_cast<const uint8_t *>(p) + n);
+    gimg_stream_destroy(out_s);
+    gimg_doc_destroy(doc);
+
+    // Walk the chunks of the saved file looking for each expected type.
+    for (uint32_t want : c.expect_types) {
+      bool found = false;
+      size_t i = 8;
+      while (i + 8 <= saved.size()) {
+        uint32_t len = (uint32_t)saved[i] << 24 | (uint32_t)saved[i + 1] << 16 |
+            (uint32_t)saved[i + 2] << 8 | (uint32_t)saved[i + 3];
+        uint32_t type = (uint32_t)saved[i + 4] << 24 |
+            (uint32_t)saved[i + 5] << 16 | (uint32_t)saved[i + 6] << 8 |
+            (uint32_t)saved[i + 7];
+        if (type == want) {
+          found = true;
+          break;
+        }
+        i += 12u + (size_t)len;
+      }
+      EXPECT_TRUE(found) << c.filename << " lost chunk 0x" << std::hex << want;
+    }
+  }
+}

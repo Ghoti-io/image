@@ -78,10 +78,13 @@ static bool gimg_png_fill_color_info_from_ancillary(
   *out_icc_size = 0;
 
   size_t first_srgb = (size_t)-1, first_iccp = (size_t)-1,
-         first_gama = (size_t)-1;
+         first_gama = (size_t)-1, first_cicp = (size_t)-1;
   for (size_t i = 0; i < state->ancillary_count; i++) {
     gimg_png_chunk_type_t t = state->ancillary[i].type;
-    if (t == GIMG_PNG_sRGB && first_srgb == (size_t)-1) {
+    if (t == GIMG_PNG_cICP && first_cicp == (size_t)-1) {
+      first_cicp = i;
+    }
+    else if (t == GIMG_PNG_sRGB && first_srgb == (size_t)-1) {
       first_srgb = i;
     }
     else if (t == GIMG_PNG_iCCP && first_iccp == (size_t)-1) {
@@ -89,6 +92,47 @@ static bool gimg_png_fill_color_info_from_ancillary(
     }
     else if (t == GIMG_PNG_gAMA && first_gama == (size_t)-1) {
       first_gama = i;
+    }
+  }
+
+  // PNG Third Edition adds cICP and puts it ahead of everything else: when a
+  // frame carries coding-independent code points, they say what the samples
+  // mean and the other colour chunks do not get a say.
+  //
+  // GIMG_Color_Info describes sRGB, Adobe RGB, linear and a plain gamma, and
+  // CICP names a great deal more than that - BT.2020 primaries, PQ and HLG
+  // transfer, limited-range signalling. Only the combination this model can
+  // actually hold is translated; any other is left unknown rather than
+  // rounded to the nearest thing we can say, which would be a claim about the
+  // pixels that the file did not make. The chunk itself is kept either way,
+  // so nothing is lost on the way through.
+  if (first_cicp != (size_t)-1) {
+    const unsigned char * p = state->ancillary[first_cicp].payload;
+    size_t len = state->ancillary[first_cicp].payload_size;
+    if (len >= GIMG_PNG_cICP_LEN) {
+      unsigned int primaries = p[0];
+      unsigned int transfer = p[1];
+      unsigned int matrix = p[2];
+      unsigned int full_range = p[3];
+      // H.273 code points: primaries 1 and transfer 13 are the sRGB pair;
+      // matrix 0 (identity) and full range are what PNG 3rd ed. requires of
+      // an RGB image.
+      if (primaries == 1u && transfer == 13u && matrix == 0u &&
+          full_range == 1u) {
+        out_info->primaries = GIMG_PRIMARIES_SRGB;
+        out_info->white_point = GIMG_PRIMARIES_SRGB;
+        out_info->transfer = GIMG_TRANSFER_SRGB;
+        return true;
+      }
+      // Transfer 8 is linear, and primaries 1 still names the sRGB gamut.
+      if (primaries == 1u && transfer == 8u && matrix == 0u &&
+          full_range == 1u) {
+        out_info->primaries = GIMG_PRIMARIES_SRGB;
+        out_info->white_point = GIMG_PRIMARIES_SRGB;
+        out_info->transfer = GIMG_TRANSFER_LINEAR;
+        return true;
+      }
+      return false; // Understood, representable by nothing here.
     }
   }
 

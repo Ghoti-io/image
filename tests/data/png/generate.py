@@ -347,6 +347,7 @@ def main() -> None:
     _write_zlib_integrity_fixtures()
     _write_suggested_palette_fixtures()
     _write_filter_fixtures()
+    _write_third_edition_fixtures()
     _write_apng16_oracle_expected()
 
 
@@ -653,6 +654,54 @@ def _write_filter_fixtures() -> None:
         + png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
         + png_chunk(b"IDAT", idat_zlib(bytes(raw)))
         + iend)
+
+
+# ---------------------------------------------------------------------------
+# PNG Third Edition colour chunks: cICP, mDCv, cLLi.
+#
+# cICP carries coding-independent code points (ITU-T H.273): colour primaries,
+# transfer function, matrix coefficients, and a full-range flag. The Third
+# Edition puts it ahead of sRGB, iCCP and gAMA+cHRM - where it appears, it is
+# what the samples mean.
+#
+# The first file names the sRGB pair (primaries 1, transfer 13, identity
+# matrix, full range) and also carries a gAMA claiming 1.0, so a decoder that
+# honours the precedence and one that does not give different answers.
+# ---------------------------------------------------------------------------
+
+
+def _write_third_edition_fixtures() -> None:
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+    ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+    idat = png_chunk(b"IDAT", idat_zlib(bytes([0x00, 0x40, 0x80, 0xC0])))
+
+    # cICP naming sRGB, with a gAMA that disagrees. cICP wins (PNG 3rd ed.).
+    write_png("png_cicp_srgb.png",
+        signature + ihdr
+        + png_chunk(b"cICP", bytes([1, 13, 0, 1]))
+        + png_chunk(b"gAMA", struct.pack(">I", 100000))
+        + idat + iend)
+
+    # cICP naming BT.2020 primaries with the PQ transfer: a perfectly legal
+    # file that this library's colour model cannot describe, so it reports no
+    # colour information rather than guessing.
+    # A gAMA rides along so that "left unknown" is a real assertion: a decoder
+    # that ignored cICP would report the gamma instead of reporting nothing.
+    write_png("png_cicp_bt2020_pq.png",
+        signature + ihdr
+        + png_chunk(b"cICP", bytes([9, 16, 0, 1]))
+        + png_chunk(b"gAMA", struct.pack(">I", 45455))
+        + idat + iend)
+
+    # The HDR mastering chunks, which are preserved and not interpreted.
+    mdcv = struct.pack(">8H", 34000, 16000, 13250, 34500, 7500, 3000,
+        15635, 16450) + struct.pack(">II", 10000000, 1)
+    write_png("png_mdcv_clli.png",
+        signature + ihdr
+        + png_chunk(b"mDCv", mdcv)
+        + png_chunk(b"cLLi", struct.pack(">II", 10000000, 1000000))
+        + idat + iend)
 
 def _write_apng16_oracle_expected() -> None:
     """Write expected pixels for the 16-bit APNG blend test using Pillow as oracle.
