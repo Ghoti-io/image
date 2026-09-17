@@ -215,9 +215,23 @@ static bool gimg_png_fill_color_info_from_ancillary(
  * BACKGROUND/PREVIOUS) to the canvas before calling this; then this blends
  * the decoded frame. See APNG spec and format-references.md. */
 static void gimg_png_apng_blend_frame(unsigned char * canvas,
-    size_t canvas_stride, const unsigned char * frame_pixels,
-    size_t frame_stride, uint32_t fx, uint32_t fy, uint32_t fw, uint32_t fh,
-    size_t bpp, int blend_over) {
+    size_t canvas_stride, uint32_t canvas_w, uint32_t canvas_h,
+    const unsigned char * frame_pixels, size_t frame_stride, uint32_t fx,
+    uint32_t fy, uint32_t fw, uint32_t fh, size_t bpp, int blend_over) {
+  // The loader refuses a frame that does not fit the canvas, so this should
+  // never have anything to clip. It clips anyway: every loop below writes to
+  // canvas + (fy + y) * stride + fx * bpp, so a frame rectangle that reaches
+  // past the edge is a heap write past the end of the canvas - which is what
+  // this used to do, for any file that declared one.
+  if (fx >= canvas_w || fy >= canvas_h) {
+    return;
+  }
+  if (fw > canvas_w - fx) {
+    fw = canvas_w - fx;
+  }
+  if (fh > canvas_h - fy) {
+    fh = canvas_h - fy;
+  }
   if (bpp == 1) {
     // Grayscale: no alpha; treat Over as replace.
     for (uint32_t y = 0; y < fh; y++) {
@@ -415,12 +429,38 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         uint32_t fy = fctl->y_offset;
         uint32_t fw = fctl->width;
         uint32_t fh = fctl->height;
+        // Clipped for the same reason the blend is: these write the canvas at
+        // the frame's own rectangle, so a rectangle past the edge is a write
+        // past the end of the buffer. The loader refuses such a frame; this is
+        // the second line of that defence and not a substitute for it.
+        if (fx >= canvas_w || fy >= canvas_h) {
+          fw = fh = 0;
+        }
+        else {
+          if (fw > canvas_w - fx) {
+            fw = canvas_w - fx;
+          }
+          if (fh > canvas_h - fy) {
+            fh = canvas_h - fy;
+          }
+        }
         if (i > 0) {
           const gimg_png_fctl_t * prev_fctl = &state->frames[i - 1].fctl;
           uint32_t px = prev_fctl->x_offset;
           uint32_t py = prev_fctl->y_offset;
           uint32_t pw = prev_fctl->width;
           uint32_t ph = prev_fctl->height;
+          if (px >= canvas_w || py >= canvas_h) {
+            pw = ph = 0;
+          }
+          else {
+            if (pw > canvas_w - px) {
+              pw = canvas_w - px;
+            }
+            if (ph > canvas_h - py) {
+              ph = canvas_h - py;
+            }
+          }
           if (prev_fctl->dispose_op == 1) {
             // BACKGROUND: clear previous frame rect to transparent black.
             for (uint32_t y = 0; y < ph; y++) {
@@ -460,7 +500,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
           gimg_free(a, canvas);
           return dr;
         }
-        gimg_png_apng_blend_frame(canvas, canvas_stride,
+        gimg_png_apng_blend_frame(canvas, canvas_stride, canvas_w, canvas_h,
             (const unsigned char *)frame_pixels, frame_stride, fx, fy, dec_fw,
             dec_fh, bpp_out, (state->frames[i].fctl.blend_op == 1) ? 1 : 0);
         gimg_free(a, frame_pixels);

@@ -372,6 +372,25 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return GIMG_ERR_FORMAT;  // Out-of-order sequence.
       }
       next_sequence++;
+      // The APNG specification requires a frame to lie inside the canvas the
+      // IHDR describes: width and height are greater than zero, x_offset +
+      // width is at most the image width, and likewise for the height. It is
+      // not an advisory constraint - compositing writes the frame into the
+      // canvas at that offset, so a frame declared past the edge is a write
+      // past the end of the canvas buffer. Pillow refuses such a file
+      // ("APNG contains invalid frames").
+      //
+      // The sums are done in 64 bits: both terms are 32-bit and either can be
+      // near the top of the range, so checking them after the addition would
+      // be checking a value that had already wrapped.
+      if (fctl.width == 0 || fctl.height == 0 ||
+          (uint64_t)fctl.x_offset + (uint64_t)fctl.width >
+              (uint64_t)state->ihdr.width ||
+          (uint64_t)fctl.y_offset + (uint64_t)fctl.height >
+              (uint64_t)state->ihdr.height) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
       if (num_fcTL_seen == 0 && !seen_idat) {
         // fcTL(0) before IDAT: default image is first frame.
         if (fctl.width != state->ihdr.width ||

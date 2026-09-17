@@ -350,6 +350,7 @@ def main() -> None:
     _write_third_edition_fixtures()
     _write_colour_typed_ancillary_fixtures()
     _write_filter_validity_fixtures()
+    _write_apng_frame_bounds_fixtures()
     _write_apng16_oracle_expected()
 
 
@@ -828,6 +829,56 @@ def _write_filter_validity_fixtures() -> None:
     rows[0] = 5
     write_png("png_bad_filter_type_interlaced.png",
         signature + ihdr_i + png_chunk(b"IDAT", idat_zlib(bytes(rows))) + iend)
+
+
+
+def _write_apng_frame_bounds_fixtures() -> None:
+    """APNG frames placed relative to the canvas the IHDR describes.
+
+    The APNG specification requires a frame to lie inside that canvas: width
+    and height above zero, x_offset + width no greater than the image width,
+    and likewise for the height. It is not advisory. Compositing writes the
+    frame into the canvas at that offset, so a frame declared past the edge is
+    a write past the end of the canvas buffer - which is what this library
+    used to do. Pillow refuses such a file ("APNG contains invalid frames").
+    """
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+    w = h = 8
+
+    def rgba(width, height, colour):
+        return b"".join(b"\x00" + bytes(list(colour) * width)
+                        for _ in range(height))
+
+    ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+    actl = png_chunk(b"acTL", struct.pack(">II", 2, 0))
+    fctl0 = png_chunk(b"fcTL",
+        struct.pack(">IIIIIHHBB", 0, w, h, 0, 0, 1, 10, 0, 0))
+    idat = png_chunk(b"IDAT", idat_zlib(rgba(w, h, (255, 0, 0, 255))))
+
+    # Frame 1 is the full canvas size but offset to (4,4), so it runs four
+    # pixels past the right and bottom edges.
+    fctl_bad = png_chunk(b"fcTL",
+        struct.pack(">IIIIIHHBB", 1, w, h, 4, 4, 1, 10, 0, 0))
+    fdat_bad = png_chunk(b"fdAT",
+        struct.pack(">I", 2) + idat_zlib(rgba(w, h, (0, 255, 0, 255)))[0:])
+    write_png("png_apng_frame_outside_canvas.png",
+        signature + ihdr + actl + fctl0 + idat + fctl_bad + fdat_bad + iend)
+
+    # The control: a 4x4 frame at (4,4) fits exactly, and must still decode.
+    # Without it, a decoder that refused every offset frame would pass.
+    fctl_ok = png_chunk(b"fcTL",
+        struct.pack(">IIIIIHHBB", 1, 4, 4, 4, 4, 1, 10, 0, 0))
+    fdat_ok = png_chunk(b"fdAT",
+        struct.pack(">I", 2) + idat_zlib(rgba(4, 4, (0, 255, 0, 255))))
+    write_png("png_apng_frame_inside_canvas.png",
+        signature + ihdr + actl + fctl0 + idat + fctl_ok + fdat_ok + iend)
+
+    # A zero-sized frame: the spec requires width and height above zero.
+    fctl_zero = png_chunk(b"fcTL",
+        struct.pack(">IIIIIHHBB", 1, 0, 0, 0, 0, 1, 10, 0, 0))
+    write_png("png_apng_frame_zero_size.png",
+        signature + ihdr + actl + fctl0 + idat + fctl_zero + fdat_ok + iend)
 
 
 def _write_apng16_oracle_expected() -> None:

@@ -1604,3 +1604,94 @@ TEST(PngChunkShape, ThoseSameChunksAtTheirRightLengthStillLoad) {
     EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_OK) << c.type;
   }
 }
+
+// ---------------------------------------------------------------------------
+// APNG frame bounds
+//
+// The APNG specification requires a frame to lie inside the canvas the IHDR
+// describes. It is not an advisory constraint: compositing writes the frame
+// into the canvas at x_offset, y_offset, so a frame declared past the edge is
+// a heap write past the end of the canvas buffer. This library used to do
+// exactly that, and AddressSanitizer reported it as
+//
+//   heap-buffer-overflow ... WRITE of size 1
+//   in gimg_png_apng_blend_frame src/codec/png/png_decode.c
+//
+// reachable from any file that declared one. Pillow refuses such a file
+// ("APNG contains invalid frames").
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Load, then decode every item; returns the first non-OK result. */
+GIMG_Result DecodeAllItems(const char * filename) {
+  std::vector<uint8_t> buf;
+  if (!png_test::load_png_file(filename, buf)) {
+    return GIMG_ERR_IO;
+  }
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(buf.data(), buf.size(), &s) != GIMG_OK) {
+    return GIMG_ERR_INTERNAL;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+    return r;
+  }
+  size_t n = gimg_doc_item_count(doc);
+  for (size_t i = 0; i < n && r == GIMG_OK; i++) {
+    GIMG_Raster * raster = nullptr;
+    r = gimg_item_decode(gimg_doc_item(doc, i), nullptr, &raster);
+    if (raster) {
+      gimg_raster_destroy(raster);
+    }
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  return r;
+}
+
+} // namespace
+
+TEST(PngApngBounds, AFrameReachingPastTheCanvasIsRefused) {
+  // An 8x8 frame at (4,4) on an 8x8 canvas: four pixels past each edge.
+  EXPECT_EQ(DecodeAllItems("png_apng_frame_outside_canvas.png"),
+      GIMG_ERR_FORMAT);
+}
+
+TEST(PngApngBounds, AFrameOfZeroSizeIsRefused) {
+  EXPECT_EQ(DecodeAllItems("png_apng_frame_zero_size.png"), GIMG_ERR_FORMAT);
+}
+
+TEST(PngApngBounds, AnOffsetFrameThatFitsStillDecodes) {
+  // The control. A 4x4 frame at (4,4) fits an 8x8 canvas exactly, and a check
+  // that refused every offset frame would pass the two tests above and make
+  // the whole of APNG's frame placement unusable.
+  EXPECT_EQ(DecodeAllItems("png_apng_frame_inside_canvas.png"), GIMG_OK);
+
+  // And the second frame really is composited where it was asked to be: the
+  // canvas is red, the frame is green, so the quadrant at (4,4) is green and
+  // the pixel at (0,0) is still red.
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(
+      png_test::load_png_file("png_apng_frame_inside_canvas.png", buf));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(doc), 2u);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &raster), GIMG_OK);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const auto * px =
+      static_cast<const unsigned char *>(gimg_raster_pixels_const(raster));
+  EXPECT_EQ(px[0], 255) << "(0,0) is outside the frame and stays red";
+  EXPECT_EQ(px[1], 0);
+  const unsigned char * at44 = px + 4u * stride + 4u * 4u;
+  EXPECT_EQ(at44[0], 0) << "(4,4) is inside the frame and is green";
+  EXPECT_EQ(at44[1], 255);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
