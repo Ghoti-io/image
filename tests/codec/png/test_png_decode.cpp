@@ -25,6 +25,7 @@
 // For gimg_png_write_chunk(), so these tests build their streams with the
 // library's own CRC rather than a second implementation of 5.5.
 #include "../../../src/codec/png/png_internal.h"
+#include "../../../src/core/alloc_internal.h"
 #include <array>
 #include <fstream>
 
@@ -1694,4 +1695,220 @@ TEST(PngApngBounds, AnOffsetFrameThatFitsStillDecodes) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
+}
+
+// ---------------------------------------------------------------------------
+// Text chunks (PNG 11.3.3)
+//
+// tEXt carries its text directly, zTXt carries it deflated, and iTXt carries
+// it either way with a language tag and a translated keyword in between. All
+// three feed the document's description when their keyword is "Description" or
+// "Comment".
+//
+// None of this was reached by a test: the zTXt and iTXt branches of
+// gimg_png_text_chunk_decode were entirely uncovered, including the handling
+// of a compression method the format does not define - which the reference
+// documentation described, incorrectly for one of the two.
+//
+// A text chunk that cannot be decoded is skipped rather than failing the load,
+// which is what libpng does with one. The image is not at fault.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** zlib-wrap a payload the way a text chunk carries one (RFC 1950). */
+std::vector<uint8_t> Deflate(const std::string & text) {
+  std::vector<uint8_t> raw(text.begin(), text.end());
+  std::vector<uint8_t> out = {0x78, 0x01};
+  size_t off = 0;
+  do {
+    size_t n = raw.size() - off;
+    if (n > 65535u) {
+      n = 65535u;
+    }
+    out.push_back((off + n == raw.size()) ? 1 : 0);
+    out.push_back((uint8_t)(n & 0xFF));
+    out.push_back((uint8_t)(n >> 8));
+    out.push_back((uint8_t)(~n & 0xFF));
+    out.push_back((uint8_t)((~n >> 8) & 0xFF));
+    out.insert(out.end(), raw.begin() + (long)off, raw.begin() + (long)(off + n));
+    off += n;
+  } while (off < raw.size());
+  uint32_t s1 = 1, s2 = 0;
+  for (uint8_t v : raw) {
+    s1 = (s1 + v) % 65521u;
+    s2 = (s2 + s1) % 65521u;
+  }
+  uint32_t adler = (s2 << 16) | s1;
+  out.push_back((uint8_t)(adler >> 24));
+  out.push_back((uint8_t)(adler >> 16));
+  out.push_back((uint8_t)(adler >> 8));
+  out.push_back((uint8_t)adler);
+  return out;
+}
+
+void Append(std::vector<uint8_t> & v, const std::string & s) {
+  v.insert(v.end(), s.begin(), s.end());
+}
+
+/** Run one payload through the decoder; returns the result and the text. */
+GIMG_Result DecodeText(gimg_png_chunk_type_t type,
+    const std::vector<uint8_t> & payload, std::string * out) {
+  size_t kw_len = 0;
+  char * text = nullptr;
+  GIMG_Result r = gimg_png_text_chunk_decode(
+      type, payload.data(), payload.size(), gimg_allocator_default(), &kw_len,
+      &text);
+  if (r == GIMG_OK && text) {
+    *out = text;
+  }
+  if (text) {
+    gimg_free(gimg_allocator_default(), text);
+  }
+  return r;
+}
+
+} // namespace
+
+TEST(PngTextChunk, PlainTextComesBackAsItWasWritten) {
+  std::vector<uint8_t> p;
+  Append(p, "Description");
+  p.push_back(0);
+  Append(p, "a caption");
+  std::string got;
+  EXPECT_EQ(DecodeText(GIMG_PNG_tEXt, p, &got), GIMG_OK);
+  EXPECT_EQ(got, "a caption");
+}
+
+TEST(PngTextChunk, CompressedTextIsInflated) {
+  std::vector<uint8_t> p;
+  Append(p, "Description");
+  p.push_back(0);
+  p.push_back(0); // compression method 0, the only one 11.3.3 defines
+  std::vector<uint8_t> z = Deflate("a longer caption, deflated");
+  p.insert(p.end(), z.begin(), z.end());
+  std::string got;
+  EXPECT_EQ(DecodeText(GIMG_PNG_zTXt, p, &got), GIMG_OK);
+  EXPECT_EQ(got, "a longer caption, deflated");
+}
+
+TEST(PngTextChunk, InternationalTextWorksBothCompressedAndNot) {
+  // iTXt: keyword, compression flag, compression method, language tag,
+  // translated keyword, then the text (11.3.3).
+  for (int compressed = 0; compressed <= 1; compressed++) {
+    std::vector<uint8_t> p;
+    Append(p, "Description");
+    p.push_back(0);
+    p.push_back((uint8_t)compressed);
+    p.push_back(0); // compression method
+    Append(p, "en");
+    p.push_back(0);
+    Append(p, "Beskrivelse");
+    p.push_back(0);
+    const std::string text = "a caption with an accent: cafe";
+    if (compressed) {
+      std::vector<uint8_t> z = Deflate(text);
+      p.insert(p.end(), z.begin(), z.end());
+    }
+    else {
+      Append(p, text);
+    }
+    std::string got;
+    EXPECT_EQ(DecodeText(GIMG_PNG_iTXt, p, &got), GIMG_OK)
+        << "compressed=" << compressed;
+    EXPECT_EQ(got, text) << "compressed=" << compressed;
+  }
+}
+
+TEST(PngTextChunk, ACompressionMethodTheFormatDoesNotDefineIsRefused) {
+  // 11.3.3 defines method 0 and nothing else. Both chunk types say the same
+  // thing about the same byte; they used to disagree.
+  {
+    std::vector<uint8_t> p;
+    Append(p, "Description");
+    p.push_back(0);
+    p.push_back(1); // not a compression method
+    std::vector<uint8_t> z = Deflate("text");
+    p.insert(p.end(), z.begin(), z.end());
+    std::string got;
+    EXPECT_EQ(DecodeText(GIMG_PNG_zTXt, p, &got), GIMG_ERR_FORMAT);
+  }
+  {
+    std::vector<uint8_t> p;
+    Append(p, "Description");
+    p.push_back(0);
+    p.push_back(1); // compressed
+    p.push_back(1); // not a compression method
+    Append(p, "en");
+    p.push_back(0);
+    p.push_back(0);
+    std::vector<uint8_t> z = Deflate("text");
+    p.insert(p.end(), z.begin(), z.end());
+    std::string got;
+    EXPECT_EQ(DecodeText(GIMG_PNG_iTXt, p, &got), GIMG_ERR_FORMAT);
+  }
+}
+
+TEST(PngTextChunk, TextWhoseChecksumDoesNotMatchIsRefused) {
+  // The Adler-32 at the end of a zlib stream (10.3, RFC 1950) is checked for a
+  // text chunk as it is for image data - it is the only check that catches
+  // bytes which still inflate but to something else.
+  std::vector<uint8_t> p;
+  Append(p, "Description");
+  p.push_back(0);
+  p.push_back(0);
+  std::vector<uint8_t> z = Deflate("a caption");
+  z[z.size() - 1] ^= 0xFF; // damage the checksum only
+  p.insert(p.end(), z.begin(), z.end());
+  std::string got;
+  EXPECT_EQ(DecodeText(GIMG_PNG_zTXt, p, &got), GIMG_ERR_CORRUPT);
+}
+
+TEST(PngTextChunk, AKeywordWithNoTerminatorIsRefused) {
+  std::vector<uint8_t> p;
+  Append(p, "Description"); // no NUL, so there is no text after it
+  std::string got;
+  EXPECT_EQ(DecodeText(GIMG_PNG_tEXt, p, &got), GIMG_ERR_FORMAT);
+}
+
+TEST(PngTextChunk, ACompressedDescriptionReachesTheDocument) {
+  // End to end: the chunk in a file, the description on the loaded document.
+  std::vector<uint8_t> p;
+  Append(p, "Description");
+  p.push_back(0);
+  p.push_back(0);
+  std::vector<uint8_t> z = Deflate("what the picture shows");
+  p.insert(p.end(), z.begin(), z.end());
+
+  PngBuilder b;
+  b.ihdr(4, 4, 8, 0).chunk("zTXt", p);
+  b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(b.bytes().data(), b.bytes().size(), &s),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
+  ASSERT_NE(meta, nullptr);
+  const char * d = gimg_meta_common_description(meta);
+  ASSERT_NE(d, nullptr);
+  EXPECT_STREQ(d, "what the picture shows");
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(PngTextChunk, ABrokenTextChunkDoesNotStopTheImageLoading) {
+  // libpng skips a text chunk it cannot read and carries on; so does this.
+  std::vector<uint8_t> p;
+  Append(p, "Description");
+  p.push_back(0);
+  p.push_back(1); // not a compression method
+  std::vector<uint8_t> z = Deflate("text");
+  p.insert(p.end(), z.begin(), z.end());
+
+  PngBuilder b;
+  b.ihdr(4, 4, 8, 0).chunk("zTXt", p);
+  b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+  EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_OK);
 }

@@ -302,7 +302,12 @@ GIMG_Result gimg_png_text_chunk_decode(gimg_png_chunk_type_t type,
     }
     uint8_t comp = payload[kw_len + 1u];
     if (comp != 0) {
-      return GIMG_ERR_UNSUPPORTED;
+      // 11.3.3 defines compression method 0 and nothing else, so this is a
+      // malformed chunk rather than a feature this library has not got round
+      // to - which is what the iTXt path below already said about the same
+      // byte. The caller skips a text chunk it cannot decode, so either way
+      // the image still loads; the distinction is about what is true.
+      return GIMG_ERR_FORMAT;
     }
     const unsigned char * zlib_src = payload + kw_len + 2u;
     size_t zlib_len = payload_size - kw_len - 2u;
