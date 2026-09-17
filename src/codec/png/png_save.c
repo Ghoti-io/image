@@ -1543,6 +1543,28 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
     gimg_free(gimg_alloc_or_default(allocator), raw);
     return GIMG_ERR_OOM;
   }
+  // Measured, not assumed, and the measurement does not give a clear winner.
+  // Against "default" on this compress library, over six images and the
+  // published conformance suite:
+  //
+  //   gradient 800x600        filtered  -9.0%     smaller
+  //   text/UI 1000x800        filtered  -4.9%     smaller
+  //   PngSuite, 162 files     filtered  -1.25%    smaller
+  //   incompressible noise    the same
+  //   photograph 900x700      filtered  +9.3%     larger
+  //   photograph 1024x1024    filtered  +4.5%     larger
+  //
+  // So it wins on smooth and synthetic content and loses on noisy
+  // photographic content. It is also about 3.5x slower - this library's
+  // "filtered" spends *more* search effort than its default (longer hash
+  // chains and lazy matching), which is the opposite of what zlib's
+  // Z_FILTERED does and the opposite of what the name suggests.
+  //
+  // Left as it is because no strategy dominates and this one wins more often
+  // than it loses. Encoding both and keeping the smaller would always give the
+  // better file, at roughly 40% more time on every save and four encodes
+  // rather than two whenever a palette is also a candidate; that trade is a
+  // real option and not obviously the right one.
   gs = gcomp_options_set_string(gopts, "deflate.strategy", "filtered");
   if (gs != GCOMP_OK) {
     gcomp_options_destroy(gopts);
