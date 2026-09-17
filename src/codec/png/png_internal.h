@@ -103,6 +103,25 @@ typedef uint32_t gimg_png_chunk_type_t;
 #define GIMG_PNG_pHYs UINT32_C(0x70485973) // 'pHYs' §11.3.4.3
 #define GIMG_PNG_tIME UINT32_C(0x74494D45) // 'tIME' §11.3.5
 
+/** pHYs unit specifier: 0 = aspect ratio only, 1 = metre (§11.3.4.3). */
+#define GIMG_PNG_PHYS_UNIT_UNKNOWN 0u
+#define GIMG_PNG_PHYS_UNIT_METRE 1u
+
+/**
+ * @brief Convert between dots per inch and pHYs' pixels per metre.
+ *
+ * PNG measures resolution in pixels per metre (11.3.4.3) and this library's
+ * common metadata carries dots per inch, which is what JFIF and Exif use. An
+ * inch is exactly 0.0254 m, so the conversion is exact arithmetic on integers
+ * rather than a float: 5000/127 one way and 127/5000 the other, rounded.
+ *
+ * Zero in means zero out, which is how both sides spell "not stated".
+ * @{
+ */
+uint32_t gimg_png_dpi_to_pixels_per_metre(uint32_t dpi);
+uint32_t gimg_png_pixels_per_metre_to_dpi(uint32_t ppm);
+/** @} */
+
 /** PNG Third Edition colour chunks (W3C PNG 3rd ed., 2025). */
 #define GIMG_PNG_cICP UINT32_C(0x63494350) // 'cICP' coding-independent points
 #define GIMG_PNG_mDCv UINT32_C(0x6D444376) // 'mDCv' mastering display volume

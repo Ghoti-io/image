@@ -261,6 +261,33 @@ void gimg_png_set_sample_bits(
 }
 
 //
+// Physical pixel dimensions (PNG 11.3.4.3)
+//
+// pHYs states pixels per metre; the common metadata carries dots per inch,
+// which is what JFIF and Exif state and so what the JPEG codec already reads
+// and writes. An inch is exactly 0.0254 m, so both directions are integer
+// arithmetic with explicit rounding rather than a float round trip - 5000/127
+// and 127/5000. The intermediate is 64-bit because dpi * 5000 leaves the
+// 32-bit range at about 859,000 dpi, which no sane file states but a hostile
+// one may.
+//
+
+uint32_t gimg_png_dpi_to_pixels_per_metre(uint32_t dpi) {
+  if (dpi == 0) {
+    return 0; // "not stated" on both sides
+  }
+  uint64_t ppm = ((uint64_t)dpi * 5000u + 63u) / 127u;
+  return (ppm > UINT32_MAX) ? UINT32_MAX : (uint32_t)ppm;
+}
+
+uint32_t gimg_png_pixels_per_metre_to_dpi(uint32_t ppm) {
+  if (ppm == 0) {
+    return 0;
+  }
+  return (uint32_t)(((uint64_t)ppm * 127u + 2500u) / 5000u);
+}
+
+//
 // Text chunk decode (tEXt/zTXt/iTXt) for meta_common description.
 //
 GIMG_Result gimg_png_text_chunk_decode(gimg_png_chunk_type_t type,

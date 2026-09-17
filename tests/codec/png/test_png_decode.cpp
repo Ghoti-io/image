@@ -1912,3 +1912,216 @@ TEST(PngTextChunk, ABrokenTextChunkDoesNotStopTheImageLoading) {
   b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
   EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_OK);
 }
+
+// ---------------------------------------------------------------------------
+// Physical pixel dimensions (PNG 11.3.4.3)
+//
+// pHYs states pixels per metre; the common metadata carries dots per inch,
+// which is what JFIF and Exif state and what the JPEG codec already reads and
+// writes. Until this was wired up a resolution survived a JPEG round trip and
+// was lost the moment the image became a PNG.
+// ---------------------------------------------------------------------------
+
+TEST(PngPhys, DotsPerInchAndPixelsPerMetreConvertBothWays) {
+  // An inch is exactly 0.0254 m. 300 dpi is 11811 pixels per metre, which is
+  // the value every other tool writes for 300 dpi - Pillow reads this file
+  // back as 299.9994, so agreeing on the integer matters more than agreeing
+  // on the real number.
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(300u), 11811u);
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(72u), 2835u);
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(96u), 3780u);
+
+  EXPECT_EQ(gimg_png_pixels_per_metre_to_dpi(11811u), 300u);
+  EXPECT_EQ(gimg_png_pixels_per_metre_to_dpi(2835u), 72u);
+  EXPECT_EQ(gimg_png_pixels_per_metre_to_dpi(3780u), 96u);
+
+  // Zero is how both sides spell "not stated" and must not become one.
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(0u), 0u);
+  EXPECT_EQ(gimg_png_pixels_per_metre_to_dpi(0u), 0u);
+
+  // Every ordinary resolution survives the trip; the conversion is not lossy
+  // in the range anyone uses.
+  for (uint32_t dpi = 1; dpi <= 1200; dpi++) {
+    EXPECT_EQ(
+        gimg_png_pixels_per_metre_to_dpi(gimg_png_dpi_to_pixels_per_metre(dpi)),
+        dpi)
+        << "dpi " << dpi;
+  }
+  // And a value large enough to overflow a 32-bit intermediate saturates
+  // rather than wrapping: dpi * 5000 leaves the range near 859,000.
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(UINT32_MAX), UINT32_MAX);
+}
+
+namespace {
+
+/** A 4x4 grey PNG carrying one pHYs with the given values. */
+std::vector<uint8_t> PngWithPhys(uint32_t x_ppm, uint32_t y_ppm, uint8_t unit) {
+  std::vector<uint8_t> phys = {(uint8_t)(x_ppm >> 24), (uint8_t)(x_ppm >> 16),
+      (uint8_t)(x_ppm >> 8), (uint8_t)x_ppm, (uint8_t)(y_ppm >> 24),
+      (uint8_t)(y_ppm >> 16), (uint8_t)(y_ppm >> 8), (uint8_t)y_ppm, unit};
+  PngBuilder b;
+  b.ihdr(4, 4, 8, 0).chunk("pHYs", phys);
+  b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+  return b.bytes();
+}
+
+/** Load bytes and report the document's dpi. */
+void LoadDpi(const std::vector<uint8_t> & png, uint32_t * x, uint32_t * y) {
+  *x = *y = 0;
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Meta_Common * m = gimg_doc_meta_common(doc);
+  if (m) {
+    gimg_meta_common_dpi(m, x, y);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+} // namespace
+
+TEST(PngPhys, AResolutionInMetresBecomesTheDocumentsDpi) {
+  uint32_t x = 0, y = 0;
+  LoadDpi(PngWithPhys(11811u, 11811u, 1u), &x, &y);
+  EXPECT_EQ(x, 300u);
+  EXPECT_EQ(y, 300u);
+}
+
+TEST(PngPhys, AnAspectRatioIsNotAResolution) {
+  // Unit specifier 0 says how the two axes relate, not how big a pixel is
+  // (11.3.4.3), so there is no dpi in it to report.
+  uint32_t x = 0, y = 0;
+  LoadDpi(PngWithPhys(2u, 1u, 0u), &x, &y);
+  EXPECT_EQ(x, 0u);
+  EXPECT_EQ(y, 0u);
+}
+
+TEST(PngPhys, NonSquarePixelsKeepTheirTwoAxesApart) {
+  uint32_t x = 0, y = 0;
+  LoadDpi(PngWithPhys(11811u, 5906u, 1u), &x, &y);
+  EXPECT_EQ(x, 300u);
+  EXPECT_EQ(y, 150u);
+}
+
+TEST(PngPhys, ADpiTheDocumentCarriesIsWrittenOut) {
+  // A document that never came from a PNG - so nothing preserved a pHYs - but
+  // which knows its resolution. This is the JPEG-to-PNG case.
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(4, 4, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
+                nullptr, 0, &raster),
+      GIMG_OK);
+  memset(gimg_raster_pixels(raster), 128, 16);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK);
+  gimg_raster_destroy(raster);
+  GIMG_Meta_Common * meta = nullptr;
+  ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &meta), GIMG_OK);
+  gimg_meta_common_set_dpi(meta, 300u, 300u);
+
+  for (GIMG_Meta_Policy policy :
+      {GIMG_META_PRESERVE_ALL, GIMG_META_KEEP_COMMON_ONLY}) {
+    GIMG_Stream * out_s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.metadata_policy = policy;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out_s, "png", &opts, &report), GIMG_OK);
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out_s, &p, &n);
+    std::vector<uint8_t> saved(static_cast<const uint8_t *>(p),
+        static_cast<const uint8_t *>(p) + n);
+    gimg_stream_destroy(out_s);
+
+    uint32_t x = 0, y = 0;
+    LoadDpi(saved, &x, &y);
+    EXPECT_EQ(x, 300u) << "policy " << (int)policy;
+    EXPECT_EQ(y, 300u) << "policy " << (int)policy;
+  }
+  gimg_doc_destroy(doc);
+}
+
+TEST(PngPhys, TheChunkTheFileCameWithIsTheOneWrittenBack) {
+  // Only one pHYs may appear (Table 5.3 allows one). The file's own is what
+  // was actually there; the metadata copy is a fallback for a document that
+  // arrived without one.
+  std::vector<uint8_t> png = PngWithPhys(11811u, 11811u, 1u);
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out_s, "png", &opts, &report), GIMG_OK);
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out_s, &p, &n);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(p),
+      static_cast<const uint8_t *>(p) + n);
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+
+  int count = 0;
+  size_t i = 8;
+  while (i + 8 <= saved.size()) {
+    uint32_t len = ((uint32_t)saved[i] << 24) | ((uint32_t)saved[i + 1] << 16) |
+        ((uint32_t)saved[i + 2] << 8) | (uint32_t)saved[i + 3];
+    if (memcmp(&saved[i + 4], "pHYs", 4) == 0) {
+      count++;
+    }
+    if (i + 12 + (size_t)len > saved.size()) {
+      break;
+    }
+    i += 12 + (size_t)len;
+  }
+  EXPECT_EQ(count, 1) << "one pHYs, not the file's and the metadata's as well";
+}
+
+TEST(PngPhys, AResolutionSurvivesTheTripFromJpeg) {
+  // The case this was for. A JPEG states its resolution in a JFIF APP0 and the
+  // JPEG codec already reads it into the common metadata; before pHYs was
+  // wired up, saving that document as a PNG dropped it on the floor.
+  //
+  // The fixture is written by Pillow at 300 dpi, so the density on the way in
+  // is a real one and not this project's idea of one.
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(png_test::load_png_file("jpeg_300dpi_8x8.jpg", jpeg))
+      << "run tests/data/png/generate.py";
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
+  ASSERT_NE(meta, nullptr);
+  uint32_t jx = 0, jy = 0;
+  gimg_meta_common_dpi(meta, &jx, &jy);
+  ASSERT_EQ(jx, 300u) << "the JPEG half of this is the other suite's business";
+
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out_s, "png", &opts, &report), GIMG_OK);
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out_s, &p, &n);
+  std::vector<uint8_t> png(static_cast<const uint8_t *>(p),
+      static_cast<const uint8_t *>(p) + n);
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+
+  uint32_t px = 0, py = 0;
+  LoadDpi(png, &px, &py);
+  EXPECT_EQ(px, 300u) << "300 dpi went in as JPEG and must come out as PNG";
+  EXPECT_EQ(py, 300u);
+}

@@ -783,6 +783,36 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   // Populate meta_common description from first tEXt/zTXt/iTXt with keyword
   // "Description" or "Comment".
+  // pHYs (11.3.4.3) states the physical size of a pixel, which is the same
+  // thing the common metadata calls dpi and which the JPEG codec already reads
+  // out of JFIF. Without this a resolution survived a JPEG round trip and was
+  // lost the moment the image became a PNG.
+  //
+  // Only unit specifier 1 says anything physical. Unit 0 gives an aspect
+  // ratio, which is a statement about the shape of a pixel and not its size,
+  // and has no dpi to offer.
+  for (size_t i = 0; i < state->ancillary_count; i++) {
+    if (state->ancillary[i].type != GIMG_PNG_pHYs ||
+        state->ancillary[i].payload_size != 9u) {
+      continue;
+    }
+    const unsigned char * p = state->ancillary[i].payload;
+    if (p[8] != GIMG_PNG_PHYS_UNIT_METRE) {
+      break;
+    }
+    uint32_t x_ppm = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+        ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+    uint32_t y_ppm = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) |
+        ((uint32_t)p[6] << 8) | (uint32_t)p[7];
+    GIMG_Meta_Common * meta_common = NULL;
+    if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
+      gimg_meta_common_set_dpi(meta_common,
+          gimg_png_pixels_per_metre_to_dpi(x_ppm),
+          gimg_png_pixels_per_metre_to_dpi(y_ppm));
+    }
+    break;
+  }
+
   for (size_t i = 0; i < state->ancillary_count; i++) {
     gimg_png_chunk_type_t t = state->ancillary[i].type;
     if (t != GIMG_PNG_tEXt && t != GIMG_PNG_zTXt && t != GIMG_PNG_iTXt) {

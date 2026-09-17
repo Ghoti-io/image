@@ -351,6 +351,7 @@ def main() -> None:
     _write_colour_typed_ancillary_fixtures()
     _write_filter_validity_fixtures()
     _write_apng_frame_bounds_fixtures()
+    _write_jpeg_with_resolution()
     _write_apng16_oracle_expected()
 
 
@@ -879,6 +880,28 @@ def _write_apng_frame_bounds_fixtures() -> None:
         struct.pack(">IIIIIHHBB", 1, 0, 0, 0, 0, 1, 10, 0, 0))
     write_png("png_apng_frame_zero_size.png",
         signature + ihdr + actl + fctl0 + idat + fctl_zero + fdat_ok + iend)
+
+
+
+def _write_jpeg_with_resolution() -> None:
+    """A small JPEG stating 300 dpi, for the PNG side of the resolution test.
+
+    PNG measures resolution in pHYs (11.3.4.3) and JPEG in a JFIF APP0, and the
+    point of the fixture is that a resolution crossing from one to the other
+    arrives intact. Written with Pillow so the JFIF density is a real one and
+    not this project's idea of one.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        raise SystemExit("Pillow is required to generate the resolution fixture") from None
+    im = Image.new("RGB", (8, 8))
+    for y in range(8):
+        for x in range(8):
+            im.putpixel((x, y), ((x * 32) % 256, (y * 32) % 256, 128))
+    path = os.path.join(SCRIPT_DIR, "jpeg_300dpi_8x8.jpg")
+    im.save(path, "JPEG", dpi=(300, 300), quality=90)
+    print("Wrote", path)
 
 
 def _write_apng16_oracle_expected() -> None:

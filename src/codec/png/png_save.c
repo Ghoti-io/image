@@ -288,6 +288,24 @@ static bool gimg_png_raster_to_ihdr(const GIMG_Raster * raster,
   return false;
 }
 
+/**
+ * Build a pHYs payload (9 bytes): pixels per metre on each axis, then the unit
+ * specifier (11.3.4.3). Always unit 1, because a resolution this library has
+ * is a physical one - unit 0 states an aspect ratio and no size at all.
+ */
+static void gimg_png_build_phys(
+    unsigned char * out, uint32_t x_ppm, uint32_t y_ppm) {
+  out[0] = (unsigned char)(x_ppm >> 24);
+  out[1] = (unsigned char)(x_ppm >> 16);
+  out[2] = (unsigned char)(x_ppm >> 8);
+  out[3] = (unsigned char)(x_ppm & 0xFFu);
+  out[4] = (unsigned char)(y_ppm >> 24);
+  out[5] = (unsigned char)(y_ppm >> 16);
+  out[6] = (unsigned char)(y_ppm >> 8);
+  out[7] = (unsigned char)(y_ppm & 0xFFu);
+  out[8] = (unsigned char)GIMG_PNG_PHYS_UNIT_METRE;
+}
+
 /** Build IHDR payload (13 bytes). @a interlace_method 0 or 1 (Adam7). */
 static void gimg_png_build_ihdr(unsigned char * out, uint32_t width,
     uint32_t height, uint8_t bit_depth, uint8_t color_type,
@@ -1811,6 +1829,23 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
 
   if (policy == GIMG_META_KEEP_COMMON_ONLY) {
+    // A resolution is common metadata, so this policy keeps it (11.3.4.3).
+    GIMG_Meta_Common * common_meta = gimg_doc_meta_common(doc);
+    if (common_meta) {
+      uint32_t x_dpi = 0, y_dpi = 0;
+      gimg_meta_common_dpi(common_meta, &x_dpi, &y_dpi);
+      if (x_dpi > 0 && y_dpi > 0) {
+        unsigned char phys[9];
+        gimg_png_build_phys(phys, gimg_png_dpi_to_pixels_per_metre(x_dpi),
+            gimg_png_dpi_to_pixels_per_metre(y_dpi));
+        r = gimg_png_write_chunk(stream, GIMG_PNG_pHYs, phys, sizeof(phys));
+        if (r != GIMG_OK) {
+          gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+          return r;
+        }
+        report->bytes_written += 8 + sizeof(phys) + 4;
+      }
+    }
     // Emit only color-related metadata from raster's color info.
     if (color_info_for_save.transfer == GIMG_TRANSFER_SRGB ||
         color_info_for_save.primaries == GIMG_PRIMARIES_SRGB) {
@@ -1896,6 +1931,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
     GIMG_Meta_Common * meta_common = gimg_doc_meta_common(doc);
     bool have_description_or_comment_from_ancillary = false;
+    bool have_phys_from_ancillary = false;
     // PRESERVE_ALL, STRIP_GPS, or NORMALIZE_EXIF: emit ancillary from state.
     if (state && state->ancillary) {
       for (size_t i = 0; i < state->ancillary_count; i++) {
@@ -1920,6 +1956,9 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
             gimg_png_text_keyword_is_description_or_comment(
                 state->ancillary[i].payload, state->ancillary[i].payload_size)) {
           have_description_or_comment_from_ancillary = true;
+        }
+        if (t == GIMG_PNG_pHYs) {
+          have_phys_from_ancillary = true;
         }
         const void * chunk_payload = state->ancillary[i].payload;
         size_t chunk_size = state->ancillary[i].payload_size;
@@ -1983,6 +2022,26 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           return r;
         }
         report->bytes_written += 8 + chunk_size + 4;
+      }
+    }
+    // A resolution the document carries but the file did not: pHYs
+    // (11.3.4.3). The chunk the file came with wins, the same way the
+    // description does - it is what was actually there, and this is only a way
+    // of not losing a resolution that arrived from somewhere else, such as a
+    // JPEG's JFIF density.
+    if (!have_phys_from_ancillary && meta_common) {
+      uint32_t x_dpi = 0, y_dpi = 0;
+      gimg_meta_common_dpi(meta_common, &x_dpi, &y_dpi);
+      if (x_dpi > 0 && y_dpi > 0) {
+        unsigned char phys[9];
+        gimg_png_build_phys(phys, gimg_png_dpi_to_pixels_per_metre(x_dpi),
+            gimg_png_dpi_to_pixels_per_metre(y_dpi));
+        r = gimg_png_write_chunk(stream, GIMG_PNG_pHYs, phys, sizeof(phys));
+        if (r != GIMG_OK) {
+          gimg_free(alloc, zlib_buf);
+          return r;
+        }
+        report->bytes_written += 8 + sizeof(phys) + 4;
       }
     }
     // If meta_common has description and we did not write one from ancillary,
