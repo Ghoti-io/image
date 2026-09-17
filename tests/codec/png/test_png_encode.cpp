@@ -27,6 +27,7 @@
 // fixture per case would be a sensible way to cover.
 #include "../../../src/codec/png/png_internal.h"
 #include <fstream>
+#include <set>
 #include <string>
 
 TEST(PngEncode, SaveNullDocReturnsInternal) {
@@ -2072,4 +2073,254 @@ TEST(PngPalette, AnImageThatArrivedAsAPaletteIsStillWrittenAsOne) {
   uint8_t ct = 0, bd = 0;
   ReadIhdr(saved, &ct, &bd);
   EXPECT_EQ(ct, 3);
+}
+
+// ---------------------------------------------------------------------------
+// Round-trip matrix
+//
+// Every test above checks one thing on one image. This checks the product:
+// pixel format against image shape against interlace against row filter
+// against palette creation, and asserts that what comes back is what went in.
+//
+// The combinations are the point. A writer can be right about interlace and
+// right about sub-byte depths and still be wrong about a sub-byte depth inside
+// an Adam7 pass; it can be right about the palette and right about tRNS and
+// wrong about a palette whose transparency lands in the last pass of a
+// seven-pixel-wide image. The shapes below are chosen to make Adam7 awkward -
+// 1x1 has six empty passes, 1x7 and 7x1 have several, and 33x17 has a partial
+// row in most of them.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct RoundTripCase {
+  const GIMG_Pixel_Format * format;
+  const char * format_name;
+};
+
+/** Fill a raster with a pattern that is not flat, not random, and not grey. */
+void FillPattern(GIMG_Raster * raster, unsigned int colours) {
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+  auto * px = static_cast<unsigned char *>(gimg_raster_pixels(raster));
+  const bool sixteen = fmt->bits_per_channel[0] == 16;
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      unsigned char * p = px + (size_t)y * stride + (size_t)x * bpp;
+      // A small repeating set of values, so "few colours" cases really are few
+      // and the palette path is reached where it should be.
+      unsigned int i = (x * 3u + y * 5u) % colours;
+      unsigned int v = (i * 251u) % 256u;
+      for (size_t c = 0; c < (size_t)fmt->channel_count; c++) {
+        unsigned int cv = (v + (unsigned int)c * 37u) % 256u;
+        // Alpha is left opaque except on a few pixels, so tRNS and the alpha
+        // channel are both exercised without making every case transparent.
+        const bool is_alpha = (fmt->channel_model == GIMG_CHANNEL_RGBA && c == 3);
+        if (is_alpha) {
+          cv = ((x + y) % 7u == 3u) ? 0u : 255u;
+        }
+        if (sixteen) {
+          p[c * 2] = (unsigned char)cv;
+          p[c * 2 + 1] = (unsigned char)((cv * 7u) % 256u);
+        }
+        else {
+          p[c] = (unsigned char)cv;
+        }
+      }
+    }
+  }
+}
+
+/** Save a raster with the given options and reload it. */
+::testing::AssertionResult RoundTrip(const GIMG_Pixel_Format * fmt, uint32_t w,
+    uint32_t h, unsigned int colours, int interlaced, uint8_t filter,
+    uint8_t palette, uint8_t * out_color_type = nullptr,
+    uint8_t * out_bit_depth = nullptr) {
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(w, h, fmt, GIMG_RASTER_OWNED, nullptr, 0, &raster) !=
+      GIMG_OK) {
+    return ::testing::AssertionFailure() << "raster_create";
+  }
+  FillPattern(raster, colours);
+  std::vector<uint8_t> before(
+      (size_t)gimg_raster_height(raster) * gimg_raster_stride_bytes(raster));
+  memcpy(before.data(), gimg_raster_pixels_const(raster), before.size());
+  const size_t stride_in = gimg_raster_stride_bytes(raster);
+  const size_t bpp_in = gimg_raster_bytes_per_pixel(fmt);
+
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_from_raster(raster, &doc) != GIMG_OK) {
+    gimg_raster_destroy(raster);
+    return ::testing::AssertionFailure() << "doc_from_raster";
+  }
+  gimg_raster_destroy(raster);
+
+  GIMG_Stream * out_s = nullptr;
+  if (gimg_stream_create_memory_output(&out_s) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return ::testing::AssertionFailure() << "output stream";
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  opts.interlaced = (uint8_t)interlaced;
+  opts.png_filter = filter;
+  opts.png_palette = palette;
+  GIMG_Save_Report report = {};
+  GIMG_Result sr = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  gimg_doc_destroy(doc);
+  if (sr != GIMG_OK) {
+    gimg_stream_destroy(out_s);
+    return ::testing::AssertionFailure() << "save: " << (int)sr;
+  }
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out_s, &p, &n);
+  std::vector<uint8_t> png(static_cast<const uint8_t *>(p),
+      static_cast<const uint8_t *>(p) + n);
+  gimg_stream_destroy(out_s);
+  if (png.size() > 26) {
+    if (out_bit_depth) {
+      *out_bit_depth = png[24];
+    }
+    if (out_color_type) {
+      *out_color_type = png[25];
+    }
+  }
+
+  GIMG_Stream * in_s = nullptr;
+  if (gimg_stream_create_memory(png.data(), png.size(), &in_s) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "input stream";
+  }
+  GIMG_Doc * doc2 = nullptr;
+  GIMG_Result lr = gimg_doc_load(in_s, nullptr, nullptr, &doc2);
+  if (lr != GIMG_OK) {
+    gimg_stream_destroy(in_s);
+    return ::testing::AssertionFailure() << "reload: " << (int)lr;
+  }
+  GIMG_Raster * back = nullptr;
+  GIMG_Result dr = gimg_item_decode(gimg_doc_item(doc2, 0), nullptr, &back);
+  if (dr != GIMG_OK) {
+    gimg_doc_destroy(doc2);
+    gimg_stream_destroy(in_s);
+    return ::testing::AssertionFailure() << "decode: " << (int)dr;
+  }
+
+  ::testing::AssertionResult result = ::testing::AssertionSuccess();
+  if (gimg_raster_width(back) != w || gimg_raster_height(back) != h) {
+    result = ::testing::AssertionFailure()
+        << "size " << gimg_raster_width(back) << "x" << gimg_raster_height(back)
+        << " not " << w << "x" << h;
+  }
+  else {
+    const GIMG_Pixel_Format * bf = gimg_raster_format(back);
+    size_t bpp_out = gimg_raster_bytes_per_pixel(bf);
+    size_t stride_out = gimg_raster_stride_bytes(back);
+    const auto * bp =
+        static_cast<const unsigned char *>(gimg_raster_pixels_const(back));
+    // The decoder may widen a format - a greyscale image with tRNS comes back
+    // as RGBA - so compare the channels that mean the same thing rather than
+    // insisting the formats match.
+    for (uint32_t y = 0; y < h && result; y++) {
+      for (uint32_t x = 0; x < w && result; x++) {
+        const unsigned char * a = before.data() + (size_t)y * stride_in +
+            (size_t)x * bpp_in;
+        const unsigned char * b = bp + (size_t)y * stride_out + (size_t)x * bpp_out;
+        size_t common = bpp_in < bpp_out ? bpp_in : bpp_out;
+        if (bf->channel_count == fmt->channel_count &&
+            bf->bits_per_channel[0] == fmt->bits_per_channel[0]) {
+          if (memcmp(a, b, common) != 0) {
+            result = ::testing::AssertionFailure()
+                << "pixel (" << x << "," << y << ") changed";
+          }
+        }
+        else if (fmt->channel_model == GIMG_CHANNEL_GRAY &&
+            bf->channel_model == GIMG_CHANNEL_RGBA &&
+            fmt->bits_per_channel[0] == bf->bits_per_channel[0]) {
+          // grey -> RGBA: the grey level in all three colour channels.
+          size_t step = fmt->bits_per_channel[0] == 16 ? 2u : 1u;
+          for (int c = 0; c < 3 && result; c++) {
+            if (memcmp(a, b + (size_t)c * step, step) != 0) {
+              result = ::testing::AssertionFailure()
+                  << "pixel (" << x << "," << y << ") channel " << c
+                  << " changed when widened to RGBA";
+            }
+          }
+        }
+      }
+    }
+  }
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(doc2);
+  gimg_stream_destroy(in_s);
+  return result;
+}
+
+} // namespace
+
+TEST(PngRoundTripMatrix, EveryCombinationOfShapeInterlaceFilterAndPalette) {
+  const RoundTripCase formats[] = {
+      {&GIMG_PIXEL_GRAY8, "gray8"},
+      {&GIMG_PIXEL_GRAY16, "gray16"},
+      {&GIMG_PIXEL_RGBA8, "rgba8"},
+      {&GIMG_PIXEL_RGBA16, "rgba16"},
+  };
+  // 1x1 leaves six Adam7 passes empty; 1x7 and 7x1 leave several; 33x17 has a
+  // partial row in most of them. 8x8 is the case where nothing is awkward.
+  const struct {
+    uint32_t w, h;
+  } shapes[] = {{1, 1}, {1, 7}, {7, 1}, {8, 8}, {33, 17}, {64, 64}};
+  const uint8_t filters[] = {GIMG_PNG_FILTER_ADAPTIVE, GIMG_PNG_FILTER_NONE,
+      GIMG_PNG_FILTER_SUB, GIMG_PNG_FILTER_UP, GIMG_PNG_FILTER_AVERAGE,
+      GIMG_PNG_FILTER_PAETH};
+  const uint8_t palettes[] = {GIMG_PNG_PALETTE_AUTO, GIMG_PNG_PALETTE_NEVER};
+  // Few colours reaches the palette path; many does not.
+  const unsigned int colour_counts[] = {3u, 200u};
+
+  int cases = 0;
+  // What the writer actually chose, so this can assert it reached the paths it
+  // exists to cover rather than only that it did not crash.
+  std::set<int> colour_types;
+  std::set<int> bit_depths;
+  for (const RoundTripCase & f : formats) {
+    for (const auto & s : shapes) {
+      for (int interlaced = 0; interlaced <= 1; interlaced++) {
+        for (uint8_t filter : filters) {
+          for (uint8_t palette : palettes) {
+            for (unsigned int colours : colour_counts) {
+              cases++;
+              uint8_t ct = 0, bd = 0;
+              EXPECT_TRUE(RoundTrip(f.format, s.w, s.h, colours, interlaced,
+                  filter, palette, &ct, &bd))
+                  << f.format_name << " " << s.w << "x" << s.h
+                  << " interlaced=" << interlaced << " filter=" << (int)filter
+                  << " palette=" << (int)palette << " colours=" << colours;
+              colour_types.insert(ct);
+              bit_depths.insert(bd);
+            }
+          }
+        }
+      }
+    }
+  }
+  EXPECT_EQ(cases, 4 * 6 * 2 * 6 * 2 * 2);
+
+  // A matrix that never reached anything interesting would pass too. These say
+  // which of the writer's choices it actually made.
+  EXPECT_TRUE(colour_types.count(0)) << "greyscale was never written";
+  EXPECT_TRUE(colour_types.count(3))
+      << "no case produced a palette, so PALETTE_AUTO went untested here";
+  EXPECT_TRUE(colour_types.count(6)) << "truecolour with alpha was never written";
+  EXPECT_TRUE(bit_depths.count(8));
+  EXPECT_TRUE(bit_depths.count(16));
+  EXPECT_TRUE(bit_depths.count(4)) << "no palette was small enough to pack";
+
+  // Colour types 2 and 4 are reached only by preserving what a frame arrived
+  // as - a raster with no PNG history and an alpha channel is written as 6 by
+  // design - so they are not expected here. The conformance round trip covers
+  // them: all 162 images of the published suite, every colour type among them.
+  EXPECT_FALSE(colour_types.count(2)) << "unexpected here; see the comment";
+  EXPECT_FALSE(colour_types.count(4)) << "unexpected here; see the comment";
 }
