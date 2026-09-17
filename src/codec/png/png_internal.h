@@ -99,6 +99,10 @@ typedef uint32_t gimg_png_chunk_type_t;
 #define GIMG_PNG_bKGD UINT32_C(0x624B4744) // 'bKGD' §11.3.4.1
 #define GIMG_PNG_hIST UINT32_C(0x68495354) // 'hIST' §11.3.4.2
 
+/** Ancillary chunks whose payload length the spec fixes exactly. */
+#define GIMG_PNG_pHYs UINT32_C(0x70485973) // 'pHYs' §11.3.4.3
+#define GIMG_PNG_tIME UINT32_C(0x74494D45) // 'tIME' §11.3.5
+
 /** PNG Third Edition colour chunks (W3C PNG 3rd ed., 2025). */
 #define GIMG_PNG_cICP UINT32_C(0x63494350) // 'cICP' coding-independent points
 #define GIMG_PNG_mDCv UINT32_C(0x6D444376) // 'mDCv' mastering display volume

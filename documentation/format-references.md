@@ -52,17 +52,41 @@ Short reference for chunks, depths, filters, and limitations. Update when adding
 |------|------------|-------------------------|
 | **IHDR (11.2.1)** | Every colour type and bit depth combination of Table 11.1 is read; all are written too, though the sub-byte depths and colour type 3 are reached by preserving a frame's own, not chosen for a raster with no PNG history (see Colour types and depths above). Compression method 0, filter method 0, interlace 0 or 1 | Any other combination, a zero dimension, or an unknown method &rarr; `GIMG_ERR_FORMAT` |
 | **PLTE (11.2.2)** | Required for colour type 3; accepted and **ignored** for 2 and 6, where it is a suggested palette, and kept for round-trip. A palette is also **built** for a raster that arrived without one, when the image has no more than 256 distinct colours and the palette form is the smaller file - both forms are encoded and the smaller kept, since DEFLATE makes the arithmetic hard to predict. Indices are written at the smallest depth that holds them (1, 2, 4 or 8), and entries with alpha are placed first so tRNS can stop early (11.3.2.1) | Length not a multiple of 3, zero, or over 256 entries &rarr; `GIMG_ERR_FORMAT`; present for colour type 0 or 4 &rarr; `GIMG_ERR_FORMAT` ("shall not appear"). More than 256 colours stays truecolour: reducing them would be colour quantisation, which is an image-processing decision and not a codec's. Not attempted for an animation, whose frames must share one colour type. `GIMG_Save_Options.png_palette` = `GIMG_PNG_PALETTE_NEVER` turns the building off; a frame that arrived as a palette is written back as one either way |
-| **tRNS (11.3.2.1)** | Read for colour types 0, 2 and 3. Written for 3, and for 0 and 2 when the alpha channel fits what the chunk can say | Must precede IDAT and follow PLTE; one only |
+| **tRNS (11.3.2.1)** | Read for colour types 0, 2 and 3. Written for 3, and for 0 and 2 when the alpha channel fits what the chunk can say | Must precede IDAT and follow PLTE; one only. Length is fixed by colour type - 2 bytes for 0, 6 for 2, no more entries than PLTE for 3 - and any other length &rarr; `GIMG_ERR_FORMAT`. Present for colour type 4 or 6 &rarr; `GIMG_ERR_FORMAT` ("shall not appear"): those carry alpha already, and keeping both would leave two sources of transparency and no rule for which wins |
 | **IDAT (11.2.4)** | Contiguous, concatenated into one zlib stream; written split at 32768 bytes | Non-contiguous or absent &rarr; `GIMG_ERR_FORMAT` |
 | **Filters (clause 9)** | All five, both directions: None, Sub, Up, Average, Paeth. Filtering is on bytes with bpp rounded up to one, so it works unchanged below 8 bits | A filter byte above 4 is not a type Table 9.1 defines, so the row cannot be reconstructed &rarr; `GIMG_ERR_CORRUPT`, on the interlaced path as well. libpng and Pillow both refuse such a file |
 | **Interlace (clause 8)** | Adam7, read and written, at every bit depth. Below 8 bits samples are placed by bit: a pass row is not a byte-slice of an image row | — |
 | **zlib (10.3)** | RFC 1950 wrapper checked on read: method, window, FDICT, and the trailing Adler-32 | Bad header &rarr; `GIMG_ERR_FORMAT`; failed inflate or Adler-32 mismatch &rarr; `GIMG_ERR_CORRUPT` |
-| **Ancillary, interpreted** | tEXt, zTXt, iTXt (description), iCCP, sRGB, gAMA, cHRM, eXIf (orientation), cICP | iTXt/zTXt compression method other than 0 &rarr; `GIMG_ERR_UNSUPPORTED` |
+| **Ancillary, interpreted** | tEXt, zTXt, iTXt (description), iCCP, sRGB, gAMA, cHRM, eXIf (orientation), cICP | iTXt/zTXt compression method other than 0 &rarr; `GIMG_ERR_UNSUPPORTED`. The chunks whose length the spec fixes are checked on read - gAMA 4, cHRM 32, sRGB 1, pHYs 9, tIME 7, cICP 4 - and any other length &rarr; `GIMG_ERR_FORMAT`, since there is nothing to interpret a short one as and keeping it would write the same malformation back out |
 | **Ancillary, preserved only** | sBIT, bKGD, pHYs, tIME, sPLT, hIST, mDCv, cLLi, and any unknown chunk, kept in read order and written back by the policies that preserve what a file came with | Not acted on when decoding. sBIT and bKGD are advisory and a decoder is not required to use them; mDCv and cLLi describe a mastering display and mean something only to an HDR pipeline this library does not have |
 | **Ancillary whose shape follows the colour type** | bKGD (11.3.4.1), sBIT (11.3.2.4) and hIST (11.3.4.2) are rewritten on save when the colour type being written is not the one the frame arrived as. A background colour translates wherever the destination can hold it - grey becomes R=G=B, a palette index becomes the colour it names, a colour becomes grey only when its samples already agree - rescaling between depths by 13.12 | sBIT does not survive a change of depth: rescaling spreads the value over the whole of the new sample, so a count taken before it would misdescribe what is stored. hIST has no meaning without the palette it counts. Those are dropped, as is any of the three whose length was already wrong for the file it came from: an absent advisory chunk is a smaller lie than a wrong one |
 | **Colour precedence** | cICP > sRGB > iCCP > gAMA/cHRM, which is the order the Third Edition sets | A cICP naming code points `GIMG_Color_Info` cannot hold (BT.2020, PQ, HLG, limited range) leaves the colour **unknown** rather than being approximated; the chunk is preserved for a caller that can read it |
 | **APNG** | acTL, fcTL, fdAT; dispose None/Background/Previous, blend Source/Over; 8- and 16-bit compositing | acTL after IDAT, duplicate acTL, out-of-order sequence numbers, more fcTL than acTL declared &rarr; `GIMG_ERR_FORMAT` |
 | **Orientation** | All eight of CIPA DC-008 Table 6, applied to the decoded raster | — |
+
+### Where this library is stricter than libpng
+
+A three-way differential over 41 deliberately non-conforming files - this
+library, libpng via `pngtopnm`, and Pillow - leaves seven cases where this
+library refuses what both reference decoders accept. Each is a "shall" in the
+spec that libpng reports as a warning and carries on from, which is its stated
+policy rather than a disagreement about the text:
+
+| Case | Clause |
+|---|---|
+| PLTE present for colour type 0 or 4 | 11.2.3, "shall not appear" |
+| tRNS with more entries than PLTE | 11.3.2.1 |
+| tRNS present for colour type 4 or 6 | 11.3.2.1, "shall not appear" |
+| tRNS before PLTE | Table 5.3 |
+| IDAT chunks not consecutive | 11.2.4, "shall appear consecutively" |
+| more scanlines than the IHDR declares | clause 8 |
+| tIME of a length other than 7 | 11.3.5 |
+
+The remaining disagreements run the other way and are all cases where a
+reference decoder is stricter than the spec requires, or where the spec leaves
+the choice open: data after IEND, a gamma of zero, an sRGB rendering intent
+outside 0..3, and a palette index naming an entry the palette does not have -
+which decodes to black here, is bounds-checked, and is what libpng does too.
 
 ### PNG tested scope
 

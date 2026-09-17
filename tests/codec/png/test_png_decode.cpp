@@ -21,6 +21,10 @@
 #include <vector>
 
 #include "png_test_utils.h"
+
+// For gimg_png_write_chunk(), so these tests build their streams with the
+// library's own CRC rather than a second implementation of 5.5.
+#include "../../../src/codec/png/png_internal.h"
 #include <array>
 #include <fstream>
 
@@ -1395,4 +1399,208 @@ TEST(PngFilterType, TheCheckIsReachedOnTheInterlacedPathToo) {
   // read in a second place and has to be checked in both.
   EXPECT_EQ(TryDecodeFixture("png_bad_filter_type_interlaced.png"),
       GIMG_ERR_CORRUPT);
+}
+
+// ---------------------------------------------------------------------------
+// Chunks the spec fixes the shape of
+//
+// Several chunks have a length the spec states outright, and tRNS has both a
+// length and a set of colour types it may appear for. A chunk of the wrong
+// length is not one whose meaning can be recovered - for colour type 2 a tRNS
+// is three 16-bit samples or it is nothing - and keeping it means writing a
+// file that is malformed in the same way.
+//
+// Every stream below was put in front of libpng and Pillow before any of these
+// tests was written. libpng accepts each with a warning naming the same defect
+// (its policy is to warn and carry on); Pillow refuses most of them outright.
+// Where this library is stricter than both it is because the spec says
+// "shall", and the verdict is recorded with each case.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Assemble a PNG from chunks, using the library's own CRC (5.5). */
+class PngBuilder {
+public:
+  PngBuilder() {
+    bytes_.assign(kSig, kSig + 8);
+  }
+  PngBuilder & chunk(const char * type, const std::vector<uint8_t> & data) {
+    uint32_t t = ((uint32_t)(unsigned char)type[0] << 24) |
+        ((uint32_t)(unsigned char)type[1] << 16) |
+        ((uint32_t)(unsigned char)type[2] << 8) |
+        (uint32_t)(unsigned char)type[3];
+    GIMG_Stream * s = nullptr;
+    if (gimg_stream_create_memory_output(&s) != GIMG_OK) {
+      return *this;
+    }
+    if (gimg_png_write_chunk(s, t, data.empty() ? nullptr : data.data(),
+            data.size()) == GIMG_OK) {
+      const void * p = nullptr;
+      size_t n = 0;
+      gimg_stream_output_buffer(s, &p, &n);
+      const auto * b = static_cast<const uint8_t *>(p);
+      bytes_.insert(bytes_.end(), b, b + n);
+    }
+    gimg_stream_destroy(s);
+    return *this;
+  }
+  PngBuilder & ihdr(uint32_t w, uint32_t h, uint8_t depth, uint8_t ct) {
+    std::vector<uint8_t> d = {(uint8_t)(w >> 24), (uint8_t)(w >> 16),
+        (uint8_t)(w >> 8), (uint8_t)w, (uint8_t)(h >> 24), (uint8_t)(h >> 16),
+        (uint8_t)(h >> 8), (uint8_t)h, depth, ct, 0, 0, 0};
+    return chunk("IHDR", d);
+  }
+  const std::vector<uint8_t> & bytes() const {
+    return bytes_;
+  }
+
+private:
+  static constexpr uint8_t kSig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A,
+      '\n'};
+  std::vector<uint8_t> bytes_;
+};
+constexpr uint8_t PngBuilder::kSig[8];
+
+/** Try to load and decode a stream; return whatever the load or decode said. */
+GIMG_Result TryDecodeBytes(const std::vector<uint8_t> & png) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(png.data(), png.size(), &s) != GIMG_OK) {
+    return GIMG_ERR_INTERNAL;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+    return r;
+  }
+  GIMG_Raster * raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  if (raster) {
+    gimg_raster_destroy(raster);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  return r;
+}
+
+/**
+ * A zlib stream (RFC 1950) holding @a h filter-None scanlines of @a w zero
+ * bytes, as a single stored DEFLATE block. Stored rather than compressed so
+ * the test builds its own input without depending on an encoder to do it.
+ */
+std::vector<uint8_t> GreyIdatPayload(uint32_t w, uint32_t h) {
+  std::vector<uint8_t> raw;
+  for (uint32_t y = 0; y < h; y++) {
+    raw.push_back(0); // filter type None (9.2)
+    raw.insert(raw.end(), w, 0);
+  }
+  std::vector<uint8_t> out = {0x78, 0x01}; // CM 8, CINFO 7, FCHECK (RFC 1950)
+  size_t off = 0;
+  do {
+    size_t n = raw.size() - off;
+    if (n > 65535u) {
+      n = 65535u;
+    }
+    const bool last = (off + n == raw.size());
+    out.push_back(last ? 1 : 0); // BFINAL, BTYPE 00 stored (RFC 1951 3.2.4)
+    out.push_back((uint8_t)(n & 0xFF));
+    out.push_back((uint8_t)(n >> 8));
+    out.push_back((uint8_t)(~n & 0xFF));
+    out.push_back((uint8_t)((~n >> 8) & 0xFF));
+    out.insert(out.end(), raw.begin() + (long)off, raw.begin() + (long)(off + n));
+    off += n;
+  } while (off < raw.size());
+  uint32_t s1 = 1, s2 = 0;
+  for (uint8_t v : raw) {
+    s1 = (s1 + v) % 65521u;
+    s2 = (s2 + s1) % 65521u;
+  }
+  uint32_t adler = (s2 << 16) | s1;
+  out.push_back((uint8_t)(adler >> 24));
+  out.push_back((uint8_t)(adler >> 16));
+  out.push_back((uint8_t)(adler >> 8));
+  out.push_back((uint8_t)adler);
+  return out;
+}
+
+} // namespace
+
+TEST(PngChunkShape, TransparencyOfTheWrongLengthIsRefused) {
+  // 11.3.2.1: two bytes for colour type 0, six for colour type 2.
+  // libpng: "tRNS: invalid" (warns). Pillow: refuses.
+  {
+    PngBuilder b;
+    b.ihdr(4, 4, 8, 0).chunk("tRNS", {0x00});
+    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+    EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_ERR_FORMAT) << "colour type 0";
+  }
+  {
+    PngBuilder b;
+    b.ihdr(4, 4, 8, 0).chunk("tRNS", {0x00, 0x01, 0x02});
+    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+    EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_ERR_FORMAT) << "three bytes";
+  }
+  {
+    // The control: two bytes is the right length and must still load.
+    PngBuilder b;
+    b.ihdr(4, 4, 8, 0).chunk("tRNS", {0x00, 0x01});
+    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+    EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_OK);
+  }
+}
+
+TEST(PngChunkShape, TransparencyOnAColourTypeThatHasAlphaIsRefused) {
+  // 11.3.2.1: tRNS "shall not appear" for colour types 4 and 6. A decoder that
+  // kept it would have two sources of transparency and no rule for which wins.
+  // libpng warns; Pillow accepts. The spec is explicit, so this is refused.
+  PngBuilder b;
+  b.ihdr(4, 4, 8, 4).chunk("tRNS", {0x00, 0x01});
+  b.chunk("IDAT", GreyIdatPayload(4 * 2, 4)).chunk("IEND", {});
+  EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_ERR_FORMAT);
+}
+
+TEST(PngChunkShape, AncillaryChunksOfAFixedLengthAreChecked) {
+  // Each of these has a length the spec states outright. libpng warns on every
+  // one; Pillow refuses gAMA, cHRM, sRGB and pHYs.
+  struct Case {
+    const char * type;
+    size_t wrong_len;
+    const char * clause;
+  };
+  const Case cases[] = {
+      {"gAMA", 2, "11.3.2.2: four bytes"},
+      {"cHRM", 31, "11.3.2.1: 32 bytes"},
+      {"sRGB", 0, "11.3.2.5: one byte"},
+      {"pHYs", 8, "11.3.4.3: nine bytes"},
+      {"tIME", 6, "11.3.5: seven bytes"},
+      {"cICP", 3, "four code points"},
+  };
+  for (const Case & c : cases) {
+    char t[5] = {c.type[0], c.type[1], c.type[2], c.type[3], 0};
+    PngBuilder b;
+    b.ihdr(4, 4, 8, 0);
+    b.chunk(t, std::vector<uint8_t>(c.wrong_len, 0));
+    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+    EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_ERR_FORMAT) << c.clause;
+  }
+}
+
+TEST(PngChunkShape, ThoseSameChunksAtTheirRightLengthStillLoad) {
+  // The other half. A check that refused these lengths as well would pass
+  // every case above and be worthless.
+  struct Case {
+    const char * type;
+    size_t len;
+  };
+  const Case cases[] = {{"gAMA", 4}, {"cHRM", 32}, {"sRGB", 1}, {"pHYs", 9},
+      {"tIME", 7}, {"cICP", 4}};
+  for (const Case & c : cases) {
+    char t[5] = {c.type[0], c.type[1], c.type[2], c.type[3], 0};
+    PngBuilder b;
+    b.ihdr(4, 4, 8, 0);
+    b.chunk(t, std::vector<uint8_t>(c.len, 0));
+    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+    EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_OK) << c.type;
+  }
 }

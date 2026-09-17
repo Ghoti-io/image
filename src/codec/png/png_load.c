@@ -487,6 +487,38 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT; // For palette, PLTE before tRNS.
       }
+      // PNG 11.3.2.1 fixes the length for every colour type it allows, and
+      // forbids the chunk outright for the two that carry an alpha channel of
+      // their own. A tRNS of the wrong length is not a tRNS whose meaning can
+      // be guessed at: for colour type 2 it is three 16-bit samples or it is
+      // nothing, and reading a shorter one as a colour means reading past it.
+      switch (state->ihdr.color_type) {
+      case 0:
+        if (length != 2u) {
+          gimg_png_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT; // one grey level
+        }
+        break;
+      case 2:
+        if (length != 6u) {
+          gimg_png_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT; // three 16-bit samples
+        }
+        break;
+      case 3:
+        // "shall not contain more values than there are palette entries"
+        if (length == 0 || length > state->plte_size / 3u) {
+          gimg_png_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+        break;
+      default:
+        // Colour types 4 and 6 already have alpha; 11.3.2.1 says tRNS "shall
+        // not appear" for them, and a decoder that kept it would have two
+        // sources of transparency and no rule for which wins.
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
       state->trns = (unsigned char *)gimg_malloc(alloc, length);
       if (!state->trns) {
         gimg_png_free_doc_state(codec, state);
@@ -559,6 +591,43 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (gimg_png_chunk_is_critical(type)) {
       gimg_png_free_doc_state(codec, state);
       return GIMG_ERR_FORMAT;
+    }
+
+    // Several ancillary chunks have a fixed length, and one has a fixed set of
+    // values. A chunk of the wrong length is not a chunk whose meaning can be
+    // recovered - there is nothing to interpret it as - and keeping it would
+    // mean writing it back out into a file that is then malformed in the same
+    // way. Only the types whose length the spec actually fixes are checked
+    // here; the text chunks, eXIf, sPLT and anything unknown are variable by
+    // design and pass through as before.
+    {
+      size_t want = 0;
+      switch (type) {
+      case GIMG_PNG_gAMA:
+        want = 4u; // 11.3.2.2: one 4-byte gamma
+        break;
+      case GIMG_PNG_cHRM:
+        want = 32u; // 11.3.2.1: eight 4-byte values
+        break;
+      case GIMG_PNG_sRGB:
+        want = 1u; // 11.3.2.5: one rendering intent
+        break;
+      case GIMG_PNG_pHYs:
+        want = 9u; // 11.3.4.3: two 4-byte units and a unit specifier
+        break;
+      case GIMG_PNG_tIME:
+        want = 7u; // 11.3.5: year, month, day, hour, minute, second
+        break;
+      case GIMG_PNG_cICP:
+        want = GIMG_PNG_cICP_LEN; // four code points
+        break;
+      default:
+        break;
+      }
+      if (want != 0 && (size_t)length != want) {
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
     }
 
     // Ancillary: parse and store (tEXt, zTXt, iTXt, iCCP, sRGB, gAMA, cHRM,
