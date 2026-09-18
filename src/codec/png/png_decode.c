@@ -213,7 +213,7 @@ static bool gimg_png_fill_color_info_from_ancillary(
  * divides by 65535 to avoid overflow. Grayscale/gray+alpha without alpha
  * channel are treated as replace. Order: caller must apply dispose (NONE/
  * BACKGROUND/PREVIOUS) to the canvas before calling this; then this blends
- * the decoded frame. See APNG spec and format-references.md. */
+ * the decoded frame. See APNG spec and formats/png.md. */
 static void gimg_png_apng_blend_frame(unsigned char * canvas,
     size_t canvas_stride, uint32_t canvas_w, uint32_t canvas_h,
     const unsigned char * frame_pixels, size_t frame_stride, uint32_t fx,

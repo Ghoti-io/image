@@ -924,7 +924,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   // A four-component frame is CMYK unless the caller asked for the YCCK
   // transform; either way it needs an Adobe APP14 marker, because that marker
   // is the only thing in the file that says which (see jdapimin.c, and the
-  // colour section of documentation/format-references.md).
+  // colour section of documentation/formats/jpeg.md).
   int adobe_transform = -1;
   if (num_components == 4 && fmt->channel_model == GIMG_CHANNEL_CMYK) {
     adobe_transform = (cmyk_transform == 2u) ? 2 : 0;

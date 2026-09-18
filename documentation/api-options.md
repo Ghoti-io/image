@@ -67,7 +67,7 @@ Controls which ancillary metadata is written on save. Defined in `ghoti.io/image
 | **GIMG_META_KEEP_RAW_ONLY**  | Emit only ancillary chunks that are *not* known semantic (no iCCP, sRGB, gAMA, cHRM, eXIf, tEXt, zTXt, iTXt). |
 | **GIMG_META_KEEP_COMMON_ONLY** | Emit only metadata that maps to common metadata (e.g. one color chunk from raster color info; no eXIf or text). |
 
-Format-specific behavior (e.g. PNG chunk emission) is described in \ref format_references "Format and specification references" (PNG save metadata policies).
+Format-specific behavior is described on the format's own page: \ref format_png "PNG and APNG" (save metadata policies), \ref format_jpeg "JPEG" (APP segment handling), \ref format_bmp "BMP" (which ignores the policy, having no metadata to write).
 
 ## Decode options
 

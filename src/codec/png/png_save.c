@@ -9,7 +9,7 @@
  *
  * --- Internal algorithms and design ---
  *
- * Chunk order: We emit chunks in PNG spec order (see format-references.md):
+ * Chunk order: We emit chunks in PNG spec order (see formats/png.md):
  * signature, IHDR, ancillary (per GIMG_Meta_Policy), PLTE/tRNS if palette,
  * IDAT (one or multiple), IEND. Ancillary is written in the order stored
  * during load (read order) when policy is

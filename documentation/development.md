@@ -138,11 +138,11 @@ Tests under `tests/` include:
 
 3. **Decode:** Implement decode from **GIMG_Item** to **GIMG_Raster**: respect **GIMG_Decode_Options** limits, use safe pixel-count helpers (e.g. from `safe_math_internal.h`) to avoid overflow, return **GIMG_ERR_CORRUPT** or **GIMG_ERR_LIMIT** as appropriate.
 
-4. **Save:** Implement save from **GIMG_Doc** to stream for the codec’s format name; apply metadata policy (PRESERVE_ALL, STRIP_GPS, NORMALIZE_EXIF, etc.) as documented in format-references and api-options.
+4. **Save:** Implement save from **GIMG_Doc** to stream for the codec’s format name; apply metadata policy (PRESERVE_ALL, STRIP_GPS, NORMALIZE_EXIF, etc.) as documented in the format's page under `documentation/formats/` and in api-options.
 
-5. **Tests:** Add decode/encode tests (and round-trip if applicable); use shared test helpers where possible. Add a `tests/data/<format>/` directory with a manifest or generator and a verify script (or equivalent), consistent with PNG and JPEG. Add fuzz coverage for load/decode and, if feasible, save. Ensure limits and failure-path tests cover the new codec. Document round-trip and oracle strategy: at least one round-trip test (save→load→decode) and, if available, an external oracle (e.g. reference decoder) for decode correctness; see format-references and tests/data/png/ and tests/data/jpeg/ for reference.
+5. **Tests:** Add decode/encode tests (and round-trip if applicable); use shared test helpers where possible. Add a `tests/data/<format>/` directory with a manifest or generator and a verify script (or equivalent), consistent with PNG and JPEG. Add fuzz coverage for load/decode and, if feasible, save. Ensure limits and failure-path tests cover the new codec. Document round-trip and oracle strategy: at least one round-trip test (save→load→decode) and, if available, an external oracle (e.g. reference decoder) for decode correctness; see the format pages under `documentation/formats/` and tests/data/png/ and tests/data/jpeg/ for reference.
 
-6. **Docs:** Update `documentation/format-references.md` and option docs for format-specific behavior and limits.
+6. **Docs:** Add `documentation/formats/<format>.md` and link it from the table in \ref format_references "Format and specification references"; update option docs for format-specific behavior and limits. \ref format_adding "Adding a format" is the checklist and the page template.
 
 ### Codec implementation checklist
 
@@ -152,7 +152,7 @@ When implementing a new codec (or auditing an existing one), ensure:
 - **Limits:** Enforce **GIMG_Limits** at the appropriate points: `max_chunk_size` (or equivalent segment/payload size) before reading large payloads; `max_decoded_pixels` before allocating decode buffers; `max_frame_count` for animated formats. Return **GIMG_ERR_LIMIT** when exceeded; append diagnostics when provided. See @ref api_options "API Options and Types" and the “Limits per codec” subsection in this document.
 - **Safe math:** Use `gimg_safe_pixel_count()` from `safe_math_internal.h`, and the general helpers from `<ghoti.io/cutil/safemath.h>` (`gcu_safe_mul_size()`, `gcu_safe_add_size()`, `gcu_safe_mul_add_size()`), for all size and pixel-count calculations that feed allocations or comparisons to limits. The general ones used to be local `gimg_safe_*` duplicates of the same functions in compress. **Checklist for new codecs:** Validate all length/size fields read from the stream before allocating or indexing; use safe_math for any derived buffer size.
 - **Output parameters and cleanup:** Set `*out_doc` or `*out_raster` to **NULL** before any work in load/decode. On error, free any partially allocated state (e.g. via the codec’s free_doc_state or equivalent) and return without setting the output parameter. The central dispatch in `codec.c` also clears `*out_raster` on decode callback failure.
-- **Spec alignment:** Document implemented parts, conformance scope, and rejected/unsupported features in `documentation/format-references.md` (see PNG and JPEG sections as the reference structure).
+- **Spec alignment:** Document implemented parts, conformance scope, and rejected/unsupported features on the format's own page under `documentation/formats/` (see \ref format_adding "Adding a format" for the checklist and template; PNG and JPEG are the reference structure).
 
 ### Limits per codec
 
