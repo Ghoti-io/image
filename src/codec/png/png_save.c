@@ -20,7 +20,7 @@
  * DEFLATE as-is.
  *
  * DEFLATE: We use the compress library's "deflate" method with strategy
- * "filtered" (zlib-friendly). The raw image buffer (filter byte + row data
+ * "lazy". The raw image buffer (filter byte + row data
  * per row, or Adam7 pass order when interlaced) is compressed in one shot;
  * then we zlib-wrap (RFC 1950): 2-byte header (0x78 0x9C), raw DEFLATE bytes,
  * 4-byte Adler-32 of the uncompressed data (big-endian).
@@ -1543,29 +1543,25 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
     gimg_free(gimg_alloc_or_default(allocator), raw);
     return GIMG_ERR_OOM;
   }
-  // Measured, not assumed, and the measurement does not give a clear winner.
-  // Against "default" on this compress library, over six images and the
-  // published conformance suite:
+  // Ask for deferred matching by name.
   //
-  //   gradient 800x600        filtered  -9.0%     smaller
-  //   text/UI 1000x800        filtered  -4.9%     smaller
-  //   PngSuite, 162 files     filtered  -1.25%    smaller
-  //   incompressible noise    the same
-  //   photograph 900x700      filtered  +9.3%     larger
-  //   photograph 1024x1024    filtered  +4.5%     larger
+  // At the compression level used here this is identical to "default" - the
+  // compress library defers matches from level 4 up, and this strategy
+  // differs from the default only at levels 1 to 3, where it defers and the
+  // default does not.  It is set anyway, as a statement of what this codec
+  // wants rather than a reliance on where that library happens to draw the
+  // line, and so that dropping to a fast level for speed would keep the
+  // deferral rather than silently lose it.
   //
-  // So it wins on smooth and synthetic content and loses on noisy
-  // photographic content. It is also about 3.5x slower - this library's
-  // "filtered" spends *more* search effort than its default (longer hash
-  // chains and lazy matching), which is the opposite of what zlib's
-  // Z_FILTERED does and the opposite of what the name suggests.
-  //
-  // Left as it is because no strategy dominates and this one wins more often
-  // than it loses. Encoding both and keeping the smaller would always give the
-  // better file, at roughly 40% more time on every save and four encodes
-  // rather than two whenever a palette is also a candidate; that trade is a
-  // real option and not obviously the right one.
-  gs = gcomp_options_set_string(gopts, "deflate.strategy", "filtered");
+  // The strategy used to be spelled "filtered" and used to be measurably
+  // different here - over six images and the published conformance suite it
+  // was 9.0% smaller on a gradient, 1.25% smaller across PngSuite, and 9.3%
+  // larger on a photograph, at about 3.5x the time.  None of that holds any
+  // more.  Two things changed in the compress library: the strategy stopped
+  // searching four times as deep as the default, which was measured to be
+  // worth 0.1 points against deferral's 1.7; and the default started
+  // deferring from level 4.  What is left is a name that says what it does.
+  gs = gcomp_options_set_string(gopts, "deflate.strategy", "lazy");
   if (gs != GCOMP_OK) {
     gcomp_options_destroy(gopts);
     gimg_free(gimg_alloc_or_default(allocator), deflate_buf);
