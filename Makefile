@@ -194,6 +194,16 @@ endif
 
 # The standard include directories for the project.
 INCLUDE := -I include/ -I $(GEN_DIR)/
+# Goals that compile and link nothing.  A missing sibling library must not stop
+# them: `make docs` needs doxygen and the tracked sources, not compress or
+# cutil, and it was failing at parse time - before doxygen was ever reached -
+# on any machine where the suite is not installed.  Every other goal still
+# gets the hard error below, which is the point of having no fallback.
+DEPLESS_GOALS := docs docs-pdf clean clean-test-out cloc help
+ifeq ($(filter-out $(DEPLESS_GOALS),$(or $(MAKECMDGOALS),all)),)
+SKIP_DEP_CHECK := 1
+endif
+
 # ghoti.io-compress (required for PNG codec). Prefer pkg-config; fallback to sibling.
 # The name must carry $(BRANCH): compress installs its .pc as
 # ghoti.io-compress-dev.pc, so asking for "ghoti.io-compress" never matched and
@@ -204,7 +214,9 @@ COMPRESS_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflag
 COMPRESS_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs $(COMPRESS_PC) 2>/dev/null)
 # Use sibling path when pkg-config failed (empty) or returned unsubstituted placeholder.
 ifeq ($(strip $(COMPRESS_CFLAGS)),)
+ifndef SKIP_DEP_CHECK
 $(error ghoti.io-compress was not found by pkg-config. Run ./bootstrap.sh in the parent folder to build and install the suite into a local prefix, then pass the same PREFIX here - or point PKG_CONFIG_PATH at the directory holding its .pc file. There is deliberately no sibling-checkout fallback: a second resolution path that only in-tree builds exercise is one that silently rots.)
+endif
 endif
 INCLUDE += $(COMPRESS_CFLAGS)
 
@@ -216,7 +228,9 @@ CUTIL_PC ?= ghoti.io-cutil$(BRANCH)
 CUTIL_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags $(CUTIL_PC) 2>/dev/null)
 CUTIL_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs $(CUTIL_PC) 2>/dev/null)
 ifeq ($(strip $(CUTIL_CFLAGS)),)
+ifndef SKIP_DEP_CHECK
 $(error ghoti.io-cutil was not found by pkg-config. Run ./bootstrap.sh in the parent folder to build and install the suite into a local prefix, then pass the same PREFIX here - or point PKG_CONFIG_PATH at the directory holding its .pc file. There is deliberately no sibling-checkout fallback: a second resolution path that only in-tree builds exercise is one that silently rots.)
+endif
 endif
 INCLUDE += $(CUTIL_CFLAGS)
 
