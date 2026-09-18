@@ -39,8 +39,9 @@ tested for some time, was not mentioned in it at all.
       all there is.
 - [ ] The gaps are listed. Absences are cheap to write down while they are
       fresh and expensive to rediscover.
-- [ ] `documentation/development.md` and \ref api_options "API Options and
-      Types" are updated for any option the format adds.
+- [ ] `documentation/development.md` and the
+      \ref api_options "API options and types" page are updated for any
+      option the format adds.
 - [ ] The parent `README.md` lists the format among the ones with a codec.
 
 ## Page template

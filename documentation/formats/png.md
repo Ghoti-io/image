@@ -4,8 +4,8 @@
 
 What this codec implements of ISO/IEC 15948 and of the APNG extension, where
 it is deliberately stricter than libpng, and how each claim was checked. The
-library's format index is \ref format_references "Format and specification
-references".
+library's format index is the
+\ref format_references "format and specification references".
 
 ## Normative references
 
