@@ -49,7 +49,7 @@ JPEG implementation lives under `src/codec/jpeg/`. Roles of the main files:
 | `jpeg_entropy.c` | Entropy orchestration: baseline and progressive decode entry points; MCU loop; calls jpeg_block, jpeg_idct, jpeg_upsample; scan state and buffer layout. Keeps default AC refine DHT and high-level control flow. |
 | `jpeg_bitstream.c` | Bitstream reader (byte/bit access, RST/stuff-byte skip). Build Huffman tables from DHT payload; decode next symbol given a table. Used by jpeg_block.c and jpeg_entropy.c. |
 | `jpeg_block.c` | Decode one 8×8 block: baseline DC/AC, progressive DC initial/refinement, progressive AC initial/refinement. Calls jpeg_bitstream; outputs coefficient block. |
-| `jpeg_idct.c` | Dezigzag, dequantise, 8×8 inverse DCT (float, 32-bit, and T.81 integer islow). Used by jpeg_entropy.c after block decode. |
+| `jpeg_idct.c` | Dezigzag, dequantize, 8×8 inverse DCT (float, 32-bit, and T.81 integer islow). Used by jpeg_entropy.c after block decode. |
 | `jpeg_upsample.c` | Chroma upsampling (e.g. 2h2v fancy). Used by jpeg_entropy.c for component→raster assembly. |
 | `jpeg_save.c` | Raster→scan, DQT/DHT/SOS/scan write, baseline and progressive body, APP/COM write. |
 | `jpeg_encode.c` | FDCT, quantization, bit writer, baseline and progressive scan encode (uses shared tables from `jpeg_huffman_tables_internal.h`). |
@@ -89,7 +89,7 @@ Test layout:
 
 After `make test`, PNG output is verified with `tests/data/png/verify_png_output.py` (e.g. via PIL). JPEG decode correctness is validated against Pillow (Python) where applicable (`Decode*PillowOracle` tests run `tests/data/jpeg/pillow_decode_hash.py`); JPEG encode output is verified by `tests/data/jpeg/verify_jpeg_output.py` (PIL opens each file in `tests/out/jpeg/`). **Pillow is required** for these JPEG tests (see Prerequisites above).
 
-**JPEG test map:** Load and segment/limit behaviour: `tests/codec/jpeg/test_jpeg_load.cpp` (e.g. SOF rejection, DNL, DHT/SOS negative tests, golden/oracle). Encode, round-trip, and save: `tests/codec/jpeg/test_jpeg_encode.cpp` (quality, chroma, progressive, 12-bit, DHT consistency, failure paths). Helpers: `jpeg_test_utils.cpp` / `jpeg_test_utils.h` (load_jpeg_file, raster hash, oracle helpers). Fuzz: `tests/fuzz/fuzz_jpeg_load` (load + decode; no crash on arbitrary input).
+**JPEG test map:** Load and segment/limit behavior: `tests/codec/jpeg/test_jpeg_load.cpp` (e.g. SOF rejection, DNL, DHT/SOS negative tests, golden/oracle). Encode, round-trip, and save: `tests/codec/jpeg/test_jpeg_encode.cpp` (quality, chroma, progressive, 12-bit, DHT consistency, failure paths). Helpers: `jpeg_test_utils.cpp` / `jpeg_test_utils.h` (load_jpeg_file, raster hash, oracle helpers). Fuzz: `tests/fuzz/fuzz_jpeg_load` (load + decode; no crash on arbitrary input).
 
 **Regenerating JPEG fixtures and oracle verification:** From the repo root: `python3 tests/data/jpeg/generate.py` to regenerate fixtures (requires Pillow). Build libjpeg oracle tools: `make jpeg-oracle-tools` (requires libjpeg-turbo dev package). Verify encode output: `make test-verify-jpeg` or `python3 tests/data/jpeg/verify_jpeg_output.py`. Decode oracle (Pillow or libjpeg): see `tests/data/jpeg/README.md` for `generate_jpeg_oracle_raws.py`, `pillow_decode_hash.py`, and libjpeg ref tool usage.
 
@@ -185,7 +185,7 @@ See that header for the full list (e.g. `GIMG_JPEG_DEBUG_LOAD`,
 write files may still read the output path from the same-named environment
 variable when the category is enabled at compile time.
 
-**Behaviour-altering options** `recover_stuff_zero` and `pad_at_eob` remain
+**Behavior-altering options** `recover_stuff_zero` and `pad_at_eob` remain
 **runtime** (environment variable) for field debugging of truncated or
 non-byte-aligned streams. They are not part of T.81; use only for recovery.
 Set `GIMG_JPEG_RECOVER_STUFF_ZERO=1` to enable recover_stuff_zero (treat missing

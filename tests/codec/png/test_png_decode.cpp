@@ -600,7 +600,7 @@ TEST(PngDecode, LoadLimitsBoundALaterDecodeWithNoOptions) {
 // at all, so saving was a way around a cap the application had set: a 20-byte
 // IHDR naming an enormous canvas allocates on the way out, and png_load will
 // not have stopped it because it does not look at the pixel count.
-TEST(PngDecode, SaveHonoursTheLimitsTheDocumentWasLoadedWith) {
+TEST(PngDecode, SaveHonorsTheLimitsTheDocumentWasLoadedWith) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(png_test::load_png_file("png_2x2_gray.png", buf));
   GIMG_Stream * s = nullptr;
@@ -1043,7 +1043,7 @@ TEST(PngDecode, SubByteDepthsDecodeToTheSamplesTheSpecScalesThemTo) {
     EXPECT_EQ(gimg_raster_height(raster), c.height) << c.base;
     const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
     // PNG 4.5.5: a palette entry is RGB, so an indexed image decodes to
-    // colour; a grayscale image of any depth below 8 rescales to GRAY8.
+    // color; a grayscale image of any depth below 8 rescales to GRAY8.
     EXPECT_EQ(fmt->channel_model,
         c.palette ? GIMG_CHANNEL_RGBA : GIMG_CHANNEL_GRAY)
         << c.base;
@@ -1160,16 +1160,16 @@ TEST(PngDecode, ZlibWrapperIsCheckedNotSkipped) {
 }
 
 // ---------------------------------------------------------------------------
-// A suggested palette on a truecolour image (PNG 11.2.2).
+// A suggested palette on a truecolor image (PNG 11.2.2).
 //
-// PLTE is required for colour type 3 and "shall not appear" for colour types 0
+// PLTE is required for color type 3 and "shall not appear" for color types 0
 // and 4, but for 2 and 6 it may appear as a suggested palette for a viewer that
-// cannot display truecolour. A decoder that can display truecolour ignores it.
+// cannot display truecolor. A decoder that can display truecolor ignores it.
 // The published conformance suite carries two such files (pp0n2c16, pp0n6a08).
 // ---------------------------------------------------------------------------
 
-TEST(PngDecode, SuggestedPaletteOnTruecolourIsAcceptedAndIgnored) {
-  // The palette in the fixture does not contain the image's colours, so a
+TEST(PngDecode, SuggestedPaletteOnTruecolorIsAcceptedAndIgnored) {
+  // The palette in the fixture does not contain the image's colors, so a
   // decoder that used it would produce different pixels from the twin that
   // carries no PLTE. Comparing the two needs no reference decoder.
   GIMG_Stream * s_with = nullptr;
@@ -1194,7 +1194,7 @@ TEST(PngDecode, SuggestedPaletteOnTruecolourIsAcceptedAndIgnored) {
   gimg_doc_destroy(doc_with);
   gimg_stream_destroy(s_with);
 
-  // Colour type 6 may carry one too.
+  // Color type 6 may carry one too.
   GIMG_Stream * s_rgba = nullptr;
   GIMG_Doc * doc_rgba = nullptr;
   GIMG_Raster * rgba = nullptr;
@@ -1226,7 +1226,7 @@ TEST(PngDecode, PaletteOnGrayscaleIsRejected) {
 }
 
 // ---------------------------------------------------------------------------
-// PNG Third Edition colour chunks.
+// PNG Third Edition color chunks.
 //
 // cICP carries coding-independent code points (ITU-T H.273) and the Third
 // Edition puts it ahead of sRGB, iCCP and gAMA+cHRM: where it appears, it says
@@ -1234,15 +1234,15 @@ TEST(PngDecode, PaletteOnGrayscaleIsRejected) {
 //
 // GIMG_Color_Info can describe sRGB, Adobe RGB, linear and a plain gamma.
 // CICP names far more - BT.2020, PQ, HLG, limited range - so only the
-// combinations this model holds are translated. The rest leave the colour
+// combinations this model holds are translated. The rest leave the color
 // unknown rather than being rounded to the nearest thing expressible, which
 // would assert something about the pixels the file never said. Every one of
 // these chunks is preserved on the way through regardless.
 // ---------------------------------------------------------------------------
 
-TEST(PngDecode, CicpOutranksTheOlderColourChunks) {
+TEST(PngDecode, CicpOutranksTheOlderColorChunks) {
   // The fixture carries cICP naming the sRGB pair and a gAMA claiming 1.0.
-  // Honouring the precedence and ignoring it give different answers.
+  // Honoring the precedence and ignoring it give different answers.
   GIMG_Stream * s = nullptr;
   GIMG_Doc * doc = nullptr;
   GIMG_Raster * raster = nullptr;
@@ -1257,7 +1257,7 @@ TEST(PngDecode, CicpOutranksTheOlderColourChunks) {
   gimg_stream_destroy(s);
 }
 
-TEST(PngDecode, ACicpThisColourModelCannotHoldLeavesItUnknown) {
+TEST(PngDecode, ACicpThisColorModelCannotHoldLeavesItUnknown) {
   // BT.2020 primaries with the PQ transfer: a legal file, and nothing in
   // GIMG_Color_Info can say what it means. Reporting sRGB would be a lie.
   GIMG_Stream * s = nullptr;
@@ -1406,8 +1406,8 @@ TEST(PngFilterType, TheCheckIsReachedOnTheInterlacedPathToo) {
 // Chunks the spec fixes the shape of
 //
 // Several chunks have a length the spec states outright, and tRNS has both a
-// length and a set of colour types it may appear for. A chunk of the wrong
-// length is not one whose meaning can be recovered - for colour type 2 a tRNS
+// length and a set of color types it may appear for. A chunk of the wrong
+// length is not one whose meaning can be recovered - for color type 2 a tRNS
 // is three 16-bit samples or it is nothing - and keeping it means writing a
 // file that is malformed in the same way.
 //
@@ -1490,7 +1490,7 @@ GIMG_Result TryDecodeBytes(const std::vector<uint8_t> & png) {
  * bytes, as a single stored DEFLATE block. Stored rather than compressed so
  * the test builds its own input without depending on an encoder to do it.
  */
-std::vector<uint8_t> GreyIdatPayload(uint32_t w, uint32_t h) {
+std::vector<uint8_t> GrayIdatPayload(uint32_t w, uint32_t h) {
   std::vector<uint8_t> raw;
   for (uint32_t y = 0; y < h; y++) {
     raw.push_back(0); // filter type None (9.2)
@@ -1528,36 +1528,36 @@ std::vector<uint8_t> GreyIdatPayload(uint32_t w, uint32_t h) {
 } // namespace
 
 TEST(PngChunkShape, TransparencyOfTheWrongLengthIsRefused) {
-  // 11.3.2.1: two bytes for colour type 0, six for colour type 2.
+  // 11.3.2.1: two bytes for color type 0, six for color type 2.
   // libpng: "tRNS: invalid" (warns). Pillow: refuses.
   {
     PngBuilder b;
     b.ihdr(4, 4, 8, 0).chunk("tRNS", {0x00});
-    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
-    EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_ERR_FORMAT) << "colour type 0";
+    b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
+    EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_ERR_FORMAT) << "color type 0";
   }
   {
     PngBuilder b;
     b.ihdr(4, 4, 8, 0).chunk("tRNS", {0x00, 0x01, 0x02});
-    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+    b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
     EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_ERR_FORMAT) << "three bytes";
   }
   {
     // The control: two bytes is the right length and must still load.
     PngBuilder b;
     b.ihdr(4, 4, 8, 0).chunk("tRNS", {0x00, 0x01});
-    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+    b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
     EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_OK);
   }
 }
 
-TEST(PngChunkShape, TransparencyOnAColourTypeThatHasAlphaIsRefused) {
-  // 11.3.2.1: tRNS "shall not appear" for colour types 4 and 6. A decoder that
+TEST(PngChunkShape, TransparencyOnAColorTypeThatHasAlphaIsRefused) {
+  // 11.3.2.1: tRNS "shall not appear" for color types 4 and 6. A decoder that
   // kept it would have two sources of transparency and no rule for which wins.
   // libpng warns; Pillow accepts. The spec is explicit, so this is refused.
   PngBuilder b;
   b.ihdr(4, 4, 8, 4).chunk("tRNS", {0x00, 0x01});
-  b.chunk("IDAT", GreyIdatPayload(4 * 2, 4)).chunk("IEND", {});
+  b.chunk("IDAT", GrayIdatPayload(4 * 2, 4)).chunk("IEND", {});
   EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_ERR_FORMAT);
 }
 
@@ -1582,7 +1582,7 @@ TEST(PngChunkShape, AncillaryChunksOfAFixedLengthAreChecked) {
     PngBuilder b;
     b.ihdr(4, 4, 8, 0);
     b.chunk(t, std::vector<uint8_t>(c.wrong_len, 0));
-    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+    b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
     EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_ERR_FORMAT) << c.clause;
   }
 }
@@ -1601,7 +1601,7 @@ TEST(PngChunkShape, ThoseSameChunksAtTheirRightLengthStillLoad) {
     PngBuilder b;
     b.ihdr(4, 4, 8, 0);
     b.chunk(t, std::vector<uint8_t>(c.len, 0));
-    b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+    b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
     EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_OK) << c.type;
   }
 }
@@ -1882,7 +1882,7 @@ TEST(PngTextChunk, ACompressedDescriptionReachesTheDocument) {
 
   PngBuilder b;
   b.ihdr(4, 4, 8, 0).chunk("zTXt", p);
-  b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+  b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
 
   GIMG_Stream * s = nullptr;
   ASSERT_EQ(gimg_stream_create_memory(b.bytes().data(), b.bytes().size(), &s),
@@ -1909,59 +1909,59 @@ TEST(PngTextChunk, ABrokenTextChunkDoesNotStopTheImageLoading) {
 
   PngBuilder b;
   b.ihdr(4, 4, 8, 0).chunk("zTXt", p);
-  b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+  b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
   EXPECT_EQ(TryDecodeBytes(b.bytes()), GIMG_OK);
 }
 
 // ---------------------------------------------------------------------------
 // Physical pixel dimensions (PNG 11.3.4.3)
 //
-// pHYs states pixels per metre; the common metadata carries dots per inch,
+// pHYs states pixels per meter; the common metadata carries dots per inch,
 // which is what JFIF and Exif state and what the JPEG codec already reads and
 // writes. Until this was wired up a resolution survived a JPEG round trip and
 // was lost the moment the image became a PNG.
 // ---------------------------------------------------------------------------
 
-TEST(PngPhys, DotsPerInchAndPixelsPerMetreConvertBothWays) {
-  // An inch is exactly 0.0254 m. 300 dpi is 11811 pixels per metre, which is
+TEST(PngPhys, DotsPerInchAndPixelsPerMeterConvertBothWays) {
+  // An inch is exactly 0.0254 m. 300 dpi is 11811 pixels per meter, which is
   // the value every other tool writes for 300 dpi - Pillow reads this file
   // back as 299.9994, so agreeing on the integer matters more than agreeing
   // on the real number.
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(300u), 11811u);
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(72u), 2835u);
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(96u), 3780u);
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(300u), 11811u);
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(72u), 2835u);
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(96u), 3780u);
 
-  EXPECT_EQ(gimg_png_pixels_per_metre_to_dpi(11811u), 300u);
-  EXPECT_EQ(gimg_png_pixels_per_metre_to_dpi(2835u), 72u);
-  EXPECT_EQ(gimg_png_pixels_per_metre_to_dpi(3780u), 96u);
+  EXPECT_EQ(gimg_png_pixels_per_meter_to_dpi(11811u), 300u);
+  EXPECT_EQ(gimg_png_pixels_per_meter_to_dpi(2835u), 72u);
+  EXPECT_EQ(gimg_png_pixels_per_meter_to_dpi(3780u), 96u);
 
   // Zero is how both sides spell "not stated" and must not become one.
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(0u), 0u);
-  EXPECT_EQ(gimg_png_pixels_per_metre_to_dpi(0u), 0u);
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(0u), 0u);
+  EXPECT_EQ(gimg_png_pixels_per_meter_to_dpi(0u), 0u);
 
   // Every ordinary resolution survives the trip; the conversion is not lossy
   // in the range anyone uses.
   for (uint32_t dpi = 1; dpi <= 1200; dpi++) {
     EXPECT_EQ(
-        gimg_png_pixels_per_metre_to_dpi(gimg_png_dpi_to_pixels_per_metre(dpi)),
+        gimg_png_pixels_per_meter_to_dpi(gimg_png_dpi_to_pixels_per_meter(dpi)),
         dpi)
         << "dpi " << dpi;
   }
   // And a value large enough to overflow a 32-bit intermediate saturates
   // rather than wrapping: dpi * 5000 leaves the range near 859,000.
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_metre(UINT32_MAX), UINT32_MAX);
+  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(UINT32_MAX), UINT32_MAX);
 }
 
 namespace {
 
-/** A 4x4 grey PNG carrying one pHYs with the given values. */
+/** A 4x4 gray PNG carrying one pHYs with the given values. */
 std::vector<uint8_t> PngWithPhys(uint32_t x_ppm, uint32_t y_ppm, uint8_t unit) {
   std::vector<uint8_t> phys = {(uint8_t)(x_ppm >> 24), (uint8_t)(x_ppm >> 16),
       (uint8_t)(x_ppm >> 8), (uint8_t)x_ppm, (uint8_t)(y_ppm >> 24),
       (uint8_t)(y_ppm >> 16), (uint8_t)(y_ppm >> 8), (uint8_t)y_ppm, unit};
   PngBuilder b;
   b.ihdr(4, 4, 8, 0).chunk("pHYs", phys);
-  b.chunk("IDAT", GreyIdatPayload(4, 4)).chunk("IEND", {});
+  b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
   return b.bytes();
 }
 
@@ -1982,7 +1982,7 @@ void LoadDpi(const std::vector<uint8_t> & png, uint32_t * x, uint32_t * y) {
 
 } // namespace
 
-TEST(PngPhys, AResolutionInMetresBecomesTheDocumentsDpi) {
+TEST(PngPhys, AResolutionInMetersBecomesTheDocumentsDpi) {
   uint32_t x = 0, y = 0;
   LoadDpi(PngWithPhys(11811u, 11811u, 1u), &x, &y);
   EXPECT_EQ(x, 300u);

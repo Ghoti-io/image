@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * JPEG entropy decoding (Huffman), dezigzag, dequantise, inverse DCT.
+ * JPEG entropy decoding (Huffman), dezigzag, dequantize, inverse DCT.
  * Used for baseline decode.
  *
  * Copyright 2026 by Corey Pennycuff
@@ -55,7 +55,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     const gimg_jpeg_doc_state_t * state, const GIMG_Decode_Options * options,
     GIMG_Raster ** out_raster);
 
-/** Assemble a frame with no colour convention; see the definition below. */
+/** Assemble a frame with no color convention; see the definition below. */
 static GIMG_Result jpeg_emit_unknown_components(const GIMG_Allocator * alloc,
     uint32_t width, uint32_t height, int num_comp, int precision,
     int planes_wide, const void * const * comp_buf, const size_t * comp_stride,
@@ -209,7 +209,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
   // therefore yields (512 / scale) * s(x), and the separable two-pass transform
   // squares that, so only scale = 512 reproduces the transform.  It was 4096,
   // which is a factor of (512/4096)^2 = 1/64: every 12-bit image decoded to a
-  // band roughly 1/64 of its true contrast, clustered around mid-grey, and no
+  // band roughly 1/64 of its true contrast, clustered around mid-gray, and no
   // test noticed because none compared 12-bit sample values.
   (void)precision;
   int level_shift = (precision == 12) ? 2048 : 32768;
@@ -313,7 +313,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
             }
             block_counter++;
             jpeg_dezigzag(block_zig, block_rz);
-            jpeg_dequantise_32(block_rz, quant, block_q);
+            jpeg_dequantize_32(block_rz, quant, block_q);
             // pass1_bits 1 at P=12: one fewer fractional bit between passes,
             // for the headroom the wider samples need (libjpeg jidctint.c).
             jpeg_idct_8x8_islow(block_q, block_idct, 1);
@@ -395,7 +395,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
     // uint16 elements, not pixels: the row is indexed as
     // pixels[y * stride_el + x * 4 + c] through a uint16_t *, so the divisor is
     // sizeof(uint16_t) and not the 8 bytes an RGBA16 pixel occupies.  Dividing
-    // by 8 made the stride a quarter of a row, so every 12-bit colour frame was
+    // by 8 made the stride a quarter of a row, so every 12-bit color frame was
     // written into the first quarter of its own raster and the rest left blank.
     size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 2;
     uint32_t cw1 = comp_w[1];
@@ -403,7 +403,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
     // Fancy unless the caller explicitly asked for SIMPLE, so that NULL
-    // options and zero-initialised options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
+    // options and zero-initialized options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
     // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
@@ -415,7 +415,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
         int yy = (int)comp_buf[0][jpeg_component_index(comp_w[0], comp_h[0],
             comp_stride_el[0], x, y, width, height)];
         // The same filters the 8-bit path uses.  This used to read the chroma
-        // planes with a nearest-neighbour index of its own, so a 12-bit 4:2:0
+        // planes with a nearest-neighbor index of its own, so a 12-bit 4:2:0
         // or 4:2:2 frame was always box-filtered no matter what the caller
         // asked for.
         int cb = jpeg_chroma_sample(&pl_cb, cw1, ch1, x, y, width, height,
@@ -426,10 +426,10 @@ static GIMG_Result jpeg_decode_baseline_extended(
         // reconstructed sample is in 0..2^P-1), then widen once to the 16-bit
         // raster.
         int r_val, g_val, b_val;
-        // T.81 describes no colour space at all; jpeg_frame_is_rgb reads the
+        // T.81 describes no color space at all; jpeg_frame_is_rgb reads the
         // conventions that do (JFIF, Adobe APP14, the component identifiers).
         // A frame that already carries R, G, B is passed through: converting it
-        // as though it were YCbCr turns every pixel into a different colour.
+        // as though it were YCbCr turns every pixel into a different color.
         if (frame_is_rgb) {
           r_val = yy;
           g_val = cb;
@@ -496,7 +496,7 @@ ext_fail:
 }
 
 /**
- * Assemble a frame whose component count carries no colour convention.
+ * Assemble a frame whose component count carries no color convention.
  *
  * T.81 B.2.2 lets a frame have from 1 to 255 components and never says what
  * any of them mean.  One, three and four have conventions attached from
@@ -574,7 +574,7 @@ static GIMG_Result jpeg_emit_unknown_components(const GIMG_Allocator * alloc,
 /**
  * Assemble a four-component frame into a CMYK raster.
  *
- * T.81 puts no colour space in the frame at all and allows Nf up to 255;
+ * T.81 puts no color space in the frame at all and allows Nf up to 255;
  * four components in practice means CMYK, or YCCK when an Adobe APP14 says
  * transform 2, and that marker is the only thing that distinguishes them.
  *
@@ -586,11 +586,11 @@ static GIMG_Result jpeg_emit_unknown_components(const GIMG_Allocator * alloc,
  * different times; they now assemble the picture with the same code.
  *
  * Upsampling is the same as for three components.  This used to resample by
- * nearest neighbour on the grounds that "four-component files are not YCbCr
+ * nearest neighbor on the grounds that "four-component files are not YCbCr
  * and the filter does not apply to them", which was wrong: libjpeg chooses its
  * upsampler from the sampling factors alone (jdsample.c jinit_upsampler never
- * looks at the colour space), so a subsampled YCCK frame gets the triangle
- * filter there.  Nearest neighbour disagreed with libjpeg on every 4:2:0 and
+ * looks at the color space), so a subsampled YCCK frame gets the triangle
+ * filter there.  Nearest neighbor disagreed with libjpeg on every 4:2:0 and
  * 4:2:2 YCCK file; nothing caught it because every four-component fixture was
  * 4:4:4, where the two agree exactly.
  *
@@ -609,10 +609,10 @@ static GIMG_Result jpeg_emit_four_component(const GIMG_Allocator * alloc,
   // follows the walk that produced them - the coefficient-buffer walk carries
   // even an 8-bit frame in uint16_t so that a 12-bit one fits.
   const int wide = (precision > 8);
-  // T.81 A.3.1: a reconstructed sample lies in 0..2^P-1, and the centre the
+  // T.81 A.3.1: a reconstructed sample lies in 0..2^P-1, and the center the
   // chrominance components are offset about is 2^(P-1).
   const int max_val = (1 << precision) - 1;
-  const int centre = 1 << (precision - 1);
+  const int center = 1 << (precision - 1);
   uint8_t h_max = 1, v_max = 1;
   gimg_jpeg_sampling_max(4, h_samp, v_samp, &h_max, &v_max);
   jpeg_plane_t pl[4];
@@ -646,7 +646,7 @@ static GIMG_Result jpeg_emit_four_component(const GIMG_Allocator * alloc,
         // two agree by construction at either precision.
         int r_val, g_val, b_val;
         jpeg_ycbcr_to_rgb(
-            s[0], s[1], s[2], centre, max_val, &r_val, &g_val, &b_val);
+            s[0], s[1], s[2], center, max_val, &r_val, &g_val, &b_val);
         out[0] = max_val - r_val;
         out[1] = max_val - g_val;
         out[2] = max_val - b_val;
@@ -1063,7 +1063,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
               (void)fflush(stderr);
             }
             jpeg_dezigzag(block_zig, block_rz);
-            jpeg_dequantise_32(block_rz, quant, block_q);
+            jpeg_dequantize_32(block_rz, quant, block_q);
             // pass1_bits 2: the 8-bit setting (libjpeg jidctint.c).
             jpeg_idct_8x8_islow(block_q, block_idct, 2);
 
@@ -1241,7 +1241,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
     // Fancy unless the caller explicitly asked for SIMPLE, so that NULL
-    // options and zero-initialised options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
+    // options and zero-initialized options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
     // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
@@ -1259,10 +1259,10 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
         int cr = jpeg_chroma_sample(&pl_cr, cw2, ch2, x, y, width, height,
             sof->h_samp[2], sof->v_samp[2], h_max, v_max, use_fancy);
         int r_val, g_val, b_val;
-        // T.81 describes no colour space at all; jpeg_frame_is_rgb reads the
+        // T.81 describes no color space at all; jpeg_frame_is_rgb reads the
         // conventions that do (JFIF, Adobe APP14, the component identifiers).
         // A frame that already carries R, G, B is passed through: converting it
-        // as though it were YCbCr turns every pixel into a different colour.
+        // as though it were YCbCr turns every pixel into a different color.
         if (frame_is_rgb) {
           r_val = yy;
           g_val = cb;
@@ -1280,7 +1280,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   }
   else if (num_comp == 4) {
     // GIMG_JPEG_CHROMA_UPSAMPLE_DEFAULT is 0 and means FANCY, so absent
-    // options and zero-initialised options agree.
+    // options and zero-initialized options agree.
     int use_fancy_4 = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
     r = jpeg_emit_four_component(alloc, state->adobe_transform,
@@ -1537,7 +1537,7 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
             // bitstream reader to notice the marker on its own does not work:
             // the reader only looks when it next needs a byte, which is after
             // it has already consumed bits belonging to the wrong side of the
-            // boundary, and the scan desynchronises from there on.  That is why
+            // boundary, and the scan desynchronizes from there on.  That is why
             // every progressive file with a restart interval failed to decode.
             bs.expect_rst = 1; // T.81 3.1.110: next 0xFF 0xD0..0xD7 is RST
             jpeg_bitstream_align_skip_rst(&bs);
@@ -1837,7 +1837,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
   // therefore yields (512 / scale) * s(x), and the separable two-pass transform
   // squares that, so only scale = 512 reproduces the transform.  It was 4096,
   // which is a factor of (512/4096)^2 = 1/64: every 12-bit image decoded to a
-  // band roughly 1/64 of its true contrast, clustered around mid-grey, and no
+  // band roughly 1/64 of its true contrast, clustered around mid-gray, and no
   // test noticed because none compared 12-bit sample values.
   (void)precision;
   int level_shift = (precision == 12) ? 2048 : 32768;
@@ -1890,7 +1890,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
         if (precision == 8) {
           // Same pipeline as baseline 8-bit: dequant (int16_t) + islow IDCT.
           // Chroma may underflow/overflow (TBD: match baseline or use 32-bit).
-          jpeg_dequantise_32(block_rz, quant, block_q);
+          jpeg_dequantize_32(block_rz, quant, block_q);
           // pass1_bits 2: the 8-bit setting (libjpeg jidctint.c).
           jpeg_idct_8x8_islow(block_q, block_idct, 2);
           if (comp_idx == 1 && by == 0 && bx == 0 &&
@@ -1921,7 +1921,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
           }
         }
         else {
-          jpeg_dequantise_32(block_rz, quant, block_q);
+          jpeg_dequantize_32(block_rz, quant, block_q);
           // pass1_bits 1 at P=12: one fewer fractional bit between passes,
           // for the headroom the wider samples need (libjpeg jidctint.c).
           jpeg_idct_8x8_islow(block_q, block_idct, 1);
@@ -1974,7 +1974,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     }
   }
   else if (prog_8bit && num_comp == 3) {
-    // 8-bit colour: comp_buf holds 0..255; use same chroma and RGB as baseline.
+    // 8-bit color: comp_buf holds 0..255; use same chroma and RGB as baseline.
     unsigned char * comp_buf_8[GIMG_JPEG_MAX_COMPONENTS];
     size_t comp_size_8[GIMG_JPEG_MAX_COMPONENTS];
     for (uint8_t i = 0; i < num_comp; i++) {
@@ -1991,7 +1991,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
       }
     }
     // Fancy unless the caller explicitly asked for SIMPLE, so that NULL
-    // options and zero-initialised options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
+    // options and zero-initialized options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
     // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
@@ -2022,10 +2022,10 @@ static GIMG_Result jpeg_decode_progressive_extended(
         int cr = jpeg_chroma_sample(&pl_cr, cw2, ch2, x, y, width, height,
             sof->h_samp[2], sof->v_samp[2], h_max, v_max, use_fancy);
         int r_val, g_val, b_val;
-        // T.81 describes no colour space at all; jpeg_frame_is_rgb reads the
+        // T.81 describes no color space at all; jpeg_frame_is_rgb reads the
         // conventions that do (JFIF, Adobe APP14, the component identifiers).
         // A frame that already carries R, G, B is passed through: converting it
-        // as though it were YCbCr turns every pixel into a different colour.
+        // as though it were YCbCr turns every pixel into a different color.
         if (frame_is_rgb) {
           r_val = yy;
           g_val = cb;
@@ -2089,7 +2089,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     // uint16 elements, not pixels: the row is indexed as
     // pixels[y * stride_el + x * 4 + c] through a uint16_t *, so the divisor is
     // sizeof(uint16_t) and not the 8 bytes an RGBA16 pixel occupies.  Dividing
-    // by 8 made the stride a quarter of a row, so every 12-bit colour frame was
+    // by 8 made the stride a quarter of a row, so every 12-bit color frame was
     // written into the first quarter of its own raster and the rest left blank.
     size_t stride_el = gimg_raster_stride_bytes(*out_raster) / 2;
     uint32_t cw1 = comp_w[1];
@@ -2097,7 +2097,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     uint32_t cw2 = comp_w[2];
     uint32_t ch2 = comp_h[2];
     // Fancy unless the caller explicitly asked for SIMPLE, so that NULL
-    // options and zero-initialised options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
+    // options and zero-initialized options agree (GIMG_JPEG_CHROMA_UPSAMPLE_
     // DEFAULT is 0 and means FANCY).
     int use_fancy = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
@@ -2116,10 +2116,10 @@ static GIMG_Result jpeg_decode_progressive_extended(
         // T.81 A.3.1: a reconstructed sample lies in 0..2^P-1.  Clamp there,
         // then widen once to the 16-bit raster.
         int r_val, g_val, b_val;
-        // T.81 describes no colour space at all; jpeg_frame_is_rgb reads the
+        // T.81 describes no color space at all; jpeg_frame_is_rgb reads the
         // conventions that do (JFIF, Adobe APP14, the component identifiers).
         // A frame that already carries R, G, B is passed through: converting it
-        // as though it were YCbCr turns every pixel into a different colour.
+        // as though it were YCbCr turns every pixel into a different color.
         if (frame_is_rgb) {
           r_val = yy;
           g_val = cb;

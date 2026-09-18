@@ -61,7 +61,7 @@ int jpeg_sof_is_arithmetic(uint8_t m) {
 /**
  * Decide whether a three-component frame carries R, G, B rather than Y, Cb, Cr.
  *
- * T.81 says nothing about colour: a component is a component, and the frame
+ * T.81 says nothing about color: a component is a component, and the frame
  * header names them only by identifier.  What a decoder does with three of them
  * is settled by the application conventions layered on top - JFIF, which
  * defines its images to be YCbCr, and Adobe's APP14, whose transform byte says

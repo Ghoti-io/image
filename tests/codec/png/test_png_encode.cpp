@@ -23,7 +23,7 @@
 #include "png_test_utils.h"
 
 // Reaches gimg_png_retarget_ancillary(), which is internal: the rules it
-// encodes are per-colour-type and there are more of them than an end-to-end
+// encodes are per-color-type and there are more of them than an end-to-end
 // fixture per case would be a sensible way to cover.
 #include "../../../src/codec/png/png_internal.h"
 #include <fstream>
@@ -1253,12 +1253,12 @@ TEST(PngEncode, SamplesBelowEightBitsRoundTripAndKeepTheirDepth) {
     gimg_stream_destroy(out_s);
 
     // IHDR payload starts at signature (8) + length (4) + type (4) = 16;
-    // bit depth is byte 8 of the payload and colour type byte 9. PNG 11.2.1.
+    // bit depth is byte 8 of the payload and color type byte 9. PNG 11.2.1.
     ASSERT_GT(saved.size(), 26u) << c.filename;
     EXPECT_EQ(saved[24], c.expect_bit_depth)
         << c.filename << ": IHDR bit depth";
     EXPECT_EQ(saved[25], c.expect_color_type)
-        << c.filename << ": IHDR colour type";
+        << c.filename << ": IHDR color type";
 
     GIMG_Stream * s2 = nullptr;
     ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &s2),
@@ -1443,11 +1443,11 @@ TEST(PngEncode, AnUnknownFilterSettingIsRefused) {
 }
 
 // ---------------------------------------------------------------------------
-// Colour-type-dependent ancillary chunks on save
+// Color-type-dependent ancillary chunks on save
 //
-// bKGD, sBIT and hIST are laid out according to the colour type in the IHDR
+// bKGD, sBIT and hIST are laid out according to the color type in the IHDR
 // beside them (PNG 11.3.4.1, 11.3.2.4, 11.3.4.2). The writer does not always
-// emit the colour type a frame arrived as, so copying them across unchanged
+// emit the color type a frame arrived as, so copying them across unchanged
 // produces a chunk whose length contradicts the header in the same file -
 // which is what saving the conformance suite's tbbn0g04.png used to do, and
 // what libpng called "bKGD: invalid".
@@ -1508,7 +1508,7 @@ bool FindChunk(const std::vector<uint8_t> & png, const char (&type)[5],
   return false;
 }
 
-/** colour type and bit depth out of an encoded PNG's IHDR. */
+/** color type and bit depth out of an encoded PNG's IHDR. */
 void ReadIhdr(const std::vector<uint8_t> & png, uint8_t * color_type,
     uint8_t * bit_depth) {
   std::vector<uint8_t> ihdr;
@@ -1526,9 +1526,9 @@ std::vector<uint8_t> LoadAndSave(const char * fixture) {
 
 // -- bKGD -------------------------------------------------------------------
 
-TEST(PngAncillaryRetarget, AGreyBackgroundBecomesThreeEqualSamples) {
-  // 4-bit greyscale promoted to colour type 6 at 8 bits, which is what happens
-  // when a tRNS has to become an alpha channel. Grey 7 of 15 rescales to 119
+TEST(PngAncillaryRetarget, AGrayBackgroundBecomesThreeEqualSamples) {
+  // 4-bit grayscale promoted to color type 6 at 8 bits, which is what happens
+  // when a tRNS has to become an alpha channel. Gray 7 of 15 rescales to 119
   // by 13.12 - round(7 * 255 / 15) - a value that is not 7, not 112 and not
   // 127, so every plausible way of getting the rescaling wrong is visible.
   SourceImage src(0, 4);
@@ -1539,7 +1539,7 @@ TEST(PngAncillaryRetarget, AGreyBackgroundBecomesThreeEqualSamples) {
   EXPECT_EQ(got.payload, want);
 }
 
-TEST(PngAncillaryRetarget, AnUnchangedColourTypeAndDepthKeepsTheChunk) {
+TEST(PngAncillaryRetarget, AnUnchangedColorTypeAndDepthKeepsTheChunk) {
   // The control. A writer that rewrote unconditionally would pass the test
   // above and fail this one.
   SourceImage src(0, 8);
@@ -1547,7 +1547,7 @@ TEST(PngAncillaryRetarget, AnUnchangedColourTypeAndDepthKeepsTheChunk) {
       GIMG_PNG_RETARGET_KEEP);
 }
 
-TEST(PngAncillaryRetarget, APaletteIndexBecomesTheColourItNames) {
+TEST(PngAncillaryRetarget, APaletteIndexBecomesTheColorItNames) {
   SourceImage src(3, 8);
   src.set_palette({0xFF, 0x00, 0x00, 0x20, 0x40, 0x60, 0x00, 0xFF, 0x00});
   Retargeted got = Retarget(GIMG_PNG_bKGD, {1}, src, 6, 8);
@@ -1563,22 +1563,22 @@ TEST(PngAncillaryRetarget, APaletteIndexPastTheEndOfThePaletteIsDropped) {
       GIMG_PNG_RETARGET_DROP);
 }
 
-TEST(PngAncillaryRetarget, AColourBackgroundSurvivesOnlyIfItIsAlreadyGrey) {
-  SourceImage colour(2, 8);
-  // Three different samples: no grey level says this, so it goes.
+TEST(PngAncillaryRetarget, AColorBackgroundSurvivesOnlyIfItIsAlreadyGray) {
+  SourceImage color(2, 8);
+  // Three different samples: no gray level says this, so it goes.
   EXPECT_EQ(
-      Retarget(GIMG_PNG_bKGD, {0, 0x20, 0, 0x40, 0, 0x60}, colour, 0, 8).what,
+      Retarget(GIMG_PNG_bKGD, {0, 0x20, 0, 0x40, 0, 0x60}, color, 0, 8).what,
       GIMG_PNG_RETARGET_DROP);
-  // Three equal samples: the grey level is exactly that.
+  // Three equal samples: the gray level is exactly that.
   Retargeted got =
-      Retarget(GIMG_PNG_bKGD, {0, 0x44, 0, 0x44, 0, 0x44}, colour, 0, 8);
+      Retarget(GIMG_PNG_bKGD, {0, 0x44, 0, 0x44, 0, 0x44}, color, 0, 8);
   EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
   const std::vector<unsigned char> want = {0, 0x44};
   EXPECT_EQ(got.payload, want);
 }
 
 TEST(PngAncillaryRetarget, ABackgroundOfTheWrongLengthIsNotCarriedForward) {
-  // Three bytes where colour type 0 calls for two. The file was already
+  // Three bytes where color type 0 calls for two. The file was already
   // malformed; that is not a reason to write another one.
   SourceImage src(0, 8);
   EXPECT_EQ(Retarget(GIMG_PNG_bKGD, {0x00, 0x80, 0x00}, src, 6, 8).what,
@@ -1600,7 +1600,7 @@ TEST(PngAncillaryRetarget, SixteenBitBackgroundsRescaleDownToEight) {
 TEST(PngAncillaryRetarget, SignificantBitsDoNotSurviveAChangeOfDepth) {
   // Rescaling by 13.12 spreads a 4-bit value across all 8 bits of the new
   // sample, so a count taken before that would tell a decoder to shift data
-  // that has already been scaled. Unlike a background colour, this cannot be
+  // that has already been scaled. Unlike a background color, this cannot be
   // translated - only dropped.
   SourceImage src(0, 4);
   EXPECT_EQ(Retarget(GIMG_PNG_sBIT, {3}, src, 6, 8).what,
@@ -1608,7 +1608,7 @@ TEST(PngAncillaryRetarget, SignificantBitsDoNotSurviveAChangeOfDepth) {
 }
 
 TEST(PngAncillaryRetarget, SignificantBitsSurviveAChangeOfChannelCount) {
-  // Same depth, more channels: a grey level repeated into R, G and B is
+  // Same depth, more channels: a gray level repeated into R, G and B is
   // significant in each to exactly the same degree, and the alpha channel the
   // writer is adding is significant in all of its bits.
   SourceImage src(0, 8);
@@ -1619,7 +1619,7 @@ TEST(PngAncillaryRetarget, SignificantBitsSurviveAChangeOfChannelCount) {
 }
 
 TEST(PngAncillaryRetarget, AnAlphaChannelAlreadyPresentKeepsItsOwnCount) {
-  SourceImage src(4, 8); // grey + alpha
+  SourceImage src(4, 8); // gray + alpha
   Retargeted got = Retarget(GIMG_PNG_sBIT, {5, 6}, src, 6, 8);
   EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
   const std::vector<unsigned char> want = {5, 5, 5, 6};
@@ -1635,14 +1635,14 @@ TEST(PngAncillaryRetarget, SignificantBitsOutsideTheirLegalRangeAreDropped) {
       Retarget(GIMG_PNG_sBIT, {9}, src, 6, 8).what, GIMG_PNG_RETARGET_DROP);
 }
 
-TEST(PngAncillaryRetarget, UnequalColourCountsCannotBecomeOneGreyCount) {
+TEST(PngAncillaryRetarget, UnequalColorCountsCannotBecomeOneGrayCount) {
   SourceImage src(2, 8);
   EXPECT_EQ(Retarget(GIMG_PNG_sBIT, {5, 6, 7}, src, 0, 8).what,
       GIMG_PNG_RETARGET_DROP);
 }
 
 TEST(PngAncillaryRetarget, PaletteSignificantBitsDescribeEightBitSamples) {
-  // 11.3.2.4: for colour type 3 the three values describe the palette's
+  // 11.3.2.4: for color type 3 the three values describe the palette's
   // samples, which are always 8-bit, whatever the depth of the indices.
   SourceImage src(3, 4);
   Retargeted got = Retarget(GIMG_PNG_sBIT, {5, 6, 7}, src, 2, 8);
@@ -1655,7 +1655,7 @@ TEST(PngAncillaryRetarget, PaletteSignificantBitsDescribeEightBitSamples) {
 
 TEST(PngAncillaryRetarget, AHistogramWithoutItsPaletteIsDropped) {
   // 11.3.4.2: one frequency per palette entry, and "shall not appear unless a
-  // PLTE chunk appears". A truecolour image has no palette for it to be about,
+  // PLTE chunk appears". A truecolor image has no palette for it to be about,
   // and there is nothing to translate it into.
   SourceImage src(3, 8);
   src.set_palette({0xFF, 0, 0, 0x20, 0x40, 0x60});
@@ -1684,10 +1684,10 @@ TEST(PngAncillaryRetarget, AHistogramOfTheWrongLengthIsDropped) {
 // The rules above, reached the way a caller reaches them: load a file, save
 // it, and read the chunks back out of what was written.
 
-TEST(PngAncillaryRetarget, APromotedGreyscaleFileGetsABackgroundThatFitsIt) {
-  // 4-bit greyscale with tRNS. The transparent grey level cannot survive as a
-  // tRNS against an 8-bit raster, so this is written as colour type 6 - and a
-  // 2-byte bKGD is not a bKGD for colour type 6.
+TEST(PngAncillaryRetarget, APromotedGrayscaleFileGetsABackgroundThatFitsIt) {
+  // 4-bit grayscale with tRNS. The transparent gray level cannot survive as a
+  // tRNS against an 8-bit raster, so this is written as color type 6 - and a
+  // 2-byte bKGD is not a bKGD for color type 6.
   std::vector<uint8_t> saved = LoadAndSave("png_gray4_trns_bkgd_sbit.png");
   ASSERT_FALSE(saved.empty());
 
@@ -1699,14 +1699,14 @@ TEST(PngAncillaryRetarget, APromotedGreyscaleFileGetsABackgroundThatFitsIt) {
   std::vector<uint8_t> bkgd;
   ASSERT_TRUE(FindChunk(saved, "bKGD", bkgd));
   const std::vector<uint8_t> want = {0, 119, 0, 119, 0, 119};
-  EXPECT_EQ(bkgd, want) << "grey 7 of 15 rescales to 119 at 8 bits (13.12)";
+  EXPECT_EQ(bkgd, want) << "gray 7 of 15 rescales to 119 at 8 bits (13.12)";
 
   // sBIT counted bits in 4-bit samples; the samples are 8-bit now.
   std::vector<uint8_t> sbit;
   EXPECT_FALSE(FindChunk(saved, "sBIT", sbit));
 }
 
-TEST(PngAncillaryRetarget, AFileThatKeepsItsColourTypeKeepsItsChunksVerbatim) {
+TEST(PngAncillaryRetarget, AFileThatKeepsItsColorTypeKeepsItsChunksVerbatim) {
   // The control for the test above. No tRNS, nothing forces a change, so both
   // chunks must come back byte for byte.
   std::vector<uint8_t> saved = LoadAndSave("png_gray8_bkgd_sbit.png");
@@ -1731,7 +1731,7 @@ TEST(PngAncillaryRetarget, AMalformedBackgroundIsNotCopiedIntoTheNewFile) {
   ASSERT_FALSE(saved.empty());
   std::vector<uint8_t> bkgd;
   EXPECT_FALSE(FindChunk(saved, "bKGD", bkgd))
-      << "a three-byte bKGD is wrong for every colour type";
+      << "a three-byte bKGD is wrong for every color type";
 }
 
 TEST(PngAncillaryRetarget, APaletteThatStaysAPaletteKeepsItsHistogram) {
@@ -1749,9 +1749,9 @@ TEST(PngAncillaryRetarget, APaletteThatStaysAPaletteKeepsItsHistogram) {
   EXPECT_EQ(hist.size(), 8u) << "one 16-bit frequency per palette entry";
 }
 
-TEST(PngAncillaryRetarget, ChunksThatDoNotDependOnTheColourTypeAreUntouched) {
+TEST(PngAncillaryRetarget, ChunksThatDoNotDependOnTheColorTypeAreUntouched) {
   // pHYs, tIME, gAMA, text, and anything unknown mean the same thing whatever
-  // the colour type, so a change of colour type must not disturb them.
+  // the color type, so a change of color type must not disturb them.
   SourceImage src(0, 4);
   const gimg_png_chunk_type_t independent[] = {
       GIMG_PNG_gAMA, GIMG_PNG_tEXt, GIMG_PNG_iCCP, GIMG_PNG_eXIf};
@@ -1762,11 +1762,11 @@ TEST(PngAncillaryRetarget, ChunksThatDoNotDependOnTheColourTypeAreUntouched) {
 }
 
 // ---------------------------------------------------------------------------
-// Building a palette (PNG 11.2.2, colour type 3)
+// Building a palette (PNG 11.2.2, color type 3)
 //
-// A palette is not built by choosing which colours to keep - that is
-// quantisation, an image-processing decision. It is built when there is
-// nothing to choose: at 256 colours or fewer exactly one palette reproduces
+// A palette is not built by choosing which colors to keep - that is
+// quantization, an image-processing decision. It is built when there is
+// nothing to choose: at 256 colors or fewer exactly one palette reproduces
 // the image, so writing one is a storage decision of the same kind as picking
 // a row filter. It is used only when it is the smaller file, which is
 // measured and not guessed.
@@ -1777,7 +1777,7 @@ namespace {
 /** Save an RGBA8 raster built from a per-pixel function. */
 template <typename Fn>
 std::vector<uint8_t> SaveRgba(
-    uint32_t w, uint32_t h, Fn colour_at, uint8_t palette_option) {
+    uint32_t w, uint32_t h, Fn color_at, uint8_t palette_option) {
   GIMG_Raster * raster = nullptr;
   if (gimg_raster_create(w, h, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0,
           &raster) != GIMG_OK) {
@@ -1787,7 +1787,7 @@ std::vector<uint8_t> SaveRgba(
   auto * px = static_cast<unsigned char *>(gimg_raster_pixels(raster));
   for (uint32_t y = 0; y < h; y++) {
     for (uint32_t x = 0; x < w; x++) {
-      uint32_t rgba = colour_at(x, y);
+      uint32_t rgba = color_at(x, y);
       unsigned char * p = px + (size_t)y * stride + (size_t)x * 4;
       p[0] = (unsigned char)(rgba >> 24);
       p[1] = (unsigned char)((rgba >> 16) & 0xFF);
@@ -1851,8 +1851,8 @@ std::vector<uint8_t> DecodeToRgba(const std::vector<uint8_t> & png) {
   for (uint32_t y = 0; y < h; y++) {
     for (uint32_t x = 0; x < w; x++) {
       const unsigned char * p = px + (size_t)y * stride + (size_t)x * bpp;
-      // Normalise whatever came back to RGBA so the comparison is about
-      // pixels and not about which colour type they arrived in.
+      // Normalize whatever came back to RGBA so the comparison is about
+      // pixels and not about which color type they arrived in.
       if (bpp == 4) {
         out.insert(out.end(), p, p + 4);
       }
@@ -1874,28 +1874,28 @@ std::vector<uint8_t> DecodeToRgba(const std::vector<uint8_t> & png) {
 
 } // namespace
 
-TEST(PngPalette, FewColoursBecomeAPaletteAndComeBackUnchanged) {
-  // 48 colours over 128x128: the shape of a screenshot or a diagram, where a
+TEST(PngPalette, FewColorsBecomeAPaletteAndComeBackUnchanged) {
+  // 48 colors over 128x128: the shape of a screenshot or a diagram, where a
   // palette is a large saving and a lossless one.
-  auto colour = [](uint32_t x, uint32_t y) -> uint32_t {
+  auto color = [](uint32_t x, uint32_t y) -> uint32_t {
     static const uint32_t table[48] = {};
     (void)table;
     uint32_t i = ((x / 8u) + (y / 6u) * 3u) % 48u;
     return ((30u + (i % 5u) * 50u) << 24) | ((20u + (i % 4u) * 60u) << 16) |
         ((40u + (i % 3u) * 70u) << 8) | 0xFFu;
   };
-  std::vector<uint8_t> with = SaveRgba(128, 128, colour, GIMG_PNG_PALETTE_AUTO);
+  std::vector<uint8_t> with = SaveRgba(128, 128, color, GIMG_PNG_PALETTE_AUTO);
   std::vector<uint8_t> without =
-      SaveRgba(128, 128, colour, GIMG_PNG_PALETTE_NEVER);
+      SaveRgba(128, 128, color, GIMG_PNG_PALETTE_NEVER);
   ASSERT_FALSE(with.empty());
   ASSERT_FALSE(without.empty());
 
   uint8_t ct = 0, bd = 0;
   ReadIhdr(with, &ct, &bd);
-  EXPECT_EQ(ct, 3) << "few enough colours to store as a palette";
+  EXPECT_EQ(ct, 3) << "few enough colors to store as a palette";
 
   ReadIhdr(without, &ct, &bd);
-  EXPECT_EQ(ct, 6) << "PALETTE_NEVER must leave it truecolour";
+  EXPECT_EQ(ct, 6) << "PALETTE_NEVER must leave it truecolor";
 
   EXPECT_LT(with.size(), without.size()) << "the palette is the point";
 
@@ -1904,7 +1904,7 @@ TEST(PngPalette, FewColoursBecomeAPaletteAndComeBackUnchanged) {
 }
 
 TEST(PngPalette, TheBitDepthIsTheSmallestThatHoldsTheIndices) {
-  // 11.2.2 allows 1, 2, 4 and 8 bits of index. Two colours need one bit.
+  // 11.2.2 allows 1, 2, 4 and 8 bits of index. Two colors need one bit.
   auto two = [](uint32_t x, uint32_t y) -> uint32_t {
     return ((x + y) % 2u) ? 0xFF0000FFu : 0x0000FFFFu;
   };
@@ -1924,14 +1924,14 @@ TEST(PngPalette, TransparentEntriesComeFirstSoTheTrnsChunkCanBeShort) {
   // 11.3.2.1 lets tRNS be shorter than the palette, every entry past its end
   // being opaque. Putting the non-opaque entries first is what makes that
   // saving available - and it is only available if the order is deliberate.
-  auto colours = [](uint32_t x, uint32_t y) -> uint32_t {
+  auto colors = [](uint32_t x, uint32_t y) -> uint32_t {
     static const uint32_t table[6] = {
         0xFF0000FFu, 0x00FF00FFu, 0x0000FFFFu, // opaque
         0xFF000000u, 0x00FF0080u, 0x0000FF40u, // not
     };
     return table[(x + y * 3u) % 6u];
   };
-  std::vector<uint8_t> saved = SaveRgba(64, 64, colours, GIMG_PNG_PALETTE_AUTO);
+  std::vector<uint8_t> saved = SaveRgba(64, 64, colors, GIMG_PNG_PALETTE_AUTO);
   ASSERT_FALSE(saved.empty());
   uint8_t ct = 0, bd = 0;
   ReadIhdr(saved, &ct, &bd);
@@ -1948,8 +1948,8 @@ TEST(PngPalette, TransparentEntriesComeFirstSoTheTrnsChunkCanBeShort) {
   }
 }
 
-TEST(PngPalette, MoreThanTwoHundredAndFiftySixColoursStaysTruecolour) {
-  // Reducing these would be quantisation, and this writer does not do that.
+TEST(PngPalette, MoreThanTwoHundredAndFiftySixColorsStaysTruecolor) {
+  // Reducing these would be quantization, and this writer does not do that.
   auto many = [](uint32_t x, uint32_t y) -> uint32_t {
     return (((x * 2u) % 256u) << 24) | (((y * 2u) % 256u) << 16) |
         (((x + y) % 256u) << 8) | 0xFFu;
@@ -1961,7 +1961,7 @@ TEST(PngPalette, MoreThanTwoHundredAndFiftySixColoursStaysTruecolour) {
   EXPECT_NE(ct, 3);
 }
 
-TEST(PngPalette, ExactlyTwoHundredAndFiftySixColoursStillFits) {
+TEST(PngPalette, ExactlyTwoHundredAndFiftySixColorsStillFits) {
   // The boundary: 256 is a palette, and the 257th is what stops it.
   auto exact = [](uint32_t x, uint32_t y) -> uint32_t {
     uint32_t i = (y * 16u + x) % 256u;
@@ -1983,23 +1983,23 @@ TEST(PngPalette, APaletteIsNeverTheLargerFile) {
   // The choice is measured, not assumed: both forms are encoded and the loser
   // is discarded. A small image can spend more on PLTE than it saves.
   struct Case {
-    uint32_t w, h, colours;
+    uint32_t w, h, colors;
   };
   const Case cases[] = {{4, 4, 4}, {8, 8, 16}, {16, 16, 64}, {64, 64, 200},
       {128, 128, 7}, {200, 137, 33}};
   for (const Case & c : cases) {
-    auto colour = [&c](uint32_t x, uint32_t y) -> uint32_t {
-      uint32_t i = (x + y * 7u) % c.colours;
+    auto color = [&c](uint32_t x, uint32_t y) -> uint32_t {
+      uint32_t i = (x + y * 7u) % c.colors;
       return ((i * 7u) << 24) | ((i * 13u) << 16) | ((i * 29u) << 8) | 0xFFu;
     };
     std::vector<uint8_t> with =
-        SaveRgba(c.w, c.h, colour, GIMG_PNG_PALETTE_AUTO);
+        SaveRgba(c.w, c.h, color, GIMG_PNG_PALETTE_AUTO);
     std::vector<uint8_t> without =
-        SaveRgba(c.w, c.h, colour, GIMG_PNG_PALETTE_NEVER);
+        SaveRgba(c.w, c.h, color, GIMG_PNG_PALETTE_NEVER);
     ASSERT_FALSE(with.empty());
     ASSERT_FALSE(without.empty());
     EXPECT_LE(with.size(), without.size())
-        << c.w << "x" << c.h << " with " << c.colours << " colours";
+        << c.w << "x" << c.h << " with " << c.colors << " colors";
     EXPECT_EQ(DecodeToRgba(with), DecodeToRgba(without))
         << "whichever form wins, the pixels are the same";
   }
@@ -2098,8 +2098,8 @@ struct RoundTripCase {
   const char * format_name;
 };
 
-/** Fill a raster with a pattern that is not flat, not random, and not grey. */
-void FillPattern(GIMG_Raster * raster, unsigned int colours) {
+/** Fill a raster with a pattern that is not flat, not random, and not gray. */
+void FillPattern(GIMG_Raster * raster, unsigned int colors) {
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   uint32_t w = gimg_raster_width(raster);
   uint32_t h = gimg_raster_height(raster);
@@ -2110,9 +2110,9 @@ void FillPattern(GIMG_Raster * raster, unsigned int colours) {
   for (uint32_t y = 0; y < h; y++) {
     for (uint32_t x = 0; x < w; x++) {
       unsigned char * p = px + (size_t)y * stride + (size_t)x * bpp;
-      // A small repeating set of values, so "few colours" cases really are few
+      // A small repeating set of values, so "few colors" cases really are few
       // and the palette path is reached where it should be.
-      unsigned int i = (x * 3u + y * 5u) % colours;
+      unsigned int i = (x * 3u + y * 5u) % colors;
       unsigned int v = (i * 251u) % 256u;
       for (size_t c = 0; c < (size_t)fmt->channel_count; c++) {
         unsigned int cv = (v + (unsigned int)c * 37u) % 256u;
@@ -2136,7 +2136,7 @@ void FillPattern(GIMG_Raster * raster, unsigned int colours) {
 
 /** Save a raster with the given options and reload it. */
 ::testing::AssertionResult RoundTrip(const GIMG_Pixel_Format * fmt, uint32_t w,
-    uint32_t h, unsigned int colours, int interlaced, uint8_t filter,
+    uint32_t h, unsigned int colors, int interlaced, uint8_t filter,
     uint8_t palette, uint8_t * out_color_type = nullptr,
     uint8_t * out_bit_depth = nullptr) {
   GIMG_Raster * raster = nullptr;
@@ -2144,7 +2144,7 @@ void FillPattern(GIMG_Raster * raster, unsigned int colours) {
       GIMG_OK) {
     return ::testing::AssertionFailure() << "raster_create";
   }
-  FillPattern(raster, colours);
+  FillPattern(raster, colors);
   std::vector<uint8_t> before(
       (size_t)gimg_raster_height(raster) * gimg_raster_stride_bytes(raster));
   memcpy(before.data(), gimg_raster_pixels_const(raster), before.size());
@@ -2220,7 +2220,7 @@ void FillPattern(GIMG_Raster * raster, unsigned int colours) {
     size_t stride_out = gimg_raster_stride_bytes(back);
     const auto * bp =
         static_cast<const unsigned char *>(gimg_raster_pixels_const(back));
-    // The decoder may widen a format - a greyscale image with tRNS comes back
+    // The decoder may widen a format - a grayscale image with tRNS comes back
     // as RGBA - so compare the channels that mean the same thing rather than
     // insisting the formats match.
     for (uint32_t y = 0; y < h && result; y++) {
@@ -2239,7 +2239,7 @@ void FillPattern(GIMG_Raster * raster, unsigned int colours) {
         else if (fmt->channel_model == GIMG_CHANNEL_GRAY &&
             bf->channel_model == GIMG_CHANNEL_RGBA &&
             fmt->bits_per_channel[0] == bf->bits_per_channel[0]) {
-          // grey -> RGBA: the grey level in all three colour channels.
+          // gray -> RGBA: the gray level in all three color channels.
           size_t step = fmt->bits_per_channel[0] == 16 ? 2u : 1u;
           for (int c = 0; c < 3 && result; c++) {
             if (memcmp(a, b + (size_t)c * step, step) != 0) {
@@ -2276,28 +2276,28 @@ TEST(PngRoundTripMatrix, EveryCombinationOfShapeInterlaceFilterAndPalette) {
       GIMG_PNG_FILTER_SUB, GIMG_PNG_FILTER_UP, GIMG_PNG_FILTER_AVERAGE,
       GIMG_PNG_FILTER_PAETH};
   const uint8_t palettes[] = {GIMG_PNG_PALETTE_AUTO, GIMG_PNG_PALETTE_NEVER};
-  // Few colours reaches the palette path; many does not.
-  const unsigned int colour_counts[] = {3u, 200u};
+  // Few colors reaches the palette path; many does not.
+  const unsigned int color_counts[] = {3u, 200u};
 
   int cases = 0;
   // What the writer actually chose, so this can assert it reached the paths it
   // exists to cover rather than only that it did not crash.
-  std::set<int> colour_types;
+  std::set<int> color_types;
   std::set<int> bit_depths;
   for (const RoundTripCase & f : formats) {
     for (const auto & s : shapes) {
       for (int interlaced = 0; interlaced <= 1; interlaced++) {
         for (uint8_t filter : filters) {
           for (uint8_t palette : palettes) {
-            for (unsigned int colours : colour_counts) {
+            for (unsigned int colors : color_counts) {
               cases++;
               uint8_t ct = 0, bd = 0;
-              EXPECT_TRUE(RoundTrip(f.format, s.w, s.h, colours, interlaced,
+              EXPECT_TRUE(RoundTrip(f.format, s.w, s.h, colors, interlaced,
                   filter, palette, &ct, &bd))
                   << f.format_name << " " << s.w << "x" << s.h
                   << " interlaced=" << interlaced << " filter=" << (int)filter
-                  << " palette=" << (int)palette << " colours=" << colours;
-              colour_types.insert(ct);
+                  << " palette=" << (int)palette << " colors=" << colors;
+              color_types.insert(ct);
               bit_depths.insert(bd);
             }
           }
@@ -2309,18 +2309,18 @@ TEST(PngRoundTripMatrix, EveryCombinationOfShapeInterlaceFilterAndPalette) {
 
   // A matrix that never reached anything interesting would pass too. These say
   // which of the writer's choices it actually made.
-  EXPECT_TRUE(colour_types.count(0)) << "greyscale was never written";
-  EXPECT_TRUE(colour_types.count(3))
+  EXPECT_TRUE(color_types.count(0)) << "grayscale was never written";
+  EXPECT_TRUE(color_types.count(3))
       << "no case produced a palette, so PALETTE_AUTO went untested here";
-  EXPECT_TRUE(colour_types.count(6)) << "truecolour with alpha was never written";
+  EXPECT_TRUE(color_types.count(6)) << "truecolor with alpha was never written";
   EXPECT_TRUE(bit_depths.count(8));
   EXPECT_TRUE(bit_depths.count(16));
   EXPECT_TRUE(bit_depths.count(4)) << "no palette was small enough to pack";
 
-  // Colour types 2 and 4 are reached only by preserving what a frame arrived
+  // Color types 2 and 4 are reached only by preserving what a frame arrived
   // as - a raster with no PNG history and an alpha channel is written as 6 by
   // design - so they are not expected here. The conformance round trip covers
-  // them: all 162 images of the published suite, every colour type among them.
-  EXPECT_FALSE(colour_types.count(2)) << "unexpected here; see the comment";
-  EXPECT_FALSE(colour_types.count(4)) << "unexpected here; see the comment";
+  // them: all 162 images of the published suite, every color type among them.
+  EXPECT_FALSE(color_types.count(2)) << "unexpected here; see the comment";
+  EXPECT_FALSE(color_types.count(4)) << "unexpected here; see the comment";
 }

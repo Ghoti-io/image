@@ -16,8 +16,8 @@ import math, os, random, struct, subprocess, sys
 CJPEG = os.environ.get("GIMG_CJPEG12", "cjpeg")
 
 
-def write_pnm(path, w, h, vals, colour):
-    magic = b"P6" if colour else b"P5"
+def write_pnm(path, w, h, vals, color):
+    magic = b"P6" if color else b"P5"
     with open(path, "wb") as f:
         f.write(b"%s\n%d %d\n4095\n" % (magic, w, h))
         f.write(struct.pack(">%dH" % len(vals), *vals))
@@ -62,10 +62,10 @@ def main():
     n = 0
     for src in sources(outdir):
         base = os.path.splitext(os.path.basename(src))[0]
-        colour = src.endswith(".ppm")
+        color = src.endswith(".ppm")
         for q in (25, 75, 95, 100):
             for mode, tag in (([], "base"), (["-progressive"], "prog")):
-                for samp in (["1x1", "2x1", "2x2"] if colour else [None]):
+                for samp in (["1x1", "2x1", "2x2"] if color else [None]):
                     name = "%s_q%d_%s%s.jpg" % (
                         base, q, tag, "_" + samp if samp else "")
                     cmd = [CJPEG, "-precision", "12", "-quality", str(q)] + mode

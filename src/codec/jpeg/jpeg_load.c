@@ -319,7 +319,7 @@ GIMG_Result gimg_jpeg_apply_dqt(gimg_jpeg_doc_state_t * state,
       }
     }
     // T.81 B.2.4.1 Table B.4: a quantization value is 1..255 (Pq=0) or
-    // 1..65535 (Pq=1).  Zero is not a permitted value, and dequantisation
+    // 1..65535 (Pq=1).  Zero is not a permitted value, and dequantization
     // multiplies by it, so a zero element silently discards a coefficient
     // rather than being caught anywhere downstream.
     for (size_t i = 0; i < GIMG_JPEG_DQT_ENTRIES; i++) {

@@ -31,7 +31,7 @@ Two deliberate safety properties:
   `Signed-off-by:` survive.
 - **Legitimate prose is preserved.** A commit like `feat: add Claude API
   client` and a body that discusses Cursor or session ids pass through
-  untouched; only recognised trailer and banner *forms* are matched.
+  untouched; only recognized trailer and banner *forms* are matched.
 
 If a message consists of nothing but attribution, the hook leaves it alone
 rather than silently emptying it, so git's own empty-message check fires.

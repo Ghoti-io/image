@@ -91,7 +91,7 @@ typedef uint32_t gimg_png_chunk_type_t;
 #define GIMG_PNG_eXIf UINT32_C(0x65584966) // 'eXIf' §11.3.4
 
 /**
- * Ancillary chunks whose payload layout is a function of the colour type, and
+ * Ancillary chunks whose payload layout is a function of the color type, and
  * so cannot be copied from one image to another that is written as a different
  * one. See gimg_png_retarget_ancillary() in png_save.c.
  */
@@ -103,14 +103,14 @@ typedef uint32_t gimg_png_chunk_type_t;
 #define GIMG_PNG_pHYs UINT32_C(0x70485973) // 'pHYs' §11.3.4.3
 #define GIMG_PNG_tIME UINT32_C(0x74494D45) // 'tIME' §11.3.5
 
-/** pHYs unit specifier: 0 = aspect ratio only, 1 = metre (§11.3.4.3). */
+/** pHYs unit specifier: 0 = aspect ratio only, 1 = meter (§11.3.4.3). */
 #define GIMG_PNG_PHYS_UNIT_UNKNOWN 0u
-#define GIMG_PNG_PHYS_UNIT_METRE 1u
+#define GIMG_PNG_PHYS_UNIT_METER 1u
 
 /**
- * @brief Convert between dots per inch and pHYs' pixels per metre.
+ * @brief Convert between dots per inch and pHYs' pixels per meter.
  *
- * PNG measures resolution in pixels per metre (11.3.4.3) and this library's
+ * PNG measures resolution in pixels per meter (11.3.4.3) and this library's
  * common metadata carries dots per inch, which is what JFIF and Exif use. An
  * inch is exactly 0.0254 m, so the conversion is exact arithmetic on integers
  * rather than a float: 5000/127 one way and 127/5000 the other, rounded.
@@ -118,16 +118,16 @@ typedef uint32_t gimg_png_chunk_type_t;
  * Zero in means zero out, which is how both sides spell "not stated".
  * @{
  */
-uint32_t gimg_png_dpi_to_pixels_per_metre(uint32_t dpi);
-uint32_t gimg_png_pixels_per_metre_to_dpi(uint32_t ppm);
+uint32_t gimg_png_dpi_to_pixels_per_meter(uint32_t dpi);
+uint32_t gimg_png_pixels_per_meter_to_dpi(uint32_t ppm);
 /** @} */
 
-/** PNG Third Edition colour chunks (W3C PNG 3rd ed., 2025). */
+/** PNG Third Edition color chunks (W3C PNG 3rd ed., 2025). */
 #define GIMG_PNG_cICP UINT32_C(0x63494350) // 'cICP' coding-independent points
 #define GIMG_PNG_mDCv UINT32_C(0x6D444376) // 'mDCv' mastering display volume
 #define GIMG_PNG_cLLi UINT32_C(0x634C4C69) // 'cLLi' content light level
 
-/** cICP payload: colour primaries, transfer function, matrix, range flag. */
+/** cICP payload: color primaries, transfer function, matrix, range flag. */
 #define GIMG_PNG_cICP_LEN 4
 
 /** APNG chunk type IDs (Mozilla APNG spec). */
@@ -215,7 +215,7 @@ struct gimg_png_doc_state {
   gimg_png_ihdr_t ihdr;
   unsigned char * plte;
   size_t plte_size;
-  int plte_is_suggested; ///< PLTE seen on a truecolour frame: advisory only
+  int plte_is_suggested; ///< PLTE seen on a truecolor frame: advisory only
                          ///< (PNG 11.2.2), never used to decode.
   unsigned char * trns;
   size_t trns_size;
@@ -270,7 +270,7 @@ size_t gimg_png_row_bytes_from_ihdr(const gimg_png_ihdr_t * ihdr,
  * @a depth must be 1, 2 or 4.
  */
 /**
- * @brief What to do with one colour-type-dependent ancillary chunk on save.
+ * @brief What to do with one color-type-dependent ancillary chunk on save.
  * @see gimg_png_retarget_ancillary
  */
 typedef enum {
@@ -280,13 +280,13 @@ typedef enum {
 } gimg_png_retarget_t;
 
 /**
- * @brief Decide what to do with a preserved ancillary chunk, given the colour
+ * @brief Decide what to do with a preserved ancillary chunk, given the color
  * type and depth the image is actually being written as.
  *
- * bKGD, sBIT and hIST are laid out according to the colour type in the IHDR
+ * bKGD, sBIT and hIST are laid out according to the color type in the IHDR
  * beside them (11.3.4.1, 11.3.2.4, 11.3.4.2), and the writer does not always
- * emit the colour type a frame arrived as - a greyscale image whose tRNS
- * cannot survive as one is promoted to truecolour with alpha. Copying those
+ * emit the color type a frame arrived as - a grayscale image whose tRNS
+ * cannot survive as one is promoted to truecolor with alpha. Copying those
  * three across unchanged produces a chunk whose length contradicts the header
  * in the same file.
  *
@@ -306,7 +306,7 @@ uint8_t gimg_png_get_sample_bits(
 
 /**
  * @brief Write one sample of @a depth bits at pixel index @a x into a packed
- * scanline, leaving the neighbouring samples in that byte untouched. PNG 7.2.
+ * scanline, leaving the neighboring samples in that byte untouched. PNG 7.2.
  * @a depth must be 1, 2 or 4.
  */
 void gimg_png_set_sample_bits(

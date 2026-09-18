@@ -4,7 +4,7 @@ Verify DC-only progressive decode: expected pixels from DCs + DQT vs our decoder
 
 After the first scan (DC-only), each 8×8 block should be a constant value:
   pixel = clamp(((4*DC*quant[0] + 16) >> 5) + 128, 0, 255)
-This matches the decoder's jpeg_dequantise + jpeg_idct_8x8_islow DC path.
+This matches the decoder's jpeg_dequantize + jpeg_idct_8x8_islow DC path.
 
 Usage:
   python3 verify_dc_only_pipeline.py <file.jpg> [dump_dir] [path-to-dump_jpeg_raster]

@@ -5,8 +5,8 @@
  * Huffman coding, SOF11 with arithmetic).
  *
  * This is a different coding process from everything else in this codec, not a
- * variation on it.  There is no DCT, no quantisation and no 8x8 block: each
- * sample is predicted from its already-decoded neighbours, and the difference
+ * variation on it.  There is no DCT, no quantization and no 8x8 block: each
+ * sample is predicted from its already-decoded neighbors, and the difference
  * between the prediction and the sample is what gets entropy-coded.  The
  * reconstruction is exact, which is the point.
  *
@@ -32,7 +32,7 @@
 /**
  * Widen a P-bit sample to @p to bits by replicating its high bits.
  *
- * The same rule the rest of the library uses (src/ops/bitdepth.c), generalised:
+ * The same rule the rest of the library uses (src/ops/bitdepth.c), generalized:
  * a lossless frame may declare any precision from 2 to 16, so the fixed 8-to-16
  * and 12-to-16 helpers are not enough.  Replication maps the full source range
  * onto the full destination range - all-ones stays all-ones - which
@@ -55,7 +55,7 @@ uint32_t jpeg_sample_widen(uint32_t v, int from, int to) {
   return r;
 }
 
-/** Predict a sample from its neighbours (T.81 H.1.2.1, Table H.1). */
+/** Predict a sample from its neighbors (T.81 H.1.2.1, Table H.1). */
 int32_t jpeg_lossless_predict(
     int psv, int32_t ra, int32_t rb, int32_t rc) {
   switch (psv) {
@@ -473,7 +473,7 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
   // Undo the point transform (H.1.2) and widen to the raster's depth.
   int out_bits = (precision <= 8) ? 8 : 16;
   int sample_bits = precision; // after the point transform is undone
-  // T.81 Annex H has no colour concept of its own and B.2.2 counts components
+  // T.81 Annex H has no color concept of its own and B.2.2 counts components
   // from 1 to 255, so a lossless frame of four or of forty is as legal as one
   // of three.  Four-component lossless used to be refused outright.
   const GIMG_Pixel_Format * fmt;
@@ -518,7 +518,7 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
     // Which map: the same choice libjpeg makes.  A chroma component of a YCbCr
     // frame gets the triangle filter, because that is what the rest of this
     // codec does with chroma and what the caller's option selects; anything
-    // else - an RGB frame's components, or a grey one's - gets replication,
+    // else - an RGB frame's components, or a gray one's - gets replication,
     // which is libjpeg's int_upsample and the only defensible thing to do to a
     // component that is not chroma.
     int use_fancy = (!options ||
@@ -553,7 +553,7 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
           v[c] = sv;
         }
         // A lossless frame's three components are no more inherently RGB than
-        // any other frame's: T.81 describes no colour space, and the same
+        // any other frame's: T.81 describes no color space, and the same
         // conventions decide it here as in the DCT paths.  Most lossless files
         // in the wild do carry RGB - they say so with an Adobe APP14 whose
         // transform is zero, or with 'R', 'G', 'B' as the component
@@ -743,8 +743,8 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
   // lossless frame, so there is no need to convert anything.
   int precision = (int)fmt->bits_per_channel[0];
   int channels = (int)fmt->channel_count;
-  // T.81 Annex H has no colour concept and B.2.2 counts components from 1 to
-  // 255.  A three-channel raster is colour and goes out as RGB (see below); an
+  // T.81 Annex H has no color concept and B.2.2 counts components from 1 to
+  // 255.  A three-channel raster is color and goes out as RGB (see below); an
   // RGBA one drops its alpha, because a JPEG frame has no alpha to put it in;
   // anything else is written channel for channel.
   int num_comp;
@@ -775,7 +775,7 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
   // The samples become one signed plane per component and the prediction walk
   // happens there, so that the hierarchical path - whose planes are differences
   // and never were a raster - runs the identical code.  A lossless frame stores
-  // colour as RGB, because YCbCr is not reversible and "lossless" would then be
+  // color as RGB, because YCbCr is not reversible and "lossless" would then be
   // a lie, so this is a copy and not a conversion.
   size_t n_samples = 0;
   if (!gcu_safe_mul_size((size_t)width, (size_t)height, &n_samples) ||

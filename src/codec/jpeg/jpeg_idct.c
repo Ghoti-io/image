@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * Dequantise (scale coefficients by quant table) and 8×8 inverse DCT for
+ * Dequantize (scale coefficients by quant table) and 8×8 inverse DCT for
  * JPEG decode. Input: coefficient block (zigzag or row-major); output: sample
  * block. No chroma or raster; used by jpeg_entropy.c after block decode.
  *
@@ -20,7 +20,7 @@ void jpeg_dezigzag(const int16_t * block, int16_t * out) {
   }
 }
 
-void jpeg_dequantise_32(
+void jpeg_dequantize_32(
     const int16_t * block, const uint16_t * quant, int32_t * out) {
   for (int i = 0; i < 64; i++) {
     out[i] = (int32_t)block[i] * (int32_t)quant[gimg_jpeg_inv_zigzag[i]];
@@ -149,9 +149,9 @@ void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits) {
     // again at the one point it mattered: pass 2 then read a wrapped value.
     // It is not undefined - a conversion that will not fit is
     // implementation-defined, not UB - which is why the sanitizer never said
-    // anything about it.  It is still wrong.  The largest dequantised DC a
+    // anything about it.  It is still wrong.  The largest dequantized DC a
     // syntactically valid frame can carry is 32767 x 65535 (a 15-category DC
-    // coefficient, T.81 F.1.2.1, against a 16-bit quantiser value, B.2.4.1
+    // coefficient, T.81 F.1.2.1, against a 16-bit quantizer value, B.2.4.1
     // Pq=1); at P=12 that reaches 4294770690 after the pass-1 shift, and
     // (int) of it is -196606.  The sample came out black where the transform
     // had computed white.  No encoder can produce such a coefficient - the FDCT
@@ -190,10 +190,10 @@ void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits) {
     }
 
     // The workspace is int64_t and pass 1 can legitimately fill its range for
-    // a hostile block: coefficients reach +-32767 and a quantiser value reaches
-    // 65535, so the dequantised input alone is a 31-bit quantity before this
+    // a hostile block: coefficients reach +-32767 and a quantizer value reaches
+    // 65535, so the dequantized input alone is a 31-bit quantity before this
     // transform scales it further.  Narrowing to int32_t here - as this did -
-    // made the sums below overflow, which is undefined behaviour rather than
+    // made the sums below overflow, which is undefined behavior rather than
     // merely a wrong pixel, and UBSan flagged it on a fuzzed round trip.  For
     // any coefficient a real image produces the values fit either way, so
     // keeping them wide changes no output; it only stops the arithmetic being

@@ -14,7 +14,7 @@ well formed.  That is a limit of that implementation, not of the standard.
 So the fixture is assembled from files libjpeg did write.  A frame of N
 components, all 1x1, written as N single-component scans is - block for block,
 and with the DC predictor reset at every SOS - exactly N grayscale JPEGs
-sharing one quantisation table and one set of Huffman tables.  This script
+sharing one quantization table and one set of Huffman tables.  This script
 writes those N grayscale files with cjpeg, checks that their tables really are
 identical, splices their scans into one N-component frame, and keeps libjpeg's
 own decode of each grayscale file as the expected plane.  Both ends of the

@@ -104,13 +104,13 @@ static bool gimg_png_gray_fits_depth(
 
 /**
  * Can this raster's transparency be expressed by a tRNS chunk beside a
- * colour type 2 image?
+ * color type 2 image?
  *
- * PNG 11.3.2.1: for colour type 2, tRNS holds one RGB triple, and pixels of
- * exactly that colour are fully transparent while all others are fully opaque.
+ * PNG 11.3.2.1: for color type 2, tRNS holds one RGB triple, and pixels of
+ * exactly that color are fully transparent while all others are fully opaque.
  * So the alpha channel qualifies only when every pixel is either fully opaque
- * or fully transparent, every fully transparent pixel shares one colour, and
- * no opaque pixel wears that same colour - otherwise writing the chunk would
+ * or fully transparent, every fully transparent pixel shares one color, and
+ * no opaque pixel wears that same color - otherwise writing the chunk would
  * make opaque pixels vanish.
  *
  * On success @a out_trns receives the six-byte payload (three 16-bit samples,
@@ -129,7 +129,7 @@ static bool gimg_png_alpha_fits_trns(const GIMG_Raster * raster,
   uint16_t key[3] = {0, 0, 0};
 
   // First pass: every pixel must be wholly opaque or wholly transparent, and
-  // the transparent ones must agree on a colour.
+  // the transparent ones must agree on a color.
   for (uint32_t y = 0; y < h; y++) {
     const unsigned char * row = pixels + (size_t)y * stride;
     for (uint32_t x = 0; x < w; x++) {
@@ -148,7 +148,7 @@ static bool gimg_png_alpha_fits_trns(const GIMG_Raster * raster,
         c[2] = p[2];
         c[3] = p[3];
       }
-      // Colour type 0 stores one sample, so the three colour channels must
+      // Color type 0 stores one sample, so the three color channels must
       // agree for every pixel, transparent or not.
       if (color_type == 0 && (c[0] != c[1] || c[1] != c[2])) {
         return false;
@@ -166,15 +166,15 @@ static bool gimg_png_alpha_fits_trns(const GIMG_Raster * raster,
         have_key = 1;
       }
       else if (c[0] != key[0] || c[1] != key[1] || c[2] != key[2]) {
-        return false;  // more than one transparent colour
+        return false;  // more than one transparent color
       }
     }
   }
   if (!have_key) {
-    *out_trns_size = 0;  // nothing transparent: colour type 2 needs no tRNS
+    *out_trns_size = 0;  // nothing transparent: color type 2 needs no tRNS
     return true;
   }
-  // Second pass: no opaque pixel may share the key colour.
+  // Second pass: no opaque pixel may share the key color.
   for (uint32_t y = 0; y < h; y++) {
     const unsigned char * row = pixels + (size_t)y * stride;
     for (uint32_t x = 0; x < w; x++) {
@@ -200,7 +200,7 @@ static bool gimg_png_alpha_fits_trns(const GIMG_Raster * raster,
     }
   }
   // PNG 11.3.2.1 stores each sample as two bytes whatever the bit depth: one
-  // sample for colour type 0, three for colour type 2.
+  // sample for color type 0, three for color type 2.
   int samples = (color_type == 0) ? 1 : 3;
   for (int i = 0; i < samples; i++) {
     out_trns[i * 2] = (unsigned char)(key[i] >> 8);
@@ -255,7 +255,7 @@ static bool gimg_png_raster_to_ihdr(const GIMG_Raster * raster,
       return false;
     }
     // A grayscale frame decodes to RGBA once tRNS gives it an alpha channel.
-    // It can go back the way it came when the colour channels still agree and
+    // It can go back the way it came when the color channels still agree and
     // the transparency is still one key value (PNG 11.3.2.1).
     if (state && state->ihdr.color_type == 0 && state->ihdr.bit_depth == bd) {
       if (gimg_png_alpha_fits_trns(raster, 0, bd, out_trns, out_trns_size)) {
@@ -264,15 +264,15 @@ static bool gimg_png_raster_to_ihdr(const GIMG_Raster * raster,
         return true;
       }
     }
-    // Colour type 4 carries alpha of its own, so keeping it loses nothing.
+    // Color type 4 carries alpha of its own, so keeping it loses nothing.
     if (state && state->ihdr.color_type == 4 && state->ihdr.bit_depth == bd) {
       *color_type = 4;
       *bit_depth = bd;
       return true;
     }
-    // Colour type 2 has no alpha channel. PNG 11.3.2.1 lets a tRNS chunk name
-    // one fully transparent colour beside it, and nothing more: every other
-    // pixel is opaque. Keeping colour type 2 for a raster whose alpha does not
+    // Color type 2 has no alpha channel. PNG 11.3.2.1 lets a tRNS chunk name
+    // one fully transparent color beside it, and nothing more: every other
+    // pixel is opaque. Keeping color type 2 for a raster whose alpha does not
     // fit that shape would drop transparency silently, so the alpha decides.
     if (state && state->ihdr.color_type == 2 && state->ihdr.bit_depth == bd) {
       if (gimg_png_alpha_fits_trns(raster, 2, bd, out_trns, out_trns_size)) {
@@ -289,7 +289,7 @@ static bool gimg_png_raster_to_ihdr(const GIMG_Raster * raster,
 }
 
 /**
- * Build a pHYs payload (9 bytes): pixels per metre on each axis, then the unit
+ * Build a pHYs payload (9 bytes): pixels per meter on each axis, then the unit
  * specifier (11.3.4.3). Always unit 1, because a resolution this library has
  * is a physical one - unit 0 states an aspect ratio and no size at all.
  */
@@ -303,7 +303,7 @@ static void gimg_png_build_phys(
   out[5] = (unsigned char)(y_ppm >> 16);
   out[6] = (unsigned char)(y_ppm >> 8);
   out[7] = (unsigned char)(y_ppm & 0xFFu);
-  out[8] = (unsigned char)GIMG_PNG_PHYS_UNIT_METRE;
+  out[8] = (unsigned char)GIMG_PNG_PHYS_UNIT_METER;
 }
 
 /** Build IHDR payload (13 bytes). @a interlace_method 0 or 1 (Adam7). */
@@ -373,20 +373,20 @@ static void gimg_png_build_fctl(unsigned char * out, uint32_t sequence_number,
 
 /** Return true if chunk type is known semantic metadata (color, Exif, text). */
 //
-// Ancillary chunks whose shape depends on the colour type
+// Ancillary chunks whose shape depends on the color type
 // =======================================================
 //
 // bKGD, sBIT and hIST are not self-describing: their length and meaning are a
-// function of the colour type in the IHDR beside them (11.3.4.1, 11.3.2.4,
-// 11.3.4.2). The writer does not always emit the colour type a frame arrived
-// as - a greyscale image whose tRNS cannot be expressed against an alpha
-// channel is promoted to truecolour with alpha, for one - and copying these
+// function of the color type in the IHDR beside them (11.3.4.1, 11.3.2.4,
+// 11.3.4.2). The writer does not always emit the color type a frame arrived
+// as - a grayscale image whose tRNS cannot be expressed against an alpha
+// channel is promoted to truecolor with alpha, for one - and copying these
 // three across unchanged then produces a chunk whose length contradicts the
 // header in the same file.
 //
 // That is not a theoretical complaint. Saving the conformance suite's
-// tbbn0g04.png - 4-bit greyscale, tRNS, a 2-byte bKGD - correctly wrote
-// colour type 6 and kept the 2-byte bKGD, which needs 6 bytes there, and
+// tbbn0g04.png - 4-bit grayscale, tRNS, a 2-byte bKGD - correctly wrote
+// color type 6 and kept the 2-byte bKGD, which needs 6 bytes there, and
 // libpng said so: "libpng warning: bKGD: invalid".
 //
 // So each is either translated, kept, or dropped. Translation is only done
@@ -394,34 +394,34 @@ static void gimg_png_build_fctl(unsigned char * out, uint32_t sequence_number,
 // an absent advisory chunk is a smaller lie than a wrong one.
 //
 
-/** Payload length bKGD must have for a colour type (11.3.4.1). */
+/** Payload length bKGD must have for a color type (11.3.4.1). */
 static size_t gimg_png_bkgd_len(uint8_t color_type) {
   if (color_type == 3) {
     return 1u; // a palette index
   }
   if (color_type == 0 || color_type == 4) {
-    return 2u; // one grey level
+    return 2u; // one gray level
   }
-  return 6u; // three 16-bit samples, colour types 2 and 6
+  return 6u; // three 16-bit samples, color types 2 and 6
 }
 
-/** Payload length sBIT must have for a colour type (11.3.2.4). */
+/** Payload length sBIT must have for a color type (11.3.2.4). */
 static size_t gimg_png_sbit_len(uint8_t color_type) {
   switch (color_type) {
   case 0:
-    return 1u; // grey
+    return 1u; // gray
   case 2:
   case 3:
-    return 3u; // R, G, B - for colour type 3 these describe the palette
+    return 3u; // R, G, B - for color type 3 these describe the palette
   case 4:
-    return 2u; // grey, alpha
+    return 2u; // gray, alpha
   default:
     return 4u; // R, G, B, alpha
   }
 }
 
 /**
- * The depth of the samples a chunk's values are expressed in. For colour type
+ * The depth of the samples a chunk's values are expressed in. For color type
  * 3 that is the palette's 8 bits, whatever the bit depth of the indices
  * (11.2.2: PLTE entries are always three 8-bit samples).
  */
@@ -459,12 +459,12 @@ static void gimg_png_put_be16(unsigned char * p, uint16_t v) {
 }
 
 /**
- * bKGD (11.3.4.1) from the colour type the frame arrived as to the one being
+ * bKGD (11.3.4.1) from the color type the frame arrived as to the one being
  * written.
  *
- * The background is a colour, so it translates whenever the destination can
- * hold it: grey becomes R=G=B, a palette index becomes the colour it names,
- * and a colour becomes grey only when its three samples already agree. A
+ * The background is a color, so it translates whenever the destination can
+ * hold it: gray becomes R=G=B, a palette index becomes the color it names,
+ * and a color becomes gray only when its three samples already agree. A
  * change of bit depth rescales by 13.12, the same rule the pixels took.
  */
 static gimg_png_retarget_t gimg_png_retarget_bkgd(const unsigned char * payload,
@@ -494,7 +494,7 @@ static gimg_png_retarget_t gimg_png_retarget_bkgd(const unsigned char * payload,
     g = gimg_png_be16(payload + 2);
     b = gimg_png_be16(payload + 4);
   }
-  else { // colour type 3: the byte is an index into PLTE
+  else { // color type 3: the byte is an index into PLTE
     if (!state->plte || state->plte_size < 3u) {
       return GIMG_PNG_RETARGET_DROP;
     }
@@ -515,7 +515,7 @@ static gimg_png_retarget_t gimg_png_retarget_bkgd(const unsigned char * payload,
   }
   if (out_color_type == 0 || out_color_type == 4) {
     if (r != g || g != b) {
-      return GIMG_PNG_RETARGET_DROP; // no grey level says this colour
+      return GIMG_PNG_RETARGET_DROP; // no gray level says this color
     }
     gimg_png_put_be16(
         out_buf, gimg_png_rescale_sample(r, src_depth, out_bit_depth));
@@ -533,7 +533,7 @@ static gimg_png_retarget_t gimg_png_retarget_bkgd(const unsigned char * payload,
 }
 
 /**
- * sBIT (11.3.2.4) from the colour type the frame arrived as to the one being
+ * sBIT (11.3.2.4) from the color type the frame arrived as to the one being
  * written.
  *
  * sBIT counts how many of the bits in each stored sample carry the original
@@ -541,8 +541,8 @@ static gimg_png_retarget_t gimg_png_retarget_bkgd(const unsigned char * payload,
  * 13.12 spreads the original value across the whole of the new sample, and a
  * count taken before that would tell a decoder to shift data that has already
  * been scaled. Those are dropped. A change of channel count at the same depth
- * is exact - a grey level repeated into R, G and B is significant in each to
- * exactly the same degree - and an alpha channel this writer synthesised is
+ * is exact - a gray level repeated into R, G and B is significant in each to
+ * exactly the same degree - and an alpha channel this writer synthesized is
  * significant in all of its bits.
  */
 static gimg_png_retarget_t gimg_png_retarget_sbit(const unsigned char * payload,
@@ -602,7 +602,7 @@ static gimg_png_retarget_t gimg_png_retarget_sbit(const unsigned char * payload,
 
   if (out_color_type == 0 || out_color_type == 4) {
     if (sr != sg || sg != sb) {
-      return GIMG_PNG_RETARGET_DROP; // no single grey count says this
+      return GIMG_PNG_RETARGET_DROP; // no single gray count says this
     }
     out_buf[0] = (unsigned char)sr;
     *out_size = 1u;
@@ -626,7 +626,7 @@ static gimg_png_retarget_t gimg_png_retarget_sbit(const unsigned char * payload,
 /**
  * hIST (11.3.4.2) carries one 16-bit frequency per palette entry and, by the
  * same clause, "shall not appear unless a PLTE chunk appears". There is
- * nothing to translate it into: a truecolour image has no palette for its
+ * nothing to translate it into: a truecolor image has no palette for its
  * entries to be about.
  */
 static gimg_png_retarget_t gimg_png_retarget_hist(size_t payload_size,
@@ -641,13 +641,13 @@ static gimg_png_retarget_t gimg_png_retarget_hist(size_t payload_size,
 }
 
 /**
- * Decide what to do with one preserved ancillary chunk, given the colour type
+ * Decide what to do with one preserved ancillary chunk, given the color type
  * and depth the image is actually being written as.
  *
  * @param out_buf Receives a rewritten payload when REPLACE is returned. Must
  *                have room for at least 6 bytes, the longest any of these
  *                produces.
- * @return KEEP for every chunk whose meaning does not depend on the colour
+ * @return KEEP for every chunk whose meaning does not depend on the color
  *         type, which is most of them.
  */
 gimg_png_retarget_t gimg_png_retarget_ancillary(
@@ -673,19 +673,19 @@ gimg_png_retarget_t gimg_png_retarget_ancillary(
 }
 
 //
-// Building a palette (PNG 11.2.2, colour type 3)
+// Building a palette (PNG 11.2.2, color type 3)
 // ==============================================
 //
 // A palette is not written for an arbitrary raster, because choosing which
-// colours to keep is quantisation - an image-processing decision, and not a
-// codec's. But when an image already has 256 colours or fewer there is nothing
+// colors to keep is quantization - an image-processing decision, and not a
+// codec's. But when an image already has 256 colors or fewer there is nothing
 // to choose: exactly one palette reproduces it, up to the order of its
-// entries. That is not quantisation, it is a way of storing what is already
+// entries. That is not quantization, it is a way of storing what is already
 // there, and it is the same kind of decision as picking a row filter.
 //
 // So a palette is built only when it is lossless, and used only when it is
 // smaller. Screenshots, diagrams, icons and line art land here; photographs
-// exceed 256 colours in their first few hundred pixels and never do.
+// exceed 256 colors in their first few hundred pixels and never do.
 //
 
 /** Pack an RGBA8 pixel into one comparable value. */
@@ -694,17 +694,17 @@ static uint32_t gimg_png_rgba_key(const unsigned char * p) {
       ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-/** Slots in the colour lookup: twice the largest palette, so it stays sparse. */
+/** Slots in the color lookup: twice the largest palette, so it stays sparse. */
 #define GIMG_PNG_LUT_SLOTS 512u
 
 /**
- * Open-addressed map from an RGBA8 colour to a palette index.
+ * Open-addressed map from an RGBA8 color to a palette index.
  *
  * The writer needs a pixel's index for every pixel, and a palette holds up to
  * 256 entries, so the obvious linear scan is 256 comparisons per pixel - a
  * megapixel image spends a quarter of a billion comparisons deciding what it
  * already knows. A `used` array rather than a sentinel key, because fully
- * transparent black is a real colour and would make a poor "empty".
+ * transparent black is a real color and would make a poor "empty".
  */
 typedef struct {
   uint32_t key[GIMG_PNG_LUT_SLOTS];
@@ -763,7 +763,7 @@ static bool gimg_png_lut_put(
 }
 
 /**
- * Collect the distinct colours of an 8-bit RGBA raster into a palette, giving
+ * Collect the distinct colors of an 8-bit RGBA raster into a palette, giving
  * up as soon as a 257th appears.
  *
  * Entries with alpha below 255 are placed first. PNG 11.3.2.1 lets tRNS be
@@ -773,7 +773,7 @@ static bool gimg_png_lut_put(
  *
  * @param out_plte      Receives up to 256 RGB triples.
  * @param out_trns      Receives the alpha of the leading non-opaque entries.
- * @return false when the image has more than 256 colours, or is not RGBA8.
+ * @return false when the image has more than 256 colors, or is not RGBA8.
  */
 static bool gimg_png_build_palette(const GIMG_Raster * raster,
     unsigned char * out_plte, size_t * out_plte_size, unsigned char * out_trns,
@@ -793,7 +793,7 @@ static bool gimg_png_build_palette(const GIMG_Raster * raster,
   const unsigned char * pixels =
       (const unsigned char *)gimg_raster_pixels_const(raster);
 
-  // First pass: the distinct colours, in the order they first appear.
+  // First pass: the distinct colors, in the order they first appear.
   gimg_png_color_lut_t seen;
   gimg_png_lut_init(&seen);
   uint32_t colors[GIMG_PNG_PLTE_MAX_ENTRIES];
@@ -808,7 +808,7 @@ static bool gimg_png_build_palette(const GIMG_Raster * raster,
       }
       if (n >= GIMG_PNG_PLTE_MAX_ENTRIES ||
           !gimg_png_lut_put(&seen, key, (uint8_t)n)) {
-        return false; // a 257th colour: not a palette image
+        return false; // a 257th color: not a palette image
       }
       colors[n++] = key;
     }
@@ -839,7 +839,7 @@ static bool gimg_png_build_palette(const GIMG_Raster * raster,
   return true;
 }
 
-/** Smallest bit depth colour type 3 allows for @a entries indices (11.2.2). */
+/** Smallest bit depth color type 3 allows for @a entries indices (11.2.2). */
 static uint8_t gimg_png_palette_bit_depth(size_t entries) {
   if (entries <= 2u) {
     return 1u;
@@ -1086,7 +1086,7 @@ static bool gimg_png_palette_index_at(const GIMG_Raster * raster,
     const gimg_png_doc_state_t * state, uint32_t x, uint32_t y,
     uint8_t * out_index);
 
-/** Colour-to-index map for a palette, built once per image. */
+/** Color-to-index map for a palette, built once per image. */
 static void gimg_png_palette_lut_build(
     const gimg_png_doc_state_t * state, gimg_png_color_lut_t * lut);
 static bool gimg_png_palette_index_lut(const GIMG_Raster * raster,
@@ -1155,7 +1155,7 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
     row[0] = 0;
     const unsigned char * src = pixels + (size_t)y * stride;
     if (color_type == 0) {
-      // The source is a GRAY raster, or an RGBA one whose colour channels
+      // The source is a GRAY raster, or an RGBA one whose color channels
       // agree - which is how a grayscale frame comes back when tRNS gave it an
       // alpha channel on the way in (PNG 11.3.2.1). Either way only the first
       // channel is written.
@@ -1263,14 +1263,14 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
  * for RGBA).
  */
 /**
- * Build the colour-to-index map for a palette.
+ * Build the color-to-index map for a palette.
  *
  * PNG 11.3.2.1: tRNS gives the alpha of the leading entries and every entry
- * past its end is opaque, so an entry's colour is its RGB together with that
+ * past its end is opaque, so an entry's color is its RGB together with that
  * alpha - two entries with the same RGB and different alpha are different
- * colours, and a pixel matches only one of them.
+ * colors, and a pixel matches only one of them.
  *
- * A palette may legitimately hold the same colour twice. The first index wins,
+ * A palette may legitimately hold the same color twice. The first index wins,
  * which is what a linear scan did as well.
  */
 static void gimg_png_palette_lut_build(
@@ -1317,7 +1317,7 @@ static bool gimg_png_palette_index_at(const GIMG_Raster * raster,
 
 /**
  * Sample value for one pixel at a bit depth below 8: a palette index for
- * colour type 3, or a grayscale level for colour type 0, rescaled from the
+ * color type 3, or a grayscale level for color type 0, rescaled from the
  * raster's 8 bits by the inverse of the rescaling decode applies (PNG 13.12).
  * Returns false when no palette entry matches the pixel.
  */
@@ -1358,7 +1358,7 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
 
   if (color_type == 0) {
     // As in the non-interlaced filler: the source may be GRAY, or RGBA whose
-    // colour channels agree because tRNS gave the frame an alpha channel.
+    // color channels agree because tRNS gave the frame an alpha channel.
     const GIMG_Pixel_Format * src_fmt = gimg_raster_format(raster);
     bool gray_source = src_fmt && src_fmt->channel_model == GIMG_CHANNEL_GRAY;
     size_t src_pixel_bytes = gray_source ? (bit_depth == 8 ? 1u : 2u)
@@ -1684,9 +1684,9 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
   }
-  // A tRNS the writer derives from the raster's alpha, when colour type 2 can
+  // A tRNS the writer derives from the raster's alpha, when color type 2 can
   // carry it (PNG 11.3.2.1). Empty when the image needs no transparency, or
-  // needs more than one transparent colour and so gets an alpha channel.
+  // needs more than one transparent color and so gets an alpha channel.
   unsigned char derived_trns[6];
   size_t derived_trns_size = 0;
   if (!use_palette &&
@@ -1716,13 +1716,13 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   //
   // A palette for a raster that did not arrive with one (11.2.2).
   //
-  // Only when it is lossless - 256 colours or fewer, so there is nothing to
+  // Only when it is lossless - 256 colors or fewer, so there is nothing to
   // choose - and only when it is the smaller file, which is measured rather
   // than guessed: both forms are encoded and the loser is discarded. DEFLATE
   // makes the arithmetic hard to predict, and a small image can spend more on
   // PLTE than it saves on pixels.
   //
-  // Not attempted for an animation: every APNG frame must share one colour
+  // Not attempted for an animation: every APNG frame must share one color
   // type, and a palette that suits frame 0 need not suit the rest.
   //
   bool try_palette = !use_palette && !is_apng &&
@@ -1854,8 +1854,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       gimg_meta_common_dpi(common_meta, &x_dpi, &y_dpi);
       if (x_dpi > 0 && y_dpi > 0) {
         unsigned char phys[9];
-        gimg_png_build_phys(phys, gimg_png_dpi_to_pixels_per_metre(x_dpi),
-            gimg_png_dpi_to_pixels_per_metre(y_dpi));
+        gimg_png_build_phys(phys, gimg_png_dpi_to_pixels_per_meter(x_dpi),
+            gimg_png_dpi_to_pixels_per_meter(y_dpi));
         r = gimg_png_write_chunk(stream, GIMG_PNG_pHYs, phys, sizeof(phys));
         if (r != GIMG_OK) {
           gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
@@ -1980,7 +1980,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         }
         const void * chunk_payload = state->ancillary[i].payload;
         size_t chunk_size = state->ancillary[i].payload_size;
-        // bKGD, sBIT and hIST are laid out according to the colour type, and
+        // bKGD, sBIT and hIST are laid out according to the color type, and
         // the one being written is not always the one the frame arrived as.
         unsigned char retargeted[6];
         size_t retargeted_size = 0;
@@ -2052,8 +2052,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       gimg_meta_common_dpi(meta_common, &x_dpi, &y_dpi);
       if (x_dpi > 0 && y_dpi > 0) {
         unsigned char phys[9];
-        gimg_png_build_phys(phys, gimg_png_dpi_to_pixels_per_metre(x_dpi),
-            gimg_png_dpi_to_pixels_per_metre(y_dpi));
+        gimg_png_build_phys(phys, gimg_png_dpi_to_pixels_per_meter(x_dpi),
+            gimg_png_dpi_to_pixels_per_meter(y_dpi));
         r = gimg_png_write_chunk(stream, GIMG_PNG_pHYs, phys, sizeof(phys));
         if (r != GIMG_OK) {
           gimg_free(alloc, zlib_buf);
@@ -2154,7 +2154,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       if (gimg_png_chunk_is_known_semantic(t)) {
         continue;
       }
-      // Same colour-type dependence as above: these three reach this policy
+      // Same color-type dependence as above: these three reach this policy
       // too, because none of them is semantic metadata in the sense
       // gimg_png_chunk_is_known_semantic() means.
       const void * raw_payload = state->ancillary[i].payload;
@@ -2196,7 +2196,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   // DROP_ALL: no ancillary (already skipped above).
 
-  // PNG 11.2.2 also lets a truecolour frame carry PLTE as a suggested palette.
+  // PNG 11.2.2 also lets a truecolor frame carry PLTE as a suggested palette.
   // It plays no part in decoding, but it is content the file came with, so the
   // policies that keep what was there keep it too.
   if (color_type != 3 && state && state->plte && state->plte_size > 0 &&
@@ -2211,7 +2211,7 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += 8 + state->plte_size + 4;
   }
 
-  // A truecolour image whose alpha is one fully transparent colour keeps it in
+  // A truecolor image whose alpha is one fully transparent color keeps it in
   // tRNS rather than growing an alpha channel (PNG 11.3.2.1). Written whatever
   // the metadata policy: it is part of the image, not metadata about it.
   if ((color_type == 2 || color_type == 0) && derived_trns_size > 0) {

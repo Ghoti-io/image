@@ -651,7 +651,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
   // read the run length and throw it away ("EOBRUN value not needed for
   // single-block decode"), which is only ever right when every run has length
   // one.  Any longer run left the following blocks reading bits that belonged
-  // to a later block, and the scan desynchronised from there on.
+  // to a later block, and the scan desynchronized from there on.
   if (out_eobrun && *out_eobrun > 0) {
     (*out_eobrun)--;
     for (; k <= se; k++) {
@@ -1110,7 +1110,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
       // already-nonzero coefficient passed along the way, exactly as the
       // run-skip above does.  libjpeg routes ZRL through that same loop for
       // this reason.  Skipping the nonzeroes silently, as this did, drops one
-      // bit per nonzero coefficient and desynchronises the rest of the scan;
+      // bit per nonzero coefficient and desynchronizes the rest of the scan;
       // chroma refinement, which is dense in ZRL, never survived it.
       int left = 16;
       while (left > 0 && k <= se) {

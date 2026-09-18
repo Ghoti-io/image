@@ -43,9 +43,9 @@ Tests in `tests/codec/png/test_png_decode.cpp` load these files when built with 
 | `png_zlib_bad_adler.png` | Adler-32 of the wrong bytes. DEFLATE alone accepts this stream; only the check RFC 1950 requires catches it. |
 | `png_zlib_bad_header.png` | CMF/FLG that is not a multiple of 31, declaring a compression method other than the 8 PNG 10.3 allows. |
 | `png_zlib_preset_dict.png` | FDICT set, which PNG forbids. The header still passes the multiple-of-31 test, so only the flag marks it - and a decoder ignoring it reads the DICTID as DEFLATE data. |
-| `png_rgb_suggested_palette.png`, `png_rgba_suggested_palette.png` | PLTE on a truecolour image, which PNG 11.2.2 allows as a suggested palette. The palette deliberately does not contain the image's colours. |
+| `png_rgb_suggested_palette.png`, `png_rgba_suggested_palette.png` | PLTE on a truecolor image, which PNG 11.2.2 allows as a suggested palette. The palette deliberately does not contain the image's colors. |
 | `png_rgb_no_palette.png` | The same image with no PLTE, so "the suggested palette was ignored" is checkable without a reference decoder. |
-| `png_gray_forbidden_palette.png` | PLTE on colour type 0, which the spec forbids outright. Some decoders read it anyway; this one does not. |
+| `png_gray_forbidden_palette.png` | PLTE on color type 0, which the spec forbids outright. Some decoders read it anyway; this one does not. |
 | `png_gradient_64x64_rgb.png` | A smooth gradient, which is where row filtering pays most, so choosing per row can be shown to beat forcing any single filter. |
 | `png_cicp_srgb.png` | cICP naming the sRGB pair beside a gAMA that disagrees, so the Third Edition's precedence is testable. |
 | `png_cicp_bt2020_pq.png` | cICP naming BT.2020 primaries with the PQ transfer - legal, and beyond what `GIMG_Color_Info` can describe. A gAMA rides along so that "left unknown" is an assertion and not an accident. |
@@ -71,16 +71,16 @@ python3 tests/data/png/verify_png_output.py
 # Or: python3 tests/data/png/verify_png_output.py /path/to/tests/out/png
 ```
 
-### Colour-type-dependent ancillary chunks
+### Color-type-dependent ancillary chunks
 
-bKGD, sBIT and hIST are laid out according to the colour type in the IHDR
+bKGD, sBIT and hIST are laid out according to the color type in the IHDR
 beside them (PNG 11.3.4.1, 11.3.2.4, 11.3.4.2), so they cannot be copied into a
 file written as a different one - and the writer does write a different one
 whenever a tRNS has to become an alpha channel.
 
 | Fixture | What it is for |
 |---|---|
-| `png_gray4_trns_bkgd_sbit.png` | 4-bit greyscale with tRNS, so saving promotes it to colour type 6. bKGD must be rewritten from one 2-byte grey to three 16-bit samples, rescaled 4 bits to 8 by 13.12; sBIT must be dropped. The background is grey 7 of 15, which is 119 at 8 bits - not 7, not 112, not 127, so every plausible way of getting the rescaling wrong shows up |
-| `png_gray8_bkgd_sbit.png` | The control. Nothing forces a change of colour type, so both chunks must come back byte for byte. A writer that rewrote them unconditionally passes the fixture above and fails this one |
+| `png_gray4_trns_bkgd_sbit.png` | 4-bit grayscale with tRNS, so saving promotes it to color type 6. bKGD must be rewritten from one 2-byte gray to three 16-bit samples, rescaled 4 bits to 8 by 13.12; sBIT must be dropped. The background is gray 7 of 15, which is 119 at 8 bits - not 7, not 112, not 127, so every plausible way of getting the rescaling wrong shows up |
+| `png_gray8_bkgd_sbit.png` | The control. Nothing forces a change of color type, so both chunks must come back byte for byte. A writer that rewrote them unconditionally passes the fixture above and fails this one |
 | `png_palette_trns_bkgd_hist.png` | A palette image, written back as one, so bKGD and hIST are kept. libpng warns "hIST: out of place" on this file - and on PngSuite's own `ch1n3p04.png` and `ch2n3p08.png`, whose chunk order is identical, so the warning is that build's and not the fixture's |
-| `png_gray8_bad_bkgd.png` | A three-byte bKGD where colour type 0 calls for two. Already malformed; the point is that it is not carried into a new file. libpng agrees: "bKGD: invalid" |
+| `png_gray8_bad_bkgd.png` | A three-byte bKGD where color type 0 calls for two. Already malformed; the point is that it is not carried into a new file. libpng agrees: "bKGD: invalid" |

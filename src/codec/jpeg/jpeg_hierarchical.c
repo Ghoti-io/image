@@ -88,7 +88,7 @@ static GIMG_Result hier_plane_alloc(
  * top line of the lower resolution image.  The right column and the bottom line
  * of the lower resolution image are replicated to provide the values required
  * for the right column edge and bottom line interpolations."  And: "If both
- * horizontal and vertical expansions are signalled, they are done in sequence -
+ * horizontal and vertical expansions are signaled, they are done in sequence -
  * first the horizontal expansion and then the vertical."
  *
  * So output column 2i is input column i, and output column 2i+1 is the mean of
@@ -403,7 +403,7 @@ static GIMG_Result hier_decode_dct_frame(const gimg_jpeg_doc_state_t * state,
               goto fail;
             }
             jpeg_dezigzag(block_zig, block_rz);
-            jpeg_dequantise_32(block_rz, quant, block_q);
+            jpeg_dequantize_32(block_rz, quant, block_q);
             jpeg_idct_8x8_islow(block_q, block_idct, pass1_bits);
 
             uint32_t dst_x =
@@ -856,7 +856,7 @@ static GIMG_Result hier_decode_progressive_frame(
           const int16_t * block =
               coef[ci] + ((size_t)by * grid_w[ci] + bx) * 64u;
           jpeg_dezigzag(block, block_rz);
-          jpeg_dequantise_32(block_rz, quant, block_q);
+          jpeg_dequantize_32(block_rz, quant, block_q);
           jpeg_idct_8x8_islow(block_q, block_idct, pass1_bits);
           for (int dy = 0; dy < 8; dy++) {
             uint32_t y = by * 8u + (uint32_t)dy;
@@ -895,7 +895,7 @@ fail:
  * Turn the finished reference components into a raster.
  *
  * The components are narrowed to the frame precision first, so that the
- * upsampling and colour-conversion helpers the single-frame decoders use can
+ * upsampling and color-conversion helpers the single-frame decoders use can
  * be applied here unchanged: they read a plane of bytes or of 16-bit words,
  * which is what a reconstructed component is once it stops being a running sum.
  */
@@ -913,7 +913,7 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
   const int32_t max_val = ((int32_t)1 << precision) - 1;
 
   // T.81 B.2.2 counts a hierarchical sequence's components exactly as it counts
-  // any other frame's, and Annex H has no colour concept at all, so neither a
+  // any other frame's, and Annex H has no color concept at all, so neither a
   // wide sequence nor a lossless four-component one is anything but ordinary.
   // Both used to be refused here, the second of them because the single-frame
   // lossless path refused it too.
@@ -988,7 +988,7 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
     fmt = wide ? &GIMG_PIXEL_RGBA16 : &GIMG_PIXEL_RGBA8;
   }
   else {
-    // Four components are CMYK; any other count carries no colour meaning at
+    // Four components are CMYK; any other count carries no color meaning at
     // all.  Either way the samples go out as they came in.
     r = gimg_pixel_format_multichannel(
         num_comp, (uint8_t)out_bits, &fmt_n);
@@ -1070,7 +1070,7 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
         else if (num_comp == 3u) {
           int rv, gv, bv;
           if (frame_is_rgb) {
-            // T.81 describes no colour space; jpeg_frame_is_rgb reads the
+            // T.81 describes no color space; jpeg_frame_is_rgb reads the
             // conventions that do.  A sequence whose components are already
             // R, G, B is passed through.
             rv = sample[0];
@@ -1100,7 +1100,7 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
           }
         }
         else {
-          // Raw CMYK, or components with no colour meaning: unchanged, as the
+          // Raw CMYK, or components with no color meaning: unchanged, as the
           // single-frame paths leave them.
           if (wide) {
             uint16_t * p = (uint16_t *)(pixels + (size_t)y * stride);

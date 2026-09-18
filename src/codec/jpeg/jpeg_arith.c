@@ -160,7 +160,7 @@ static const jpeg_arith_state_t jpeg_arith_qe[114] = {
  *
  * The spec primes the C register with two bytes and sets A to 0x8000.  The
  * equivalent formulation used here, and in libjpeg, starts with A and C at zero
- * and CT at -16, so that the renormalisation loop at the head of the decode
+ * and CT at -16, so that the renormalization loop at the head of the decode
  * procedure performs the priming: it is the same sequence of byte fetches, with
  * one place that reads input instead of two.
  */
@@ -169,7 +169,7 @@ void jpeg_arith_decoder_init(jpeg_arith_decoder_t * d,
   memset(d, 0, sizeof(*d));
   d->data = data;
   d->size = size;
-  // CT starts at -16 so that the renormalisation loop reads the two priming
+  // CT starts at -16 so that the renormalization loop reads the two priming
   // bytes before A becomes meaningful.  At 0 the loop would shift a zero A for
   // ever, because nothing would ever set it to 0x8000.
   d->ct = -16;
@@ -228,7 +228,7 @@ static int jpeg_arith_bytein(jpeg_arith_decoder_t * d) {
  */
 int jpeg_arith_decode(jpeg_arith_decoder_t * d, uint8_t * st) {
   // RENORMD (Figure D.18), inlined at the head so that priming and
-  // renormalisation share one path.
+  // renormalization share one path.
   while (d->a < 0x8000) {
     if (--d->ct < 0) {
       int data = jpeg_arith_bytein(d);
@@ -462,14 +462,14 @@ GIMG_Result jpeg_arith_decode_block_sequential(jpeg_arith_decoder_t * d,
 }
 
 /**
- * Resynchronise at a restart marker (T.81 F.2.4.1 and B.2.1).
+ * Resynchronize at a restart marker (T.81 F.2.4.1 and B.2.1).
  *
  * The arithmetic coder handles restarts quite differently from the Huffman one.
  * There is no bit alignment to do, because the coder's output is a byte stream
  * already; instead the decoder is discarded and started again from scratch
  * after the marker, and the adaptive statistics and the DC predictors go back
  * to their initial state.  That is what makes a restart interval a genuine
- * resynchronisation point: everything the decoder had learned is forgotten, so
+ * resynchronization point: everything the decoder had learned is forgotten, so
  * a later interval can be decoded without the earlier ones.
  *
  * The decoder may or may not already have run into the marker - it stops
@@ -479,11 +479,11 @@ GIMG_Result jpeg_arith_decode_block_sequential(jpeg_arith_decoder_t * d,
 //
 // Lossless arithmetic coding (T.81 Annex H, SOF11).
 //
-// H.1.2.3: the DC model of F.1.4.4.1 generalised to two dimensions.  A DCT DC
+// H.1.2.3: the DC model of F.1.4.4.1 generalized to two dimensions.  A DCT DC
 // difference is conditioned on the one difference that preceded it in the same
 // component; a lossless difference is conditioned on two - the sample to the
 // left and the sample above - because the data is a raster of samples rather
-// than a sequence of blocks, and both neighbours say something about how
+// than a sequence of blocks, and both neighbors say something about how
 // active this part of the image is.  Each of the two is classified into the
 // same five categories (H.1.2.3.1), and the pair selects one of 25 states.
 //
@@ -705,7 +705,7 @@ GIMG_Result jpeg_arith_decode_block_prog_dc_refine(
     int16_t * block) {
   // G.1.2.1: a DC refinement sends one bit of the coefficient and nothing else.
   // It is coded against the fixed-probability bin, because a refinement bit
-  // carries no bias worth modelling.
+  // carries no bias worth modeling.
   if (jpeg_arith_decode(d, &stats->fixed)) {
     block[0] = (int16_t)(block[0] | GIMG_JPEG_LSHIFT(1, al));
   }
@@ -916,7 +916,7 @@ void jpeg_arith_encode(jpeg_arith_encoder_t * e, uint8_t * st, int val) {
   else {
     // CODEMPS.
     if (e->a >= 0x8000) {
-      return; // the interval is still large enough; nothing to renormalise
+      return; // the interval is still large enough; nothing to renormalize
     }
     if (e->a < qe) {
       e->c += (uint32_t)e->a;

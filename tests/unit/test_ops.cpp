@@ -121,7 +121,7 @@ TEST(Ops, BitdepthWideningIsConsistent) {
   EXPECT_EQ(gimg_bitdepth_12_to_8(4095), 255);
   EXPECT_EQ(gimg_bitdepth_16_to_8(0), 0);
   EXPECT_EQ(gimg_bitdepth_16_to_12(0), 0);
-  // Mid-grey stays mid-grey across every widening.
+  // Mid-gray stays mid-gray across every widening.
   EXPECT_NEAR(gimg_bitdepth_8_to_16(128) / 257.0, 128.0, 0.5);
   EXPECT_NEAR(gimg_bitdepth_12_to_16(2048) / 16.0037, 2048.0, 1.0);
 }

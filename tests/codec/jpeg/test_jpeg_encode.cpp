@@ -966,7 +966,7 @@ TEST(JpegEncode, FourComponentFramesAreWrittenAndLibjpegTurboReadsThem) {
 // Transform 0 writes the four components exactly as they arrived, which is
 // what libjpeg's JCS_CMYK does (jdcolor.c null_convert on the way back).  A
 // CMYK raster must therefore survive a save and a load unchanged apart from
-// the quantiser, and at quality 100 with no subsampling the only remaining
+// the quantizer, and at quality 100 with no subsampling the only remaining
 // loss is the DCT rounding - small, bounded, and the same in both directions.
 //
 // This is the property the gap list called out: a CMYK JPEG that decodes but
@@ -1009,10 +1009,10 @@ TEST(JpegEncode, CmykRasterSurvivesASaveAndLoad) {
     }
   }
   EXPECT_LE(worst, 2) << "the components are meant to pass through unchanged "
-                         "apart from the quantiser";
+                         "apart from the quantizer";
 }
 
-// T.81 has no colour space, so the Adobe APP14 marker is the only thing that
+// T.81 has no color space, so the Adobe APP14 marker is the only thing that
 // says whether the first three components of a four-component frame are C, M
 // and Y or Y, Cb and Cr.  Writing the frame without it would leave a YCCK file
 // that every decoder reads as CMYK, so the marker goes in whatever the
@@ -1324,7 +1324,7 @@ TEST(JpegEncode, HierarchicalRefusesASequenceWiderThanAScan) {
   }
 }
 
-// T.81 Annex H has no colour concept of its own and B.2.2 counts components
+// T.81 Annex H has no color concept of its own and B.2.2 counts components
 // from 1 to 255, so a lossless frame of four is as legal as one of three and a
 // lossless CMYK file is an ordinary thing in prepress.  This codec refused
 // anything but one or three, on both sides: "CMYK lossless is not handled
@@ -1571,7 +1571,7 @@ TEST(JpegEncode, TwelveBitFramesOfAnyComponentCount) {
 // abbreviated image saved with the same options belong together, and reading
 // them together must give exactly what the complete file gives - not nearly,
 // exactly, because the same tables and the same coefficients are involved
-// either way and nothing is requantised between them.
+// either way and nothing is requantized between them.
 //
 // The two halves are also checked apart: neither is a JPEG on its own.
 TEST(JpegEncode, AbbreviatedStreamsOfB4) {
@@ -1724,7 +1724,7 @@ TEST(JpegEncode, AbbreviatedRefusesWhatCannotBeSplit) {
 // T.81 B.2.2 lets a frame carry from 1 to 255 components; B.2.3 caps one scan
 // at 4, so a frame wider than that has exactly one legal arrangement - several
 // non-interleaved scans (A.2.3) - and the encoder writes it that way whether
-// or not the caller asked, because there is no other way to honour the
+// or not the caller asked, because there is no other way to honor the
 // request.
 //
 // There is no oracle for the whole file: libjpeg's decoder matches a scan's Cs
@@ -1732,7 +1732,7 @@ TEST(JpegEncode, AbbreviatedRefusesWhatCannotBeSplit) {
 // it cannot read one back.  It can read each scan on its own, though, and that
 // is what JpegLoad.FramesWiderThanOneScanCanName rests on; here the check is
 // the round trip, which is what a caller of this library actually gets.  The
-// error bound is the quantiser's: at quality 100 the DCT rounding is all that
+// error bound is the quantizer's: at quality 100 the DCT rounding is all that
 // is left.
 TEST(JpegEncode, FramesWiderThanOneScanCanNameAreWritten) {
   const int counts[] = {2, 5, 8, 10, 32, 255};
@@ -1751,7 +1751,7 @@ TEST(JpegEncode, FramesWiderThanOneScanCanNameAreWritten) {
     for (uint32_t y = 0; y < 9u; y++) {
       for (uint32_t x = 0; x < 17u; x++) {
         for (int c = 0; c < n; c++) {
-          // Smooth in x and y so the quantiser has little to do, and offset
+          // Smooth in x and y so the quantizer has little to do, and offset
           // per component so a mix-up between two of them shows.
           int v = (int)(x * 3u + y * 5u) + (c * 37) % 96 + 32;
           px[y * stride + (size_t)x * (size_t)n + (size_t)c] =
@@ -3782,33 +3782,33 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
   EXPECT_GT(size_50, 0u);
   EXPECT_GT(size_85, 0u);
   EXPECT_GT(size_100, 0u) << "quality 100 must produce a file, not an error";
-  // Finer quantisation, more bits.
+  // Finer quantization, more bits.
   EXPECT_GT(size_85, size_50);
   EXPECT_GT(size_100, size_85);
 }
 
 /**
  * A flat 12-bit image must come back at the value it went in at, spread across
- * the whole 16-bit output range - not squeezed into a band around mid-grey.
+ * the whole 16-bit output range - not squeezed into a band around mid-gray.
  *
  * This checks sample values, which nothing did before: every 12-bit test
  * asserted dimensions, format and "decode succeeded", so a decoder whose
  * inverse DCT was scaled wrong by a factor of 64 passed them all.  T.81 A.3.3
  * fixes the transform exactly; there is no latitude in it beyond rounding.
  */
-/** A flat 12-bit colour field must survive a 12-bit round trip.
+/** A flat 12-bit color field must survive a 12-bit round trip.
  *
  * The encoder's 12-bit RGB->YCbCr had coefficients scaled for 8-bit data but a
  * shift of 12 rather than 8, so luminance came out sixteen times too small and
- * every 12-bit colour image we wrote was ruined.  Neither this library's own
+ * every 12-bit color image we wrote was ruined.  Neither this library's own
  * decoder nor libjpeg could reveal that on its own - both read the file back
  * faithfully, and what they read back was faithfully wrong - so the check has
  * to be against the sample that went in.
  *
  * A flat field is used so that chroma subsampling and the DCT are both exact,
- * leaving nothing between the input and the output but the colour transform.
+ * leaving nothing between the input and the output but the color transform.
  * The tolerance covers the round trip through YCbCr, which is not lossless. */
-TEST(JpegEncode, Save12BitColourFlatFieldsKeepTheirValue) {
+TEST(JpegEncode, Save12BitColorFlatFieldsKeepTheirValue) {
   struct Case {
     uint16_t r, g, b;
   };
@@ -3893,7 +3893,7 @@ TEST(JpegEncode, Save12BitColourFlatFieldsKeepTheirValue) {
  * any quality of 100 or more at P=12, because the file it produced could not be
  * decoded.  The cause was in the extended Huffman tables - they over-subscribed
  * the code space, so 79 symbols shared codes with other symbols - and not in
- * the quantiser, as the comment on the guard had assumed.  With the tables
+ * the quantizer, as the comment on the guard had assumed.  With the tables
  * fixed the guard was refusing files that are perfectly good, so it is gone.
  *
  * The content here is deliberately hostile to quality 100: a one-pixel
@@ -3945,7 +3945,7 @@ TEST(JpegEncode, Save12BitQuality100RoundTrips) {
   ASSERT_EQ(gimg_raster_height(decoded), 32u);
   const uint16_t * out_px = (const uint16_t *)gimg_raster_pixels_const(decoded);
   size_t out_stride = gimg_raster_stride_bytes(decoded) / sizeof(uint16_t);
-  // At quality 100 the quantisation values are all 1, so the checkerboard comes
+  // At quality 100 the quantization values are all 1, so the checkerboard comes
   // back essentially intact; the tolerance is for the DCT round trip alone.
   for (uint32_t y = 0; y < 32; y++) {
     for (uint32_t x = 0; x < 32; x++) {
@@ -4050,8 +4050,8 @@ TEST(JpegEncode, LosslessRoundTripsExactly) {
         gimg_doc_destroy(doc);
 
         // The frame must announce itself as lossless at the raster's own
-        // precision, and must carry no quantisation table - there is nothing
-        // to quantise.
+        // precision, and must carry no quantization table - there is nothing
+        // to quantize.
         bool saw_sof = false, saw_dqt = false, saw_dht = false, saw_dac = false;
         int got_precision = 0;
         const uint8_t want_sof = arith ? 0xCB : 0xC3;
@@ -4131,7 +4131,7 @@ TEST(JpegEncode, LosslessRoundTripsExactly) {
 /** Arithmetic and Huffman encoding of the same image must agree.
  *
  * T.81 defines two entropy coders, and they are exactly that: two ways of
- * writing the same quantised coefficients.  Both encoders here are fed one
+ * writing the same quantized coefficients.  Both encoders here are fed one
  * coefficient buffer, so whatever a decoder reconstructs from one file it must
  * reconstruct from the other, to the sample.  That makes each a check on the
  * other, which is how the Huffman encoder's zero-run bug was found: it had been
@@ -4368,7 +4368,7 @@ TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
     size_t dstride = gimg_raster_stride_bytes(decoded) / 2;
 
     // A flat field is carried entirely by the DC coefficient, so the only loss
-    // is one quantisation step.  Allow 2 steps of the 12-bit quantiser, widened.
+    // is one quantization step.  Allow 2 steps of the 12-bit quantizer, widened.
     const int expect = (int)gimg_bitdepth_12_to_16(c.sample);
     const int tolerance = 16 * 24;
     for (uint32_t y = 0; y < 16; y += 5) {
@@ -4432,7 +4432,7 @@ TEST(JpegEncode, Save12BitRampKeepsItsContrast) {
   }
   EXPECT_GT(hi - lo, 60000)
       << "decoded ramp spans " << (hi - lo) << " of 65535; a wrongly scaled "
-         "inverse DCT collapses it toward mid-grey";
+         "inverse DCT collapses it toward mid-gray";
   EXPECT_LT(lo, 2000) << "dark end should stay dark";
   EXPECT_GT(hi, 63000) << "bright end should stay bright";
   gimg_raster_destroy(decoded);
@@ -4864,7 +4864,7 @@ TEST(JpegEncode, SaveGray12QualityVariation) {
   EXPECT_GT(size_50, 0u);
   EXPECT_GT(size_85, 0u);
   EXPECT_GT(size_100, 0u) << "quality 100 must produce a file, not an error";
-  // Finer quantisation, more bits.
+  // Finer quantization, more bits.
   EXPECT_GT(size_85, size_50);
   EXPECT_GT(size_100, size_85);
 }
@@ -5404,7 +5404,7 @@ TEST(JpegEncode, Large640x480BaselineWithRestart) {
  * that the pixels were right.  The fixture and libjpeg's own decode of it are
  * committed instead, so it always runs and compares actual samples.
  *
- * The colour case is exact rather than approximate because a NULL
+ * The color case is exact rather than approximate because a NULL
  * GIMG_Decode_Options now selects fancy chroma upsampling, which is also
  * libjpeg's default; before that the two defaults disagreed and a comparison
  * like this reported a difference on every subsampled file.
@@ -5416,7 +5416,7 @@ TEST(JpegEncode, DecodeLibjpegRestartOracle) {
     const char * what;
   };
   static const Case cases[] = {
-      {"libjpeg_restart_gray.jpg", "libjpeg_restart_gray.pgm", "grey, DRI 34"},
+      {"libjpeg_restart_gray.jpg", "libjpeg_restart_gray.pgm", "gray, DRI 34"},
       {"libjpeg_restart_rgb.jpg", "libjpeg_restart_rgb.ppm", "4:2:0, DRI 18"},
   };
   for (const Case & c : cases) {
@@ -5624,12 +5624,12 @@ int main(int argc, char ** argv) {
 // An Adobe APP14 describes the frame it accompanies, so it cannot be copied
 // across a re-encode unexamined.
 //
-// Its transform byte says which colour space the components are in.  A source
+// Its transform byte says which color space the components are in.  A source
 // that carried RGB says transform 0; this encoder writes YCbCr for three
 // components, and preserving the marker unchanged left the file asserting both
 // at once, alongside a JFIF APP0 that asserts YCbCr a third time.  Nothing here
 // decodes it wrongly - JFIF outranks Adobe, for this library and for libjpeg -
-// but a decoder that reads Adobe first gets a picture in the wrong colours out
+// but a decoder that reads Adobe first gets a picture in the wrong colors out
 // of a file this library wrote.
 //
 // The lossless path has the opposite problem.  It keeps RGB, and writes its own
@@ -5737,13 +5737,13 @@ TEST(JpegEncode, AdobeMarkerDescribesTheFrameThatWasWritten) {
 // The encoder has to contain a decoder to work at all: every differential
 // frame codes the difference between the picture and what has been
 // reconstructed so far, so at each step the encoder must reconstruct exactly
-// what a decoder will, quantisation loss included.  Get that reconstruction
+// what a decoder will, quantization loss included.  Get that reconstruction
 // wrong and the file still decodes - it just decodes to the wrong picture,
 // consistently, in every decoder, which is why the round trip below compares
 // against the source rather than against another decode.
 //
 // The first version of this encoder handed its quantization table to the
-// decoder's dequantiser, which reads the table in the zigzag order a DQT
+// decoder's dequantizer, which reads the table in the zigzag order a DQT
 // segment stores it in, while the encoder keeps it in natural order.  Every
 // coefficient was multiplied by the wrong element, the reference bore no
 // relation to the frame, and the differential frames spent their bits coding
@@ -5754,7 +5754,7 @@ TEST(JpegEncode, HierarchicalRoundTrip) {
   std::vector<uint8_t> src((size_t)kW * kH * 3);
   for (uint32_t y = 0; y < kH; y++) {
     for (uint32_t x = 0; x < kW; x++) {
-      // Smooth, so that quantisation error is the only thing being measured.
+      // Smooth, so that quantization error is the only thing being measured.
       size_t k = ((size_t)y * kW + x) * 3;
       src[k + 0] = (uint8_t)(128 + 100 * std::sin(x / 11.0) * std::cos(y / 9.0));
       src[k + 1] = (uint8_t)(128 + 90 * std::sin((x + y) / 17.0));
@@ -6179,7 +6179,7 @@ TEST(JpegEncode, HierarchicalRefusesACombinationItCannotWrite) {
   };
   // Progressive and lossless sequences are written now (B.3.1 allows any of
   // the three processes, as long as every frame of a sequence uses the same
-  // one), so the only combination left that cannot be honoured is a change of
+  // one), so the only combination left that cannot be honored is a change of
   // precision: a pyramid's reconstruction is built at 8 bits.
   const Case cases[] = {
       {0, 0, 12, "12-bit frames"},
@@ -6343,7 +6343,7 @@ TEST(JpegEncode, NonInterleavedOutputIsReadByLibjpegTurbo) {
 
 // The two scan orders of A.2.2 and A.2.3 describe the same blocks, so the same
 // image written both ways must decode to the same pixels - not merely to
-// similar ones.  Nothing is requantised between them; only the order the
+// similar ones.  Nothing is requantized between them; only the order the
 // coefficients are written in changes.
 //
 // This also pins the thing the external oracle cannot see, because libjpeg
@@ -6555,7 +6555,7 @@ TEST(JpegEncode, ScanDataGrowsGeometrically) {
 }
 
 // The inverse DCT carries its intermediates in int64_t on purpose: the
-// dequantised input alone is a 31-bit quantity for a block that is
+// dequantized input alone is a 31-bit quantity for a block that is
 // syntactically legal, and 32-bit sums of those values overflow.  Pass 1 used
 // to compute wide and then store through (int) into the int64_t workspace,
 // which handed pass 2 a wrapped value - implementation-defined rather than
@@ -6564,20 +6564,20 @@ TEST(JpegEncode, ScanDataGrowsGeometrically) {
 // This test sits at the transform rather than at a file because the input that
 // exposes it is one no encoder can emit: the forward DCT of any 12-bit block
 // bounds the DC coefficient near 16376, whereas a 15-category DC difference
-// (T.81 F.1.2.1) against a 16-bit quantiser value (B.2.4.1, Pq=1) dequantises
+// (T.81 F.1.2.1) against a 16-bit quantizer value (B.2.4.1, Pq=1) dequantizes
 // to 32767 x 65535.  T.81 does not say what such a block decodes to.  It does
 // have to decode to the sign the transform actually computed.
 TEST(JpegIdct, Pass1ResultReachesPass2WithoutBeingNarrowed) {
-  const int32_t dequantised_dc = 32767 * 65535;
+  const int32_t dequantized_dc = 32767 * 65535;
   // pass1_bits is 1 for 12-bit frames (jidctint.c's PASS1_BITS), so the
-  // pass-1 DC is dequantised_dc << 1 == 4294770690 - past int32, and (int) of
+  // pass-1 DC is dequantized_dc << 1 == 4294770690 - past int32, and (int) of
   // it is -196606.
-  ASSERT_GT((int64_t)dequantised_dc << 1, (int64_t)INT32_MAX);
+  ASSERT_GT((int64_t)dequantized_dc << 1, (int64_t)INT32_MAX);
 
   // The DC-only shortcut in pass 1.
   int32_t in[64] = {0};
   int32_t out[64];
-  in[0] = dequantised_dc;
+  in[0] = dequantized_dc;
   jpeg_idct_8x8_islow(in, out, 1);
   for (int i = 0; i < 64; i++) {
     EXPECT_GT(out[i], 0) << "sample " << i << " came back negative; a positive "
@@ -6589,7 +6589,7 @@ TEST(JpegIdct, Pass1ResultReachesPass2WithoutBeingNarrowed) {
   // shortcut does not apply.  The eight pass-1 stores are the ones that used
   // to narrow.
   int32_t in2[64] = {0};
-  in2[0] = dequantised_dc;
+  in2[0] = dequantized_dc;
   in2[1] = 1;
   jpeg_idct_8x8_islow(in2, out, 1);
   for (int i = 0; i < 64; i++) {

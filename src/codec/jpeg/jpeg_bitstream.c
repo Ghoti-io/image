@@ -51,7 +51,7 @@ static int jpeg_marker_no_length(unsigned char m) {
 /**
  * Forget every bit buffered ahead of the current position.
  *
- * A restart marker is a hard resynchronisation point (T.81 B.2.1): the encoder
+ * A restart marker is a hard resynchronization point (T.81 B.2.1): the encoder
  * pads to a byte boundary, emits the marker, and starts the next interval with
  * a clean slate.  Anything the decoder had read ahead of the marker belongs to
  * the interval that just ended and must not be handed to the next one.

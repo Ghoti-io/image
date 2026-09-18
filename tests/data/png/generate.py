@@ -348,7 +348,7 @@ def main() -> None:
     _write_suggested_palette_fixtures()
     _write_filter_fixtures()
     _write_third_edition_fixtures()
-    _write_colour_typed_ancillary_fixtures()
+    _write_color_typed_ancillary_fixtures()
     _write_filter_validity_fixtures()
     _write_apng_frame_bounds_fixtures()
     _write_jpeg_with_resolution()
@@ -454,7 +454,7 @@ def _subbyte_samples(width: int, height: int, depth: int):
 
 
 def _subbyte_palette(depth: int) -> bytes:
-    """A palette of 2^depth entries, each a distinct colour."""
+    """A palette of 2^depth entries, each a distinct color."""
     n = 1 << depth
     out = bytearray()
     for i in range(n):
@@ -478,7 +478,7 @@ def _write_subbyte_and_interlace_fixtures() -> None:
         for depth in (1, 2, 4):
             samples = _subbyte_samples(width, height, depth)
 
-            # ---- grayscale, colour type 0 ----
+            # ---- grayscale, color type 0 ----
             base = f"png_gray{depth}_{width}x{height}"
             for interlace in (0, 1):
                 raw = (raw_rows_adam7 if interlace else raw_rows_plain)(
@@ -493,7 +493,7 @@ def _write_subbyte_and_interlace_fixtures() -> None:
                 scale_sample_to_8(samples[y][x], depth)
                 for y in range(height) for x in range(width)))
 
-            # ---- palette, colour type 3 ----
+            # ---- palette, color type 3 ----
             base = f"png_pal{depth}_{width}x{height}"
             plte = _subbyte_palette(depth)
             for interlace in (0, 1):
@@ -568,11 +568,11 @@ def _write_zlib_integrity_fixtures() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A suggested palette on a truecolour image (PNG 11.2.2).
+# A suggested palette on a truecolor image (PNG 11.2.2).
 #
-# PLTE is required for colour type 3 and "shall not appear" for colour types 0
+# PLTE is required for color type 3 and "shall not appear" for color types 0
 # and 4, but for 2 and 6 it *may* appear as a suggested palette for a viewer
-# that cannot display truecolour. A decoder that can display truecolour ignores
+# that cannot display truecolor. A decoder that can display truecolor ignores
 # it. Rejecting such a file is not one of the choices the spec offers, and the
 # conformance suite carries two of them (pp0n2c16, pp0n6a08).
 # ---------------------------------------------------------------------------
@@ -583,7 +583,7 @@ def _write_suggested_palette_fixtures() -> None:
     iend = png_chunk(b"IEND", b"")
     # A 4x4 RGB image whose pixels deliberately do *not* all appear in the
     # suggested palette: if the palette were used to decode, the result would
-    # differ from the truecolour samples and the test would see it.
+    # differ from the truecolor samples and the test would see it.
     raw = bytearray()
     for y in range(4):
         raw.append(0)
@@ -599,7 +599,7 @@ def _write_suggested_palette_fixtures() -> None:
         + png_chunk(b"IDAT", idat_zlib(raw))
         + iend)
 
-    # The same suggested palette on colour type 6, which PNG 11.2.2 allows too.
+    # The same suggested palette on color type 6, which PNG 11.2.2 allows too.
     raw_a = bytearray()
     for y in range(4):
         raw_a.append(0)
@@ -623,7 +623,7 @@ def _write_suggested_palette_fixtures() -> None:
         + png_chunk(b"IDAT", idat_zlib(raw))
         + iend)
 
-    # PLTE on colour type 0, which the spec forbids outright.
+    # PLTE on color type 0, which the spec forbids outright.
     write_png("png_gray_forbidden_palette.png",
         signature
         + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 0, 0, 0, 0))
@@ -661,16 +661,16 @@ def _write_filter_fixtures() -> None:
 
 
 # ---------------------------------------------------------------------------
-# PNG Third Edition colour chunks: cICP, mDCv, cLLi.
+# PNG Third Edition color chunks: cICP, mDCv, cLLi.
 #
-# cICP carries coding-independent code points (ITU-T H.273): colour primaries,
+# cICP carries coding-independent code points (ITU-T H.273): color primaries,
 # transfer function, matrix coefficients, and a full-range flag. The Third
 # Edition puts it ahead of sRGB, iCCP and gAMA+cHRM - where it appears, it is
 # what the samples mean.
 #
 # The first file names the sRGB pair (primaries 1, transfer 13, identity
 # matrix, full range) and also carries a gAMA claiming 1.0, so a decoder that
-# honours the precedence and one that does not give different answers.
+# honors the precedence and one that does not give different answers.
 # ---------------------------------------------------------------------------
 
 
@@ -688,8 +688,8 @@ def _write_third_edition_fixtures() -> None:
         + idat + iend)
 
     # cICP naming BT.2020 primaries with the PQ transfer: a perfectly legal
-    # file that this library's colour model cannot describe, so it reports no
-    # colour information rather than guessing.
+    # file that this library's color model cannot describe, so it reports no
+    # color information rather than guessing.
     # A gAMA rides along so that "left unknown" is a real assertion: a decoder
     # that ignored cICP would report the gamma instead of reporting nothing.
     write_png("png_cicp_bt2020_pq.png",
@@ -708,12 +708,12 @@ def _write_third_edition_fixtures() -> None:
         + idat + iend)
 
 
-def _write_colour_typed_ancillary_fixtures() -> None:
+def _write_color_typed_ancillary_fixtures() -> None:
     """Images carrying bKGD, sBIT and hIST, for the save-side retargeting.
 
-    These three chunks are laid out according to the colour type in the IHDR
+    These three chunks are laid out according to the color type in the IHDR
     beside them (PNG 11.3.4.1, 11.3.2.4, 11.3.4.2), so they cannot be copied
-    across when the writer emits a different colour type than the frame arrived
+    across when the writer emits a different color type than the frame arrived
     as - and it does, whenever a tRNS has to become an alpha channel.
 
     Each fixture is a case where that happens, or a control where it must not.
@@ -721,15 +721,15 @@ def _write_colour_typed_ancillary_fixtures() -> None:
     signature = b"\x89PNG\r\n\x1a\n"
     iend = png_chunk(b"IEND", b"")
 
-    # ---- 4-bit greyscale + tRNS + bKGD + sBIT ------------------------------
+    # ---- 4-bit grayscale + tRNS + bKGD + sBIT ------------------------------
     #
-    # Saving this promotes it to colour type 6: the transparent grey level has
-    # to become an alpha channel. bKGD must be rewritten from one 2-byte grey
+    # Saving this promotes it to color type 6: the transparent gray level has
+    # to become an alpha channel. bKGD must be rewritten from one 2-byte gray
     # to three 16-bit samples, rescaled from 4 bits to 8 by 13.12, and sBIT
     # must be dropped - rescaling spreads each 4-bit value over 8 bits, so a
     # count taken before it no longer describes what is stored.
     #
-    # The background is grey 7 of 15, which is 119 at 8 bits
+    # The background is gray 7 of 15, which is 119 at 8 bits
     # (round(7 * 255 / 15)) - a value that is wrong in every way the rescaling
     # could be got wrong: not 7, not 112, not 127.
     width, height, depth = 4, 4, 4
@@ -743,9 +743,9 @@ def _write_colour_typed_ancillary_fixtures() -> None:
         + png_chunk(b"IDAT", idat_zlib(raw_rows_plain(samples, width, height, depth)))
         + iend)
 
-    # ---- 8-bit greyscale + bKGD + sBIT, no tRNS ---------------------------
+    # ---- 8-bit grayscale + bKGD + sBIT, no tRNS ---------------------------
     #
-    # The control. Nothing forces a change of colour type, so both chunks must
+    # The control. Nothing forces a change of color type, so both chunks must
     # come back byte for byte. A writer that rewrote them unconditionally would
     # pass the fixture above and fail this one.
     gray8 = bytes([0x00] + [0x11, 0x22, 0x33, 0x44]) * 4
@@ -760,13 +760,13 @@ def _write_colour_typed_ancillary_fixtures() -> None:
     # ---- palette + tRNS + bKGD + hIST -------------------------------------
     #
     # A palette whose tRNS gives one entry partial alpha, which no tRNS on a
-    # truecolour image can express, so saving promotes this to colour type 6.
-    # bKGD names palette entry 1 and must become that entry's colour; hIST is
+    # truecolor image can express, so saving promotes this to color type 6.
+    # bKGD names palette entry 1 and must become that entry's color; hIST is
     # one frequency per palette entry and has nothing to be about once the
     # palette is gone, so it must be dropped (11.3.4.2 requires PLTE).
     #
     # Entry 1 is (0x20, 0x40, 0x60): three different samples, so a writer that
-    # collapsed the colour to grey, or took the wrong entry, is visible.
+    # collapsed the color to gray, or took the wrong entry, is visible.
     plte = bytes([0xFF, 0x00, 0x00,   # 0
                   0x20, 0x40, 0x60,   # 1  <- bKGD names this one
                   0x00, 0xFF, 0x00,   # 2
@@ -782,11 +782,11 @@ def _write_colour_typed_ancillary_fixtures() -> None:
         + png_chunk(b"IDAT", idat_zlib(raw_rows_plain(indices, 4, 4, 8)))
         + iend)
 
-    # ---- 8-bit greyscale + tRNS + a bKGD of the wrong length --------------
+    # ---- 8-bit grayscale + tRNS + a bKGD of the wrong length --------------
     #
-    # Three bytes where colour type 0 calls for two. The file is already
+    # Three bytes where color type 0 calls for two. The file is already
     # malformed; the point is that it is not carried forward into a new one.
-    # The tRNS forces a colour type change so the chunk is examined at all.
+    # The tRNS forces a color type change so the chunk is examined at all.
     write_png("png_gray8_bad_bkgd.png",
         signature
         + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 0, 0, 0, 0))
@@ -847,8 +847,8 @@ def _write_apng_frame_bounds_fixtures() -> None:
     iend = png_chunk(b"IEND", b"")
     w = h = 8
 
-    def rgba(width, height, colour):
-        return b"".join(b"\x00" + bytes(list(colour) * width)
+    def rgba(width, height, color):
+        return b"".join(b"\x00" + bytes(list(color) * width)
                         for _ in range(height))
 
     ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))

@@ -1444,7 +1444,7 @@ TEST(JpegLoad, LosslessFrameWithNonUnitSamplingFactors) {
 
 // A three-component frame is not automatically YCbCr.
 //
-// T.81 describes no colour space at all - a component is a component, and the
+// T.81 describes no color space at all - a component is a component, and the
 // frame header names them only by identifier.  What three of them mean is
 // settled by the conventions layered on top, and libjpeg's rule (jdapimin.c,
 // default_decompress_parms) is the one every decoder follows: JFIF means
@@ -1455,7 +1455,7 @@ TEST(JpegLoad, LosslessFrameWithNonUnitSamplingFactors) {
 // This library converted every three-component frame as though it were YCbCr,
 // so an RGB-coded JPEG - which is what the ISO reference codec writes with -c,
 // and what a good deal of scientific and print imagery is - came out with every
-// pixel a different colour.
+// pixel a different color.
 //
 // The four fixtures are one encode, altered four ways, so the only thing that
 // varies is the evidence: keep the Adobe marker, drop it, drop it and retag the
@@ -1464,7 +1464,7 @@ TEST(JpegLoad, LosslessFrameWithNonUnitSamplingFactors) {
 // differ from each other by up to 255, so reading the rule wrongly anywhere
 // changes every pixel of at least one fixture.  The expected output is
 // libjpeg-turbo's own decode and the match is exact, not within a tolerance.
-TEST(JpegLoad, ThreeComponentColourSpaceFollowsTheMarkers) {
+TEST(JpegLoad, ThreeComponentColorSpaceFollowsTheMarkers) {
   struct Case {
     const char * jpg;
     const char * ref;
@@ -1668,10 +1668,10 @@ TEST(JpegLoad, DecodeLosslessArithmeticMatchesReferenceCodec) {
     const char * what;
   };
   static const Case cases[] = {
-      {"lossless_arith_gray.jpg", "lossless_arith_gray.pgm", "8-bit grey"},
+      {"lossless_arith_gray.jpg", "lossless_arith_gray.pgm", "8-bit gray"},
       {"lossless_arith_rgb.jpg", "lossless_arith_rgb.ppm", "8-bit RGB"},
-      {"lossless_arith_gray12.jpg", "lossless_arith_gray12.pgm", "12-bit grey"},
-      {"lossless_arith_gray16.jpg", "lossless_arith_gray16.pgm", "16-bit grey"},
+      {"lossless_arith_gray12.jpg", "lossless_arith_gray12.pgm", "12-bit gray"},
+      {"lossless_arith_gray16.jpg", "lossless_arith_gray16.pgm", "16-bit gray"},
       // A restart interval of one whole MCU row.
       {"lossless_arith_restart.jpg", "lossless_arith_restart.pgm",
           "restart, row-aligned"},
@@ -2823,7 +2823,7 @@ TEST(JpegLoad, DecodeBaseline640x480Ycbcr) {
 /** Lossless JPEG (SOF3) decodes, exactly.
  *
  * T.81 Annex H is a coding process in its own right, not a variation on the
- * DCT ones: each sample is predicted from its already-decoded neighbours and
+ * DCT ones: each sample is predicted from its already-decoded neighbors and
  * the difference is entropy-coded, so the reconstruction is exact.  This codec
  * rejected every such frame until the process existed.
  *
@@ -2864,7 +2864,7 @@ TEST(JpegLoad, DecodeLossless) {
       {"lossless_rgb12_psv4.jpg", 64, 64, 3, 12, 25158656ULL,
           {0, 0, 0, 2080, 2080, 2080, 4095, 4095, 4095, 65, 0, 32, 0, 65, 32}},
   };
-  // The library's widening rule, generalised to any source precision.
+  // The library's widening rule, generalized to any source precision.
   auto widen = [](uint32_t v, int from, int to) -> uint32_t {
     if (from >= to) return v >> (from - to);
     uint32_t r = v;
@@ -2950,7 +2950,7 @@ TEST(JpegLoad, DecodeLossless) {
  * belongs with them because all three broke on the same thing: a progressive
  * image with restart intervals was undecodable, whichever entropy coder it
  * used, for two reasons that only show up together.  A restart marker is a hard
- * resynchronisation point, so bits the longest-match Huffman decode had read
+ * resynchronization point, so bits the longest-match Huffman decode had read
  * ahead of it had to be discarded and were not; and DRI may appear between
  * scans and change, which an encoder measuring its restart interval in MCU rows
  * has to do, because an interleaved scan and a single-component scan do not
@@ -3025,7 +3025,7 @@ TEST(JpegLoad, DecodeArithmeticSequential) {
       for (uint32_t x = 0; x < c.w; x++) {
         const unsigned char * p = px + y * stride + x * bpp;
         for (int ch = 0; ch < c.channels; ch++) {
-          // A grayscale frame decodes to GRAY8, a colour one to RGBA8.
+          // A grayscale frame decodes to GRAY8, a color one to RGBA8.
           sum += (bpp == 1) ? p[0] : p[ch];
         }
       }
@@ -3105,16 +3105,16 @@ TEST(JpegLoad, DecodeArithmetic12Bit) {
   gimg_doc_destroy(doc);
 }
 
-/** A 12-bit colour frame must fill its whole raster.
+/** A 12-bit color frame must fill its whole raster.
  *
- * The fixture is a flat colour, so every decoded pixel has to be the same one;
+ * The fixture is a flat color, so every decoded pixel has to be the same one;
  * that makes this a check on addressing rather than on arithmetic.  It is here
- * because the 12-bit colour path computed its row stride in pixels while
+ * because the 12-bit color path computed its row stride in pixels while
  * indexing the row through a uint16_t * - so it wrote each frame into the first
  * quarter of its own raster and left the rest at zero.  Every existing 12-bit
  * test looked only at the dimensions and the pixel format, which were both
  * correct, and none of them read a sample. */
-TEST(JpegLoad, Decode12BitColourFillsTheWholeRaster) {
+TEST(JpegLoad, Decode12BitColorFillsTheWholeRaster) {
   std::vector<uint8_t> jpeg;
   if (!jpeg_test::load_jpeg_file("baseline_rgb12_444.jpg", jpeg)) {
     GTEST_SKIP() << "Fixture tests/data/jpeg/baseline_rgb12_444.jpg not found.";
@@ -3406,14 +3406,14 @@ TEST(JpegLoad, GoldenProgressive) {
       << "canonical pixel hash (reference produced with simple chroma upsampling)";
 }
 
-// Passing no options and passing a zero-initialised GIMG_Decode_Options must
+// Passing no options and passing a zero-initialized GIMG_Decode_Options must
 // decode identically.  They did not: GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE used to
 // be 0, so `GIMG_Decode_Options o = {};` selected the box filter while NULL
 // selected the triangle filter, and the natural way to write the struct
 // quietly produced different pixels.  The third decode is what gives this test
 // teeth - it proves the fixture actually distinguishes the two filters, so the
 // first two agreeing means something.
-TEST(JpegLoad, ZeroInitialisedDecodeOptionsMatchNullOptions) {
+TEST(JpegLoad, ZeroInitializedDecodeOptionsMatchNullOptions) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("progressive_sample.jpg", jpeg))
       << "Run tests/data/jpeg/generate.py";
@@ -3448,7 +3448,7 @@ TEST(JpegLoad, ZeroInitialisedDecodeOptionsMatchNullOptions) {
   gimg_stream_destroy(s);
 
   EXPECT_EQ(zeroed_hash, null_hash)
-      << "a zero-initialised GIMG_Decode_Options must decode as NULL does";
+      << "a zero-initialized GIMG_Decode_Options must decode as NULL does";
   EXPECT_NE(simple_hash, null_hash)
       << "fixture must distinguish the two upsampling filters, or the check "
          "above proves nothing";
@@ -4188,7 +4188,7 @@ TEST(JpegLoad, FramesWiderThanOneScanCanName) {
     const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
     ASSERT_NE(fmt, nullptr);
     ASSERT_EQ((int)fmt->channel_count, n);
-    // One and four have colour conventions; the rest have none, which is what
+    // One and four have color conventions; the rest have none, which is what
     // GIMG_CHANNEL_UNKNOWN records.
     EXPECT_EQ(fmt->channel_model,
         (n == 4) ? GIMG_CHANNEL_CMYK : GIMG_CHANNEL_UNKNOWN);
@@ -4347,10 +4347,10 @@ TEST(JpegLoad, TwelveBitFourComponentFrames) {
 }
 
 // A four-component frame whose chrominance components are subsampled was
-// upsampled by nearest neighbour here, on the stated grounds that "four-
+// upsampled by nearest neighbor here, on the stated grounds that "four-
 // component files are not YCbCr and the filter does not apply to them".  That
 // was wrong: libjpeg picks its upsampler from the sampling factors alone -
-// jdsample.c's jinit_upsampler never looks at the colour space - so a 4:2:0
+// jdsample.c's jinit_upsampler never looks at the color space - so a 4:2:0
 // YCCK file gets the same triangle filter a 4:2:0 YCbCr file gets, and this
 // decoder disagreed with libjpeg on every pixel between chroma samples.
 //
@@ -4623,19 +4623,19 @@ TEST(JpegLoad, DnlSuppliesAHeightTheFrameHeaderLeftAtZero) {
 //
 // exif.c's read_u32 built its value as (p[0] << 24) | ..., and an unsigned char
 // promotes to int, so any field with a top byte above 0x7F was a signed shift
-// that does not fit: undefined behaviour, not a wrap.  The same fault was in
+// that does not fit: undefined behavior, not a wrap.  The same fault was in
 // the APP13 resource size in jpeg_load.c.  Every compiler anyone uses produces
 // the right number anyway, which is why no functional test could ever have
 // caught this, and why it sat in all four fuzz logs at once without anyone
 // acting on it - UBSan was in recover mode, so it printed and the suite passed.
-// The sanitizer build now aborts on undefined behaviour, which is what makes
+// The sanitizer build now aborts on undefined behavior, which is what makes
 // this test a test: it loads a file whose EXIF has a high top byte, and under
 // the sanitizers that either returns or it does not.
 //
 // The file came from the fuzz corpus.  What it decodes to does not matter here
 // and is not asserted; it is malformed, and the loader is entitled to reject
 // it.  Reaching the EXIF parser at all is the point.
-TEST(JpegLoad, ExifFieldWithAHighTopByteIsReadWithoutUndefinedBehaviour) {
+TEST(JpegLoad, ExifFieldWithAHighTopByteIsReadWithoutUndefinedBehavior) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("exif_u32_high_bit.jpg", jpeg));
   GIMG_Stream * s = nullptr;

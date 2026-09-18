@@ -192,7 +192,7 @@ GIMG_Result gimg_png_zlib_decode(const unsigned char * zlib_data,
   }
   // FDICT: PNG 10.3 forbids a preset dictionary. Beyond being disallowed, one
   // would put a four-byte DICTID between the header and the DEFLATE data, so
-  // ignoring the flag would desynchronise the stream rather than merely admit
+  // ignoring the flag would desynchronize the stream rather than merely admit
   // a file the spec excludes.
   if (flg & 0x20u) {
     return GIMG_ERR_FORMAT;
@@ -263,7 +263,7 @@ void gimg_png_set_sample_bits(
 //
 // Physical pixel dimensions (PNG 11.3.4.3)
 //
-// pHYs states pixels per metre; the common metadata carries dots per inch,
+// pHYs states pixels per meter; the common metadata carries dots per inch,
 // which is what JFIF and Exif state and so what the JPEG codec already reads
 // and writes. An inch is exactly 0.0254 m, so both directions are integer
 // arithmetic with explicit rounding rather than a float round trip - 5000/127
@@ -272,7 +272,7 @@ void gimg_png_set_sample_bits(
 // one may.
 //
 
-uint32_t gimg_png_dpi_to_pixels_per_metre(uint32_t dpi) {
+uint32_t gimg_png_dpi_to_pixels_per_meter(uint32_t dpi) {
   if (dpi == 0) {
     return 0; // "not stated" on both sides
   }
@@ -280,7 +280,7 @@ uint32_t gimg_png_dpi_to_pixels_per_metre(uint32_t dpi) {
   return (ppm > UINT32_MAX) ? UINT32_MAX : (uint32_t)ppm;
 }
 
-uint32_t gimg_png_pixels_per_metre_to_dpi(uint32_t ppm) {
+uint32_t gimg_png_pixels_per_meter_to_dpi(uint32_t ppm) {
   if (ppm == 0) {
     return 0;
   }

@@ -35,7 +35,7 @@ typedef enum {
   GIMG_CHANNEL_LAB,
   GIMG_CHANNEL_INDEXED,
   /**
-   * Channels with no colour meaning attached: some number of samples per
+   * Channels with no color meaning attached: some number of samples per
    * pixel, in the order the file gave them.
    *
    * A JPEG frame is the case this exists for.  ISO/IEC 10918-1 (T.81) B.2.2
@@ -113,7 +113,7 @@ GIMG_API uint8_t gimg_pixel_format_channel_bits(
  * what a JPEG frame of two, or of five or more, components carries.  Three
  * channels are ambiguous (RGB and YCbCr are both three) and are not guessed:
  * they come back as GIMG_CHANNEL_UNKNOWN too, so a caller that knows they are
- * colour should name GIMG_PIXEL_RGBA8 or its kin instead.
+ * color should name GIMG_PIXEL_RGBA8 or its kin instead.
  *
  * @param channel_count 1 to 255.
  * @param bits 8, 12 or 16.  A 12-bit sample occupies a uint16_t and runs

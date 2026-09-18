@@ -56,7 +56,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
     return 0;
   }
 
-  // Value-initialise first: a designated initialiser that names one member
+  // Value-initialize first: a designated initializer that names one member
   // leaves the rest zeroed, but clang warns about it under -Wextra, and the
   // fuzz harnesses build with -Werror.  Zeroing and then assigning says the
   // same thing without the warning, and keeps building when the struct grows.

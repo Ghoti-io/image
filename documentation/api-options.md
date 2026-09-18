@@ -216,7 +216,7 @@ combine them.  Which one compresses best depends on the image; 1 and 4 are the
 usual choices.
 
 The reconstruction is exact, so `quality` and `jpeg_chroma_subsampling` have no
-meaning here and are ignored, and colour is stored as RGB rather than YCbCr
+meaning here and are ignored, and color is stored as RGB rather than YCbCr
 because that conversion is not reversible.
 
 Precision follows the raster: 8-bit rasters give P=8, 12-bit P=12 and 16-bit
@@ -224,7 +224,7 @@ P=16, all of which Table B.2 permits in a lossless frame.  This is the only way
 a 16-bit raster survives a JPEG round trip unchanged — the DCT-based writers
 narrow one to 12 bits, because a 16-bit DCT frame does not exist.
 
-`jpeg_restart_interval` is honoured but rounded down to a whole number of image
+`jpeg_restart_interval` is honored but rounded down to a whole number of image
 rows.  T.81 does not require a lossless restart interval to begin at the start
 of a row, but an interval resets the prediction, and what "the first row of the
 interval" means for an interval starting mid-row is not defined anywhere;

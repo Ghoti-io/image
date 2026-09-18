@@ -13,7 +13,7 @@
  * so the PNG harnesses decode a JPEG bomb just as readily as the JPEG ones do.
  *
  * The limits go on the load as well as the decode, because a save re-decodes
- * its source item and has no decode options to pass - it honours what the
+ * its source item and has no decode options to pass - it honors what the
  * document was loaded with.
  *
  * Copyright 2026 by Corey Pennycuff

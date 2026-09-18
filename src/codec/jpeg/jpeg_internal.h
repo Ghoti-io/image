@@ -241,7 +241,7 @@ static inline void gimg_jpeg_sampling_max(int num_components,
  * C17 6.5.7p4 leaves `x << n` undefined for negative x, and both the DCT and
  * the entropy coder shift signed intermediates as a matter of course.  Shifting
  * the unsigned representation and converting back produces the same bit pattern
- * on a two's-complement target without the undefined behaviour; libjpeg spells
+ * on a two's-complement target without the undefined behavior; libjpeg spells
  * the same idea LEFT_SHIFT.  The conversion back is implementation-defined
  * rather than undefined, and gcc and clang both define it as the wrap we want.
  */
@@ -442,7 +442,7 @@ void jpeg_arith_lossless_encode_diff(jpeg_arith_encoder_t * e,
     jpeg_arith_lossless_stats_t * stats, const jpeg_arith_cond_t * cond,
     uint8_t tbl, int da_cat, int db_cat, int32_t diff, int * out_cat);
 
-/** Resynchronise at a restart marker in a lossless arithmetic scan
+/** Resynchronize at a restart marker in a lossless arithmetic scan
  * (T.81 D.2.9 and H.1.2.3.4). */
 GIMG_Result jpeg_arith_lossless_restart(
     jpeg_arith_decoder_t * d, jpeg_arith_lossless_stats_t * stats);
@@ -503,7 +503,7 @@ void jpeg_arith_encode_block_prog_ac_refine(jpeg_arith_encoder_t * e,
     const int16_t * block);
 /** @} */
 
-/** Resynchronise at a restart marker: skip it, restart the decoder and reset
+/** Resynchronize at a restart marker: skip it, restart the decoder and reset
  * the statistics and predictors (T.81 F.2.4.1). */
 GIMG_Result jpeg_arith_restart(
     jpeg_arith_decoder_t * d, jpeg_arith_stats_t * stats);
@@ -602,7 +602,7 @@ typedef struct gimg_jpeg_doc_state {
   int is_progressive; ///< SOF2/SOF10 vs SOF0/SOF1/SOF9.
   /** Lossless predictive coding (SOF3/SOF11, T.81 Annex H) rather than the
    * DCT-based processes.  A different coding process, not a variation: no DCT,
-   * no quantisation, and sample precision from 2 to 16 (Table B.2). */
+   * no quantization, and sample precision from 2 to 16 (Table B.2). */
   int is_lossless;
   /** Arithmetic entropy coding (SOF9/SOF10) rather than Huffman (T.81 Annex D
    * is normative; a frame that uses it is as much a JPEG as any other). */
@@ -860,13 +860,13 @@ void jpeg_gen_huff_table(uint32_t * freq, int num_symbols,
  * The coefficients come from a buffer laid out exactly as the sequential
  * encoder's, but taken from a differential input: no level shift, and the DC
  * coefficient is written directly rather than as a difference from the
- * previous block (J.1.3.1).  The tables are optimised for this frame rather
+ * previous block (J.1.3.1).  The tables are optimized for this frame rather
  * than taken from Annex K, because Table J.2's extra AC category is not in any
  * Annex K table; *out_dht receives the DHT payload to write beside the scan,
  * with the DC table as destination 0 and the AC table as destination 0.
  */
 /**
- * Forward-transform and quantise a differential frame's planes (T.81 J.1.3.1:
+ * Forward-transform and quantize a differential frame's planes (T.81 J.1.3.1:
  * the FDCT is taken without the level shift).  Defined in jpeg_encode.c.
  * Sampling is 4:4:4, so the buffer is blocks in raster order with the
  * components interleaved.
@@ -944,7 +944,7 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
 /**
  * Widen a sample from one precision to another by bit replication.
  *
- * The rule the rest of the library uses (src/ops/bitdepth.c), generalised: a
+ * The rule the rest of the library uses (src/ops/bitdepth.c), generalized: a
  * lossless frame may declare any precision from 2 to 16 (T.81 Table B.2), so
  * the fixed 8-to-16 and 12-to-16 helpers are not enough.  Replication maps the
  * full source range onto the full destination range - all-ones stays all-ones -
@@ -963,7 +963,7 @@ uint32_t jpeg_sample_widen(uint32_t v, int from, int to);
 GIMG_Result jpeg_lossless_decode_diff(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * tbl, int32_t * out_diff);
 
-/** Predict a sample from its neighbours (T.81 H.1.2.1, Table H.1).  Defined in
+/** Predict a sample from its neighbors (T.81 H.1.2.1, Table H.1).  Defined in
  * jpeg_lossless.c; the hierarchical path needs it for the non-differential
  * lossless frames of a sequence. */
 int32_t jpeg_lossless_predict(int psv, int32_t ra, int32_t rb, int32_t rc);
@@ -1201,16 +1201,16 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
 GIMG_Result gimg_jpeg_write_ac_refine_dht(
     GIMG_Stream * stream, size_t * out_bytes_written);
 
-/** @name IDCT module (dezigzag, dequantise, 8×8 inverse DCT; used by
+/** @name IDCT module (dezigzag, dequantize, 8×8 inverse DCT; used by
  * jpeg_entropy.c) */
 /** @{ */
 /** Reorder 64 coefficients from zigzag order to row-major 8×8. */
 void jpeg_dezigzag(const int16_t * block, int16_t * out);
-/** Dequantise block: out[i] = block[i] * quant[inv_zigzag[i]].  The result is
- * 32-bit because it does not fit in 16: a quantised coefficient is itself up to
- * 16 bits (T.81 F.1.2) and the quantisation value up to 16 bits at P=12
+/** Dequantize block: out[i] = block[i] * quant[inv_zigzag[i]].  The result is
+ * 32-bit because it does not fit in 16: a quantized coefficient is itself up to
+ * 16 bits (T.81 F.1.2) and the quantization value up to 16 bits at P=12
  * (B.2.4.1), so the product needs the width libjpeg gives it (DCTELEM). */
-void jpeg_dequantise_32(
+void jpeg_dequantize_32(
     const int16_t * block, const uint16_t * quant, int32_t * out);
 /** Integer inverse DCT ("islow"), matching libjpeg for both supported sample
  * precisions.  pass1_bits is 2 at P=8 and 1 at P=12; see the definition. */
@@ -1220,7 +1220,7 @@ void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits);
 /** @name Bitstream module (init, read bits, skip RST, Huffman table, decode;
  * used by jpeg_block.c and jpeg_entropy.c) */
 /** @{ */
-/** Initialise bitstream over scan data; caller sets
+/** Initialize bitstream over scan data; caller sets
  * pad_at_eob/recover_stuff_zero if needed. */
 void jpeg_bitstream_init(
     gimg_jpeg_bitstream_t * bs, const unsigned char * data, size_t size);
@@ -1276,7 +1276,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
 /** @} */
 
 /**
- * One decoded component plane, as the upsamplers and the colour converter see
+ * One decoded component plane, as the upsamplers and the color converter see
  * it.  A frame at P=8 holds its samples in bytes and one at P=12 in 16-bit
  * words (T.81 Table B.2); naming the difference here lets the filters below be
  * written once instead of once per precision.
@@ -1307,9 +1307,9 @@ int jpeg_chroma_sample_fancy_h1v2(
  * Sample a chroma plane for output pixel (x, y).
  *
  * Picks the fancy filter that matches the component's sampling factors - 2h2v
- * for 4:2:0, h2v1 for 4:2:2 - and falls back to nearest-neighbour when there is
+ * for 4:2:0, h2v1 for 4:2:2 - and falls back to nearest-neighbor when there is
  * no filter for the ratio or the caller asked for the box filter.  4:4:4 needs
- * no filter: the nearest-neighbour path is exact there.
+ * no filter: the nearest-neighbor path is exact there.
  *
  * @param h_samp,v_samp This component's Hi and Vi (T.81 B.2.2).
  * @param h_max,v_max The frame's largest Hi and Vi.
@@ -1319,16 +1319,16 @@ int jpeg_chroma_sample(const jpeg_plane_t * p, uint32_t cw, uint32_t ch,
     uint8_t v_samp, uint8_t h_max, uint8_t v_max, int fancy);
 
 /**
- * YCbCr -> RGB at the frame's own precision.  centre is 2^(P-1) and max_val is
+ * YCbCr -> RGB at the frame's own precision.  center is 2^(P-1) and max_val is
  * 2^P - 1; the result is clamped to 0..max_val (T.81 A.3.1).  See the
  * definition for the arithmetic and why it is shared.
  */
-/** RGB to YCbCr at 8 bits (T.81 has no colour space; this is the JFIF/BT.601
+/** RGB to YCbCr at 8 bits (T.81 has no color space; this is the JFIF/BT.601
  * transform every 8-bit encoder uses).  Defined in jpeg_save.c. */
 void jpeg_rgb_to_ycbcr(
     uint8_t r, uint8_t g, uint8_t b, uint8_t * y, uint8_t * cb, uint8_t * cr);
 
-void jpeg_ycbcr_to_rgb(int y, int cb, int cr, int centre, int max_val,
+void jpeg_ycbcr_to_rgb(int y, int cb, int cr, int center, int max_val,
     int * out_r, int * out_g, int * out_b);
 
 /**
@@ -1372,7 +1372,7 @@ int jpeg_marker_is_sof(uint8_t m);
 /**
  * True when a three-component frame carries R, G, B rather than Y, Cb, Cr.
  * Defined in jpeg_parse.c; see the comment there for the rule and where it
- * comes from, since T.81 itself does not describe colour at all.
+ * comes from, since T.81 itself does not describe color at all.
  */
 int jpeg_frame_is_rgb(
     const gimg_jpeg_doc_state_t * state, const gimg_jpeg_sof_t * sof);

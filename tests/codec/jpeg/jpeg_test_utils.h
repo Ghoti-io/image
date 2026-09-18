@@ -46,7 +46,7 @@ bool rasters_equal_with_tolerance(
     const GIMG_Raster * a, const GIMG_Raster * b, int max_diff);
 
 /**
- * Read a binary PNM (P5 grey or P6 colour) from GIMG_TEST_DATA_JPEG.
+ * Read a binary PNM (P5 gray or P6 color) from GIMG_TEST_DATA_JPEG.
  *
  * The lossless fixtures keep their source image beside them as a PNM rather
  * than as an opaque .raw dump, because a lossless codec has to return exactly

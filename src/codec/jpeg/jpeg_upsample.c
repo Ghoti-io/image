@@ -8,7 +8,7 @@
  * Everything here is written against jpeg_plane_t rather than a concrete
  * sample type, so that a 12-bit frame (T.81 Table B.2 allows P=8 and P=12) goes
  * through the same filters as an 8-bit one.  They used to be separate: the
- * 8-bit path had these filters and the 12-bit path had a nearest-neighbour
+ * 8-bit path had these filters and the 12-bit path had a nearest-neighbor
  * copy, so GIMG_JPEG_CHROMA_UPSAMPLE_FANCY did nothing at all at 12 bits.
  *
  * Copyright 2026 by Corey Pennycuff
@@ -143,7 +143,7 @@ int jpeg_chroma_sample(const jpeg_plane_t * p, uint32_t cw, uint32_t ch,
     int h_half = ((int)h_samp * 2 == (int)h_max);
     int v_full = (v_samp == v_max);
     int v_half = ((int)v_samp * 2 == (int)v_max);
-    // A triangle filter needs a neighbour on each side to interpolate between.
+    // A triangle filter needs a neighbor on each side to interpolate between.
     // With one or two columns there is no interior, and the filter degenerates
     // into a weighted copy of the same one or two samples - which is not what
     // libjpeg produces there: jdsample.c selects the fancy upsamplers only when
@@ -203,26 +203,26 @@ int jpeg_chroma_sample(const jpeg_plane_t * p, uint32_t cw, uint32_t ch,
  * YCbCr -> RGB, the conversion JFIF specifies and every decoder implements with
  * the same scaled-integer arithmetic (libjpeg jdcolor.c, SCALEBITS = 16):
  *
- *   R = Y                        + 1.40200 * (Cr - centre)
- *   G = Y - 0.34414 * (Cb - centre) - 0.71414 * (Cr - centre)
- *   B = Y + 1.77200 * (Cb - centre)
+ *   R = Y                        + 1.40200 * (Cr - center)
+ *   G = Y - 0.34414 * (Cb - center) - 0.71414 * (Cr - center)
+ *   B = Y + 1.77200 * (Cb - center)
  *
- * Only Cb and Cr are centred; Y is an unsigned sample and is used as it stands.
- * @param centre 2^(P-1): 128 at P=8, 2048 at P=12.
+ * Only Cb and Cr are centerd; Y is an unsigned sample and is used as it stands.
+ * @param center 2^(P-1): 128 at P=8, 2048 at P=12.
  * @param max_val 2^P - 1, the clamp T.81 A.3.1 requires of a reconstructed
  *   sample.
  *
  * The 12-bit path used to do this in floating point, as
- * "yy = Y - centre; r = yy + (int)(1.402 * cr + 0.5)" - which subtracts the
- * centre from Y and never adds it back, so every 12-bit colour sample we ever
+ * "yy = Y - center; r = yy + (int)(1.402 * cr + 0.5)" - which subtracts the
+ * center from Y and never adds it back, so every 12-bit color sample we ever
  * produced was low by very nearly half the range.  (int)(x + 0.5) also rounds
  * negative values towards zero rather than to nearest.  Nothing caught either,
  * because nothing outside this library had ever decoded a 12-bit file we wrote.
  */
-void jpeg_ycbcr_to_rgb(int y, int cb, int cr, int centre, int max_val,
+void jpeg_ycbcr_to_rgb(int y, int cb, int cr, int center, int max_val,
     int * out_r, int * out_g, int * out_b) {
-  int cb_x = cb - centre;
-  int cr_x = cr - centre;
+  int cb_x = cb - center;
+  int cr_x = cr - center;
   // FIX(1.40200) = 91881, FIX(0.34414) = 22554, FIX(0.71414) = 46802,
   // FIX(1.77200) = 116130, and ONE_HALF = 1 << 15 for rounding.  The shift is
   // arithmetic, so it floors, which is what the reference tables do.

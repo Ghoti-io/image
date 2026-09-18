@@ -5,7 +5,7 @@
  * enable for debug builds via -DGIMG_JPEG_DEBUG_LOAD=1 (or equivalent) or by
  * defining a set of them in a debug build.
  *
- * Behaviour-altering options recover_stuff_zero and pad_at_eob remain
+ * Behavior-altering options recover_stuff_zero and pad_at_eob remain
  * runtime (getenv) for field debugging; see comments below.
  *
  * Copyright 2026 by Corey Pennycuff

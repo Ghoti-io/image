@@ -251,7 +251,7 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
           // PNG 7.2: below 8 bits a sample is a bit field, so pixel i of the
           // pass row and pixel ix of the image row are bit positions. Copying
           // bpp (== 1, the floor) bytes per pixel would both smear one sample
-          // over its eight neighbours and run off the end of the row, whose
+          // over its eight neighbors and run off the end of the row, whose
           // length is (width * bit_depth + 7) / 8 and not width.
           for (uint32_t i = 0; i < pw; i++) {
             uint32_t ix = ap->x_offset + i * ap->x_step;

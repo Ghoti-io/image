@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * JPEG save: baseline encode (DCT, quantisation, zigzag, Huffman); emit SOI,
+ * JPEG save: baseline encode (DCT, quantization, zigzag, Huffman); emit SOI,
  * DQT, DHT, SOF0, SOS, EOI. Supports grayscale and YCbCr 4:4:4. Synthetic
  * document support: when doc was not loaded by a codec, pixel data from
  * gimg_item_raster(item) only.
@@ -235,14 +235,14 @@ static void jpeg_build_minimal_app0(
  * sample precision.
  *
  *   Y  =  0.29900*R + 0.58700*G + 0.11400*B
- *   Cb = -0.16874*R - 0.33126*G + 0.50000*B + centre
- *   Cr =  0.50000*R - 0.41869*G - 0.08131*B + centre
+ *   Cb = -0.16874*R - 0.33126*G + 0.50000*B + center
+ *   Cr =  0.50000*R - 0.41869*G - 0.08131*B + center
  *
  * Scaled-integer form with SCALEBITS = 16, as libjpeg's jccolor.c does it:
  * FIX(x) = round(x * 65536), ONE_HALF = 1 << 15 for rounding, and the chroma
- * terms carry an extra (centre << 16) - 1.
+ * terms carry an extra (center << 16) - 1.
  *
- * @param centre 2^(P-1): 128 at P=8, 2048 at P=12 (T.81 Table B.2 allows both).
+ * @param center 2^(P-1): 128 at P=8, 2048 at P=12 (T.81 Table B.2 allows both).
  * @param max_val 2^P - 1.
  *
  * The 12-bit case used to have a transform of its own, with coefficients scaled
@@ -255,7 +255,7 @@ static void jpeg_build_minimal_app0(
  * 65536 * 4095, comfortably inside int32.
  */
 static void jpeg_rgb_to_ycbcr_at(int32_t r, int32_t g, int32_t b,
-    int32_t centre, int32_t max_val, int32_t * y, int32_t * cb, int32_t * cr) {
+    int32_t center, int32_t max_val, int32_t * y, int32_t * cb, int32_t * cr) {
   if (r < 0)
     r = 0;
   if (r > max_val)
@@ -269,7 +269,7 @@ static void jpeg_rgb_to_ycbcr_at(int32_t r, int32_t g, int32_t b,
   if (b > max_val)
     b = max_val;
   const int32_t one_half = 1 << 15;
-  const int32_t cbcr_bias = (centre << 16) + one_half - 1;
+  const int32_t cbcr_bias = (center << 16) + one_half - 1;
   int32_t yv = (19595 * r + 38470 * g + 7471 * b + one_half) >> 16;
   int32_t cbv = (-11059 * r - 21709 * g + 32768 * b + cbcr_bias) >> 16;
   int32_t crv = (32768 * r - 27439 * g - 5331 * b + cbcr_bias) >> 16;
@@ -335,15 +335,15 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
   // T.81 B.2.2 counts components from 1 to 255 and Table B.2 allows P = 12 in
   // a DCT frame; the two are independent, so four components and more are as
-  // legal here as at eight bits.  Only the three-component case is colour, and
+  // legal here as at eight bits.  Only the three-component case is color, and
   // only it converts.
-  const int is_colour = (fmt->channel_model == GIMG_CHANNEL_RGB ||
+  const int is_color = (fmt->channel_model == GIMG_CHANNEL_RGB ||
       fmt->channel_model == GIMG_CHANNEL_RGBA);
   int num_components;
   if (fmt->channel_model == GIMG_CHANNEL_GRAY) {
     num_components = 1;
   }
-  else if (is_colour) {
+  else if (is_color) {
     num_components = 3;
   }
   else {
@@ -359,10 +359,10 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   }
   if (out_tbl_sel) {
     for (int c = 0; c < num_components; c++) {
-      // No component of a frame with no colour convention is chrominance, so
+      // No component of a frame with no color convention is chrominance, so
       // none of them wants the chrominance tables (see the eight-bit path).
       out_tbl_sel[c] =
-          is_colour ? (uint8_t)(c == 0 ? 0 : 1) : (uint8_t)0;
+          is_color ? (uint8_t)(c == 0 ? 0 : 1) : (uint8_t)0;
     }
   }
   size_t comp_size = 0;
@@ -376,7 +376,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   }
   uint16_t * comp_cb = NULL;
   uint16_t * comp_cr = NULL;
-  // Beyond the third, a component has no name here and no colour step; it is
+  // Beyond the third, a component has no name here and no color step; it is
   // held in extra[] and handed to the coefficient walk beside the others.
   uint16_t * extra[GIMG_JPEG_MAX_COMPONENTS];
   memset(extra, 0, sizeof(extra));
@@ -421,7 +421,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
       }
     }
   }
-  else if (is_colour) {
+  else if (is_color) {
     int ch_count = (int)fmt->channel_count;
     if (ch_count < 3) {
       ch_count = 3;
@@ -444,7 +444,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     }
   }
   else {
-    // CMYK, or channels with no colour convention: the samples go out as they
+    // CMYK, or channels with no color convention: the samples go out as they
     // came in, as they do at eight bits.
     for (uint32_t y = 0; y < height; y++) {
       const uint16_t * row = (const uint16_t *)(pixels + y * stride_bytes);
@@ -474,7 +474,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   size_t stride2 = (size_t)width;
   uint16_t * use_cb = comp_cb;
   uint16_t * use_cr = comp_cr;
-  if (is_colour && num_components == 3 &&
+  if (is_color && num_components == 3 &&
       chroma_subsampling != CHROMA_444) {
     if (chroma_subsampling == CHROMA_420) {
       uint32_t mcu_per_row = (width + 15u) / 16u;
@@ -782,8 +782,8 @@ static void jpeg_planes_free(
  *
  * The components are held in one array of planes rather than in comp_y /
  * comp_cb / comp_cr, because T.81 B.2.2 counts components from 1 to 255 and
- * nothing below this line cares which colour they carry: the DCT, the
- * quantiser and the entropy coder see a list of planes and a list of sampling
+ * nothing below this line cares which color they carry: the DCT, the
+ * quantizer and the entropy coder see a list of planes and a list of sampling
  * factors.  Naming three of them after YCbCr was what kept a four-component
  * frame out.
  *
@@ -860,7 +860,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   else if (fmt->channel_model == GIMG_CHANNEL_UNKNOWN &&
       fmt->channel_count >= 1 && fmt->bits_per_channel[0] == 8 &&
       fmt->layout == GIMG_LAYOUT_INTERLEAVED) {
-    // Channels with no colour meaning: T.81 B.2.2 allows Nf from 1 to 255 and
+    // Channels with no color meaning: T.81 B.2.2 allows Nf from 1 to 255 and
     // says nothing about what the components are, so they are written as they
     // came in.  This is libjpeg's JCS_UNKNOWN.
     num_components = (int)fmt->channel_count;
@@ -924,14 +924,14 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   // A four-component frame is CMYK unless the caller asked for the YCCK
   // transform; either way it needs an Adobe APP14 marker, because that marker
   // is the only thing in the file that says which (see jdapimin.c, and the
-  // colour section of documentation/formats/jpeg.md).
+  // color section of documentation/formats/jpeg.md).
   int adobe_transform = -1;
   if (num_components == 4 && fmt->channel_model == GIMG_CHANNEL_CMYK) {
     adobe_transform = (cmyk_transform == 2u) ? 2 : 0;
   }
   else if (num_components == 3 &&
       fmt->channel_model == GIMG_CHANNEL_UNKNOWN) {
-    // Three components with no colour meaning still go out unchanged, and
+    // Three components with no color meaning still go out unchanged, and
     // three components is the one count where a decoder will otherwise guess:
     // RGB and YCbCr are both three, and without a marker the convention is
     // YCbCr (jdapimin.c, and jpeg_frame_is_rgb here).  An Adobe APP14 with
@@ -1685,11 +1685,11 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const gimg_jpeg_enc_frame_t * frames, unsigned num_frames,
     uint16_t restart_interval, bool arithmetic, int precision,
-    int hier_is_colour, size_t * out_n) {
+    int hier_is_color, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   size_t written = 0;
   GIMG_Result r;
-  // A lossless sequence has no quantisation table to write at all: T.81 Annex
+  // A lossless sequence has no quantization table to write at all: T.81 Annex
   // H has no DCT, so DQT would describe nothing.  Which process the sequence
   // uses is in the frames' own markers.
   const int lossless = (num_frames > 0) &&
@@ -1700,13 +1700,13 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
   // reversible and "lossless" would then be a lie - so it needs the Adobe
   // APP14 that says so, exactly as the single-frame lossless writer does.
   // Without it a decoder reads three components as YCbCr (jdapimin.c, and
-  // jpeg_frame_is_rgb here) and every pixel comes out a different colour.
+  // jpeg_frame_is_rgb here) and every pixel comes out a different color.
   // Three components, and not YCbCr: a lossless sequence keeps RGB, and a
-  // sequence of channels with no colour meaning keeps those.  Three is the
+  // sequence of channels with no color meaning keeps those.  Three is the
   // count a decoder guesses at, so it has to be told (see the single-frame
   // writers); the marker is harmless for any other count and is written only
   // where it decides something.
-  if (num_components == 3 && (lossless || !hier_is_colour)) {
+  if (num_components == 3 && (lossless || !hier_is_color)) {
     unsigned char app14[12];
     memcpy(app14, "Adobe", 5);
     app14[5] = 0x00;
@@ -1839,7 +1839,7 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
       for (int c = 0; c < num_components; c++) {
         sof[6 + c * 3] = (unsigned char)(c + 1);
         sof[7 + c * 3] = 0x11;
-        // A lossless frame has no quantisation, so Tq is zero (B.2.2 still
+        // A lossless frame has no quantization, so Tq is zero (B.2.2 still
         // requires the field); a DCT frame uses the selector the tables were
         // written under.
         sof[8 + c * 3] =
@@ -2497,11 +2497,11 @@ static void jpeg_gather_component_blocks(int16_t * interleaved,
  * Write the body of a lossless frame (T.81 Annex H).
  *
  * Shorter than the DCT-based writers, and different in shape: there is no DQT,
- * because nothing is quantised.  The frame header is SOF3 and the scan header
+ * because nothing is quantized.  The frame header is SOF3 and the scan header
  * carries the predictor selection value in Ss, zero in Se, and the point
  * transform in Al (H.1).
  *
- * Colour is written as RGB, with the component identifiers 'R', 'G' and 'B' and
+ * Color is written as RGB, with the component identifiers 'R', 'G' and 'B' and
  * an Adobe APP14 saying transform 0, which is how libjpeg marks the same thing.
  * A YCbCr conversion would make the result not lossless.
  */
@@ -2571,7 +2571,7 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
       sof[6 + c * 3] =
           (num_components == 3) ? rgb_ids[c] : (unsigned char)(c + 1);
       sof[7 + c * 3] = 0x11; // H = V = 1
-      sof[8 + c * 3] = 0x00; // no quantisation table
+      sof[8 + c * 3] = 0x00; // no quantization table
     }
     r = gimg_stream_write(stream, sof, 6 + 3 * (size_t)num_components, &written);
     if (r != GIMG_OK) {
@@ -3185,7 +3185,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   // than four components cannot be written as one interleaved scan at all: it
   // is split whether or not the caller asked for it (A.2.3).  Not a refusal,
   // because there is nothing wrong with the request - there is only one way to
-  // honour it.
+  // honor it.
   {
     const GIMG_Pixel_Format * wide_fmt = gimg_raster_format(raster);
     // Not for a lossless frame or a hierarchical sequence: each of those
@@ -3261,7 +3261,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       (options && options->jpeg_chroma_subsampling <= 2)
       ? options->jpeg_chroma_subsampling
       : (unsigned)CHROMA_420;
-  // T.81 puts no colour space in a frame; for four components the Adobe APP14
+  // T.81 puts no color space in a frame; for four components the Adobe APP14
   // marker is the whole of it.  See GIMG_Save_Options.jpeg_cmyk_transform.
   unsigned cmyk_transform =
       (options && options->jpeg_cmyk_transform) ? options->jpeg_cmyk_transform
@@ -3356,9 +3356,9 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   // the one before it and they cannot be produced as they are emitted.
   gimg_jpeg_enc_frame_t hier_frames[GIMG_JPEG_MAX_FRAMES];
   unsigned hier_num_frames = 0;
-  // Whether the sequence's three components are colour, which decides whether
+  // Whether the sequence's three components are color, which decides whether
   // it needs an Adobe marker saying they are not.
-  int hier_is_colour = 1;
+  int hier_is_color = 1;
   memset(hier_frames, 0, sizeof(hier_frames));
   if (hier_levels != 0) {
     gimg_jpeg_default_quant_scaled(quality, quant_luma, quant_chroma);
@@ -3369,7 +3369,7 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     // names it once for the whole pyramid.
     {
       const GIMG_Pixel_Format * hf = gimg_raster_format(raster);
-      hier_is_colour = hf && (hf->channel_model == GIMG_CHANNEL_RGB ||
+      hier_is_color = hf && (hf->channel_model == GIMG_CHANNEL_RGB ||
                                  hf->channel_model == GIMG_CHANNEL_RGBA);
     }
     gimg_jpeg_hier_process_t hier_process = GIMG_JPEG_HIER_SEQUENTIAL;
@@ -3551,7 +3551,7 @@ have_scan:
     // grayscale or YCbCr data and says nothing about four components; libjpeg
     // writes none for a CMYK or YCCK file (jcparam.c sets write_JFIF_header
     // for JCS_GRAYSCALE and JCS_YCbCr only), and the Adobe marker below is
-    // what carries the colour instead.
+    // what carries the color instead.
     // JFIF declares three-component data to be YCbCr and says nothing about
     // any other count, so it is written only for the frames it describes.
     // adobe_transform >= 0 marks a frame that carries its meaning in an Adobe
@@ -3563,7 +3563,7 @@ have_scan:
         // A hierarchical sequence writes its own Adobe marker where its three
         // components are not YCbCr, and JFIF beside it would contradict it: a
         // decoder that sees JFIF takes it at its word first.
-        (hier_levels != 0 && !hier_is_colour);
+        (hier_levels != 0 && !hier_is_color);
     size_t app0_len = 0;
     bool have_app0 = !suppress_jfif &&
         (policy != GIMG_META_DROP_ALL &&
@@ -3975,7 +3975,7 @@ have_scan:
         }
       }
       // APP14: preserved from the source, but its transform byte describes the
-      // colour space of the frame it accompanies, and that is this encoder's
+      // color space of the frame it accompanies, and that is this encoder's
       // frame now, not the one it came from.  A source that carried RGB with
       // transform 0 re-encodes here as YCbCr, and copying the marker across
       // unchanged leaves the file saying two contradictory things at once -
@@ -4067,7 +4067,7 @@ have_scan:
   }
 
   // A four-component frame that did not bring an Adobe marker with it gets one
-  // written here.  T.81 describes no colour space, so for four components this
+  // written here.  T.81 describes no color space, so for four components this
   // marker is the whole of it: without it a decoder has only libjpeg's
   // fallback to go on (jdapimin.c reads four components with no Adobe marker
   // as CMYK), and a YCCK frame would then be read as CMYK and come out wrong.
@@ -4113,7 +4113,7 @@ have_scan:
     r = jpeg_write_image_body_hierarchical(stream, width, height,
         num_components, tbl_sel, quant_luma, quant_chroma, hier_frames,
         hier_num_frames, restart_interval, arithmetic, precision,
-        hier_is_colour, &report->bytes_written);
+        hier_is_color, &report->bytes_written);
     gimg_jpeg_free_enc_frames(alloc, hier_frames, hier_num_frames);
   }
   else if (lossless_psv != 0) {

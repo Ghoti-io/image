@@ -97,11 +97,11 @@ static bool gimg_png_fill_color_info_from_ancillary(
 
   // PNG Third Edition adds cICP and puts it ahead of everything else: when a
   // frame carries coding-independent code points, they say what the samples
-  // mean and the other colour chunks do not get a say.
+  // mean and the other color chunks do not get a say.
   //
   // GIMG_Color_Info describes sRGB, Adobe RGB, linear and a plain gamma, and
   // CICP names a great deal more than that - BT.2020 primaries, PQ and HLG
-  // transfer, limited-range signalling. Only the combination this model can
+  // transfer, limited-range signaling. Only the combination this model can
   // actually hold is translated; any other is left unknown rather than
   // rounded to the nearest thing we can say, which would be a claim about the
   // pixels that the file did not make. The chunk itself is kept either way,
@@ -432,7 +432,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         // Clipped for the same reason the blend is: these write the canvas at
         // the frame's own rectangle, so a rectangle past the edge is a write
         // past the end of the buffer. The loader refuses such a frame; this is
-        // the second line of that defence and not a substitute for it.
+        // the second line of that defense and not a substitute for it.
         if (fx >= canvas_w || fy >= canvas_h) {
           fw = fh = 0;
         }

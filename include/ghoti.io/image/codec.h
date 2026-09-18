@@ -250,7 +250,7 @@ typedef struct {
    * to 7 select a predictor from Table H.1 - 1 is the sample to the left, 2 the
    * one above, and 4 to 7 combine them.  The reconstruction is exact, so
    * `quality` and `jpeg_chroma_subsampling` have no meaning and are ignored,
-   * and colour is stored as RGB rather than YCbCr because that conversion is
+   * and color is stored as RGB rather than YCbCr because that conversion is
    * not reversible.  Precision follows the raster: 8-bit rasters give P=8,
    * 12-bit P=12, 16-bit P=16, all of which Table B.2 permits in a lossless
    * frame.  Ignored for non-JPEG. */
@@ -277,7 +277,7 @@ typedef struct {
    * Both orders describe the same blocks and decode to the same picture; what
    * differs is the order they are written in and, with it, which decoders and
    * which pipelines can work on one component at a time.  A decoder that wants
-   * only the luminance of a colour image can stop after the first scan.
+   * only the luminance of a color image can stop after the first scan.
    *
    * A single-component image is already non-interleaved by definition, so the
    * option changes nothing there.  It combines with `jpeg_arithmetic` and with
@@ -288,9 +288,9 @@ typedef struct {
    * with `jpeg_hierarchical_levels`.  Ignored for non-JPEG. */
   uint8_t jpeg_non_interleaved;
 
-  /** Adobe APP14 colour transform for a four-component (CMYK) raster.
+  /** Adobe APP14 color transform for a four-component (CMYK) raster.
    *
-   * T.81 describes no colour space at all: a frame has Nf components and
+   * T.81 describes no color space at all: a frame has Nf components and
    * nothing says what they mean.  For four components the convention is
    * Adobe's APP14 marker, and it is the only thing in the file that
    * distinguishes the two readings - which is why this codec writes that
@@ -336,14 +336,14 @@ typedef struct {
    * that each of the five reconstructs. */
   uint8_t png_filter;
   /** Whether the PNG writer may build a palette for a raster that did not
-   * arrive with one (11.2.2, colour type 3).
+   * arrive with one (11.2.2, color type 3).
    *
    * GIMG_PNG_PALETTE_AUTO (0, default) builds one when the image has no more
-   * than 256 distinct colours and the palette form is the smaller file.  That
-   * is a lossless choice and not colour quantisation: with 256 colours or
+   * than 256 distinct colors and the palette form is the smaller file.  That
+   * is a lossless choice and not color quantization: with 256 colors or
    * fewer there is exactly one palette that reproduces the image, so nothing
    * is decided about the picture - only about how it is stored.  An image with
-   * more colours than that is written as truecolour, because reducing it would
+   * more colors than that is written as truecolor, because reducing it would
    * be an image-processing decision and not a codec's.
    *
    * GIMG_PNG_PALETTE_NEVER refuses to build one.  A frame that arrived as a
@@ -362,7 +362,7 @@ typedef struct {
 #define GIMG_PNG_FILTER_PAETH 5u    ///< Filter type 4 on every row.
 /** @} */
 
-/** @name PNG palette creation (PNG 11.2.2, colour type 3)
+/** @name PNG palette creation (PNG 11.2.2, color type 3)
  * @{ */
 #define GIMG_PNG_PALETTE_AUTO 0u  ///< Build one when it is lossless and smaller. Default.
 #define GIMG_PNG_PALETTE_NEVER 1u ///< Never build one for a raster that had none.
@@ -388,7 +388,7 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
  * @brief JPEG chroma upsampling method (decode only).
  * @see api_options
  */
-/** Codec default, which is FANCY.  Zero so that a zero-initialised
+/** Codec default, which is FANCY.  Zero so that a zero-initialized
  * GIMG_Decode_Options decodes exactly as a NULL one does - see below. */
 #define GIMG_JPEG_CHROMA_UPSAMPLE_DEFAULT 0
 #define GIMG_JPEG_CHROMA_UPSAMPLE_FANCY  1  /**< Triangle filter (smooth). */
@@ -402,7 +402,7 @@ typedef struct {
   const GIMG_Limits * limits;
   /** JPEG: chroma upsampling when decoding 4:2:0/4:2:2.
    * GIMG_JPEG_CHROMA_UPSAMPLE_DEFAULT (0), FANCY (1) or SIMPLE (2).
-   * DEFAULT means FANCY, so passing a zero-initialised GIMG_Decode_Options
+   * DEFAULT means FANCY, so passing a zero-initialized GIMG_Decode_Options
    * and passing NULL select the same filter.  SIMPLE deliberately does not
    * live at zero: when it did, `GIMG_Decode_Options o = {};` quietly decoded
    * with a different filter than passing no options at all. */

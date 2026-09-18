@@ -6,8 +6,8 @@
  * The encoder is the decoder run backwards, and it has to contain the decoder
  * to work at all: a differential frame codes the difference between the
  * picture and what has been reconstructed so far, so at every step the encoder
- * must reconstruct exactly what a decoder will, quantisation loss included.
- * That is why each frame here is followed by a dequantise-and-inverse-DCT pass
+ * must reconstruct exactly what a decoder will, quantization loss included.
+ * That is why each frame here is followed by a dequantize-and-inverse-DCT pass
  * over the very coefficients that were written, rather than by anything
  * cheaper: what the encoder believes the decoder has must be what the decoder
  * actually gets, or the differences drift.
@@ -75,8 +75,8 @@ static GIMG_Result henc_plane_alloc(
  * Halve a component plane (T.81 K.5).
  *
  * K.5 gives a 1-2-1 low-pass filter, "normalized by the sum of the
- * neighbourhood weights", applied horizontally and then vertically: "The
- * centre sample ... should be aligned with the left column or top line of the
+ * neighborhood weights", applied horizontally and then vertically: "The
+ * center sample ... should be aligned with the left column or top line of the
  * high resolution image when calculating the left column or top line of the
  * low resolution image.  Sample values which are situated outside of the image
  * boundary are replicated from the sample values at the boundary", and "If the
@@ -199,14 +199,14 @@ static GIMG_Result henc_expand_to(const GIMG_Allocator * alloc,
 }
 
 /**
- * Dequantise, inverse-transform and level-shift one block, exactly as the
+ * Dequantize, inverse-transform and level-shift one block, exactly as the
  * decoder will: the encoder's reference has to be what the decoder holds.
  *
- * The dequantisation is spelled out here rather than handed to
- * jpeg_dequantise_32 because the two sides of the codec hold the table in
+ * The dequantization is spelled out here rather than handed to
+ * jpeg_dequantize_32 because the two sides of the codec hold the table in
  * different orders.  A DQT segment stores its elements in zigzag order
  * (B.2.4.1), so that is the order the decoder keeps and the order
- * jpeg_dequantise_32 indexes; the encoder's table is in natural order, because
+ * jpeg_dequantize_32 indexes; the encoder's table is in natural order, because
  * that is what jpeg_quantize_block wants and what the DQT writer converts from.
  * Passing one to the other multiplies every coefficient by the wrong element,
  * and the reconstruction it produces bears no relation to the frame - which,
@@ -538,24 +538,24 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
   if (!fmt || width == 0 || height == 0) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  // Eight-bit grey or colour.  A DCT pyramid is built at 8 bits because the
+  // Eight-bit gray or color.  A DCT pyramid is built at 8 bits because the
   // twelve-bit process would need its own reconstruction, which is the part
   // that cannot be approximated; a lossless pyramid is built at 8 bits because
-  // that is the precision the colour step below produces.
+  // that is the precision the color step below produces.
   if (fmt->bits_per_channel[0] != 8) {
     return GIMG_ERR_UNSUPPORTED;
   }
   // T.81 B.2.2 counts a sequence's components as it counts any frame's.  Three
-  // channels are colour and convert; CMYK and channels with no colour meaning
+  // channels are color and convert; CMYK and channels with no color meaning
   // go through as they are; an RGBA raster drops its alpha, which a JPEG frame
   // has nowhere to put.
-  const int is_colour = (fmt->channel_model == GIMG_CHANNEL_RGB ||
+  const int is_color = (fmt->channel_model == GIMG_CHANNEL_RGB ||
       fmt->channel_model == GIMG_CHANNEL_RGBA);
   int num_components;
   if (fmt->channel_model == GIMG_CHANNEL_GRAY) {
     num_components = 1;
   }
-  else if (is_colour) {
+  else if (is_color) {
     num_components = 3;
   }
   else if (fmt->channel_model == GIMG_CHANNEL_CMYK ||
@@ -630,11 +630,11 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
       if (num_components == 1) {
         pyr[levels][0].s[(size_t)y * width + x] = row[x * bpp];
       }
-      else if (lossless || !is_colour) {
+      else if (lossless || !is_color) {
         // A lossless sequence keeps RGB - the YCbCr conversion is not
         // reversible, so converting here would make "lossless" a lie, the same
         // reason gimg_jpeg_encode_lossless stores RGB and marks it with an
-        // Adobe APP14 saying transform 0 - and components with no colour
+        // Adobe APP14 saying transform 0 - and components with no color
         // meaning have nothing to convert either way.
         for (int c = 0; c < num_components; c++) {
           pyr[levels][c].s[(size_t)y * width + x] =
@@ -662,7 +662,7 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
 
   // Frame 0 of a lossless sequence: an ordinary lossless frame at the smallest
   // resolution (T.81 SOF3, or SOF11 for the arithmetic coder), predicted and
-  // coded by Annex H.  There is no DCT and no quantiser here, so the
+  // coded by Annex H.  There is no DCT and no quantizer here, so the
   // reconstruction the next frame is differenced against is the frame itself.
   if (lossless) {
     uint32_t w0 = pyr[0][0].w, h0 = pyr[0][0].h;

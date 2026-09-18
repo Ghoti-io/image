@@ -457,10 +457,10 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
 
     if (type == GIMG_PNG_PLTE) {
-      // PNG 11.2.2: PLTE is required for colour type 3 and forbidden for 0 and
+      // PNG 11.2.2: PLTE is required for color type 3 and forbidden for 0 and
       // 4, but it *may* appear for 2 and 6, where it is a suggested palette for
-      // a viewer that cannot show truecolour. A decoder that can show
-      // truecolour ignores it; rejecting the file is not one of the choices the
+      // a viewer that cannot show truecolor. A decoder that can show
+      // truecolor ignores it; rejecting the file is not one of the choices the
       // spec offers.
       if (state->ihdr.color_type == 0 || state->ihdr.color_type == 4) {
         gimg_png_free_doc_state(codec, state);
@@ -506,16 +506,16 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT; // For palette, PLTE before tRNS.
       }
-      // PNG 11.3.2.1 fixes the length for every colour type it allows, and
+      // PNG 11.3.2.1 fixes the length for every color type it allows, and
       // forbids the chunk outright for the two that carry an alpha channel of
       // their own. A tRNS of the wrong length is not a tRNS whose meaning can
-      // be guessed at: for colour type 2 it is three 16-bit samples or it is
-      // nothing, and reading a shorter one as a colour means reading past it.
+      // be guessed at: for color type 2 it is three 16-bit samples or it is
+      // nothing, and reading a shorter one as a color means reading past it.
       switch (state->ihdr.color_type) {
       case 0:
         if (length != 2u) {
           gimg_png_free_doc_state(codec, state);
-          return GIMG_ERR_FORMAT; // one grey level
+          return GIMG_ERR_FORMAT; // one gray level
         }
         break;
       case 2:
@@ -532,7 +532,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         }
         break;
       default:
-        // Colour types 4 and 6 already have alpha; 11.3.2.1 says tRNS "shall
+        // Color types 4 and 6 already have alpha; 11.3.2.1 says tRNS "shall
         // not appear" for them, and a decoder that kept it would have two
         // sources of transparency and no rule for which wins.
         gimg_png_free_doc_state(codec, state);
@@ -797,7 +797,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       continue;
     }
     const unsigned char * p = state->ancillary[i].payload;
-    if (p[8] != GIMG_PNG_PHYS_UNIT_METRE) {
+    if (p[8] != GIMG_PNG_PHYS_UNIT_METER) {
       break;
     }
     uint32_t x_ppm = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -807,8 +807,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     GIMG_Meta_Common * meta_common = NULL;
     if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
       gimg_meta_common_set_dpi(meta_common,
-          gimg_png_pixels_per_metre_to_dpi(x_ppm),
-          gimg_png_pixels_per_metre_to_dpi(y_ppm));
+          gimg_png_pixels_per_meter_to_dpi(x_ppm),
+          gimg_png_pixels_per_meter_to_dpi(y_ppm));
     }
     break;
   }

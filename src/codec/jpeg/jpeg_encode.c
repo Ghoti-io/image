@@ -1238,7 +1238,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
         // runs 0..15.  Clamping a larger category, as this did, emits the code
         // for a different category and then writes the original number of extra
         // bits - the decoder reads the wrong width from there on.  A value this
-        // large means the quantiser produced a coefficient the format cannot
+        // large means the quantizer produced a coefficient the format cannot
         // represent, so refuse rather than write a stream that cannot be read.
         int nbits = jpeg_nbits(diff);
         if (nbits > 15 || dc_tbl->len[nbits] == 0) {
@@ -2095,7 +2095,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
  * low-order bits, then run-length coded AC coefficients ending in EOB.
  *
  * When @p dc_freq is non-NULL this counts symbols instead of writing them,
- * which is the first of the two passes an optimised table needs (K.2).
+ * which is the first of the two passes an optimized table needs (K.2).
  */
 static void jpeg_diff_encode_block(jpeg_bit_writer * w,
     const GIMG_Allocator * alloc, const int16_t * block,
@@ -2219,7 +2219,7 @@ static void jpeg_diff_walk(jpeg_bit_writer * w, const GIMG_Allocator * alloc,
   }
 }
 
-/** Serialise one Huffman table into a DHT payload (T.81 B.2.4.2). */
+/** Serialize one Huffman table into a DHT payload (T.81 B.2.4.2). */
 static size_t jpeg_append_dht_table(unsigned char * out, uint8_t tc, uint8_t th,
     const unsigned char bits[17], const unsigned char * vals, int nvals) {
   size_t n = 0;
@@ -2270,7 +2270,7 @@ GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
   // Pass one: count the symbols this frame actually uses, and build a table
   // for them (K.2).  The fixed tables of Annex K would not do even if the
   // ranges matched - they are tuned for level-shifted samples, and a
-  // differential frame's coefficients are centred on zero - but the ranges do
+  // differential frame's coefficients are centerd on zero - but the ranges do
   // not match either: Table J.2 adds SSSS 15, which no Annex K table contains.
   uint32_t dc_freq[17];
   uint32_t ac_freq[257];
@@ -2312,12 +2312,12 @@ GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
 }
 
 /**
- * Forward-transform and quantise a differential frame's planes (T.81 J.1.3.1).
+ * Forward-transform and quantize a differential frame's planes (T.81 J.1.3.1).
  *
  * "The FDCT of the differential input is calculated without the level shift" -
  * which is the whole difference from gimg_jpeg_progressive_fill_coef_buffer,
  * whose input is a sample and so has 128 taken off it first.  Here the input is
- * already a two's complement difference centred on zero.
+ * already a two's complement difference centerd on zero.
  *
  * Sampling is 4:4:4, so an MCU is one block of each component and the buffer is
  * blocks in MCU raster order with the components interleaved - the same layout
