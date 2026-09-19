@@ -1160,6 +1160,116 @@ TEST(PngDecode, ZlibWrapperIsCheckedNotSkipped) {
 }
 
 // ---------------------------------------------------------------------------
+// The limits this codec decodes zlib streams under (RFC 1950).
+//
+// The compress library's zlib method defaults limits.max_expansion_ratio to
+// 1000, which is the right default for a caller inflating something whose
+// size it does not know. This codec does know: IHDR says exactly how many
+// bytes the filtered rows come to, and gimg_png_zlib_options_for_decode()
+// pins max_output_bytes to that number. The ratio is then a second, looser
+// bound on the same quantity, and a harmful one.
+//
+// Harmful because PNG's own filtering puts ordinary images right at the
+// threshold. With the Up filter a flat image is rows of zeros, and the best
+// DEFLATE does on zeros is about 1030:1 -- measured at 1029:1 for 8 MB of
+// them at the default level, and 992:1 at level 9. So whether a perfectly
+// legitimate flat image opened would depend on what compression level
+// whoever saved it happened to use.
+//
+// That 3% straddle is also why this is asserted at the seam rather than
+// through a fixture: a fixture would be a coin-flip away from proving the
+// opposite of what it claims. What matters is the pair of settings, and the
+// reason they go together, so that is what is checked.
+// ---------------------------------------------------------------------------
+
+TEST(PngDecode, ZlibDecodeIsBoundedByOutputSizeNotByRatio) {
+  const size_t kRawRowBytes = 1049088;  // whatever IHDR worked out to
+
+  gcomp_options_t * opts = nullptr;
+  ASSERT_EQ(gimg_png_zlib_options_for_decode(kRawRowBytes, &opts), GIMG_OK);
+  ASSERT_NE(opts, nullptr);
+
+  uint64_t max_output = 0;
+  ASSERT_EQ(
+      gcomp_options_get_uint64(opts, "limits.max_output_bytes", &max_output),
+      GCOMP_OK);
+  EXPECT_EQ(max_output, (uint64_t)kRawRowBytes)
+      << "the output must be bounded by the exact size IHDR implies";
+
+  uint64_t ratio = 12345u;
+  ASSERT_EQ(
+      gcomp_options_get_uint64(opts, "limits.max_expansion_ratio", &ratio),
+      GCOMP_OK);
+  EXPECT_EQ(ratio, 0u)
+      << "the ratio limit must be off: max_output_bytes above already bounds "
+         "the output exactly, and DEFLATE reaches about 1030:1 on the rows of "
+         "zeros PNG filtering produces, so leaving the default of 1000 on "
+         "would refuse ordinary flat images depending on the level they were "
+         "saved at";
+
+  gcomp_options_destroy(opts);
+}
+
+// A flat image really does decode, end to end. This cannot pin down the ratio
+// -- see above -- but it is the shape the limit above would have broken.
+TEST(PngDecode, AFlatImageRoundTripsThroughSaveAndLoad) {
+  const uint32_t kWidth = 512;
+  const uint32_t kHeight = 512;
+
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(kWidth, kHeight, &GIMG_PIXEL_RGBA8,
+                GIMG_RASTER_OWNED, nullptr, 0, &raster),
+      GIMG_OK);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  uint8_t * pixels = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  for (uint32_t y = 0; y < kHeight; y++) {
+    memset(pixels + static_cast<size_t>(y) * stride, 0x40,
+        static_cast<size_t>(kWidth) * 4u);
+  }
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK);
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out_s, "png", nullptr, &report), GIMG_OK);
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out_s, &p, &n);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(p),
+      static_cast<const uint8_t *>(p) + n);
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+
+  GIMG_Stream * in_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &in_s),
+      GIMG_OK);
+  GIMG_Doc * back = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_s, nullptr, nullptr, &back), GIMG_OK);
+  GIMG_Raster * decoded = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(back, 0), nullptr, &decoded),
+      GIMG_OK);
+
+  ASSERT_EQ(gimg_raster_width(decoded), kWidth);
+  ASSERT_EQ(gimg_raster_height(decoded), kHeight);
+  size_t dstride = gimg_raster_stride_bytes(decoded);
+  const uint8_t * dpixels =
+      static_cast<const uint8_t *>(gimg_raster_pixels_const(decoded));
+  bool same = true;
+  for (uint32_t y = 0; y < kHeight && same; y++) {
+    same = memcmp(dpixels + static_cast<size_t>(y) * dstride,
+               pixels + static_cast<size_t>(y) * stride,
+               static_cast<size_t>(kWidth) * 4u) == 0;
+  }
+  EXPECT_TRUE(same);
+
+  gimg_raster_destroy(decoded);
+  gimg_doc_destroy(back);
+  gimg_stream_destroy(in_s);
+  gimg_raster_destroy(raster);
+}
+
+// ---------------------------------------------------------------------------
 // A suggested palette on a truecolor image (PNG 11.2.2).
 //
 // PLTE is required for color type 3 and "shall not appear" for color types 0

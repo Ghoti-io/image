@@ -46,6 +46,7 @@
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <ghoti.io/compress/options.h>
+#include <ghoti.io/compress/zlib.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -401,16 +402,15 @@ GIMG_Result gimg_png_append_frame_data(gimg_png_doc_state_t * state,
  * @param out_opts On success, set to new options; on failure, set to NULL.
  * @return GIMG_OK or GIMG_ERR_OOM / GIMG_ERR_INTERNAL.
  */
-/** @brief Adler-32 of a buffer (RFC 1950 section 2.2). */
-uint32_t gimg_png_adler32(const unsigned char * data, size_t len);
 
 /**
  * @brief Inflate a PNG-embedded zlib stream, checking the wrapper.
  *
- * Validates the RFC 1950 header (PNG 10.3 allows only compression method 8,
- * a window of at most 32768 bytes, and no preset dictionary) and verifies the
- * trailing Adler-32 against the bytes produced. @a zlib_size covers the whole
- * stream, header and trailer included.
+ * The container itself is the compress library's "zlib" method; what this
+ * adds is the part PNG 10.3 makes stricter than RFC 1950 -- no preset
+ * dictionary -- and the distinction between a payload that is not a zlib
+ * stream at all and one that is but has been damaged. @a zlib_size covers the
+ * whole stream, header and trailer included.
  *
  * @return GIMG_ERR_FORMAT for a malformed header, GIMG_ERR_CORRUPT for a
  *   stream that does not inflate or whose Adler-32 disagrees, GIMG_ERR_LIMIT
@@ -420,7 +420,7 @@ GIMG_Result gimg_png_zlib_decode(const unsigned char * zlib_data,
     size_t zlib_size, unsigned char * out, size_t out_capacity,
     size_t * out_len);
 
-GIMG_Result gimg_png_deflate_options_for_decode(size_t max_output_bytes,
+GIMG_Result gimg_png_zlib_options_for_decode(size_t max_output_bytes,
     gcomp_options_t ** out_opts);
 
 /**

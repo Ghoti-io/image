@@ -94,12 +94,12 @@ size_t gimg_png_row_bytes_from_ihdr(
 }
 
 //
-// DEFLATE decode options: single helper so decode paths (single-frame and
-// APNG) use the same limit handling (max_output_bytes from raw size). Avoids
+// zlib decode options: single helper so decode paths (single-frame and APNG)
+// use the same limit handling (max_output_bytes from raw size). Avoids
 // repeated create/set/destroy and ensures GCOMP_ERR_LIMIT is mapped
 // consistently to GIMG_ERR_LIMIT.
 //
-GIMG_Result gimg_png_deflate_options_for_decode(
+GIMG_Result gimg_png_zlib_options_for_decode(
     size_t max_output_bytes, gcomp_options_t ** out_opts) {
   if (!out_opts) {
     return GIMG_ERR_INTERNAL;
@@ -116,6 +116,26 @@ GIMG_Result gimg_png_deflate_options_for_decode(
     gcomp_options_destroy(opts);
     return GIMG_ERR_INTERNAL;
   }
+
+  // Turn the expansion-ratio limit off, deliberately.
+  //
+  // It is a sensible default for a caller decompressing something of unknown
+  // size, and the zlib method sets it to 1000 for that reason.  Here the size
+  // is not unknown: max_output_bytes above is the exact number of bytes IHDR
+  // says the filtered rows come to, so the output is already bounded by the
+  // thing the ratio is a proxy for.
+  //
+  // Leaving both on would reject legitimate images.  A 4096x4096 image of one
+  // colour is 67,112,960 bytes of filtered rows and 65,141 bytes of zlib -
+  // 1030:1, over the default, and a flat image only gets flatter as it gets
+  // bigger.  The raw deflate path this replaced had no ratio limit at all, so
+  // this keeps the behaviour those files already relied on.
+  gs = gcomp_options_set_uint64(opts, "limits.max_expansion_ratio", 0);
+  if (gs != GCOMP_OK) {
+    gcomp_options_destroy(opts);
+    return GIMG_ERR_INTERNAL;
+  }
+
   *out_opts = opts;
   return GIMG_OK;
 }
@@ -152,19 +172,11 @@ bool gimg_png_adam7_raw_size(uint32_t width, uint32_t height, uint8_t color_type
 // inflates without complaint but to the wrong thing - so neither the header
 // nor the trailer is taken on trust here.
 //
-
-/** Adler-32 modulus (RFC 1950 section 2.2). */
-#define GIMG_PNG_ADLER_MOD 65521u
-
-uint32_t gimg_png_adler32(const unsigned char * data, size_t len) {
-  uint32_t s1 = 1u;
-  uint32_t s2 = 0u;
-  for (size_t i = 0; i < len; i++) {
-    s1 = (s1 + (uint32_t)data[i]) % GIMG_PNG_ADLER_MOD;
-    s2 = (s2 + s1) % GIMG_PNG_ADLER_MOD;
-  }
-  return (s2 << 16) | s1;
-}
+// This used to parse CMF and FLG by hand and carry its own Adler-32, because
+// the compress library had raw deflate and gzip and nothing in between.  It
+// has a zlib method now, so the container is its job and what is left here is
+// only what PNG adds on top of RFC 1950.
+//
 
 GIMG_Result gimg_png_zlib_decode(const unsigned char * zlib_data,
     size_t zlib_size, unsigned char * out, size_t out_capacity,
@@ -178,53 +190,44 @@ GIMG_Result gimg_png_zlib_decode(const unsigned char * zlib_data,
   if (zlib_size < GIMG_PNG_ZLIB_MIN_BYTES) {
     return GIMG_ERR_FORMAT;
   }
-  unsigned int cmf = zlib_data[0];
-  unsigned int flg = zlib_data[1];
-  // RFC 1950 section 2.2: CM is the low nibble of CMF and PNG 10.3 allows only
-  // 8 (deflate); CINFO, the high nibble, may not exceed 7, which is a 32768
-  // byte window.
-  if ((cmf & 0x0Fu) != 8u || (cmf >> 4) > 7u) {
-    return GIMG_ERR_FORMAT;
-  }
-  // FCHECK: the two bytes as a big-endian 16-bit value are a multiple of 31.
-  if (((cmf << 8) | flg) % 31u != 0u) {
-    return GIMG_ERR_FORMAT;
-  }
-  // FDICT: PNG 10.3 forbids a preset dictionary. Beyond being disallowed, one
-  // would put a four-byte DICTID between the header and the DEFLATE data, so
-  // ignoring the flag would desynchronize the stream rather than merely admit
-  // a file the spec excludes.
-  if (flg & 0x20u) {
-    return GIMG_ERR_FORMAT;
-  }
 
-  const unsigned char * deflate_data = zlib_data + 2;
-  size_t deflate_size = zlib_size - GIMG_PNG_ZLIB_MIN_BYTES;
+  // The header is inspected before decoding, for two reasons.
+  //
+  // One is that PNG and RFC 1950 disagree about what is allowed, and PNG is
+  // the stricter: 10.3 permits only compression method 8 and forbids a preset
+  // dictionary outright.  A stream with FDICT set is a valid zlib stream that
+  // is not a valid PNG payload, and it is this codec's job to say so.
+  //
+  // The other is that it keeps the distinction the caller sees.  A file that
+  // is not a zlib stream at all is a format error; one that is, but whose
+  // bytes have been altered, is corruption.  Handing everything to the
+  // decoder would report both the same way.
+  gcomp_zlib_header_info_t zinfo;
+  if (gcomp_zlib_peek_header(zlib_data, zlib_size, &zinfo) != GCOMP_OK) {
+    return GIMG_ERR_FORMAT;
+  }
+  if (zinfo.has_dictionary) {
+    return GIMG_ERR_FORMAT;
+  }
 
   gcomp_options_t * opts = NULL;
-  GIMG_Result r = gimg_png_deflate_options_for_decode(out_capacity, &opts);
+  GIMG_Result r = gimg_png_zlib_options_for_decode(out_capacity, &opts);
   if (r != GIMG_OK) {
     return r;
   }
   size_t produced = 0;
-  gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "deflate",
-      opts, deflate_data, deflate_size, out, out_capacity, &produced);
+  gcomp_status_t gs = gcomp_decode_buffer(gcomp_registry_default(), "zlib",
+      opts, zlib_data, zlib_size, out, out_capacity, &produced);
   gcomp_options_destroy(opts);
   if (gs != GCOMP_OK) {
+    // Everything the zlib method rejects from here on is damage to a stream
+    // that was well formed at the header: a truncated or malformed DEFLATE
+    // body, or an Adler-32 over bytes other than the ones that came out.
     return (gs == GCOMP_ERR_MEMORY) ? GIMG_ERR_OOM
         : (gs == GCOMP_ERR_LIMIT)   ? GIMG_ERR_LIMIT
                                     : GIMG_ERR_CORRUPT;
   }
 
-  // Adler-32 of the uncompressed data, stored big-endian after the DEFLATE
-  // data. A stream whose bytes were altered in a way DEFLATE still accepts
-  // fails here and nowhere else.
-  const unsigned char * trailer = zlib_data + zlib_size - 4u;
-  uint32_t stored = ((uint32_t)trailer[0] << 24) | ((uint32_t)trailer[1] << 16) |
-      ((uint32_t)trailer[2] << 8) | (uint32_t)trailer[3];
-  if (stored != gimg_png_adler32(out, produced)) {
-    return GIMG_ERR_CORRUPT;
-  }
   *out_len = produced;
   return GIMG_OK;
 }

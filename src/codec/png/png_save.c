@@ -19,11 +19,18 @@
  * Paeth) could be added later to improve compression; raw bytes are passed to
  * DEFLATE as-is.
  *
- * DEFLATE: We use the compress library's "deflate" method with strategy
- * "lazy". The raw image buffer (filter byte + row data
- * per row, or Adam7 pass order when interlaced) is compressed in one shot;
- * then we zlib-wrap (RFC 1950): 2-byte header (0x78 0x9C), raw DEFLATE bytes,
- * 4-byte Adler-32 of the uncompressed data (big-endian).
+ * Compression: We use the compress library's "zlib" method (RFC 1950) with
+ * strategy "lazy" passed through to the DEFLATE underneath. The raw image
+ * buffer (filter byte + row data per row, or Adam7 pass order when
+ * interlaced) is compressed in one shot, straight into the container: two
+ * header bytes, the DEFLATE data, and a big-endian Adler-32 of the
+ * uncompressed bytes.
+ *
+ * Those six bytes used to be assembled here by hand -- a literal 0x78 0x9C, a
+ * local Adler-32, and a second allocation to concatenate them around the
+ * DEFLATE output -- because the compress library had raw deflate and gzip and
+ * nothing in between. It has the container now, so this no longer keeps a
+ * private copy of a format somebody else already implements.
  *
  * IDAT splitting: The zlib payload is written as one or more IDAT chunks with
  * a maximum of 32 KiB per chunk. Some decoders expect smaller IDATs; splitting
@@ -1525,21 +1532,25 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
     gimg_free(gimg_alloc_or_default(allocator), raw);
     return r;
   }
-  size_t deflate_cap = raw_size + (raw_size / 2) + 64;
-  if (deflate_cap < raw_size) {
+  // Room for the compressed rows plus the six bytes RFC 1950 wraps them in.
+  // The zlib method writes the whole container, so this is the only buffer:
+  // the header bytes and the Adler-32 used to be assembled here by hand, into
+  // a second allocation, after a separate deflate pass.
+  size_t zlib_cap = raw_size + (raw_size / 2) + 64 + GIMG_PNG_ZLIB_MIN_BYTES;
+  if (zlib_cap < raw_size) {
     gimg_free(gimg_alloc_or_default(allocator), raw);
     return GIMG_ERR_OOM;
   }
-  unsigned char * deflate_buf = (unsigned char *)gimg_malloc(
-      gimg_alloc_or_default(allocator), deflate_cap);
-  if (!deflate_buf) {
+  unsigned char * zlib_buf = (unsigned char *)gimg_malloc(
+      gimg_alloc_or_default(allocator), zlib_cap);
+  if (!zlib_buf) {
     gimg_free(gimg_alloc_or_default(allocator), raw);
     return GIMG_ERR_OOM;
   }
   gcomp_options_t * gopts = NULL;
   gcomp_status_t gs = gcomp_options_create(&gopts);
   if (gs != GCOMP_OK || !gopts) {
-    gimg_free(gimg_alloc_or_default(allocator), deflate_buf);
+    gimg_free(gimg_alloc_or_default(allocator), zlib_buf);
     gimg_free(gimg_alloc_or_default(allocator), raw);
     return GIMG_ERR_OOM;
   }
@@ -1564,18 +1575,17 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
   gs = gcomp_options_set_string(gopts, "deflate.strategy", "lazy");
   if (gs != GCOMP_OK) {
     gcomp_options_destroy(gopts);
-    gimg_free(gimg_alloc_or_default(allocator), deflate_buf);
+    gimg_free(gimg_alloc_or_default(allocator), zlib_buf);
     gimg_free(gimg_alloc_or_default(allocator), raw);
     return GIMG_ERR_INTERNAL;
   }
-  size_t deflate_len = 0;
-  gs = gcomp_encode_buffer(gcomp_registry_default(), "deflate", gopts, raw,
-      raw_size, deflate_buf, deflate_cap, &deflate_len);
+  size_t zlib_len = 0;
+  gs = gcomp_encode_buffer(gcomp_registry_default(), "zlib", gopts, raw,
+      raw_size, zlib_buf, zlib_cap, &zlib_len);
   gcomp_options_destroy(gopts);
-  uint32_t adler = gimg_png_adler32(raw, raw_size);
   gimg_free(gimg_alloc_or_default(allocator), raw);
   if (gs != GCOMP_OK) {
-    gimg_free(gimg_alloc_or_default(allocator), deflate_buf);
+    gimg_free(gimg_alloc_or_default(allocator), zlib_buf);
     if (gs == GCOMP_ERR_MEMORY) {
       return GIMG_ERR_OOM;
     }
@@ -1584,21 +1594,6 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
     }
     return GIMG_ERR_FORMAT;
   }
-  size_t zlib_len = 2 + deflate_len + 4;
-  unsigned char * zlib_buf =
-      (unsigned char *)gimg_malloc(gimg_alloc_or_default(allocator), zlib_len);
-  if (!zlib_buf) {
-    gimg_free(gimg_alloc_or_default(allocator), deflate_buf);
-    return GIMG_ERR_OOM;
-  }
-  zlib_buf[0] = 0x78;
-  zlib_buf[1] = 0x9C;
-  memcpy(zlib_buf + 2, deflate_buf, deflate_len);
-  gimg_free(gimg_alloc_or_default(allocator), deflate_buf);
-  zlib_buf[zlib_len - 4] = (unsigned char)(adler >> 24);
-  zlib_buf[zlib_len - 3] = (unsigned char)(adler >> 16);
-  zlib_buf[zlib_len - 2] = (unsigned char)(adler >> 8);
-  zlib_buf[zlib_len - 1] = (unsigned char)(adler & 0xFF);
   *out_zlib = zlib_buf;
   *out_zlib_len = zlib_len;
   return GIMG_OK;
@@ -1896,48 +1891,37 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
     else if (color_info_for_save.icc_bytes &&
         color_info_for_save.icc_size > 0) {
+      // iCCP is "ICC Profile\0", a compression-method byte, then the profile
+      // as a zlib stream (PNG 11.3.3.3).  Encoded straight into place after
+      // that 13-byte prefix, so the container never has to be assembled by
+      // hand.
+      size_t icc_prefix = 13;  // "ICC Profile" + NUL + compression method
       size_t icc_cap = color_info_for_save.icc_size +
-          (color_info_for_save.icc_size / 2) + 64;
-      unsigned char * icc_compressed = (unsigned char *)gimg_malloc(
-          gimg_alloc_or_default(codec->allocator), icc_cap);
-      if (icc_compressed) {
+          (color_info_for_save.icc_size / 2) + 64 + GIMG_PNG_ZLIB_MIN_BYTES;
+      unsigned char * iccp_buf = (unsigned char *)gimg_malloc(
+          gimg_alloc_or_default(codec->allocator), icc_prefix + icc_cap);
+      if (iccp_buf) {
+        memcpy(iccp_buf, "ICC Profile", 11);
+        iccp_buf[11] = 0;
+        iccp_buf[12] = 0;  // compression method: zlib, the only one PNG has
         gcomp_options_t * gopts_icc = NULL;
         gcomp_status_t gs = gcomp_options_create(&gopts_icc);
         if (gs == GCOMP_OK && gopts_icc) {
           size_t icc_len = 0;
-          gs = gcomp_encode_buffer(gcomp_registry_default(), "deflate",
-              gopts_icc, (const unsigned char *)color_info_for_save.icc_bytes,
-              color_info_for_save.icc_size, icc_compressed, icc_cap, &icc_len);
+          gs = gcomp_encode_buffer(gcomp_registry_default(), "zlib", gopts_icc,
+              (const unsigned char *)color_info_for_save.icc_bytes,
+              color_info_for_save.icc_size, iccp_buf + icc_prefix, icc_cap,
+              &icc_len);
           gcomp_options_destroy(gopts_icc);
           if (gs == GCOMP_OK && icc_len > 0) {
-            uint32_t adler_icc = gimg_png_adler32(
-                (const unsigned char *)color_info_for_save.icc_bytes,
-                color_info_for_save.icc_size);
-            size_t iccp_len =
-                19 + icc_len;  // "ICC Profile\0" + comp byte + zlib
-            unsigned char * iccp_buf = (unsigned char *)gimg_malloc(
-                gimg_alloc_or_default(codec->allocator), iccp_len);
-            if (iccp_buf) {
-              memcpy(iccp_buf, "ICC Profile", 11);
-              iccp_buf[11] = 0;
-              iccp_buf[12] = 0;  // compression method
-              iccp_buf[13] = 0x78;
-              iccp_buf[14] = 0x9C;
-              memcpy(iccp_buf + 15, icc_compressed, icc_len);
-              iccp_buf[15 + icc_len] = (unsigned char)(adler_icc >> 24);
-              iccp_buf[16 + icc_len] = (unsigned char)(adler_icc >> 16);
-              iccp_buf[17 + icc_len] = (unsigned char)(adler_icc >> 8);
-              iccp_buf[18 + icc_len] = (unsigned char)(adler_icc & 0xFFu);
-              r = gimg_png_write_chunk(
-                  stream, GIMG_PNG_iCCP, iccp_buf, 19 + icc_len);
-              gimg_free(gimg_alloc_or_default(codec->allocator), iccp_buf);
-              if (r == GIMG_OK) {
-                report->bytes_written += 8 + (19 + icc_len) + 4;
-              }
+            r = gimg_png_write_chunk(
+                stream, GIMG_PNG_iCCP, iccp_buf, icc_prefix + icc_len);
+            if (r == GIMG_OK) {
+              report->bytes_written += 8 + (icc_prefix + icc_len) + 4;
             }
           }
         }
-        gimg_free(gimg_alloc_or_default(codec->allocator), icc_compressed);
+        gimg_free(gimg_alloc_or_default(codec->allocator), iccp_buf);
       }
       if (r != GIMG_OK) {
         gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
