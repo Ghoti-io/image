@@ -243,6 +243,14 @@ LIBOBJECTS := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SOURCES))
 
 TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs --cflags gtest`
 
+# The checks `make test` runs besides the tests themselves. Named in a
+# variable so that a build which cannot satisfy them can clear it: the
+# coverage target does, because --coverage links the gcov runtime, whose
+# mangle_path check-symbols is right to reject in a shipping library and
+# wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
+TEST_GATES ?= check-symbols
+
+
 # Valgrind flags (exclude "still reachable" as it's not a leak)
 VALGRIND_FLAGS := --leak-check=full --show-leak-kinds=definite,indirect,possible --track-origins=yes --error-exitcode=1
 
@@ -557,7 +565,11 @@ $(APP_DIR)/testPng_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_encode.o $(
 ####################################################################
 
 # Pattern rule for example executables
-$(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c $(APP_DIR)/$(TARGET)
+# Links the archive, so it depends on the archive: naming only the shared
+# library left nothing in the chain that builds the archive, so a clean tree
+# could not build the examples at all.
+$(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
+		$(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Compiling Example: $* ###\n"
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(INCLUDE) -o $@ $< $(LDFLAGS) $(IMAGELIBRARY)
@@ -717,7 +729,7 @@ else
 endif
 
 test: ## Make and run the Unit tests, then verify PNG and JPEG output with PIL
-test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) check-symbols
+test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
@@ -1226,12 +1238,29 @@ coverage: ## Build instrumented, run the tests, and report line coverage
 # and leaving the tree cleaned would break any sibling project that links
 # this one. The cost is one extra build; coverage is not run often.
 	@$(MAKE) --no-print-directory clean > /dev/null
-	@$(MAKE) --no-print-directory test \
+# The instrumented build, the report and the restoration of the tree are one
+# shell command so that the cleanup runs whatever fails. Letting a failure
+# stop the recipe leaves the --coverage objects in build/, and the next
+# ordinary `make` links them into a library that needs the gcov runtime; every
+# later build then fails with undefined references to __gcov_init until
+# somebody works out why.
+#
+# TEST_GATES is cleared because --coverage links the gcov runtime, which
+# exports mangle_path. check-symbols is right to reject that in a shipping
+# build and wrong to reject it here, and it made this target fail before it
+# ever produced a report.
+	@status=0; \
+	$(MAKE) --no-print-directory test TEST_GATES= \
 		EXTRA_CFLAGS="--coverage -O0" \
-		EXTRA_LDFLAGS="--coverage" > /dev/null
-	@tools/coverage.sh $(OBJ_DIR)
-	@$(MAKE) --no-print-directory clean > /dev/null
-	@$(MAKE) --no-print-directory all > /dev/null
+		EXTRA_LDFLAGS="--coverage" > /dev/null || status=$$?; \
+	if [ $$status -eq 0 ]; then \
+		tools/coverage.sh $(OBJ_DIR) || status=$$?; \
+	else \
+		printf "coverage: the instrumented test run failed; no report\n" >&2; \
+	fi; \
+	$(MAKE) --no-print-directory clean > /dev/null; \
+	$(MAKE) --no-print-directory all > /dev/null; \
+	exit $$status
 
 help: ## Display this help
 	@grep -E '^[ a-zA-Z_-]+:.*?## .*$$' Makefile | sort | sed 's/\\([^:]*\\):.*## \\(.*\\)/\\1:\\2/' | awk -F: '{printf "%-15s %s\n", $$1, $$2}' | sed "s/(SUITE)/$(SUITE)/g; s/(PROJECT)/$(PROJECT)/g; s/(BRANCH)/$(BRANCH)/g"
