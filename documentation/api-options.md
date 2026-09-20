@@ -106,11 +106,11 @@ means the same thing. **An image is a header that names a size, so a file of a
 hundred bytes can ask for as much memory as its fields allow.** Measured on
 this library:
 
-| File | Bytes | Asks for |
-|---|---|---|
-| BMP naming 46340 &times; 46340 at 32 bpp | 118 | ~8.6 GB |
-| JPEG with SOF0 naming 65535 &times; 65535, 3 components | 78 | ~17 GB |
-| PNG with IHDR naming 65535 &times; 65535 RGBA8 | 69 | ~17 GB |
+| File | Bytes | Raster it names | Peak RSS to refuse it |
+|---|---|---|---|
+| BMP naming 46340 &times; 46340 at 32 bpp | 118 | ~8.6 GB | 236 KB |
+| JPEG with SOF0 naming 65535 &times; 65535, 3 components | 78 | ~17 GB | below measurement |
+| PNG with IHDR naming 65535 &times; 65535 RGBA8 | 69 | ~17 GB | 1.9 MB |
 
 None of these crashes: each allocation is checked and a failure comes back as
 `GIMG_ERR_OOM`. A header naming more pixel data than the file actually holds
