@@ -70,11 +70,13 @@ extern const unsigned char gimg_bmp_signature[GIMG_BMP_SIGNATURE_LEN];
  * the header reader resolves it once and everything downstream reads this.
  */
 typedef enum {
-  GIMG_BMP_COMP_RGB = 0,  ///< Uncompressed, channel layout implied by depth.
-  GIMG_BMP_COMP_RLE8,     ///< 8-bit run-length encoding.
-  GIMG_BMP_COMP_RLE4,     ///< 4-bit run-length encoding.
-  GIMG_BMP_COMP_RLE24,    ///< 24-bit run-length encoding (OS/2 2.x).
-  GIMG_BMP_COMP_BITFIELDS ///< Uncompressed, channel layout given by masks.
+  GIMG_BMP_COMP_RGB = 0,   ///< Uncompressed, channel layout implied by depth.
+  GIMG_BMP_COMP_RLE8,      ///< 8-bit run-length encoding.
+  GIMG_BMP_COMP_RLE4,      ///< 4-bit run-length encoding.
+  GIMG_BMP_COMP_RLE24,     ///< 24-bit run-length encoding (OS/2 2.x).
+  GIMG_BMP_COMP_BITFIELDS, ///< Uncompressed, channel layout given by masks.
+  GIMG_BMP_COMP_JPEG,      ///< The pixel data is a whole JPEG stream.
+  GIMG_BMP_COMP_PNG        ///< The pixel data is a whole PNG stream.
 } gimg_bmp_compression_t;
 
 /**
@@ -101,6 +103,7 @@ typedef struct {
   uint16_t bit_count;     ///< Bits per pixel: 1, 2, 4, 8, 16, 24, or 32.
   bool os2_v2;            ///< True for a BITMAPCOREHEADER2 (OS/2 2.x).
   gimg_bmp_compression_t compression; ///< How the pixel data is stored.
+  uint32_t size_image;    ///< biSizeImage as read; untrusted, 0 means unset.
   uint32_t x_ppm;         ///< biXPelsPerMeter; 0 means the file did not say.
   uint32_t y_ppm;         ///< biYPelsPerMeter; 0 means the file did not say.
   uint32_t palette_count; ///< Palette entries actually present in the file.
@@ -110,6 +113,11 @@ typedef struct {
   gimg_bmp_channel_mask_t blue;
   gimg_bmp_channel_mask_t alpha; ///< `mask` is 0 when the format has no alpha.
 } gimg_bmp_header_t;
+
+/** @brief True for the compressions whose pixel data is a whole other image. */
+static inline bool gimg_bmp_is_embedded(gimg_bmp_compression_t c) {
+  return c == GIMG_BMP_COMP_JPEG || c == GIMG_BMP_COMP_PNG;
+}
 
 /** @brief True for the compressions whose pixel data is a run-length stream. */
 static inline bool gimg_bmp_is_rle(gimg_bmp_compression_t c) {
@@ -141,6 +149,11 @@ typedef struct {
   uint32_t palette_count;
   unsigned char * pixels; ///< Raw pixel bytes as stored in the file.
   size_t pixels_size;
+  /** For BI_JPEG and BI_PNG, the document the embedded stream loaded into.
+   * Decode hands the work to its first item rather than doing any of its own:
+   * the "pixel data" of such a file is a whole JPEG or PNG, and this library
+   * has a codec for each. */
+  GIMG_Doc * embedded;
   /** GIMG_Load_Options.bmp_rgb32_alpha as the load was given it.  Kept here
    * rather than read again at decode because a save re-decodes its source
    * item with no options of its own, and must not reinterpret the pixels

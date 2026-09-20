@@ -329,6 +329,78 @@ TEST(BmpDecode, Os2Rle24) {
 }
 
 // ---------------------------------------------------------------------------
+// Embedded streams (BI_JPEG, BI_PNG)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/**
+ * Decode a fixture that is a bare JPEG or PNG, for use as a second opinion on
+ * what its BI_JPEG or BI_PNG wrapper should have produced.
+ *
+ * This is deliberately not a comparison against a hard-coded picture.  What
+ * the wrapper has to get right is handing the payload to the right codec
+ * untouched; whether that codec is correct is the JPEG and PNG suites' job,
+ * and re-asserting it here would only pin the two together.
+ */
+void expect_same_image(const Loaded & wrapped, const Loaded & bare) {
+  ASSERT_EQ(wrapped.width(), bare.width());
+  ASSERT_EQ(wrapped.height(), bare.height());
+  for (uint32_t y = 0; y < bare.height(); y++) {
+    for (uint32_t x = 0; x < bare.width(); x++) {
+      EXPECT_EQ(wrapped.at(x, y), bare.at(x, y))
+          << "at (" << x << "," << y << ")";
+    }
+  }
+}
+
+} // namespace
+
+TEST(BmpDecode, EmbeddedPngDecodesAsThePayloadDoes) {
+  // BI_PNG means the pixel data is a whole PNG stream.  This library has a
+  // PNG codec, so the wrapper's work is to find the payload and hand it over.
+  Loaded wrapped, bare;
+  ASSERT_EQ(wrapped.load("bmp_4x4_embedded_png.bmp"), GIMG_OK);
+  ASSERT_EQ(wrapped.decode(), GIMG_OK);
+  ASSERT_EQ(bare.load("bmp_4x4_embedded_png_payload.png"), GIMG_OK);
+  ASSERT_EQ(bare.decode(), GIMG_OK);
+  expect_same_image(wrapped, bare);
+}
+
+TEST(BmpDecode, EmbeddedJpegDecodesAsThePayloadDoes) {
+  Loaded wrapped, bare;
+  ASSERT_EQ(wrapped.load("bmp_4x4_embedded_jpeg.bmp"), GIMG_OK);
+  ASSERT_EQ(wrapped.decode(), GIMG_OK);
+  ASSERT_EQ(bare.load("bmp_4x4_embedded_jpeg_payload.jpg"), GIMG_OK);
+  ASSERT_EQ(bare.decode(), GIMG_OK);
+  expect_same_image(wrapped, bare);
+}
+
+TEST(BmpLoad, EmbeddedStreamGoesToTheCodecTheHeaderNamed) {
+  // The payload is loaded through the codec biCompression named, never
+  // through the prober.  Probing would let a BI_PNG wrapper hold another BMP,
+  // which could hold another, with no bound on the nesting this side of the
+  // stack.  A payload that is not a PNG is therefore a failure, not an
+  // invitation to look for something else.
+  Loaded img;
+  EXPECT_NE(img.load("bmp_embedded_png_not_a_png.bmp"), GIMG_OK);
+}
+
+TEST(BmpLoad, EmbeddedStreamHonorsTheCallersLimits) {
+  // The load options go down to the inner codec unchanged, so a limit applies
+  // to what is inside a wrapper exactly as it would to a file that arrived on
+  // its own.  Without that a BI_PNG header of a few dozen bytes would be a
+  // way around every cap the caller set.
+  GIMG_Limits limits = {};
+  limits.max_decoded_pixels = 4;  // The payload is 4x4 = 16.
+  GIMG_Load_Options options = {};
+  options.limits = &limits;
+
+  Loaded img;
+  EXPECT_EQ(img.load("bmp_4x4_embedded_png.bmp", &options), GIMG_ERR_LIMIT);
+}
+
+// ---------------------------------------------------------------------------
 // Indexed
 // ---------------------------------------------------------------------------
 

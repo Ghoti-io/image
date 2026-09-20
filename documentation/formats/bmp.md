@@ -234,10 +234,6 @@ reconstruct one.
 
 Listed so the absences are visible rather than discovered.
 
-- **`BI_JPEG` and `BI_PNG`.** A BMP may wrap a whole JPEG or PNG stream as its
-  "pixel data". Both are refused with `GIMG_ERR_UNSUPPORTED`. The library has
-  codecs for both formats, so handing the payload to one of them is the
-  obvious implementation; nothing depends on it yet.
 - **OS/2 Huffman 1D.** `ulCompression` 3 in an OS/2 2.x header is CCITT
   Group 3 one-dimensional Huffman coding, not `BI_BITFIELDS`. It is
   recognized as such and refused with `GIMG_ERR_UNSUPPORTED` rather than

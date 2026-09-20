@@ -263,6 +263,7 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     signed_height = (int64_t)bmp_read_i32(body + 4);
     out->bit_count = bmp_read_u16(body + 10);
     raw_compression = bmp_read_u32(body + 12);
+    out->size_image = bmp_read_u32(body + 16);
     // biXPelsPerMeter and biYPelsPerMeter.  Stored signed, but a negative
     // resolution is meaningless, so anything with the top bit set is read as
     // "not stated" rather than as an enormous density.
@@ -293,12 +294,6 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE, "negative width");
     return GIMG_ERR_CORRUPT;
   }
-  if (!bmp_bit_count_known(out->bit_count)) {
-    bmp_load_diag(
-        diagnostics, GIMG_BMP_FILE_HEADER_SIZE, "unsupported bit depth");
-    return GIMG_ERR_UNSUPPORTED;
-  }
-
   // Resolve the compression number against the vocabulary of the header that
   // carried it, then check it against the bit depth.  0, 1 and 2 mean the
   // same thing to both; 3 and 4 do not.
@@ -345,6 +340,12 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
         out->compression = GIMG_BMP_COMP_BITFIELDS;
         alpha_bitfields = true;
         break;
+      case GIMG_BMP_BI_JPEG:
+        out->compression = GIMG_BMP_COMP_JPEG;
+        break;
+      case GIMG_BMP_BI_PNG:
+        out->compression = GIMG_BMP_COMP_PNG;
+        break;
       default:
         bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
             "unsupported compression method");
@@ -383,6 +384,20 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
         return GIMG_ERR_CORRUPT;
       }
       break;
+    case GIMG_BMP_COMP_JPEG:
+    case GIMG_BMP_COMP_PNG:
+      // The embedded stream carries its own depth and its own everything
+      // else.  biBitCount describes the image the BMP wrapper stands in for,
+      // and is not a constraint on what is inside - a conformant BI_PNG file
+      // may leave it at zero - so it is not checked for these.
+      break;
+  }
+
+  if (!gimg_bmp_is_embedded(out->compression) &&
+      !bmp_bit_count_known(out->bit_count)) {
+    bmp_load_diag(
+        diagnostics, GIMG_BMP_FILE_HEADER_SIZE, "unsupported bit depth");
+    return GIMG_ERR_UNSUPPORTED;
   }
 
   // A negative biHeight means top-down rows, and the format does not allow it
@@ -516,6 +531,59 @@ static GIMG_Result bmp_read_palette(GIMG_Stream * stream,
 // ---------------------------------------------------------------------------
 
 /**
+ * Load the JPEG or PNG that is the "pixel data" of a BI_JPEG or BI_PNG file.
+ *
+ * The codec is chosen by name rather than by probing the bytes.  Probing would
+ * let a BI_PNG wrapper hold another BMP, which could hold another, and the
+ * nesting has no bound this side of the stack: the format says the payload is
+ * a JPEG or a PNG, so that is what it is asked to be.  Neither of those can
+ * hold a BMP in turn, so the depth is one.
+ *
+ * The caller's load options go down unchanged, so `GIMG_Limits` applies to
+ * what is inside exactly as it would to a file that arrived on its own.
+ */
+static GIMG_Result bmp_load_embedded(GIMG_Diagnostics * diagnostics,
+    const gimg_bmp_header_t * header, const unsigned char * bytes,
+    size_t size, const GIMG_Load_Options * options, GIMG_Doc ** out_doc) {
+  *out_doc = NULL;
+  const char * name =
+      header->compression == GIMG_BMP_COMP_JPEG ? "jpeg" : "png";
+
+  GIMG_Codec * inner = gimg_codec_by_name(name);
+  if (!inner || !inner->load_cb) {
+    bmp_load_diag(diagnostics, 0u, "no codec for the embedded stream");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  GIMG_Stream * stream = NULL;
+  GIMG_Result r = gimg_stream_create_memory(bytes, size, &stream);
+  if (r != GIMG_OK) {
+    return r;
+  }
+
+  GIMG_Doc * doc = NULL;
+  r = inner->load_cb(inner, stream, options, diagnostics, &doc);
+  gimg_stream_destroy(stream);
+  if (r != GIMG_OK) {
+    if (doc) {
+      gimg_doc_destroy(doc);
+    }
+    bmp_load_diag(diagnostics, 0u, "the embedded stream did not load");
+    return r;
+  }
+  if (!doc || gimg_doc_item_count(doc) == 0) {
+    if (doc) {
+      gimg_doc_destroy(doc);
+    }
+    bmp_load_diag(diagnostics, 0u, "the embedded stream held no image");
+    return GIMG_ERR_CORRUPT;
+  }
+
+  *out_doc = doc;
+  return GIMG_OK;
+}
+
+/**
  * Read the pixel data starting at `data_offset`.
  *
  * For uncompressed images the exact size is known from the stride and height,
@@ -539,18 +607,28 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
     return GIMG_ERR_CORRUPT;
   }
 
-  bool is_rle = gimg_bmp_is_rle(header->compression);
+  bool variable_length =
+      gimg_bmp_is_rle(header->compression) ||
+      gimg_bmp_is_embedded(header->compression);
 
   size_t needed;
-  if (is_rle) {
+  if (variable_length) {
     if (!stream_size) {
-      // A non-seekable or unsized stream gives us nothing to bound the RLE
-      // data with.
+      // Neither an RLE stream nor an embedded JPEG or PNG has a length that
+      // can be predicted from the header, so both are taken from bfOffBits to
+      // the end of the file - which needs a stream that knows where that is.
       bmp_load_diag(diagnostics, (size_t)data_offset,
-          "RLE data requires a sized stream");
+          "this compression requires a sized stream");
       return GIMG_ERR_UNSUPPORTED;
     }
     needed = stream_size - (size_t)data_offset;
+    // biSizeImage states the length when it is believable.  It is
+    // attacker-controlled and often zero, so it may only ever shorten what is
+    // taken, never extend it past the end of the file.
+    if (gimg_bmp_is_embedded(header->compression) && header->size_image &&
+        (size_t)header->size_image < needed) {
+      needed = (size_t)header->size_image;
+    }
   }
   else {
     size_t stride;
@@ -610,6 +688,9 @@ void gimg_bmp_free_doc_state(GIMG_Codec * codec, void * codec_private) {
     return;
   }
   const GIMG_Allocator * alloc = gimg_alloc_or_default(state->allocator);
+  if (state->embedded) {
+    gimg_doc_destroy(state->embedded);
+  }
   gimg_free(alloc, state->palette);
   gimg_free(alloc, state->pixels);
   gimg_free(alloc, state);
@@ -692,6 +773,15 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   state->pixels_size = pixels_size;
   state->rgb32_alpha = options ? options->bmp_rgb32_alpha
                                : (uint8_t)GIMG_BMP_RGB32_ALPHA_IGNORE;
+
+  if (gimg_bmp_is_embedded(header.compression)) {
+    r = bmp_load_embedded(diagnostics, &header, state->pixels,
+        state->pixels_size, options, &state->embedded);
+    if (r != GIMG_OK) {
+      gimg_bmp_free_doc_state(codec, state);
+      return r;
+    }
+  }
 
   GIMG_Doc * doc = NULL;
   r = gimg_doc_create_with_allocator(alloc, &doc);

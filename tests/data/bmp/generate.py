@@ -9,6 +9,7 @@ BITMAPCOREHEADER, the RLE encodings, and deliberately malformed files.
 Run from this directory:  python3 generate.py
 """
 
+import io
 import struct
 from pathlib import Path
 
@@ -330,6 +331,40 @@ def rle_fixtures() -> None:
                    palette, rle_delta))
 
 
+def embedded_fixtures() -> None:
+    """BI_JPEG and BI_PNG: the "pixel data" is a whole JPEG or PNG stream.
+
+    The payloads are generated from PATTERN through Pillow, then wrapped, so
+    a test can decode the wrapper and the payload separately and require the
+    two to agree - which pins the wrapper without re-testing the JPEG and PNG
+    codecs.
+    """
+    img = Image.new("RGB", (4, 4))
+    for y, row in enumerate(PATTERN):
+        for x, rgb in enumerate(row):
+            img.putpixel((x, y), rgb)
+
+    for name, fmt, compression in (("png", "PNG", 5), ("jpeg", "JPEG", 4)):
+        buffer = io.BytesIO()
+        img.save(buffer, format=fmt)
+        payload = buffer.getvalue()
+        # biSizeImage states the payload length, which is the only field that
+        # does; the header's own width, height and depth describe the image
+        # the wrapper stands in for.
+        dib = info_header(4, 4, 24, compression=compression,
+                          image_size=len(payload))
+        write(f"bmp_4x4_embedded_{name}.bmp", assemble(dib, b"", payload))
+        # The payload on its own, for the test to decode as a second opinion.
+        write(f"bmp_4x4_embedded_{name}_payload.{name.replace('jpeg', 'jpg')}",
+              payload)
+
+    # A BI_PNG wrapper whose payload is not a PNG at all.  Refusing it is the
+    # point: the inner stream is loaded through the codec the header named,
+    # never through the prober, so this cannot become a BMP inside a BMP.
+    dib = info_header(4, 4, 24, compression=5, image_size=16)
+    write("bmp_embedded_png_not_a_png.bmp", assemble(dib, b"", b"not a png!!!!!!!"))
+
+
 def malformed_fixtures() -> None:
     colors = [(255, 0, 0), (0, 255, 0)]
     palette = b"".join(bytes([b, g, r, 0]) for (r, g, b) in colors)
@@ -391,5 +426,7 @@ if __name__ == "__main__":
     os2_fixtures()
     print("RLE fixtures:")
     rle_fixtures()
+    print("Embedded-stream fixtures:")
+    embedded_fixtures()
     print("Malformed fixtures:")
     malformed_fixtures()

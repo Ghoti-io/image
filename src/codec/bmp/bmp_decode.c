@@ -380,6 +380,19 @@ GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
       (const gimg_bmp_doc_state_t *)doc->codec_private;
   const gimg_bmp_header_t * h = &state->header;
 
+  // BI_JPEG and BI_PNG: the "pixel data" is a whole JPEG or PNG, which load
+  // handed to that format's own codec.  There is nothing for this one to
+  // decode, only a document to ask.  The BMP header's biWidth and biBitCount
+  // describe the image it stands in for; the stream inside is the image, and
+  // where the two disagree the stream is what the pixels actually are.
+  if (gimg_bmp_is_embedded(h->compression)) {
+    if (!state->embedded) {
+      return GIMG_ERR_INTERNAL;
+    }
+    return gimg_item_decode(
+        gimg_doc_item(state->embedded, 0), options, out_raster);
+  }
+
   const GIMG_Limits * limits = options ? options->limits : NULL;
   if (limits && limits->max_decoded_pixels) {
     size_t pixel_count;
