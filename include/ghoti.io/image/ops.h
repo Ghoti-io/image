@@ -29,14 +29,45 @@ GIMG_API GIMG_Result gimg_ops_apply_orientation(
     GIMG_Raster * raster, GIMG_Orientation orientation);
 
 /**
- * @brief Convert pixel format (same-format copy; anything else UNSUPPORTED).
+ * @brief Convert pixel format: a same-format copy, or CMYK to RGBA.
  *
- * The result carries the source's GIMG_Color_Info, profile included: copying
- * samples does not change what they mean.
+ * A **same-format** conversion copies the samples, and the result carries the
+ * source's GIMG_Color_Info, profile included: copying samples does not change
+ * what they mean.
+ *
+ * **CMYK to RGBA** at the same sample width (CMYK8 to RGBA8, CMYK12 to
+ * RGBA12, CMYK16 to RGBA16) performs the naive conversion: each ink is taken
+ * as an independent multiplicative filter over white, so a channel is the
+ * product of its own colourant and the black, rounded to nearest. This exists
+ * because neither PNG nor BMP has CMYK, so without it a four-component JPEG
+ * could not be converted into anything at all.
+ *
+ * It is **not colorimetric**. A real conversion would run the samples through
+ * the source profile and a destination profile, and this library has no colour
+ * engine; the choice it offers is between the naive conversion and none. It is
+ * what libjpeg-based tools do, and it agrees with Pillow exactly on every
+ * pixel of every CMYK and YCCK fixture in tests/data/jpeg.
+ *
+ * The source's `cmyk_polarity` must say which way round the samples are:
+ * GIMG_CMYK_POLARITY_UNKNOWN returns GIMG_ERR_UNSUPPORTED rather than a
+ * guess, because the two readings are negatives of each other and the wrong
+ * one gives a plausible but inverted picture. The JPEG decoder always states
+ * it.
+ *
+ * The result is **opaque** and carries **no** GIMG_Color_Info: what the source
+ * said described four ink amounts, and none of it - an embedded profile least
+ * of all - is true of the three-channel result.
+ *
+ * No writer performs this conversion on your behalf. Saving a CMYK raster as
+ * a PNG or a BMP still returns GIMG_ERR_UNSUPPORTED, so the library never
+ * changes an image's colour without being asked.
  *
  * @param src Source raster.
  * @param dst_format Target format descriptor.
  * @param out_raster On success, new raster in target format.
+ * @return GIMG_OK, or GIMG_ERR_UNSUPPORTED for any other pair of formats, for
+ *   a CMYK source with no stated polarity, or for a width change (that is
+ *   gimg_ops_convert_bit_depth's job).
  */
 GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
     const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster);

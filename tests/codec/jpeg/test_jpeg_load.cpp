@@ -14,6 +14,7 @@
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
@@ -4795,4 +4796,81 @@ TEST(JpegLoad, AProfileStillReachesARasterThatIsNotFourComponent) {
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
+}
+
+TEST(JpegLoad, CmykConvertsToTheRgbLibjpegAndPillowProduce) {
+  // This library has no colour engine, so a CMYK-to-RGB conversion cannot be
+  // colorimetric and is not claimed to be.  What it can be held to is
+  // agreeing with the naive conversion every other library without an engine
+  // performs - and it does, exactly, on every pixel of every CMYK and YCCK
+  // fixture here.  The oracle files are Pillow's RGB rendering, written by
+  // tests/data/jpeg/generate_jpeg_oracle_raws.py; Pillow's CMYK handling is
+  // libjpeg's.
+  static const char * const fixtures[] = {"cmyk_sample.jpg",
+      "cmyk_ljt_sub.jpg", "cmyk_ours_seq.jpg", "cmyk_ours_ni.jpg",
+      "cmyk_ours_prog.jpg", "cmyk_ours_arith.jpg", "cmyk_progressive.jpg",
+      "ycck_baseline.jpg", "ycck_progressive.jpg", "ycck_ljt_420.jpg",
+      "ycck_ljt_422.jpg", "ycck_ours_420.jpg", "ycck_ours_422.jpg",
+      "ycck_ours_444.jpg", "ycck_ours_prog420.jpg"};
+
+  size_t checked = 0;
+  for (const char * name : fixtures) {
+    SCOPED_TRACE(name);
+    std::string base(name);
+    base = base.substr(0, base.find_last_of('.'));
+    std::string oracle =
+        std::string(GIMG_TEST_DATA_JPEG) + "/" + base + ".cmyk2rgb.raw";
+
+    std::vector<uint8_t> want;
+    uint32_t ow = 0, oh = 0;
+    int omode = 0;
+    if (!jpeg_test::load_jpeg_oracle_raw_from_path(
+            oracle.c_str(), want, &ow, &oh, &omode)) {
+      // The oracle is generated, not hand-written; say which one is missing
+      // rather than passing silently over it.
+      ADD_FAILURE() << "no oracle at " << oracle
+                    << "; run python3 tests/data/jpeg/"
+                       "generate_jpeg_oracle_raws.py";
+      continue;
+    }
+    ASSERT_EQ(omode, jpeg_test::kOracleRgb);
+
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name, jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * cmyk = nullptr;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &cmyk), GIMG_OK);
+
+    GIMG_Raster * rgb = nullptr;
+    ASSERT_EQ(gimg_ops_convert_pixel_format(cmyk, &GIMG_PIXEL_RGBA8, &rgb),
+        GIMG_OK);
+    ASSERT_NE(rgb, nullptr);
+    ASSERT_EQ(gimg_raster_width(rgb), ow);
+    ASSERT_EQ(gimg_raster_height(rgb), oh);
+
+    const uint8_t * px =
+        static_cast<const uint8_t *>(gimg_raster_pixels_const(rgb));
+    size_t stride = gimg_raster_stride_bytes(rgb);
+    for (uint32_t y = 0; y < oh; y++) {
+      for (uint32_t x = 0; x < ow; x++) {
+        const uint8_t * p = px + (y * stride) + (x * 4u);
+        size_t o = ((size_t)y * ow + x) * 3u;
+        ASSERT_EQ(p[0], want[o]) << "red at (" << x << "," << y << ")";
+        ASSERT_EQ(p[1], want[o + 1]) << "green at (" << x << "," << y << ")";
+        ASSERT_EQ(p[2], want[o + 2]) << "blue at (" << x << "," << y << ")";
+        ASSERT_EQ(p[3], 255u) << "alpha at (" << x << "," << y << ")";
+      }
+    }
+    checked++;
+
+    gimg_raster_destroy(rgb);
+    gimg_raster_destroy(cmyk);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+  EXPECT_EQ(checked, sizeof(fixtures) / sizeof(fixtures[0]));
 }

@@ -554,3 +554,200 @@ TEST(Ops, AnUntaggedRasterStaysUntaggedThroughAConversion) {
   gimg_raster_destroy(src);
   gimg_raster_destroy(dst);
 }
+
+namespace {
+
+/** A 1x1 CMYK8 raster holding one sample set, with the given polarity. */
+static GIMG_Raster * one_cmyk_pixel(uint8_t c, uint8_t m, uint8_t y, uint8_t k,
+    GIMG_CMYK_Polarity polarity) {
+  GIMG_Raster * r = nullptr;
+  if (gimg_raster_create(
+          1, 1, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, nullptr, 0, &r) !=
+          GIMG_OK ||
+      !r) {
+    return nullptr;
+  }
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(r));
+  px[0] = c;
+  px[1] = m;
+  px[2] = y;
+  px[3] = k;
+  GIMG_Color_Info ci;
+  gimg_color_info_default(&ci);
+  ci.cmyk_polarity = polarity;
+  if (gimg_raster_set_color_info(r, &ci) != GIMG_OK) {
+    gimg_raster_destroy(r);
+    return nullptr;
+  }
+  return r;
+}
+
+} // namespace
+
+TEST(Ops, CmykBecomesRgbTheWayEveryEngineLessLibraryDoesIt) {
+  // Each ink is an independent multiplicative filter over white, so a channel
+  // is the product of its own colourant and the black.  The samples are the
+  // JPEG and Adobe convention here - 0 is full ink - which is what
+  // GIMG_CMYK_POLARITY_INK means and what this library's decoder produces.
+  //
+  // Every expected value below is Pillow's, which is libjpeg's CMYK handling
+  // plus its own conversion.  On all fifteen CMYK and YCCK fixtures in
+  // tests/data/jpeg, every pixel of every one, the two agree exactly.
+  struct Case {
+    uint8_t c, m, y, k;
+    uint8_t r, g, b;
+  };
+  static const Case cases[] = {
+      {255, 255, 255, 255, 255, 255, 255}, // no ink at all: white
+      {0, 0, 0, 0, 0, 0, 0},               // every ink full: black
+      {0, 0, 0, 255, 0, 0, 0},             // full C, M, Y, no black
+      {255, 255, 255, 0, 0, 0, 0},         // no colourant, full black
+      {128, 128, 128, 255, 128, 128, 128}, // half of each colourant
+      {255, 0, 0, 255, 255, 0, 0},         // red
+      {219, 240, 190, 250, 215, 235, 186}, // rounding, not truncation
+  };
+  for (const Case & t : cases) {
+    SCOPED_TRACE(testing::Message() << "cmyk " << (int)t.c << "," << (int)t.m
+                                    << "," << (int)t.y << "," << (int)t.k);
+    GIMG_Raster * src =
+        one_cmyk_pixel(t.c, t.m, t.y, t.k, GIMG_CMYK_POLARITY_INK);
+    ASSERT_NE(src, nullptr);
+    GIMG_Raster * dst = nullptr;
+    ASSERT_EQ(
+        gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_RGBA8, &dst), GIMG_OK);
+    ASSERT_NE(dst, nullptr);
+    const uint8_t * px =
+        static_cast<const uint8_t *>(gimg_raster_pixels_const(dst));
+    EXPECT_EQ(px[0], t.r);
+    EXPECT_EQ(px[1], t.g);
+    EXPECT_EQ(px[2], t.b);
+    EXPECT_EQ(px[3], 255) << "CMYK has no alpha, so the result is opaque";
+    gimg_raster_destroy(src);
+    gimg_raster_destroy(dst);
+  }
+}
+
+TEST(Ops, ReflectionPolarityIsTheOtherWayRound) {
+  // The two readings are photographic negatives of each other, so a raster
+  // that says 0 is no ink must come out as the complement of one that says 0
+  // is full ink.
+  GIMG_Raster * ink =
+      one_cmyk_pixel(255, 255, 255, 255, GIMG_CMYK_POLARITY_INK);
+  GIMG_Raster * refl =
+      one_cmyk_pixel(0, 0, 0, 0, GIMG_CMYK_POLARITY_REFLECTION);
+  ASSERT_NE(ink, nullptr);
+  ASSERT_NE(refl, nullptr);
+  GIMG_Raster * a = nullptr;
+  GIMG_Raster * b = nullptr;
+  ASSERT_EQ(gimg_ops_convert_pixel_format(ink, &GIMG_PIXEL_RGBA8, &a), GIMG_OK);
+  ASSERT_EQ(
+      gimg_ops_convert_pixel_format(refl, &GIMG_PIXEL_RGBA8, &b), GIMG_OK);
+  const uint8_t * pa = static_cast<const uint8_t *>(gimg_raster_pixels_const(a));
+  const uint8_t * pb = static_cast<const uint8_t *>(gimg_raster_pixels_const(b));
+  EXPECT_EQ(pa[0], 255);
+  EXPECT_EQ(pb[0], 255) << "no ink either way is white";
+  gimg_raster_destroy(a);
+  gimg_raster_destroy(b);
+  gimg_raster_destroy(ink);
+  gimg_raster_destroy(refl);
+
+  GIMG_Raster * full = one_cmyk_pixel(255, 255, 255, 255,
+      GIMG_CMYK_POLARITY_REFLECTION);
+  ASSERT_NE(full, nullptr);
+  GIMG_Raster * out = nullptr;
+  ASSERT_EQ(
+      gimg_ops_convert_pixel_format(full, &GIMG_PIXEL_RGBA8, &out), GIMG_OK);
+  const uint8_t * po =
+      static_cast<const uint8_t *>(gimg_raster_pixels_const(out));
+  EXPECT_EQ(po[0], 0);
+  EXPECT_EQ(po[1], 0);
+  EXPECT_EQ(po[2], 0) << "every ink at full under this reading is black";
+  gimg_raster_destroy(full);
+  gimg_raster_destroy(out);
+}
+
+TEST(Ops, CmykWithNoStatedPolarityIsRefusedRatherThanGuessed) {
+  // The two readings are negatives of each other, so guessing would produce a
+  // plausible picture that might be inverted.  Refusing is the honest answer
+  // and the error tells the caller what to state.
+  GIMG_Raster * src =
+      one_cmyk_pixel(10, 20, 30, 40, GIMG_CMYK_POLARITY_UNKNOWN);
+  ASSERT_NE(src, nullptr);
+  GIMG_Raster * dst = nullptr;
+  EXPECT_EQ(gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_RGBA8, &dst),
+      GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(dst, nullptr);
+  gimg_raster_destroy(src);
+}
+
+TEST(Ops, CmykToRgbCarriesNoColorInfo) {
+  // Whatever the source said described four ink amounts on some press, and
+  // none of it - an embedded profile least of all - is true of the
+  // three-channel result.  Copying a CMYK profile onto RGB pixels would
+  // label them with a space they are not in.
+  std::vector<uint8_t> profile(128, 0);
+  std::memcpy(profile.data() + 36, "acsp", 4);
+  GIMG_Raster * src =
+      one_cmyk_pixel(100, 110, 120, 130, GIMG_CMYK_POLARITY_INK);
+  ASSERT_NE(src, nullptr);
+  GIMG_Color_Info ci;
+  gimg_color_info_default(&ci);
+  ci.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
+  ci.icc_bytes = profile.data();
+  ci.icc_size = profile.size();
+  ci.transfer = GIMG_TRANSFER_GAMMA;
+  ci.gamma_value = 1.8;
+  ASSERT_EQ(gimg_raster_set_color_info(src, &ci), GIMG_OK);
+
+  GIMG_Raster * dst = nullptr;
+  ASSERT_EQ(
+      gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_RGBA8, &dst), GIMG_OK);
+  const GIMG_Color_Info * got = gimg_raster_color_info_const(dst);
+  ASSERT_NE(got, nullptr);
+  EXPECT_EQ(got->icc_size, 0u);
+  EXPECT_EQ(got->icc_bytes, nullptr);
+  EXPECT_EQ(got->transfer, GIMG_TRANSFER_UNKNOWN);
+  EXPECT_EQ(got->cmyk_polarity, GIMG_CMYK_POLARITY_UNKNOWN)
+      << "the result has no ink channels for a polarity to describe";
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+TEST(Ops, CmykToRgbAtADifferentSampleWidthIsRefused) {
+  // Narrowing or widening is gimg_ops_convert_bit_depth's job; doing both at
+  // once would hide which of them the caller asked for.
+  GIMG_Raster * src = one_cmyk_pixel(10, 20, 30, 40, GIMG_CMYK_POLARITY_INK);
+  ASSERT_NE(src, nullptr);
+  GIMG_Raster * dst = nullptr;
+  EXPECT_EQ(gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_RGBA16, &dst),
+      GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(dst, nullptr);
+  gimg_raster_destroy(src);
+}
+
+TEST(Ops, SixteenBitCmykUsesTheWholeRange) {
+  GIMG_Raster * src = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                2, 1, &GIMG_PIXEL_CMYK16, GIMG_RASTER_OWNED, nullptr, 0, &src),
+      GIMG_OK);
+  uint16_t * px = static_cast<uint16_t *>(gimg_raster_pixels(src));
+  px[0] = px[1] = px[2] = px[3] = 65535u;      // no ink
+  px[4] = px[5] = px[6] = 65535u; px[7] = 0u;  // full black only
+  GIMG_Color_Info ci;
+  gimg_color_info_default(&ci);
+  ci.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
+  ASSERT_EQ(gimg_raster_set_color_info(src, &ci), GIMG_OK);
+
+  GIMG_Raster * dst = nullptr;
+  ASSERT_EQ(
+      gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_RGBA16, &dst), GIMG_OK);
+  const uint16_t * out =
+      static_cast<const uint16_t *>(gimg_raster_pixels_const(dst));
+  EXPECT_EQ(out[0], 65535u);
+  EXPECT_EQ(out[3], 65535u) << "opaque at the full 16-bit value, not 255";
+  EXPECT_EQ(out[4], 0u);
+  EXPECT_EQ(out[5], 0u);
+  EXPECT_EQ(out[6], 0u);
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}

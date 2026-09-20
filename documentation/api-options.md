@@ -181,7 +181,7 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 | `gamma_value` | Used when `transfer` is **GIMG_TRANSFER_GAMMA**. |
 | `intent` | **GIMG_Rendering_Intent** — used when ICC is present. |
 | `icc_bytes` / `icc_size` | Optional ICC profile; library does not take ownership. |
-| `cmyk_polarity` | **GIMG_CMYK_Polarity** — interpretation of CMYK channel values. Only relevant when raster format is **GIMG_PIXEL_CMYK8**. |
+| `cmyk_polarity` | **GIMG_CMYK_Polarity** — interpretation of CMYK channel values. Only relevant when the raster format is a CMYK one (**GIMG_PIXEL_CMYK8**, **CMYK12**, **CMYK16**). |
 
 **GIMG_CMYK_Polarity** (see `ghoti.io/image/color.h`):
 
@@ -191,7 +191,9 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 | **GIMG_CMYK_POLARITY_INK** | 0 = full ink, 255 = no ink (Adobe / JPEG file convention). Set by the JPEG decoder for CMYK output. |
 | **GIMG_CMYK_POLARITY_REFLECTION** | 0 = no ink, 255 = full ink (reflection; e.g. many design-tool APIs). |
 
-Raster pixels are stored as raw values; `cmyk_polarity` tells consumers (e.g. display or CMYK→RGB conversion) whether to treat 0 as “no ink” or “full ink” when interpreting the channels.
+Raster pixels are stored as raw values; `cmyk_polarity` tells consumers (e.g. display or CMYK→RGB conversion) whether to treat 0 as “no ink” or “full ink” when interpreting the channels. The JPEG decoder states it on every four-component frame, whatever the coding process.
+
+`gimg_ops_convert_pixel_format` reads it to convert a CMYK raster to RGBA, which is the only route from a four-component JPEG into a PNG or a BMP — neither has CMYK. The conversion is the naive one (each ink an independent multiplicative filter over white) and is **not colorimetric**: this library has no colour engine, so what it offers is that conversion or none. It agrees with Pillow exactly on every pixel of every CMYK and YCCK fixture in `tests/data/jpeg`. A polarity of **GIMG_CMYK_POLARITY_UNKNOWN** is refused rather than guessed — the two readings are negatives of each other, and the wrong one gives a plausible but inverted picture. No writer performs the conversion on your behalf.
 
 ## `jpeg_arithmetic` (save)
 

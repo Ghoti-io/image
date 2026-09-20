@@ -12,6 +12,13 @@ reads same JPEG, (2) decodes to raw, (3) compares to .raw.
 - L and RGB: Pillow decodes and writes .raw.
 - CMYK: libjpeg (dump_jpeg_pixels_ref -o) writes .raw so decoder tests match
   libjpeg. Requires jpeg-oracle-tools to be built in DIR.
+- CMYK also gets a second file, `<base>.cmyk2rgb.raw`, holding Pillow's RGB
+  rendering of the same image (mode 1). That is the oracle for
+  gimg_ops_convert_pixel_format's CMYK-to-RGBA conversion: this library has no
+  colour engine, so what it can be held to is agreeing with the naive
+  conversion everything else without one performs. Pillow's is libjpeg's CMYK
+  handling plus its own ink arithmetic, and the two agree exactly on every
+  pixel of every CMYK fixture here.
 
 Usage:
   python3 tests/data/jpeg/generate_jpeg_oracle_raws.py [DIR]
@@ -78,6 +85,15 @@ def main() -> int:
         raw_path = os.path.join(dirpath, base + ".raw")
 
         if im.mode == "CMYK":
+            # Pillow's RGB rendering of the same image, as the oracle for our
+            # CMYK-to-RGBA conversion.  Written whether or not the libjpeg
+            # tool below is available, because it needs nothing but Pillow.
+            rgb_path = os.path.join(dirpath, base + ".cmyk2rgb.raw")
+            with open(rgb_path, "wb") as f:
+                f.write(struct.pack("<BII", MODE_RGB, w, h))
+                f.write(im.convert("RGB").tobytes())
+            written += 1
+
             # Use libjpeg (dump_jpeg_pixels_ref) so decoder tests match libjpeg.
             ref_exe = os.path.join(dirpath, "dump_jpeg_pixels_ref")
             if os.path.isfile(ref_exe):
@@ -88,7 +104,7 @@ def main() -> int:
                         capture_output=True,
                     )
                     written += 1
-                except subprocess.CalledProcessError as e:
+                except (subprocess.CalledProcessError, OSError) as e:
                     print(f"{name}: skip (dump_jpeg_pixels_ref failed: {e})", file=sys.stderr)
             else:
                 exe_win = ref_exe + ".exe"
@@ -100,7 +116,7 @@ def main() -> int:
                             capture_output=True,
                         )
                         written += 1
-                    except subprocess.CalledProcessError as e:
+                    except (subprocess.CalledProcessError, OSError) as e:
                         print(f"{name}: skip (dump_jpeg_pixels_ref failed: {e})", file=sys.stderr)
                 else:
                     print(f"{name}: skip (CMYK needs libjpeg .raw; run make jpeg-oracle-tools)", file=sys.stderr)

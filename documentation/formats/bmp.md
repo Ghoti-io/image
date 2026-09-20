@@ -221,9 +221,12 @@ The form follows the raster and the caller's options, in this order:
   to write it as, and refusing meant a 16-bit PNG could not be saved as a BMP
   at all. The narrowing is `round(v x 255 / max)`, the same rule the decoder
   uses widening a sub-byte channel, and it carries the color info across with
-  it. Anything else - CMYK above all, where the four channels are ink amounts
-  and turning them into RGB is a color conversion this library does not do -
-  is reported as `GIMG_ERR_UNSUPPORTED` rather than reinterpreted.
+  it. Anything else - CMYK above all, where the four channels are ink amounts -
+  is reported as `GIMG_ERR_UNSUPPORTED` rather than reinterpreted. A CMYK
+  raster has an explicit route: `gimg_ops_convert_pixel_format` will turn one
+  into RGBA, and the result saves here like any other. The writer does not do
+  it on your behalf, because it is a color conversion and this library does
+  not change an image's color without being asked.
 - **Source of the pixels:** the raster attached to item 0 if there is one,
   otherwise the item is decoded and the result owned for the duration of the
   save. `GIMG_Save_Report.bytes_written` is the file size, and the tests
