@@ -140,6 +140,16 @@ GIMG_API void gimg_jpeg_tables_destroy(GIMG_JPEG_Tables * tables);
  * @brief BMP: what to make of the fourth byte of a 32-bit BI_RGB pixel.
  * @see api_options
  */
+/** BMP: write an indexed bitmap when that is lossless and smaller. */
+#define GIMG_BMP_PALETTE_AUTO 0
+/** BMP: always write 24- or 32-bit color. */
+#define GIMG_BMP_PALETTE_NEVER 1
+
+/** BMP: never run-length encode. */
+#define GIMG_BMP_RLE_NEVER 0
+/** BMP: write BI_RLE8 for an 8-bit indexed image when it comes out smaller. */
+#define GIMG_BMP_RLE_AUTO 1
+
 /** Ignore it: a 32-bit BI_RGB image decodes fully opaque.  This is the
  * default, and what GDI, Pillow, GdkPixbuf and netpbm all do. */
 #define GIMG_BMP_RGB32_ALPHA_IGNORE 0
@@ -378,6 +388,50 @@ typedef struct {
    * palette image is still written back as one either way: that is preserving
    * what the file was, not creating something new.  Ignored for non-PNG. */
   uint8_t png_palette;
+
+  /** Whether the BMP writer may store an image through a palette.
+   *
+   * GIMG_BMP_PALETTE_AUTO (0, default) writes an indexed bitmap when the
+   * image has no more than 256 distinct colors, is fully opaque, and the
+   * indexed form is the smaller file - at the smallest depth that holds the
+   * indices, 1, 4 or 8 bits.  Like the PNG writer's palette, that is a
+   * lossless choice and not color quantization: with 256 colors or fewer
+   * there is exactly one palette that reproduces the image, so nothing is
+   * being decided about the picture, only about how it is stored.  Unlike
+   * PNG's, the two sizes are arithmetic rather than a measurement, so both
+   * forms need not be written to find out which is smaller.
+   *
+   * GIMG_BMP_PALETTE_NEVER writes 24- or 32-bit color always.  An image with
+   * more than 256 colors, or with any transparency, is written that way
+   * regardless: a BMP palette has no alpha, and reducing the colors would be
+   * an image-processing decision and not a codec's.  Ignored for non-BMP. */
+  uint8_t bmp_palette;
+
+  /** Whether the BMP writer may run-length encode an indexed bitmap.
+   *
+   * GIMG_BMP_RLE_NEVER (0, default) writes the rows uncompressed.  That is
+   * the default because an uncompressed BMP is the most widely readable image
+   * there is, which is most of why the format is still worth writing;
+   * `bmptopnm` refuses several of bmpsuite's RLE files, to name one reader in
+   * reach of this repository.
+   *
+   * GIMG_BMP_RLE_AUTO writes BI_RLE8 when the image is being stored at 8 bits
+   * through a palette and the encoded rows come out smaller than the plain
+   * ones.  It applies to nothing else: RLE4's alternating nibbles make it
+   * larger than RLE8 on most images that are not synthetic, and RLE24 is an
+   * OS/2 encoding that Windows never reads.  Ignored for non-BMP. */
+  uint8_t bmp_rle;
+
+  /** Whether the BMP writer stores rows top to bottom.
+   *
+   * 0 (the default) writes them bottom-up with a positive biHeight, which is
+   * the layout every reader handles.  1 writes them top-down with a negative
+   * biHeight, which is legal from BITMAPINFOHEADER onwards and is what a
+   * caller wants when something downstream reads the file as a memory-mapped
+   * framebuffer.  It is refused together with GIMG_BMP_RLE_AUTO, because the
+   * format does not allow compression and top-down rows together - an RLE
+   * stream's end-of-line walks one way only.  Ignored for non-BMP. */
+  uint8_t bmp_top_down;
 } GIMG_Save_Options;
 
 /** @name PNG row filters (PNG 9.2, Table 9.1)

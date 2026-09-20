@@ -1,21 +1,42 @@
 /**
  * @file
  *
- * BMP save: raster -> uncompressed BITMAPINFOHEADER bitmap.
+ * BMP save: raster -> BITMAPINFOHEADER bitmap, indexed or true color.
  *
  * Copyright 2026 by Corey Pennycuff
  *
  * --- Internal algorithms and design ---
  *
- * Depth selection: a raster whose alpha is not uniformly opaque is written as
- * 32-bit BI_BITFIELDS with an explicit alpha mask, since 32-bit BI_RGB leaves
- * the fourth byte undefined and readers disagree about it.  Everything else
- * is written as 24-bit BI_RGB, which is the most widely readable BMP there
- * is.  The caller can force 32-bit by leaving a non-opaque alpha in place.
+ * Form selection, in order.  A raster whose alpha is not uniformly opaque is
+ * written as 32-bit BI_BITFIELDS with an explicit alpha mask, since 32-bit
+ * BI_RGB leaves the fourth byte undefined and readers disagree about it - see
+ * GIMG_Load_Options.bmp_rgb32_alpha for the other side of that.  An opaque
+ * raster of no more than 256 distinct colors is written through a palette
+ * when that is the smaller file, at the smallest depth that holds the indices
+ * - 1, 4 or 8.  Everything else is 24-bit BI_RGB, which is the most widely
+ * readable BMP there is.
  *
- * Row order: rows are written bottom-up with a positive height, the layout
- * every BMP reader handles.  Top-down BMPs exist but are less portable and
- * are illegal in combination with compression.
+ * The palette is lossless and not color quantization: with 256 colors or
+ * fewer there is exactly one palette that reproduces the image, so nothing is
+ * being decided about the picture, only about how it is stored.  Which form
+ * is smaller is arithmetic here rather than a measurement, because a BMP's
+ * size follows from its stride and height alone; the PNG writer has to encode
+ * both forms to find out, since DEFLATE makes it unpredictable.
+ *
+ * 2 bits per pixel is read but never written.  It is a Windows CE addition
+ * that the desktop API does not accept, and an image that fits in 4 colors
+ * fits in 1 or 4 bits as well, so writing it would cost portability for at
+ * most a byte a row.
+ *
+ * Counting colors uses an open-addressed table keyed on the packed RGB, so a
+ * pixel costs one probe rather than a walk of everything seen so far.  It
+ * gives up at 257 distinct colors: the answer past that point is only ever
+ * "too many".
+ *
+ * Row order: bottom-up with a positive height by default, the layout every
+ * BMP reader handles.  GIMG_Save_Options.bmp_top_down writes them the other
+ * way, which is legal from BITMAPINFOHEADER onwards and is refused together
+ * with RLE, whose end-of-line walks one way only.
  *
  * Source formats: the raster is read through gimg_raster_* accessors for RGBA8
  * and GRAY8, the two 8-bit formats the library decodes to.  Anything else is
@@ -125,6 +146,256 @@ static bool bmp_raster_is_opaque(const GIMG_Raster * raster) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Palette
+// ---------------------------------------------------------------------------
+
+/** Entries the table can address at each depth this writer will emit. */
+#define BMP_PALETTE_MAX 256u
+
+/**
+ * Open-addressed map from a packed 0x00RRGGBB to a palette index.
+ *
+ * Sized well above the 256 entries it can hold so the load factor stays low
+ * and a probe almost always lands first try.  A power of two, so the wrap is
+ * a mask.
+ */
+#define BMP_COLOR_SLOTS 1024u
+
+typedef struct {
+  uint32_t key[BMP_COLOR_SLOTS];  ///< Packed color, with bit 24 set when used.
+  uint16_t index[BMP_COLOR_SLOTS];
+  uint32_t colors[BMP_PALETTE_MAX]; ///< Packed colors, in first-seen order.
+  uint32_t count;
+} bmp_color_table_t;
+
+/** Bit above the 24 color bits, marking a slot as occupied. */
+#define BMP_SLOT_USED UINT32_C(0x01000000)
+
+static uint32_t bmp_color_hash(uint32_t packed) {
+  // Knuth's multiplicative hash; the top bits are the well-mixed ones.
+  return (packed * UINT32_C(2654435761)) >> 22;
+}
+
+/**
+ * Note one color, assigning it the next index if it is new.
+ *
+ * @return false once the image has more distinct colors than a palette can
+ *   hold, at which point the caller stops asking.
+ */
+static bool bmp_color_table_add(bmp_color_table_t * t, uint32_t packed) {
+  uint32_t slot = bmp_color_hash(packed) & (BMP_COLOR_SLOTS - 1u);
+  for (;;) {
+    uint32_t key = t->key[slot];
+    if (!(key & BMP_SLOT_USED)) {
+      if (t->count >= BMP_PALETTE_MAX) {
+        return false;
+      }
+      t->key[slot] = packed | BMP_SLOT_USED;
+      t->index[slot] = (uint16_t)t->count;
+      t->colors[t->count++] = packed;
+      return true;
+    }
+    if ((key & 0x00FFFFFFu) == packed) {
+      return true;
+    }
+    slot = (slot + 1u) & (BMP_COLOR_SLOTS - 1u);
+  }
+}
+
+/** The index a color was given; only ever called for a color already added. */
+static unsigned int bmp_color_table_lookup(
+    const bmp_color_table_t * t, uint32_t packed) {
+  uint32_t slot = bmp_color_hash(packed) & (BMP_COLOR_SLOTS - 1u);
+  for (;;) {
+    uint32_t key = t->key[slot];
+    if (!(key & BMP_SLOT_USED)) {
+      return 0; // Unreachable: every color present was added first.
+    }
+    if ((key & 0x00FFFFFFu) == packed) {
+      return t->index[slot];
+    }
+    slot = (slot + 1u) & (BMP_COLOR_SLOTS - 1u);
+  }
+}
+
+/**
+ * Fill `table` with the image's distinct colors.
+ *
+ * @return false when there are more than a palette can hold, which is the
+ *   only thing worth knowing past that point.
+ */
+static bool bmp_collect_colors(
+    const GIMG_Raster * raster, bmp_color_table_t * table) {
+  const GIMG_Pixel_Format * f = gimg_raster_format(raster);
+  uint32_t width = gimg_raster_width(raster);
+  uint32_t height = gimg_raster_height(raster);
+  size_t stride = gimg_raster_stride_bytes(raster);
+  const uint8_t * pixels = (const uint8_t *)gimg_raster_pixels_const(raster);
+
+  memset(table, 0, sizeof(*table));
+  for (uint32_t y = 0; y < height; y++) {
+    const uint8_t * row = pixels + ((size_t)y * stride);
+    for (uint32_t x = 0; x < width; x++) {
+      uint8_t rgba[4];
+      bmp_sample(f, row, x, rgba);
+      uint32_t packed = ((uint32_t)rgba[0] << 16) | ((uint32_t)rgba[1] << 8) |
+          (uint32_t)rgba[2];
+      if (!bmp_color_table_add(table, packed)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/** The smallest depth this writer will emit that addresses `count` entries. */
+static uint16_t bmp_depth_for(uint32_t count) {
+  // 2 bits per pixel is deliberately absent: see the file comment.
+  if (count <= 2u) {
+    return 1u;
+  }
+  if (count <= 16u) {
+    return 4u;
+  }
+  return 8u;
+}
+
+// ---------------------------------------------------------------------------
+// Row packing
+// ---------------------------------------------------------------------------
+
+/**
+ * Write one image row into `out`, which the caller has zeroed to `stride`.
+ *
+ * Indices are packed most significant bits first, which is what clause 2 of
+ * the DIB layout says and what the decoder here reads back.
+ */
+static void bmp_pack_row(const GIMG_Pixel_Format * format, const uint8_t * src,
+    uint32_t width, uint16_t bit_count, const bmp_color_table_t * table,
+    unsigned char * out) {
+  for (uint32_t x = 0; x < width; x++) {
+    uint8_t rgba[4];
+    bmp_sample(format, src, x, rgba);
+
+    if (bit_count >= 24u) {
+      unsigned char * px = out + ((size_t)x * (size_t)(bit_count / 8u));
+      px[0] = rgba[2]; // Blue.
+      px[1] = rgba[1]; // Green.
+      px[2] = rgba[0]; // Red.
+      if (bit_count == 32u) {
+        px[3] = rgba[3];
+      }
+      continue;
+    }
+
+    uint32_t packed = ((uint32_t)rgba[0] << 16) | ((uint32_t)rgba[1] << 8) |
+        (uint32_t)rgba[2];
+    unsigned int index = bmp_color_table_lookup(table, packed);
+    size_t bit = (size_t)x * bit_count;
+    unsigned int shift = (unsigned int)(8u - bit_count - (bit % 8u));
+    out[bit / 8u] |= (unsigned char)((index & ((1u << bit_count) - 1u))
+        << shift);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RLE8
+// ---------------------------------------------------------------------------
+
+/**
+ * Run-length encode one row of 8-bit indices, appending to `out`.
+ *
+ * A run of three or more identical indices is worth an encoded pair; anything
+ * shorter goes into an absolute run, which costs two bytes of header and so
+ * only pays from three literals up.  Absolute runs are padded to a 16-bit
+ * boundary, and a run of fewer than three literals is emitted as encoded
+ * pairs instead, since counts below three are escapes.
+ *
+ * @return the number of bytes appended, or SIZE_MAX if `capacity` was short.
+ */
+static size_t bmp_rle8_row(const unsigned char * indices, uint32_t width,
+    unsigned char * out, size_t capacity) {
+  size_t used = 0;
+  uint32_t x = 0;
+
+#define BMP_RLE_PUT(byte)                                                      \
+  do {                                                                         \
+    if (used >= capacity) {                                                    \
+      return SIZE_MAX;                                                         \
+    }                                                                          \
+    out[used++] = (unsigned char)(byte);                                       \
+  } while (0)
+
+  while (x < width) {
+    // How far the run of equal indices starting here reaches, capped at the
+    // 255 a count byte can state.
+    uint32_t run = 1;
+    while (x + run < width && run < 255u && indices[x + run] == indices[x]) {
+      run++;
+    }
+    if (run >= 3u) {
+      BMP_RLE_PUT(run);
+      BMP_RLE_PUT(indices[x]);
+      x += run;
+      continue;
+    }
+
+    // A stretch with no run worth encoding: gather literals until one starts.
+    uint32_t start = x;
+    uint32_t literals = 0;
+    while (x < width && literals < 255u) {
+      uint32_t ahead = 1;
+      while (x + ahead < width && ahead < 3u && indices[x + ahead] ==
+          indices[x]) {
+        ahead++;
+      }
+      if (ahead >= 3u) {
+        break;
+      }
+      x++;
+      literals++;
+    }
+    if (literals < 3u) {
+      // Too few to be an absolute run - 0, 1 and 2 are escapes - so they go
+      // out as encoded pairs of one.
+      for (uint32_t i = 0; i < literals; i++) {
+        BMP_RLE_PUT(1);
+        BMP_RLE_PUT(indices[start + i]);
+      }
+      continue;
+    }
+    BMP_RLE_PUT(0);
+    BMP_RLE_PUT(literals);
+    for (uint32_t i = 0; i < literals; i++) {
+      BMP_RLE_PUT(indices[start + i]);
+    }
+    if (literals & 1u) {
+      BMP_RLE_PUT(0); // Pad to a 16-bit boundary.
+    }
+  }
+
+  BMP_RLE_PUT(0); // End of line.
+  BMP_RLE_PUT(0);
+#undef BMP_RLE_PUT
+  return used;
+}
+
+// ---------------------------------------------------------------------------
+// Save
+// ---------------------------------------------------------------------------
+
+/** Everything the header writer needs, decided before a byte goes out. */
+typedef struct {
+  uint16_t bit_count;
+  uint32_t compression;
+  uint32_t dib_size;
+  uint32_t palette_entries;
+  bool top_down;
+  size_t stride;      ///< Bytes per row of uncompressed pixel data.
+  size_t pixel_bytes; ///< Bytes of pixel data, encoded or not.
+} bmp_plan_t;
+
 GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report) {
@@ -133,6 +404,19 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return GIMG_ERR_INTERNAL;
   }
   report->bytes_written = 0;
+
+  const uint8_t want_palette =
+      options ? options->bmp_palette : (uint8_t)GIMG_BMP_PALETTE_AUTO;
+  const uint8_t want_rle =
+      options ? options->bmp_rle : (uint8_t)GIMG_BMP_RLE_NEVER;
+  const bool want_top_down = options && options->bmp_top_down;
+
+  if (want_rle == GIMG_BMP_RLE_AUTO && want_top_down) {
+    // The format does not allow the pair: an RLE stream's end-of-line walks
+    // one way only, so a top-down RLE bitmap does not say which way it walks.
+    // The loader here refuses one, and so do GdkPixbuf and netpbm.
+    return GIMG_ERR_UNSUPPORTED;
+  }
 
   if (gimg_doc_item_count(doc) == 0) {
     return GIMG_ERR_FORMAT;
@@ -157,6 +441,8 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   GIMG_Result result = GIMG_OK;
   const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
   unsigned char * row_buffer = NULL;
+  unsigned char * encoded = NULL;
+  bmp_color_table_t * table = NULL;
 
   const GIMG_Pixel_Format * format = gimg_raster_format(raster);
   if (!bmp_format_supported(format)) {
@@ -172,29 +458,140 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       goto done;
     }
 
-    bool opaque = bmp_raster_is_opaque(raster);
-    uint16_t bit_count = opaque ? 24u : 32u;
-    // An alpha channel needs explicit masks; 32-bit BI_RGB does not define
-    // the fourth byte and readers disagree on whether to honor it.
-    uint32_t compression = opaque ? GIMG_BMP_BI_RGB : GIMG_BMP_BI_BITFIELDS;
-    uint32_t dib_size =
-        opaque ? GIMG_BMP_INFOHEADER_SIZE : GIMG_BMP_V3HEADER_SIZE;
+    bmp_plan_t plan;
+    memset(&plan, 0, sizeof(plan));
+    plan.top_down = want_top_down;
 
-    size_t stride;
-    result = gimg_bmp_row_stride(width, bit_count, &stride);
+    bool opaque = bmp_raster_is_opaque(raster);
+    bool indexed = false;
+
+    if (!opaque) {
+      // An alpha channel needs explicit masks; 32-bit BI_RGB does not define
+      // the fourth byte and readers disagree on whether to honor it.  A BMP
+      // palette has no alpha at all, so this rules the palette out too.
+      plan.bit_count = 32u;
+      plan.compression = GIMG_BMP_BI_BITFIELDS;
+      plan.dib_size = GIMG_BMP_V3HEADER_SIZE;
+    }
+    else {
+      plan.bit_count = 24u;
+      plan.compression = GIMG_BMP_BI_RGB;
+      plan.dib_size = GIMG_BMP_INFOHEADER_SIZE;
+
+      if (want_palette == GIMG_BMP_PALETTE_AUTO) {
+        table =
+            (bmp_color_table_t *)gimg_calloc(alloc, 1, sizeof(*table));
+        if (!table) {
+          result = GIMG_ERR_OOM;
+          goto done;
+        }
+        if (bmp_collect_colors(raster, table) && table->count > 0) {
+          uint16_t depth = bmp_depth_for(table->count);
+          size_t plain_stride = 0, indexed_stride = 0;
+          if (gimg_bmp_row_stride(width, 24u, &plain_stride) == GIMG_OK &&
+              gimg_bmp_row_stride(width, depth, &indexed_stride) == GIMG_OK) {
+            // Both forms' sizes follow from the stride, so which is smaller is
+            // arithmetic and not a measurement.  The palette costs four bytes
+            // an entry and is part of the comparison.
+            size_t plain = plain_stride * (size_t)height;
+            size_t with_palette = (indexed_stride * (size_t)height) +
+                ((size_t)table->count * 4u);
+            if (with_palette < plain) {
+              indexed = true;
+              plan.bit_count = depth;
+              plan.palette_entries = table->count;
+            }
+          }
+        }
+        if (!indexed) {
+          gimg_free(alloc, table);
+          table = NULL;
+        }
+      }
+    }
+
+    result = gimg_bmp_row_stride(width, plan.bit_count, &plan.stride);
     if (result != GIMG_OK) {
       goto done;
     }
-
-    size_t pixel_bytes;
-    if (!gcu_safe_mul_size(stride, (size_t)height, &pixel_bytes)) {
+    if (!gcu_safe_mul_size(plan.stride, (size_t)height, &plan.pixel_bytes)) {
       result = GIMG_ERR_LIMIT;
       goto done;
     }
 
-    size_t data_offset = (size_t)GIMG_BMP_FILE_HEADER_SIZE + (size_t)dib_size;
+    // RLE8, when it was asked for, applies and comes out smaller.  It is
+    // encoded up front rather than streamed, because biSizeImage and bfSize
+    // both have to state its length before any of it is written.
+    size_t encoded_size = 0;
+    bool use_rle = false;
+    if (want_rle == GIMG_BMP_RLE_AUTO && indexed && plan.bit_count == 8u) {
+      // Worst case per row: every pixel its own encoded pair, plus the
+      // end-of-line, plus the end-of-bitmap at the end of the image.
+      size_t per_row;
+      size_t capacity;
+      if (!gcu_safe_mul_size((size_t)width, 2u, &per_row) ||
+          !gcu_safe_add_size(per_row, 2u, &per_row) ||
+          !gcu_safe_mul_size(per_row, (size_t)height, &capacity) ||
+          !gcu_safe_add_size(capacity, 2u, &capacity)) {
+        result = GIMG_ERR_LIMIT;
+        goto done;
+      }
+      encoded = (unsigned char *)gimg_malloc(alloc, capacity);
+      if (!encoded) {
+        result = GIMG_ERR_OOM;
+        goto done;
+      }
+      unsigned char * indices =
+          (unsigned char *)gimg_malloc(alloc, (size_t)width);
+      if (!indices) {
+        result = GIMG_ERR_OOM;
+        goto done;
+      }
+
+      size_t src_stride = gimg_raster_stride_bytes(raster);
+      const uint8_t * pixels =
+          (const uint8_t *)gimg_raster_pixels_const(raster);
+      encoded_size = 0;
+      for (uint32_t y = 0; y < height && encoded_size != SIZE_MAX; y++) {
+        // Rows go out in the order the file stores them, which is bottom-up.
+        uint32_t source_row = height - 1u - y;
+        const uint8_t * src = pixels + ((size_t)source_row * src_stride);
+        for (uint32_t x = 0; x < width; x++) {
+          uint8_t rgba[4];
+          bmp_sample(format, src, x, rgba);
+          uint32_t packed = ((uint32_t)rgba[0] << 16) |
+              ((uint32_t)rgba[1] << 8) | (uint32_t)rgba[2];
+          indices[x] = (unsigned char)bmp_color_table_lookup(table, packed);
+        }
+        size_t n = bmp_rle8_row(indices, width, encoded + encoded_size,
+            capacity - encoded_size);
+        if (n == SIZE_MAX) {
+          encoded_size = SIZE_MAX;
+          break;
+        }
+        encoded_size += n;
+      }
+      gimg_free(alloc, indices);
+
+      if (encoded_size != SIZE_MAX && encoded_size + 2u <= capacity) {
+        encoded[encoded_size++] = 0; // End of bitmap.
+        encoded[encoded_size++] = 1;
+        if (encoded_size < plan.pixel_bytes) {
+          use_rle = true;
+          plan.compression = GIMG_BMP_BI_RLE8;
+          plan.pixel_bytes = encoded_size;
+        }
+      }
+      if (!use_rle) {
+        gimg_free(alloc, encoded);
+        encoded = NULL;
+      }
+    }
+
+    size_t data_offset = (size_t)GIMG_BMP_FILE_HEADER_SIZE +
+        (size_t)plan.dib_size + ((size_t)plan.palette_entries * 4u);
     size_t file_size;
-    if (!gcu_safe_add_size(data_offset, pixel_bytes, &file_size) ||
+    if (!gcu_safe_add_size(data_offset, plan.pixel_bytes, &file_size) ||
         file_size > UINT32_MAX) {
       result = GIMG_ERR_LIMIT;
       goto done;
@@ -215,13 +612,15 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     // DIB header.
     unsigned char dib[GIMG_BMP_V3HEADER_SIZE];
     memset(dib, 0, sizeof(dib));
-    bmp_write_u32(dib + 0, dib_size);
+    bmp_write_u32(dib + 0, plan.dib_size);
     bmp_write_u32(dib + 4, width);
-    bmp_write_u32(dib + 8, height); // Positive: rows are stored bottom-up.
-    bmp_write_u16(dib + 12, 1u);    // Planes.
-    bmp_write_u16(dib + 14, bit_count);
-    bmp_write_u32(dib + 16, compression);
-    bmp_write_u32(dib + 20, (uint32_t)pixel_bytes);
+    // A negative height means the rows run top to bottom.
+    bmp_write_u32(dib + 8,
+        plan.top_down ? (uint32_t)(-(int64_t)height) : height);
+    bmp_write_u16(dib + 12, 1u); // Planes.
+    bmp_write_u16(dib + 14, plan.bit_count);
+    bmp_write_u32(dib + 16, plan.compression);
+    bmp_write_u32(dib + 20, (uint32_t)plan.pixel_bytes);
 
     // biXPelsPerMeter / biYPelsPerMeter.  Zero means the file does not state
     // a resolution, which is both legal and what most writers emit; inventing
@@ -242,46 +641,62 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
     bmp_write_u32(dib + 24, x_ppm);
     bmp_write_u32(dib + 28, y_ppm);
-    if (!opaque) {
+    bmp_write_u32(dib + 32, plan.palette_entries);
+    bmp_write_u32(dib + 36, plan.palette_entries);
+
+    if (plan.bit_count == 32u) {
       bmp_write_u32(dib + 40, 0x00FF0000u); // Red.
       bmp_write_u32(dib + 44, 0x0000FF00u); // Green.
       bmp_write_u32(dib + 48, 0x000000FFu); // Blue.
       bmp_write_u32(dib + 52, 0xFF000000u); // Alpha.
     }
-    result = bmp_write_all(stream, dib, dib_size);
+    result = bmp_write_all(stream, dib, plan.dib_size);
     if (result != GIMG_OK) {
       goto done;
     }
 
-    // Pixel rows, bottom-up, zero-padded to a 4-byte boundary.
-    row_buffer = (unsigned char *)gimg_calloc(alloc, 1, stride);
-    if (!row_buffer) {
-      result = GIMG_ERR_OOM;
-      goto done;
-    }
-
-    size_t src_stride = gimg_raster_stride_bytes(raster);
-    const uint8_t * pixels =
-        (const uint8_t *)gimg_raster_pixels_const(raster);
-
-    for (uint32_t y = 0; y < height; y++) {
-      const uint8_t * src = pixels + ((size_t)(height - 1u - y) * src_stride);
-      memset(row_buffer, 0, stride);
-      for (uint32_t x = 0; x < width; x++) {
-        uint8_t rgba[4];
-        bmp_sample(format, src, x, rgba);
-        unsigned char * out =
-            row_buffer + ((size_t)x * (size_t)(bit_count / 8u));
-        out[0] = rgba[2]; // Blue.
-        out[1] = rgba[1]; // Green.
-        out[2] = rgba[0]; // Red.
-        if (bit_count == 32) {
-          out[3] = rgba[3];
+    // Palette, blue-green-red-reserved per entry.
+    if (plan.palette_entries) {
+      for (uint32_t i = 0; i < plan.palette_entries; i++) {
+        uint32_t packed = table->colors[i];
+        unsigned char entry[4];
+        entry[0] = (unsigned char)(packed & 0xFFu);         // Blue.
+        entry[1] = (unsigned char)((packed >> 8) & 0xFFu);  // Green.
+        entry[2] = (unsigned char)((packed >> 16) & 0xFFu); // Red.
+        entry[3] = 0;
+        result = bmp_write_all(stream, entry, sizeof(entry));
+        if (result != GIMG_OK) {
+          goto done;
         }
       }
-      result = bmp_write_all(stream, row_buffer, stride);
+    }
+
+    if (use_rle) {
+      result = bmp_write_all(stream, encoded, plan.pixel_bytes);
       if (result != GIMG_OK) {
         goto done;
+      }
+    }
+    else {
+      row_buffer = (unsigned char *)gimg_calloc(alloc, 1, plan.stride);
+      if (!row_buffer) {
+        result = GIMG_ERR_OOM;
+        goto done;
+      }
+
+      size_t src_stride = gimg_raster_stride_bytes(raster);
+      const uint8_t * pixels =
+          (const uint8_t *)gimg_raster_pixels_const(raster);
+
+      for (uint32_t y = 0; y < height; y++) {
+        uint32_t source_row = plan.top_down ? y : (height - 1u - y);
+        const uint8_t * src = pixels + ((size_t)source_row * src_stride);
+        memset(row_buffer, 0, plan.stride);
+        bmp_pack_row(format, src, width, plan.bit_count, table, row_buffer);
+        result = bmp_write_all(stream, row_buffer, plan.stride);
+        if (result != GIMG_OK) {
+          goto done;
+        }
       }
     }
 
@@ -290,6 +705,8 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
 done:
   gimg_free(alloc, row_buffer);
+  gimg_free(alloc, encoded);
+  gimg_free(alloc, table);
   if (raster_owned) {
     gimg_raster_destroy(raster);
   }

@@ -187,6 +187,84 @@ Rgba alpha_gradient(uint32_t x, uint32_t y) {
       (uint8_t)((x + y) * 11u), (uint8_t)(x * 40u)};
 }
 
+/** Two colors: the fewest a palette can hold, so 1 bit per pixel. */
+Rgba two_colors(uint32_t x, uint32_t y) {
+  return ((x + y) % 2u) ? Rgba{255, 255, 255, 255} : Rgba{16, 32, 48, 255};
+}
+
+/** Twelve colors, which needs 4 bits per pixel. */
+Rgba twelve_colors(uint32_t x, uint32_t y) {
+  uint8_t n = (uint8_t)(((x / 4u) + y) % 12u);
+  return Rgba{(uint8_t)(n * 21u), (uint8_t)(255u - n * 17u),
+      (uint8_t)(n * 9u), 255};
+}
+
+/** Thirty-two colors in runs of eight: 8 bits per pixel, and compressible. */
+Rgba thirty_two_colors_in_runs(uint32_t x, uint32_t y) {
+  (void)y;
+  uint8_t n = (uint8_t)((x / 8u) % 32u);
+  return Rgba{(uint8_t)(n * 8u), (uint8_t)(n * 3u), (uint8_t)(n * 5u), 255};
+}
+
+/** More distinct colors than a palette can hold. */
+Rgba too_many_colors(uint32_t x, uint32_t y) {
+  uint32_t i = (y * 32u) + x;
+  return Rgba{(uint8_t)(i & 0xFFu), (uint8_t)((i >> 8) & 0xFFu),
+      (uint8_t)(i >> 4), 255};
+}
+
+/** Save with options, so the writer's choices can be asked for by name. */
+GIMG_Result save_raster_with_options(GIMG_Raster * raster,
+    const GIMG_Save_Options * options, std::vector<uint8_t> & out) {
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_create(&doc);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = gimg_doc_set_item_count(doc, 1);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * stream = nullptr;
+  r = gimg_stream_create_memory_output(&stream);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, stream, "bmp", options, &report);
+  if (r == GIMG_OK) {
+    const void * buffer = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(stream, &buffer, &size);
+    const uint8_t * bytes = static_cast<const uint8_t *>(buffer);
+    out.assign(bytes, bytes + size);
+    EXPECT_EQ(report.bytes_written, size)
+        << "report must match what was actually written";
+  }
+  gimg_stream_destroy(stream);
+  gimg_doc_destroy(doc);
+  return r;
+}
+
+/** Load a saved file back and require every pixel to be what went in. */
+void expect_round_trip(const std::vector<uint8_t> & bytes, uint32_t width,
+    uint32_t height, Rgba (*pixel)(uint32_t, uint32_t)) {
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  ASSERT_EQ(img.width(), width);
+  ASSERT_EQ(img.height(), height);
+  for (uint32_t y = 0; y < height; y++) {
+    for (uint32_t x = 0; x < width; x++) {
+      EXPECT_EQ(img.at(x, y), pixel(x, y)) << "at (" << x << "," << y << ")";
+    }
+  }
+}
+
 } // namespace
 
 TEST(BmpEncode, OpaqueRasterIsWrittenAs24Bit) {
@@ -410,4 +488,205 @@ TEST(BmpEncode, ResolutionSurvivesASaveAndLoad) {
     EXPECT_EQ(x_dpi, dpi);
     EXPECT_EQ(y_dpi, dpi);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Indexed output
+// ---------------------------------------------------------------------------
+
+TEST(BmpEncode, TwoColorImageIsWrittenAtOneBitPerPixel) {
+  // With 256 colors or fewer there is exactly one palette that reproduces the
+  // image, so storing it through one decides nothing about the picture.  Two
+  // colors need one bit, and at 64 wide that is 8 bytes a row against 192.
+  GIMG_Raster * raster = make_raster(64, 8, two_colors);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u16(bytes, 28), 1u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 30), 0u) << "BI_RGB";
+  EXPECT_EQ(read_u32(bytes, 46), 2u) << "biClrUsed";
+  EXPECT_EQ(read_u32(bytes, 10), 54u + (2u * 4u)) << "palette precedes pixels";
+
+  expect_round_trip(bytes, 64, 8, two_colors);
+  publish_for_verification("indexed_1bit_64x8.bmp", bytes, 64, 8, two_colors);
+}
+
+TEST(BmpEncode, TwelveColorImageIsWrittenAtFourBitsPerPixel) {
+  GIMG_Raster * raster = make_raster(64, 8, twelve_colors);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u16(bytes, 28), 4u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 46), 12u) << "biClrUsed";
+
+  expect_round_trip(bytes, 64, 8, twelve_colors);
+  publish_for_verification("indexed_4bit_64x8.bmp", bytes, 64, 8,
+      twelve_colors);
+}
+
+TEST(BmpEncode, ThirtyTwoColorImageIsWrittenAtEightBitsPerPixel) {
+  GIMG_Raster * raster = make_raster(256, 8, thirty_two_colors_in_runs);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u16(bytes, 28), 8u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 46), 32u) << "biClrUsed";
+
+  expect_round_trip(bytes, 256, 8, thirty_two_colors_in_runs);
+  publish_for_verification("indexed_8bit_256x8.bmp", bytes, 256, 8,
+      thirty_two_colors_in_runs);
+}
+
+TEST(BmpEncode, TooManyColorsStaysTrueColor) {
+  // Reducing an image to 256 colors would be color quantization, which is an
+  // image-processing decision and not a codec's.
+  GIMG_Raster * raster = make_raster(32, 32, too_many_colors);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(read_u16(bytes, 28), 24u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 46), 0u) << "biClrUsed";
+  expect_round_trip(bytes, 32, 32, too_many_colors);
+}
+
+TEST(BmpEncode, PaletteNeverKeepsTrueColor) {
+  GIMG_Save_Options options = {};
+  options.bmp_palette = GIMG_BMP_PALETTE_NEVER;
+
+  GIMG_Raster * raster = make_raster(64, 8, two_colors);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+  EXPECT_EQ(read_u16(bytes, 28), 24u) << "biBitCount";
+  expect_round_trip(bytes, 64, 8, two_colors);
+}
+
+TEST(BmpEncode, TransparencyRulesOutThePalette) {
+  // A BMP palette has no alpha, so an image that needs one cannot use it
+  // however few colors it has.
+  GIMG_Raster * raster = make_raster(4, 2, alpha_gradient);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(read_u16(bytes, 28), 32u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 46), 0u) << "biClrUsed";
+}
+
+TEST(BmpEncode, PaletteIsNotUsedWhenItWouldBeLarger) {
+  // Four pixels of four colors.  At 4 bits each the rows come to 4 bytes and
+  // the palette to 16, against 12 bytes of plain 24-bit colour - so storing
+  // it through a palette would make the file larger, and the arithmetic has
+  // to come out against it.
+  GIMG_Raster * raster = make_raster(4, 1, too_many_colors);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(read_u16(bytes, 28), 24u) << "biBitCount";
+}
+
+// ---------------------------------------------------------------------------
+// RLE8 output
+// ---------------------------------------------------------------------------
+
+TEST(BmpEncode, RleIsNotWrittenUnlessAskedFor) {
+  // An uncompressed BMP is the most widely readable image there is, which is
+  // most of why the format is still worth writing, so compression is opt-in.
+  GIMG_Raster * raster = make_raster(256, 8, thirty_two_colors_in_runs);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(read_u32(bytes, 30), 0u) << "BI_RGB";
+}
+
+TEST(BmpEncode, RleAutoWritesRle8ForARunHeavyImage) {
+  GIMG_Save_Options options = {};
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+
+  GIMG_Raster * plain = make_raster(256, 8, thirty_two_colors_in_runs);
+  GIMG_Raster * raster = make_raster(256, 8, thirty_two_colors_in_runs);
+  ASSERT_NE(plain, nullptr);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> uncompressed;
+  ASSERT_EQ(save_raster(plain, uncompressed), GIMG_OK);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u16(bytes, 28), 8u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 30), 1u) << "BI_RLE8";
+  EXPECT_LT(bytes.size(), uncompressed.size())
+      << "the encoded form is only chosen when it is smaller";
+  EXPECT_EQ(read_u32(bytes, 34), bytes.size() - read_u32(bytes, 10))
+      << "biSizeImage must state the encoded length";
+
+  expect_round_trip(bytes, 256, 8, thirty_two_colors_in_runs);
+  publish_for_verification("rle8_256x8.bmp", bytes, 256, 8,
+      thirty_two_colors_in_runs);
+}
+
+TEST(BmpEncode, RleIsDeclinedWhenItWouldNotHelp) {
+  // A checkerboard at one bit per pixel is not an 8-bit indexed image, so
+  // there is nothing for BI_RLE8 to apply to and the request is simply not
+  // taken up - not refused.
+  GIMG_Save_Options options = {};
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+
+  GIMG_Raster * raster = make_raster(64, 8, two_colors);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+  EXPECT_EQ(read_u32(bytes, 30), 0u) << "BI_RGB";
+  expect_round_trip(bytes, 64, 8, two_colors);
+}
+
+// ---------------------------------------------------------------------------
+// Row order
+// ---------------------------------------------------------------------------
+
+TEST(BmpEncode, TopDownWritesANegativeHeight) {
+  GIMG_Save_Options options = {};
+  options.bmp_top_down = 1;
+
+  GIMG_Raster * raster = make_raster(5, 3, opaque_gradient);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+  int32_t height = (int32_t)read_u32(bytes, 22);
+  EXPECT_EQ(height, -3) << "a negative biHeight means top-down rows";
+
+  expect_round_trip(bytes, 5, 3, opaque_gradient);
+  publish_for_verification("topdown_24bit_5x3.bmp", bytes, 5, 3,
+      opaque_gradient);
+}
+
+TEST(BmpEncode, TopDownAndRleTogetherAreRefused) {
+  // The format does not allow the pair: an RLE stream's end-of-line walks one
+  // way only, so a top-down RLE bitmap does not say which way it walks.  The
+  // loader here refuses such a file, and writing one would be producing
+  // something this library will not read back.
+  GIMG_Save_Options options = {};
+  options.bmp_top_down = 1;
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+
+  GIMG_Raster * raster = make_raster(64, 8, two_colors);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  EXPECT_EQ(save_raster_with_options(raster, &options, bytes),
+      GIMG_ERR_UNSUPPORTED);
 }

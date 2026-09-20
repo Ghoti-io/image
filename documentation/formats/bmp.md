@@ -245,12 +245,12 @@ Listed so the absences are visible rather than discovered.
   therefore decodes as untagged, which for the overwhelming majority of BMP
   files - which are `LCS_sRGB` or carry no color block at all - is what it
   is, but a V5 file with a real profile loses it.
-- **Writing anything but 24- and 32-bit uncompressed.** No palette is ever
-  written, so an indexed file that is loaded and saved comes back as 24-bit;
-  no RLE is ever written; no top-down output.
-- **2 bits per pixel is accepted but has no fixture.** The depth is a Windows
-  CE addition and decodes through the same path as 1, 4 and 8, but nothing in
-  `tests/data/bmp/` exercises it.
+- **Writing RLE4 and RLE24.** `BI_RLE8` is written on request; the other two
+  are not. RLE4's alternating nibbles make it larger than RLE8 on most images
+  that are not synthetic, and RLE24 is an OS/2 encoding Windows never reads.
+- **Writing 2 bits per pixel.** It is read but never written: a Windows CE
+  addition the desktop API does not accept, and an image that fits in four
+  colors fits in 1 or 4 bits as well.
 
 ---
 
