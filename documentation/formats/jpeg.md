@@ -97,6 +97,16 @@ A JPEG has one place to state a color space: APP2 segments introduced by
 `gAMA` or `cHRM`, so primaries and a transfer function that arrived without a
 profile cannot be written at all - only an ICC profile survives a save.
 
+This is the one asymmetry left in the conversion matrix. A BMP with a
+calibrated V4 header naming Adobe RGB and a gamma of 2.2 keeps both through a
+save as BMP and, since `cHRM`, through a save as PNG; saved as a JPEG it keeps
+neither, because there is nowhere in the format to put them. The remedy would
+be to **synthesize** an ICC profile from what `GIMG_Color_Info` states - a
+few hundred bytes of `rXYZ`, `gXYZ`, `bXYZ`, `wtpt` and three `TRC` curves -
+which is what a tool with a color engine does. That is writing a profile the
+source never carried, and it has not been done here; it is recorded as a
+choice rather than an oversight.
+
 **The segments the file came with win.** A document loaded from a JPEG that
 carried APP2 ICC has those segments written back verbatim, single or
 multi-part, and nothing is synthesized on top of them.
