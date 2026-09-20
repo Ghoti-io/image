@@ -38,8 +38,10 @@ static void fnv1a_update(uint64_t *h, const unsigned char *p, size_t n)
 static int write_raw_header(FILE *out, unsigned int w, unsigned int h,
                             int num_components)
 {
-  unsigned char mode = RAW_MODE_L;
-  if (num_components == 3)
+  unsigned char mode;
+  if (num_components == 1)
+    mode = RAW_MODE_L;
+  else if (num_components == 3)
     mode = RAW_MODE_RGB;
   else if (num_components == 4)
     mode = RAW_MODE_CMYK;
@@ -101,11 +103,25 @@ int main(int argc, char **argv)
   unsigned int w = cinfo.output_width;
   unsigned int h = cinfo.output_height;
   int num_components = cinfo.output_components;  // 1 gray, 3 RGB, 4 CMYK
-  const char *mode = "L";
-  if (num_components == 3)
+  /* This tool names three output shapes.  Anything else is refused rather
+     than reported as one of them: the mode used to fall through to "L" for a
+     two-component frame while the pixel loop below hashed it two bytes per
+     pixel, so the line said one thing and the hash meant another. */
+  const char *mode;
+  if (num_components == 1)
+    mode = "L";
+  else if (num_components == 3)
     mode = "RGBA";
   else if (num_components == 4)
     mode = "CMYK";
+  else {
+    fprintf(stderr, "%s: %d-component output has no mode this tool names\n",
+            path, num_components);
+    if (raw_fp) fclose(raw_fp);
+    jpeg_destroy_decompress(&cinfo);
+    fclose(fp);
+    return 1;
+  }
 
   unsigned long row_bytes = (unsigned long)w * (unsigned long)num_components;
   if (row_bytes > 1024 * 1024 || h > 65535) {
@@ -178,7 +194,8 @@ int main(int argc, char **argv)
     }
     free(rgba);
   } else {
-    /* CMYK: 4 bytes per pixel */
+    /* CMYK: 4 bytes per pixel.  Only reachable for four components now that
+       anything this tool cannot name is refused above. */
     while (cinfo.output_scanline < cinfo.output_height) {
       (void)jpeg_read_scanlines(&cinfo, &row, 1);
       fnv1a_update(&fnv, row, (size_t)row_bytes);
