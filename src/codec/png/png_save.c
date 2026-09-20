@@ -1541,9 +1541,40 @@ static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
       return r;
     }
     report->bytes_written += 8 + 1 + 4;
+    return r;
   }
-  else if ((info->transfer == GIMG_TRANSFER_GAMMA &&
-               info->gamma_value > 0.0) ||
+
+  // cHRM states the gamut and nothing else, so it goes beside gAMA rather
+  // than instead of it (PNG 11.3.2.1; the two are a pair).  It is written
+  // only for a gamut a reader would not otherwise assume: sRGB's primaries
+  // are what a PNG with no such chunk means, so stating them costs 44 bytes
+  // and says nothing new, while leaving Adobe RGB unstated loses it - which
+  // it did, so a BMP with a calibrated V4 header naming Adobe RGB came out
+  // of a save as PNG carrying its gamma and not its gamut.
+  //
+  // Not written beside iCCP: the profile is the more specific statement and
+  // supersedes it, and 11.3.3.3 does not want the two disagreeing.
+  if (info->primaries == GIMG_PRIMARIES_ADOBE_RGB &&
+      !(info->icc_bytes && info->icc_size > 0)) {
+    // White point D65, then red, green and blue, each x and y times 100000.
+    static const uint32_t adobe_rgb_chrm[8] = {
+        31270u, 32900u, 64000u, 33000u, 21000u, 71000u, 15000u, 6000u};
+    unsigned char chrm[32];
+    for (unsigned int i = 0; i < 8; i++) {
+      chrm[i * 4] = (unsigned char)(adobe_rgb_chrm[i] >> 24);
+      chrm[(i * 4) + 1] = (unsigned char)(adobe_rgb_chrm[i] >> 16);
+      chrm[(i * 4) + 2] = (unsigned char)(adobe_rgb_chrm[i] >> 8);
+      chrm[(i * 4) + 3] = (unsigned char)(adobe_rgb_chrm[i] & 0xFFu);
+    }
+    r = gimg_png_write_chunk(stream, GIMG_PNG_cHRM, chrm, sizeof(chrm));
+    if (r != GIMG_OK) {
+      return r;
+    }
+    report->bytes_written += 8 + sizeof(chrm) + 4;
+  }
+
+  if ((info->transfer == GIMG_TRANSFER_GAMMA &&
+          info->gamma_value > 0.0) ||
       info->transfer == GIMG_TRANSFER_LINEAR) {
     // gAMA states the transfer and nothing about the primaries, which for an
     // image whose primaries are sRGB's costs nothing: those are what a PNG

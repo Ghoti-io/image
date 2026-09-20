@@ -2236,3 +2236,102 @@ TEST(PngPhys, AResolutionSurvivesTheTripFromJpeg) {
   EXPECT_EQ(px, 300u) << "300 dpi went in as JPEG and must come out as PNG";
   EXPECT_EQ(py, 300u);
 }
+
+namespace {
+
+/** Wrap a cHRM payload around a minimal PNG and decode its color. */
+::testing::AssertionResult color_from_chrm(
+    const std::vector<uint32_t> & values, GIMG_Color_Info * out) {
+  std::vector<uint8_t> chrm;
+  for (uint32_t v : values) {
+    chrm.push_back((uint8_t)(v >> 24));
+    chrm.push_back((uint8_t)(v >> 16));
+    chrm.push_back((uint8_t)(v >> 8));
+    chrm.push_back((uint8_t)(v & 0xFFu));
+  }
+  PngBuilder b;
+  b.ihdr(4, 4, 8, 0).chunk("cHRM", chrm);
+  b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
+  std::vector<uint8_t> png = b.bytes();
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(png.data(), png.size(), &s) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "stream";
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+    return ::testing::AssertionFailure() << "load: " << r;
+  }
+  GIMG_Raster * raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  if (r != GIMG_OK || !raster) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    return ::testing::AssertionFailure() << "decode: " << r;
+  }
+  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  if (ci) {
+    *out = *ci;
+  }
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  return ::testing::AssertionSuccess();
+}
+
+} // namespace
+
+TEST(PngChrm, AdobeRgbChromaticitiesNameTheGamut) {
+  GIMG_Color_Info ci;
+  gimg_color_info_default(&ci);
+  ASSERT_TRUE(color_from_chrm(
+      {31270u, 32900u, 64000u, 33000u, 21000u, 71000u, 15000u, 6000u}, &ci));
+  EXPECT_EQ(ci.primaries, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(ci.white_point, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(ci.transfer, GIMG_TRANSFER_UNKNOWN)
+      << "cHRM states the gamut and nothing about the curve";
+}
+
+TEST(PngChrm, SrgbChromaticitiesNameTheGamutToo) {
+  GIMG_Color_Info ci;
+  gimg_color_info_default(&ci);
+  ASSERT_TRUE(color_from_chrm(
+      {31270u, 32900u, 64000u, 33000u, 30000u, 60000u, 15000u, 6000u}, &ci));
+  EXPECT_EQ(ci.primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(ci.transfer, GIMG_TRANSFER_UNKNOWN)
+      << "the primaries sRGB shares are not a claim that the curve is sRGB's";
+}
+
+TEST(PngChrm, AGamutThisModelCannotNameIsLeftUnknown) {
+  // BT.2020's primaries. GIMG_Color_Info names sRGB and Adobe RGB and nothing
+  // else, so this is left unknown rather than rounded to the nearer of them -
+  // the same rule the cICP reader above applies.
+  GIMG_Color_Info ci;
+  gimg_color_info_default(&ci);
+  ASSERT_TRUE(color_from_chrm(
+      {31270u, 32900u, 70800u, 29200u, 17000u, 79700u, 13100u, 4600u}, &ci));
+  EXPECT_EQ(ci.primaries, GIMG_PRIMARIES_UNKNOWN);
+}
+
+TEST(PngChrm, AChrmOfTheWrongLengthIsRefusedBeforeTheColorIsRead) {
+  // 11.3.2.1 fixes cHRM at 32 bytes, and the loader enforces the length of
+  // every chunk whose shape the specification fixes, so a short one never
+  // reaches the color reader at all - the file is refused.  The reader's own
+  // length check is therefore belt and braces rather than the thing that
+  // catches this.
+  std::vector<uint8_t> chrm = {0, 0, 0x7A, 0x26, 0, 0, 0x80, 0x84, 0, 0, 0xFA};
+  PngBuilder b;
+  b.ihdr(4, 4, 8, 0).chunk("cHRM", chrm);
+  b.chunk("IDAT", GrayIdatPayload(4, 4)).chunk("IEND", {});
+  std::vector<uint8_t> png = b.bytes();
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_ERR_FORMAT);
+  if (doc) {
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(s);
+}

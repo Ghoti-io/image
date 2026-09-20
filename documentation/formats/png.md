@@ -58,9 +58,27 @@ order:
 | Raster's `GIMG_Color_Info` | Written |
 |---|---|
 | `transfer` is sRGB | `sRGB`, with the rendering intent |
+| `primaries` are Adobe RGB, and no profile | `cHRM`, beside whichever of the next two applies |
 | `transfer` is a gamma, or linear | `gAMA`; linear is a gamma of 1 |
 | An ICC profile is attached | `iCCP`, deflated, keyword "ICC Profile" |
 | None of the above | nothing |
+
+`cHRM` (11.3.2.1) is the exception to "at most one": it states the **gamut**
+and nothing about the curve, so it goes beside `gAMA` rather than instead of
+it - the two are a pair. It is written only for a gamut a reader would not
+otherwise assume. sRGB's primaries are what a PNG carrying no such chunk
+means, so stating them costs 44 bytes and says nothing new; leaving Adobe
+RGB's unstated loses them, and did - a BMP with a calibrated V4 header naming
+Adobe RGB came out of a save as PNG carrying its gamma and not its gamut. It
+is not written beside `iCCP`, where the profile is the more specific
+statement.
+
+On the way in, `cHRM` is read the same way: the white point and three
+primaries are matched against the two gamuts `GIMG_Color_Info` can name, and
+anything else - BT.2020, say - is left unknown rather than rounded to the
+nearer of them, which is the rule `cICP` already followed. A `cHRM` of the
+wrong length never reaches this: the loader enforces the fixed length of every
+chunk whose shape the specification fixes, and refuses the file.
 
 `gAMA` holds gamma x 100000 in four bytes and so cannot state a gamma above
 about 42949. A BMP's V4 gamma is 16.16 fixed point and reaches 65535, and

@@ -2679,3 +2679,104 @@ TEST(PngEncode, SavingFromADocumentWhoseRasterTheSaveOwnsReadsNoFreedColor) {
   gimg_doc_destroy(back_doc);
   gimg_stream_destroy(s);
 }
+
+TEST(PngEncode, AGamutAReaderWouldNotAssumeIsWrittenAsChrm) {
+  // gAMA states the transfer and says nothing about the gamut, so a PNG
+  // carrying it alone means sRGB's primaries - which is what a reader
+  // assumes when nothing says otherwise. That costs nothing for an sRGB
+  // image and loses everything for an Adobe RGB one: a BMP with a calibrated
+  // V4 header naming Adobe RGB came out of a save as PNG with its gamma and
+  // not its gamut. cHRM (11.3.2.1) is the chunk that says it, and it goes
+  // beside gAMA rather than instead of it.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.primaries = GIMG_PRIMARIES_ADOBE_RGB;
+  color.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  color.transfer = GIMG_TRANSFER_GAMMA;
+  color.gamma_value = 2.2;
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster_with_color(color), GIMG_META_PRESERVE_ALL, png),
+      GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "cHRM gAMA");
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
+  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  ASSERT_NE(read, nullptr);
+  EXPECT_EQ(read->primaries, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(read->white_point, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(read->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_NEAR(read->gamma_value, 2.2, 0.0001);
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(PngEncode, TheGamutAReaderAlreadyAssumesIsNotWritten) {
+  // sRGB's primaries are what a PNG with no cHRM means, so stating them costs
+  // 44 bytes and says nothing new.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.primaries = GIMG_PRIMARIES_SRGB;
+  color.white_point = GIMG_PRIMARIES_SRGB;
+  color.transfer = GIMG_TRANSFER_GAMMA;
+  color.gamma_value = 1.8;
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster_with_color(color), GIMG_META_PRESERVE_ALL, png),
+      GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "gAMA");
+}
+
+TEST(PngEncode, ChrmIsNotWrittenBesideAProfile) {
+  // The profile is the more specific statement and supersedes it; 11.3.3.3
+  // does not want the two of them disagreeing in one file.
+  std::vector<uint8_t> profile(128, 0);
+  std::memcpy(&profile[36], "acsp", 4);
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.primaries = GIMG_PRIMARIES_ADOBE_RGB;
+  color.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster_with_color(color), GIMG_META_PRESERVE_ALL, png),
+      GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "iCCP");
+}
+
+TEST(PngEncode, AGamutWithNoTransferIsStillWritten) {
+  // Either half of the pair may be absent. A gamut with no curve is written
+  // as cHRM alone, the same way a BMP's calibrated header leaves its gamma at
+  // zero when nothing stated one.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.primaries = GIMG_PRIMARIES_ADOBE_RGB;
+  color.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster_with_color(color), GIMG_META_PRESERVE_ALL, png),
+      GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "cHRM");
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
+  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  ASSERT_NE(read, nullptr);
+  EXPECT_EQ(read->primaries, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(read->transfer, GIMG_TRANSFER_UNKNOWN)
+      << "the file stated no curve, so neither does the raster";
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
