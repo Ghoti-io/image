@@ -462,10 +462,10 @@ Listed so the absences are visible rather than discovered.
 - **Writing 2 bits per pixel.** It is read but never written: a Windows CE
   addition the desktop API does not accept, and an image that fits in four
   colors fits in 1 or 4 bits as well.
-- **Writing a 64-bit or a `BI_JPEG`/`BI_PNG` file.** Each is read; neither is
-  written. The first is refused above, and wrapping a JPEG or a PNG inside a
-  BMP produces a file most readers refuse - the wrapper is worth reading and
-  not worth making.
+- **Writing a `BI_JPEG` or `BI_PNG` wrapper.** Both are read; neither is
+  written. Wrapping a JPEG or a PNG inside a BMP produces a file most readers
+  refuse - the wrapper is worth reading and not worth making, and a caller who
+  wants a JPEG can save one.
 
 ---
 
