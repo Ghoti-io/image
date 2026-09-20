@@ -32,6 +32,9 @@ import struct
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from oracle_path import BUILD_HINT, find_oracle, repo_root
+
 try:
     from PIL import Image
 except ImportError:
@@ -40,42 +43,6 @@ except ImportError:
 MODE_L = 0
 MODE_RGB = 1
 MODE_CMYK = 2
-
-
-def repo_root() -> str:
-    d = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(4):
-        if os.path.isdir(os.path.join(d, ".git")):
-            return d
-        parent = os.path.dirname(d)
-        if parent == d:
-            break
-        d = parent
-    return d
-
-
-def oracle_exe() -> str | None:
-    """Path to dump_jpeg_pixels_ref, or None when it has not been built.
-
-    GIMG_JPEG_ORACLE_DIR first, the same variable the C++ tests read and the
-    one `make jpeg-oracle-tools` prints; then that target's own output
-    directory, so a plain build needs no environment at all. The fixture
-    directory is searched last and only for compatibility: compiled tools used
-    to be committed there, and are not any more.
-    """
-    root = repo_root()
-    candidates = []
-    env = os.environ.get("GIMG_JPEG_ORACLE_DIR")
-    if env:
-        candidates.append(env if os.path.isabs(env) else os.path.join(root, env))
-    candidates.append(os.path.join(root, "tests", "tools", "jpeg-oracle", "build"))
-    candidates.append(os.path.join(root, "tests", "data", "jpeg"))
-    for d in candidates:
-        for name in ("dump_jpeg_pixels_ref", "dump_jpeg_pixels_ref.exe"):
-            exe = os.path.join(d, name)
-            if os.path.isfile(exe):
-                return exe
-    return None
 
 
 def main() -> int:
@@ -120,9 +87,9 @@ def main() -> int:
             written += 1
 
             # Use libjpeg (dump_jpeg_pixels_ref) so decoder tests match libjpeg.
-            ref_exe = oracle_exe()
+            ref_exe = find_oracle("dump_jpeg_pixels_ref")
             if ref_exe is None:
-                print(f"{name}: skip (CMYK needs libjpeg .raw; run make jpeg-oracle-tools)", file=sys.stderr)
+                print(f"{name}: skip (CMYK needs libjpeg .raw). {BUILD_HINT}", file=sys.stderr)
             else:
                 try:
                     subprocess.run(
