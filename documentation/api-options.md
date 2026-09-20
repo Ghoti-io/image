@@ -19,10 +19,23 @@ Codec capability bits (see `ghoti.io/image/codec.h`) form a bitmask returned by 
 | **GIMG_CAP_WRITE** | Codec can save documents. |
 | **GIMG_CAP_ANIMATION** | Format supports multiple frames (e.g. APNG); document may have multiple items with frame timing. |
 | **GIMG_CAP_PALETTE** | Codec supports palette/indexed color. |
-| **GIMG_CAP_ICC** | Codec supports ICC profile (e.g. iCCP in PNG). |
+| **GIMG_CAP_ICC** | Codec supports ICC profile (e.g. iCCP in PNG, APP2 in JPEG, `PROFILE_EMBEDDED` in a BMP V5 header). |
 | **GIMG_CAP_16BPC** | Codec supports 16-bit-per-channel samples. |
+| **GIMG_CAP_CMYK** | Codec supports four ink channels (`GIMG_PIXEL_CMYK8`). |
 
-Example: PNG is registered with READ, WRITE, ANIMATION, PALETTE, ICC, and 16BPC set.
+What the three registered codecs declare:
+
+| Codec | READ | WRITE | ANIMATION | PALETTE | ICC | 16BPC | CMYK |
+|---|---|---|---|---|---|---|---|
+| PNG | yes | yes | yes (APNG) | yes | yes | yes | no |
+| JPEG | yes | yes | no | no | yes | yes | yes |
+| BMP | yes | yes | no | yes | yes | no | no |
+
+BMP's absences are the format's, not the codec's: a BMP holds one image, its
+samples are a byte at most - a deeper raster is restated at 8 bits rather than
+refused - and its writer reports `GIMG_ERR_UNSUPPORTED` for a CMYK raster
+rather than reinterpreting four ink channels as colour. JPEG has no palette:
+T.81 describes none.
 
 ## Load options
 
@@ -42,15 +55,50 @@ Used by `gimg_doc_load()`.
 
 **GIMG_Save_Options** (see `ghoti.io/image/codec.h`):
 
-| Field              | Description |
-|--------------------|-------------|
-| `metadata_policy`  | **GIMG_Meta_Policy** — which metadata to write (see @ref api_options_meta_policy). |
-| `interlaced`       | For PNG: `0` = non-interlaced (default), `1` = Adam7 interlaced. |
-| `quality`          | For JPEG: `1`–`100` (100 = finest). `0` = unspecified, codec default (85). Ignored by other codecs. |
-| `jpeg_chroma_subsampling` | For JPEG: `GIMG_JPEG_CHROMA_420` (default), `GIMG_JPEG_CHROMA_422`, `GIMG_JPEG_CHROMA_444`. Ignored by other codecs. |
-| `jpeg_progressive` | For JPEG: `0` = baseline (default), `1` = progressive. Ignored by other codecs. |
-| `jpeg_progressive_config` | When `jpeg_progressive` is 1: `NULL` or `scan_count` 0 = use default progression (DC + AC scan(s)); otherwise pointer to **GIMG_JPEG_Progressive_Config** giving a custom scan script (array of Ss, Se, Ah, Al per scan). Ignored for non-JPEG or baseline. |
-| `jpeg_precision` | For JPEG save: output precision. `0` = derive from the raster; `8` or `12` = write at that precision. T.81 Table B.2 allows only 8 and 12 in a DCT-based frame, so `16` returns `GIMG_ERR_UNSUPPORTED` and a 16-bit raster is written at 12-bit when this is `0`. When raster depth differs from the chosen precision, the encoder uses **library** bit-depth conversion (`gimg_ops_convert_bit_depth` / `gimg_bitdepth_*`). Ignored for non-JPEG. |
+Every field below is read and honoured. The one-line summaries here are a
+reference; `codec.h` carries the full reasoning for each, and the format pages
+say what a given option costs in a real file.
+
+| Field | Description |
+|-------|-------------|
+| `metadata_policy` | **GIMG_Meta_Policy** — which metadata to write (see @ref api_options_meta_policy). |
+| `interlaced` | For PNG: `0` = non-interlaced (default), `1` = Adam7 interlaced. |
+| `quality` | For JPEG: `1`–`100` (100 = finest). `0` = unspecified, codec default (85). Ignored by a lossless frame, which reconstructs exactly. Ignored by other codecs. |
+| `exif_thumbnail_format` | IFD1 thumbnail compression: `0` = default (6), or `1`, `6`, `7`. |
+| `exif_thumbnail_quality` | Thumbnail JPEG quality `1`–`100` when the format is 6 or 7; `0` = default (85). |
+
+**JPEG.** Ignored by other codecs.
+
+| Field | Description |
+|-------|-------------|
+| `jpeg_chroma_subsampling` | `GIMG_JPEG_CHROMA_420` (default), `GIMG_JPEG_CHROMA_422`, `GIMG_JPEG_CHROMA_444`. Ignored by a lossless or hierarchical frame, and by a raw CMYK frame, which has no chrominance. |
+| `jpeg_fdct_method` | `GIMG_JPEG_FDCT_LOEFFLER` (0, default) = libjpeg-compatible Loeffler integer DCT, for an exact match against it; `GIMG_JPEG_FDCT_REF` (1) = float reference implementation. |
+| `jpeg_quant_method` | `GIMG_JPEG_QUANT_RECIP` (0, default) = reciprocal-based, matching libjpeg; `GIMG_JPEG_QUANT_DIV` (1) = integer division. |
+| `jpeg_progressive` | `0` = baseline (default), `1` = progressive (Annex G). |
+| `jpeg_progressive_config` | When `jpeg_progressive` is 1: `NULL` or `scan_count` 0 = default progression (DC + AC scan(s)); otherwise a **GIMG_JPEG_Progressive_Config** giving a custom scan script. Ignored for baseline. |
+| `jpeg_restart_interval` | Restart interval in MCUs; `0` = none. Non-zero writes a DRI segment and injects RST0–RST7 every N MCUs. In a non-interleaved scan an MCU is a single block (A.2.3), so that is what N counts. |
+| `jpeg_precision` | Output precision. `0` = derive from the raster; `8` or `12` = write at that precision. Table B.2 allows no other value in a DCT frame, so `16` returns `GIMG_ERR_UNSUPPORTED` and a 16-bit raster is written at 12-bit when this is `0`. A differing raster depth is converted by the library (`gimg_ops_convert_bit_depth`). |
+| `jpeg_arithmetic` | `1` writes arithmetic entropy coding (Annex D) — SOF9/SOF10, a DAC segment and no DHT — instead of Huffman. Both are normative; arithmetic is a few per cent smaller and understood by far fewer decoders, so Huffman stays the default. |
+| `jpeg_lossless_predictor` | `0` (default) writes a DCT frame; `1`–`7` write a lossless frame (Annex H, SOF3) with that predictor from Table H.1. Reconstruction is exact, so `quality` and `jpeg_chroma_subsampling` have no meaning; colour is stored as RGB because the YCbCr conversion is not reversible. Precision follows the raster (8, 12 or 16). |
+| `jpeg_hierarchical_levels` | `0` (default) writes one frame; *n* writes a hierarchical sequence (Annex J) with *n* resolution doublings. Sampling is 4:4:4 throughout and the raster must be 8-bit. Combines with `jpeg_arithmetic`. |
+| `jpeg_non_interleaved` | `1` writes a sequential frame as one non-interleaved scan per component (A.2.3) rather than one interleaved scan (A.2.2). Same blocks, same picture, different order — a decoder wanting only luminance can stop after the first scan. Refused with `jpeg_progressive`, a lossless frame, or `jpeg_hierarchical_levels`. |
+| `jpeg_cmyk_transform` | Adobe APP14 transform for a four-component raster. `0` (default) writes CMYK unchanged, so a CMYK JPEG survives a load and save; `2` writes YCCK. Only 0 and 2 are accepted; anything else returns `GIMG_ERR_UNSUPPORTED`. Ignored unless the raster is `GIMG_PIXEL_CMYK8`. |
+| `jpeg_abbreviated` | `0` (default) writes a complete file. `1` writes the frame with its tables left out (B.4), read back by passing `GIMG_Load_Options.jpeg_tables`. `2` writes the tables alone, with no frame — the raster is read only for its shape. Refused with `jpeg_hierarchical_levels` and with a lossless frame. |
+
+**PNG.** Ignored by other codecs.
+
+| Field | Description |
+|-------|-------------|
+| `png_filter` | Row filter (11.2.4). `GIMG_PNG_FILTER_ADAPTIVE` (0, default) chooses per row by the heuristic PNG 12.8 recommends; the other values force one filter on every row, which is mainly useful for testing that each of the five reconstructs. |
+| `png_palette` | Whether the writer may build a palette for a raster that did not arrive with one (colour type 3). `GIMG_PNG_PALETTE_AUTO` (0, default) builds one when the image has at most 256 distinct colours and the palette form is smaller — a lossless choice, not quantization. `GIMG_PNG_PALETTE_NEVER` refuses to build one; a frame that *arrived* as a palette image is still written back as one either way. |
+
+**BMP.** Ignored by other codecs.
+
+| Field | Description |
+|-------|-------------|
+| `bmp_palette` | Whether the writer may store an image through a palette. `GIMG_BMP_PALETTE_AUTO` (0, default) writes an indexed bitmap when the image is fully opaque, has at most 256 distinct colours, and the indexed form is the smaller file — at the smallest depth that holds the indices, 1, 4 or 8 bits. Unlike PNG's, which form is smaller is arithmetic rather than a measurement, so both need not be written to find out. `GIMG_BMP_PALETTE_NEVER` always writes 24- or 32-bit colour. Transparency rules the palette out whatever the colour count: a BMP palette has no alpha. |
+| `bmp_rle` | Whether the writer may run-length encode an indexed bitmap. `GIMG_BMP_RLE_NEVER` (0, default) writes rows uncompressed, because an uncompressed BMP is the most widely readable image there is. `GIMG_BMP_RLE_AUTO` writes `BI_RLE8` when the image is stored at 8 bits through a palette and the encoded rows come out smaller. It applies to nothing else — RLE4 is usually larger, and RLE24 is an OS/2 encoding Windows never reads. |
+| `bmp_top_down` | `0` (default) writes rows bottom-up with a positive `biHeight`, the layout every reader handles. `1` writes them top-down with a negative `biHeight`, legal from `BITMAPINFOHEADER` onwards and what a caller wants when something downstream reads the file as a memory-mapped framebuffer. Refused together with `GIMG_BMP_RLE_AUTO`: the format does not allow compression and top-down rows together. |
 
 **GIMG_JPEG_Progressive_Config** holds `scan_count` and `scans` (array of **GIMG_JPEG_Progressive_Scan**). Each scan has `Ss`, `Se` (spectral selection, 0–63), `Ah`, `Al` (successive approximation). Caller keeps the array valid for the duration of `gimg_doc_save()`. **When `jpeg_progressive_config` is NULL or `scan_count` is 0:** the encoder uses the default scan script (one DC scan Ss=0, Se=0 then one AC scan Ss=1..63, Ah=0, Al=0). **Custom script:** non-NULL with `scan_count` > 0 uses the given sequence of scans. Initial AC spectral bands (Ah=0, Ss≥1) must not overlap (T.81 Annex G); overlapping [Ss,Se] ranges are rejected with **GIMG_ERR_UNSUPPORTED**. Refinement passes (Ah>0) are supported: DC refinement (Ss=0, Se=0, Ah>0) and AC refinement (Ah>0 for band Ss..Se) with successive-approximation encoding and optional refinement DHT (Th=2).
 
