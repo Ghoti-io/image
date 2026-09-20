@@ -104,3 +104,23 @@ caught this one.
 Building the compress dependency with the same sanitizers and linking that
 build into the fuzz and ASan targets would close the gap. It is a cross-repo
 change and has not been made.
+
+## Slow units are usually the sanitizers, not a defect
+
+libFuzzer writes a `*-slow-unit-*` artifact when an input takes longer than a
+second. Under ASan and UBSan that is roughly twenty to thirty times the
+release cost, so an input that takes 40 ms in a release build trips it.
+
+Every slow unit a thirty-minute six-harness run produced was a JPEG, and all
+but one ran in 5 to 46 ms without the sanitizers. **Time one in a release
+build before treating it as a complexity problem.**
+
+The exception is worth knowing about: a 92-byte arithmetic **lossless** JPEG
+whose SOF11 names 16385 by 219 - 3.59 megapixels, just under the harnesses'
+`max_decoded_pixels` - takes about half a second to a second in release.
+Arithmetic decoding is serial by construction and libjpeg's is slow too;
+nothing here is quadratic. What bounds it is `max_decoded_pixels`, which is
+why the harnesses set one (see `fuzz_limits.h`) and why a service should.
+
+All of these are in the corpus, so a later run keeps exercising the paths
+that produced them rather than rediscovering them.
