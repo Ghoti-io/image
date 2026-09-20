@@ -239,12 +239,10 @@ Listed so the absences are visible rather than discovered.
   recognized as such and refused with `GIMG_ERR_UNSUPPORTED` rather than
   misread as a channel layout; bmpsuite's `q/pal1huffmsb.bmp` is the case.
   No other decoder reachable from here implements it either.
-- **Color management.** The color space endpoints, per-channel gamma,
-  rendering intent and embedded ICC profile of a V4 or V5 header are skipped,
-  and no `GIMG_Color_Info` is attached to the decoded raster. An image
-  therefore decodes as untagged, which for the overwhelming majority of BMP
-  files - which are `LCS_sRGB` or carry no color block at all - is what it
-  is, but a V5 file with a real profile loses it.
+- **Following a linked color profile.** `PROFILE_LINKED` states a file path
+  rather than carrying a profile. It is deliberately not followed: opening a
+  path an image file names is acting on data, and is the shape of a directory
+  traversal. Such a file decodes untagged. `PROFILE_EMBEDDED` is read.
 - **Writing RLE4 and RLE24.** `BI_RLE8` is written on request; the other two
   are not. RLE4's alternating nibbles make it larger than RLE8 on most images
   that are not synthetic, and RLE24 is an OS/2 encoding Windows never reads.

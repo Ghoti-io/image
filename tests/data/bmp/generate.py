@@ -331,6 +331,113 @@ def rle_fixtures() -> None:
                    palette, rle_delta))
 
 
+def color_fixtures() -> None:
+    """BITMAPV4HEADER and BITMAPV5HEADER color fields.
+
+    bmpsuite carries these too - g/pal8v4.bmp, g/pal8v5.bmp, q/rgb24prof.bmp -
+    but the suite is not vendored, and these pin the same behaviour with
+    values chosen here rather than inherited.
+    """
+    def fxpt2dot30(value: float) -> int:
+        return int(round(value * (1 << 30)))
+
+    def fixed16(value: float) -> int:
+        return int(round(value * 65536))
+
+    # The ITU-R BT.709 primaries, which sRGB shares, written the way every
+    # writer in reach writes them: xyY chromaticities normalized to sum to 1,
+    # in fields the format declares as CIEXYZ.
+    SRGB_ENDPOINTS = [0.6400, 0.3300, 0.0300,
+                      0.3000, 0.6000, 0.1000,
+                      0.1500, 0.0600, 0.7900]
+    # Adobe RGB (1998): the same red and blue, a wider green.
+    ADOBE_ENDPOINTS = [0.6400, 0.3300, 0.0300,
+                       0.2100, 0.7100, 0.0800,
+                       0.1500, 0.0600, 0.7900]
+
+    def v4_tail(cs_type, endpoints, gamma):
+        # A V4 header carries the four channel masks at offsets 40..55
+        # whatever the compression is; they are simply zero for BI_RGB.  The
+        # colour fields follow them, so leaving them out shifts everything
+        # after and makes a 92-byte header no version defines.
+        out = struct.pack("<4I", 0, 0, 0, 0)
+        out += struct.pack("<I", cs_type)
+        out += struct.pack("<9i", *[fxpt2dot30(v) for v in endpoints])
+        out += struct.pack("<3I", *[fixed16(g) for g in gamma])
+        return out
+
+    def v5_tail(intent, profile_offset, profile_size):
+        return struct.pack("<4I", intent, profile_offset, profile_size, 0)
+
+    pixels = bgr24(bottom_up(PATTERN))
+
+    # V4, LCS_CALIBRATED_RGB: the space is described by the endpoints and the
+    # per-channel gammas rather than named.
+    write("bmp_4x4_v4_calibrated.bmp",
+          assemble(info_header(4, 4, 24,
+                               extra=v4_tail(0, SRGB_ENDPOINTS, [2.2] * 3)),
+                   b"", pixels))
+
+    # The same, with Adobe RGB's green.
+    write("bmp_4x4_v4_adobe.bmp",
+          assemble(info_header(4, 4, 24,
+                               extra=v4_tail(0, ADOBE_ENDPOINTS, [2.2] * 3)),
+                   b"", pixels))
+
+    # Three gammas that disagree describe a space one transfer function cannot
+    # hold, so the transfer must be left unsaid rather than averaged.
+    write("bmp_4x4_v4_split_gamma.bmp",
+          assemble(info_header(4, 4, 24,
+                               extra=v4_tail(0, SRGB_ENDPOINTS,
+                                             [2.2, 1.8, 1.0])),
+                   b"", pixels))
+
+    # V5 naming sRGB outright, with LCS_GM_GRAPHICS (relative colorimetric).
+    write("bmp_4x4_v5_srgb.bmp",
+          assemble(info_header(4, 4, 24,
+                               extra=v4_tail(0x73524742, [0.0] * 9, [0.0] * 3)
+                               + v5_tail(2, 0, 0)),
+                   b"", pixels))
+
+    # V5 with PROFILE_EMBEDDED.  The payload is not a usable profile - nothing
+    # here parses one - but it is shaped like the start of an ICC profile, so
+    # a test can require it to come back byte for byte.
+    profile = bytearray(128)
+    profile[0:4] = struct.pack(">I", 128)      # Profile size, big-endian.
+    profile[36:40] = b"acsp"                   # ICC file signature.
+    for i in range(40, 128):
+        profile[i] = (i * 7) & 0xFF
+    dib = info_header(4, 4, 24,
+                      extra=v4_tail(0x4D424544, [0.0] * 9, [0.0] * 3)
+                      + v5_tail(4, 0, 0))
+    # bV5ProfileData counts from the start of the DIB header, and the profile
+    # is placed after the pixel data.
+    offset = len(dib) + len(pixels)
+    dib = dib[:108] + struct.pack("<4I", 4, offset, len(profile), 0)
+    write("bmp_4x4_v5_icc.bmp",
+          assemble(dib, b"", pixels + bytes(profile)))
+
+    # PROFILE_LINKED: the "profile" is a file path.  It must not be followed -
+    # opening a path an image names is acting on data.
+    path = b"C:\\does\\not\\exist.icc\x00"
+    dib = info_header(4, 4, 24,
+                      extra=v4_tail(0x4C494E4B, [0.0] * 9, [0.0] * 3)
+                      + v5_tail(4, 0, 0))
+    offset = len(dib) + len(pixels)
+    dib = dib[:108] + struct.pack("<4I", 4, offset, len(path), 0)
+    write("bmp_4x4_v5_linked_profile.bmp",
+          assemble(dib, b"", pixels + path))
+
+    # A profile whose offset and size run off the end of the file.  The image
+    # decodes untagged rather than being refused: a picture is not wrong
+    # because its colour annotation is.
+    dib = info_header(4, 4, 24,
+                      extra=v4_tail(0x4D424544, [0.0] * 9, [0.0] * 3)
+                      + v5_tail(4, 0, 0))
+    dib = dib[:108] + struct.pack("<4I", 4, 100000, 4096, 0)
+    write("bmp_4x4_v5_icc_past_eof.bmp", assemble(dib, b"", pixels))
+
+
 def embedded_fixtures() -> None:
     """BI_JPEG and BI_PNG: the "pixel data" is a whole JPEG or PNG stream.
 
@@ -426,6 +533,8 @@ if __name__ == "__main__":
     os2_fixtures()
     print("RLE fixtures:")
     rle_fixtures()
+    print("Color fixtures:")
+    color_fixtures()
     print("Embedded-stream fixtures:")
     embedded_fixtures()
     print("Malformed fixtures:")

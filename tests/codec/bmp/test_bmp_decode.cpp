@@ -10,6 +10,7 @@
  */
 
 #include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
@@ -734,4 +735,131 @@ TEST(BmpLoad, StatesNoResolutionForACoreHeader) {
     EXPECT_EQ(x_dpi, 0u);
     EXPECT_EQ(y_dpi, 0u);
   }
+}
+
+// ---------------------------------------------------------------------------
+// V4 and V5 color
+// ---------------------------------------------------------------------------
+
+TEST(BmpDecode, V4CalibratedEndpointsNameTheGamut) {
+  // LCS_CALIBRATED_RGB describes the space rather than naming it.  The
+  // endpoints are declared CIEXYZ and written by every writer in reach as
+  // xyY chromaticities; these are the BT.709 primaries sRGB shares, with a
+  // gamma of 2.2.  bmpsuite's g/pal8v4.bmp carries the same values.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v4_calibrated.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(color->white_point, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(color->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_NEAR(color->gamma_value, 2.2, 0.001);
+}
+
+TEST(BmpDecode, V4EndpointsDistinguishAdobeRgbFromSrgb) {
+  // The two gamuts share their red and blue primaries and differ only in
+  // green, so a decoder that looked at fewer than three would call this sRGB.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v4_adobe.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_ADOBE_RGB);
+}
+
+TEST(BmpDecode, V4GammasThatDisagreeLeaveTheTransferUnsaid) {
+  // GIMG_Color_Info holds one transfer function.  Three different gammas
+  // describe a space it cannot state, and averaging them would be a claim
+  // about the pixels that the file did not make.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v4_split_gamma.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  EXPECT_EQ(color->transfer, GIMG_TRANSFER_UNKNOWN);
+  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_SRGB) << "the gamut is still known";
+}
+
+TEST(BmpDecode, V5NamesSrgbAndItsRenderingIntent) {
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v5_srgb.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(color->transfer, GIMG_TRANSFER_SRGB);
+  // LCS_GM_GRAPHICS is the relative colorimetric intent.
+  EXPECT_EQ(color->intent, GIMG_INTENT_RELATIVE_COLORIMETRIC);
+}
+
+TEST(BmpDecode, V5EmbeddedProfileSurvivesIntact) {
+  // The profile lives outside the header, at an offset measured from the
+  // header's own start.  Nothing here parses it, so what matters is that
+  // every byte arrives.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v5_icc.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  ASSERT_EQ(color->icc_size, 128u);
+  ASSERT_NE(color->icc_bytes, nullptr);
+
+  const uint8_t * icc = static_cast<const uint8_t *>(color->icc_bytes);
+  // The generator writes the profile length big-endian at 0 and the ICC file
+  // signature at 36, then a known ramp.
+  EXPECT_EQ(icc[0], 0u);
+  EXPECT_EQ(icc[3], 128u);
+  EXPECT_EQ(memcmp(icc + 36, "acsp", 4), 0);
+  for (size_t i = 40; i < 128; i++) {
+    EXPECT_EQ(icc[i], (uint8_t)((i * 7u) & 0xFFu)) << "profile byte " << i;
+  }
+}
+
+TEST(BmpDecode, V5LinkedProfileIsNotFollowed) {
+  // PROFILE_LINKED names a file rather than carrying one.  Opening a path an
+  // image file names is acting on data - it is the shape of a directory
+  // traversal - so the image decodes untagged instead.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v5_linked_profile.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  EXPECT_EQ(color->icc_size, 0u);
+  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_UNKNOWN);
+  expect_pattern(img);
+}
+
+TEST(BmpDecode, V5ProfilePastTheEndOfTheFileLeavesTheImageAlone) {
+  // A picture is not wrong because its colour annotation is, so a profile
+  // that runs off the end yields no profile rather than no image.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v5_icc_past_eof.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  EXPECT_EQ(color->icc_size, 0u);
+  expect_pattern(img);
+}
+
+TEST(BmpDecode, APlainInfoHeaderSaysNothingAboutColor) {
+  // An untagged BMP is overwhelmingly an sRGB one, but the file does not say
+  // so and neither does this: a decoder that assumed it would be asserting
+  // something no byte of the file supports.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_24bit.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(color->transfer, GIMG_TRANSFER_UNKNOWN);
+  EXPECT_EQ(color->icc_size, 0u);
 }

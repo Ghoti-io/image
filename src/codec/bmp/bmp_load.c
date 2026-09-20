@@ -32,6 +32,7 @@
 
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
@@ -467,6 +468,25 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     out->has_masks = true;
   }
 
+  // BITMAPV4HEADER and BITMAPV5HEADER color fields.  They are interpreted in
+  // bmp_color.c; here they are only read out of the bytes.  An OS/2 header of
+  // the same length holds something else entirely at these offsets, so it is
+  // excluded.
+  if (!os2_v2 && header_size >= GIMG_BMP_V4HEADER_SIZE) {
+    out->cs_type = bmp_read_u32(body + 52);
+    for (unsigned int i = 0; i < 9; i++) {
+      out->endpoints[i] = bmp_read_i32(body + 56 + (i * 4u));
+    }
+    out->gamma[0] = bmp_read_u32(body + 92);
+    out->gamma[1] = bmp_read_u32(body + 96);
+    out->gamma[2] = bmp_read_u32(body + 100);
+  }
+  if (!os2_v2 && header_size >= GIMG_BMP_V5HEADER_SIZE) {
+    out->intent = bmp_read_u32(body + 104);
+    out->profile_offset = bmp_read_u32(body + 108);
+    out->profile_size = bmp_read_u32(body + 112);
+  }
+
   // Palette entry count.  biClrUsed of 0 means "the maximum for this depth".
   if (out->bit_count <= 8) {
     uint32_t maximum = bmp_default_palette_count(out->bit_count);
@@ -691,6 +711,7 @@ void gimg_bmp_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   if (state->embedded) {
     gimg_doc_destroy(state->embedded);
   }
+  gimg_free(alloc, state->icc);
   gimg_free(alloc, state->palette);
   gimg_free(alloc, state->pixels);
   gimg_free(alloc, state);
@@ -773,6 +794,18 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   state->pixels_size = pixels_size;
   state->rgb32_alpha = options ? options->bmp_rgb32_alpha
                                : (uint8_t)GIMG_BMP_RGB32_ALPHA_IGNORE;
+
+  gimg_bmp_color_from_header(&header, &state->color);
+  r = gimg_bmp_read_profile(
+      stream, &header, limits, alloc, &state->icc, &state->icc_size);
+  if (r != GIMG_OK) {
+    gimg_bmp_free_doc_state(codec, state);
+    return r;
+  }
+  if (state->icc) {
+    state->color.icc_bytes = state->icc;
+    state->color.icc_size = state->icc_size;
+  }
 
   if (gimg_bmp_is_embedded(header.compression)) {
     r = bmp_load_embedded(diagnostics, &header, state->pixels,

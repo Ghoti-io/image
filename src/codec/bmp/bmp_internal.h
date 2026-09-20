@@ -14,6 +14,7 @@
 
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
@@ -112,6 +113,14 @@ typedef struct {
   gimg_bmp_channel_mask_t green;
   gimg_bmp_channel_mask_t blue;
   gimg_bmp_channel_mask_t alpha; ///< `mask` is 0 when the format has no alpha.
+
+  // BITMAPV4HEADER and BITMAPV5HEADER color fields; zero before V4.
+  uint32_t cs_type;        ///< bV4CSType: LCS_*, PROFILE_LINKED/EMBEDDED.
+  int32_t endpoints[9];    ///< bV4Endpoints, as FXPT2DOT30.
+  uint32_t gamma[3];       ///< bV4Gamma{Red,Green,Blue}, as 16.16 fixed point.
+  uint32_t intent;         ///< bV5Intent (LCS_GM_*); 0 before V5.
+  uint32_t profile_offset; ///< bV5ProfileData, from the DIB header's start.
+  uint32_t profile_size;   ///< bV5ProfileSize.
 } gimg_bmp_header_t;
 
 /** @brief True for the compressions whose pixel data is a whole other image. */
@@ -149,6 +158,12 @@ typedef struct {
   uint32_t palette_count;
   unsigned char * pixels; ///< Raw pixel bytes as stored in the file.
   size_t pixels_size;
+  /** The color the header described, if it described one this model can
+   * hold.  Built at load and attached to the raster at decode, so that a
+   * caller who only wants the dimensions never pays for it. */
+  GIMG_Color_Info color;
+  void * icc;      ///< An embedded ICC profile, owned here; NULL when none.
+  size_t icc_size;
   /** For BI_JPEG and BI_PNG, the document the embedded stream loaded into.
    * Decode hands the work to its first item rather than doing any of its own:
    * the "pixel data" of such a file is a whole JPEG or PNG, and this library
@@ -160,6 +175,41 @@ typedef struct {
    * differently from the load that produced them. */
   uint8_t rgb32_alpha;
 } gimg_bmp_doc_state_t;
+
+/**
+ * @brief Fill in what a V4 or V5 header's color fields say, as far as
+ *   GIMG_Color_Info can hold it.
+ *
+ * Anything the model cannot state is left unknown rather than approximated.
+ * The ICC profile, which lives outside the header, is not touched here.
+ *
+ * @param header Parsed header.
+ * @param out_info Receives the color; set to defaults when the header says
+ *   nothing this can hold.
+ */
+void gimg_bmp_color_from_header(
+    const gimg_bmp_header_t * header, GIMG_Color_Info * out_info);
+
+/**
+ * @brief Read an embedded ICC profile out of a PROFILE_EMBEDDED V5 file.
+ *
+ * The stream is left where it was found.  A profile that runs off the end of
+ * the file, or cannot be read, yields no profile rather than an error: the
+ * image decodes perfectly well untagged, and refusing a picture over its
+ * color annotation would be the wrong trade.
+ *
+ * @param stream Stream positioned anywhere; restored before returning.
+ * @param header Parsed header.
+ * @param limits Caller's limits, or NULL.
+ * @param alloc Allocator for the profile bytes.
+ * @param out_profile Receives the profile, owned by the caller; NULL if none.
+ * @param out_size Receives its length; 0 if none.
+ * @return GIMG_OK, GIMG_ERR_LIMIT if the profile exceeds max_memory, or
+ *   GIMG_ERR_OOM.
+ */
+GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
+    const gimg_bmp_header_t * header, const GIMG_Limits * limits,
+    const GIMG_Allocator * alloc, void ** out_profile, size_t * out_size);
 
 /**
  * @brief Read and verify the "BM" signature, leaving the stream after it.

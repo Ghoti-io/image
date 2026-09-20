@@ -37,6 +37,7 @@
 
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
@@ -417,6 +418,18 @@ GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
   if (r != GIMG_OK) {
     gimg_raster_destroy(raster);
     return r;
+  }
+
+  // What a V4 or V5 header said about color, when it said anything this model
+  // can hold.  gimg_raster_set_color_info copies the ICC bytes, so the
+  // raster outlives the document that read them.
+  if (state->color.primaries != GIMG_PRIMARIES_UNKNOWN ||
+      state->color.transfer != GIMG_TRANSFER_UNKNOWN || state->color.icc_size) {
+    r = gimg_raster_set_color_info(raster, &state->color);
+    if (r != GIMG_OK) {
+      gimg_raster_destroy(raster);
+      return r;
+    }
   }
 
   *out_raster = raster;
