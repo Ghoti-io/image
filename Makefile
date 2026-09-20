@@ -1206,8 +1206,14 @@ FUZZ_CXX ?= clang++
 # every out-of-bounds read that happens to land on mapped memory and every
 # signed overflow.  Both were present in the JPEG decoder and neither was found
 # until address and undefined-behaviour checking were turned on here.
-FUZZ_FLAGS := -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -g -O1
-FUZZ_LIB_FLAGS := -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -g -O1
+# -fno-sanitize-recover=undefined so that undefined behaviour fails the run
+# instead of printing a line into a log.  Without it UBSan reports and carries
+# on, the fuzzer finds no crash, and the finding survives only as long as
+# somebody is reading the output - which is how a signed-overflow shift in the
+# EXIF reader once went unacted upon while all four harnesses reported it, and
+# how a double-to-uint32 conversion in the PNG colour writer nearly did again.
+FUZZ_FLAGS := -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1
+FUZZ_LIB_FLAGS := -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1
 # Check if clang++ is available for fuzz
 FUZZ_CXX_OK := $(shell which $(FUZZ_CXX) 2>/dev/null)
 

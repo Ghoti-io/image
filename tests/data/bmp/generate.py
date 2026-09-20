@@ -446,6 +446,16 @@ def color_fixtures() -> None:
                                              [2.2, 1.8, 1.0])),
                    b"", pixels))
 
+    # A V4 gamma at the top of what a 16.16 fixed-point field can hold.  PNG's
+    # gAMA states gamma x 100000 in four bytes and cannot hold it, and the
+    # conversion to uint32_t is undefined behaviour rather than a large
+    # number - UBSan caught exactly that on a BMP-to-PNG conversion.
+    write("bmp_4x4_v4_huge_gamma.bmp",
+          assemble(info_header(4, 4, 24,
+                               extra=v4_tail(0, SRGB_ENDPOINTS,
+                                             [65535.9] * 3)),
+                   b"", pixels))
+
     # V5 naming sRGB outright, with LCS_GM_GRAPHICS (relative colorimetric).
     write("bmp_4x4_v5_srgb.bmp",
           assemble(info_header(4, 4, 24,

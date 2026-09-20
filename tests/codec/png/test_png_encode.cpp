@@ -2550,3 +2550,49 @@ TEST(PngEncode, TheChunkAPngArrivedWithWinsOverTheRastersColorInfo) {
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }
+
+TEST(PngEncode, AGammaGamaCannotHoldGoesUnsaid) {
+  // gAMA states gamma x 100000 in four bytes, so it cannot hold a gamma above
+  // about 42949.  A BMP's V4 gamma is 16.16 fixed point and reaches 65535,
+  // and converting one of those to uint32_t is undefined behaviour rather
+  // than a large number - UBSan caught it at 4.98588e+09 while fuzzing the
+  // PNG round trip.  Such a gamma is now left unsaid, which is what this
+  // writer does with everything else it cannot state.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.transfer = GIMG_TRANSFER_GAMMA;
+  color.gamma_value = 65535.9;
+
+  GIMG_Raster * raster = raster_with_color(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster, GIMG_META_PRESERVE_ALL, png), GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "");
+}
+
+TEST(PngEncode, LinearTransferIsWrittenAsAGammaOfOne) {
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.transfer = GIMG_TRANSFER_LINEAR;
+
+  GIMG_Raster * raster = raster_with_color(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster, GIMG_META_PRESERVE_ALL, png), GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "gAMA");
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
+  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  ASSERT_NE(read, nullptr);
+  EXPECT_NEAR(read->gamma_value, 1.0, 0.0001);
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}

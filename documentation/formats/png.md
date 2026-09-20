@@ -62,6 +62,12 @@ order:
 | An ICC profile is attached | `iCCP`, deflated, keyword "ICC Profile" |
 | None of the above | nothing |
 
+`gAMA` holds gamma x 100000 in four bytes and so cannot state a gamma above
+about 42949. A BMP's V4 gamma is 16.16 fixed point and reaches 65535, and
+converting one of those to `uint32_t` is undefined behaviour rather than a
+large number - UBSan caught exactly that at 4.98588e+09 while fuzzing this
+path. A gamma the chunk cannot hold goes unsaid.
+
 The sRGB chunk takes the *transfer* actually saying sRGB, not the primaries.
 Matching on the primaries alone was too loose: a BMP with a calibrated V4
 header naming sRGB's primaries and a gamma of 2.2 is not an sRGB image, and

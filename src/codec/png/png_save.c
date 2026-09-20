@@ -1550,8 +1550,15 @@ static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
     // reader assumes when no chunk says otherwise.  Linear is a gamma of 1.
     double gamma =
         info->transfer == GIMG_TRANSFER_LINEAR ? 1.0 : info->gamma_value;
-    uint32_t gama_val = (uint32_t)(gamma * 100000.0 + 0.5);
-    if (gama_val > 0) {
+    // gAMA holds gamma x 100000 in four bytes, so it cannot state a gamma
+    // above about 42949.  A BMP's V4 gamma is 16.16 fixed point and reaches
+    // 65535, and converting one of those to uint32_t is undefined behaviour
+    // rather than a large number - UBSan caught exactly that here, on a value
+    // of 4.98588e+09.  A gamma the chunk cannot hold goes unsaid, which is
+    // what this writer does with every other thing it cannot state.
+    double scaled = (gamma * 100000.0) + 0.5;
+    if (scaled >= 1.0 && scaled <= 4294967295.0) {
+      uint32_t gama_val = (uint32_t)scaled;
       unsigned char gama[4];
       gama[0] = (unsigned char)(gama_val >> 24);
       gama[1] = (unsigned char)(gama_val >> 16);

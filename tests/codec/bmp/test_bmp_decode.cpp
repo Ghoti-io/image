@@ -1010,3 +1010,37 @@ TEST(BmpToPng, ACalibratedGammaSurvivesAsGama) {
 
   gimg_stream_destroy(out);
 }
+
+TEST(BmpToPng, AGammaPngCannotStateIsNotWritten) {
+  // bmp_4x4_v4_huge_gamma.bmp carries a V4 gamma at the top of what a 16.16
+  // field holds.  PNG's gAMA cannot state it, and the conversion used to be
+  // undefined behaviour rather than a large number.
+  Loaded bmp;
+  ASSERT_EQ(bmp.load("bmp_4x4_v4_huge_gamma.bmp"), GIMG_OK);
+  ASSERT_EQ(gimg_item_ensure_decoded(gimg_doc_item(bmp.doc(), 0), nullptr),
+      GIMG_OK);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options options = {};
+  options.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(bmp.doc(), out, "png", &options, &report), GIMG_OK);
+
+  const void * buffer = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &buffer, &size);
+  std::vector<uint8_t> png(static_cast<const uint8_t *>(buffer),
+      static_cast<const uint8_t *>(buffer) + size);
+
+  Loaded back;
+  ASSERT_EQ(back.load_bytes(png), GIMG_OK);
+  ASSERT_EQ(back.decode(), GIMG_OK);
+  const GIMG_Color_Info * from_png =
+      gimg_raster_color_info_const(back.raster());
+  ASSERT_NE(from_png, nullptr);
+  EXPECT_EQ(from_png->transfer, GIMG_TRANSFER_UNKNOWN)
+      << "a gamma gAMA cannot hold should go unsaid";
+
+  gimg_stream_destroy(out);
+}
