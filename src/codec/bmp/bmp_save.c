@@ -563,10 +563,16 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       uint32_t color_dib = gimg_bmp_color_to_header(
           gimg_raster_color_info_const(raster), plan.color_tail);
       if (color_dib > plan.dib_size) {
-        const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
         plan.dib_size = color_dib;
-        if (color_dib == GIMG_BMP_V5HEADER_SIZE && ci && ci->icc_bytes &&
-            ci->icc_size > 0) {
+        // Whether a profile is to be embedded is what the header itself now
+        // says, not what the raster carries: the two differ when the profile
+        // is past what this codec will embed, and reading the decision back
+        // from the tail keeps one answer rather than two that could drift.
+        unsigned char * cs = plan.color_tail + GIMG_BMP_V4_CS_TYPE_AT;
+        uint32_t cs_type = (uint32_t)cs[0] | ((uint32_t)cs[1] << 8) |
+            ((uint32_t)cs[2] << 16) | ((uint32_t)cs[3] << 24);
+        if (cs_type == GIMG_BMP_PROFILE_EMBEDDED) {
+          const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
           plan.profile = ci->icc_bytes;
           plan.profile_bytes = ci->icc_size;
         }

@@ -420,7 +420,7 @@ $(OBJ_DIR)/tests/%.o: tests/unit/%.cpp
 $(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/bmp -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Test in tests/codec/png/ (object name from basename for link)
 $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
@@ -967,7 +967,7 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp
 $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/bmp -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
 	@mkdir -p $(@D)

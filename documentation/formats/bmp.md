@@ -263,6 +263,14 @@ not an sRGB image.
 `bV4Gamma` is 16.16 fixed point and so states nothing above 65535; a gamma
 past that goes unsaid, for the same reason PNG's `gAMA` leaves one out.
 
+An embedded profile is capped at **4 MiB** in both directions, which is what
+the PNG and JPEG codecs allow and far above any real profile - a press profile
+runs to a few hundred kilobytes. `bV5ProfileSize` is 32 bits, so without a
+ceiling a file could name a profile of four gigabytes and the loader would try
+to allocate it. A file naming one past the cap decodes untagged, and a raster
+carrying one is written without it rather than into a file this codec could
+not read whole; whatever else its color info states is still written.
+
 The profile goes **after** the pixel data. Putting it before would make
 `bfOffBits` depend on it, and every reader that ignores the profile still has
 to find the pixels. `bV5ProfileData` is measured from the start of the DIB

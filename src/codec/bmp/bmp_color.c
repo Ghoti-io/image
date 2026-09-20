@@ -40,15 +40,6 @@
 #include "../../core/alloc_internal.h"
 #include "bmp_internal.h"
 
-/** @name bV4CSType / bV5CSType values, four-character codes where they are.
- * @{ */
-#define GIMG_BMP_LCS_CALIBRATED_RGB UINT32_C(0x00000000) ///< Endpoints + gamma.
-#define GIMG_BMP_LCS_sRGB UINT32_C(0x73524742) ///< 'sRGB'.
-#define GIMG_BMP_LCS_WINDOWS_COLOR_SPACE UINT32_C(0x57696E20) ///< 'Win '.
-#define GIMG_BMP_PROFILE_LINKED UINT32_C(0x4C494E4B) ///< 'LINK': a file path.
-#define GIMG_BMP_PROFILE_EMBEDDED UINT32_C(0x4D424544) ///< 'MBED': a profile.
-/** @} */
-
 /** @name bV5Intent values (wingdi.h LCS_GM_*).
  * @{ */
 #define GIMG_BMP_LCS_GM_BUSINESS 1u         ///< Saturation.
@@ -242,7 +233,14 @@ GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
     // fatal to the image, which decodes perfectly well untagged.
     return GIMG_OK;
   }
+  if (size > GIMG_BMP_ICC_MAX_SIZE) {
+    // Past what any real profile is, so the file is describing something
+    // other than its own color.  Untagged, for the same reason a profile
+    // running off the end of the file is: the picture is not wrong.
+    return GIMG_OK;
+  }
   if (limits && limits->max_memory && size > limits->max_memory) {
+    // A limit the caller set is different: they asked to be told.
     return GIMG_ERR_LIMIT;
   }
 
@@ -304,7 +302,8 @@ uint32_t gimg_bmp_color_to_header(
   // V5 header has the two fields that locate one.  The caller fills them in,
   // because where the profile lands depends on how much pixel data precedes
   // it.
-  if (info->icc_bytes && info->icc_size > 0) {
+  if (info->icc_bytes && info->icc_size > 0 &&
+      info->icc_size <= GIMG_BMP_ICC_MAX_SIZE) {
     gimg_bmp_write_u32(tail + GIMG_BMP_V4_CS_TYPE_AT, GIMG_BMP_PROFILE_EMBEDDED);
     gimg_bmp_write_u32(
         tail + GIMG_BMP_V5_INTENT_AT, bmp_intent_to_v5(info->intent));

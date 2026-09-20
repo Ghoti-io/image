@@ -21,6 +21,10 @@
 
 #include "bmp_test_utils.h"
 
+extern "C" {
+#include "bmp_internal.h"
+}
+
 using bmp_test::Loaded;
 using bmp_test::Rgba;
 
@@ -1260,4 +1264,56 @@ TEST(BmpEncode, ProfileBearingFilesStillReadBackFromOutside) {
   std::vector<uint8_t> bytes;
   ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
   publish_for_verification("v5_profile.bmp", bytes, 5, 3, opaque_gradient);
+}
+
+TEST(BmpEncode, AProfilePastWhatThisCodecReadsIsNotEmbedded) {
+  // bV5ProfileSize is 32 bits, so without a ceiling a file could name a
+  // profile of four gigabytes.  The writer obeys the same ceiling the loader
+  // does, so it never produces a file this codec would refuse to read whole -
+  // and a raster whose only colour is an over-large profile gets the smallest
+  // header, not a V5 one pointing at nothing.
+  std::vector<uint8_t> profile(GIMG_BMP_ICC_MAX_SIZE + 1u, 0);
+  profile[3] = 0;
+  std::memcpy(profile.data() + 36, "acsp", 4);
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(dib_size_of(bytes), 40u);
+}
+
+TEST(BmpEncode, AnOverLargeProfileDoesNotSuppressTheRestOfTheColor) {
+  // The rendering intent is what pushes a header to V5 when there is no
+  // profile, and it used to drag an over-large profile along with it.
+  std::vector<uint8_t> profile(GIMG_BMP_ICC_MAX_SIZE + 1u, 0);
+  std::memcpy(profile.data() + 36, "acsp", 4);
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.transfer = GIMG_TRANSFER_SRGB;
+  color.intent = GIMG_INTENT_SATURATION;
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  ASSERT_EQ(dib_size_of(bytes), 124u);
+  EXPECT_EQ(dib_u32(bytes, 56), 0x73524742u) << "sRGB, not PROFILE_EMBEDDED";
+  EXPECT_EQ(dib_u32(bytes, 116), 0u) << "and no profile size";
+  EXPECT_LT(bytes.size(), 4096u) << "the profile must not have been written";
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(back, nullptr);
+  EXPECT_EQ(back->transfer, GIMG_TRANSFER_SRGB);
+  EXPECT_EQ(back->intent, GIMG_INTENT_SATURATION);
+  EXPECT_EQ(back->icc_size, 0u);
 }

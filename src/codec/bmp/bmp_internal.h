@@ -40,6 +40,28 @@ extern const unsigned char gimg_bmp_signature[GIMG_BMP_SIGNATURE_LEN];
 #define GIMG_BMP_V4HEADER_SIZE 108   ///< BITMAPV4HEADER.
 #define GIMG_BMP_V5HEADER_SIZE 124   ///< BITMAPV5HEADER.
 
+/** @name bV4CSType / bV5CSType values, four-character codes where they are.
+ * @{ */
+#define GIMG_BMP_LCS_CALIBRATED_RGB UINT32_C(0x00000000) ///< Endpoints + gamma.
+#define GIMG_BMP_LCS_sRGB UINT32_C(0x73524742) ///< 'sRGB'.
+#define GIMG_BMP_LCS_WINDOWS_COLOR_SPACE UINT32_C(0x57696E20) ///< 'Win '.
+#define GIMG_BMP_PROFILE_LINKED UINT32_C(0x4C494E4B) ///< 'LINK': a file path.
+#define GIMG_BMP_PROFILE_EMBEDDED UINT32_C(0x4D424544) ///< 'MBED': a profile.
+/** @} */
+
+/**
+ * Largest embedded ICC profile this codec reads or writes.
+ *
+ * bV5ProfileSize is 32 bits, so without a ceiling a file could name a profile
+ * of four gigabytes and the loader would try to allocate it.  Four mebibytes
+ * is what the PNG and JPEG codecs allow (GIMG_PNG_ICC_MAX_DECODED,
+ * GIMG_JPEG_MAX_ICC_PROFILE_SIZE) and is far above any real profile - a press
+ * profile runs to a few hundred kilobytes.  The writer obeys the same
+ * ceiling, so it never produces a file this loader would refuse to read
+ * whole.
+ */
+#define GIMG_BMP_ICC_MAX_SIZE (4u * 1024u * 1024u)
+
 /** Where a V4 header's color fields begin: after the four channel masks,
  * which a V4 header carries whether or not the compression uses them. */
 #define GIMG_BMP_V4_TAIL_AT 56
