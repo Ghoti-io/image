@@ -169,11 +169,28 @@ GIMG_Result gimg_bmp_row_stride(
 // DIB header
 // ---------------------------------------------------------------------------
 
-/** True for the DIB header sizes this codec knows how to interpret. */
-static bool bmp_header_size_known(uint32_t size) {
+/** True for a DIB header size only Windows uses. */
+static bool bmp_header_size_windows(uint32_t size) {
   return size == GIMG_BMP_COREHEADER_SIZE || size == GIMG_BMP_INFOHEADER_SIZE ||
       size == GIMG_BMP_V2HEADER_SIZE || size == GIMG_BMP_V3HEADER_SIZE ||
       size == GIMG_BMP_V4HEADER_SIZE || size == GIMG_BMP_V5HEADER_SIZE;
+}
+
+/**
+ * True for a header size that can only be a BITMAPCOREHEADER2 (OS/2 2.x).
+ *
+ * OS/2 2.x allows the header to stop at any multiple of 4 from 16 to 64, with
+ * every field it stops short of reading as zero.  Three of those sizes are
+ * also Windows headers - 40 is BITMAPINFOHEADER, 52 and 56 are the V2 and V3
+ * forms - and nothing in the file says which was meant.  They are read as
+ * Windows, because that is what wrote them: bmpsuite's q/rgb32h52.bmp and
+ * q/rgba32h56.bmp both carry RGB masks in the bytes where OS/2 would put
+ * usRecording, and the masks are what makes them decode.  The rest of the
+ * range is unambiguous.
+ */
+static bool bmp_header_size_os2_v2(uint32_t size) {
+  return size >= GIMG_BMP_OS2V2_MIN_SIZE && size <= GIMG_BMP_OS2V2_MAX_SIZE &&
+      (size % 4u) == 0u && !bmp_header_size_windows(size);
 }
 
 /** True for bit depths that have a defined pixel layout. */
@@ -204,7 +221,8 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
   }
 
   uint32_t header_size = bmp_read_u32(size_bytes);
-  if (!bmp_header_size_known(header_size)) {
+  bool os2_v2 = bmp_header_size_os2_v2(header_size);
+  if (!os2_v2 && !bmp_header_size_windows(header_size)) {
     bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
         "unrecognized DIB header size");
     return GIMG_ERR_UNSUPPORTED;
@@ -212,9 +230,11 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
 
   memset(out, 0, sizeof(*out));
   out->header_size = header_size;
+  out->os2_v2 = os2_v2;
 
   // Everything after the 4-byte size field.
   unsigned char body[GIMG_BMP_V5HEADER_SIZE];
+  memset(body, 0, sizeof(body));
   size_t body_size = (size_t)header_size - 4u;
   r = gimg_stream_read_exact(stream, body, body_size);
   if (r != GIMG_OK) {
@@ -224,6 +244,7 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
   }
 
   uint32_t clr_used = 0;
+  uint32_t raw_compression = GIMG_BMP_BI_RGB;
   int64_t signed_height = 0;
 
   if (header_size == GIMG_BMP_COREHEADER_SIZE) {
@@ -231,13 +252,17 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     out->width = bmp_read_u16(body + 0);
     signed_height = (int64_t)bmp_read_u16(body + 2);
     out->bit_count = bmp_read_u16(body + 6);
-    out->compression = GIMG_BMP_BI_RGB;
   }
   else {
+    // A BITMAPCOREHEADER2 and a BITMAPINFOHEADER agree byte for byte over
+    // their first 40, so the same reads serve both.  What an OS/2 header
+    // stops short of is zero, which body was cleared to - and zero is the
+    // right answer for every one of these fields: no compression, no stated
+    // resolution, and a palette of the depth's full size.
     out->width = bmp_read_u32(body + 0);
     signed_height = (int64_t)bmp_read_i32(body + 4);
     out->bit_count = bmp_read_u16(body + 10);
-    out->compression = bmp_read_u32(body + 12);
+    raw_compression = bmp_read_u32(body + 12);
     // biXPelsPerMeter and biYPelsPerMeter.  Stored signed, but a negative
     // resolution is meaningless, so anything with the top bit set is read as
     // "not stated" rather than as an enormous density.
@@ -274,36 +299,90 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  // Compression must agree with the bit depth.
+  // Resolve the compression number against the vocabulary of the header that
+  // carried it, then check it against the bit depth.  0, 1 and 2 mean the
+  // same thing to both; 3 and 4 do not.
+  bool alpha_bitfields = false;
+  if (os2_v2) {
+    switch (raw_compression) {
+      case GIMG_BMP_BI_RGB:
+        out->compression = GIMG_BMP_COMP_RGB;
+        break;
+      case GIMG_BMP_BI_RLE8:
+        out->compression = GIMG_BMP_COMP_RLE8;
+        break;
+      case GIMG_BMP_BI_RLE4:
+        out->compression = GIMG_BMP_COMP_RLE4;
+        break;
+      case GIMG_BMP_OS2_RLE24:
+        out->compression = GIMG_BMP_COMP_RLE24;
+        break;
+      case GIMG_BMP_OS2_HUFFMAN1D:
+        bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
+            "OS/2 Huffman 1D compression is not implemented");
+        return GIMG_ERR_UNSUPPORTED;
+      default:
+        bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
+            "unsupported compression method");
+        return GIMG_ERR_UNSUPPORTED;
+    }
+  }
+  else {
+    switch (raw_compression) {
+      case GIMG_BMP_BI_RGB:
+        out->compression = GIMG_BMP_COMP_RGB;
+        break;
+      case GIMG_BMP_BI_RLE8:
+        out->compression = GIMG_BMP_COMP_RLE8;
+        break;
+      case GIMG_BMP_BI_RLE4:
+        out->compression = GIMG_BMP_COMP_RLE4;
+        break;
+      case GIMG_BMP_BI_BITFIELDS:
+        out->compression = GIMG_BMP_COMP_BITFIELDS;
+        break;
+      case GIMG_BMP_BI_ALPHABITFIELDS:
+        out->compression = GIMG_BMP_COMP_BITFIELDS;
+        alpha_bitfields = true;
+        break;
+      default:
+        bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
+            "unsupported compression method");
+        return GIMG_ERR_UNSUPPORTED;
+    }
+  }
+
   switch (out->compression) {
-    case GIMG_BMP_BI_RGB:
+    case GIMG_BMP_COMP_RGB:
       break;
-    case GIMG_BMP_BI_RLE8:
+    case GIMG_BMP_COMP_RLE8:
       if (out->bit_count != 8) {
         bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
             "RLE8 requires 8 bits per pixel");
         return GIMG_ERR_CORRUPT;
       }
       break;
-    case GIMG_BMP_BI_RLE4:
+    case GIMG_BMP_COMP_RLE4:
       if (out->bit_count != 4) {
         bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
             "RLE4 requires 4 bits per pixel");
         return GIMG_ERR_CORRUPT;
       }
       break;
-    case GIMG_BMP_BI_BITFIELDS:
-    case GIMG_BMP_BI_ALPHABITFIELDS:
+    case GIMG_BMP_COMP_RLE24:
+      if (out->bit_count != 24) {
+        bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
+            "RLE24 requires 24 bits per pixel");
+        return GIMG_ERR_CORRUPT;
+      }
+      break;
+    case GIMG_BMP_COMP_BITFIELDS:
       if (out->bit_count != 16 && out->bit_count != 32) {
         bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
             "bitfields require 16 or 32 bits per pixel");
         return GIMG_ERR_CORRUPT;
       }
       break;
-    default:
-      bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
-          "unsupported compression method");
-      return GIMG_ERR_UNSUPPORTED;
   }
 
   // A negative biHeight means top-down rows, and the format does not allow it
@@ -312,9 +391,7 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
   // top-down RLE bitmap does not say which way it walks.  Windows refuses
   // such a file and so do GdkPixbuf and netpbm.  Decoding one bottom-up, as
   // this codec used to, produced a silently upside-down image.
-  if (out->top_down &&
-      (out->compression == GIMG_BMP_BI_RLE8 ||
-          out->compression == GIMG_BMP_BI_RLE4)) {
+  if (out->top_down && gimg_bmp_is_rle(out->compression)) {
     bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
         "RLE cannot be combined with top-down rows");
     return GIMG_ERR_CORRUPT;
@@ -324,8 +401,7 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
   // with BI_BITFIELDS stores them in the three 32-bit words that follow the
   // header, which is where the palette would otherwise begin.
   bool masks_from_header = header_size >= GIMG_BMP_V2HEADER_SIZE;
-  bool wants_masks = out->compression == GIMG_BMP_BI_BITFIELDS ||
-      out->compression == GIMG_BMP_BI_ALPHABITFIELDS;
+  bool wants_masks = out->compression == GIMG_BMP_COMP_BITFIELDS;
 
   if (wants_masks) {
     uint32_t r_mask, g_mask, b_mask, a_mask = 0;
@@ -339,8 +415,7 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     }
     else {
       unsigned char mask_bytes[16];
-      size_t mask_size =
-          out->compression == GIMG_BMP_BI_ALPHABITFIELDS ? 16u : 12u;
+      size_t mask_size = alpha_bitfields ? 16u : 12u;
       r = gimg_stream_read_exact(stream, mask_bytes, mask_size);
       if (r != GIMG_OK) {
         bmp_load_diag(diagnostics, (size_t)header_size,
@@ -464,8 +539,7 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
     return GIMG_ERR_CORRUPT;
   }
 
-  bool is_rle = header->compression == GIMG_BMP_BI_RLE8 ||
-      header->compression == GIMG_BMP_BI_RLE4;
+  bool is_rle = gimg_bmp_is_rle(header->compression);
 
   size_t needed;
   if (is_rle) {

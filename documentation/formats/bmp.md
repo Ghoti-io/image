@@ -238,8 +238,11 @@ Listed so the absences are visible rather than discovered.
   "pixel data". Both are refused with `GIMG_ERR_UNSUPPORTED`. The library has
   codecs for both formats, so handing the payload to one of them is the
   obvious implementation; nothing depends on it yet.
-- **OS/2 `BITMAPCOREHEADER2`.** The 64-byte OS/2 2.x header, and the truncated
-  forms of it that are legal there, are refused as an unknown header size.
+- **OS/2 Huffman 1D.** `ulCompression` 3 in an OS/2 2.x header is CCITT
+  Group 3 one-dimensional Huffman coding, not `BI_BITFIELDS`. It is
+  recognized as such and refused with `GIMG_ERR_UNSUPPORTED` rather than
+  misread as a channel layout; bmpsuite's `q/pal1huffmsb.bmp` is the case.
+  No other decoder reachable from here implements it either.
 - **Color management.** The color space endpoints, per-channel gamma,
   rendering intent and embedded ICC profile of a V4 or V5 header are skipped,
   and no `GIMG_Color_Info` is attached to the decoded raster. An image

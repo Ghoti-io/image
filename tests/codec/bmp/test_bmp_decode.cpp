@@ -247,6 +247,88 @@ TEST(BmpDecode, Rgb32BitfieldsAlphaIsHonored) {
 }
 
 // ---------------------------------------------------------------------------
+// OS/2 2.x
+// ---------------------------------------------------------------------------
+
+TEST(BmpDecode, Os2V2HeaderDecodesLikeAWindowsOne) {
+  // A BITMAPCOREHEADER2's first 40 bytes are byte for byte a
+  // BITMAPINFOHEADER, so the same picture written under either header must
+  // decode the same way.  That is a property of the two layouts and needs no
+  // reference decoder to check.
+  Loaded windows, os2;
+  ASSERT_EQ(windows.load("bmp_8x2_8bit.bmp"), GIMG_OK);
+  ASSERT_EQ(windows.decode(), GIMG_OK);
+  ASSERT_EQ(os2.load("bmp_8x2_os2v2_64.bmp"), GIMG_OK);
+  ASSERT_EQ(os2.decode(), GIMG_OK);
+
+  ASSERT_EQ(os2.width(), windows.width());
+  ASSERT_EQ(os2.height(), windows.height());
+  for (uint32_t y = 0; y < os2.height(); y++) {
+    for (uint32_t x = 0; x < os2.width(); x++) {
+      EXPECT_EQ(os2.at(x, y), windows.at(x, y))
+          << "at (" << x << "," << y << ")";
+    }
+  }
+}
+
+TEST(BmpDecode, Os2V2HeaderMayStopAtSixteenBytes) {
+  // OS/2 2.x lets the header end at any multiple of 4 from 16 to 64, with
+  // every field it stops short of reading as zero.  A 16-byte header stops
+  // before biCompression and biClrUsed, so the image is uncompressed and the
+  // palette is the depth's full size.  bmpsuite carries the same pair as
+  // q/pal8os2v2-16.bmp and q/pal8os2v2.bmp.
+  Loaded full, tiny;
+  ASSERT_EQ(full.load("bmp_8x2_os2v2_64.bmp"), GIMG_OK);
+  ASSERT_EQ(full.decode(), GIMG_OK);
+  ASSERT_EQ(tiny.load("bmp_8x2_os2v2_16.bmp"), GIMG_OK);
+  ASSERT_EQ(tiny.decode(), GIMG_OK);
+
+  ASSERT_EQ(tiny.width(), full.width());
+  ASSERT_EQ(tiny.height(), full.height());
+  for (uint32_t y = 0; y < tiny.height(); y++) {
+    for (uint32_t x = 0; x < tiny.width(); x++) {
+      EXPECT_EQ(tiny.at(x, y), full.at(x, y))
+          << "at (" << x << "," << y << ")";
+    }
+  }
+}
+
+TEST(BmpLoad, Os2CompressionThreeIsHuffmanAndNotBitfields) {
+  // 3 is BI_BITFIELDS to a Windows header and Huffman 1D to an OS/2 one.
+  // Reading it as bitfields would look for masks that are not there and
+  // decode whatever followed the header as a channel layout.
+  Loaded img;
+  EXPECT_EQ(img.load("bmp_8x2_os2v2_huffman.bmp"), GIMG_ERR_UNSUPPORTED);
+}
+
+TEST(BmpDecode, Os2Rle24) {
+  // RLE24 is OS/2's compression 4 - Windows spells BI_JPEG there.  It carries
+  // a BGR triple per pixel and uses no palette.  The fixture runs every form
+  // through one 8x2 image: an encoded run, an absolute run, a delta, an end
+  // of line and an end of bitmap.  Pixels the delta skipped are left at the
+  // raster's zeroed value - transparent, not opaque black - which is what the
+  // RLE8 and RLE4 paths do with a delta too.
+  const Rgba kSkipped = {0, 0, 0, 0};
+  const Rgba kWhite = {255, 255, 255, 255};
+  const Rgba expected[2][8] = {
+      {kCyan, kCyan, kSkipped, kSkipped, kWhite, kWhite, kSkipped, kSkipped},
+      {kRed, kRed, kRed, kGreen, kBlue, kYellow, kMagenta, kMagenta},
+  };
+
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_8x2_rle24.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  ASSERT_EQ(img.width(), 8u);
+  ASSERT_EQ(img.height(), 2u);
+  for (uint32_t y = 0; y < 2; y++) {
+    for (uint32_t x = 0; x < 8; x++) {
+      EXPECT_EQ(img.at(x, y), expected[y][x])
+          << "at (" << x << "," << y << ")";
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Indexed
 // ---------------------------------------------------------------------------
 

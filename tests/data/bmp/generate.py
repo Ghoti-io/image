@@ -207,6 +207,81 @@ def palette_fixtures() -> None:
     write("bmp_8x2_core.bmp", assemble(core, core_palette, b"".join(rows)))
 
 
+def os2_fixtures() -> None:
+    """OS/2 2.x BITMAPCOREHEADER2 forms, and the RLE24 only OS/2 has.
+
+    The header may stop at any multiple of 4 from 16 to 64, and every field it
+    stops short of reads as zero.  Its first 40 bytes are byte-for-byte a
+    BITMAPINFOHEADER, so the same picture written at 16, 40 and 64 bytes must
+    decode identically - which is a property, and needs no reference decoder
+    to check.
+    """
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255),
+              (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+    palette = b"".join(bytes([b, g, r, 0]) for (r, g, b) in colors)
+    indices = [
+        [0, 1, 2, 3, 4, 5, 0, 1],
+        [5, 4, 3, 2, 1, 0, 5, 4],
+    ]
+    rows = b"".join(pad_row(bytes(row)) for row in bottom_up(indices))
+
+    def os2v2_header(size, width, height, bit_count, compression=0,
+                     clr_used=0):
+        """A BITMAPCOREHEADER2 truncated to `size` bytes."""
+        full = struct.pack("<IiiHHIIiiII", size, width, height, 1, bit_count,
+                           compression, 0, 0, 0, clr_used, 0)
+        full += struct.pack("<HHHHIIII", 0, 0, 0, 0, 0, 0, 0, 0)
+        assert len(full) == 64
+        return full[:size]
+
+    # The full 64-byte form, and the smallest one there is.  A 16-byte header
+    # stops before biCompression and biClrUsed, so the palette is the depth's
+    # full 256 entries.
+    write("bmp_8x2_os2v2_64.bmp",
+          assemble(os2v2_header(64, 8, 2, 8, clr_used=6), palette, rows))
+    full_palette = palette + b"\x00" * 4 * (256 - len(colors))
+    write("bmp_8x2_os2v2_16.bmp",
+          assemble(os2v2_header(16, 8, 2, 8), full_palette, rows))
+
+    # ulCompression 3 is Huffman 1D to OS/2, not BI_BITFIELDS.  Reading it as
+    # bitfields would look for masks that are not there.
+    write("bmp_8x2_os2v2_huffman.bmp",
+          assemble(os2v2_header(64, 8, 2, 1, compression=3), palette,
+                   b"\x00" * 8))
+
+    # ulCompression 4 is RLE24: an escape structure like RLE8's, but each
+    # pixel is a BGR triple and there is no palette at all.  The fixture runs
+    # every form through in one 8x2 image - encoded run, absolute run, delta,
+    # end of line, end of bitmap - and the expected pixels are spelled out in
+    # the test rather than derived from PATTERN.
+    def rle24_run(count, rgb):
+        r, g, b = rgb
+        return bytes([count, b, g, r])
+
+    def rle24_absolute(pixels):
+        assert len(pixels) >= 3, "counts below 3 are escapes, not runs"
+        body = b"".join(bytes([b, g, r]) for (r, g, b) in pixels)
+        return bytes([0, len(pixels)]) + body + (b"\x00" * (len(body) & 1))
+
+    red, green, blue = (255, 0, 0), (0, 255, 0), (0, 0, 255)
+    yellow, magenta, cyan = (255, 255, 0), (255, 0, 255), (0, 255, 255)
+    white = (255, 255, 255)
+
+    # Rows are emitted bottom-up, so the image's last row is encoded first.
+    #   row 1: R R R | G B Y | M M
+    #   row 0: C C | skip 2 | W W | (the rest never reached, so black)
+    rle24 = (rle24_run(3, red)
+             + rle24_absolute([green, blue, yellow])
+             + rle24_run(2, magenta)
+             + bytes([0, 0])                  # End of line.
+             + rle24_run(2, cyan)
+             + bytes([0, 2, 2, 0])            # Delta: +2 columns, +0 rows.
+             + rle24_run(2, white)
+             + bytes([0, 1]))                 # End of bitmap.
+    write("bmp_8x2_rle24.bmp",
+          assemble(os2v2_header(64, 8, 2, 24, compression=4), b"", rle24))
+
+
 def rle_fixtures() -> None:
     colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255),
               (255, 255, 0), (255, 0, 255), (0, 255, 255)]
@@ -278,9 +353,11 @@ def malformed_fixtures() -> None:
     # Zero width.
     write("bmp_zero_width.bmp", assemble(info_header(0, 4, 24), b"", b""))
 
-    # A DIB header size no version uses.
-    bad = struct.pack("<IiiHHIIiiII", 44, 4, 4, 1, 24, 0, 0, 0, 0, 0, 0)
-    bad += b"\x00" * 4
+    # A DIB header size no version uses.  It has to be outside 16..64 as well
+    # as away from the Windows sizes: OS/2 2.x allows every multiple of 4 in
+    # that range, so 44 - which this fixture used to carry - is legal there.
+    bad = struct.pack("<IiiHHIIiiII", 100, 4, 4, 1, 24, 0, 0, 0, 0, 0, 0)
+    bad += b"\x00" * 60
     write("bmp_unknown_header_size.bmp", assemble(bad, b"", b"\x00" * 48))
 
     # Correct header, wrong magic.
@@ -310,6 +387,8 @@ if __name__ == "__main__":
     true_color_fixtures()
     print("Palette fixtures:")
     palette_fixtures()
+    print("OS/2 fixtures:")
+    os2_fixtures()
     print("RLE fixtures:")
     rle_fixtures()
     print("Malformed fixtures:")

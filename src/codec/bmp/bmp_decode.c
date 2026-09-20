@@ -26,10 +26,13 @@
  * BI_BITFIELDS, BI_ALPHABITFIELDS or a V3 or later header, is always honored
  * as written and is not affected by either.
  *
- * RLE: runs are clipped to the row and the decoder refuses to advance past
- * the last row, so a hostile stream cannot write outside the raster.  Pixels
- * never reached by the encoded data stay at the zeroed initial value, which
- * is what the format specifies for a delta that skips them.
+ * RLE: RLE8 and RLE4 name palette entries; the OS/2 RLE24 carries a BGR
+ * triple per pixel and uses no palette.  All three share one escape
+ * structure, so they share one loop.  Runs are clipped to the row and the
+ * decoder refuses to advance past the last row, so a hostile stream cannot
+ * write outside the raster.  Pixels never reached by the encoded data stay at
+ * the zeroed initial value, which is what the format specifies for a delta
+ * that skips them.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -133,7 +136,8 @@ static GIMG_Result bmp_decode_uncompressed(
   // nothing about transparency and the image decodes opaque.  A caller who
   // knows their files put alpha there asks for the heuristic instead.
   bool use_alpha = h->alpha.mask != 0;
-  if (use_alpha && h->bit_count == 32 && h->compression == GIMG_BMP_BI_RGB) {
+  if (use_alpha && h->bit_count == 32 &&
+      h->compression == GIMG_BMP_COMP_RGB) {
     use_alpha = state->rgb32_alpha == GIMG_BMP_RGB32_ALPHA_HEURISTIC &&
         bmp_rgb32_has_alpha(state, stride);
   }
@@ -194,29 +198,44 @@ static GIMG_Result bmp_decode_uncompressed(
 // RLE
 // ---------------------------------------------------------------------------
 
-/** Plot one palette index, clipping anything outside the row. */
-static GIMG_Result bmp_rle_plot(const gimg_bmp_doc_state_t * state,
-    uint8_t * dest, size_t dest_stride, uint32_t x, uint32_t y,
-    unsigned int index) {
-  const gimg_bmp_header_t * h = &state->header;
-  if (index >= state->palette_count) {
-    return GIMG_ERR_CORRUPT;
-  }
+/** Plot one pixel, clipping anything outside the raster. */
+static void bmp_rle_put(const gimg_bmp_header_t * h, uint8_t * dest,
+    size_t dest_stride, uint32_t x, uint32_t y, uint8_t r, uint8_t g,
+    uint8_t b) {
   if (x >= h->width || y >= h->height) {
     // Encoders legitimately emit runs that overhang the row; the excess is
     // discarded rather than treated as corruption.
-    return GIMG_OK;
+    return;
   }
-  uint8_t * row = dest + ((size_t)bmp_dest_row(h, y) * dest_stride);
+  bmp_put_rgb(dest + ((size_t)bmp_dest_row(h, y) * dest_stride), x, r, g, b);
+}
+
+/** Plot one palette index, refusing an index the file has no entry for. */
+static GIMG_Result bmp_rle_plot(const gimg_bmp_doc_state_t * state,
+    uint8_t * dest, size_t dest_stride, uint32_t x, uint32_t y,
+    unsigned int index) {
+  if (index >= state->palette_count) {
+    return GIMG_ERR_CORRUPT;
+  }
   const gimg_bmp_palette_entry_t * e = &state->palette[index];
-  bmp_put_rgb(row, x, e->r, e->g, e->b);
+  bmp_rle_put(&state->header, dest, dest_stride, x, y, e->r, e->g, e->b);
   return GIMG_OK;
 }
 
+/**
+ * Decode a run-length encoded bitmap: RLE8, RLE4, or the OS/2 RLE24.
+ *
+ * All three share the escape structure - a zero count introduces end-of-line,
+ * end-of-bitmap, a delta, or an absolute run - and differ only in what a
+ * "pixel" costs in the stream.  RLE8 and RLE4 name palette entries; RLE24
+ * carries a BGR triple per pixel and uses no palette at all, which is why the
+ * plotting is split into an index form and a literal form.
+ */
 static GIMG_Result bmp_decode_rle(
     const gimg_bmp_doc_state_t * state, GIMG_Raster * raster) {
   const gimg_bmp_header_t * h = &state->header;
-  bool rle4 = h->compression == GIMG_BMP_BI_RLE4;
+  bool rle4 = h->compression == GIMG_BMP_COMP_RLE4;
+  bool rle24 = h->compression == GIMG_BMP_COMP_RLE24;
 
   uint8_t * dest = (uint8_t *)gimg_raster_pixels(raster);
   size_t dest_stride = gimg_raster_stride_bytes(raster);
@@ -227,28 +246,45 @@ static GIMG_Result bmp_decode_rle(
   uint32_t x = 0;
   uint32_t y = 0;
 
-  while (p + 2 <= end) {
+  while (p < end) {
     unsigned int count = *p++;
-    unsigned int value = *p++;
 
     if (count) {
-      // Encoded run: `count` pixels of one color (RLE8) or of two alternating
-      // nibbles (RLE4).
-      for (unsigned int i = 0; i < count; i++) {
+      // Encoded run.  RLE8 repeats one index, RLE4 alternates the two nibbles
+      // of the value byte, RLE24 repeats one BGR triple.
+      if (rle24) {
+        if (end - p < 3) {
+          return GIMG_ERR_CORRUPT;
+        }
+        uint8_t b = p[0], g = p[1], rr = p[2];
+        p += 3;
+        for (unsigned int i = 0; i < count; i++, x++) {
+          bmp_rle_put(h, dest, dest_stride, x, y, rr, g, b);
+        }
+        continue;
+      }
+      if (p >= end) {
+        return GIMG_ERR_CORRUPT;
+      }
+      unsigned int value = *p++;
+      for (unsigned int i = 0; i < count; i++, x++) {
         unsigned int index = rle4
             ? ((i & 1u) ? (value & 0x0Fu) : ((value >> 4) & 0x0Fu))
             : value;
-        GIMG_Result r =
-            bmp_rle_plot(state, dest, dest_stride, x, y, index);
+        GIMG_Result r = bmp_rle_plot(state, dest, dest_stride, x, y, index);
         if (r != GIMG_OK) {
           return r;
         }
-        x++;
       }
       continue;
     }
 
     // Escape.
+    if (p >= end) {
+      return GIMG_ERR_CORRUPT;
+    }
+    unsigned int value = *p++;
+
     if (value == 0) {
       // End of line.
       x = 0;
@@ -265,7 +301,7 @@ static GIMG_Result bmp_decode_rle(
     if (value == 2) {
       // Delta: skip dx right and dy down.  Skipped pixels keep the raster's
       // initial value.
-      if (p + 2 > end) {
+      if (end - p < 2) {
         return GIMG_ERR_CORRUPT;
       }
       x += *p++;
@@ -276,14 +312,20 @@ static GIMG_Result bmp_decode_rle(
       continue;
     }
 
-    // Absolute run of `value` literal indices, padded to a 16-bit boundary.
+    // Absolute run of `value` literal pixels, padded to a 16-bit boundary.
     unsigned int n = value;
-    size_t encoded = rle4 ? (size_t)((n + 1u) / 2u) : (size_t)n;
+    size_t encoded = rle24 ? (size_t)n * 3u
+                           : (rle4 ? (size_t)((n + 1u) / 2u) : (size_t)n);
     size_t padded = encoded + (encoded & 1u);
-    if (p + padded > end) {
+    if ((size_t)(end - p) < padded) {
       return GIMG_ERR_CORRUPT;
     }
-    for (unsigned int i = 0; i < n; i++) {
+    for (unsigned int i = 0; i < n; i++, x++) {
+      if (rle24) {
+        bmp_rle_put(h, dest, dest_stride, x, y, p[(i * 3u) + 2u],
+            p[(i * 3u) + 1u], p[i * 3u]);
+        continue;
+      }
       unsigned int index;
       if (rle4) {
         unsigned char byte = p[i / 2u];
@@ -296,7 +338,6 @@ static GIMG_Result bmp_decode_rle(
       if (r != GIMG_OK) {
         return r;
       }
-      x++;
     }
     p += padded;
   }
@@ -357,10 +398,9 @@ GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return r;
   }
 
-  bool is_rle = h->compression == GIMG_BMP_BI_RLE8 ||
-      h->compression == GIMG_BMP_BI_RLE4;
-  r = is_rle ? bmp_decode_rle(state, raster)
-             : bmp_decode_uncompressed(state, raster);
+  r = gimg_bmp_is_rle(h->compression)
+      ? bmp_decode_rle(state, raster)
+      : bmp_decode_uncompressed(state, raster);
   if (r != GIMG_OK) {
     gimg_raster_destroy(raster);
     return r;

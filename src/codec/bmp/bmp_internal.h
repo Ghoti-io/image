@@ -39,12 +39,43 @@ extern const unsigned char gimg_bmp_signature[GIMG_BMP_SIGNATURE_LEN];
 #define GIMG_BMP_V4HEADER_SIZE 108   ///< BITMAPV4HEADER.
 #define GIMG_BMP_V5HEADER_SIZE 124   ///< BITMAPV5HEADER.
 
-/** biCompression values. */
+/** Smallest and largest BITMAPCOREHEADER2 (OS/2 2.x); any multiple of 4
+ * between them is legal, and a field the header stops short of reads as
+ * zero. */
+#define GIMG_BMP_OS2V2_MIN_SIZE 16
+#define GIMG_BMP_OS2V2_MAX_SIZE 64
+
+/** biCompression values, as a Windows BITMAPINFOHEADER spells them. */
 #define GIMG_BMP_BI_RGB 0u
 #define GIMG_BMP_BI_RLE8 1u
 #define GIMG_BMP_BI_RLE4 2u
 #define GIMG_BMP_BI_BITFIELDS 3u
+#define GIMG_BMP_BI_JPEG 4u
+#define GIMG_BMP_BI_PNG 5u
 #define GIMG_BMP_BI_ALPHABITFIELDS 6u
+
+/** ulCompression values, as an OS/2 BITMAPCOREHEADER2 spells them.  0, 1 and
+ * 2 agree with Windows; 3 and 4 do not, which is why the two spellings are
+ * normalized into gimg_bmp_compression_t rather than compared raw. */
+#define GIMG_BMP_OS2_HUFFMAN1D 3u
+#define GIMG_BMP_OS2_RLE24 4u
+
+/**
+ * @brief How the pixel data is stored, independent of which header spelled it.
+ *
+ * A 64-byte OS/2 header and a 40-byte Windows one share their first 40 bytes
+ * but not their compression numbering: 3 is BI_BITFIELDS to Windows and
+ * Huffman 1D to OS/2, and 4 is BI_JPEG to Windows and RLE24 to OS/2.  Keeping
+ * the raw number around invites a comparison against the wrong vocabulary, so
+ * the header reader resolves it once and everything downstream reads this.
+ */
+typedef enum {
+  GIMG_BMP_COMP_RGB = 0,  ///< Uncompressed, channel layout implied by depth.
+  GIMG_BMP_COMP_RLE8,     ///< 8-bit run-length encoding.
+  GIMG_BMP_COMP_RLE4,     ///< 4-bit run-length encoding.
+  GIMG_BMP_COMP_RLE24,    ///< 24-bit run-length encoding (OS/2 2.x).
+  GIMG_BMP_COMP_BITFIELDS ///< Uncompressed, channel layout given by masks.
+} gimg_bmp_compression_t;
 
 /**
  * @brief A single channel's extraction rule for a BI_BITFIELDS image.
@@ -68,7 +99,8 @@ typedef struct {
   uint32_t height;        ///< Image height in pixels (always positive).
   bool top_down;          ///< True when the file stored rows top to bottom.
   uint16_t bit_count;     ///< Bits per pixel: 1, 2, 4, 8, 16, 24, or 32.
-  uint32_t compression;   ///< One of the GIMG_BMP_BI_* values.
+  bool os2_v2;            ///< True for a BITMAPCOREHEADER2 (OS/2 2.x).
+  gimg_bmp_compression_t compression; ///< How the pixel data is stored.
   uint32_t x_ppm;         ///< biXPelsPerMeter; 0 means the file did not say.
   uint32_t y_ppm;         ///< biYPelsPerMeter; 0 means the file did not say.
   uint32_t palette_count; ///< Palette entries actually present in the file.
@@ -78,6 +110,12 @@ typedef struct {
   gimg_bmp_channel_mask_t blue;
   gimg_bmp_channel_mask_t alpha; ///< `mask` is 0 when the format has no alpha.
 } gimg_bmp_header_t;
+
+/** @brief True for the compressions whose pixel data is a run-length stream. */
+static inline bool gimg_bmp_is_rle(gimg_bmp_compression_t c) {
+  return c == GIMG_BMP_COMP_RLE8 || c == GIMG_BMP_COMP_RLE4 ||
+      c == GIMG_BMP_COMP_RLE24;
+}
 
 /**
  * @brief A palette entry, already expanded to 8 bits per channel.
