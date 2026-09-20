@@ -246,10 +246,6 @@ Listed so the absences are visible rather than discovered.
   therefore decodes as untagged, which for the overwhelming majority of BMP
   files - which are `LCS_sRGB` or carry no color block at all - is what it
   is, but a V5 file with a real profile loses it.
-- **Physical resolution.** `biXPelsPerMeter` and `biYPelsPerMeter` are not
-  read into the document's common metadata, and save writes a fixed 2835
-  (72 dpi) rather than reading one back out. PNG does carry resolution both
-  ways through `pHYs`, so a PNG-to-BMP conversion drops it here.
 - **Writing anything but 24- and 32-bit uncompressed.** No palette is ever
   written, so an indexed file that is loaded and saved comes back as 24-bit;
   no RLE is ever written; no top-down output.

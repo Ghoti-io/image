@@ -108,19 +108,6 @@ typedef uint32_t gimg_png_chunk_type_t;
 #define GIMG_PNG_PHYS_UNIT_UNKNOWN 0u
 #define GIMG_PNG_PHYS_UNIT_METER 1u
 
-/**
- * @brief Convert between dots per inch and pHYs' pixels per meter.
- *
- * PNG measures resolution in pixels per meter (11.3.4.3) and this library's
- * common metadata carries dots per inch, which is what JFIF and Exif use. An
- * inch is exactly 0.0254 m, so the conversion is exact arithmetic on integers
- * rather than a float: 5000/127 one way and 127/5000 the other, rounded.
- *
- * Zero in means zero out, which is how both sides spell "not stated".
- * @{
- */
-uint32_t gimg_png_dpi_to_pixels_per_meter(uint32_t dpi);
-uint32_t gimg_png_pixels_per_meter_to_dpi(uint32_t ppm);
 /** @} */
 
 /** PNG Third Edition color chunks (W3C PNG 3rd ed., 2025). */

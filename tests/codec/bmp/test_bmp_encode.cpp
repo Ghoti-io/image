@@ -10,6 +10,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
@@ -94,6 +95,50 @@ GIMG_Result save_raster(GIMG_Raster * raster, std::vector<uint8_t> & out) {
         << "report must match what was actually written";
   }
 
+  gimg_stream_destroy(stream);
+  gimg_doc_destroy(doc);
+  return r;
+}
+
+/** Save a raster as BMP with a resolution stated on the document. */
+GIMG_Result save_raster_with_dpi(GIMG_Raster * raster, uint32_t x_dpi,
+    uint32_t y_dpi, const GIMG_Save_Options * options,
+    std::vector<uint8_t> & out) {
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_create(&doc);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  r = gimg_doc_set_item_count(doc, 1);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Meta_Common * meta = nullptr;
+  r = gimg_doc_ensure_meta_common(doc, &meta);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  gimg_meta_common_set_dpi(meta, x_dpi, y_dpi);
+
+  GIMG_Stream * stream = nullptr;
+  r = gimg_stream_create_memory_output(&stream);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, stream, "bmp", options, &report);
+  if (r == GIMG_OK) {
+    const void * buffer = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(stream, &buffer, &size);
+    const uint8_t * bytes = static_cast<const uint8_t *>(buffer);
+    out.assign(bytes, bytes + size);
+  }
   gimg_stream_destroy(stream);
   gimg_doc_destroy(doc);
   return r;
@@ -264,4 +309,67 @@ TEST(BmpEncode, PaletteFixtureSurvivesASaveLoadCycle) {
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+// ---------------------------------------------------------------------------
+// Physical resolution
+// ---------------------------------------------------------------------------
+
+TEST(BmpEncode, StatesNoResolutionWhenTheDocumentHasNone) {
+  // biXPelsPerMeter of zero means "not stated", which is legal and is what
+  // most writers emit.  This encoder used to write a fixed 2835 - 72 dpi -
+  // into every image, which is a claim about the picture that nothing in it
+  // supported.
+  GIMG_Raster * raster = make_raster(4, 2, opaque_gradient);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(read_u32(bytes, 38), 0u) << "biXPelsPerMeter";
+  EXPECT_EQ(read_u32(bytes, 42), 0u) << "biYPelsPerMeter";
+}
+
+TEST(BmpEncode, WritesTheResolutionTheDocumentCarries) {
+  GIMG_Raster * raster = make_raster(4, 2, opaque_gradient);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_dpi(raster, 300, 300, nullptr, bytes), GIMG_OK);
+  // An inch is exactly 0.0254 m, so 300 dpi is 300 * 5000 / 127 = 11811 ppm.
+  EXPECT_EQ(read_u32(bytes, 38), 11811u) << "biXPelsPerMeter";
+  EXPECT_EQ(read_u32(bytes, 42), 11811u) << "biYPelsPerMeter";
+}
+
+TEST(BmpEncode, DropAllMetadataDropsTheResolutionToo) {
+  GIMG_Raster * raster = make_raster(4, 2, opaque_gradient);
+  ASSERT_NE(raster, nullptr);
+
+  GIMG_Save_Options options = {};
+  options.metadata_policy = GIMG_META_DROP_ALL;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_dpi(raster, 300, 300, &options, bytes), GIMG_OK);
+  EXPECT_EQ(read_u32(bytes, 38), 0u) << "biXPelsPerMeter";
+  EXPECT_EQ(read_u32(bytes, 42), 0u) << "biYPelsPerMeter";
+}
+
+TEST(BmpEncode, ResolutionSurvivesASaveAndLoad) {
+  // Every ordinary resolution survives exactly: the conversion is 5000/127
+  // and back in integer arithmetic, with rounding at each end.
+  for (uint32_t dpi : {1u, 72u, 96u, 150u, 200u, 300u, 600u, 1200u}) {
+    GIMG_Raster * raster = make_raster(4, 2, opaque_gradient);
+    ASSERT_NE(raster, nullptr);
+
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_dpi(raster, dpi, dpi, nullptr, bytes), GIMG_OK);
+
+    Loaded back;
+    ASSERT_EQ(back.load_bytes(bytes), GIMG_OK) << "dpi " << dpi;
+    GIMG_Meta_Common * meta = gimg_doc_meta_common(back.doc());
+    ASSERT_NE(meta, nullptr) << "dpi " << dpi;
+    uint32_t x_dpi = 0, y_dpi = 0;
+    gimg_meta_common_dpi(meta, &x_dpi, &y_dpi);
+    EXPECT_EQ(x_dpi, dpi);
+    EXPECT_EQ(y_dpi, dpi);
+  }
 }

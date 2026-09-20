@@ -69,6 +69,7 @@
 #include "../../meta/exif_internal.h"
 #include "../../raster/raster_internal.h"
 #include "../codec_internal.h"
+#include "../../core/resolution_internal.h"
 #include "png_internal.h"
 
 /**
@@ -1849,8 +1850,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       gimg_meta_common_dpi(common_meta, &x_dpi, &y_dpi);
       if (x_dpi > 0 && y_dpi > 0) {
         unsigned char phys[9];
-        gimg_png_build_phys(phys, gimg_png_dpi_to_pixels_per_meter(x_dpi),
-            gimg_png_dpi_to_pixels_per_meter(y_dpi));
+        gimg_png_build_phys(phys, gimg_dpi_to_pixels_per_meter(x_dpi),
+            gimg_dpi_to_pixels_per_meter(y_dpi));
         r = gimg_png_write_chunk(stream, GIMG_PNG_pHYs, phys, sizeof(phys));
         if (r != GIMG_OK) {
           gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
@@ -2036,8 +2037,8 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       gimg_meta_common_dpi(meta_common, &x_dpi, &y_dpi);
       if (x_dpi > 0 && y_dpi > 0) {
         unsigned char phys[9];
-        gimg_png_build_phys(phys, gimg_png_dpi_to_pixels_per_meter(x_dpi),
-            gimg_png_dpi_to_pixels_per_meter(y_dpi));
+        gimg_png_build_phys(phys, gimg_dpi_to_pixels_per_meter(x_dpi),
+            gimg_dpi_to_pixels_per_meter(y_dpi));
         r = gimg_png_write_chunk(stream, GIMG_PNG_pHYs, phys, sizeof(phys));
         if (r != GIMG_OK) {
           gimg_free(alloc, zlib_buf);

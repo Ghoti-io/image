@@ -25,6 +25,7 @@
 // For gimg_png_write_chunk(), so these tests build their streams with the
 // library's own CRC rather than a second implementation of 5.5.
 #include "../../../src/codec/png/png_internal.h"
+#include "../../../src/core/resolution_internal.h"
 #include "../../../src/core/alloc_internal.h"
 #include <array>
 #include <fstream>
@@ -2037,29 +2038,29 @@ TEST(PngPhys, DotsPerInchAndPixelsPerMeterConvertBothWays) {
   // the value every other tool writes for 300 dpi - Pillow reads this file
   // back as 299.9994, so agreeing on the integer matters more than agreeing
   // on the real number.
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(300u), 11811u);
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(72u), 2835u);
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(96u), 3780u);
+  EXPECT_EQ(gimg_dpi_to_pixels_per_meter(300u), 11811u);
+  EXPECT_EQ(gimg_dpi_to_pixels_per_meter(72u), 2835u);
+  EXPECT_EQ(gimg_dpi_to_pixels_per_meter(96u), 3780u);
 
-  EXPECT_EQ(gimg_png_pixels_per_meter_to_dpi(11811u), 300u);
-  EXPECT_EQ(gimg_png_pixels_per_meter_to_dpi(2835u), 72u);
-  EXPECT_EQ(gimg_png_pixels_per_meter_to_dpi(3780u), 96u);
+  EXPECT_EQ(gimg_pixels_per_meter_to_dpi(11811u), 300u);
+  EXPECT_EQ(gimg_pixels_per_meter_to_dpi(2835u), 72u);
+  EXPECT_EQ(gimg_pixels_per_meter_to_dpi(3780u), 96u);
 
   // Zero is how both sides spell "not stated" and must not become one.
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(0u), 0u);
-  EXPECT_EQ(gimg_png_pixels_per_meter_to_dpi(0u), 0u);
+  EXPECT_EQ(gimg_dpi_to_pixels_per_meter(0u), 0u);
+  EXPECT_EQ(gimg_pixels_per_meter_to_dpi(0u), 0u);
 
   // Every ordinary resolution survives the trip; the conversion is not lossy
   // in the range anyone uses.
   for (uint32_t dpi = 1; dpi <= 1200; dpi++) {
     EXPECT_EQ(
-        gimg_png_pixels_per_meter_to_dpi(gimg_png_dpi_to_pixels_per_meter(dpi)),
+        gimg_pixels_per_meter_to_dpi(gimg_dpi_to_pixels_per_meter(dpi)),
         dpi)
         << "dpi " << dpi;
   }
   // And a value large enough to overflow a 32-bit intermediate saturates
   // rather than wrapping: dpi * 5000 leaves the range near 859,000.
-  EXPECT_EQ(gimg_png_dpi_to_pixels_per_meter(UINT32_MAX), UINT32_MAX);
+  EXPECT_EQ(gimg_dpi_to_pixels_per_meter(UINT32_MAX), UINT32_MAX);
 }
 
 namespace {

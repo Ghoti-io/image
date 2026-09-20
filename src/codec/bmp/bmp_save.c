@@ -20,17 +20,25 @@
  * Source formats: the raster is read through gimg_raster_* accessors for RGBA8
  * and GRAY8, the two 8-bit formats the library decodes to.  Anything else is
  * reported as unsupported rather than reinterpreted.
+ *
+ * Resolution: biXPelsPerMeter and biYPelsPerMeter are written from the
+ * document's common metadata when it states a dpi, and left at zero - "not
+ * stated", which is what most writers emit - when it does not.  This file
+ * used to write a fixed 2835 (72 dpi) into every image, which is a claim
+ * about the picture that nothing in it supported.
  */
 
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <string.h>
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/resolution_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../codec_internal.h"
 #include "bmp_internal.h"
@@ -121,7 +129,6 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report) {
   (void)format_name;
-  (void)options;
   if (!codec || !doc || !stream || !report) {
     return GIMG_ERR_INTERNAL;
   }
@@ -215,8 +222,26 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     bmp_write_u16(dib + 14, bit_count);
     bmp_write_u32(dib + 16, compression);
     bmp_write_u32(dib + 20, (uint32_t)pixel_bytes);
-    bmp_write_u32(dib + 24, 2835u); // 72 DPI in pixels per meter.
-    bmp_write_u32(dib + 28, 2835u);
+
+    // biXPelsPerMeter / biYPelsPerMeter.  Zero means the file does not state
+    // a resolution, which is both legal and what most writers emit; inventing
+    // one would be a claim about the picture that nothing in it supports.
+    uint32_t x_ppm = 0, y_ppm = 0;
+    GIMG_Meta_Policy policy =
+        options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
+    if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_RAW_ONLY) {
+      const GIMG_Meta_Common * meta_common = gimg_doc_meta_common(doc);
+      if (meta_common) {
+        uint32_t x_dpi = 0, y_dpi = 0;
+        gimg_meta_common_dpi(meta_common, &x_dpi, &y_dpi);
+        if (x_dpi > 0 && y_dpi > 0) {
+          x_ppm = gimg_dpi_to_pixels_per_meter(x_dpi);
+          y_ppm = gimg_dpi_to_pixels_per_meter(y_dpi);
+        }
+      }
+    }
+    bmp_write_u32(dib + 24, x_ppm);
+    bmp_write_u32(dib + 28, y_ppm);
     if (!opaque) {
       bmp_write_u32(dib + 40, 0x00FF0000u); // Red.
       bmp_write_u32(dib + 44, 0x0000FF00u); // Green.

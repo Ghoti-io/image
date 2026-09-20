@@ -275,21 +275,6 @@ void gimg_png_set_sample_bits(
 // one may.
 //
 
-uint32_t gimg_png_dpi_to_pixels_per_meter(uint32_t dpi) {
-  if (dpi == 0) {
-    return 0; // "not stated" on both sides
-  }
-  uint64_t ppm = ((uint64_t)dpi * 5000u + 63u) / 127u;
-  return (ppm > UINT32_MAX) ? UINT32_MAX : (uint32_t)ppm;
-}
-
-uint32_t gimg_png_pixels_per_meter_to_dpi(uint32_t ppm) {
-  if (ppm == 0) {
-    return 0;
-  }
-  return (uint32_t)(((uint64_t)ppm * 127u + 2500u) / 5000u);
-}
-
 //
 // Text chunk decode (tEXt/zTXt/iTXt) for meta_common description.
 //

@@ -49,6 +49,7 @@
 #include "../../core/alloc_internal.h"
 #include "../../meta/exif_internal.h"
 #include "../codec_internal.h"
+#include "../../core/resolution_internal.h"
 #include "png_internal.h"
 
 /** Append diagnostic on load error (codec "png", offset, chunk type). */
@@ -807,8 +808,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     GIMG_Meta_Common * meta_common = NULL;
     if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
       gimg_meta_common_set_dpi(meta_common,
-          gimg_png_pixels_per_meter_to_dpi(x_ppm),
-          gimg_png_pixels_per_meter_to_dpi(y_ppm));
+          gimg_pixels_per_meter_to_dpi(x_ppm),
+          gimg_pixels_per_meter_to_dpi(y_ppm));
     }
     break;
   }

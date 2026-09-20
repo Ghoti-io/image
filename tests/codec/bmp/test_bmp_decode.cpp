@@ -12,6 +12,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
@@ -550,4 +551,33 @@ TEST(BmpDecode, ProducesRgba8) {
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+TEST(BmpLoad, ReadsThePhysicalResolutionTheHeaderStates) {
+  // generate.py's info_header() writes 2835 pixels per metre on both axes,
+  // which is 72 dpi.  A BMP states its resolution in the header rather than
+  // in an optional chunk, so the document's common metadata is the only place
+  // it can go - and where the PNG and JPEG codecs already put theirs.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_24bit_topdown.bmp"), GIMG_OK);
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(img.doc());
+  ASSERT_NE(meta, nullptr);
+  uint32_t x_dpi = 0, y_dpi = 0;
+  gimg_meta_common_dpi(meta, &x_dpi, &y_dpi);
+  EXPECT_EQ(x_dpi, 72u);
+  EXPECT_EQ(y_dpi, 72u);
+}
+
+TEST(BmpLoad, StatesNoResolutionForACoreHeader) {
+  // BITMAPCOREHEADER has no density fields at all, so there is nothing to
+  // report and the document must not claim one.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_8x2_core.bmp"), GIMG_OK);
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(img.doc());
+  if (meta) {
+    uint32_t x_dpi = 0, y_dpi = 0;
+    gimg_meta_common_dpi(meta, &x_dpi, &y_dpi);
+    EXPECT_EQ(x_dpi, 0u);
+    EXPECT_EQ(y_dpi, 0u);
+  }
 }

@@ -69,6 +69,8 @@ typedef struct {
   bool top_down;          ///< True when the file stored rows top to bottom.
   uint16_t bit_count;     ///< Bits per pixel: 1, 2, 4, 8, 16, 24, or 32.
   uint32_t compression;   ///< One of the GIMG_BMP_BI_* values.
+  uint32_t x_ppm;         ///< biXPelsPerMeter; 0 means the file did not say.
+  uint32_t y_ppm;         ///< biYPelsPerMeter; 0 means the file did not say.
   uint32_t palette_count; ///< Palette entries actually present in the file.
   bool has_masks;         ///< True when the channel masks below are in use.
   gimg_bmp_channel_mask_t red;

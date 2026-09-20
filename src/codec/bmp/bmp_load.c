@@ -34,11 +34,13 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/stream.h>
 #include <string.h>
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/resolution_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../codec_internal.h"
 #include "bmp_internal.h"
@@ -236,6 +238,13 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     signed_height = (int64_t)bmp_read_i32(body + 4);
     out->bit_count = bmp_read_u16(body + 10);
     out->compression = bmp_read_u32(body + 12);
+    // biXPelsPerMeter and biYPelsPerMeter.  Stored signed, but a negative
+    // resolution is meaningless, so anything with the top bit set is read as
+    // "not stated" rather than as an enormous density.
+    int32_t x_ppm = bmp_read_i32(body + 20);
+    int32_t y_ppm = bmp_read_i32(body + 24);
+    out->x_ppm = x_ppm > 0 ? (uint32_t)x_ppm : 0u;
+    out->y_ppm = y_ppm > 0 ? (uint32_t)y_ppm : 0u;
     clr_used = bmp_read_u32(body + 28);
   }
 
@@ -625,6 +634,23 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   doc->loaded_by_codec = codec;
   doc->codec_private = state;
+
+  // A BMP states its physical resolution in the header rather than in an
+  // optional chunk, so there is nothing to preserve verbatim: the only way to
+  // carry it is through the document's common metadata, which is where the
+  // PNG and JPEG codecs put theirs.  Without this a resolution was lost the
+  // moment an image became a BMP, in both directions.
+  //
+  // Both axes must be stated.  One alone describes a pixel's shape rather
+  // than its size, which is not what dpi means.
+  if (header.x_ppm && header.y_ppm) {
+    GIMG_Meta_Common * meta_common = NULL;
+    if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
+      gimg_meta_common_set_dpi(meta_common,
+          gimg_pixels_per_meter_to_dpi(header.x_ppm),
+          gimg_pixels_per_meter_to_dpi(header.y_ppm));
+    }
+  }
 
   *out_doc = doc;
   return GIMG_OK;
