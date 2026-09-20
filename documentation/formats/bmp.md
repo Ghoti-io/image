@@ -215,8 +215,15 @@ The form follows the raster and the caller's options, in this order:
   readers disagree about it, and a mask removes the question.
 - **Padding:** each row is zero-padded to a 4-byte boundary.
 - **Input formats:** `GIMG_PIXEL_RGBA8` and `GIMG_PIXEL_GRAY8`, the two 8-bit
-  formats the library decodes to. Anything else is reported as
-  `GIMG_ERR_UNSUPPORTED` rather than reinterpreted.
+  formats the library decodes to. A **12- or 16-bit** raster of the same
+  channels - `GRAY12`, `GRAY16`, `RGBA12`, `RGBA16` - is restated at 8 bits
+  and then written: a BMP sample is a byte at most, so there is nothing deeper
+  to write it as, and refusing meant a 16-bit PNG could not be saved as a BMP
+  at all. The narrowing is `round(v x 255 / max)`, the same rule the decoder
+  uses widening a sub-byte channel, and it carries the color info across with
+  it. Anything else - CMYK above all, where the four channels are ink amounts
+  and turning them into RGB is a color conversion this library does not do -
+  is reported as `GIMG_ERR_UNSUPPORTED` rather than reinterpreted.
 - **Source of the pixels:** the raster attached to item 0 if there is one,
   otherwise the item is decoded and the result owned for the duration of the
   save. `GIMG_Save_Report.bytes_written` is the file size, and the tests
@@ -247,7 +254,7 @@ adding or restricting features.
 | **Resolution** | `biXPelsPerMeter` / `biYPelsPerMeter` read into and written from the document's common metadata | Both axes must be stated: one alone describes a pixel's shape rather than its size. A negative value reads as "not stated" |
 | **Document shape** | One item, decoded to `GIMG_PIXEL_RGBA8` | BMP holds a single image; an item index above 0 &rarr; `GIMG_ERR_UNSUPPORTED` |
 | **Limits** | `max_decoded_pixels` at load and at decode, `max_memory` on the pixel buffer and on an embedded ICC profile | Exceeded &rarr; `GIMG_ERR_LIMIT`, before the allocation rather than after |
-| **Save** | 32-bit `BI_BITFIELDS` with a V3 header when alpha is present; 1-, 4- or 8-bit indexed, optionally `BI_RLE8`; 24-bit `BI_RGB` otherwise. Bottom-up or top-down | A raster that is not `RGBA8` or `GRAY8` &rarr; `GIMG_ERR_UNSUPPORTED`. A zero dimension &rarr; `GIMG_ERR_FORMAT`. A file larger than `UINT32_MAX` &rarr; `GIMG_ERR_LIMIT`, since `bfSize` cannot describe it. Top-down together with RLE &rarr; `GIMG_ERR_UNSUPPORTED`. No RLE4, no RLE24, no 2-bit output |
+| **Save** | 32-bit `BI_BITFIELDS` with a V3 header when alpha is present; 1-, 4- or 8-bit indexed, optionally `BI_RLE8`; 24-bit `BI_RGB` otherwise. Bottom-up or top-down | A 12- or 16-bit GRAY or RGBA raster is narrowed to 8 bits first; any other raster &rarr; `GIMG_ERR_UNSUPPORTED`. A zero dimension &rarr; `GIMG_ERR_FORMAT`. A file larger than `UINT32_MAX` &rarr; `GIMG_ERR_LIMIT`, since `bfSize` cannot describe it. Top-down together with RLE &rarr; `GIMG_ERR_UNSUPPORTED`. No RLE4, no RLE24, no 2-bit output |
 
 ## Where this codec differs from other decoders
 

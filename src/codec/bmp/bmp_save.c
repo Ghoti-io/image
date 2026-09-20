@@ -54,6 +54,7 @@
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <string.h>
 
@@ -104,6 +105,31 @@ static bool bmp_format_supported(const GIMG_Pixel_Format * f) {
     return true;
   }
   return false;
+}
+
+/**
+ * Whether a raster this writer cannot store could be narrowed into one.
+ *
+ * A BMP sample is a byte at most - the format has no deeper form - so a 12-
+ * or 16-bit raster is written by restating it at 8 bits, which is what every
+ * other writer of this format does.  Before this, saving a 16-bit PNG as a
+ * BMP returned GIMG_ERR_UNSUPPORTED, so the two formats could not be
+ * converted between at all in that direction.
+ *
+ * CMYK is deliberately not here: narrowing it to 8 bits would still leave
+ * four ink amounts, and turning those into RGB is a color conversion this
+ * library does not do - see the format page.
+ */
+static bool bmp_format_narrowable(const GIMG_Pixel_Format * f) {
+  if (!f || f->layout != GIMG_LAYOUT_INTERLEAVED ||
+      f->channel_type != GIMG_CHANNEL_UNORM) {
+    return false;
+  }
+  if (f->bits_per_channel[0] != 12 && f->bits_per_channel[0] != 16) {
+    return false;
+  }
+  return (f->channel_model == GIMG_CHANNEL_RGBA && f->channel_count == 4) ||
+      (f->channel_model == GIMG_CHANNEL_GRAY && f->channel_count == 1);
 }
 
 /** Read one pixel as RGBA8 from a supported raster format. */
@@ -436,6 +462,24 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (dr != GIMG_OK || !raster) {
       return dr == GIMG_ERR_UNSUPPORTED || dr == GIMG_OK ? GIMG_ERR_FORMAT : dr;
     }
+    raster_owned = true;
+  }
+
+  // A deeper raster than this format can hold is restated at 8 bits rather
+  // than refused; the conversion carries the color info across with it.
+  if (bmp_format_narrowable(gimg_raster_format(raster))) {
+    GIMG_Raster * narrowed = NULL;
+    GIMG_Result cr = gimg_ops_convert_bit_depth(raster, 8, &narrowed);
+    if (cr != GIMG_OK || !narrowed) {
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      return cr != GIMG_OK ? cr : GIMG_ERR_UNSUPPORTED;
+    }
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    raster = narrowed;
     raster_owned = true;
   }
 

@@ -13,6 +13,7 @@
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
@@ -823,4 +824,140 @@ TEST(BmpEncode, EveryFixtureSurvivesEveryCombinationOfTheWritersOptions) {
 
   EXPECT_GT(fixtures, 30u) << "the fixture directory should not be nearly empty";
   EXPECT_GT(round_trips, 100u) << "most fixtures should have round-tripped";
+}
+
+namespace {
+
+/**
+ * A raster of @p bits-per-channel samples, filled from a 16-bit pixel
+ * function whose values are narrowed to the raster's own depth.
+ */
+GIMG_Raster * make_deep_raster(uint32_t width, uint32_t height,
+    const GIMG_Pixel_Format * fmt, const std::vector<uint16_t> & samples) {
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(
+          width, height, fmt, GIMG_RASTER_OWNED, nullptr, 0, &raster) !=
+      GIMG_OK) {
+    return nullptr;
+  }
+  uint8_t * pixels = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  size_t stride = gimg_raster_stride_bytes(raster);
+  size_t channels = fmt->channel_count;
+  size_t i = 0;
+  for (uint32_t y = 0; y < height; y++) {
+    uint16_t * row = reinterpret_cast<uint16_t *>(pixels + (y * stride));
+    for (uint32_t x = 0; x < width * channels; x++) {
+      row[x] = samples[i % samples.size()];
+      i++;
+    }
+  }
+  return raster;
+}
+
+/** round(v * 255 / 65535), the rule gimg_bitdepth_16_to_8 applies. */
+uint8_t narrow_16_to_8(uint16_t v) {
+  return (uint8_t)((((uint32_t)v * 255u) + 32767u) / 65535u);
+}
+
+} // namespace
+
+TEST(BmpEncode, A16BitRasterIsNarrowedRatherThanRefused) {
+  // A BMP sample is a byte at most, so a deeper raster is restated at 8 bits.
+  // This used to return GIMG_ERR_UNSUPPORTED, which meant a 16-bit PNG could
+  // not be saved as a BMP at all.
+  std::vector<uint16_t> samples = {0u, 1u, 255u, 256u, 13107u, 32768u,
+      65534u, 65535u, 26214u, 4096u, 900u, 60000u};
+  GIMG_Raster * raster =
+      make_deep_raster(3, 2, &GIMG_PIXEL_RGBA16, samples);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  ASSERT_EQ(img.width(), 3u);
+  ASSERT_EQ(img.height(), 2u);
+
+  size_t i = 0;
+  for (uint32_t y = 0; y < 2; y++) {
+    for (uint32_t x = 0; x < 3; x++) {
+      Rgba want{narrow_16_to_8(samples[(i + 0) % samples.size()]),
+          narrow_16_to_8(samples[(i + 1) % samples.size()]),
+          narrow_16_to_8(samples[(i + 2) % samples.size()]),
+          narrow_16_to_8(samples[(i + 3) % samples.size()])};
+      EXPECT_EQ(img.at(x, y), want) << "at (" << x << "," << y << ")";
+      i += 4;
+    }
+  }
+}
+
+TEST(BmpEncode, A16BitGrayRasterIsNarrowedToo) {
+  std::vector<uint16_t> samples = {0u, 32768u, 65535u, 13107u};
+  GIMG_Raster * raster =
+      make_deep_raster(4, 1, &GIMG_PIXEL_GRAY16, samples);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  for (uint32_t x = 0; x < 4; x++) {
+    uint8_t v = narrow_16_to_8(samples[x]);
+    EXPECT_EQ(img.at(x, 0), (Rgba{v, v, v, 255u})) << "at x=" << x;
+  }
+}
+
+TEST(BmpEncode, A12BitRasterIsNarrowedToo) {
+  // 12-bit samples are the ones a JPEG at extended precision decodes to.
+  std::vector<uint16_t> samples = {0u, 2048u, 4095u, 1024u};
+  GIMG_Raster * raster =
+      make_deep_raster(4, 1, &GIMG_PIXEL_GRAY12, samples);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  for (uint32_t x = 0; x < 4; x++) {
+    uint16_t v12 = samples[x];
+    uint8_t v = v12 >= 4095u
+        ? 255u
+        : (uint8_t)((((uint32_t)v12 * 255u) + 2047u) / 4095u);
+    EXPECT_EQ(img.at(x, 0), (Rgba{v, v, v, 255u})) << "at x=" << x;
+  }
+}
+
+TEST(BmpEncode, NarrowingKeepsTheProfileTheDeepRasterCarried) {
+  // The narrowed raster is the one the writer goes on to inspect, so a
+  // conversion that lost the color info would lose it here even once the
+  // writer learns to state one.
+  std::vector<uint16_t> samples = {0u, 32768u, 65535u, 13107u};
+  GIMG_Raster * raster =
+      make_deep_raster(4, 1, &GIMG_PIXEL_GRAY16, samples);
+  ASSERT_NE(raster, nullptr);
+  std::vector<uint8_t> profile(128, 0);
+  profile[3] = 128;
+  std::memcpy(profile.data() + 36, "acsp", 4);
+  GIMG_Color_Info ci;
+  gimg_color_info_default(&ci);
+  ci.icc_bytes = profile.data();
+  ci.icc_size = profile.size();
+  ASSERT_EQ(gimg_raster_set_color_info(raster, &ci), GIMG_OK);
+
+  GIMG_Raster * narrowed = nullptr;
+  ASSERT_EQ(gimg_ops_convert_bit_depth(raster, 8, &narrowed), GIMG_OK);
+  ASSERT_NE(narrowed, nullptr);
+  const GIMG_Color_Info * got = gimg_raster_color_info_const(narrowed);
+  ASSERT_NE(got, nullptr);
+  EXPECT_EQ(got->icc_size, profile.size());
+  gimg_raster_destroy(narrowed);
+
+  std::vector<uint8_t> bytes;
+  EXPECT_EQ(save_raster(raster, bytes), GIMG_OK);
 }
