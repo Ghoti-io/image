@@ -549,8 +549,28 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep (needs BMPSUITE=
 		--decoder $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION) \
 		$(if $(BMPSUITE),--suite $(BMPSUITE),)
 
-# libjpeg-based oracle tools live in third_party/jpeg-oracle (optional; not required for make test).
-# See third_party/jpeg-oracle/README.md. Tests that use the oracle skip when it is not present.
+# libjpeg oracle tools. Sources are tracked in tests/tools/jpeg-oracle; the
+# binaries they build are not. Optional: every test that reaches for an oracle
+# tries Pillow first and skips when neither is available. Needs the libjpeg
+# headers (Debian/Ubuntu: libjpeg-dev; the runtime library alone is not enough).
+JPEG_ORACLE_DIR := tests/tools/jpeg-oracle
+JPEG_ORACLE_OUT := $(JPEG_ORACLE_DIR)/build
+JPEG_ORACLE_TOOLS := dump_jpeg_pixels_ref dump_jpeg_coef_ref
+
+jpeg-oracle-tools: ## Build the libjpeg oracle tools into tests/tools/jpeg-oracle/build (needs libjpeg headers)
+	@mkdir -p $(JPEG_ORACLE_OUT)
+	@jflags=`pkg-config --cflags --libs libjpeg 2>/dev/null` || jflags=""; \
+	if [ -z "$$jflags" ]; then jflags="-ljpeg"; fi; \
+	for t in $(JPEG_ORACLE_TOOLS); do \
+		printf '### Building oracle tool %s ###\n' "$$t"; \
+		$(CC) -O2 -g -std=c17 -o $(JPEG_ORACLE_OUT)/$$t$(EXE_EXTENSION) \
+			$(JPEG_ORACLE_DIR)/$$t.c $$jflags || { \
+			echo "Could not build $$t. Install the libjpeg headers (Debian/Ubuntu: apt install libjpeg-dev)."; \
+			exit 1; }; \
+	done
+	@echo "Oracle tools in $(JPEG_ORACLE_OUT). Use them with:"
+	@echo "  export GIMG_JPEG_ORACLE_DIR=$(CURDIR)/$(JPEG_ORACLE_OUT)"
+
 
 # IJG v10 (Independent JPEG Group reference, third_party/jpeg-10). Decode precision 8-12 only;
 # rejects 16-bit and extended DHT (242 AC symbols). See tests/data/jpeg/README.md.
@@ -598,7 +618,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 # General commands
 .PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build coverage check-symbols
 .PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode
-.PHONY: bmp-dump-raster bmpsuite
+.PHONY: bmp-dump-raster bmpsuite jpeg-oracle-tools
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-watch uninstall watch
 # Debug build commands
