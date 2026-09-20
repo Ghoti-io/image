@@ -144,6 +144,18 @@ are covered by the same fallback.
 | **GIMG_NORMAL** | Safe recoveries allowed; report warnings. |
 | **GIMG_PERMISSIVE** | More heuristics; report warnings. |
 
+> **Not honoured.** No codec reads `strictness`. The table above describes what
+> the levels are *for*, not what setting one does today - which is nothing.
+> Every codec behaves as GIMG_NORMAL describes whatever is set. Do not rely on
+> GIMG_STRICT to reject a file: use the result code and **GIMG_Diagnostics**,
+> which load and decode do fill. Note that the enum's zero value is
+> GIMG_STRICT, so zero-initialized options already ask for the strictest
+> setting and would change behaviour the day this is implemented.
+
+> **GIMG_Save_Report.diagnostics is never set** either. No save path writes to
+> it, so it holds whatever the caller left there. Saving reports through its
+> result code alone; `bytes_written` is always filled.
+
 ## Save report
 
 **GIMG_Save_Report** (see `ghoti.io/image/codec.h`): Optional output of `gimg_doc_save()`. Contains `bytes_written` and `diagnostics` (warnings, codec name, offset, chunk/tag when relevant).

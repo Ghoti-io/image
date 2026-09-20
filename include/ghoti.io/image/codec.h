@@ -163,6 +163,18 @@ GIMG_API void gimg_jpeg_tables_destroy(GIMG_JPEG_Tables * tables);
  */
 typedef struct {
   const GIMG_Limits * limits; ///< NULL = use defaults.
+  /**
+   * @warning **Not honoured.** No codec reads this field. It is declared so
+   * the shape of the struct is settled, and every codec currently behaves as
+   * GIMG_NORMAL describes whatever is set here. Setting GIMG_STRICT does not
+   * make anything stricter, so do not rely on it to reject a file - use the
+   * result code and GIMG_Diagnostics, which are filled.
+   *
+   * Its zero value is GIMG_STRICT, so the usual zero-initialized options ask
+   * for the strictest setting today and would change behaviour the day this
+   * is implemented. That is worth knowing before writing code that depends on
+   * either answer.
+   */
   GIMG_Strictness strictness;
   /** Tables to install before reading the stream (T.81 B.4).
    *
@@ -454,13 +466,29 @@ typedef struct {
  * @brief Save report (warnings, bytes written, etc.).
  */
 typedef struct {
-  size_t bytes_written;
+  size_t bytes_written; ///< Bytes the save actually wrote; always filled.
+  /**
+   * @warning **Never set.** No codec's save path writes to this pointer, so
+   * it holds whatever the caller left in it. The load and decode paths do
+   * take a GIMG_Diagnostics and fill it; saving reports through its result
+   * code alone.
+   */
   GIMG_Diagnostics * diagnostics;
   uint8_t _reserved[8];
 } GIMG_Save_Report;
 
 /**
- * @brief Save document to stream (stub: fails until codecs exist).
+ * @brief Save a document to a stream in the named format.
+ *
+ * @param doc The document. Its item 0 supplies the pixels: the raster
+ *   attached to it when there is one, otherwise the writer decodes the item
+ *   itself, whichever codec loaded the document.
+ * @param stream Destination, opened for output.
+ * @param format_name "png", "jpeg" or "bmp".
+ * @param options May be NULL for the defaults; see @ref api_options.
+ * @param report Required. On success its bytes_written is the file size.
+ * @return GIMG_OK, or GIMG_ERR_UNSUPPORTED when the raster's pixel format is
+ *   one the named codec cannot write.
  */
 GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     const char * format_name, const GIMG_Save_Options * options,
