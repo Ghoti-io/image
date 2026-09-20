@@ -358,35 +358,6 @@ static bool run_pillow_decode_oracle_to_raw(const char * jpeg_path, const char *
   return (ret == 0);
 }
 
-/** Try Pillow encode oracle. Returns true if JPEG was written. */
-static bool run_pillow_encode_baseline_to_file(const char * jpeg_path,
-    unsigned int width, unsigned int height, int quality, unsigned int restart_interval) {
-  (void)restart_interval;
-  std::string data_dir = resolved_data_dir();
-  std::string script = data_dir + "/encode_oracle_pillow.py";
-  std::ifstream check(script);
-  if (!check.good()) {
-    return false;
-  }
-  char w[32], h[32], q[32];
-  (void)std::snprintf(w, sizeof(w), "%u", width);
-  (void)std::snprintf(h, sizeof(h), "%u", height);
-  (void)std::snprintf(q, sizeof(q), "%d", quality);
-  std::string scan_tmp = jpeg_output_dir() + "/libjpeg_enc_scan_tmp.bin";
-  std::string cmd = "python3 \"" + script + "\" " + w + " " + h + " " + q +
-      " \"" + scan_tmp + "\" 0 \"" + std::string(jpeg_path) + "\" 2>";
-#ifdef _WIN32
-  cmd += "NUL";
-#else
-  cmd += "/dev/null";
-#endif
-  if (std::system(cmd.c_str()) != 0) {
-    return false;
-  }
-  std::ifstream f(jpeg_path, std::ios::binary | std::ios::ate);
-  return f && f.tellg() > 0;
-}
-
 /** Run decode oracle (Pillow script first, else libjpeg binary) and parse one line. */
 static bool run_libjpeg_oracle(const std::string & oracle_dir,
     const char * file_path, uint64_t * out_hash, uint32_t * out_width,
@@ -455,10 +426,9 @@ static bool run_libjpeg_oracle_to_raw(const std::string & oracle_dir,
   return (ret == 0);
 }
 
-/** Run encode oracle to produce a full JPEG (Pillow script first, else libjpeg binary). */
+/** Run the Pillow encode oracle to produce a full JPEG. */
 bool libjpeg_encode_baseline_to_file(const char * jpeg_path,
-    unsigned int width, unsigned int height, int quality,
-    unsigned int restart_interval) {
+    unsigned int width, unsigned int height, int quality) {
   if (!jpeg_path) {
     return false;
   }
@@ -471,23 +441,18 @@ bool libjpeg_encode_baseline_to_file(const char * jpeg_path,
     (void)mk;
 #endif
   }
-  if (run_pillow_encode_baseline_to_file(jpeg_path, width, height, quality,
-                                         restart_interval)) {
-    return true;
+  std::string script = resolved_data_dir() + "/encode_oracle_pillow.py";
+  std::ifstream check(script);
+  if (!check.good()) {
+    return false;
   }
-  std::string oracle_dir(resolved_oracle_dir());
-  std::string encoder = oracle_dir + "/encode_libjpeg_baseline_scan";
-#ifdef _WIN32
-  encoder += ".exe";
-#endif
-  std::string scan_tmp = jpeg_output_dir() + "/libjpeg_enc_scan_tmp.bin";
-  char w[32], h[32], q[32], ri[32];
+  char w[32], h[32], q[32];
   (void)std::snprintf(w, sizeof(w), "%u", width);
   (void)std::snprintf(h, sizeof(h), "%u", height);
   (void)std::snprintf(q, sizeof(q), "%d", quality);
-  (void)std::snprintf(ri, sizeof(ri), "%u", restart_interval);
-  std::string cmd = "\"" + encoder + "\" " + w + " " + h + " " + q + " \"" +
-      scan_tmp + "\" " + ri + " \"" + jpeg_path + "\" 2>";
+  std::string scan_tmp = jpeg_output_dir() + "/libjpeg_enc_scan_tmp.bin";
+  std::string cmd = "python3 \"" + script + "\" " + w + " " + h + " " + q +
+      " \"" + scan_tmp + "\" 0 \"" + std::string(jpeg_path) + "\" 2>";
 #ifdef _WIN32
   cmd += "NUL";
 #else

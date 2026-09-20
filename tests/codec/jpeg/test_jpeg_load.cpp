@@ -3785,13 +3785,13 @@ TEST(JpegLoad, DecodeJpegWithIccVsLibjpeg) {
   gimg_stream_destroy(s);
 }
 
-/** Priority (1): Decoder must work correctly with output from oracle (libjpeg).
- * Use libjpeg to encode a known image, then our decoder decodes that JPEG;
- * compare to libjpeg's decode of the same file. Requires make jpeg-oracle-tools. */
+/** Priority (1): Decoder must work correctly with output from an outside encoder.
+ * Encode a known image with the oracle, then our decoder decodes that JPEG;
+ * compare to the oracle's decode of the same file. Requires Pillow. */
 TEST(JpegLoad, DecodeLibjpegEncodedBaseline) {
   std::string jpeg_path = jpeg_test::jpeg_output_dir() + "/libjpeg_encoded_baseline.jpg";
-  if (!jpeg_test::libjpeg_encode_baseline_to_file(jpeg_path.c_str(), 640, 480, 85, 0)) {
-    GTEST_SKIP() << "Run make jpeg-oracle-tools (encode_libjpeg_baseline_scan)";
+  if (!jpeg_test::libjpeg_encode_baseline_to_file(jpeg_path.c_str(), 640, 480, 85)) {
+    GTEST_SKIP() << "Install Pillow (pip install Pillow) for the encode oracle";
   }
   std::string raw_path = jpeg_test::jpeg_output_dir() + "/libjpeg_encoded_baseline.raw";
   std::vector<uint8_t> libjpeg_pixels;
