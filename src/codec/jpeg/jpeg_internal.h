@@ -746,6 +746,27 @@ typedef struct gimg_jpeg_doc_state {
 void gimg_jpeg_attach_color(const gimg_jpeg_doc_state_t * state,
     uint8_t num_comp, GIMG_Raster * raster);
 
+/**
+ * @brief Put a CMYK raster's samples the way a JPEG holds them.
+ *
+ * A JPEG's four-component samples are the Adobe convention - 0 is full ink -
+ * which is what GIMG_CMYK_POLARITY_INK means.  A raster that says
+ * GIMG_CMYK_POLARITY_REFLECTION holds the complement, and writing it as it
+ * stands would produce a photographic negative of the picture the caller
+ * labelled.  Such a raster is copied and complemented; anything else is left
+ * alone, an unstated polarity included - a caller building CMYK samples for a
+ * JPEG is building them the way a JPEG holds them.
+ *
+ * @param raster The raster about to be encoded.
+ * @param out_raster Receives a new raster the caller owns when one was
+ *   needed, and NULL when the samples are already right, which is the usual
+ *   case and is not an error.
+ * @return GIMG_OK, GIMG_ERR_OOM, or GIMG_ERR_UNSUPPORTED for a sample width
+ *   this cannot complement.
+ */
+GIMG_Result gimg_jpeg_cmyk_to_file_polarity(
+    const GIMG_Raster * raster, GIMG_Raster ** out_raster);
+
 
 /**
  * Huffman decode table built from DHT payload (used by bitstream/block decode).

@@ -26,9 +26,11 @@
  */
 
 #include <ghoti.io/image/color.h>
+#include <ghoti.io/image/core.h>
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/raster.h>
 
+#include "../../raster/raster_internal.h"
 #include "jpeg_internal.h"
 
 void gimg_jpeg_attach_color(const gimg_jpeg_doc_state_t * state,
@@ -60,4 +62,70 @@ void gimg_jpeg_attach_color(const gimg_jpeg_doc_state_t * state,
     }
   }
   (void)gimg_raster_set_color_info(raster, &color_info);
+}
+
+GIMG_Result gimg_jpeg_cmyk_to_file_polarity(
+    const GIMG_Raster * raster, GIMG_Raster ** out_raster) {
+  *out_raster = NULL;
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  if (!fmt || fmt->channel_model != GIMG_CHANNEL_CMYK ||
+      fmt->channel_count != 4 || fmt->layout != GIMG_LAYOUT_INTERLEAVED) {
+    return GIMG_OK;
+  }
+  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  if (!ci || ci->cmyk_polarity != GIMG_CMYK_POLARITY_REFLECTION) {
+    // INK is what a JPEG means, and an unstated polarity is taken to be the
+    // file's own convention rather than refused: a caller building CMYK
+    // samples for a JPEG is building them the way a JPEG holds them.  Only
+    // the other reading needs anything done to it.
+    return GIMG_OK;
+  }
+
+  uint8_t bits = fmt->bits_per_channel[0];
+  if (bits != 8 && bits != 12 && bits != 16) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  uint32_t max = (bits == 8) ? 255u : ((UINT32_C(1) << bits) - 1u);
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  GIMG_Result r =
+      gimg_raster_create_with_allocator(gimg_raster_allocator(raster), w, h,
+          fmt, GIMG_RASTER_OWNED, NULL, 0, out_raster);
+  if (r != GIMG_OK) {
+    return r;
+  }
+
+  size_t src_stride = gimg_raster_stride_bytes(raster);
+  size_t dst_stride = gimg_raster_stride_bytes(*out_raster);
+  const unsigned char * sp =
+      (const unsigned char *)gimg_raster_pixels_const(raster);
+  unsigned char * dp = (unsigned char *)gimg_raster_pixels(*out_raster);
+  for (uint32_t y = 0; y < h; y++) {
+    const unsigned char * sr = sp + ((size_t)y * src_stride);
+    unsigned char * dr = dp + ((size_t)y * dst_stride);
+    for (uint32_t x = 0; x < (uint32_t)((size_t)w * 4u); x++) {
+      if (bits == 8) {
+        dr[x] = (unsigned char)(max - sr[x]);
+      }
+      else {
+        uint32_t v = ((const uint16_t *)sr)[x];
+        if (v > max) {
+          v = max;
+        }
+        ((uint16_t *)dr)[x] = (uint16_t)(max - v);
+      }
+    }
+  }
+
+  // The samples now mean what the file will mean, so say so.  Everything else
+  // the raster said about its colour still holds - the profile above all,
+  // which describes the same ink amounts either way round.
+  GIMG_Color_Info flipped = *ci;
+  flipped.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
+  r = gimg_raster_set_color_info(*out_raster, &flipped);
+  if (r != GIMG_OK) {
+    gimg_raster_destroy(*out_raster);
+    *out_raster = NULL;
+  }
+  return r;
 }

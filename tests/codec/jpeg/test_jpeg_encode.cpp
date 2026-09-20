@@ -7011,3 +7011,130 @@ TEST(JpegEncode, AProfileSurvivesASaveThatOwnsItsRaster) {
   gimg_doc_destroy(doc);
   gimg_stream_destroy(in);
 }
+
+TEST(JpegEncode, ACmykRasterLabelledTheOtherWayRoundIsWrittenRightWayUp) {
+  // A JPEG's four components are the Adobe convention - 0 is full ink - so a
+  // raster that says GIMG_CMYK_POLARITY_REFLECTION holds the complement.
+  // Writing those samples as they stand produced a photographic negative of
+  // the picture the caller had correctly labelled.  The encoder read the
+  // field nowhere, while the conversion in ops reads it as authoritative.
+  //
+  // The two rasters below are complements of each other and say so, and must
+  // therefore encode to the same picture.
+  const uint8_t values[4][4] = {
+      {0, 64, 128, 255}, {255, 191, 127, 0}, {10, 20, 30, 40}, {32, 32, 32, 32}};
+
+  std::vector<uint8_t> as_ink, as_reflection;
+  for (int pass = 0; pass < 2; pass++) {
+    bool reflection = (pass == 1);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_raster_create(
+                  4, 1, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+        GIMG_OK);
+    uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+    for (int x = 0; x < 4; x++) {
+      for (int c = 0; c < 4; c++) {
+        uint8_t v = values[x][c];
+        px[(x * 4) + c] = reflection ? (uint8_t)(255u - v) : v;
+      }
+    }
+    GIMG_Color_Info ci;
+    gimg_color_info_default(&ci);
+    ci.cmyk_polarity = reflection ? GIMG_CMYK_POLARITY_REFLECTION
+                                  : GIMG_CMYK_POLARITY_INK;
+    ASSERT_EQ(gimg_raster_set_color_info(raster, &ci), GIMG_OK);
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.quality = 100;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+    const void * bytes = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &bytes, &size);
+    std::vector<uint8_t> & into = reflection ? as_reflection : as_ink;
+    into.assign(static_cast<const uint8_t *>(bytes),
+        static_cast<const uint8_t *>(bytes) + size);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+  }
+
+  EXPECT_EQ(as_ink, as_reflection)
+      << "two rasters that say they are complements of each other describe "
+         "the same picture and must encode to the same file";
+
+  // And the one that came back says it is the file's own convention.
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(as_reflection.data(), as_reflection.size(), &s),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
+  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  ASSERT_NE(read, nullptr);
+  EXPECT_EQ(read->cmyk_polarity, GIMG_CMYK_POLARITY_INK);
+  const uint8_t * got =
+      static_cast<const uint8_t *>(gimg_raster_pixels_const(back));
+  for (int x = 0; x < 4; x++) {
+    for (int c = 0; c < 4; c++) {
+      EXPECT_NEAR(got[(x * 4) + c], values[x][c], 3)
+          << "channel " << c << " of pixel " << x;
+    }
+  }
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegEncode, ACmykRasterThatStatesNoPolarityIsWrittenAsItStands) {
+  // A caller building CMYK samples for a JPEG is building them the way a JPEG
+  // holds them, so an unstated polarity is taken as the file's own convention
+  // rather than refused.  This is the case every existing caller is in.
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                4, 1, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  for (int i = 0; i < 16; i++) {
+    px[i] = (uint8_t)(i * 16);
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.quality = 100;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+  const void * bytes = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &bytes, &size);
+  std::vector<uint8_t> jpeg(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * back_doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &back_doc), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(
+      gimg_item_decode(gimg_doc_item(back_doc, 0), nullptr, &back), GIMG_OK);
+  const uint8_t * got =
+      static_cast<const uint8_t *>(gimg_raster_pixels_const(back));
+  for (int i = 0; i < 16; i++) {
+    EXPECT_NEAR(got[i], (uint8_t)(i * 16), 3) << "sample " << i;
+  }
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(back_doc);
+  gimg_stream_destroy(s);
+}

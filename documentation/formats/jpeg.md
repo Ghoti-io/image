@@ -71,6 +71,25 @@ All fourteen frame headers of T.81 Table B.1 are read: sequential (SOF0, SOF1), 
 - **Color:** Grayscale (1 component); three components as YCbCr or as RGB; four as CMYK or, with an Adobe APP14 transform of 2, YCCK; any other count as channels with no color meaning. Four-component frames are **written** as well as read: `GIMG_Save_Options.jpeg_cmyk_transform` picks 0 (CMYK, the components unchanged, so a raster from a CMYK JPEG survives a round trip) or 2 (YCCK). That marker is the only thing in a JPEG that distinguishes the two, so it is written whatever the metadata policy says - it is not metadata - and JFIF, which declares three-component data to be YCbCr, is not written beside it. Chroma subsampling applies to a YCCK frame’s two chrominance components and to nothing else: C, M, Y and K are four ink amounts, and libjpeg gives all four 1x1 as well. A three-component frame whose channels carry no color meaning also gets an Adobe marker of transform 0, because three is the count a decoder would otherwise guess at. T.81 describes no color space at all, so which of these a frame carries is decided the way libjpeg decides it (`jdapimin.c`): a JFIF APP0 means YCbCr, else an Adobe APP14 transform, else component identifiers 'R', 'G', 'B', else YCbCr. A three-component frame that already carries RGB is passed through rather than converted — treating one as YCbCr changes every pixel.
 - **Sampling factors:** every H and V from 1 to 4 that T.81 B.2.2 allows and A.2.3's ten-data-unit MCU limit permits — twelve combinations — decoded byte-exactly against libjpeg-turbo 3.0.4 in both upsampling modes. The fancy filters are libjpeg's: h2v1 for 4:2:2, h2v2 for 4:2:0, h1v2 for 4:4:0; every other ratio replicates, as libjpeg's `int_upsample` does. A ratio that does not divide is refused by libjpeg itself (`JERR_FRACT_SAMPLE_NOTIMPL`) and is nothing this codec can be checked against.
 
+## CMYK polarity
+
+A JPEG's four components are the Adobe convention - 0 is full ink - which is
+what `GIMG_CMYK_POLARITY_INK` names. The decoder states it on **every**
+four-component frame, whatever the coding process; it used to be set by the
+baseline path alone, so the same image came back saying 0 is full ink when it
+was baseline and saying nothing at all when it was progressive or twelve-bit.
+
+The writer reads it too. A raster that says `GIMG_CMYK_POLARITY_REFLECTION`
+holds the complement, and writing those samples as they stand produced a
+photographic negative of the picture the caller had labelled; such a raster is
+complemented on the way out. An **unstated** polarity is written as it stands
+rather than refused: a caller building CMYK samples for a JPEG is building
+them the way a JPEG holds them.
+
+To turn a CMYK raster into RGB - the only route into a PNG or a BMP, neither
+of which has CMYK - use `gimg_ops_convert_pixel_format`; see
+\ref api_options "API options". No writer does it on your behalf.
+
 ## Color on save
 
 A JPEG has one place to state a color space: APP2 segments introduced by

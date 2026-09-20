@@ -3315,6 +3315,28 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
 
+  // A CMYK raster that says its samples are the other way round is
+  // complemented here, because a JPEG's four components are the Adobe
+  // convention and writing the samples as they stand would produce a
+  // photographic negative of the picture the caller labelled.
+  {
+    GIMG_Raster * flipped = NULL;
+    GIMG_Result fr = gimg_jpeg_cmyk_to_file_polarity(raster, &flipped);
+    if (fr != GIMG_OK) {
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      return fr;
+    }
+    if (flipped) {
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      raster = flipped;
+      raster_owned = 1;
+    }
+  }
+
   const GIMG_Allocator * alloc = codec->allocator;
   alloc = gimg_alloc_or_default(alloc);
 
