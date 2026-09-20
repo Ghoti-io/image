@@ -1099,13 +1099,19 @@ TEST(BmpDecode, APixelCountOverTheLimitIsRefusedBeforeItIsAllocated) {
 }
 
 TEST(BmpDecode, NoLimitsMeansTheHeaderIsStillCheckedAgainstTheFile) {
-  // With no limits at all, a header naming more than the file holds must
-  // still be refused - on the bytes actually present, not on a cap.  This is
-  // what stops the unlimited default from being a way to read past the end.
+  // With no limits at all, a header naming more than the file holds must be
+  // refused on the bytes actually present, and refused *before* the
+  // allocation it names.  It used to be refused after: the loader allocated
+  // what the header asked for and only then found the file short, so a
+  // 118-byte file caused an 8.6 GB allocation with no limit set.  Valgrind
+  // found it, as a warning about an address range of exactly that size.
+  //
+  // What makes this checkable without measuring memory is that the file says
+  // it is lying: bfOffBits plus the pixel data the stride and height imply is
+  // past the end of a stream that knows how long it is.
   std::vector<uint8_t> bomb = header_naming(46340, 46340, 32u);
   Loaded img;
-  GIMG_Result r = img.load_bytes(bomb, nullptr);
-  EXPECT_NE(r, GIMG_OK)
+  EXPECT_EQ(img.load_bytes(bomb, nullptr), GIMG_ERR_CORRUPT)
       << "a 118-byte file cannot hold eight gigabytes of pixels";
 }
 

@@ -664,6 +664,18 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
     }
   }
 
+  // A header names a size, so a file of a hundred bytes can name gigabytes.
+  // When the stream knows how long it is, that settles the question before
+  // anything is committed: the read below would fail anyway, but only after
+  // allocating what the header asked for.  Valgrind caught this as an 8.6 GB
+  // allocation from a 118-byte file - the shape of a denial of service, and
+  // one that needs no limit set to defend against, because the file itself
+  // says it is lying.
+  if (stream_size && needed > stream_size - (size_t)data_offset) {
+    bmp_load_diag(diagnostics, (size_t)data_offset,
+        "the header names more pixel data than the file holds");
+    return GIMG_ERR_CORRUPT;
+  }
   if (limits && limits->max_memory && needed > limits->max_memory) {
     bmp_load_diag(diagnostics, (size_t)data_offset, "increase max_memory");
     return GIMG_ERR_LIMIT;

@@ -113,10 +113,14 @@ this library:
 | PNG with IHDR naming 65535 &times; 65535 RGBA8 | 69 | ~17 GB |
 
 None of these crashes: each allocation is checked and a failure comes back as
-`GIMG_ERR_OOM`, and a header naming more pixel data than the file actually
-holds is refused as `GIMG_ERR_CORRUPT` whether or not a limit is set. What an
-unlimited default costs is not safety from a malformed file but **a bound on
-what a well-formed hostile one can make the process try to allocate**.
+`GIMG_ERR_OOM`. A header naming more pixel data than the file actually holds
+is refused as `GIMG_ERR_CORRUPT` **before** the allocation it names, whether
+or not a limit is set - the BMP loader used to allocate first and discover the
+truncation on the read, so the 118-byte row above really did allocate 8.6 GB.
+What an unlimited default costs is therefore not safety from a malformed file
+but **a bound on what a well-formed hostile one can make the process try to
+allocate**: a file that genuinely carries 8.6 GB of pixels is not lying, and
+only a limit will stop it.
 
 This matches libpng and libjpeg, which have no built-in cap either, and it is
 the right default for a library that does not know whether it is decoding a

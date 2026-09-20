@@ -225,7 +225,13 @@ static inline uint32_t ops_cmyk_stored(
   return polarity == GIMG_CMYK_POLARITY_REFLECTION ? max - v : v;
 }
 
-/** One channel of the result: colourant times black, rounded to nearest. */
+/**
+ * One channel of the result: colourant times black, rounded to nearest.
+ *
+ * Both operands are at most 65535, so the product is at most 4294836225 and
+ * the rounding term brings it to 4294868992 - inside uint32_t by 98303.  A
+ * wider sample than 16 bits would not fit and this does not accept one.
+ */
 static inline uint32_t ops_cmyk_channel(
     uint32_t colourant, uint32_t black, uint32_t max) {
   return ((colourant * black) + (max / 2u)) / max;
@@ -297,14 +303,20 @@ static GIMG_Result ops_cmyk_to_rgba(const GIMG_Raster * src,
         yv = px[2];
         k = px[3];
       }
-      c = ops_cmyk_stored(c, max, polarity);
-      m = ops_cmyk_stored(m, max, polarity);
-      yv = ops_cmyk_stored(yv, max, polarity);
-      k = ops_cmyk_stored(k, max, polarity);
+      // Clamped before the reading is applied, not after.  A 12-bit raster
+      // holds its samples in 16 bits and a caller can put 5000 in one; taking
+      // the complement of that first wraps to an enormous value and then
+      // clamps to full ink, which is the opposite of what saturating the
+      // sample and then reading it gives.  The JPEG writer's flip clamps in
+      // this order too.
       if (c > max) c = max;
       if (m > max) m = max;
       if (yv > max) yv = max;
       if (k > max) k = max;
+      c = ops_cmyk_stored(c, max, polarity);
+      m = ops_cmyk_stored(m, max, polarity);
+      yv = ops_cmyk_stored(yv, max, polarity);
+      k = ops_cmyk_stored(k, max, polarity);
 
       uint32_t red = ops_cmyk_channel(c, k, max);
       uint32_t green = ops_cmyk_channel(m, k, max);

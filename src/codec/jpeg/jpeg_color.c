@@ -103,7 +103,7 @@ GIMG_Result gimg_jpeg_cmyk_to_file_polarity(
   for (uint32_t y = 0; y < h; y++) {
     const unsigned char * sr = sp + ((size_t)y * src_stride);
     unsigned char * dr = dp + ((size_t)y * dst_stride);
-    for (uint32_t x = 0; x < (uint32_t)((size_t)w * 4u); x++) {
+    for (size_t x = 0; x < (size_t)w * 4u; x++) {
       if (bits == 8) {
         dr[x] = (unsigned char)(max - sr[x]);
       }
