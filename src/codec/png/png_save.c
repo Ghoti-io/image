@@ -1725,9 +1725,10 @@ static GIMG_Result gimg_png_raster_to_zlib(const GIMG_Raster * raster,
   return GIMG_OK;
 }
 
-GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
+static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
-    const GIMG_Save_Options * options, GIMG_Save_Report * report) {
+    const GIMG_Save_Options * options, GIMG_Save_Report * report,
+    void ** out_icc_copy) {
   (void)format_name;
   if (!codec || !doc || !stream || !report) {
     return GIMG_ERR_INTERNAL;
@@ -1780,10 +1781,31 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       (doc->loaded_by_codec == (struct GIMG_Codec *)codec)
       ? (gimg_png_doc_state_t *)doc->codec_private
       : NULL;
+  // The colour is captured here because the raster does not live long enough
+  // to be asked later: it is destroyed as soon as the image data is deflated,
+  // and every chunk - the signature included - is written after that.  The
+  // struct is values apart from the profile, which points into the raster, so
+  // that one field is copied and owned by gimg_png_save, which frees it
+  // however this returns.  Without the copy the iCCP branch read freed memory
+  // and wrote whatever was in it into the file; the JPEG writer had the same
+  // defect, and ASan found that one.
   GIMG_Color_Info color_info_for_save;
   const GIMG_Color_Info * rci = gimg_raster_color_info_const(raster);
   if (rci) {
     color_info_for_save = *rci;
+    if (rci->icc_bytes && rci->icc_size > 0) {
+      const GIMG_Allocator * icc_alloc = gimg_alloc_or_default(codec->allocator);
+      void * copy = gimg_malloc(icc_alloc, rci->icc_size);
+      if (!copy) {
+        if (raster_owned) {
+          gimg_raster_destroy(raster);
+        }
+        return GIMG_ERR_OOM;
+      }
+      memcpy(copy, rci->icc_bytes, rci->icc_size);
+      *out_icc_copy = copy;
+      color_info_for_save.icc_bytes = copy;
+    }
   }
   else {
     gimg_color_info_default(&color_info_for_save);
@@ -2505,4 +2527,24 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   report->bytes_written += 12;
   return GIMG_OK;
+}
+
+/**
+ * Save a document as a PNG.
+ *
+ * A thin owner around png_save_body: the colour the chunk writer states has
+ * to outlive the raster it came from, because the raster is destroyed as soon
+ * as the image data is deflated and every chunk is written after that.  The
+ * body hands back the one allocation behind the captured profile, which is
+ * freed here however the body returned.
+ */
+GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
+    GIMG_Stream * stream, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report) {
+  void * icc_copy = NULL;
+  GIMG_Result r =
+      png_save_body(codec, doc, stream, format_name, options, report,
+          &icc_copy);
+  gimg_free(codec ? gimg_alloc_or_default(codec->allocator) : NULL, icc_copy);
+  return r;
 }

@@ -1317,3 +1317,53 @@ TEST(BmpEncode, AnOverLargeProfileDoesNotSuppressTheRestOfTheColor) {
   EXPECT_EQ(back->intent, GIMG_INTENT_SATURATION);
   EXPECT_EQ(back->icc_size, 0u);
 }
+
+TEST(BmpEncode, SavingFromADocumentWhoseRasterTheSaveOwnsWritesTheRightProfile) {
+  // The PNG and JPEG writers both read a raster they had already destroyed
+  // when the save had decoded it for itself, and wrote freed memory into the
+  // file.  This writer holds the raster to the end and so is not in that
+  // state - which is worth an assertion rather than an argument.
+  std::vector<uint8_t> profile = small_profile();
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> first;
+  ASSERT_EQ(save_raster(raster, first), GIMG_OK);
+
+  // Load it back and save again without attaching a raster, so the second
+  // save decodes for itself and the profile it writes comes from a raster it
+  // owns.
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(first.data(), first.size(), &in),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_item_raster(gimg_doc_item(doc, 0)), nullptr)
+      << "the save must decode for itself, or this tests nothing";
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "bmp", nullptr, &report), GIMG_OK);
+  const void * bytes = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &bytes, &size);
+  std::vector<uint8_t> second(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in);
+
+  ASSERT_EQ(dib_size_of(second), 124u);
+  uint32_t at = 14u + dib_u32(second, 112);
+  uint32_t len = dib_u32(second, 116);
+  ASSERT_EQ(len, profile.size());
+  ASSERT_LE(at + len, second.size());
+  EXPECT_EQ(std::memcmp(second.data() + at, profile.data(), len), 0)
+      << "the profile written must be the one that went in";
+  EXPECT_EQ(first, second) << "and the second save must reproduce the first";
+}

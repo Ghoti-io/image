@@ -2596,3 +2596,86 @@ TEST(PngEncode, LinearTransferIsWrittenAsAGammaOfOne) {
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }
+
+TEST(PngEncode, SavingFromADocumentWhoseRasterTheSaveOwnsReadsNoFreedColor) {
+  // color_info_for_save is a copy of the struct, but its icc_bytes points into
+  // the raster, and the raster is destroyed as soon as the image data is
+  // deflated - well before the colour chunk is written.  When the save had
+  // decoded the raster itself, the iCCP branch read freed memory and wrote
+  // whatever was there into the file.  The JPEG writer had the same defect,
+  // found by ASan; this one is reachable the same way and was not, because
+  // every test of the colour path attached the raster to the document.
+  //
+  // Run under `make test-asan` for the assertion that matters.  The profile
+  // check below is the visible half: the bytes must be the ones that went in.
+  std::vector<uint8_t> profile(256, 0);
+  profile[3] = 0;
+  std::memcpy(&profile[36], "acsp", 4);
+  for (size_t i = 40; i < profile.size(); i++) {
+    profile[i] = (uint8_t)((i * 11u) & 0xFFu);
+  }
+
+  // A BMP carries the profile in a V5 header, so loading one gives a document
+  // with a profile and no raster on its item.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+  GIMG_Raster * raster = raster_with_color(color);
+  ASSERT_NE(raster, nullptr);
+
+  GIMG_Doc * src = nullptr;
+  ASSERT_EQ(gimg_doc_create(&src), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(src, 0), raster);
+  GIMG_Stream * bmp_out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&bmp_out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(src, bmp_out, "bmp", &opts, &report), GIMG_OK);
+  const void * bmp_bytes = nullptr;
+  size_t bmp_size = 0;
+  gimg_stream_output_buffer(bmp_out, &bmp_bytes, &bmp_size);
+  std::vector<uint8_t> bmp(static_cast<const uint8_t *>(bmp_bytes),
+      static_cast<const uint8_t *>(bmp_bytes) + bmp_size);
+  gimg_stream_destroy(bmp_out);
+  gimg_doc_destroy(src);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bmp.data(), bmp.size(), &in), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_item_raster(gimg_doc_item(doc, 0)), nullptr)
+      << "the save must decode for itself, or this tests nothing";
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  ASSERT_EQ(gimg_doc_save(doc, out, "png", &opts, &report), GIMG_OK);
+  const void * bytes = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &bytes, &size);
+  std::vector<uint8_t> png(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in);
+
+  EXPECT_EQ(color_chunks_of(png), "iCCP");
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &s), GIMG_OK);
+  GIMG_Doc * back_doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &back_doc), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(
+      gimg_item_decode(gimg_doc_item(back_doc, 0), nullptr, &back), GIMG_OK);
+  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  ASSERT_NE(read, nullptr);
+  ASSERT_EQ(read->icc_size, profile.size());
+  EXPECT_EQ(std::memcmp(read->icc_bytes, profile.data(), profile.size()), 0)
+      << "the profile written must be the one that went in, not whatever the "
+         "freed raster's memory happened to hold";
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(back_doc);
+  gimg_stream_destroy(s);
+}
