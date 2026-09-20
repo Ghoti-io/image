@@ -3170,9 +3170,10 @@ after_prog_tables:
   return GIMG_OK;
 }
 
-GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
+static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
-    const GIMG_Save_Options * options, GIMG_Save_Report * report) {
+    const GIMG_Save_Options * options, GIMG_Save_Report * report,
+    GIMG_Color_Info * out_color, void ** out_icc_copy) {
   (void)format_name;
   if (!codec || !doc || !stream || !report) {
     return GIMG_ERR_INTERNAL;
@@ -3316,6 +3317,39 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
   const GIMG_Allocator * alloc = codec->allocator;
   alloc = gimg_alloc_or_default(alloc);
+
+  // What the APP2 writer will say about colour, captured here because the
+  // raster does not live that long: the encode below produces the scan data
+  // and then destroys the raster, and the APP segments are written after
+  // that.  ASan caught the difference as a use-after-free the first time this
+  // writer read a raster's colour, on a lossless file whose raster the save
+  // had decoded for itself.
+  //
+  // Only the profile needs copying; the rest of GIMG_Color_Info is values.
+  // The copy belongs to gimg_jpeg_save, which frees it however this returns -
+  // this function has thirty-nine exits and is no place for a second thing to
+  // remember.
+  {
+    const GIMG_Color_Info * raster_color = gimg_raster_color_info_const(raster);
+    if (raster_color) {
+      *out_color = *raster_color;
+      out_color->icc_bytes = NULL;
+      out_color->icc_size = 0;
+      if (raster_color->icc_bytes && raster_color->icc_size > 0) {
+        void * copy = gimg_malloc(alloc, raster_color->icc_size);
+        if (!copy) {
+          if (raster_owned) {
+            gimg_raster_destroy(raster);
+          }
+          return GIMG_ERR_OOM;
+        }
+        memcpy(copy, raster_color->icc_bytes, raster_color->icc_size);
+        *out_icc_copy = copy;
+        out_color->icc_bytes = copy;
+        out_color->icc_size = raster_color->icc_size;
+      }
+    }
+  }
 
   unsigned quality = GIMG_JPEG_DEFAULT_QUALITY;
   if (options && options->quality != 0) {
@@ -4034,8 +4068,7 @@ have_scan:
       // a way of not losing a profile that arrived from somewhere else, such
       // as a BMP's V5 embedded one or a PNG's iCCP.
       if (!wrote_icc_from_raw && policy != GIMG_META_KEEP_RAW_ONLY) {
-        r = jpeg_write_icc_from_info(
-            stream, gimg_raster_color_info_const(raster), alloc, report);
+        r = jpeg_write_icc_from_info(stream, out_color, alloc, report);
         if (r != GIMG_OK) {
           gimg_free(alloc, to_free);
           return r;
@@ -4159,8 +4192,7 @@ have_scan:
       // color space is not one of them: it describes what the samples mean,
       // and the PNG writer keeps it under this policy for the same reason.
       // APP2 is the only place a JPEG can say it.
-      r = jpeg_write_icc_from_info(
-          stream, gimg_raster_color_info_const(raster), alloc, report);
+      r = jpeg_write_icc_from_info(stream, out_color, alloc, report);
       if (r != GIMG_OK) {
         gimg_free(alloc, to_free);
         return r;
@@ -4241,4 +4273,25 @@ have_scan:
     return r;
   }
   return GIMG_OK;
+}
+
+/**
+ * Save a document as a JPEG.
+ *
+ * A thin owner around jpeg_save_body: the colour the APP2 writer states has
+ * to outlive the raster it came from, because the raster is destroyed as soon
+ * as the scan data exists and the APP segments are written after that.  The
+ * body fills in the colour and hands back the one allocation behind it, which
+ * is freed here however the body returned.
+ */
+GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
+    GIMG_Stream * stream, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report) {
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  void * icc_copy = NULL;
+  GIMG_Result r = jpeg_save_body(
+      codec, doc, stream, format_name, options, report, &color, &icc_copy);
+  gimg_free(codec ? gimg_alloc_or_default(codec->allocator) : NULL, icc_copy);
+  return r;
 }

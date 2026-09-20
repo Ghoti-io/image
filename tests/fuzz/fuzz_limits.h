@@ -23,6 +23,7 @@
 #define GIMG_TESTS_FUZZ_FUZZ_LIMITS_H
 
 #include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/stream.h>
 
 static inline const GIMG_Limits * fuzz_limits() {
@@ -41,6 +42,42 @@ static inline const GIMG_Decode_Options * fuzz_decode_options() {
   static GIMG_Decode_Options o = {};
   o.limits = fuzz_limits();
   return &o;
+}
+
+/**
+ * A save policy chosen from the input, so one corpus reaches all of them.
+ *
+ * The policies are not interchangeable on the write side: each codec's colour
+ * and metadata writing is gated on them, and GIMG_META_DROP_ALL and
+ * GIMG_META_KEEP_RAW_ONLY take different branches from the rest.  A harness
+ * pinned to PRESERVE_ALL leaves those branches unfuzzed.
+ *
+ * It is derived from the bytes rather than consumed from the front of them,
+ * so every seed stays a valid file of its format and the fuzzer reaches the
+ * other policies by mutating content it already has.
+ */
+static inline GIMG_Meta_Policy fuzz_save_policy(
+    const uint8_t * data, size_t size) {
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < size && i < 64u; i++) {
+    h = (h ^ data[i]) * 16777619u;
+  }
+  h = (h ^ (uint32_t)size) * 16777619u;
+  switch (h % 6u) {
+    case 1:
+      return GIMG_META_DROP_ALL;
+    case 2:
+      return GIMG_META_STRIP_GPS;
+    case 3:
+      return GIMG_META_NORMALIZE_EXIF;
+    case 4:
+      return GIMG_META_KEEP_RAW_ONLY;
+    case 5:
+      return GIMG_META_KEEP_COMMON_ONLY;
+    case 0:
+    default:
+      return GIMG_META_PRESERVE_ALL;
+  }
 }
 
 #endif // GIMG_TESTS_FUZZ_FUZZ_LIMITS_H

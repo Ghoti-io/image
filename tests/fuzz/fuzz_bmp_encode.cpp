@@ -57,7 +57,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   }
 
   GIMG_Save_Options opts = {};
-  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  opts.metadata_policy = fuzz_save_policy(data, size);
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "bmp", &opts, &report);
   if (r != GIMG_OK) {

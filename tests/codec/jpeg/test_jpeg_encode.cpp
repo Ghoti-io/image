@@ -6905,3 +6905,109 @@ TEST(JpegEncode, ADocumentAnotherCodecLoadedCanBeSavedAsJpeg) {
   gimg_doc_destroy(loaded);
   gimg_stream_destroy(in);
 }
+
+TEST(JpegEncode, SavingFromADocumentWhoseRasterTheSaveOwnsReadsNoFreedColor) {
+  // The colour the APP2 writer states has to outlive the raster it came from:
+  // the encode destroys the raster as soon as the scan data exists, and the
+  // APP segments are written after that.  When the save had decoded the
+  // raster itself there was nothing else holding it, so reading its colour
+  // read freed memory - and a garbage icc_size and icc_bytes would have
+  // copied arbitrary heap into the output file.  ASan found it on a 47-byte
+  // arithmetic lossless JPEG within seconds of the colour path going in; the
+  // input is in tests/fuzz/corpus.
+  //
+  // The tests above all attach the raster to the document, which is the case
+  // where it outlives the save - so none of them could have caught this.
+  // Run under `make test-asan` for the assertion that matters.
+  static const unsigned char lossless[] = {0xFF, 0xD8, 0x64, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0xFF, 0xCB, 0x00, 0x0B, 0x08, 0x01, 0x02, 0x00, 0x11, 0x01,
+      0x00, 0x11, 0x00, 0xFF, 0xCC, 0x00, 0x04, 0x00, 0x10, 0xFF, 0xDA, 0x00,
+      0x08, 0x01, 0x00, 0x01, 0x04, 0x00, 0x00, 0xC3, 0xE2, 0xDE, 0xDF, 0xEA,
+      0xE7, 0xD8, 0xFF, 0xD9};
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(lossless, sizeof(lossless), &in),
+      GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_item_raster(gimg_doc_item(doc, 0)), nullptr)
+      << "the save must decode for itself, or this tests nothing";
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+
+  const void * bytes = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &bytes, &size);
+  std::vector<uint8_t> jpeg(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + size);
+  // The source carried no profile, so neither may the result: an APP2 here
+  // would be whatever the freed raster's bytes happened to spell.
+  EXPECT_TRUE(app2_icc_segments(jpeg).empty());
+
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in);
+}
+
+TEST(JpegEncode, AProfileSurvivesASaveThatOwnsItsRaster) {
+  // The other half: when the save decodes the raster itself, the profile on
+  // it still reaches the file, so the fix carries the colour rather than
+  // merely dropping it.
+  std::vector<uint8_t> profile = synthetic_profile(300);
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+
+  // Round-trip through BMP, which stores the profile in a V5 header, so the
+  // loaded document has a profile and no attached raster.
+  GIMG_Doc * src = nullptr;
+  ASSERT_EQ(gimg_doc_create(&src), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  memset(gimg_raster_pixels(raster), 200, 8u * 8u * 4u);
+  ASSERT_EQ(gimg_raster_set_color_info(raster, &color), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(src, 0), raster);
+
+  GIMG_Stream * bmp_out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&bmp_out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(src, bmp_out, "bmp", &opts, &report), GIMG_OK);
+  const void * bmp_bytes = nullptr;
+  size_t bmp_size = 0;
+  gimg_stream_output_buffer(bmp_out, &bmp_bytes, &bmp_size);
+  std::vector<uint8_t> bmp(static_cast<const uint8_t *>(bmp_bytes),
+      static_cast<const uint8_t *>(bmp_bytes) + bmp_size);
+  gimg_stream_destroy(bmp_out);
+  gimg_doc_destroy(src);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bmp.data(), bmp.size(), &in), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_item_raster(gimg_doc_item(doc, 0)), nullptr);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+  const void * bytes = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &bytes, &size);
+  std::vector<uint8_t> jpeg(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + size);
+  EXPECT_EQ(icc_from_segments(app2_icc_segments(jpeg)), profile)
+      << "a BMP's embedded profile must reach a JPEG saved from it";
+
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in);
+}

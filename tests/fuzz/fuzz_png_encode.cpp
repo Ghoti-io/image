@@ -61,7 +61,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   // fuzz harnesses build with -Werror.  Zeroing and then assigning says the
   // same thing without the warning, and keeps building when the struct grows.
   GIMG_Save_Options opts = {};
-  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  opts.metadata_policy = fuzz_save_policy(data, size);
   GIMG_Save_Report report = {0, nullptr, {0}};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r != GIMG_OK) {
