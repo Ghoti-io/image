@@ -7,6 +7,7 @@
  */
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
@@ -732,4 +733,94 @@ TEST(BmpEncode, Rle8EncodesAbsoluteRunsAsWellAsRepeats) {
   expect_round_trip(bytes, 256, 8, literals_then_a_run);
   publish_for_verification("rle8_absolute_256x8.bmp", bytes, 256, 8,
       literals_then_a_run);
+}
+
+// ---------------------------------------------------------------------------
+// Every fixture, every combination of the writer's options
+// ---------------------------------------------------------------------------
+
+TEST(BmpEncode, EveryFixtureSurvivesEveryCombinationOfTheWritersOptions) {
+  // The tests above each pin one choice the writer makes.  This one asserts
+  // the invariant that ties them together: whatever the writer produces, from
+  // whatever this codec was able to read, must load back to the same picture -
+  // for all eight combinations of palette, RLE and row order.
+  //
+  // It walks the fixture directory rather than a list, so a fixture added for
+  // some other reason is covered by this the moment it lands.
+  //
+  // Two outcomes are not failures.  A fixture that does not load is one of the
+  // deliberately malformed ones, and a save that returns UNSUPPORTED is either
+  // the top-down-plus-RLE pair the format forbids or a raster whose format the
+  // writer does not take.
+  namespace fs = std::filesystem;
+  size_t round_trips = 0;
+  size_t fixtures = 0;
+
+  for (const auto & entry : fs::directory_iterator(GIMG_TEST_DATA_BMP)) {
+    if (!entry.is_regular_file() || entry.path().extension() != ".bmp") {
+      continue;
+    }
+    const std::string name = entry.path().filename().string();
+    fixtures++;
+
+    Loaded original;
+    if (original.load(name.c_str()) != GIMG_OK) {
+      continue;  // A deliberately malformed fixture.
+    }
+    if (original.decode() != GIMG_OK) {
+      continue;
+    }
+    const uint32_t width = original.width();
+    const uint32_t height = original.height();
+
+    for (int palette = 0; palette <= 1; palette++) {
+      for (int rle = 0; rle <= 1; rle++) {
+        for (int top_down = 0; top_down <= 1; top_down++) {
+          GIMG_Save_Options options = {};
+          options.bmp_palette = (uint8_t)palette;
+          options.bmp_rle = (uint8_t)rle;
+          options.bmp_top_down = (uint8_t)top_down;
+
+          // The document owns the raster it is given, so each pass needs its
+          // own copy of the picture rather than the one `original` holds.
+          GIMG_Raster * copy = nullptr;
+          ASSERT_EQ(gimg_raster_copy(original.raster(), &copy), GIMG_OK)
+              << name;
+
+          std::vector<uint8_t> bytes;
+          GIMG_Result r = save_raster_with_options(copy, &options, bytes);
+          if (r == GIMG_ERR_UNSUPPORTED) {
+            // Either the pair the format forbids, or a raster format the
+            // writer does not take.  Both are documented refusals.
+            continue;
+          }
+          ASSERT_EQ(r, GIMG_OK)
+              << name << " palette=" << palette << " rle=" << rle
+              << " top_down=" << top_down;
+
+          Loaded back;
+          ASSERT_EQ(back.load_bytes(bytes), GIMG_OK)
+              << name << ": what the writer produced would not load back"
+              << " (palette=" << palette << " rle=" << rle
+              << " top_down=" << top_down << ")";
+          ASSERT_EQ(back.decode(), GIMG_OK) << name;
+          ASSERT_EQ(back.width(), width) << name;
+          ASSERT_EQ(back.height(), height) << name;
+
+          for (uint32_t y = 0; y < height; y++) {
+            for (uint32_t x = 0; x < width; x++) {
+              ASSERT_EQ(back.at(x, y), original.at(x, y))
+                  << name << " at (" << x << "," << y << ")"
+                  << " palette=" << palette << " rle=" << rle
+                  << " top_down=" << top_down;
+            }
+          }
+          round_trips++;
+        }
+      }
+    }
+  }
+
+  EXPECT_GT(fixtures, 30u) << "the fixture directory should not be nearly empty";
+  EXPECT_GT(round_trips, 100u) << "most fixtures should have round-tripped";
 }

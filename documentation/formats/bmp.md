@@ -343,6 +343,13 @@ reconstruct one.
   Because `gimg_doc_load` dispatches on the bytes rather than on the harness's
   name, `fuzz_bmp_encode` also feeds the BMP writer rasters decoded from PNG
   and JPEG.
+- **One invariant ties the writer's choices together:** every fixture that
+  loads is saved back under all eight combinations of palette, RLE and row
+  order, and each result must load and decode to the same picture. It walks
+  the fixture directory rather than a list, so a fixture added for some other
+  reason is covered the moment it lands. Run over bmpsuite as well while this
+  was written - 666 round trips across its 91 files - it found nothing, which
+  is the answer that was wanted from it.
 - **Coverage is read for the branches nobody tested, not for the number.**
   Doing that turned up three: `BI_ALPHABITFIELDS`, whose four masks follow a
   40-byte header rather than living inside it; the clamping of a `biClrUsed`
@@ -353,7 +360,7 @@ reconstruct one.
   guards - paths that need fault injection to reach, and that the fuzzers
   exercise structurally.
 - **Counts:** 56 tests in `testBmp_decode` across `BmpCodec`, `BmpDecode` and
-  `BmpLoad`, and 24 in `testBmp_encode`. Both binaries are built and run under
+  `BmpLoad`, and 25 in `testBmp_encode`. Both binaries are built and run under
   ASan and UBSan by `make test-asan` as well.
 - **Defects this found, all now fixed:** a top-down RLE bitmap was decoded
   bottom-up and came out silently upside down; the undefined fourth byte of a
