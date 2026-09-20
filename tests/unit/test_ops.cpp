@@ -7,6 +7,7 @@
  */
 
 #include <ghoti.io/image/bitdepth.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <cstring>
@@ -435,4 +436,121 @@ TEST(Ops, AQuarterTurnWorksOnAWiderPixelToo) {
   EXPECT_EQ(std::memcmp(q, left, 4), 0);
   EXPECT_EQ(std::memcmp(q + stride, right, 4), 0);
   gimg_raster_destroy(r);
+}
+
+namespace {
+
+/** A raster tagged with a color space and a small ICC profile. */
+static GIMG_Raster * tagged_raster(const GIMG_Pixel_Format * fmt,
+    std::vector<uint8_t> & profile_out) {
+  GIMG_Raster * r = nullptr;
+  if (gimg_raster_create(4, 4, fmt, GIMG_RASTER_OWNED, nullptr, 0, &r) !=
+          GIMG_OK ||
+      !r) {
+    return nullptr;
+  }
+  std::memset(gimg_raster_pixels(r), 0x20,
+      gimg_raster_stride_bytes(r) * 4u);
+  profile_out.assign(128, 0);
+  profile_out[3] = 128;
+  std::memcpy(profile_out.data() + 36, "acsp", 4);
+  GIMG_Color_Info ci;
+  gimg_color_info_default(&ci);
+  ci.primaries = GIMG_PRIMARIES_ADOBE_RGB;
+  ci.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  ci.transfer = GIMG_TRANSFER_GAMMA;
+  ci.gamma_value = 2.2;
+  ci.intent = GIMG_INTENT_SATURATION;
+  ci.icc_bytes = profile_out.data();
+  ci.icc_size = profile_out.size();
+  if (gimg_raster_set_color_info(r, &ci) != GIMG_OK) {
+    gimg_raster_destroy(r);
+    return nullptr;
+  }
+  return r;
+}
+
+/** Everything GIMG_Color_Info says, compared field by field. */
+static void expect_same_color(const GIMG_Color_Info * got,
+    const std::vector<uint8_t> & profile) {
+  ASSERT_NE(got, nullptr);
+  EXPECT_EQ(got->primaries, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(got->white_point, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(got->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_DOUBLE_EQ(got->gamma_value, 2.2);
+  EXPECT_EQ(got->intent, GIMG_INTENT_SATURATION);
+  ASSERT_EQ(got->icc_size, profile.size());
+  ASSERT_NE(got->icc_bytes, nullptr);
+  EXPECT_EQ(std::memcmp(got->icc_bytes, profile.data(), profile.size()), 0);
+}
+
+} // namespace
+
+TEST(Ops, ConvertBitDepthKeepsTheColorSpaceAndProfile) {
+  // Restating a sample at a different precision does not change what it
+  // means, so the color space still describes the result.  Dropping it made a
+  // 16-bit PNG carrying an iCCP come out of a save as JPEG untagged, because
+  // that writer converts to 12 bits on the way.
+  for (uint8_t bits : {(uint8_t)8, (uint8_t)12, (uint8_t)16}) {
+    std::vector<uint8_t> profile;
+    GIMG_Raster * src = tagged_raster(&GIMG_PIXEL_RGBA16, profile);
+    ASSERT_NE(src, nullptr);
+    GIMG_Raster * dst = nullptr;
+    ASSERT_EQ(gimg_ops_convert_bit_depth(src, bits, &dst), GIMG_OK)
+        << "converting to " << (int)bits << " bits";
+    ASSERT_NE(dst, nullptr);
+    {
+      SCOPED_TRACE(testing::Message() << "target " << (int)bits << " bits");
+      expect_same_color(gimg_raster_color_info_const(dst), profile);
+    }
+    // Deep-copied, not aliased: the result must outlive the source.
+    EXPECT_NE(gimg_raster_color_info_const(dst)->icc_bytes,
+        gimg_raster_color_info_const(src)->icc_bytes);
+    gimg_raster_destroy(src);
+    expect_same_color(gimg_raster_color_info_const(dst), profile);
+    gimg_raster_destroy(dst);
+  }
+}
+
+TEST(Ops, ConvertBitDepthOnAGrayRasterKeepsTheColorSpaceToo) {
+  std::vector<uint8_t> profile;
+  GIMG_Raster * src = tagged_raster(&GIMG_PIXEL_GRAY8, profile);
+  ASSERT_NE(src, nullptr);
+  GIMG_Raster * dst = nullptr;
+  ASSERT_EQ(gimg_ops_convert_bit_depth(src, 16, &dst), GIMG_OK);
+  ASSERT_NE(dst, nullptr);
+  expect_same_color(gimg_raster_color_info_const(dst), profile);
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+TEST(Ops, ConvertPixelFormatKeepsTheColorSpaceAndProfile) {
+  std::vector<uint8_t> profile;
+  GIMG_Raster * src = tagged_raster(&GIMG_PIXEL_RGBA8, profile);
+  ASSERT_NE(src, nullptr);
+  GIMG_Raster * dst = nullptr;
+  ASSERT_EQ(
+      gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_RGBA8, &dst), GIMG_OK);
+  ASSERT_NE(dst, nullptr);
+  expect_same_color(gimg_raster_color_info_const(dst), profile);
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+TEST(Ops, AnUntaggedRasterStaysUntaggedThroughAConversion) {
+  GIMG_Raster * src = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                4, 4, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &src),
+      GIMG_OK);
+  std::memset(gimg_raster_pixels(src), 0, gimg_raster_stride_bytes(src) * 4u);
+  GIMG_Raster * dst = nullptr;
+  ASSERT_EQ(gimg_ops_convert_bit_depth(src, 16, &dst), GIMG_OK);
+  ASSERT_NE(dst, nullptr);
+  const GIMG_Color_Info * ci = gimg_raster_color_info_const(dst);
+  ASSERT_NE(ci, nullptr);
+  EXPECT_EQ(ci->icc_size, 0u);
+  EXPECT_EQ(ci->primaries, GIMG_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(ci->transfer, GIMG_TRANSFER_UNKNOWN);
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
 }

@@ -29,7 +29,11 @@ GIMG_API GIMG_Result gimg_ops_apply_orientation(
     GIMG_Raster * raster, GIMG_Orientation orientation);
 
 /**
- * @brief Convert pixel format (stub: same-format copy or UNSUPPORTED).
+ * @brief Convert pixel format (same-format copy; anything else UNSUPPORTED).
+ *
+ * The result carries the source's GIMG_Color_Info, profile included: copying
+ * samples does not change what they mean.
+ *
  * @param src Source raster.
  * @param dst_format Target format descriptor.
  * @param out_raster On success, new raster in target format.
@@ -40,8 +44,15 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
 /**
  * @brief Convert raster bit depth (8, 12, or 16 bits per channel). Same
  * channel model and count; uses library bit-depth conversion (bitshift/clamp).
- * Supported: GRAY8/12/16, RGBA8/12/16. CMYK and other models return
+ *
+ * Supported: GRAY, RGBA and CMYK at 8/12/16, and a raster of unnamed channels
+ * (GIMG_CHANNEL_UNKNOWN) at any count. Other channel models, a source whose
+ * channels are not all the same width, and any depth but 8, 12 or 16 return
  * GIMG_ERR_UNSUPPORTED.
+ *
+ * The result carries the source's GIMG_Color_Info, profile included: a sample
+ * restated at a different precision still means what it meant.
+ *
  * @param src Source raster (8-, 12-, or 16-bit per channel).
  * @param dst_bits Target bits per channel (8, 12, or 16).
  * @param out_raster On success, new raster in target bit depth; caller owns it.

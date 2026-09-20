@@ -188,6 +188,29 @@ GIMG_API GIMG_Result gimg_ops_apply_orientation(
   }
 }
 
+/**
+ * Carry the source raster's color description onto a converted one.
+ *
+ * Neither conversion here changes what a sample means - one copies the
+ * samples and the other restates them at a different precision - so the color
+ * space, the rendering intent and any embedded ICC profile still describe the
+ * result.  Dropping them made a 16-bit PNG carrying an iCCP come out of a
+ * save as JPEG untagged, because that writer converts to 12 bits on the way
+ * and the profile did not survive the conversion.  gimg_raster_copy has
+ * carried color across all along; these two had not.
+ *
+ * The profile is deep-copied by gimg_raster_set_color_info, so the result
+ * does not point into the source.
+ */
+static GIMG_Result ops_carry_color(
+    const GIMG_Raster * src, GIMG_Raster * dst) {
+  const GIMG_Color_Info * ci = gimg_raster_color_info_const(src);
+  if (!ci) {
+    return GIMG_OK;
+  }
+  return gimg_raster_set_color_info(dst, ci);
+}
+
 GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
     const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster) {
   if (!src || !dst_format || !out_raster) {
@@ -223,6 +246,12 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
     memcpy(dp, sp, row_bytes);
     sp += src_stride;
     dp += dst_stride;
+  }
+  r = ops_carry_color(src, *out_raster);
+  if (r != GIMG_OK) {
+    gimg_raster_destroy(*out_raster);
+    *out_raster = NULL;
+    return r;
   }
   return GIMG_OK;
 }
@@ -316,6 +345,12 @@ GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
       sp += src_stride;
       dp += dst_stride;
     }
+    r = ops_carry_color(src, *out_raster);
+    if (r != GIMG_OK) {
+      gimg_raster_destroy(*out_raster);
+      *out_raster = NULL;
+      return r;
+    }
     return GIMG_OK;
   }
 
@@ -355,6 +390,12 @@ GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
     }
     sp += src_stride;
     dp += dst_stride;
+  }
+  r = ops_carry_color(src, *out_raster);
+  if (r != GIMG_OK) {
+    gimg_raster_destroy(*out_raster);
+    *out_raster = NULL;
+    return r;
   }
   return GIMG_OK;
 }
