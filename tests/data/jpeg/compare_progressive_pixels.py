@@ -24,6 +24,9 @@ import struct
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from oracle_path import BUILD_HINT, find_oracle
+
 
 def load_ref_raw(path: str) -> tuple[bytes, int, int, int]:
     """Load ref .raw from dump_jpeg_pixels_ref -o. Returns (pixels, w, h, mode).
@@ -147,7 +150,10 @@ def main() -> int:
     jpeg_path = os.path.abspath(args.jpeg)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     our_decoder = args.our_decoder
-    ref_decoder = args.ref_decoder or os.path.join(script_dir, "dump_jpeg_pixels_ref")
+    ref_decoder = find_oracle("dump_jpeg_pixels_ref", args.ref_decoder)
+    if ref_decoder is None:
+        print(f"Reference tool not found. {BUILD_HINT}", file=sys.stderr)
+        return 1
     if os.path.isfile(ref_decoder):
         ref_decoder = os.path.abspath(ref_decoder)
     if our_decoder != "dump_jpeg_raster" and os.path.isfile(our_decoder):

@@ -38,6 +38,41 @@ Scripts below that drive a `*_debug` tool need both a lost source and an
 instrumented libjpeg built by hand; they are kept as a record of how the
 progressive decoder was debugged, and cannot be run as written.
 
+### The decoder half of these scripts is gone too
+
+Most of the comparison scripts drive our decoder through environment
+variables - `DUMP_JPEG_COEF_AFTER_SCAN`, `GIMG_JPEG_TRACE_ALL`,
+`DUMP_JPEG_COMPONENTS` and the rest. **Twenty-one of those no longer exist in
+the library.** They were removed from the decoder at some point and nothing
+updated the scripts or this file, so a script whose oracle is present still
+compares against nothing: our side emits no lines at all. The three trace
+variables the decoder does still read - `GIMG_JPEG_TRACE_BASELINE_BIT_POS`,
+`GIMG_JPEG_TRACE_ENTROPY`, `GIMG_JPEG_TRACE_FIRST_CB` - are named by no
+script and no document here.
+
+So fixing where these scripts look for their oracle, which was worth doing
+because the lookup was wrong in its own right, does not make them runnable.
+Reviving one means restoring the decoder instrumentation it was written
+against.
+
+### What does still run: compare_progressive_pixels.py
+
+It compares pixels rather than internals, so it needs no decoder
+instrumentation - only `dump_jpeg_pixels_ref` and `dump_jpeg_raster`. Across
+all 22 progressive fixtures here, our decoder is **bit-identical to libjpeg
+on 14**, including every complete file, both arithmetic-coded ones, the
+restart-interval one, and every grayscale truncation.
+
+The eight that differ are `progressive_sample_2scan` through `_9scan`:
+colour files deliberately cut short mid-progression. The difference is 4 of
+255 at two through five scans, 2 at six through nine, and **zero at ten,
+where the scan sequence is complete** - so the two decoders converge exactly
+as the refinement bits arrive, and differ only in how they render a
+progression that stops early. No test uses those eight fixtures. This is
+recorded as a measurement, not diagnosed: what a decoder should show for
+coefficients whose refinement never arrived is a quality choice, and ours is
+exact wherever the file is whole.
+
 Compiled copies of all six were once committed under `tests/data/jpeg/`. They were
 untracked: they are build output, they were checked in without the sources that
 build them, and four of the six had no source in the repo at any commit. Scripts

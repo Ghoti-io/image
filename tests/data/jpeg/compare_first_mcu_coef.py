@@ -22,6 +22,9 @@ import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from oracle_path import BUILD_HINT, find_oracle
 from typing import Dict, List, Tuple
 
 
@@ -64,10 +67,7 @@ def main() -> int:
     jpeg_path = os.path.abspath(argv[0])
     script_dir = os.path.dirname(os.path.abspath(__file__))
     decoder = argv[1] if len(argv) >= 2 else "dump_jpeg_raster"
-    ref_tool = argv[2] if len(argv) >= 3 else os.path.join(script_dir, "dump_jpeg_coef_ref")
-    if not os.path.isabs(ref_tool):
-        ref_tool = os.path.join(script_dir, os.path.basename(ref_tool))
-    ref_tool = os.path.abspath(ref_tool)
+    ref_tool = find_oracle("dump_jpeg_coef_ref", argv[2] if len(argv) >= 3 else None)
 
     if not os.path.isfile(jpeg_path):
         print(f"File not found: {jpeg_path}", file=sys.stderr)
@@ -77,8 +77,8 @@ def main() -> int:
     elif not os.path.isfile(decoder):
         print(f"Decoder not found: {decoder}", file=sys.stderr)
         return 2
-    if not os.path.isfile(ref_tool):
-        print(f"Reference tool not found: {ref_tool}", file=sys.stderr)
+    if ref_tool is None:
+        print(f"Reference tool not found. {BUILD_HINT}", file=sys.stderr)
         return 2
 
     env_ref = os.environ.copy()

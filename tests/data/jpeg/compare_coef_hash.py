@@ -3,8 +3,8 @@
 Compare our decoder's final coefficient hash to libjpeg-turbo reference.
 
 Runs our decoder with DUMP_JPEG_COEF_AFTER_SCAN=1, parses the last scan hash,
-runs dump_jpeg_coef_ref (must be built: cc -o dump_jpeg_coef_ref dump_jpeg_coef_ref.c
-$(pkg-config --cflags --libs libjpeg)), and compares.
+runs dump_jpeg_coef_ref (build it with `make jpeg-oracle-tools`), and
+compares.
 
 Exit 0 if hashes match, 1 if they differ, 2 if setup failed (missing ref tool
 or decoder, or not a multi-scan JPEG).
@@ -17,6 +17,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from oracle_path import BUILD_HINT, find_oracle
+
 
 def main() -> int:
     if len(sys.argv) < 2:
@@ -28,12 +31,9 @@ def main() -> int:
     jpeg_path = os.path.abspath(sys.argv[1])
     script_dir = os.path.dirname(os.path.abspath(__file__))
     decoder = sys.argv[2] if len(sys.argv) >= 3 else "dump_jpeg_raster"
-    ref_tool = sys.argv[3] if len(sys.argv) >= 4 else os.path.join(
-        script_dir, "dump_jpeg_coef_ref"
+    ref_tool = find_oracle(
+        "dump_jpeg_coef_ref", sys.argv[3] if len(sys.argv) >= 4 else None
     )
-    if not os.path.isabs(ref_tool):
-        ref_tool = os.path.join(script_dir, os.path.basename(ref_tool))
-    ref_tool = os.path.abspath(ref_tool)
 
     if not os.path.isfile(jpeg_path):
         print(f"File not found: {jpeg_path}", file=sys.stderr)
@@ -43,12 +43,8 @@ def main() -> int:
     elif not os.path.isfile(decoder):
         print(f"Decoder not found: {decoder}", file=sys.stderr)
         return 2
-    if not os.path.isfile(ref_tool):
-        print(
-            f"Reference tool not found: {ref_tool}. Build with:\n"
-            "  cc -o dump_jpeg_coef_ref dump_jpeg_coef_ref.c $(pkg-config --cflags --libs libjpeg)",
-            file=sys.stderr,
-        )
+    if ref_tool is None:
+        print(f"Reference tool not found. {BUILD_HINT}", file=sys.stderr)
         return 2
 
     env = os.environ.copy()

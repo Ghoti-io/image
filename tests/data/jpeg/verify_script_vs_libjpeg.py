@@ -20,6 +20,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from oracle_path import BUILD_HINT, find_oracle
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
@@ -42,13 +45,13 @@ def main() -> int:
         print("Usage: verify_script_vs_libjpeg.py <8x8-gray.jpg> [dump_jpeg_coef_ref [our_decoder]]", file=sys.stderr)
         return 2
     jpeg_path = os.path.abspath(sys.argv[1])
-    ref_tool = sys.argv[2] if len(sys.argv) >= 3 else os.path.join(script_dir, "dump_jpeg_coef_ref")
+    ref_tool = find_oracle("dump_jpeg_coef_ref", sys.argv[2] if len(sys.argv) >= 3 else None)
     our_decoder = sys.argv[3] if len(sys.argv) >= 4 else None
     if not os.path.isfile(jpeg_path):
         print(f"File not found: {jpeg_path}", file=sys.stderr)
         return 2
-    if not os.path.isfile(ref_tool):
-        print(f"Reference tool not found: {ref_tool}", file=sys.stderr)
+    if ref_tool is None:
+        print(f"Reference tool not found. {BUILD_HINT}", file=sys.stderr)
         return 2
 
     with open(jpeg_path, "rb") as f:
