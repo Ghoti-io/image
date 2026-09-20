@@ -532,6 +532,23 @@ $(APP_DIR)/dump_jpeg_structure$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_struc
 
 jpeg-dump-structure: $(APP_DIR)/dump_jpeg_structure$(EXE_EXTENSION) ## Build dump_jpeg_structure; run: build/.../dump_jpeg_structure <file.jpg>
 
+# Decode BMP files and dump each raster, for tests/data/bmp/bmpsuite_sweep.py.
+$(OBJ_DIR)/tests/dump_bmp_raster.o: tests/codec/bmp/dump_bmp_raster.cpp
+	@printf "\n### Compiling dump_bmp_raster ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+$(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_bmp_raster.o $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
+	@printf "\n### Linking dump_bmp_raster ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_bmp_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+
+bmp-dump-raster: $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION) ## Build dump_bmp_raster; used by tests/data/bmp/bmpsuite_sweep.py
+
+bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep (needs BMPSUITE=<unpacked bmpsuite dir>)
+	@python3 $(CURDIR)/tests/data/bmp/bmpsuite_sweep.py \
+		--decoder $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION) \
+		$(if $(BMPSUITE),--suite $(BMPSUITE),)
+
 # libjpeg-based oracle tools live in third_party/jpeg-oracle (optional; not required for make test).
 # See third_party/jpeg-oracle/README.md. Tests that use the oracle skip when it is not present.
 
@@ -581,6 +598,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 # General commands
 .PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build coverage check-symbols
 .PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode
+.PHONY: bmp-dump-raster bmpsuite
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-watch uninstall watch
 # Debug build commands
