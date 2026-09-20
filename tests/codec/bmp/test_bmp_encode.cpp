@@ -961,3 +961,303 @@ TEST(BmpEncode, NarrowingKeepsTheProfileTheDeepRasterCarried) {
   std::vector<uint8_t> bytes;
   EXPECT_EQ(save_raster(raster, bytes), GIMG_OK);
 }
+
+namespace {
+
+/** Save a raster as BMP under a metadata policy. */
+GIMG_Result save_raster_with_policy(GIMG_Raster * raster,
+    GIMG_Meta_Policy policy, std::vector<uint8_t> & out) {
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_create(&doc);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  GIMG_Stream * stream = nullptr;
+  r = gimg_stream_create_memory_output(&stream);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = policy;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, stream, "bmp", &opts, &report);
+  if (r == GIMG_OK) {
+    const void * buffer = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(stream, &buffer, &size);
+    const uint8_t * bytes = static_cast<const uint8_t *>(buffer);
+    out.assign(bytes, bytes + size);
+    EXPECT_EQ(report.bytes_written, size)
+        << "report must match what was actually written";
+  }
+  gimg_stream_destroy(stream);
+  gimg_doc_destroy(doc);
+  return r;
+}
+
+/** An opaque 4x2 raster tagged with the given color. */
+GIMG_Raster * colored_raster(const GIMG_Color_Info & color) {
+  GIMG_Raster * raster = make_raster(4, 2, opaque_gradient);
+  if (!raster) {
+    return nullptr;
+  }
+  if (gimg_raster_set_color_info(raster, &color) != GIMG_OK) {
+    gimg_raster_destroy(raster);
+    return nullptr;
+  }
+  return raster;
+}
+
+/** The DIB header size a saved file declares. */
+uint32_t dib_size_of(const std::vector<uint8_t> & bytes) {
+  return read_u32(bytes, 14);
+}
+
+/** A field of the DIB header, by its offset within that header. */
+uint32_t dib_u32(const std::vector<uint8_t> & bytes, size_t at) {
+  return read_u32(bytes, 14 + at);
+}
+
+/** A 128-byte stand-in for an ICC profile. */
+std::vector<uint8_t> small_profile() {
+  std::vector<uint8_t> profile(128, 0);
+  profile[3] = 128;
+  std::memcpy(profile.data() + 36, "acsp", 4);
+  for (size_t i = 40; i < profile.size(); i++) {
+    profile[i] = (uint8_t)((i * 7u) & 0xFFu);
+  }
+  return profile;
+}
+
+} // namespace
+
+TEST(BmpEncode, ARasterWithNothingToSayKeepsTheSmallestHeader) {
+  // A V4 header costs 68 bytes, so it is written only when there is something
+  // for it to carry.
+  GIMG_Raster * raster = make_raster(4, 2, opaque_gradient);
+  ASSERT_NE(raster, nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(dib_size_of(bytes), 40u);
+}
+
+TEST(BmpEncode, AProfileOnTheRasterIsWrittenIntoAV5Header) {
+  // Only a V5 header can locate an embedded profile, so a raster carrying one
+  // gets that header and the profile follows the pixels.  Without this a BMP
+  // loaded and saved as a BMP lost the profile it arrived with.
+  std::vector<uint8_t> profile = small_profile();
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  ASSERT_EQ(dib_size_of(bytes), 124u);
+  EXPECT_EQ(dib_u32(bytes, 56), 0x4D424544u) << "bV5CSType must be 'MBED'";
+
+  uint32_t offset = dib_u32(bytes, 112);
+  uint32_t size = dib_u32(bytes, 116);
+  ASSERT_EQ(size, profile.size());
+  // bV5ProfileData is measured from the start of the DIB header.
+  size_t at = 14u + offset;
+  ASSERT_LE(at + size, bytes.size());
+  EXPECT_EQ(std::memcmp(bytes.data() + at, profile.data(), size), 0)
+      << "the bytes at bV5ProfileData must be the profile";
+
+  // And it comes back.
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(back, nullptr);
+  ASSERT_EQ(back->icc_size, profile.size());
+  EXPECT_EQ(std::memcmp(back->icc_bytes, profile.data(), profile.size()), 0);
+}
+
+TEST(BmpEncode, AnSrgbRasterIsWrittenAsAV4HeaderNamingSrgb) {
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.primaries = GIMG_PRIMARIES_SRGB;
+  color.white_point = GIMG_PRIMARIES_SRGB;
+  color.transfer = GIMG_TRANSFER_SRGB;
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(dib_size_of(bytes), 108u);
+  EXPECT_EQ(dib_u32(bytes, 56), 0x73524742u) << "bV4CSType must be 'sRGB'";
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(back, nullptr);
+  EXPECT_EQ(back->transfer, GIMG_TRANSFER_SRGB);
+  EXPECT_EQ(back->primaries, GIMG_PRIMARIES_SRGB);
+}
+
+TEST(BmpEncode, CalibratedPrimariesAndGammaSurviveTheHeader) {
+  // bmpsuite's g/pal8v4.bmp is exactly this shape: sRGB's primaries with a
+  // gamma of 2.2, which is not sRGB and must not be written as though it
+  // were.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.primaries = GIMG_PRIMARIES_ADOBE_RGB;
+  color.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  color.transfer = GIMG_TRANSFER_GAMMA;
+  color.gamma_value = 2.2;
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  ASSERT_EQ(dib_size_of(bytes), 108u);
+  EXPECT_EQ(dib_u32(bytes, 56), 0u) << "bV4CSType must be LCS_CALIBRATED_RGB";
+  // 2.2 in 16.16 fixed point.
+  EXPECT_EQ(dib_u32(bytes, 96), (uint32_t)(2.2 * 65536.0 + 0.5));
+  EXPECT_EQ(dib_u32(bytes, 100), dib_u32(bytes, 96));
+  EXPECT_EQ(dib_u32(bytes, 104), dib_u32(bytes, 96));
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(back, nullptr);
+  EXPECT_EQ(back->primaries, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(back->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_NEAR(back->gamma_value, 2.2, 0.0001);
+}
+
+TEST(BmpEncode, LinearIsWrittenAsAGammaOfOne) {
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.transfer = GIMG_TRANSFER_LINEAR;
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  ASSERT_EQ(dib_size_of(bytes), 108u);
+  EXPECT_EQ(dib_u32(bytes, 96), 65536u);
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  EXPECT_EQ(gimg_raster_color_info_const(img.raster())->transfer,
+      GIMG_TRANSFER_LINEAR);
+}
+
+TEST(BmpEncode, AnIntentOtherThanPerceptualNeedsAV5Header) {
+  // bV5Intent is the only V5-only field this writer has anything to put in,
+  // so it is what decides between the two header versions when there is no
+  // profile.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.transfer = GIMG_TRANSFER_SRGB;
+  color.intent = GIMG_INTENT_SATURATION;
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  ASSERT_EQ(dib_size_of(bytes), 124u);
+  EXPECT_EQ(dib_u32(bytes, 108), 1u) << "LCS_GM_BUSINESS";
+  EXPECT_EQ(dib_u32(bytes, 116), 0u) << "no profile, so no profile size";
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  EXPECT_EQ(gimg_raster_color_info_const(img.raster())->intent,
+      GIMG_INTENT_SATURATION);
+}
+
+TEST(BmpEncode, AlphaMasksAndAProfileAreWrittenTogether) {
+  // A V4 header carries the four channel masks at the same offsets a V3 does,
+  // so stating a color space must not cost the alpha mask.
+  std::vector<uint8_t> profile = small_profile();
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+  GIMG_Raster * raster = make_raster(4, 2, alpha_gradient);
+  ASSERT_NE(raster, nullptr);
+  ASSERT_EQ(gimg_raster_set_color_info(raster, &color), GIMG_OK);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  ASSERT_EQ(dib_size_of(bytes), 124u);
+  EXPECT_EQ(read_u16(bytes, 14 + 14), 32u) << "still 32 bits per pixel";
+  EXPECT_EQ(dib_u32(bytes, 16), 3u) << "still BI_BITFIELDS";
+  EXPECT_EQ(dib_u32(bytes, 40), 0x00FF0000u);
+  EXPECT_EQ(dib_u32(bytes, 44), 0x0000FF00u);
+  EXPECT_EQ(dib_u32(bytes, 48), 0x000000FFu);
+  EXPECT_EQ(dib_u32(bytes, 52), 0xFF000000u);
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  for (uint32_t y = 0; y < 2; y++) {
+    for (uint32_t x = 0; x < 4; x++) {
+      EXPECT_EQ(img.at(x, y), alpha_gradient(x, y))
+          << "at (" << x << "," << y << ")";
+    }
+  }
+  EXPECT_EQ(gimg_raster_color_info_const(img.raster())->icc_size,
+      profile.size());
+}
+
+TEST(BmpEncode, DropAllAndKeepRawOnlyStateNoColorSpace) {
+  // The two policies that drop the resolution drop this too.
+  std::vector<uint8_t> profile = small_profile();
+  for (GIMG_Meta_Policy policy :
+      {GIMG_META_DROP_ALL, GIMG_META_KEEP_RAW_ONLY}) {
+    GIMG_Color_Info color;
+    gimg_color_info_default(&color);
+    color.icc_bytes = profile.data();
+    color.icc_size = profile.size();
+    GIMG_Raster * raster = colored_raster(color);
+    ASSERT_NE(raster, nullptr);
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_policy(raster, policy, bytes), GIMG_OK);
+    EXPECT_EQ(dib_size_of(bytes), 40u) << "policy " << (int)policy;
+  }
+}
+
+TEST(BmpEncode, AGammaTheFieldCannotHoldGoesUnsaid) {
+  // bV4Gamma is 16.16 fixed point, so it states nothing above 65535.  A value
+  // past that is left out rather than converted, which for the same reason as
+  // PNG's gAMA would be undefined behaviour and not a large number.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.transfer = GIMG_TRANSFER_GAMMA;
+  color.gamma_value = 1e9;
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(dib_size_of(bytes), 40u)
+      << "nothing was left to say, so no V4 header";
+}
+
+TEST(BmpEncode, ProfileBearingFilesStillReadBackFromOutside) {
+  // Left for tests/data/bmp/verify_bmp_output.py: a V5 header is longer than
+  // any this writer used to emit, and a decoder that stops reading at 40
+  // bytes would find the pixels in the wrong place.
+  std::vector<uint8_t> profile = small_profile();
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+  GIMG_Raster * raster = make_raster(5, 3, opaque_gradient);
+  ASSERT_NE(raster, nullptr);
+  ASSERT_EQ(gimg_raster_set_color_info(raster, &color), GIMG_OK);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  publish_for_verification("v5_profile.bmp", bytes, 5, 3, opaque_gradient);
+}

@@ -233,6 +233,51 @@ The form follows the raster and the caller's options, in this order:
   emit - when it does not. `GIMG_META_DROP_ALL` and `GIMG_META_KEEP_RAW_ONLY`
   drop it as they drop the rest.
 
+### Color on save
+
+A BMP says what its samples mean only in the header, so stating a color space
+means writing a longer one. The version is chosen by what there is to say -
+the inverse of the read above, and bounded the same way: only what
+`GIMG_Color_Info` holds is written, and a color this model cannot state
+produces no color header at all rather than the nearest thing it can say.
+
+| Raster's `GIMG_Color_Info` | Header | What it carries |
+|---|---|---|
+| An ICC profile is attached | `BITMAPV5HEADER` (124) | `bV5CSType` = `PROFILE_EMBEDDED`, the profile after the pixel data, `bV5ProfileData` and `bV5ProfileSize` locating it |
+| `transfer` is sRGB | `BITMAPV4HEADER` (108) | `bV4CSType` = `LCS_sRGB` |
+| Known primaries, or a gamma, or linear | `BITMAPV4HEADER` (108) | `LCS_CALIBRATED_RGB`, the endpoints as xyY chromaticities, the gamma in 16.16 on all three channels |
+| Any of the above with an intent other than perceptual | `BITMAPV5HEADER` (124) | as above plus `bV5Intent`; that field exists only in a V5 header |
+| None of the above | `BITMAPINFOHEADER` (40), or `BITMAPV3INFOHEADER` (56) when alpha needs masks | nothing about color |
+
+Either half of a calibrated header may be left at zero. A triple of zeros does
+not sum to one and so reads back as an unnamed gamut; a gamma of zero reads
+back as no transfer stated. Saying only the half that is known beats inventing
+the other.
+
+`LCS_sRGB` asserts the whole of sRGB, its transfer curve included, so it takes
+the *transfer* actually saying so rather than the primaries - the same rule
+the PNG writer applies to its `sRGB` chunk, and for the same reason:
+bmpsuite's `g/pal8v4.bmp` names sRGB's primaries with a gamma of 2.2 and is
+not an sRGB image.
+
+`bV4Gamma` is 16.16 fixed point and so states nothing above 65535; a gamma
+past that goes unsaid, for the same reason PNG's `gAMA` leaves one out.
+
+The profile goes **after** the pixel data. Putting it before would make
+`bfOffBits` depend on it, and every reader that ignores the profile still has
+to find the pixels. `bV5ProfileData` is measured from the start of the DIB
+header, which is where the reader here expects it.
+
+`GIMG_META_DROP_ALL` and `GIMG_META_KEEP_RAW_ONLY` state no color space, as
+they state no resolution.
+
+Until this was written the writer emitted only a 40- or 56-byte header, so a
+BMP loaded and saved as a BMP lost the color it arrived with - the one
+conversion of the three that did not keep it. A profile also reaches a PNG
+saved from the same document (\ref format_png "PNG"'s *Color on save*) and a
+JPEG (\ref format_jpeg "JPEG"'s *Color on save*). Pillow and GdkPixbuf both
+read the V4 and V5 files this writes.
+
 ## Compliance checklist
 
 Short reference for headers, depths, compression, and limitations. Update when
@@ -254,7 +299,7 @@ adding or restricting features.
 | **Resolution** | `biXPelsPerMeter` / `biYPelsPerMeter` read into and written from the document's common metadata | Both axes must be stated: one alone describes a pixel's shape rather than its size. A negative value reads as "not stated" |
 | **Document shape** | One item, decoded to `GIMG_PIXEL_RGBA8` | BMP holds a single image; an item index above 0 &rarr; `GIMG_ERR_UNSUPPORTED` |
 | **Limits** | `max_decoded_pixels` at load and at decode, `max_memory` on the pixel buffer and on an embedded ICC profile | Exceeded &rarr; `GIMG_ERR_LIMIT`, before the allocation rather than after |
-| **Save** | 32-bit `BI_BITFIELDS` with a V3 header when alpha is present; 1-, 4- or 8-bit indexed, optionally `BI_RLE8`; 24-bit `BI_RGB` otherwise. Bottom-up or top-down | A 12- or 16-bit GRAY or RGBA raster is narrowed to 8 bits first; any other raster &rarr; `GIMG_ERR_UNSUPPORTED`. A zero dimension &rarr; `GIMG_ERR_FORMAT`. A file larger than `UINT32_MAX` &rarr; `GIMG_ERR_LIMIT`, since `bfSize` cannot describe it. Top-down together with RLE &rarr; `GIMG_ERR_UNSUPPORTED`. No RLE4, no RLE24, no 2-bit output |
+| **Save** | 32-bit `BI_BITFIELDS` with a V3 header when alpha is present; 1-, 4- or 8-bit indexed, optionally `BI_RLE8`; 24-bit `BI_RGB` otherwise. Bottom-up or top-down. A V4 or V5 header when the raster states a color space | A 12- or 16-bit GRAY or RGBA raster is narrowed to 8 bits first; any other raster &rarr; `GIMG_ERR_UNSUPPORTED`. A zero dimension &rarr; `GIMG_ERR_FORMAT`. A file larger than `UINT32_MAX` &rarr; `GIMG_ERR_LIMIT`, since `bfSize` cannot describe it. Top-down together with RLE &rarr; `GIMG_ERR_UNSUPPORTED`. No RLE4, no RLE24, no 2-bit output |
 
 ## Where this codec differs from other decoders
 
@@ -406,14 +451,10 @@ Listed so the absences are visible rather than discovered.
 - **Writing 2 bits per pixel.** It is read but never written: a Windows CE
   addition the desktop API does not accept, and an image that fits in four
   colors fits in 1 or 4 bits as well.
-- **Writing a V4 or V5 header.** The writer emits a `BITMAPINFOHEADER`, or a
-  `BITMAPV3INFOHEADER` when alpha needs masks, so a color space read from a V4
-  or V5 file is not written back into one.
-
-  A profile read from a BMP does reach a PNG saved from the same document -
-  see \ref format_png "PNG"'s *Color on save* - and a JPEG saved from it, as
-  APP2 `ICC_PROFILE` segments; see \ref format_jpeg "JPEG"'s *Color on save*.
-  So a BMP-to-PNG or BMP-to-JPEG conversion keeps it.
+- **Writing a 64-bit or a `BI_JPEG`/`BI_PNG` file.** Each is read; neither is
+  written. The first is refused above, and wrapping a JPEG or a PNG inside a
+  BMP produces a file most readers refuse - the wrapper is worth reading and
+  not worth making.
 
 ---
 

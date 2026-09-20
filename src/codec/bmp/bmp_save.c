@@ -71,13 +71,6 @@ static void bmp_write_u16(unsigned char * p, uint16_t value) {
   p[1] = (unsigned char)((value >> 8) & 0xFFu);
 }
 
-/** Append a little-endian 32-bit value to a byte cursor. */
-static void bmp_write_u32(unsigned char * p, uint32_t value) {
-  p[0] = (unsigned char)(value & 0xFFu);
-  p[1] = (unsigned char)((value >> 8) & 0xFFu);
-  p[2] = (unsigned char)((value >> 16) & 0xFFu);
-  p[3] = (unsigned char)((value >> 24) & 0xFFu);
-}
 
 /** Write a whole buffer, treating a short write as an I/O error. */
 static GIMG_Result bmp_write_all(
@@ -421,6 +414,11 @@ typedef struct {
   bool top_down;            ///< True to write rows top to bottom.
   size_t stride;            ///< Bytes per row of uncompressed pixel data.
   size_t pixel_bytes;       ///< Bytes of pixel data, encoded or not.
+  /** Bytes @ref GIMG_BMP_V4_TAIL_AT onwards of a V4 or V5 header; used only
+   * when dib_size says one of those is being written. */
+  unsigned char color_tail[GIMG_BMP_V5HEADER_SIZE - GIMG_BMP_V4_TAIL_AT];
+  const void * profile;     ///< ICC profile to embed, or NULL.
+  size_t profile_bytes;     ///< Its length; 0 when there is none.
 } bmp_plan_t;
 
 GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
@@ -555,6 +553,26 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
 
+    // What the raster says about its color, and which header version carries
+    // it.  A V4 or V5 header is longer than the one the pixels alone would
+    // need, so this has to be settled before any offset is computed.  The
+    // two policies that drop the resolution below drop this too.
+    GIMG_Meta_Policy policy =
+        options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
+    if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_RAW_ONLY) {
+      uint32_t color_dib = gimg_bmp_color_to_header(
+          gimg_raster_color_info_const(raster), plan.color_tail);
+      if (color_dib > plan.dib_size) {
+        const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+        plan.dib_size = color_dib;
+        if (color_dib == GIMG_BMP_V5HEADER_SIZE && ci && ci->icc_bytes &&
+            ci->icc_size > 0) {
+          plan.profile = ci->icc_bytes;
+          plan.profile_bytes = ci->icc_size;
+        }
+      }
+    }
+
     result = gimg_bmp_row_stride(width, plan.bit_count, &plan.stride);
     if (result != GIMG_OK) {
       goto done;
@@ -637,9 +655,21 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         (size_t)plan.dib_size + ((size_t)plan.palette_entries * 4u);
     size_t file_size;
     if (!gcu_safe_add_size(data_offset, plan.pixel_bytes, &file_size) ||
+        !gcu_safe_add_size(file_size, plan.profile_bytes, &file_size) ||
         file_size > UINT32_MAX) {
       result = GIMG_ERR_LIMIT;
       goto done;
+    }
+    if (plan.profile_bytes) {
+      // bV5ProfileData is measured from the start of the DIB header, and the
+      // profile goes after the pixels: putting it before them would make
+      // bfOffBits depend on it, and every reader that ignores the profile
+      // still has to find the pixels.
+      gimg_bmp_write_u32(
+          plan.color_tail + GIMG_BMP_V5_PROFILE_AT,
+          (uint32_t)(file_size - plan.profile_bytes - GIMG_BMP_FILE_HEADER_SIZE));
+      gimg_bmp_write_u32(plan.color_tail + GIMG_BMP_V5_PROFILE_AT + 4,
+          (uint32_t)plan.profile_bytes);
     }
 
     // File header.
@@ -647,32 +677,30 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     memset(file_header, 0, sizeof(file_header));
     file_header[0] = gimg_bmp_signature[0];
     file_header[1] = gimg_bmp_signature[1];
-    bmp_write_u32(file_header + 2, (uint32_t)file_size);
-    bmp_write_u32(file_header + 10, (uint32_t)data_offset);
+    gimg_bmp_write_u32(file_header + 2, (uint32_t)file_size);
+    gimg_bmp_write_u32(file_header + 10, (uint32_t)data_offset);
     result = bmp_write_all(stream, file_header, sizeof(file_header));
     if (result != GIMG_OK) {
       goto done;
     }
 
     // DIB header.
-    unsigned char dib[GIMG_BMP_V3HEADER_SIZE];
+    unsigned char dib[GIMG_BMP_V5HEADER_SIZE];
     memset(dib, 0, sizeof(dib));
-    bmp_write_u32(dib + 0, plan.dib_size);
-    bmp_write_u32(dib + 4, width);
+    gimg_bmp_write_u32(dib + 0, plan.dib_size);
+    gimg_bmp_write_u32(dib + 4, width);
     // A negative height means the rows run top to bottom.
-    bmp_write_u32(dib + 8,
+    gimg_bmp_write_u32(dib + 8,
         plan.top_down ? (uint32_t)(-(int64_t)height) : height);
     bmp_write_u16(dib + 12, 1u); // Planes.
     bmp_write_u16(dib + 14, plan.bit_count);
-    bmp_write_u32(dib + 16, plan.compression);
-    bmp_write_u32(dib + 20, (uint32_t)plan.pixel_bytes);
+    gimg_bmp_write_u32(dib + 16, plan.compression);
+    gimg_bmp_write_u32(dib + 20, (uint32_t)plan.pixel_bytes);
 
     // biXPelsPerMeter / biYPelsPerMeter.  Zero means the file does not state
     // a resolution, which is both legal and what most writers emit; inventing
     // one would be a claim about the picture that nothing in it supports.
     uint32_t x_ppm = 0, y_ppm = 0;
-    GIMG_Meta_Policy policy =
-        options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
     if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_RAW_ONLY) {
       const GIMG_Meta_Common * meta_common = gimg_doc_meta_common(doc);
       if (meta_common) {
@@ -684,16 +712,20 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         }
       }
     }
-    bmp_write_u32(dib + 24, x_ppm);
-    bmp_write_u32(dib + 28, y_ppm);
-    bmp_write_u32(dib + 32, plan.palette_entries);
-    bmp_write_u32(dib + 36, plan.palette_entries);
+    gimg_bmp_write_u32(dib + 24, x_ppm);
+    gimg_bmp_write_u32(dib + 28, y_ppm);
+    gimg_bmp_write_u32(dib + 32, plan.palette_entries);
+    gimg_bmp_write_u32(dib + 36, plan.palette_entries);
 
     if (plan.bit_count == 32u) {
-      bmp_write_u32(dib + 40, 0x00FF0000u); // Red.
-      bmp_write_u32(dib + 44, 0x0000FF00u); // Green.
-      bmp_write_u32(dib + 48, 0x000000FFu); // Blue.
-      bmp_write_u32(dib + 52, 0xFF000000u); // Alpha.
+      gimg_bmp_write_u32(dib + 40, 0x00FF0000u); // Red.
+      gimg_bmp_write_u32(dib + 44, 0x0000FF00u); // Green.
+      gimg_bmp_write_u32(dib + 48, 0x000000FFu); // Blue.
+      gimg_bmp_write_u32(dib + 52, 0xFF000000u); // Alpha.
+    }
+    if (plan.dib_size >= GIMG_BMP_V4HEADER_SIZE) {
+      memcpy(dib + GIMG_BMP_V4_TAIL_AT, plan.color_tail,
+          plan.dib_size - GIMG_BMP_V4_TAIL_AT);
     }
     result = bmp_write_all(stream, dib, plan.dib_size);
     if (result != GIMG_OK) {
@@ -742,6 +774,14 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         if (result != GIMG_OK) {
           goto done;
         }
+      }
+    }
+
+    if (plan.profile_bytes) {
+      result =
+          bmp_write_all(stream, plan.profile, plan.profile_bytes);
+      if (result != GIMG_OK) {
+        goto done;
       }
     }
 

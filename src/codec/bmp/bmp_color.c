@@ -127,6 +127,21 @@ static GIMG_Primaries bmp_gamut_from_endpoints(const int32_t endpoints[9]) {
   return GIMG_PRIMARIES_UNKNOWN;
 }
 
+/** Map a rendering intent back onto bV5Intent. */
+static uint32_t bmp_intent_to_v5(GIMG_Rendering_Intent intent) {
+  switch (intent) {
+    case GIMG_INTENT_SATURATION:
+      return GIMG_BMP_LCS_GM_BUSINESS;
+    case GIMG_INTENT_RELATIVE_COLORIMETRIC:
+      return GIMG_BMP_LCS_GM_GRAPHICS;
+    case GIMG_INTENT_ABSOLUTE_COLORIMETRIC:
+      return GIMG_BMP_LCS_GM_ABS_COLORIMETRIC;
+    case GIMG_INTENT_PERCEPTUAL:
+    default:
+      return GIMG_BMP_LCS_GM_IMAGES;
+  }
+}
+
 /** Map bV5Intent onto the rendering intents this model names. */
 static GIMG_Rendering_Intent bmp_intent_from_v5(uint32_t intent) {
   switch (intent) {
@@ -252,4 +267,103 @@ GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
   *out_profile = profile;
   *out_size = size;
   return GIMG_OK;
+}
+
+/**
+ * Write the nine endpoint values a gamut spells, as the header stores them.
+ *
+ * The fields are declared CIEXYZ and written by every writer in reach as xyY
+ * chromaticities normalized so each triple sums to one, which is what the
+ * reader above expects, so that is what goes out: x, y, and one minus the two
+ * of them.
+ */
+static void bmp_endpoints_from_gamut(
+    const bmp_gamut_t * gamut, unsigned char * out) {
+  for (unsigned int channel = 0; channel < 3; channel++) {
+    double x = gamut->xy[channel * 2];
+    double y = gamut->xy[(channel * 2) + 1];
+    double triple[3] = {x, y, 1.0 - x - y};
+    for (unsigned int i = 0; i < 3; i++) {
+      int32_t fixed =
+          (int32_t)((triple[i] * (double)GIMG_BMP_FXPT2DOT30_ONE) + 0.5);
+      gimg_bmp_write_u32(
+          out + (((channel * 3) + i) * 4), (uint32_t)fixed);
+    }
+  }
+}
+
+uint32_t gimg_bmp_color_to_header(
+    const GIMG_Color_Info * info, unsigned char * tail) {
+  memset(tail, 0, GIMG_BMP_V5HEADER_SIZE - GIMG_BMP_V4_TAIL_AT);
+
+  if (!info) {
+    return 0;
+  }
+
+  // An embedded profile is the most specific thing a BMP can say, and only a
+  // V5 header has the two fields that locate one.  The caller fills them in,
+  // because where the profile lands depends on how much pixel data precedes
+  // it.
+  if (info->icc_bytes && info->icc_size > 0) {
+    gimg_bmp_write_u32(tail + GIMG_BMP_V4_CS_TYPE_AT, GIMG_BMP_PROFILE_EMBEDDED);
+    gimg_bmp_write_u32(
+        tail + GIMG_BMP_V5_INTENT_AT, bmp_intent_to_v5(info->intent));
+    return GIMG_BMP_V5HEADER_SIZE;
+  }
+
+  bool said_something = false;
+  if (info->transfer == GIMG_TRANSFER_SRGB) {
+    // LCS_sRGB asserts the whole of sRGB, its transfer curve included, so it
+    // takes the transfer actually saying so - the same rule the PNG writer
+    // applies to its sRGB chunk, and for the same reason: a file naming
+    // sRGB's primaries with some other curve is not an sRGB image.
+    gimg_bmp_write_u32(tail + GIMG_BMP_V4_CS_TYPE_AT, GIMG_BMP_LCS_sRGB);
+    said_something = true;
+  }
+  else {
+    // LCS_CALIBRATED_RGB, which means the endpoints and gammas below describe
+    // the space.  Either half may be left at zero: a triple of zeros does not
+    // sum to one and so reads back as an unnamed gamut, and a gamma of zero
+    // reads back as no transfer stated.  Saying only the half that is known
+    // beats inventing the other.
+    for (size_t i = 0; i < GIMG_ARRAY_SIZE(bmp_known_gamuts); i++) {
+      if (bmp_known_gamuts[i].primaries == info->primaries) {
+        bmp_endpoints_from_gamut(
+            &bmp_known_gamuts[i], tail + GIMG_BMP_V4_ENDPOINTS_AT);
+        said_something = true;
+        break;
+      }
+    }
+    double gamma = 0.0;
+    if (info->transfer == GIMG_TRANSFER_LINEAR) {
+      gamma = 1.0;
+    }
+    else if (info->transfer == GIMG_TRANSFER_GAMMA && info->gamma_value > 0.0) {
+      gamma = info->gamma_value;
+    }
+    // The field is 16.16 fixed point, so it holds a gamma below 65536 and
+    // nothing above; one it cannot hold goes unsaid, as gAMA's does in the
+    // PNG writer.
+    double scaled = (gamma * 65536.0) + 0.5;
+    if (scaled >= 1.0 && scaled <= 4294967295.0) {
+      uint32_t fixed = (uint32_t)scaled;
+      gimg_bmp_write_u32(tail + GIMG_BMP_V4_GAMMA_AT, fixed);
+      gimg_bmp_write_u32(tail + GIMG_BMP_V4_GAMMA_AT + 4, fixed);
+      gimg_bmp_write_u32(tail + GIMG_BMP_V4_GAMMA_AT + 8, fixed);
+      said_something = true;
+    }
+  }
+
+  if (!said_something) {
+    return 0;
+  }
+  if (info->intent != GIMG_INTENT_PERCEPTUAL) {
+    // Only a V5 header has bV5Intent, so an intent other than the one both
+    // this model and ICC treat as the default is what makes the difference
+    // between the two header versions here.
+    gimg_bmp_write_u32(
+        tail + GIMG_BMP_V5_INTENT_AT, bmp_intent_to_v5(info->intent));
+    return GIMG_BMP_V5HEADER_SIZE;
+  }
+  return GIMG_BMP_V4HEADER_SIZE;
 }

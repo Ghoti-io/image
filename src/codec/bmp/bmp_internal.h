@@ -40,6 +40,20 @@ extern const unsigned char gimg_bmp_signature[GIMG_BMP_SIGNATURE_LEN];
 #define GIMG_BMP_V4HEADER_SIZE 108   ///< BITMAPV4HEADER.
 #define GIMG_BMP_V5HEADER_SIZE 124   ///< BITMAPV5HEADER.
 
+/** Where a V4 header's color fields begin: after the four channel masks,
+ * which a V4 header carries whether or not the compression uses them. */
+#define GIMG_BMP_V4_TAIL_AT 56
+
+/** @name Color fields, as offsets into that tail rather than into the header,
+ * because the writer builds the tail on its own and drops it into place.
+ * @{ */
+#define GIMG_BMP_V4_CS_TYPE_AT 0    ///< bV4CSType (absolute 56).
+#define GIMG_BMP_V4_ENDPOINTS_AT 4  ///< bV4Endpoints, 9 x FXPT2DOT30 (60).
+#define GIMG_BMP_V4_GAMMA_AT 40     ///< bV4GammaRed, then green, blue (96).
+#define GIMG_BMP_V5_INTENT_AT 52    ///< bV5Intent (108).
+#define GIMG_BMP_V5_PROFILE_AT 56   ///< bV5ProfileData, then size (112).
+/** @} */
+
 /** Smallest and largest BITMAPCOREHEADER2 (OS/2 2.x); any multiple of 4
  * between them is legal, and a field the header stops short of reads as
  * zero. */
@@ -189,6 +203,41 @@ typedef struct {
  */
 void gimg_bmp_color_from_header(
     const gimg_bmp_header_t * header, GIMG_Color_Info * out_info);
+
+/**
+ * @brief Write a little-endian 32-bit field.
+ *
+ * Shared because both the header writer and the color writer build headers a
+ * field at a time.
+ */
+static inline void gimg_bmp_write_u32(unsigned char * p, uint32_t value) {
+  p[0] = (unsigned char)(value & 0xFFu);
+  p[1] = (unsigned char)((value >> 8) & 0xFFu);
+  p[2] = (unsigned char)((value >> 16) & 0xFFu);
+  p[3] = (unsigned char)((value >> 24) & 0xFFu);
+}
+
+/**
+ * @brief Say what a V4 or V5 header would state about a raster's color, and
+ *   build the part of the header that states it.
+ *
+ * The inverse of gimg_bmp_color_from_header, and bounded the same way: only
+ * what GIMG_Color_Info holds is written, and a color this model cannot state
+ * produces no header at all rather than the nearest thing it can say.
+ *
+ * @param info Color to state; NULL or an empty one says nothing.
+ * @param tail Receives bytes @ref GIMG_BMP_V4_TAIL_AT onwards of the header -
+ *   @ref GIMG_BMP_V5HEADER_SIZE minus that many bytes - zeroed first.  When
+ *   the return value is @ref GIMG_BMP_V5HEADER_SIZE and an ICC profile is to
+ *   be embedded, bV5ProfileData and bV5ProfileSize at
+ *   @ref GIMG_BMP_V5_PROFILE_AT are left at zero for the caller to fill:
+ *   where the profile lands depends on how much pixel data precedes it.
+ * @return The DIB header size that carries what was written -
+ *   @ref GIMG_BMP_V4HEADER_SIZE or @ref GIMG_BMP_V5HEADER_SIZE - or 0 when
+ *   there was nothing to say and the smallest header will do.
+ */
+uint32_t gimg_bmp_color_to_header(
+    const GIMG_Color_Info * info, unsigned char * tail);
 
 /**
  * @brief Read an embedded ICC profile out of a PROFILE_EMBEDDED V5 file.
