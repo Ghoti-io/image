@@ -3186,19 +3186,24 @@ GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return GIMG_ERR_INTERNAL;
   }
 
-  // Synthetic document support: use raster if present; else decode only when
-  // doc was loaded by this codec.
+  // Prefer a raster already attached to the item - the load, modify,
+  // set_raster, save case - and otherwise decode one and own it for the
+  // duration of the save.
+  //
+  // This used to decode only when this codec had loaded the document, which
+  // made every conversion into a JPEG fail: a PNG or BMP loaded and saved as
+  // a JPEG has no raster on its item and was refused with
+  // GIMG_ERR_UNSUPPORTED unless the caller decoded by hand first.  Nothing
+  // needed the guard - gimg_item_decode dispatches to whichever codec loaded
+  // the document - and the PNG and BMP writers never had it.
   GIMG_Raster * raster = gimg_item_raster(item);
   int raster_owned = 0;
-  if (!raster && doc->loaded_by_codec == (struct GIMG_Codec *)codec) {
+  if (!raster) {
     GIMG_Result r = gimg_item_decode(item, NULL, &raster);
     if (r != GIMG_OK || !raster) {
       return (r != GIMG_OK) ? r : GIMG_ERR_UNSUPPORTED;
     }
     raster_owned = 1;
-  }
-  if (!raster) {
-    return GIMG_ERR_UNSUPPORTED; // No raster and not loaded by us.
   }
 
   // T.81 Table B.2: a DCT-based frame carries 8- or 12-bit samples.  Precision
@@ -3733,6 +3738,12 @@ have_scan:
           GIMG_Raster * thumb_raster =
               thumb_item ? gimg_item_raster(thumb_item) : NULL;
           bool thumb_raster_owned = false;
+          // The second item is a thumbnail only in a document this codec
+          // loaded or one built by hand for that purpose.  In an APNG it is
+          // frame two, and encoding an animation frame into an EXIF thumbnail
+          // would be a claim the source never made - so it is decoded only
+          // when this codec loaded the document, unlike the image raster
+          // above.
           if (!thumb_raster &&
               doc->loaded_by_codec == (struct GIMG_Codec *)codec &&
               thumb_item) {

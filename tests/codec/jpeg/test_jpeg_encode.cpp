@@ -6848,3 +6848,60 @@ TEST(JpegEncode, ARasterWithNoProfileGetsNoApp2) {
   ASSERT_EQ(save_raster_as_jpeg(color, GIMG_META_PRESERVE_ALL, jpeg), GIMG_OK);
   EXPECT_TRUE(app2_icc_segments(jpeg).empty());
 }
+
+TEST(JpegEncode, ADocumentAnotherCodecLoadedCanBeSavedAsJpeg) {
+  // Converting to JPEG is the ordinary case, and it does not require the
+  // caller to decode by hand first: gimg_item_decode dispatches to whichever
+  // codec loaded the document, so the pixels are reachable whoever that was.
+  // The PNG and BMP writers both decode unconditionally here; this one used to
+  // refuse unless it had loaded the document itself, which made every
+  // conversion into a JPEG fail with GIMG_ERR_UNSUPPORTED.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.transfer = GIMG_TRANSFER_SRGB;
+
+  // Round-trip through PNG so the document really is one another codec loaded,
+  // with no raster attached to its item.
+  GIMG_Doc * src = nullptr;
+  ASSERT_EQ(gimg_doc_create(&src), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                8, 8, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  memset(gimg_raster_pixels(raster), 96, 8u * 8u * 4u);
+  ASSERT_EQ(gimg_raster_set_color_info(raster, &color), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(src, 0), raster);
+
+  GIMG_Stream * png_out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&png_out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(src, png_out, "png", &opts, &report), GIMG_OK);
+  const void * png_bytes = nullptr;
+  size_t png_size = 0;
+  gimg_stream_output_buffer(png_out, &png_bytes, &png_size);
+  std::vector<uint8_t> png(static_cast<const uint8_t *>(png_bytes),
+      static_cast<const uint8_t *>(png_bytes) + png_size);
+  gimg_stream_destroy(png_out);
+  gimg_doc_destroy(src);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &in), GIMG_OK);
+  GIMG_Doc * loaded = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &loaded), GIMG_OK);
+  ASSERT_EQ(gimg_item_raster(gimg_doc_item(loaded, 0)), nullptr)
+      << "the item must have no raster, or this tests nothing";
+
+  GIMG_Stream * jpeg_out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&jpeg_out), GIMG_OK);
+  EXPECT_EQ(gimg_doc_save(loaded, jpeg_out, "jpeg", &opts, &report), GIMG_OK);
+  const void * jpeg_bytes = nullptr;
+  size_t jpeg_size = 0;
+  gimg_stream_output_buffer(jpeg_out, &jpeg_bytes, &jpeg_size);
+  EXPECT_GT(jpeg_size, 0u);
+
+  gimg_stream_destroy(jpeg_out);
+  gimg_doc_destroy(loaded);
+  gimg_stream_destroy(in);
+}
