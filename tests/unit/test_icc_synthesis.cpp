@@ -49,7 +49,8 @@ uint32_t be32(const uint8_t * p) {
 
 /** A raster whose color model is stated but whose profile is absent. */
 GIMG_Raster * stating(GIMG_Primaries primaries, GIMG_Transfer transfer,
-    double gamma, const GIMG_Pixel_Format * format = &GIMG_PIXEL_RGBA8) {
+    double gamma, const GIMG_Pixel_Format * format = &GIMG_PIXEL_RGBA8,
+    GIMG_Rendering_Intent intent = GIMG_INTENT_PERCEPTUAL) {
   GIMG_Raster * raster = nullptr;
   if (gimg_raster_create(
           16, 16, format, GIMG_RASTER_OWNED, nullptr, 0, &raster) != GIMG_OK ||
@@ -63,6 +64,7 @@ GIMG_Raster * stating(GIMG_Primaries primaries, GIMG_Transfer transfer,
   ci.primaries = primaries;
   ci.transfer = transfer;
   ci.gamma_value = gamma;
+  ci.intent = intent;
   if (gimg_raster_set_color_info(raster, &ci) != GIMG_OK) {
     gimg_raster_destroy(raster);
     return nullptr;
@@ -366,6 +368,29 @@ TEST(JpegSynthesizedIcc, AGrayFrameGetsNoRgbProfile) {
       "jpeg", jpeg));
   EXPECT_TRUE(profile_in(jpeg).empty())
       << "an RGB matrix profile does not describe a one-component frame";
+}
+
+/**
+ * The rendering intent the raster states must reach the profile header.
+ *
+ * It is the one field of the color model that is copied straight through
+ * rather than turned into a tag, which makes it the easiest to leave at its
+ * default without anyone noticing.
+ */
+TEST(JpegSynthesizedIcc, TheStatedRenderingIntentReachesTheHeader) {
+  const GIMG_Rendering_Intent intents[] = {GIMG_INTENT_PERCEPTUAL,
+      GIMG_INTENT_RELATIVE_COLORIMETRIC, GIMG_INTENT_SATURATION,
+      GIMG_INTENT_ABSOLUTE_COLORIMETRIC};
+  for (auto intent : intents) {
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(save_as(stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 2.2,
+                            &GIMG_PIXEL_RGBA8, intent),
+        "jpeg", jpeg));
+    std::vector<uint8_t> profile = profile_in(jpeg);
+    ASSERT_GE(profile.size(), 128u);
+    EXPECT_EQ(be32(profile.data() + 64), (uint32_t)intent)
+        << "ICC.1:2001-04 section 6.1.11 puts the intent at byte 64";
+  }
 }
 
 /**

@@ -45,6 +45,13 @@
  * property that makes a set of matrix colorants well formed.  Checking the
  * digits against a copy of themselves would assert nothing.
  *
+ * GIMG_Color_Info.white_point is not read.  An ICC matrix profile states its
+ * colorants already adapted to the PCS illuminant, so the white point it
+ * carries is D50 whatever the gamut's native white was - here D65 for both,
+ * which is what the tabulated colorants are adapted from.  A gamut with some
+ * other native white would need its own adapted colorants in the table above,
+ * not a different value in the wtpt tag.
+ *
  * Both halves of the model must be known.  Primaries without a transfer
  * function, or the reverse, cannot become a matrix/TRC profile without
  * inventing the missing half, and inventing it is precisely what this file is
@@ -275,7 +282,16 @@ GIMG_Result gimg_icc_synthesize(const GIMG_Allocator * alloc,
   gimg_icc_put_sig(buf + 16, "RGB ");
   gimg_icc_put_sig(buf + 20, "XYZ "); // The PCS a matrix/TRC profile targets.
   gimg_icc_put_sig(buf + 36, "acsp");
-  gimg_icc_put_u32(buf + 64, (uint32_t)info->intent);
+  // ICC names four intents and nothing else.  This does not trust the field
+  // to hold one of them: what goes into a file is the writer's responsibility,
+  // and a number no reader can interpret is worse than the default.  The cast
+  // makes a negative value fail the same bound as a too-large one.  Perceptual
+  // is the enum's zero and the sensible reading of "unstated".
+  uint32_t intent = (uint32_t)info->intent;
+  if (intent >= (uint32_t)GIMG_INTENT_COUNT) {
+    intent = (uint32_t)GIMG_INTENT_PERCEPTUAL;
+  }
+  gimg_icc_put_u32(buf + 64, intent);
   gimg_icc_put_u32(buf + 68, (uint32_t)GIMG_ICC_D50_X);
   gimg_icc_put_u32(buf + 72, (uint32_t)GIMG_ICC_D50_Y);
   gimg_icc_put_u32(buf + 76, (uint32_t)GIMG_ICC_D50_Z);
