@@ -99,6 +99,37 @@ Used by `gimg_item_decode()`.
 
 The compress library’s DEFLATE decoder may use a separate limit (e.g. `limits.max_output_bytes`) for decompression; the image library passes limits where applicable.
 
+### The default is no limits, and that is a decision the caller makes
+
+`gimg_limits_default()` sets every field to zero, and a `NULL` `limits` pointer
+means the same thing. **An image is a header that names a size, so a file of a
+hundred bytes can ask for as much memory as its fields allow.** Measured on
+this library:
+
+| File | Bytes | Asks for |
+|---|---|---|
+| BMP naming 46340 &times; 46340 at 32 bpp | 118 | ~8.6 GB |
+| JPEG with SOF0 naming 65535 &times; 65535, 3 components | 78 | ~17 GB |
+| PNG with IHDR naming 65535 &times; 65535 RGBA8 | 69 | ~17 GB |
+
+None of these crashes: each allocation is checked and a failure comes back as
+`GIMG_ERR_OOM`, and a header naming more pixel data than the file actually
+holds is refused as `GIMG_ERR_CORRUPT` whether or not a limit is set. What an
+unlimited default costs is not safety from a malformed file but **a bound on
+what a well-formed hostile one can make the process try to allocate**.
+
+This matches libpng and libjpeg, which have no built-in cap either, and it is
+the right default for a library that does not know whether it is decoding a
+thumbnail or a satellite image. It is the wrong setting for a service reading
+files it did not produce. **Set `max_decoded_pixels` and `max_memory` to
+whatever your largest legitimate input needs**, and the shape above becomes
+`GIMG_ERR_LIMIT` before anything is allocated.
+
+Limits set on the **load** are remembered and applied to a later **decode**
+that carries none of its own, so setting them once at load is enough - and the
+save paths, which re-decode their source item and have no options to pass on,
+are covered by the same fallback.
+
 ## Strictness (GIMG_Strictness)
 
 **GIMG_Strictness** (see `ghoti.io/image/core.h`) controls how recoverable format issues are handled:

@@ -1044,3 +1044,67 @@ TEST(BmpToPng, AGammaPngCannotStateIsNotWritten) {
 
   gimg_stream_destroy(out);
 }
+
+namespace {
+
+/**
+ * A BMP header describing an image of the given size, with no pixel data
+ * behind it.
+ *
+ * This is the shape of a decompression bomb: a hundred bytes that name an
+ * image of any size the fields allow. What stops one is GIMG_Limits, and
+ * nothing here had ever asserted that it does.
+ */
+std::vector<uint8_t> header_naming(int32_t width, int32_t height,
+    uint16_t bit_count, size_t trailing_bytes = 64) {
+  std::vector<uint8_t> out(14u + 40u + trailing_bytes, 0);
+  auto put32 = [&out](size_t at, uint32_t v) {
+    out[at] = (uint8_t)(v & 0xFFu);
+    out[at + 1] = (uint8_t)((v >> 8) & 0xFFu);
+    out[at + 2] = (uint8_t)((v >> 16) & 0xFFu);
+    out[at + 3] = (uint8_t)((v >> 24) & 0xFFu);
+  };
+  auto put16 = [&out](size_t at, uint16_t v) {
+    out[at] = (uint8_t)(v & 0xFFu);
+    out[at + 1] = (uint8_t)((v >> 8) & 0xFFu);
+  };
+  out[0] = 'B';
+  out[1] = 'M';
+  put32(2, (uint32_t)out.size());
+  put32(10, 14u + 40u);
+  put32(14, 40u);          // biSize
+  put32(18, (uint32_t)width);
+  put32(22, (uint32_t)height);
+  put16(26, 1u);           // biPlanes
+  put16(28, bit_count);
+  put32(30, 0u);           // BI_RGB
+  return out;
+}
+
+} // namespace
+
+TEST(BmpDecode, APixelCountOverTheLimitIsRefusedBeforeItIsAllocated) {
+  // 46340 squared is just under 2^31 pixels, so the header is legal and the
+  // raster would be about eight gigabytes.  The file naming it is 118 bytes.
+  std::vector<uint8_t> bomb = header_naming(46340, 46340, 32u);
+
+  GIMG_Limits limits;
+  gimg_limits_default(&limits);
+  limits.max_decoded_pixels = 1024u * 1024u;
+  GIMG_Load_Options options = {};
+  options.limits = &limits;
+
+  Loaded img;
+  EXPECT_EQ(img.load_bytes(bomb, &options), GIMG_ERR_LIMIT);
+}
+
+TEST(BmpDecode, NoLimitsMeansTheHeaderIsStillCheckedAgainstTheFile) {
+  // With no limits at all, a header naming more than the file holds must
+  // still be refused - on the bytes actually present, not on a cap.  This is
+  // what stops the unlimited default from being a way to read past the end.
+  std::vector<uint8_t> bomb = header_naming(46340, 46340, 32u);
+  Loaded img;
+  GIMG_Result r = img.load_bytes(bomb, nullptr);
+  EXPECT_NE(r, GIMG_OK)
+      << "a 118-byte file cannot hold eight gigabytes of pixels";
+}
