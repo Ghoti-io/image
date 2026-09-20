@@ -861,6 +861,20 @@ static uint8_t gimg_png_palette_bit_depth(size_t entries) {
   return 8u;
 }
 
+/**
+ * True for the chunks that say what the samples mean.
+ *
+ * A file that brought any of these has already said something about its color,
+ * and what it said wins over what the raster's GIMG_Color_Info was reduced to
+ * on the way in - the chunk is what was actually there.  cICP is included even
+ * though this writer never generates one, because a file that carried one has
+ * said the most specific thing of all.
+ */
+static bool gimg_png_chunk_is_color(gimg_png_chunk_type_t t) {
+  return t == GIMG_PNG_iCCP || t == GIMG_PNG_sRGB || t == GIMG_PNG_gAMA ||
+      t == GIMG_PNG_cHRM || t == GIMG_PNG_cICP;
+}
+
 static bool gimg_png_chunk_is_known_semantic(gimg_png_chunk_type_t t) {
   return t == GIMG_PNG_iCCP || t == GIMG_PNG_sRGB || t == GIMG_PNG_gAMA ||
       t == GIMG_PNG_cHRM || t == GIMG_PNG_eXIf || t == GIMG_PNG_tEXt ||
@@ -1487,6 +1501,110 @@ static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
   return GIMG_OK;
 }
 
+
+/**
+ * Write the color chunk that the raster's GIMG_Color_Info calls for.
+ *
+ * At most one is written: PNG 11.3.3.3 does not want sRGB and iCCP in the same
+ * file, and gAMA is redundant beside either.  sRGB comes first because it is
+ * the smaller and more widely acted-upon statement; an embedded profile is
+ * written only when there is nothing more specific to say than the profile
+ * itself.  A document carrying both therefore keeps the sRGB flag.
+ *
+ * This exists because it is wanted twice: once for GIMG_META_KEEP_COMMON_ONLY,
+ * which writes nothing else, and once as a fallback for the ordinary policies,
+ * where a document that arrived as something other than a PNG has no ancillary
+ * chunks to preserve and would otherwise lose its color entirely.
+ *
+ * @param stream Destination.
+ * @param info The raster's color info.
+ * @param alloc Allocator for the iCCP compression buffer.
+ * @param report Byte count is added to.
+ * @return GIMG_OK, or a write error.  A profile that cannot be compressed is
+ *   skipped rather than fatal: the picture is not wrong because its color
+ *   annotation could not be written.
+ */
+static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
+    const GIMG_Color_Info * info, const GIMG_Allocator * alloc,
+    GIMG_Save_Report * report) {
+  GIMG_Result r = GIMG_OK;
+  // The sRGB chunk asserts the whole of sRGB, its transfer curve included, so
+  // it takes the transfer actually saying so.  Matching on the primaries alone
+  // was too loose: a BMP with a calibrated V4 header naming sRGB's primaries
+  // and a gamma of 2.2 is not an sRGB image, and writing sRGB for it threw the
+  // gamma away and claimed a curve the file never stated.
+  if (info->transfer == GIMG_TRANSFER_SRGB) {
+    unsigned char srgb_byte =
+        (unsigned char)(info->intent & 3u);
+    r = gimg_png_write_chunk(stream, GIMG_PNG_sRGB, &srgb_byte, 1);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    report->bytes_written += 8 + 1 + 4;
+  }
+  else if ((info->transfer == GIMG_TRANSFER_GAMMA &&
+               info->gamma_value > 0.0) ||
+      info->transfer == GIMG_TRANSFER_LINEAR) {
+    // gAMA states the transfer and nothing about the primaries, which for an
+    // image whose primaries are sRGB's costs nothing: those are what a PNG
+    // reader assumes when no chunk says otherwise.  Linear is a gamma of 1.
+    double gamma =
+        info->transfer == GIMG_TRANSFER_LINEAR ? 1.0 : info->gamma_value;
+    uint32_t gama_val = (uint32_t)(gamma * 100000.0 + 0.5);
+    if (gama_val > 0) {
+      unsigned char gama[4];
+      gama[0] = (unsigned char)(gama_val >> 24);
+      gama[1] = (unsigned char)(gama_val >> 16);
+      gama[2] = (unsigned char)(gama_val >> 8);
+      gama[3] = (unsigned char)(gama_val & 0xFFu);
+      r = gimg_png_write_chunk(stream, GIMG_PNG_gAMA, gama, 4);
+      if (r != GIMG_OK) {
+        return r;
+      }
+      report->bytes_written += 8 + 4 + 4;
+    }
+  }
+  else if (info->icc_bytes &&
+      info->icc_size > 0) {
+    // iCCP is "ICC Profile\0", a compression-method byte, then the profile
+    // as a zlib stream (PNG 11.3.3.3).  Encoded straight into place after
+    // that 13-byte prefix, so the container never has to be assembled by
+    // hand.
+    size_t icc_prefix = 13;  // "ICC Profile" + NUL + compression method
+    size_t icc_cap = info->icc_size +
+        (info->icc_size / 2) + 64 + GIMG_PNG_ZLIB_MIN_BYTES;
+    unsigned char * iccp_buf = (unsigned char *)gimg_malloc(
+        alloc, icc_prefix + icc_cap);
+    if (iccp_buf) {
+      memcpy(iccp_buf, "ICC Profile", 11);
+      iccp_buf[11] = 0;
+      iccp_buf[12] = 0;  // compression method: zlib, the only one PNG has
+      gcomp_options_t * gopts_icc = NULL;
+      gcomp_status_t gs = gcomp_options_create(&gopts_icc);
+      if (gs == GCOMP_OK && gopts_icc) {
+        size_t icc_len = 0;
+        gs = gcomp_encode_buffer(gcomp_registry_default(), "zlib", gopts_icc,
+            (const unsigned char *)info->icc_bytes,
+            info->icc_size, iccp_buf + icc_prefix, icc_cap,
+            &icc_len);
+        gcomp_options_destroy(gopts_icc);
+        if (gs == GCOMP_OK && icc_len > 0) {
+          r = gimg_png_write_chunk(
+              stream, GIMG_PNG_iCCP, iccp_buf, icc_prefix + icc_len);
+          if (r == GIMG_OK) {
+            report->bytes_written += 8 + (icc_prefix + icc_len) + 4;
+          }
+        }
+      }
+      gimg_free(alloc, iccp_buf);
+    }
+    if (r != GIMG_OK) {
+      return r;
+    }
+  }
+  return r;
+}
+
 /**
  * Encode one raster to zlib-wrapped DEFLATE (same format as IDAT/fdAT).
  * On success, *out_zlib is allocated and must be freed by caller.
@@ -1861,73 +1979,11 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
     // Emit only color-related metadata from raster's color info.
-    if (color_info_for_save.transfer == GIMG_TRANSFER_SRGB ||
-        color_info_for_save.primaries == GIMG_PRIMARIES_SRGB) {
-      unsigned char srgb_byte =
-          (unsigned char)(color_info_for_save.intent & 3u);
-      r = gimg_png_write_chunk(stream, GIMG_PNG_sRGB, &srgb_byte, 1);
-      if (r != GIMG_OK) {
-        gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
-        return r;
-      }
-      report->bytes_written += 8 + 1 + 4;
-    }
-    else if (color_info_for_save.transfer == GIMG_TRANSFER_GAMMA &&
-        color_info_for_save.gamma_value > 0.0) {
-      uint32_t gama_val =
-          (uint32_t)(color_info_for_save.gamma_value * 100000.0 + 0.5);
-      if (gama_val > 0) {
-        unsigned char gama[4];
-        gama[0] = (unsigned char)(gama_val >> 24);
-        gama[1] = (unsigned char)(gama_val >> 16);
-        gama[2] = (unsigned char)(gama_val >> 8);
-        gama[3] = (unsigned char)(gama_val & 0xFFu);
-        r = gimg_png_write_chunk(stream, GIMG_PNG_gAMA, gama, 4);
-        if (r != GIMG_OK) {
-          gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
-          return r;
-        }
-        report->bytes_written += 8 + 4 + 4;
-      }
-    }
-    else if (color_info_for_save.icc_bytes &&
-        color_info_for_save.icc_size > 0) {
-      // iCCP is "ICC Profile\0", a compression-method byte, then the profile
-      // as a zlib stream (PNG 11.3.3.3).  Encoded straight into place after
-      // that 13-byte prefix, so the container never has to be assembled by
-      // hand.
-      size_t icc_prefix = 13;  // "ICC Profile" + NUL + compression method
-      size_t icc_cap = color_info_for_save.icc_size +
-          (color_info_for_save.icc_size / 2) + 64 + GIMG_PNG_ZLIB_MIN_BYTES;
-      unsigned char * iccp_buf = (unsigned char *)gimg_malloc(
-          gimg_alloc_or_default(codec->allocator), icc_prefix + icc_cap);
-      if (iccp_buf) {
-        memcpy(iccp_buf, "ICC Profile", 11);
-        iccp_buf[11] = 0;
-        iccp_buf[12] = 0;  // compression method: zlib, the only one PNG has
-        gcomp_options_t * gopts_icc = NULL;
-        gcomp_status_t gs = gcomp_options_create(&gopts_icc);
-        if (gs == GCOMP_OK && gopts_icc) {
-          size_t icc_len = 0;
-          gs = gcomp_encode_buffer(gcomp_registry_default(), "zlib", gopts_icc,
-              (const unsigned char *)color_info_for_save.icc_bytes,
-              color_info_for_save.icc_size, iccp_buf + icc_prefix, icc_cap,
-              &icc_len);
-          gcomp_options_destroy(gopts_icc);
-          if (gs == GCOMP_OK && icc_len > 0) {
-            r = gimg_png_write_chunk(
-                stream, GIMG_PNG_iCCP, iccp_buf, icc_prefix + icc_len);
-            if (r == GIMG_OK) {
-              report->bytes_written += 8 + (icc_prefix + icc_len) + 4;
-            }
-          }
-        }
-        gimg_free(gimg_alloc_or_default(codec->allocator), iccp_buf);
-      }
-      if (r != GIMG_OK) {
-        gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
-        return r;
-      }
+    r = gimg_png_write_color_from_info(stream, &color_info_for_save,
+        gimg_alloc_or_default(codec->allocator), report);
+    if (r != GIMG_OK) {
+      gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+      return r;
     }
   }
   else if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_RAW_ONLY) {
@@ -1935,12 +1991,16 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Meta_Common * meta_common = gimg_doc_meta_common(doc);
     bool have_description_or_comment_from_ancillary = false;
     bool have_phys_from_ancillary = false;
+    bool have_color_from_ancillary = false;
     // PRESERVE_ALL, STRIP_GPS, or NORMALIZE_EXIF: emit ancillary from state.
     if (state && state->ancillary) {
       for (size_t i = 0; i < state->ancillary_count; i++) {
         gimg_png_chunk_type_t t = state->ancillary[i].type;
         if (t == GIMG_PNG_PLTE || t == GIMG_PNG_tRNS) {
           continue;
+        }
+        if (gimg_png_chunk_is_color(t)) {
+          have_color_from_ancillary = true;
         }
         if (t == GIMG_PNG_IHDR || t == GIMG_PNG_IDAT || t == GIMG_PNG_IEND) {
           continue;
@@ -2027,6 +2087,24 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         report->bytes_written += 8 + chunk_size + 4;
       }
     }
+    // A color the raster carries but the file did not.  The chunk the file
+    // came with wins, the same way the resolution below does; this is only a
+    // way of not losing a color space that arrived from somewhere else.
+    //
+    // Without it a document that did not arrive as a PNG had no ancillary
+    // chunks to preserve and so lost its color entirely: a BMP with a V5
+    // embedded ICC profile, saved as a PNG, came out untagged, and the profile
+    // was read only to be dropped.  The machinery to write one was already
+    // here and reachable from GIMG_META_KEEP_COMMON_ONLY alone.
+    if (!have_color_from_ancillary) {
+      r = gimg_png_write_color_from_info(
+          stream, &color_info_for_save, alloc, report);
+      if (r != GIMG_OK) {
+        gimg_free(alloc, zlib_buf);
+        return r;
+      }
+    }
+
     // A resolution the document carries but the file did not: pHYs
     // (11.3.4.3). The chunk the file came with wins, the same way the
     // description does - it is what was actually there, and this is only a way

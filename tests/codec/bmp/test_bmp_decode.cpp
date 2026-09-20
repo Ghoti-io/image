@@ -926,3 +926,87 @@ TEST(BmpDecode, APlainInfoHeaderSaysNothingAboutColor) {
   EXPECT_EQ(color->transfer, GIMG_TRANSFER_UNKNOWN);
   EXPECT_EQ(color->icc_size, 0u);
 }
+
+// ---------------------------------------------------------------------------
+// What a BMP's colour is good for
+// ---------------------------------------------------------------------------
+
+TEST(BmpToPng, AnEmbeddedProfileSurvivesTheConversion) {
+  // Reading a V5 profile is only worth doing if it can then go somewhere.  It
+  // could not: the PNG writer emitted iCCP from the ancillary chunks a PNG
+  // arrived with and never from the raster's colour info, so a document that
+  // did not arrive as a PNG lost its colour entirely and the profile was read
+  // only to be dropped.
+  Loaded bmp;
+  ASSERT_EQ(bmp.load("bmp_4x4_v5_icc.bmp"), GIMG_OK);
+  ASSERT_EQ(gimg_item_ensure_decoded(gimg_doc_item(bmp.doc(), 0), nullptr),
+      GIMG_OK);
+
+  const GIMG_Color_Info * from_bmp =
+      gimg_raster_color_info_const(gimg_item_raster(gimg_doc_item(bmp.doc(), 0)));
+  ASSERT_NE(from_bmp, nullptr);
+  ASSERT_GT(from_bmp->icc_size, 0u);
+  std::vector<uint8_t> profile(
+      static_cast<const uint8_t *>(from_bmp->icc_bytes),
+      static_cast<const uint8_t *>(from_bmp->icc_bytes) + from_bmp->icc_size);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options options = {};
+  options.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(bmp.doc(), out, "png", &options, &report), GIMG_OK);
+
+  const void * buffer = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &buffer, &size);
+  std::vector<uint8_t> png(static_cast<const uint8_t *>(buffer),
+      static_cast<const uint8_t *>(buffer) + size);
+
+  Loaded back;
+  ASSERT_EQ(back.load_bytes(png), GIMG_OK);
+  ASSERT_EQ(back.decode(), GIMG_OK);
+  const GIMG_Color_Info * from_png =
+      gimg_raster_color_info_const(back.raster());
+  ASSERT_NE(from_png, nullptr);
+  ASSERT_EQ(from_png->icc_size, profile.size())
+      << "the profile the BMP carried did not reach the PNG";
+  EXPECT_EQ(memcmp(from_png->icc_bytes, profile.data(), profile.size()), 0)
+      << "the profile reached the PNG but not intact";
+
+  gimg_stream_destroy(out);
+}
+
+TEST(BmpToPng, ACalibratedGammaSurvivesAsGama) {
+  // bmp_4x4_v4_calibrated.bmp names sRGB's primaries with a gamma of 2.2,
+  // which is not sRGB.  It has to come out as gAMA rather than as an sRGB
+  // chunk, which would assert a transfer curve the file never stated.
+  Loaded bmp;
+  ASSERT_EQ(bmp.load("bmp_4x4_v4_calibrated.bmp"), GIMG_OK);
+  ASSERT_EQ(gimg_item_ensure_decoded(gimg_doc_item(bmp.doc(), 0), nullptr),
+      GIMG_OK);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options options = {};
+  options.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(bmp.doc(), out, "png", &options, &report), GIMG_OK);
+
+  const void * buffer = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &buffer, &size);
+  std::vector<uint8_t> png(static_cast<const uint8_t *>(buffer),
+      static_cast<const uint8_t *>(buffer) + size);
+
+  Loaded back;
+  ASSERT_EQ(back.load_bytes(png), GIMG_OK);
+  ASSERT_EQ(back.decode(), GIMG_OK);
+  const GIMG_Color_Info * from_png =
+      gimg_raster_color_info_const(back.raster());
+  ASSERT_NE(from_png, nullptr);
+  EXPECT_EQ(from_png->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_NEAR(from_png->gamma_value, 2.2, 0.001);
+
+  gimg_stream_destroy(out);
+}

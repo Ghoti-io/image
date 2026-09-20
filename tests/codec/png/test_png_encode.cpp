@@ -2324,3 +2324,229 @@ TEST(PngRoundTripMatrix, EveryCombinationOfShapeInterlaceFilterAndPalette) {
   EXPECT_FALSE(color_types.count(2)) << "unexpected here; see the comment";
   EXPECT_FALSE(color_types.count(4)) << "unexpected here; see the comment";
 }
+
+// ---------------------------------------------------------------------------
+// Color from the raster, for a document that did not arrive as a PNG
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Every color chunk type present in a PNG, space separated, in file order. */
+std::string color_chunks_of(const std::vector<uint8_t> & png) {
+  std::string found;
+  for (size_t at = 8; at + 12 <= png.size();) {
+    uint32_t length = ((uint32_t)png[at] << 24) | ((uint32_t)png[at + 1] << 16) |
+        ((uint32_t)png[at + 2] << 8) | (uint32_t)png[at + 3];
+    std::string type((const char *)&png[at + 4], 4);
+    if (type == "iCCP" || type == "sRGB" || type == "gAMA" || type == "cHRM" ||
+        type == "cICP") {
+      if (!found.empty()) {
+        found += " ";
+      }
+      found += type;
+    }
+    if (length > png.size()) {
+      break;
+    }
+    at += 12 + length;
+    if (type == "IEND") {
+      break;
+    }
+  }
+  return found;
+}
+
+/** A 2x2 opaque raster carrying the given color info. */
+GIMG_Raster * raster_with_color(const GIMG_Color_Info & color) {
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0,
+          &raster) != GIMG_OK) {
+    return nullptr;
+  }
+  uint8_t * pixels = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  size_t stride = gimg_raster_stride_bytes(raster);
+  for (uint32_t y = 0; y < 2; y++) {
+    for (uint32_t x = 0; x < 2; x++) {
+      uint8_t * px = pixels + (y * stride) + (x * 4u);
+      px[0] = (uint8_t)(x * 90u);
+      px[1] = (uint8_t)(y * 90u);
+      px[2] = 40;
+      px[3] = 255;
+    }
+  }
+  if (gimg_raster_set_color_info(raster, &color) != GIMG_OK) {
+    gimg_raster_destroy(raster);
+    return nullptr;
+  }
+  return raster;
+}
+
+/** Save a raster the document takes ownership of, as PNG. */
+GIMG_Result save_png(GIMG_Raster * raster, GIMG_Meta_Policy policy,
+    std::vector<uint8_t> & out) {
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_create(&doc);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if ((r = gimg_doc_set_item_count(doc, 1)) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * stream = nullptr;
+  if ((r = gimg_stream_create_memory_output(&stream)) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = policy;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, stream, "png", &opts, &report);
+  if (r == GIMG_OK) {
+    const void * buffer = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(stream, &buffer, &size);
+    const uint8_t * bytes = static_cast<const uint8_t *>(buffer);
+    out.assign(bytes, bytes + size);
+  }
+  gimg_stream_destroy(stream);
+  gimg_doc_destroy(doc);
+  return r;
+}
+
+} // namespace
+
+TEST(PngEncode, EmbeddedProfileOnTheRasterIsWrittenAsICCP) {
+  // A document that did not arrive as a PNG has no ancillary chunks to
+  // preserve, so without this its color was lost entirely: a BMP with a V5
+  // embedded profile, saved as a PNG, came out untagged and the profile was
+  // read only to be dropped.
+  std::vector<uint8_t> profile(128);
+  profile[0] = 0; profile[1] = 0; profile[2] = 0; profile[3] = 128;
+  std::memcpy(&profile[36], "acsp", 4);
+  for (size_t i = 40; i < profile.size(); i++) {
+    profile[i] = (uint8_t)((i * 7u) & 0xFFu);
+  }
+
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+
+  GIMG_Raster * raster = raster_with_color(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster, GIMG_META_PRESERVE_ALL, png), GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "iCCP");
+
+  // And every byte of it comes back.
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
+  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  ASSERT_NE(read, nullptr);
+  ASSERT_EQ(read->icc_size, profile.size());
+  EXPECT_EQ(std::memcmp(read->icc_bytes, profile.data(), profile.size()), 0);
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(PngEncode, SrgbTransferOnTheRasterIsWrittenAsSrgb) {
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.primaries = GIMG_PRIMARIES_SRGB;
+  color.white_point = GIMG_PRIMARIES_SRGB;
+  color.transfer = GIMG_TRANSFER_SRGB;
+
+  GIMG_Raster * raster = raster_with_color(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster, GIMG_META_PRESERVE_ALL, png), GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "sRGB");
+}
+
+TEST(PngEncode, SrgbPrimariesWithAGammaAreWrittenAsGamaNotSrgb) {
+  // The sRGB chunk asserts the whole of sRGB, its transfer curve included.
+  // Matching on the primaries alone was too loose: a BMP with a calibrated V4
+  // header naming sRGB's primaries and a gamma of 2.2 is not an sRGB image,
+  // and writing sRGB for it threw the gamma away and claimed a curve the file
+  // never stated.  bmpsuite's g/pal8v4.bmp is exactly that file.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.primaries = GIMG_PRIMARIES_SRGB;
+  color.white_point = GIMG_PRIMARIES_SRGB;
+  color.transfer = GIMG_TRANSFER_GAMMA;
+  color.gamma_value = 2.2;
+
+  GIMG_Raster * raster = raster_with_color(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster, GIMG_META_PRESERVE_ALL, png), GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "gAMA");
+}
+
+TEST(PngEncode, ColorInfoWithNothingToSayWritesNoColorChunk) {
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+
+  GIMG_Raster * raster = raster_with_color(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster, GIMG_META_PRESERVE_ALL, png), GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "");
+}
+
+TEST(PngEncode, DropAllDropsTheColorFromTheRasterToo) {
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.transfer = GIMG_TRANSFER_SRGB;
+
+  GIMG_Raster * raster = raster_with_color(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster, GIMG_META_DROP_ALL, png), GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "");
+}
+
+TEST(PngEncode, TheChunkAPngArrivedWithWinsOverTheRastersColorInfo) {
+  // png_srgb.png carries an sRGB chunk.  Preserving what was actually there
+  // and then adding a second statement from the color info would put two
+  // color chunks in one file, which PNG 11.3.3.3 does not want.
+  std::vector<uint8_t> bytes;
+  ASSERT_TRUE(png_test::load_png_file("png_srgb.png", bytes));
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr), GIMG_OK);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "png", &opts, &report), GIMG_OK);
+
+  const void * buffer = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &buffer, &size);
+  const uint8_t * p = static_cast<const uint8_t *>(buffer);
+  std::vector<uint8_t> written(p, p + size);
+  EXPECT_EQ(color_chunks_of(written), "sRGB") << "exactly one, and the file's";
+
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}

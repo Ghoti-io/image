@@ -38,7 +38,43 @@ On PNG save, `GIMG_Save_Options.metadata_policy` controls which ancillary chunks
 - **GIMG_META_STRIP_GPS:** Only actual GPS data is stripped. eXIf is parsed; the GPS IFD (and GPS-related tags) are removed; the remaining Exif is re-serialized and written as the eXIf chunk. Non-GPS Exif (orientation, datetime, etc.) is preserved. tEXt, zTXt, and iTXt chunks whose keyword is "GPS", "GPS " (with trailing space), or "EXIF:GPS" (case-insensitive) are omitted. Other ancillary is preserved.
 - **GIMG_META_NORMALIZE_EXIF:** eXIf is normalized (e.g. orientation set to 1 / applied, duplicate tags removed) and written as a single eXIf chunk. Other ancillary is preserved. Implemented in Phase 1.5: Exif module sets orientation tag to 1 (normal) when present.
 - **GIMG_META_KEEP_RAW_ONLY:** Emit only ancillary chunks that are *not* known semantic metadata. Omitted: iCCP, sRGB, gAMA, cHRM, eXIf, tEXt, zTXt, iTXt. Emitted: any other ancillary chunk type (e.g. unknown or private chunks) in read order. eXIf from doc meta_raw is not written. PLTE/tRNS are emitted when required for the image.
-- **GIMG_META_KEEP_COMMON_ONLY:** Emit only metadata that maps to common metadata. Exactly one color chunk is written from the decoded raster’s `GIMG_Color_Info`: sRGB (if transfer/primaries indicate sRGB), or gAMA (if transfer is gamma with a positive value), or iCCP (if an ICC profile is attached). No eXIf, no text chunks, no other ancillary. PLTE/tRNS are emitted when required for the image.
+- **GIMG_META_KEEP_COMMON_ONLY:** Emit only metadata that maps to common metadata. Exactly one color chunk is written from the decoded raster's `GIMG_Color_Info` (see **Color on save** below). No eXIf, no text chunks, no other ancillary. PLTE/tRNS are emitted when required for the image.
+
+## Color on save
+
+At most one color chunk is written, because PNG 11.3.3.3 does not want sRGB
+and iCCP in the same file and gAMA is redundant beside either.
+
+**The chunk the file came with wins.** A document loaded from a PNG that
+carried sRGB, iCCP, gAMA, cHRM or cICP has that chunk preserved verbatim, and
+nothing is added from the raster's `GIMG_Color_Info` on top of it - preserving
+what was actually there and then restating it would put two color chunks in
+one file.
+
+**A document that brought no color chunk gets one from its raster.** That is
+the case for anything that did not arrive as a PNG. It is chosen in this
+order:
+
+| Raster's `GIMG_Color_Info` | Written |
+|---|---|
+| `transfer` is sRGB | `sRGB`, with the rendering intent |
+| `transfer` is a gamma, or linear | `gAMA`; linear is a gamma of 1 |
+| An ICC profile is attached | `iCCP`, deflated, keyword "ICC Profile" |
+| None of the above | nothing |
+
+The sRGB chunk takes the *transfer* actually saying sRGB, not the primaries.
+Matching on the primaries alone was too loose: a BMP with a calibrated V4
+header naming sRGB's primaries and a gamma of 2.2 is not an sRGB image, and
+writing sRGB for it threw the gamma away and claimed a curve the file never
+stated. gAMA says nothing about the primaries, which for an image whose
+primaries are sRGB's costs nothing - those are what a PNG reader assumes when
+no chunk says otherwise.
+
+Until this was wired up the whole of the above was reachable only from
+`GIMG_META_KEEP_COMMON_ONLY`, so under every ordinary policy a BMP carrying a
+V5 embedded ICC profile came out as an untagged PNG and the profile was read
+only to be dropped. `GIMG_META_DROP_ALL` and `GIMG_META_KEEP_RAW_ONLY` still
+drop it, as they drop the rest.
 
 ## Conformance
 

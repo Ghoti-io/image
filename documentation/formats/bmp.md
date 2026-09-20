@@ -403,13 +403,11 @@ Listed so the absences are visible rather than discovered.
   `BITMAPV3INFOHEADER` when alpha needs masks, so a color space read from a V4
   or V5 file is not written back into one.
 
-  A profile read from a BMP reaches the decoded raster's `GIMG_Color_Info`
-  and is there for a caller to use, but it does not presently reach a file
-  saved from that document in *any* format: the PNG writer emits `iCCP` from
-  the ancillary chunks a PNG arrived with and not from the raster's color
-  info, so a BMP-to-PNG conversion drops it. That is a gap in the PNG writer
-  rather than in this codec, and it is recorded here because this is the page
-  where somebody will look for it.
+  A profile read from a BMP does reach a PNG saved from the same document -
+  see \ref format_png "PNG"'s *Color on save* - so a BMP-to-PNG conversion
+  keeps it. It does not reach a JPEG: that writer's APP2 comes from the
+  segments a JPEG arrived with, the same way the PNG writer's `iCCP` did
+  before this was wired up.
 
 ---
 
