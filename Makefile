@@ -50,6 +50,11 @@ SO_NAME := $(BASE_NAME).$(MAJOR_VERSION)
 STATIC_TARGET := $(BASE_NAME_PREFIX).a
 ENV_VARS :=
 
+# PKG_CONFIG_PATH names where this project's own .pc file is installed, and the
+# platform block below overwrites it to say so. Remember what the environment
+# asked for first, so dependency lookup can still honour it further down.
+PKG_CONFIG_PATH_ENV := $(PKG_CONFIG_PATH)
+
 # Detect OS
 UNAME_S := $(shell uname -s)
 
@@ -204,14 +209,20 @@ ifeq ($(filter-out $(DEPLESS_GOALS),$(or $(MAKECMDGOALS),all)),)
 SKIP_DEP_CHECK := 1
 endif
 
+# Dependencies are looked up along the inherited PKG_CONFIG_PATH as well as the
+# install location chosen above, so that exporting PKG_CONFIG_PATH works as the
+# errors below say it does. The inherited value comes first: it is an explicit
+# request for this build, where the install location may be only a default.
+PKG_CONFIG_LOOKUP_PATH := $(if $(PKG_CONFIG_PATH_ENV),$(PKG_CONFIG_PATH_ENV):)$(PKG_CONFIG_PATH)
+
 # ghoti.io-compress (required for PNG codec). Prefer pkg-config; fallback to sibling.
 # The name must carry $(BRANCH): compress installs its .pc as
 # ghoti.io-compress-dev.pc, so asking for "ghoti.io-compress" never matched and
 # the sibling fallback below was taken even when compress was properly
 # installed.
 COMPRESS_PC ?= ghoti.io-compress$(BRANCH)
-COMPRESS_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags $(COMPRESS_PC) 2>/dev/null)
-COMPRESS_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs $(COMPRESS_PC) 2>/dev/null)
+COMPRESS_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cflags $(COMPRESS_PC) 2>/dev/null)
+COMPRESS_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs $(COMPRESS_PC) 2>/dev/null)
 # Use sibling path when pkg-config failed (empty) or returned unsubstituted placeholder.
 ifeq ($(strip $(COMPRESS_CFLAGS)),)
 ifndef SKIP_DEP_CHECK
@@ -225,8 +236,8 @@ INCLUDE += $(COMPRESS_CFLAGS)
 # compress's .pc when that is installed; the fallback branch has to name it
 # itself, including cutil's generated include directory (float.h).
 CUTIL_PC ?= ghoti.io-cutil$(BRANCH)
-CUTIL_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags $(CUTIL_PC) 2>/dev/null)
-CUTIL_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs $(CUTIL_PC) 2>/dev/null)
+CUTIL_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cflags $(CUTIL_PC) 2>/dev/null)
+CUTIL_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs $(CUTIL_PC) 2>/dev/null)
 ifeq ($(strip $(CUTIL_CFLAGS)),)
 ifndef SKIP_DEP_CHECK
 $(error ghoti.io-cutil was not found by pkg-config. Run ./bootstrap.sh in the parent folder to build and install the suite into a local prefix, then pass the same PREFIX here - or point PKG_CONFIG_PATH at the directory holding its .pc file. There is deliberately no sibling-checkout fallback: a second resolution path that only in-tree builds exercise is one that silently rots.)
@@ -241,7 +252,7 @@ SOURCES := $(shell find src -type f -name '*.c')
 LIBOBJECTS := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SOURCES))
 
 
-TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs --cflags gtest`
+TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cflags gtest`
 
 # The checks `make test` runs besides the tests themselves. Named in a
 # variable so that a build which cannot satisfy them can clear it: the
