@@ -1,4 +1,4 @@
-# PNG/APNG and JPEG fuzz harnesses
+# PNG/APNG, JPEG and BMP fuzz harnesses
 
 **New codecs:** Add at least (1) a load (and decode) fuzz harness so that arbitrary or truncated input does not crash and returns appropriate errors; (2) if the codec supports save, a round-trip fuzz harness (load→save→load). PNG and JPEG are the reference; see `documentation/development.md` (Fuzzing) for the same requirement.
 
@@ -10,6 +10,10 @@
 
 **fuzz_jpeg_encode**: Round-trip harness for JPEG (load -> decode all items -> save -> load). Stress-tests the JPEG encoder; invalid input that fails load or save is ignored (no crash).
 
+**fuzz_bmp_load**: LibFuzzer harness for BMP load and decode. BMP is the parser here that most directly indexes a buffer from sizes the header supplied - the row stride from `biWidth` and `biBitCount`, a palette index against the entry count, an RLE run against a row - so it is the one that most needs the sanitizers pointed at it.
+
+**fuzz_bmp_encode**: Round-trip harness for BMP (load -> decode -> save as BMP -> load). Note that `gimg_doc_load` dispatches on the bytes rather than on the harness's name, so this feeds the BMP *writer* rasters decoded from PNG and JPEG too.
+
 ## Build
 
 From the image library root, with clang available:
@@ -19,6 +23,8 @@ make fuzz-png          # PNG load/decode only
 make fuzz-png-encode   # PNG round-trip load/save/load
 make fuzz-jpeg         # JPEG load/decode only
 make fuzz-jpeg-encode  # JPEG round-trip load/save/load
+make fuzz-bmp          # BMP load/decode only
+make fuzz-bmp-encode   # BMP round-trip load/save/load
 ```
 
 These build `build/<build-dir>/apps/fuzz_*` with `-fsanitize=fuzzer`.
@@ -38,6 +44,11 @@ JPEG:
 ```bash
 cp tests/data/jpeg/*.jpg tests/fuzz/corpus/
 ```
+
+BMP: seed from `tests/data/bmp/` (after running `python3 tests/data/bmp/generate.py`), and from an unpacked copy of Jason Summers' bmpsuite, which carries header versions and malformations the hand-written fixtures do not reach:
+```bash
+cp tests/data/bmp/*.bmp tests/fuzz/corpus/
+```
 (After running `python3 tests/data/jpeg/generate.py`.) For broader coverage (Phase 2.2), include progressive and 12/16-bit JPEGs: copy from `tests/out/jpeg/` after running encode tests (e.g. `progressive_default.jpg`, `baseline_gray16.jpg`, `baseline_gray12.jpg`) so the fuzzer exercises multi-scan and extended-precision decode paths without crash.
 
 ## Run
@@ -53,6 +64,10 @@ LD_LIBRARY_PATH="build/linux/release/apps:../compress/build/linux/release/apps" 
   build/linux/release/apps/fuzz_jpeg_load tests/fuzz/corpus
 LD_LIBRARY_PATH="build/linux/release/apps:../compress/build/linux/release/apps" \
   build/linux/release/apps/fuzz_jpeg_encode tests/fuzz/corpus
+LD_LIBRARY_PATH="build/linux/release/apps:../compress/build/linux/release/apps" \
+  build/linux/release/apps/fuzz_bmp_load tests/fuzz/corpus
+LD_LIBRARY_PATH="build/linux/release/apps:../compress/build/linux/release/apps" \
+  build/linux/release/apps/fuzz_bmp_encode tests/fuzz/corpus
 ```
 
 Without a corpus directory, the fuzzer runs with no seeds (slower to find coverage). Use `-max_total_time=N` to limit run time.

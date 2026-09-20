@@ -580,6 +580,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 
 # General commands
 .PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build coverage check-symbols
+.PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-watch uninstall watch
 # Debug build commands
@@ -1230,6 +1231,24 @@ fuzz-jpeg-encode: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for JPEG round-t
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_jpeg_encode.cpp -o $(OBJ_DIR)/fuzz_jpeg_encode.o
 	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_jpeg_encode.o $(LDFLAGS) $(FUZZ_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_jpeg_encode$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_jpeg_encode tests/fuzz/corpus"
+
+fuzz-bmp: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for BMP load/decode (requires clang++)
+	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
+		echo "fuzz-bmp requires $(FUZZ_CXX); install clang or set FUZZ_CXX"; exit 1; \
+	fi
+	@mkdir -p $(OBJ_DIR) $(APP_DIR)
+	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_bmp_load.cpp -o $(OBJ_DIR)/fuzz_bmp_load.o
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_bmp_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_bmp_load.o $(LDFLAGS) $(FUZZ_LIBS)
+	@echo "Fuzz harness: $(APP_DIR)/fuzz_bmp_load$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_bmp_load tests/fuzz/corpus"
+
+fuzz-bmp-encode: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for BMP round-trip load->save->load (requires clang++)
+	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
+		echo "fuzz-bmp-encode requires $(FUZZ_CXX); install clang or set FUZZ_CXX"; exit 1; \
+	fi
+	@mkdir -p $(OBJ_DIR) $(APP_DIR)
+	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_bmp_encode.cpp -o $(OBJ_DIR)/fuzz_bmp_encode.o
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_bmp_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_bmp_encode.o $(LDFLAGS) $(FUZZ_LIBS)
+	@echo "Fuzz harness: $(APP_DIR)/fuzz_bmp_encode$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_bmp_encode tests/fuzz/corpus"
 
 coverage: ## Build instrumented, run the tests, and report line coverage
 # Cleans first because the object files would otherwise be reused without the
