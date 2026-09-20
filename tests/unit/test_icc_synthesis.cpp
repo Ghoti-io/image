@@ -72,7 +72,8 @@ GIMG_Raster * stating(GIMG_Primaries primaries, GIMG_Transfer transfer,
 
 /** Save a document (taking ownership of @p raster) as @p format. */
 ::testing::AssertionResult save_as(GIMG_Raster * raster, const char * format,
-    std::vector<uint8_t> & out) {
+    std::vector<uint8_t> & out,
+    GIMG_Meta_Policy policy = GIMG_META_PRESERVE_ALL) {
   GIMG_Doc * doc = nullptr;
   if (gimg_doc_create(&doc) != GIMG_OK || !doc) {
     gimg_raster_destroy(raster);
@@ -85,7 +86,7 @@ GIMG_Raster * stating(GIMG_Primaries primaries, GIMG_Transfer transfer,
     return ::testing::AssertionFailure() << "gimg_stream_create_memory_output";
   }
   GIMG_Save_Options opts = {};
-  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  opts.metadata_policy = policy;
   GIMG_Save_Report report = {};
   GIMG_Result r = gimg_doc_save(doc, stream, format, &opts, &report);
   if (r == GIMG_OK) {
@@ -365,6 +366,38 @@ TEST(JpegSynthesizedIcc, AGrayFrameGetsNoRgbProfile) {
       "jpeg", jpeg));
   EXPECT_TRUE(profile_in(jpeg).empty())
       << "an RGB matrix profile does not describe a one-component frame";
+}
+
+/**
+ * The policies that state no color space must not get one built for them.
+ *
+ * A synthesized profile is a color statement, so it follows the same rule the
+ * BMP writer follows: GIMG_META_DROP_ALL states nothing, and
+ * GIMG_META_KEEP_RAW_ONLY writes only what the file arrived with - and a
+ * model on the raster is not that. Every other policy keeps it, because a
+ * color space describes what the samples mean rather than annotating them.
+ */
+TEST(JpegSynthesizedIcc, ThePolicyDecidesWhetherOneIsBuilt) {
+  struct {
+    GIMG_Meta_Policy policy;
+    const char * name;
+    bool expect_profile;
+  } const cases[] = {
+      {GIMG_META_PRESERVE_ALL, "PRESERVE_ALL", true},
+      {GIMG_META_STRIP_GPS, "STRIP_GPS", true},
+      {GIMG_META_NORMALIZE_EXIF, "NORMALIZE_EXIF", true},
+      {GIMG_META_KEEP_COMMON_ONLY, "KEEP_COMMON_ONLY", true},
+      {GIMG_META_DROP_ALL, "DROP_ALL", false},
+      {GIMG_META_KEEP_RAW_ONLY, "KEEP_RAW_ONLY", false},
+  };
+  for (const auto & c : cases) {
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(save_as(
+        stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_GAMMA, 2.2), "jpeg",
+        jpeg, c.policy))
+        << c.name;
+    EXPECT_EQ(!profile_in(jpeg).empty(), c.expect_profile) << c.name;
+  }
 }
 
 /**
