@@ -791,6 +791,12 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 		else \
 			failures=$$(echo "$$output" | grep -oP '\[\s*FAILED\s*\]\s*\K\d+' | head -1); \
 			[ -z "$$failures" ] && failures=$$num_tests; \
+			: "A suite that died rather than reporting - a crash, an abort, a \
+			   failure to start - prints neither a test count nor a FAILED \
+			   line, so both of those come out zero and the run used to add \
+			   nothing to the total and call itself PASS while the suite's \
+			   own row said FAIL. A non-zero exit is at least one failure."; \
+			[ "$$failures" -eq 0 ] && failures=1; \
 			total_failed=$$((total_failed + failures)); \
 			total_passed=$$((total_passed + num_tests - failures)); \
 			printf "%-30s %8d %8dms \033[0;31mFAIL\033[0m\n" "$$test_name" "$$num_tests" "$$time_ms"; \
