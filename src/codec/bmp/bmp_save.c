@@ -162,11 +162,12 @@ static bool bmp_raster_is_opaque(const GIMG_Raster * raster) {
  */
 #define BMP_COLOR_SLOTS 1024u
 
+/** @brief The table described above. */
 typedef struct {
-  uint32_t key[BMP_COLOR_SLOTS];  ///< Packed color, with bit 24 set when used.
-  uint16_t index[BMP_COLOR_SLOTS];
+  uint32_t key[BMP_COLOR_SLOTS];    ///< Packed color, bit 24 set when in use.
+  uint16_t index[BMP_COLOR_SLOTS];  ///< Palette index for the key beside it.
   uint32_t colors[BMP_PALETTE_MAX]; ///< Packed colors, in first-seen order.
-  uint32_t count;
+  uint32_t count;                   ///< Distinct colors seen so far.
 } bmp_color_table_t;
 
 /** Bit above the 24 color bits, marking a slot as occupied. */
@@ -387,13 +388,13 @@ static size_t bmp_rle8_row(const unsigned char * indices, uint32_t width,
 
 /** Everything the header writer needs, decided before a byte goes out. */
 typedef struct {
-  uint16_t bit_count;
-  uint32_t compression;
-  uint32_t dib_size;
-  uint32_t palette_entries;
-  bool top_down;
-  size_t stride;      ///< Bytes per row of uncompressed pixel data.
-  size_t pixel_bytes; ///< Bytes of pixel data, encoded or not.
+  uint16_t bit_count;       ///< Bits per pixel to write.
+  uint32_t compression;     ///< biCompression, in the Windows vocabulary.
+  uint32_t dib_size;        ///< DIB header length: 40, or 56 with masks.
+  uint32_t palette_entries; ///< Palette entries to write; 0 for true color.
+  bool top_down;            ///< True to write rows top to bottom.
+  size_t stride;            ///< Bytes per row of uncompressed pixel data.
+  size_t pixel_bytes;       ///< Bytes of pixel data, encoded or not.
 } bmp_plan_t;
 
 GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,

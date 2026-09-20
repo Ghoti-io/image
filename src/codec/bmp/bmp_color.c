@@ -40,30 +40,38 @@
 #include "../../core/alloc_internal.h"
 #include "bmp_internal.h"
 
-/** bV4CSType / bV5CSType values, as four-character codes where they are. */
-#define GIMG_BMP_LCS_CALIBRATED_RGB UINT32_C(0x00000000)
-#define GIMG_BMP_LCS_sRGB UINT32_C(0x73524742)           /* 'sRGB' */
-#define GIMG_BMP_LCS_WINDOWS_COLOR_SPACE UINT32_C(0x57696E20) /* 'Win ' */
-#define GIMG_BMP_PROFILE_LINKED UINT32_C(0x4C494E4B)     /* 'LINK' */
-#define GIMG_BMP_PROFILE_EMBEDDED UINT32_C(0x4D424544)   /* 'MBED' */
+/** @name bV4CSType / bV5CSType values, four-character codes where they are.
+ * @{ */
+#define GIMG_BMP_LCS_CALIBRATED_RGB UINT32_C(0x00000000) ///< Endpoints + gamma.
+#define GIMG_BMP_LCS_sRGB UINT32_C(0x73524742) ///< 'sRGB'.
+#define GIMG_BMP_LCS_WINDOWS_COLOR_SPACE UINT32_C(0x57696E20) ///< 'Win '.
+#define GIMG_BMP_PROFILE_LINKED UINT32_C(0x4C494E4B) ///< 'LINK': a file path.
+#define GIMG_BMP_PROFILE_EMBEDDED UINT32_C(0x4D424544) ///< 'MBED': a profile.
+/** @} */
 
-/** bV5Intent values (wingdi.h LCS_GM_*). */
-#define GIMG_BMP_LCS_GM_BUSINESS 1u          /* Saturation. */
-#define GIMG_BMP_LCS_GM_GRAPHICS 2u          /* Relative colorimetric. */
-#define GIMG_BMP_LCS_GM_IMAGES 4u            /* Perceptual. */
-#define GIMG_BMP_LCS_GM_ABS_COLORIMETRIC 8u  /* Absolute colorimetric. */
+/** @name bV5Intent values (wingdi.h LCS_GM_*).
+ * @{ */
+#define GIMG_BMP_LCS_GM_BUSINESS 1u         ///< Saturation.
+#define GIMG_BMP_LCS_GM_GRAPHICS 2u         ///< Relative colorimetric.
+#define GIMG_BMP_LCS_GM_IMAGES 4u           ///< Perceptual.
+#define GIMG_BMP_LCS_GM_ABS_COLORIMETRIC 8u ///< Absolute colorimetric.
+/** @} */
 
 /**
- * One chromaticity, as an FXPT2DOT30 - a signed fixed-point value with 30
+ * @name Chromaticity comparison
+ *
+ * A chromaticity is an FXPT2DOT30 - a signed fixed-point value with 30
  * fractional bits - compared at a thousandth, which is finer than any of
  * these tables is quoted to and coarser than the rounding of writing one out.
+ * @{
  */
-#define GIMG_BMP_FXPT2DOT30_ONE (INT32_C(1) << 30)
-#define GIMG_BMP_CHROMA_TOLERANCE (GIMG_BMP_FXPT2DOT30_ONE / 1000)
+#define GIMG_BMP_FXPT2DOT30_ONE (INT32_C(1) << 30) ///< 1.0 in FXPT2DOT30.
+#define GIMG_BMP_CHROMA_TOLERANCE (GIMG_BMP_FXPT2DOT30_ONE / 1000) ///< 0.001.
+/** @} */
 
 /** A gamut this model can name, as the nine endpoint values would spell it. */
 typedef struct {
-  GIMG_Primaries primaries;
+  GIMG_Primaries primaries; ///< What GIMG_Color_Info calls this gamut.
   double xy[6]; ///< Red x, red y, green x, green y, blue x, blue y.
 } bmp_gamut_t;
 
