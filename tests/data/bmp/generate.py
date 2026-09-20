@@ -194,6 +194,23 @@ def palette_fixtures() -> None:
     write("bmp_8x2_8bit.bmp",
           assemble(info_header(8, 2, 8, clr_used=6), palette, b"".join(rows)))
 
+    # 2 bits per pixel: four indices, four to a byte.  A Windows CE addition
+    # that the desktop API never accepted, so it is read and never written -
+    # and until this fixture existed nothing here decoded one at all.
+    two_bit = [
+        [0, 1, 2, 3, 3, 2, 1, 0],
+        [3, 2, 1, 0, 0, 1, 2, 3],
+    ]
+    rows = []
+    for row in bottom_up(two_bit):
+        packed = bytearray()
+        for i in range(0, len(row), 4):
+            packed.append((row[i] << 6) | (row[i + 1] << 4) |
+                          (row[i + 2] << 2) | row[i + 3])
+        rows.append(pad_row(bytes(packed)))
+    write("bmp_8x2_2bit.bmp",
+          assemble(info_header(8, 2, 2, clr_used=4), palette, b"".join(rows)))
+
     # BITMAPCOREHEADER: 12-byte header, 16-bit dimensions, 3-byte palette
     # entries, and no biClrUsed field (so the palette is the full 2^bpp).
     core = struct.pack("<IHHHH", 12, 8, 2, 1, 4)

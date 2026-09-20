@@ -437,6 +437,29 @@ TEST(BmpDecode, Indexed4) {
   EXPECT_EQ(img.at(7, 1), kMagenta);
 }
 
+TEST(BmpDecode, Indexed2) {
+  // 2 bits per pixel: a Windows CE addition the desktop API never accepted,
+  // read through the same bit-unpacking as 1, 4 and 8.  bmpsuite carries
+  // q/pal2.bmp and q/pal2color.bmp for the same case.
+  const Rgba * palette[4] = {&kRed, &kGreen, &kBlue, &kYellow};
+  const unsigned int indices[2][8] = {
+      {0, 1, 2, 3, 3, 2, 1, 0},
+      {3, 2, 1, 0, 0, 1, 2, 3},
+  };
+
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_8x2_2bit.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  ASSERT_EQ(img.width(), 8u);
+  ASSERT_EQ(img.height(), 2u);
+  for (uint32_t y = 0; y < 2; y++) {
+    for (uint32_t x = 0; x < 8; x++) {
+      EXPECT_EQ(img.at(x, y), *palette[indices[y][x]])
+          << "at (" << x << "," << y << ")";
+    }
+  }
+}
+
 TEST(BmpDecode, Indexed1) {
   // A checkerboard, so a shift error in the bit unpacking inverts the image
   // rather than producing something that still looks like a checkerboard.
