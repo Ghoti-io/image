@@ -2,8 +2,9 @@
  * @file
  *
  * Register the BMP codec with its magic probe ('B' 'M') and load/save/decode
- * callbacks.  Capabilities: read, write, and palette (1/2/4/8-bit indexed
- * bitmaps are decoded through their palette).
+ * callbacks.  Capabilities: read, write, palette (1/2/4/8-bit indexed bitmaps
+ * are decoded through their palette), and ICC (a V5 header's PROFILE_EMBEDDED
+ * is read, and one is written).
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -14,7 +15,12 @@
 #include "../codec_internal.h"
 #include "bmp_internal.h"
 
-#define BMP_CAPABILITIES (GIMG_CAP_READ | GIMG_CAP_WRITE | GIMG_CAP_PALETTE)
+// GIMG_CAP_16BPC is deliberately absent: a BMP sample is a byte at most, so a
+// deeper raster is restated at 8 bits on the way in rather than written as it
+// stands.  GIMG_CAP_CMYK likewise - the writer refuses a CMYK raster rather
+// than reinterpreting its four channels.  See documentation/formats/bmp.md.
+#define BMP_CAPABILITIES                                                       \
+  (GIMG_CAP_READ | GIMG_CAP_WRITE | GIMG_CAP_PALETTE | GIMG_CAP_ICC)
 
 #if defined(__GNUC__) || defined(__clang__)
 #define GIMG_CONSTRUCTOR __attribute__((constructor))

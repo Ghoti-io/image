@@ -75,6 +75,31 @@ TEST(BmpCodec, IsRegistered) {
   EXPECT_TRUE(caps & GIMG_CAP_PALETTE);
 }
 
+// The bitmask is what a caller reads to decide whether to bother setting a
+// format-specific option, so a capability this codec gained and never declared
+// is as wrong as one it declares and does not have.  Both halves are stated:
+// asserting only the bits that are set is what let ICC go undeclared from the
+// day the V5 colour header landed.
+TEST(BmpCodec, DeclaresEveryCapabilityItHasAndNoOther) {
+  GIMG_Codec * codec = gimg_codec_by_name("bmp");
+  ASSERT_NE(codec, nullptr);
+
+  // Read, write, a palette to index through, and an ICC profile: PROFILE_EMBEDDED
+  // is read out of a V5 header and one is written back into it.
+  const unsigned int expected = GIMG_CAP_READ | GIMG_CAP_WRITE |
+      GIMG_CAP_PALETTE | GIMG_CAP_ICC;
+  EXPECT_EQ(gimg_codec_capabilities(codec), expected);
+
+  // Named individually so a failure says which one moved rather than printing
+  // two numbers to be diffed by eye.  A BMP holds one image, its samples are a
+  // byte at most, and its writer refuses a CMYK raster rather than
+  // reinterpreting four ink channels as colour.
+  unsigned int caps = gimg_codec_capabilities(codec);
+  EXPECT_FALSE(caps & GIMG_CAP_ANIMATION);
+  EXPECT_FALSE(caps & GIMG_CAP_16BPC);
+  EXPECT_FALSE(caps & GIMG_CAP_CMYK);
+}
+
 TEST(BmpCodec, ProbeIdentifiesBmp) {
   std::vector<uint8_t> bytes;
   ASSERT_TRUE(bmp_test::load_file("bmp_4x4_24bit.bmp", bytes));
