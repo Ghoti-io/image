@@ -7,6 +7,7 @@
  */
 
 #include <cstring>
+#include <fstream>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
@@ -149,6 +150,38 @@ Rgba opaque_gradient(uint32_t x, uint32_t y) {
       (uint8_t)((x + y) * 11u), 255};
 }
 
+/**
+ * Leave a saved file in GIMG_TEST_OUT_BMP together with the pixels it was
+ * meant to hold, for tests/data/bmp/verify_bmp_output.py to read back with a
+ * decoder that is not ours.
+ *
+ * Our decoder agreeing with our encoder proves nothing about either: a
+ * channel swap, a row flip or a stride error that both halves share reads as
+ * success from the inside.  The sidecar is top-down RGBA8, four bytes per
+ * pixel, which is what every decoder can be asked to produce.
+ */
+void publish_for_verification(const char * name,
+    const std::vector<uint8_t> & bytes, uint32_t width, uint32_t height,
+    Rgba (*pixel)(uint32_t, uint32_t)) {
+  const std::string dir = GIMG_TEST_OUT_BMP;
+  const std::string path = dir + "/" + name;
+  std::ofstream out(path, std::ios::binary);
+  ASSERT_TRUE(out) << "cannot write " << path;
+  out.write(reinterpret_cast<const char *>(bytes.data()),
+      static_cast<std::streamsize>(bytes.size()));
+  out.close();
+
+  std::ofstream expected(path + ".expected.rgba", std::ios::binary);
+  ASSERT_TRUE(expected) << "cannot write the expectation beside " << path;
+  for (uint32_t y = 0; y < height; y++) {
+    for (uint32_t x = 0; x < width; x++) {
+      Rgba p = pixel(x, y);
+      const char rgba[4] = {(char)p.r, (char)p.g, (char)p.b, (char)p.a};
+      expected.write(rgba, 4);
+    }
+  }
+}
+
 Rgba alpha_gradient(uint32_t x, uint32_t y) {
   return Rgba{(uint8_t)(x * 17u), (uint8_t)(y * 23u),
       (uint8_t)((x + y) * 11u), (uint8_t)(x * 40u)};
@@ -178,6 +211,9 @@ TEST(BmpEncode, OpaqueRasterIsWrittenAs24Bit) {
   // 5 pixels * 3 bytes = 15, padded to 16 per row.
   EXPECT_EQ(read_u32(bytes, 34), 16u * 3u) << "biSizeImage";
   EXPECT_EQ(bytes.size(), 54u + (16u * 3u));
+
+  publish_for_verification("opaque_24bit_5x3.bmp", bytes, 5, 3,
+      opaque_gradient);
 }
 
 TEST(BmpEncode, RasterWithAlphaIsWrittenAs32BitBitfields) {
@@ -194,6 +230,8 @@ TEST(BmpEncode, RasterWithAlphaIsWrittenAs32BitBitfields) {
   EXPECT_EQ(read_u32(bytes, 58), 0x0000FF00u) << "green mask";
   EXPECT_EQ(read_u32(bytes, 62), 0x000000FFu) << "blue mask";
   EXPECT_EQ(read_u32(bytes, 66), 0xFF000000u) << "alpha mask";
+
+  publish_for_verification("alpha_32bit_4x2.bmp", bytes, 4, 2, alpha_gradient);
 }
 
 TEST(BmpEncode, OpaqueRoundTripIsExact) {

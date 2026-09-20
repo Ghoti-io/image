@@ -251,19 +251,6 @@ Listed so the absences are visible rather than discovered.
 - **2 bits per pixel is accepted but has no fixture.** The depth is a Windows
   CE addition and decodes through the same path as 1, 4 and 8, but nothing in
   `tests/data/bmp/` exercises it.
-- **No fuzz harness.** PNG and JPEG each have load and encode harnesses under
-  `tests/fuzz/`; BMP has none, and its parser is the one in this library that
-  most directly indexes a buffer from header-supplied sizes. `fuzz_bmp_load`
-  is the gap most worth closing.
-- **No external verification of encoder output.** The build defines
-  `GIMG_TEST_OUT_BMP` and nothing writes to it. PNG and JPEG both check what
-  they wrote with a decoder that is not ours (`verify_png_output.py`,
-  `verify_jpeg_output.py`); BMP round-trips only through itself, which proves
-  the pair consistent rather than either correct.
-- **No conformance corpus.** There is no BMP equivalent of PngSuite in use.
-  Jason Summers' `bmpsuite` is the obvious candidate and would exercise the
-  header versions and malformations far past what the hand-written fixtures
-  reach.
 
 ---
 

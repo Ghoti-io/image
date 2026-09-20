@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Check what the BMP encoder wrote, with decoders that are not ours.
+
+The encode tests write each file they produce into tests/out/bmp/ together
+with a sidecar `<name>.bmp.expected.rgba` holding the pixels they meant to
+write, top-down, four bytes per pixel.  This script decodes each `.bmp` with
+whatever outside decoder is installed and compares it against that sidecar.
+
+The point is that our decoder agreeing with our encoder proves nothing about
+either: a channel swap, a row flip or a stride error that both halves share
+reads as success from the inside.  PNG and JPEG are each checked this way
+already (`verify_png_output.py`, `verify_jpeg_output.py`) and BMP was the one
+that round-tripped only through itself.
+
+Two decoders are tried, and a file passes when at least one of them reads it
+and agrees:
+
+  - **Pillow**, which covers the uncompressed depths this encoder writes.
+  - **GdkPixbuf**, which covers RLE4 - where Pillow is wrong, as
+    `bmpsuite_sweep.py` documents at more length.
+
+Neither honours a BMP's alpha channel, so alpha is checked only where the
+sidecar says the image is opaque; the round-trip tests in
+`tests/codec/bmp/test_bmp_encode.cpp` carry the alpha cases, and
+`bmpsuite_sweep.py` checks the decoder that reads them back.
+
+Usage:  python3 tests/data/bmp/verify_bmp_output.py [DIR]
+        DIR defaults to tests/out/bmp.
+
+Exit: 0 when every file was read by at least one decoder and matched.
+"""
+
+import os
+import sys
+
+
+def load_pillow(path):
+    from PIL import Image
+    with Image.open(path) as im:
+        im.load()
+        return im.convert("RGBA").tobytes(), im.size
+
+
+def load_pixbuf(path):
+    import gi
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf
+    pb = GdkPixbuf.Pixbuf.new_from_file(path)
+    w, h, rowstride = pb.get_width(), pb.get_height(), pb.get_rowstride()
+    channels, data = pb.get_n_channels(), pb.get_pixels()
+    out = bytearray()
+    for y in range(h):
+        row = data[y * rowstride:y * rowstride + w * channels]
+        if channels == 4:
+            out += row
+        else:
+            for x in range(w):
+                out += row[x * 3:x * 3 + 3] + b"\xff"
+    return bytes(out), (w, h)
+
+
+DECODERS = (("Pillow", load_pillow), ("GdkPixbuf", load_pixbuf))
+
+
+def compare(got, want, check_alpha):
+    """Return None when they agree, or a sentence saying how they do not."""
+    if len(got) != len(want):
+        return "decoded %d bytes, expected %d" % (len(got), len(want))
+    for i in range(len(got)):
+        if i % 4 == 3 and not check_alpha:
+            continue
+        if got[i] != want[i]:
+            pixel = i // 4
+            channel = "rgba"[i % 4]
+            return ("pixel %d channel %s is %d, expected %d"
+                    % (pixel, channel, got[i], want[i]))
+    return None
+
+
+def verify_directory(dirpath):
+    errors = []
+    checked = 0
+
+    if not os.path.isdir(dirpath):
+        return ["not a directory: %s" % dirpath], 0
+
+    names = sorted(n for n in os.listdir(dirpath) if n.lower().endswith(".bmp"))
+    if not names:
+        # The encode tests had not run, or wrote nothing.  Say so rather than
+        # passing: a verifier that silently checks nothing is worse than none.
+        return ["no .bmp files in %s; run the encode tests first" % dirpath], 0
+
+    available = [(name, fn) for name, fn in DECODERS if importable(fn)]
+    if not available:
+        return ["no outside BMP decoder is installed (Pillow or GdkPixbuf); "
+                "install one: pip install Pillow"], 0
+
+    for name in names:
+        path = os.path.join(dirpath, name)
+        sidecar = path + ".expected.rgba"
+        if not os.path.isfile(sidecar):
+            errors.append("%s: no %s beside it, so nothing says what it should "
+                          "contain" % (name, os.path.basename(sidecar)))
+            continue
+        with open(sidecar, "rb") as f:
+            want = f.read()
+        # An all-opaque expectation is one whose alpha the decoders can be
+        # asked about; anything else, they would answer 255 regardless.
+        check_alpha = all(want[i] == 255 for i in range(3, len(want), 4))
+
+        agreed = False
+        for decoder_name, fn in available:
+            try:
+                got, _ = fn(path)
+            except Exception:
+                continue  # a decoder that cannot read it is not evidence
+            problem = compare(got, want, check_alpha)
+            if problem:
+                errors.append("%s: %s reads it as %s"
+                              % (name, decoder_name, problem))
+            else:
+                agreed = True
+        if agreed:
+            checked += 1
+        else:
+            errors.append("%s: no outside decoder read it and agreed" % name)
+
+    return errors, checked
+
+
+def importable(fn):
+    try:
+        fn(os.devnull)
+    except ImportError:
+        return False
+    except Exception:
+        return True
+    return True
+
+
+def main():
+    if len(sys.argv) > 1:
+        out_dir = os.path.abspath(sys.argv[1])
+    else:
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.dirname(os.path.dirname(here))
+        out_dir = os.path.join(root, "tests", "out", "bmp")
+
+    errors, checked = verify_directory(out_dir)
+    if errors:
+        for message in errors:
+            print(message, file=sys.stderr)
+        return 1
+    print("  %d encoder outputs read back and matched" % checked)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
