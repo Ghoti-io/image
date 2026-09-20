@@ -4724,3 +4724,75 @@ TEST(JpegLoad, FillBytesAndTemMarkerAreSkipped) {
     gimg_stream_destroy(s);
   }
 }
+
+TEST(JpegLoad, EveryFourComponentFrameSaysItsInkPolarity) {
+  // The polarity is a property of the file - the Adobe convention the format
+  // is written in - and not of the coding process, so every path has to say
+  // the same thing about the same image.  They did not: the baseline path set
+  // it, and the extended, progressive-extended and hierarchical paths did
+  // not, so a CMYK JPEG came back saying 0 is full ink when it was baseline
+  // and saying nothing at all when it was progressive or twelve-bit.  A
+  // consumer that read the second as "no ink" would render it inverted.
+  static const char * const fixtures[] = {
+      "cmyk_sample.jpg",        // baseline, interleaved
+      "cmyk_ours_seq.jpg",      // sequential
+      "cmyk_ours_ni.jpg",       // non-interleaved, one scan per component
+      "cmyk_ours_prog.jpg",     // progressive
+      "cmyk_ours_arith.jpg",    // arithmetic
+      "cmyk_progressive.jpg",   // progressive, written elsewhere
+      "cmyk12_ljt_seq.jpg",     // twelve-bit sequential
+      "cmyk12_ljt_prog.jpg",    // twelve-bit progressive
+      "ycck_baseline.jpg",      // YCCK, baseline
+      "ycck_progressive.jpg",   // YCCK, progressive
+      "ycck_ours_prog420.jpg",  // YCCK, progressive, subsampled
+      "ycck12_ljt_420.jpg",     // YCCK, twelve-bit
+  };
+
+  for (const char * name : fixtures) {
+    SCOPED_TRACE(name);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name, jpeg)) << "missing fixture";
+
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+        GIMG_OK);
+
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    ASSERT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK)
+        << "this fixture must decode to four ink channels or it tests nothing";
+    const GIMG_Color_Info * color = gimg_raster_color_info_const(raster);
+    ASSERT_NE(color, nullptr);
+    EXPECT_EQ(color->cmyk_polarity, GIMG_CMYK_POLARITY_INK);
+
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
+TEST(JpegLoad, AProfileStillReachesARasterThatIsNotFourComponent) {
+  // The shared attachment must not have narrowed itself to CMYK: a
+  // three-component file with an APP2 profile still carries it.
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_with_icc.jpg", jpeg));
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(
+      gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(raster);
+  ASSERT_NE(color, nullptr);
+  EXPECT_GT(color->icc_size, 0u);
+  EXPECT_EQ(color->cmyk_polarity, GIMG_CMYK_POLARITY_UNKNOWN)
+      << "three channels are not ink amounts, so there is no polarity to state";
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}

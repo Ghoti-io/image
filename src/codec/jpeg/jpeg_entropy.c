@@ -466,19 +466,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
     }
   }
 
-  if (state->app2_icc && state->app2_icc_len > 0u) {
-    GIMG_Color_Info color_info;
-    gimg_color_info_default(&color_info);
-    if (state->app2_icc_num_chunks > 0) {
-      color_info.icc_bytes = state->app2_icc;
-      color_info.icc_size = state->app2_icc_len;
-    }
-    else {
-      color_info.icc_bytes = state->app2_icc + 14;
-      color_info.icc_size = state->app2_icc_len - 14u;
-    }
-    (void)gimg_raster_set_color_info(*out_raster, &color_info);
-  }
+  gimg_jpeg_attach_color(state, num_comp, *out_raster);
   for (uint8_t i = 0; i < num_comp; i++) {
     gimg_free(alloc, comp_buf[i]);
   }
@@ -1304,27 +1292,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     }
   }
 
-  // Attach ICC profile from APP2 to raster color info (single or
-  // multi-segment). For CMYK, always set color info so cmyk_polarity is set.
-  if (num_comp == 4u ||
-      (state->app2_icc && state->app2_icc_len > 0u)) {
-    GIMG_Color_Info color_info;
-    gimg_color_info_default(&color_info);
-    if (num_comp == 4u) {
-      color_info.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
-    }
-    if (state->app2_icc && state->app2_icc_len > 0u) {
-      if (state->app2_icc_num_chunks > 0) {
-        color_info.icc_bytes = state->app2_icc;
-        color_info.icc_size = state->app2_icc_len;
-      }
-      else {
-        color_info.icc_bytes = state->app2_icc + 14;
-        color_info.icc_size = state->app2_icc_len - 14u;
-      }
-    }
-    (void)gimg_raster_set_color_info(*out_raster, &color_info);
-  }
+  gimg_jpeg_attach_color(state, num_comp, *out_raster);
 
   for (uint8_t i = 0; i < num_comp; i++) {
     gimg_free(alloc, comp_buf[i]);
@@ -2156,19 +2124,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     }
   }
 
-  if (state->app2_icc && state->app2_icc_len > 0u) {
-    GIMG_Color_Info color_info;
-    gimg_color_info_default(&color_info);
-    if (state->app2_icc_num_chunks > 0) {
-      color_info.icc_bytes = state->app2_icc;
-      color_info.icc_size = state->app2_icc_len;
-    }
-    else {
-      color_info.icc_bytes = state->app2_icc + 14;
-      color_info.icc_size = state->app2_icc_len - 14u;
-    }
-    (void)gimg_raster_set_color_info(*out_raster, &color_info);
-  }
+  gimg_jpeg_attach_color(state, num_comp, *out_raster);
   for (uint8_t i = 0; i < num_comp; i++) {
     gimg_free(alloc, comp_buf[i]);
   }

@@ -730,6 +730,24 @@ typedef struct gimg_jpeg_doc_state {
 } gimg_jpeg_doc_state_t;
 
 /**
+ * @brief Tell a decoded raster what its samples mean.
+ *
+ * Attaches the ICC profile the file's APP2 segments carried and, for a
+ * four-component frame, the polarity of its ink amounts.  Both are properties
+ * of the file rather than of the coding process, so every decode path calls
+ * this rather than deciding for itself - they used not to agree.
+ *
+ * Does nothing when there is nothing to say.
+ *
+ * @param state The document state holding any assembled APP2 profile.
+ * @param num_comp Components in the frame.
+ * @param raster The raster to tag.
+ */
+void gimg_jpeg_attach_color(const gimg_jpeg_doc_state_t * state,
+    uint8_t num_comp, GIMG_Raster * raster);
+
+
+/**
  * Huffman decode table built from DHT payload (used by bitstream/block decode).
  */
 typedef struct {

@@ -1120,12 +1120,7 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
       }
     }
   }
-  if (num_comp == 4u) {
-    GIMG_Color_Info ci;
-    gimg_color_info_default(&ci);
-    ci.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
-    (void)gimg_raster_set_color_info(*out_raster, &ci);
-  }
+  gimg_jpeg_attach_color(state, num_comp, *out_raster);
 
 done:
   for (uint8_t i = 0; i < num_comp; i++) {
