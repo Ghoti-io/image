@@ -76,6 +76,14 @@ stated. gAMA says nothing about the primaries, which for an image whose
 primaries are sRGB's costs nothing - those are what a PNG reader assumes when
 no chunk says otherwise.
 
+The profile the `iCCP` branch deflates is **owned by the writer**, not
+borrowed from the raster. The raster is destroyed as soon as the image data is
+deflated, and every chunk is written after that, so a borrowed pointer was a
+read of freed memory - and because the deflating happens inside
+`libghoti.io-compress`, which is not sanitizer-instrumented, no harness saw
+it. The file came out with an `iCCP` of the right length whose first sixteen
+bytes were glibc's free-list pointer. See `tests/fuzz/README.md`.
+
 Until this was wired up the whole of the above was reachable only from
 `GIMG_META_KEEP_COMMON_ONLY`, so under every ordinary policy a BMP carrying a
 V5 embedded ICC profile came out as an untagged PNG and the profile was read

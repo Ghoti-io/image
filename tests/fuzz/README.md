@@ -71,3 +71,36 @@ LD_LIBRARY_PATH="build/linux/release/apps:../compress/build/linux/release/apps" 
 ```
 
 Without a corpus directory, the fuzzer runs with no seeds (slower to find coverage). Use `-max_total_time=N` to limit run time.
+
+## What the sanitizers cannot see
+
+**A read of freed memory that happens inside `libghoti.io-compress` is
+invisible to AddressSanitizer.** That library is linked from `PREFIX` as an
+ordinary build; only this library's own objects are instrumented, and ASan
+cannot poison or check an access made by code it did not compile. Its
+interceptors cover `memcpy` and friends, so a clobber *through* one of those
+is still caught - but a plain loop inside the dependency is not.
+
+This is not hypothetical. The PNG writer once handed
+`gimg_png_write_color_from_info` an `icc_bytes` pointing into a raster the
+save had already destroyed. The profile was deflated by `gcomp_encode_buffer`,
+which read the freed buffer from inside the dependency, so:
+
+- every harness ran the input clean, including a fresh ASan build aimed
+  straight at a file that reproduced it;
+- the defect was visible only in the *output*, where the first sixteen bytes
+  of the profile had become glibc's free-list pointer and the rest was intact.
+
+The JPEG writer had the same defect on the same day and ASan found it in
+seconds - because there the profile went through a `memcpy` in this library's
+own code.
+
+So: **anything handed to the compress library is unchecked ground.** Do not
+read "the fuzzers are clean" as "the buffers we pass out are live". Where a
+buffer crosses that boundary, own it. And check what came out: the round-trip
+tests and `tests/data/*/verify_*_output.py` compare bytes, which is what
+caught this one.
+
+Building the compress dependency with the same sanitizers and linking that
+build into the fuzz and ASan targets would close the gap. It is a cross-repo
+change and has not been made.
