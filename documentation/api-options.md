@@ -223,12 +223,30 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 
 | Field | Description |
 |-------|-------------|
-| `primaries` / `white_point` | **GIMG_Primaries** — sRGB, Adobe RGB, or unknown. |
+| `primaries` / `white_point` | **GIMG_Primaries** — sRGB, Adobe RGB, or unknown. `white_point` is **not read by any writer**: both named gamuts are D65, and an ICC profile states colorants already adapted to D50 regardless. |
 | `transfer` | **GIMG_Transfer** — linear, sRGB, gamma, or unknown. |
 | `gamma_value` | Used when `transfer` is **GIMG_TRANSFER_GAMMA**. |
-| `intent` | **GIMG_Rendering_Intent** — used when ICC is present. |
+| `intent` | **GIMG_Rendering_Intent** — written into an ICC profile's header and into a BMP V5 header. A value outside the four ICC names is written as perceptual. |
 | `icc_bytes` / `icc_size` | Optional ICC profile; library does not take ownership. |
 | `cmyk_polarity` | **GIMG_CMYK_Polarity** — interpretation of CMYK channel values. Only relevant when the raster format is a CMYK one (**GIMG_PIXEL_CMYK8**, **CMYK12**, **CMYK16**). |
+
+### Where the model goes on save
+
+`primaries` and `transfer` reach each format differently, because each format
+offers something different to say them with.
+
+| Format | With an ICC profile on the raster | With only `primaries` and `transfer` |
+|--------|-----------------------------------|--------------------------------------|
+| BMP | `BITMAPV5HEADER` with `PROFILE_EMBEDDED` | V4 header: endpoints and per-channel gamma |
+| PNG | `iCCP` | `sRGB` when the transfer is exactly sRGB; otherwise `gAMA` for the curve, plus `cHRM` for a gamut a reader would not otherwise assume (Adobe RGB, not sRGB's own primaries) |
+| JPEG | APP2 `ICC_PROFILE`, split across segments when needed | APP2 carrying an ICC profile **synthesized** to say it |
+
+JPEG is the one that manufactures rather than repeats, because APP2 is the
+only place the format can name a colour space — there is no `gAMA` or `cHRM`
+equivalent. A profile the raster already carries is always written unchanged
+in preference to a built one; a model missing either half is written as
+nothing; and only a three-component frame gets one. See
+\ref format_jpeg "JPEG"'s *Color on save*.
 
 **GIMG_CMYK_Polarity** (see `ghoti.io/image/color.h`):
 
