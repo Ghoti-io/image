@@ -390,6 +390,14 @@ TEST(BmpLoad, RejectsOffsetPastEndOfFile) {
   EXPECT_EQ(img.load("bmp_offset_past_eof.bmp"), GIMG_ERR_CORRUPT);
 }
 
+TEST(BmpLoad, RejectsRleWithTopDownRows) {
+  // A negative biHeight with BI_RLE8: the format does not allow the pair, and
+  // decoding one bottom-up produced a silently upside-down image.  GdkPixbuf
+  // and netpbm both refuse such a file; bmpsuite carries one as b/rletopdown.
+  Loaded img;
+  EXPECT_EQ(img.load("bmp_rle8_topdown.bmp"), GIMG_ERR_CORRUPT);
+}
+
 TEST(BmpDecode, RejectsPaletteIndexOutOfRange) {
   // The pixel data references index 7 with only two palette entries in the
   // file.  Reading it would be an out-of-bounds read of the palette array.

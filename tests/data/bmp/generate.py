@@ -283,6 +283,14 @@ def malformed_fixtures() -> None:
     struct.pack_into("<I", data, 10, len(body) + 1000)
     write("bmp_offset_past_eof.bmp", bytes(data))
 
+    # RLE with a negative height.  The two cannot be combined: an RLE stream's
+    # "end of line" walks one way only, so a top-down RLE bitmap does not say
+    # which way it walks.
+    rle8 = bytes([4, 0, 0, 0, 4, 1, 0, 1])
+    write("bmp_rle8_topdown.bmp",
+          assemble(info_header(4, -2, 8, compression=1, clr_used=2),
+                   palette, rle8))
+
 
 if __name__ == "__main__":
     print("Pillow fixtures:")

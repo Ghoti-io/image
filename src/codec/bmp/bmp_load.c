@@ -297,6 +297,20 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
       return GIMG_ERR_UNSUPPORTED;
   }
 
+  // A negative biHeight means top-down rows, and the format does not allow it
+  // together with either RLE encoding: an RLE stream is a sequence of row
+  // instructions whose "end of line" walks in one direction only, so a
+  // top-down RLE bitmap does not say which way it walks.  Windows refuses
+  // such a file and so do GdkPixbuf and netpbm.  Decoding one bottom-up, as
+  // this codec used to, produced a silently upside-down image.
+  if (out->top_down &&
+      (out->compression == GIMG_BMP_BI_RLE8 ||
+          out->compression == GIMG_BMP_BI_RLE4)) {
+    bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
+        "RLE cannot be combined with top-down rows");
+    return GIMG_ERR_CORRUPT;
+  }
+
   // Channel masks.  V2 and later carry them inline; a plain BITMAPINFOHEADER
   // with BI_BITFIELDS stores them in the three 32-bit words that follow the
   // header, which is where the palette would otherwise begin.
