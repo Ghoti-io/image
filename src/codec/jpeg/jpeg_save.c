@@ -25,6 +25,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../color/color_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../../meta/exif_internal.h"
 #include "../../raster/raster_internal.h"
@@ -213,9 +214,19 @@ static GIMG_Result jpeg_write_app_segment(GIMG_Stream * stream, uint8_t marker,
  * count lives in one byte, so 255 segments is the format's ceiling; a profile
  * past it cannot be written as a JPEG at all.
  *
+ * When the raster carries no profile but does state a color model, one is
+ * built to say what it states.  This is the only place the library writes a
+ * color statement the source did not carry, and it is here because APP2 is
+ * the only place a JPEG has to put one: a raster that knew its primaries and
+ * its gamma had both silently dropped on the way into a format with no gAMA
+ * and no cHRM.  It is done only for a three-component frame, the one an RGB
+ * matrix profile describes; a gray or CMYK frame would need a different kind
+ * of profile and gets none.
+ *
  * @param stream Destination.
- * @param info The raster's color info; nothing is written when it has no
- *   profile.
+ * @param info The raster's color info; nothing is written when it has neither
+ *   a profile nor a color model complete enough to state.
+ * @param num_components Components in the frame being written.
  * @param alloc Allocator for the one segment-sized staging buffer.
  * @param report Byte count is added to.
  * @return GIMG_OK, or a write error.  A profile too large for the format is
@@ -223,28 +234,45 @@ static GIMG_Result jpeg_write_app_segment(GIMG_Stream * stream, uint8_t marker,
  *   annotation could not be carried.
  */
 static GIMG_Result jpeg_write_icc_from_info(GIMG_Stream * stream,
-    const GIMG_Color_Info * info, const GIMG_Allocator * alloc,
-    GIMG_Save_Report * report) {
-  if (!info || !info->icc_bytes || info->icc_size == 0) {
+    const GIMG_Color_Info * info, int num_components,
+    const GIMG_Allocator * alloc, GIMG_Save_Report * report) {
+  if (!info) {
     return GIMG_OK;
   }
+  const unsigned char * src = (const unsigned char *)info->icc_bytes;
+  size_t icc_size = info->icc_size;
+  void * synthesized = NULL;
+  if (!src || icc_size == 0) {
+    if (num_components != 3) {
+      return GIMG_OK;
+    }
+    GIMG_Result sr = gimg_icc_synthesize(alloc, info, &synthesized, &icc_size);
+    if (sr != GIMG_OK) {
+      return sr;
+    }
+    if (!synthesized) {
+      return GIMG_OK;
+    }
+    src = (const unsigned char *)synthesized;
+  }
   size_t per_chunk = GIMG_JPEG_MAX_APP_PAYLOAD - GIMG_JPEG_ICC_PREFIX_LEN;
-  size_t chunks = (info->icc_size + per_chunk - 1) / per_chunk;
+  size_t chunks = (icc_size + per_chunk - 1) / per_chunk;
   if (chunks > GIMG_JPEG_MAX_ICC_CHUNKS) {
+    gimg_free(alloc, synthesized);
     return GIMG_OK;
   }
 
   unsigned char * seg = (unsigned char *)gimg_malloc(
       alloc, GIMG_JPEG_ICC_PREFIX_LEN + per_chunk);
   if (!seg) {
+    gimg_free(alloc, synthesized);
     return GIMG_ERR_OOM;
   }
   memcpy(seg, "ICC_PROFILE\0", 12);
   seg[13] = (unsigned char)chunks;
 
   GIMG_Result r = GIMG_OK;
-  const unsigned char * src = (const unsigned char *)info->icc_bytes;
-  size_t left = info->icc_size;
+  size_t left = icc_size;
   for (size_t i = 0; i < chunks; i++) {
     size_t take = left < per_chunk ? left : per_chunk;
     seg[12] = (unsigned char)(i + 1);
@@ -258,6 +286,7 @@ static GIMG_Result jpeg_write_icc_from_info(GIMG_Stream * stream,
     left -= take;
   }
   gimg_free(alloc, seg);
+  gimg_free(alloc, synthesized);
   return r;
 }
 
@@ -4090,7 +4119,8 @@ have_scan:
       // a way of not losing a profile that arrived from somewhere else, such
       // as a BMP's V5 embedded one or a PNG's iCCP.
       if (!wrote_icc_from_raw && policy != GIMG_META_KEEP_RAW_ONLY) {
-        r = jpeg_write_icc_from_info(stream, out_color, alloc, report);
+        r = jpeg_write_icc_from_info(
+            stream, out_color, num_components, alloc, report);
         if (r != GIMG_OK) {
           gimg_free(alloc, to_free);
           return r;
@@ -4214,7 +4244,8 @@ have_scan:
       // color space is not one of them: it describes what the samples mean,
       // and the PNG writer keeps it under this policy for the same reason.
       // APP2 is the only place a JPEG can say it.
-      r = jpeg_write_icc_from_info(stream, out_color, alloc, report);
+      r = jpeg_write_icc_from_info(
+          stream, out_color, num_components, alloc, report);
       if (r != GIMG_OK) {
         gimg_free(alloc, to_free);
         return r;

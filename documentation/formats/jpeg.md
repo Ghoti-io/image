@@ -94,18 +94,38 @@ of which has CMYK - use `gimg_ops_convert_pixel_format`; see
 
 A JPEG has one place to state a color space: APP2 segments introduced by
 `ICC_PROFILE\0` (ICC.1:2010 Annex B.4). There is no equivalent of PNG's
-`gAMA` or `cHRM`, so primaries and a transfer function that arrived without a
-profile cannot be written at all - only an ICC profile survives a save.
+`gAMA` or `cHRM`, so a color model that arrived without a profile has nowhere
+of its own to go - only an ICC profile survives a save.
 
-This is the one asymmetry left in the conversion matrix. A BMP with a
-calibrated V4 header naming Adobe RGB and a gamma of 2.2 keeps both through a
-save as BMP and, since `cHRM`, through a save as PNG; saved as a JPEG it keeps
-neither, because there is nowhere in the format to put them. The remedy would
-be to **synthesize** an ICC profile from what `GIMG_Color_Info` states - a
-few hundred bytes of `rXYZ`, `gXYZ`, `bXYZ`, `wtpt` and three `TRC` curves -
-which is what a tool with a color engine does. That is writing a profile the
-source never carried, and it has not been done here; it is recorded as a
-choice rather than an oversight.
+**So one is built for it.** A BMP with a calibrated V4 header naming Adobe RGB
+and a gamma of 2.2 carries no profile at all; saved as a JPEG it used to keep
+neither half, because there was nowhere in the format to put them. Such a
+raster now gets an ICC v2.1 RGB matrix/TRC profile synthesized from what
+`GIMG_Color_Info` states: `rXYZ`, `gXYZ`, `bXYZ` and `wtpt` for the gamut,
+and a shared tone curve for the transfer function.
+
+This is the only place in the library that manufactures a color statement
+rather than repeating one, and the rules that keep it honest are worth
+stating:
+
+- **A profile the source carried always wins.** Synthesis happens only where
+  there is nothing to repeat. A raster that carries a profile has that
+  profile written byte for byte, whatever else its color info says.
+- **Half a model is written as nothing.** Primaries without a transfer
+  function, or a transfer function without primaries, cannot become a
+  matrix/TRC profile without inventing the missing half, so nothing is
+  written. That is what such a raster got before this existed.
+- **Only a three-component frame.** What is built describes an RGB image.
+  A gray or CMYK frame would need a different kind of profile and gets none.
+
+The profile is 492 bytes for a stated gamma and 976 for the sRGB transfer
+function, whose curve has to be tabulated: 256 sample points, which measures
+within 0.78 of 65535 of the true curve, the floor set by rounding the samples
+themselves. For comparison littleCMS's own sRGB profile is 588 bytes, the
+difference being that it is a v4 profile stating the curve in closed form.
+The colorants are the published D50-adapted values, so a consumer comparing
+this profile to the one everyone else ships finds the same primaries rather
+than a rounding of them.
 
 **The segments the file came with win.** A document loaded from a JPEG that
 carried APP2 ICC has those segments written back verbatim, single or

@@ -286,8 +286,11 @@ Until this was written the writer emitted only a 40- or 56-byte header, so a
 BMP loaded and saved as a BMP lost the color it arrived with - the one
 conversion of the three that did not keep it. A profile also reaches a PNG
 saved from the same document (\ref format_png "PNG"'s *Color on save*) and a
-JPEG (\ref format_jpeg "JPEG"'s *Color on save*). Pillow and GdkPixbuf both
-read the V4 and V5 files this writes.
+JPEG (\ref format_jpeg "JPEG"'s *Color on save*). A calibrated V4 header
+states a gamut and a gamma while carrying no profile at all; that reaches a
+PNG as `cHRM` and `gAMA`, and a JPEG as a profile synthesized to say it, since
+APP2 is the only place a JPEG can. Pillow and GdkPixbuf both read the V4 and
+V5 files this writes.
 
 ## Compliance checklist
 
