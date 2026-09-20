@@ -224,6 +224,46 @@ TEST(BmpDecode, Rgb32AllZeroHighBytesStayOpaqueUnderTheHeuristic) {
   expect_pattern(img);
 }
 
+TEST(BmpDecode, AlphaBitfieldsMasksFollowTheHeader) {
+  // A V3 header carries its four masks inside itself; BI_ALPHABITFIELDS puts
+  // them in the sixteen bytes after a plain 40-byte BITMAPINFOHEADER, where
+  // the palette would otherwise begin.  bmpsuite's q/rgba32abf.bmp is the
+  // same case, and no decoder installed here reads one.
+  const uint8_t expected_alpha[4] = {255, 170, 85, 0};
+
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_alphabitfields.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  for (uint32_t y = 0; y < 4; y++) {
+    for (uint32_t x = 0; x < 4; x++) {
+      Rgba px = img.at(x, y);
+      EXPECT_EQ(px.a, expected_alpha[y]) << "alpha at (" << x << "," << y << ")";
+      EXPECT_EQ(px.r, kPattern[y][x].r) << "red at (" << x << "," << y << ")";
+      EXPECT_EQ(px.g, kPattern[y][x].g) << "green at (" << x << "," << y << ")";
+      EXPECT_EQ(px.b, kPattern[y][x].b) << "blue at (" << x << "," << y << ")";
+    }
+  }
+}
+
+TEST(BmpLoad, OversizeColorCountIsClampedRatherThanRejected) {
+  // A biClrUsed above 2^bpp names entries no index can reach.  Such files are
+  // common and the surplus is unreachable rather than wrong, so the count is
+  // clamped and the picture decoded - which is more permissive than Pillow
+  // and GdkPixbuf, both of which refuse bmpsuite's q/pal8oversizepal.bmp.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x1_oversize_palette.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  ASSERT_EQ(img.width(), 4u);
+  // The generator's entry i is (r, g, b) = (i, i * 3, i * 5), truncated.
+  for (uint32_t x = 0; x < 4; x++) {
+    unsigned int index = (x == 3) ? 255u : x;
+    Rgba px = img.at(x, 0);
+    EXPECT_EQ(px.r, (uint8_t)index) << "at x=" << x;
+    EXPECT_EQ(px.g, (uint8_t)(index * 3u)) << "at x=" << x;
+    EXPECT_EQ(px.b, (uint8_t)(index * 5u)) << "at x=" << x;
+  }
+}
+
 TEST(BmpDecode, Rgb32BitfieldsAlphaIsHonored) {
   // With an explicit alpha mask the channel is real and must survive.  The
   // fixture ramps alpha per row: 255, 170, 85, 0 from the top.

@@ -169,6 +169,27 @@ def true_color_fixtures() -> None:
                    b"".join(rows)))
 
 
+def alphabitfields_fixture() -> None:
+    """BI_ALPHABITFIELDS: four masks in the words after a 40-byte header.
+
+    A V3 header carries its four masks inside itself; compression 6 puts them
+    after a plain BITMAPINFOHEADER instead, where the palette would otherwise
+    begin.  bmpsuite's q/rgba32abf.bmp is the same case, and nothing else
+    installed here decodes one.
+    """
+    masks = struct.pack("<IIII", 0x00FF0000, 0x0000FF00, 0x000000FF,
+                        0xFF000000)
+    rows = []
+    for y, row in enumerate(bottom_up(PATTERN)):
+        alpha = [0, 85, 170, 255][y]
+        rows.append(b"".join(bytes([b, g, r, alpha]) for (r, g, b) in row))
+    # compression 6, and the masks follow the 40-byte header rather than
+    # living inside it.
+    write("bmp_4x4_alphabitfields.bmp",
+          assemble(info_header(4, 4, 32, compression=6), masks,
+                   b"".join(rows)))
+
+
 def palette_fixtures() -> None:
     # A 6-entry palette; indices 0..5 only.
     colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255),
@@ -298,6 +319,22 @@ def os2_fixtures() -> None:
              + bytes([0, 1]))                 # End of bitmap.
     write("bmp_8x2_rle24.bmp",
           assemble(os2v2_header(64, 8, 2, 24, compression=4), b"", rle24))
+
+
+def oversize_palette_fixture() -> None:
+    """A biClrUsed larger than the indices can address.
+
+    Clamped to 2^bpp rather than rejected: the surplus entries are
+    unreachable, not wrong.  The file still has to carry the 256 entries the
+    clamp will read, which is what makes this different from a truncated
+    palette.
+    """
+    palette = b"".join(bytes([(i * 5) & 0xFF, (i * 3) & 0xFF, i, 0])
+                       for i in range(256))
+    rows = [pad_row(bytes([0, 1, 2, 255]))]
+    write("bmp_4x1_oversize_palette.bmp",
+          assemble(info_header(4, 1, 8, clr_used=1000), palette,
+                   b"".join(rows)))
 
 
 def rle_fixtures() -> None:
@@ -545,7 +582,9 @@ if __name__ == "__main__":
     print("True color fixtures:")
     true_color_fixtures()
     print("Palette fixtures:")
+    alphabitfields_fixture()
     palette_fixtures()
+    oversize_palette_fixture()
     print("OS/2 fixtures:")
     os2_fixtures()
     print("RLE fixtures:")

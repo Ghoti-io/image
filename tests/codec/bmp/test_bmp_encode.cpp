@@ -206,6 +206,21 @@ Rgba thirty_two_colors_in_runs(uint32_t x, uint32_t y) {
   return Rgba{(uint8_t)(n * 8u), (uint8_t)(n * 3u), (uint8_t)(n * 5u), 255};
 }
 
+/**
+ * Two hundred pixels with no repeat, then a long run of one.
+ *
+ * The RLE8 encoder's absolute-run branch only runs for a stretch with no run
+ * worth encoding in it, and the run-heavy fixture never reaches it: every row
+ * there is runs from end to end.  This one exercises the absolute run, the
+ * odd-length padding it needs (199 literals), and the lookahead that breaks
+ * out of gathering literals when a run of three starts.
+ */
+Rgba literals_then_a_run(uint32_t x, uint32_t y) {
+  (void)y;
+  uint8_t n = (uint8_t)((x < 200u ? x : 199u) % 32u);
+  return Rgba{(uint8_t)(n * 8u), (uint8_t)(n * 3u), (uint8_t)(n * 5u), 255};
+}
+
 /** More distinct colors than a palette can hold. */
 Rgba too_many_colors(uint32_t x, uint32_t y) {
   uint32_t i = (y * 32u) + x;
@@ -689,4 +704,32 @@ TEST(BmpEncode, TopDownAndRleTogetherAreRefused) {
   std::vector<uint8_t> bytes;
   EXPECT_EQ(save_raster_with_options(raster, &options, bytes),
       GIMG_ERR_UNSUPPORTED);
+}
+
+TEST(BmpEncode, Rle8EncodesAbsoluteRunsAsWellAsRepeats) {
+  // The run-heavy fixture never reaches the encoder's absolute-run branch,
+  // because every row of it is runs from end to end.  This image is 200
+  // pixels with no repeat followed by a run of one colour, so it takes the
+  // absolute run, the odd-length padding that needs, and the lookahead that
+  // stops gathering literals when a run of three begins.
+  GIMG_Save_Options options = {};
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+
+  GIMG_Raster * plain = make_raster(256, 8, literals_then_a_run);
+  GIMG_Raster * raster = make_raster(256, 8, literals_then_a_run);
+  ASSERT_NE(plain, nullptr);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> uncompressed;
+  ASSERT_EQ(save_raster(plain, uncompressed), GIMG_OK);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u32(bytes, 30), 1u) << "BI_RLE8";
+  EXPECT_LT(bytes.size(), uncompressed.size());
+
+  expect_round_trip(bytes, 256, 8, literals_then_a_run);
+  publish_for_verification("rle8_absolute_256x8.bmp", bytes, 256, 8,
+      literals_then_a_run);
 }
