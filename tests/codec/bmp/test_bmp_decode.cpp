@@ -1108,3 +1108,40 @@ TEST(BmpDecode, NoLimitsMeansTheHeaderIsStillCheckedAgainstTheFile) {
   EXPECT_NE(r, GIMG_OK)
       << "a 118-byte file cannot hold eight gigabytes of pixels";
 }
+
+TEST(BmpDecode, AProfileLargerThanThisCodecReadsLeavesTheFileUntagged) {
+  // bV5ProfileSize is 32 bits, so a file can name a profile of four
+  // gigabytes.  Past the cap the image still decodes - it is not wrong
+  // because its colour annotation is absurd - it just decodes untagged.
+  // The writer's side of this cap is asserted in test_bmp_encode.cpp; this is
+  // the reader's.
+  std::vector<uint8_t> file(14u + 124u + 16u, 0);
+  auto put32 = [&file](size_t at, uint32_t v) {
+    file[at] = (uint8_t)(v & 0xFFu);
+    file[at + 1] = (uint8_t)((v >> 8) & 0xFFu);
+    file[at + 2] = (uint8_t)((v >> 16) & 0xFFu);
+    file[at + 3] = (uint8_t)((v >> 24) & 0xFFu);
+  };
+  file[0] = 'B';
+  file[1] = 'M';
+  put32(2, (uint32_t)file.size());
+  put32(10, 14u + 124u);
+  put32(14, 124u);  // BITMAPV5HEADER
+  put32(18, 2u);    // width
+  put32(22, 2u);    // height
+  file[26] = 1;     // planes
+  file[28] = 24;    // bits per pixel
+  put32(30, 0u);    // BI_RGB
+  put32(14 + 56, 0x4D424544u);          // bV5CSType = 'MBED'
+  put32(14 + 112, 124u);                // bV5ProfileData
+  put32(14 + 116, 64u * 1024u * 1024u); // bV5ProfileSize: 64 MiB
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(file, nullptr), GIMG_OK)
+      << "the picture is fine; only its colour annotation is absurd";
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  const GIMG_Color_Info * ci = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(ci, nullptr);
+  EXPECT_EQ(ci->icc_size, 0u);
+  EXPECT_EQ(ci->icc_bytes, nullptr);
+}

@@ -7138,3 +7138,55 @@ TEST(JpegEncode, ACmykRasterThatStatesNoPolarityIsWrittenAsItStands) {
   gimg_doc_destroy(back_doc);
   gimg_stream_destroy(s);
 }
+
+TEST(JpegEncode, TheCmykPolarityFlipWorksAtTwelveBitsToo) {
+  // The complement is taken against the raster's own maximum, so a twelve-bit
+  // raster - what a JPEG at extended precision decodes to - has to complement
+  // against 4095 and not 255.  A flip against the wrong maximum would clip
+  // everything to black.
+  const uint16_t values[2][4] = {{0, 1365, 2730, 4095}, {4095, 100, 2000, 0}};
+
+  std::vector<uint8_t> as_ink, as_reflection;
+  for (int pass = 0; pass < 2; pass++) {
+    bool reflection = (pass == 1);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(
+        gimg_raster_create(
+            2, 1, &GIMG_PIXEL_CMYK12, GIMG_RASTER_OWNED, NULL, 0, &raster),
+        GIMG_OK);
+    uint16_t * px = static_cast<uint16_t *>(gimg_raster_pixels(raster));
+    for (int x = 0; x < 2; x++) {
+      for (int c = 0; c < 4; c++) {
+        uint16_t v = values[x][c];
+        px[(x * 4) + c] = reflection ? (uint16_t)(4095u - v) : v;
+      }
+    }
+    GIMG_Color_Info ci;
+    gimg_color_info_default(&ci);
+    ci.cmyk_polarity = reflection ? GIMG_CMYK_POLARITY_REFLECTION
+                                  : GIMG_CMYK_POLARITY_INK;
+    ASSERT_EQ(gimg_raster_set_color_info(raster, &ci), GIMG_OK);
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.quality = 100;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+    const void * bytes = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &bytes, &size);
+    std::vector<uint8_t> & into = reflection ? as_reflection : as_ink;
+    into.assign(static_cast<const uint8_t *>(bytes),
+        static_cast<const uint8_t *>(bytes) + size);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+  }
+
+  EXPECT_EQ(as_ink, as_reflection)
+      << "complemented against 4095, the two describe the same picture";
+  EXPECT_FALSE(as_ink.empty());
+}

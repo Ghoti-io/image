@@ -1367,3 +1367,35 @@ TEST(BmpEncode, SavingFromADocumentWhoseRasterTheSaveOwnsWritesTheRightProfile) 
       << "the profile written must be the one that went in";
   EXPECT_EQ(first, second) << "and the second save must reproduce the first";
 }
+
+TEST(BmpEncode, KnownPrimariesWithNoTransferWriteEndpointsAndNoGamma) {
+  // Either half of a calibrated header may be left at zero.  A gamma of zero
+  // reads back as no transfer stated, so saying only the half that is known
+  // beats inventing the other.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.primaries = GIMG_PRIMARIES_SRGB;
+  color.white_point = GIMG_PRIMARIES_SRGB;
+  GIMG_Raster * raster = colored_raster(color);
+  ASSERT_NE(raster, nullptr);
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  ASSERT_EQ(dib_size_of(bytes), 108u);
+  EXPECT_EQ(dib_u32(bytes, 56), 0u) << "LCS_CALIBRATED_RGB";
+  EXPECT_EQ(dib_u32(bytes, 96), 0u) << "no gamma was stated, so none is written";
+  EXPECT_EQ(dib_u32(bytes, 100), 0u);
+  EXPECT_EQ(dib_u32(bytes, 104), 0u);
+  // sRGB's red primary is x=0.64, y=0.33 as FXPT2DOT30 xyY.
+  EXPECT_NEAR((double)dib_u32(bytes, 60) / 1073741824.0, 0.64, 0.001);
+  EXPECT_NEAR((double)dib_u32(bytes, 64) / 1073741824.0, 0.33, 0.001);
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(back, nullptr);
+  EXPECT_EQ(back->primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(back->transfer, GIMG_TRANSFER_UNKNOWN)
+      << "the file stated no curve, so neither does the raster";
+}
