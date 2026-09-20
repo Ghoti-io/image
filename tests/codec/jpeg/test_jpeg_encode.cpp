@@ -6597,3 +6597,254 @@ TEST(JpegIdct, Pass1ResultReachesPass2WithoutBeingNarrowed) {
                             "general path";
   }
 }
+
+namespace {
+
+/**
+ * Save a raster as a JPEG under one metadata policy.
+ *
+ * The raster becomes the document's only item, so nothing but the raster's own
+ * color info can tell the writer what color space to state - which is the
+ * case these tests are about.
+ */
+static GIMG_Result save_raster_as_jpeg(const GIMG_Color_Info & color,
+    GIMG_Meta_Policy policy, std::vector<uint8_t> & out) {
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_create(&doc) != GIMG_OK || !doc) {
+    return GIMG_ERR_OOM;
+  }
+  GIMG_Raster * raster = nullptr;
+  GIMG_Result r = gimg_raster_create(
+      8, 8, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0, &raster);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  memset(gimg_raster_pixels(raster), 128, 8u * 8u * 4u);
+  r = gimg_raster_set_color_info(raster, &color);
+  if (r != GIMG_OK) {
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * stream = nullptr;
+  r = gimg_stream_create_memory_output(&stream);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return r;
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = policy;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, stream, "jpeg", &opts, &report);
+  if (r == GIMG_OK) {
+    const void * buffer = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(stream, &buffer, &size);
+    const uint8_t * bytes = static_cast<const uint8_t *>(buffer);
+    out.assign(bytes, bytes + size);
+  }
+  gimg_stream_destroy(stream);
+  gimg_doc_destroy(doc);
+  return r;
+}
+
+/**
+ * Collect the payload of every APP2 segment introduced by "ICC_PROFILE\0",
+ * in the order they appear, with the 14-byte header still on the front.
+ */
+static std::vector<std::vector<uint8_t>> app2_icc_segments(
+    const std::vector<uint8_t> & jpeg) {
+  std::vector<std::vector<uint8_t>> found;
+  size_t i = 2; // past SOI
+  while (i + 4 <= jpeg.size() && jpeg[i] == 0xFF) {
+    uint8_t marker = jpeg[i + 1];
+    if (marker == 0xD8 || marker == 0xD9 || marker == 0x01 ||
+        (marker >= 0xD0 && marker <= 0xD7)) {
+      i += 2;
+      continue;
+    }
+    size_t len = (size_t)((jpeg[i + 2] << 8) | jpeg[i + 3]);
+    if (len < 2 || i + 2 + len > jpeg.size()) {
+      break;
+    }
+    const uint8_t * payload = jpeg.data() + i + 4;
+    size_t payload_len = len - 2;
+    if (marker == 0xE2 && payload_len >= 14 &&
+        memcmp(payload, "ICC_PROFILE\0", 12) == 0) {
+      found.push_back(
+          std::vector<uint8_t>(payload, payload + payload_len));
+    }
+    if (marker == 0xDA) {
+      break; // entropy-coded data follows; no more headers to walk
+    }
+    i += 2 + len;
+  }
+  return found;
+}
+
+/** Join the data of a run of ICC_PROFILE segments, headers dropped. */
+static std::vector<uint8_t> icc_from_segments(
+    const std::vector<std::vector<uint8_t>> & segments) {
+  std::vector<uint8_t> profile;
+  for (const std::vector<uint8_t> & seg : segments) {
+    profile.insert(profile.end(), seg.begin() + 14, seg.end());
+  }
+  return profile;
+}
+
+/**
+ * A syntactically plausible ICC profile of a given size: its declared length
+ * in the first four bytes and the 'acsp' signature at offset 36, so a reader
+ * that sanity-checks a profile before storing it has something to accept.
+ */
+static std::vector<uint8_t> synthetic_profile(size_t size) {
+  std::vector<uint8_t> profile(size < 128 ? 128 : size, 0);
+  profile[0] = (uint8_t)(profile.size() >> 24);
+  profile[1] = (uint8_t)(profile.size() >> 16);
+  profile[2] = (uint8_t)(profile.size() >> 8);
+  profile[3] = (uint8_t)profile.size();
+  memcpy(profile.data() + 36, "acsp", 4);
+  for (size_t i = 40; i < profile.size(); i++) {
+    profile[i] = (uint8_t)((i * 7u) & 0xFFu);
+  }
+  return profile;
+}
+
+} // namespace
+
+TEST(JpegEncode, EmbeddedProfileOnTheRasterIsWrittenAsApp2) {
+  // A document that did not arrive as a JPEG has no APP2 in its raw metadata
+  // to preserve, so without this its profile was lost: a BMP with a V5
+  // embedded profile, saved as a JPEG, came out untagged and the profile was
+  // read only to be dropped.
+  std::vector<uint8_t> profile = synthetic_profile(512);
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_EQ(save_raster_as_jpeg(color, GIMG_META_PRESERVE_ALL, jpeg), GIMG_OK);
+
+  std::vector<std::vector<uint8_t>> segments = app2_icc_segments(jpeg);
+  ASSERT_EQ(segments.size(), 1u);
+  EXPECT_EQ(segments[0][12], 1); // chunk 1
+  EXPECT_EQ(segments[0][13], 1); // of 1
+  EXPECT_EQ(icc_from_segments(segments), profile);
+
+  // And the library reads back what it wrote.
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
+  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  ASSERT_NE(read, nullptr);
+  ASSERT_EQ(read->icc_size, profile.size());
+  EXPECT_EQ(memcmp(read->icc_bytes, profile.data(), profile.size()), 0);
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegEncode, AProfileTooBigForOneSegmentIsSplitAndNumbered) {
+  // One APP2 holds 65519 bytes of profile, so a real one - CMYK press
+  // profiles run to hundreds of kilobytes - has to be split, and a reader
+  // reassembles it by the chunk numbers.  A writer that emitted a single
+  // oversized segment would produce a file no decoder could read.
+  const size_t per_chunk = 65533u - 14u;
+  std::vector<uint8_t> profile = synthetic_profile(per_chunk * 2 + 100);
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_EQ(save_raster_as_jpeg(color, GIMG_META_PRESERVE_ALL, jpeg), GIMG_OK);
+
+  std::vector<std::vector<uint8_t>> segments = app2_icc_segments(jpeg);
+  ASSERT_EQ(segments.size(), 3u);
+  for (size_t i = 0; i < segments.size(); i++) {
+    EXPECT_EQ(segments[i][12], (uint8_t)(i + 1)) << "chunk number";
+    EXPECT_EQ(segments[i][13], 3) << "chunk count";
+  }
+  EXPECT_EQ(segments[0].size(), 14u + per_chunk);
+  EXPECT_EQ(segments[2].size(), 14u + 100u);
+  EXPECT_EQ(icc_from_segments(segments), profile);
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
+  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  ASSERT_NE(read, nullptr);
+  ASSERT_EQ(read->icc_size, profile.size());
+  EXPECT_EQ(memcmp(read->icc_bytes, profile.data(), profile.size()), 0);
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(JpegEncode, AProfilePastTheFormatsCeilingIsLeftOutRatherThanTruncated) {
+  // The chunk count is one byte, so 255 segments is all a JPEG can carry.  A
+  // profile past that is written as no profile: a truncated one would be
+  // worse than none, since a reader has no way to tell it is incomplete.
+  const size_t per_chunk = 65533u - 14u;
+  std::vector<uint8_t> profile = synthetic_profile(per_chunk * 255 + 1);
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_EQ(save_raster_as_jpeg(color, GIMG_META_PRESERVE_ALL, jpeg), GIMG_OK);
+  EXPECT_TRUE(app2_icc_segments(jpeg).empty());
+}
+
+TEST(JpegEncode, KeepCommonOnlyStillStatesTheColorSpace) {
+  // Dropping the segments a file arrived with does not mean dropping what its
+  // samples mean.  The PNG writer keeps color under this policy too.
+  std::vector<uint8_t> profile = synthetic_profile(256);
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_EQ(
+      save_raster_as_jpeg(color, GIMG_META_KEEP_COMMON_ONLY, jpeg), GIMG_OK);
+  EXPECT_EQ(icc_from_segments(app2_icc_segments(jpeg)), profile);
+}
+
+TEST(JpegEncode, DropAllAndKeepRawOnlyWriteNoProfile) {
+  // DROP_ALL is asked for a file with nothing attached.  KEEP_RAW_ONLY is
+  // asked for the segments the file arrived with and no others, so a profile
+  // that reached the raster from somewhere else is not synthesized into one.
+  std::vector<uint8_t> profile = synthetic_profile(256);
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.icc_bytes = profile.data();
+  color.icc_size = profile.size();
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_EQ(save_raster_as_jpeg(color, GIMG_META_DROP_ALL, jpeg), GIMG_OK);
+  EXPECT_TRUE(app2_icc_segments(jpeg).empty());
+
+  jpeg.clear();
+  ASSERT_EQ(save_raster_as_jpeg(color, GIMG_META_KEEP_RAW_ONLY, jpeg), GIMG_OK);
+  EXPECT_TRUE(app2_icc_segments(jpeg).empty());
+}
+
+TEST(JpegEncode, ARasterWithNoProfileGetsNoApp2) {
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  std::vector<uint8_t> jpeg;
+  ASSERT_EQ(save_raster_as_jpeg(color, GIMG_META_PRESERVE_ALL, jpeg), GIMG_OK);
+  EXPECT_TRUE(app2_icc_segments(jpeg).empty());
+}

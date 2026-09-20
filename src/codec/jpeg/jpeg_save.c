@@ -174,7 +174,7 @@ static GIMG_Result jpeg_write_scan_data_with_stuffing(GIMG_Stream * stream,
 /** Write APP segment: marker + length (2 + payload_len) + payload. */
 static GIMG_Result jpeg_write_app_segment(GIMG_Stream * stream, uint8_t marker,
     const void * payload, size_t payload_len, size_t * out_n) {
-  if (payload_len > 65533u) {
+  if (payload_len > GIMG_JPEG_MAX_APP_PAYLOAD) {
     return GIMG_ERR_LIMIT;
   }
   GIMG_Result r = jpeg_write_marker(stream, marker, out_n);
@@ -196,6 +196,69 @@ static GIMG_Result jpeg_write_app_segment(GIMG_Stream * stream, uint8_t marker,
     }
   }
   return GIMG_OK;
+}
+
+/**
+ * Write the raster's ICC profile as APP2 ICC_PROFILE segment(s).
+ *
+ * This is the fallback for a document that did not arrive as a JPEG and so
+ * has no APP2 in its raw metadata to preserve.  Without it a BMP with a V5
+ * embedded profile, or a PNG with iCCP, saved as a JPEG came out untagged:
+ * the profile was read only to be dropped, exactly as PNG's iCCP was before
+ * the raster became its fallback source.
+ *
+ * A profile is split across segments because one APP2 holds only 65519 bytes
+ * of it.  Each carries "ICC_PROFILE\0", its own 1-based number and the count,
+ * which is how a reader knows to reassemble them (ICC.1:2010 Annex B.4).  The
+ * count lives in one byte, so 255 segments is the format's ceiling; a profile
+ * past it cannot be written as a JPEG at all.
+ *
+ * @param stream Destination.
+ * @param info The raster's color info; nothing is written when it has no
+ *   profile.
+ * @param alloc Allocator for the one segment-sized staging buffer.
+ * @param report Byte count is added to.
+ * @return GIMG_OK, or a write error.  A profile too large for the format is
+ *   skipped rather than fatal: the picture is not wrong because its color
+ *   annotation could not be carried.
+ */
+static GIMG_Result jpeg_write_icc_from_info(GIMG_Stream * stream,
+    const GIMG_Color_Info * info, const GIMG_Allocator * alloc,
+    GIMG_Save_Report * report) {
+  if (!info || !info->icc_bytes || info->icc_size == 0) {
+    return GIMG_OK;
+  }
+  size_t per_chunk = GIMG_JPEG_MAX_APP_PAYLOAD - GIMG_JPEG_ICC_PREFIX_LEN;
+  size_t chunks = (info->icc_size + per_chunk - 1) / per_chunk;
+  if (chunks > GIMG_JPEG_MAX_ICC_CHUNKS) {
+    return GIMG_OK;
+  }
+
+  unsigned char * seg = (unsigned char *)gimg_malloc(
+      alloc, GIMG_JPEG_ICC_PREFIX_LEN + per_chunk);
+  if (!seg) {
+    return GIMG_ERR_OOM;
+  }
+  memcpy(seg, "ICC_PROFILE\0", 12);
+  seg[13] = (unsigned char)chunks;
+
+  GIMG_Result r = GIMG_OK;
+  const unsigned char * src = (const unsigned char *)info->icc_bytes;
+  size_t left = info->icc_size;
+  for (size_t i = 0; i < chunks; i++) {
+    size_t take = left < per_chunk ? left : per_chunk;
+    seg[12] = (unsigned char)(i + 1);
+    memcpy(seg + GIMG_JPEG_ICC_PREFIX_LEN, src, take);
+    r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP2, seg,
+        GIMG_JPEG_ICC_PREFIX_LEN + take, &report->bytes_written);
+    if (r != GIMG_OK) {
+      break;
+    }
+    src += take;
+    left -= take;
+  }
+  gimg_free(alloc, seg);
+  return r;
 }
 
 /** Build minimal APP0 JFIF (14 bytes), per JFIF 1.01. Lh=16 so segment is
@@ -3893,6 +3956,7 @@ have_scan:
       }
 
       // APP2 ICC: multi-segment (CHUNKS) or single segment (APP2_ICC).
+      bool wrote_icc_from_raw = false;
       size_t icc_chunks_size = 0;
       if (meta_raw &&
           gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP2_ICC_CHUNKS,
@@ -3928,6 +3992,7 @@ have_scan:
           gimg_free(alloc, to_free);
           return r;
         }
+        wrote_icc_from_raw = true;
       }
       else if (meta_raw) {
         size_t icc_size = 0;
@@ -3949,6 +4014,20 @@ have_scan:
             gimg_free(alloc, to_free);
             return r;
           }
+          wrote_icc_from_raw = true;
+        }
+      }
+
+      // A profile the raster carries but the file did not.  The segment the
+      // file came with wins, the same way the APP0 density does; this is only
+      // a way of not losing a profile that arrived from somewhere else, such
+      // as a BMP's V5 embedded one or a PNG's iCCP.
+      if (!wrote_icc_from_raw && policy != GIMG_META_KEEP_RAW_ONLY) {
+        r = jpeg_write_icc_from_info(
+            stream, gimg_raster_color_info_const(raster), alloc, report);
+        if (r != GIMG_OK) {
+          gimg_free(alloc, to_free);
+          return r;
         }
       }
 
@@ -4062,6 +4141,18 @@ have_scan:
           gimg_free(alloc, to_free);
           return r;
         }
+      }
+    }
+    else if (policy == GIMG_META_KEEP_COMMON_ONLY) {
+      // KEEP_COMMON_ONLY drops the segments the file arrived with, but a
+      // color space is not one of them: it describes what the samples mean,
+      // and the PNG writer keeps it under this policy for the same reason.
+      // APP2 is the only place a JPEG can say it.
+      r = jpeg_write_icc_from_info(
+          stream, gimg_raster_color_info_const(raster), alloc, report);
+      if (r != GIMG_OK) {
+        gimg_free(alloc, to_free);
+        return r;
       }
     }
   }

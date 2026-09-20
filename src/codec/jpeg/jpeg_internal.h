@@ -289,6 +289,19 @@ static inline void gimg_jpeg_sampling_max(int num_components,
 #define GIMG_JPEG_MAX_ICC_CHUNKS 255u
 
 /**
+ * Largest payload an APP segment can carry: the 16-bit length field counts
+ * itself, so a segment holds 65535 - 2 bytes after it.
+ */
+#define GIMG_JPEG_MAX_APP_PAYLOAD 65533u
+
+/**
+ * Bytes an APP2 ICC_PROFILE segment spends before the profile data: the
+ * twelve of "ICC_PROFILE\0", then a 1-based chunk number and the chunk count
+ * (ICC.1:2010 Annex B.4).
+ */
+#define GIMG_JPEG_ICC_PREFIX_LEN 14u
+
+/**
  * Max assembled ICC profile size (bytes). Rationale: bomb protection; match
  * PNG iCCP limit (4 MiB).
  */

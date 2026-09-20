@@ -404,10 +404,9 @@ Listed so the absences are visible rather than discovered.
   or V5 file is not written back into one.
 
   A profile read from a BMP does reach a PNG saved from the same document -
-  see \ref format_png "PNG"'s *Color on save* - so a BMP-to-PNG conversion
-  keeps it. It does not reach a JPEG: that writer's APP2 comes from the
-  segments a JPEG arrived with, the same way the PNG writer's `iCCP` did
-  before this was wired up.
+  see \ref format_png "PNG"'s *Color on save* - and a JPEG saved from it, as
+  APP2 `ICC_PROFILE` segments; see \ref format_jpeg "JPEG"'s *Color on save*.
+  So a BMP-to-PNG or BMP-to-JPEG conversion keeps it.
 
 ---
 

@@ -71,6 +71,47 @@ All fourteen frame headers of T.81 Table B.1 are read: sequential (SOF0, SOF1), 
 - **Color:** Grayscale (1 component); three components as YCbCr or as RGB; four as CMYK or, with an Adobe APP14 transform of 2, YCCK; any other count as channels with no color meaning. Four-component frames are **written** as well as read: `GIMG_Save_Options.jpeg_cmyk_transform` picks 0 (CMYK, the components unchanged, so a raster from a CMYK JPEG survives a round trip) or 2 (YCCK). That marker is the only thing in a JPEG that distinguishes the two, so it is written whatever the metadata policy says - it is not metadata - and JFIF, which declares three-component data to be YCbCr, is not written beside it. Chroma subsampling applies to a YCCK frame’s two chrominance components and to nothing else: C, M, Y and K are four ink amounts, and libjpeg gives all four 1x1 as well. A three-component frame whose channels carry no color meaning also gets an Adobe marker of transform 0, because three is the count a decoder would otherwise guess at. T.81 describes no color space at all, so which of these a frame carries is decided the way libjpeg decides it (`jdapimin.c`): a JFIF APP0 means YCbCr, else an Adobe APP14 transform, else component identifiers 'R', 'G', 'B', else YCbCr. A three-component frame that already carries RGB is passed through rather than converted — treating one as YCbCr changes every pixel.
 - **Sampling factors:** every H and V from 1 to 4 that T.81 B.2.2 allows and A.2.3's ten-data-unit MCU limit permits — twelve combinations — decoded byte-exactly against libjpeg-turbo 3.0.4 in both upsampling modes. The fancy filters are libjpeg's: h2v1 for 4:2:2, h2v2 for 4:2:0, h1v2 for 4:4:0; every other ratio replicates, as libjpeg's `int_upsample` does. A ratio that does not divide is refused by libjpeg itself (`JERR_FRACT_SAMPLE_NOTIMPL`) and is nothing this codec can be checked against.
 
+## Color on save
+
+A JPEG has one place to state a color space: APP2 segments introduced by
+`ICC_PROFILE\0` (ICC.1:2010 Annex B.4). There is no equivalent of PNG's
+`gAMA` or `cHRM`, so primaries and a transfer function that arrived without a
+profile cannot be written at all - only an ICC profile survives a save.
+
+**The segments the file came with win.** A document loaded from a JPEG that
+carried APP2 ICC has those segments written back verbatim, single or
+multi-part, and nothing is synthesized on top of them.
+
+**A document that brought none gets one from its raster.** That is the case
+for anything that did not arrive as a JPEG. The profile on the raster's
+`GIMG_Color_Info` is written as APP2, split when it does not fit in one
+segment: each carries `ICC_PROFILE\0`, its own 1-based number and the count,
+which is how a reader reassembles it. One segment holds 65519 bytes of
+profile, so a 121908-byte press profile takes two.
+
+The count is one byte, so 255 segments - about 16.7 MB - is the format's
+ceiling. A profile past it is written as no profile rather than a truncated
+one, because a reader has no way to tell an incomplete profile from a whole
+one.
+
+`GIMG_META_DROP_ALL` and `GIMG_META_KEEP_RAW_ONLY` write no profile:
+DROP_ALL is asked for a file with nothing attached, and KEEP_RAW_ONLY for the
+segments the file arrived with and no others.
+`GIMG_META_KEEP_COMMON_ONLY` does write it, as PNG's *Color on save* does -
+a color space describes what the samples mean rather than being something
+attached to them.
+
+Until this was wired up the APP2 writer read only from raw metadata, so a BMP
+carrying a V5 embedded ICC profile came out as an untagged JPEG and the
+profile was read only to be dropped. The check is that bmpsuite's
+`q/rgb24prof.bmp`, saved as a JPEG, hands Pillow 3048 bytes identical to those
+in the BMP, which littleCMS reads as *sRGB IEC61966-2-1 black scaled*.
+
+**The Adobe APP14 marker is not metadata** and is written whatever the policy
+says; see *Color and sampling* above. It is what tells a decoder whether four
+components are CMYK or YCCK, and a file without it is read by libjpeg's
+fallback rather than by anything the file said.
+
 ## Precision and 12-bit support
 
 - **Extended precision (12-bit):** T.81 Table B.2 gives a DCT-based frame a sample precision of 8 or 12; precision up to 16 exists only for lossless (SOF3). This codec therefore writes and accepts 8 and 12 only. **12-bit encode:** sequential at precision 12 emits SOF1 (extended sequential DCT), single scan, DQT Pq=1; progressive at precision 12 emits SOF2 with two scans (DC then AC), the same extended DHT and 12-bit coefficient range. Both **native 12-bit raster** (GRAY12/RGBA12, uint16_t 0..4095) and the **save option** (`jpeg_precision=12`, with library bit-depth conversion from an 8- or 16-bit raster) are supported; a 16-bit raster is written at 12-bit, and `jpeg_precision=16` returns `GIMG_ERR_UNSUPPORTED`. The extended DHT uses a 242-symbol AC table (162 + 80); note that T.81 F.1.2.2 only needs SSSS up to 14 at 12-bit (226 symbols), so this table is wider than the spec requires — it is not a spec requirement and is under review. 12-bit encode is checked against libjpeg-turbo 3.0.4 at every quality from 80 to 100, sequential and progressive, and the decoded pixels agree exactly; an earlier defect at qualities 88–90 and 94–99, where the encoder produced a file its own decoder rejected, is gone.
