@@ -32,6 +32,8 @@ Example: PNG is registered with READ, WRITE, ANIMATION, PALETTE, ICC, and 16BPC 
 |-------------|-------------|
 | `limits`    | Pointer to **GIMG_Limits**; `NULL` = use defaults (no limits). Enforced during load and decode (chunk size, decoded pixels, frame count). |
 | `strictness`| **GIMG_Strictness** — how to handle recoverable issues (see below). |
+| `jpeg_tables` | For JPEG: tables to install before reading an abbreviated stream (T.81 B.4). Ignored by other codecs. |
+| `bmp_rgb32_alpha` | For BMP: what the undefined fourth byte of a 32-bit `BI_RGB` pixel means. `GIMG_BMP_RGB32_ALPHA_IGNORE` (0, default) decodes such an image opaque; `GIMG_BMP_RGB32_ALPHA_HEURISTIC` reads the byte as alpha when any pixel sets it. A file that *declares* its alpha is unaffected either way. Ignored by other codecs. |
 | `_reserved` | Reserved; set to zero. |
 
 Used by `gimg_doc_load()`.

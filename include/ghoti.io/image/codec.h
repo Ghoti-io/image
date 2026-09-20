@@ -137,6 +137,17 @@ GIMG_API GIMG_Result gimg_jpeg_tables_load(
 GIMG_API void gimg_jpeg_tables_destroy(GIMG_JPEG_Tables * tables);
 
 /**
+ * @brief BMP: what to make of the fourth byte of a 32-bit BI_RGB pixel.
+ * @see api_options
+ */
+/** Ignore it: a 32-bit BI_RGB image decodes fully opaque.  This is the
+ * default, and what GDI, Pillow, GdkPixbuf and netpbm all do. */
+#define GIMG_BMP_RGB32_ALPHA_IGNORE 0
+/** Read it as alpha when any pixel in the image sets it, and as opaque when
+ * every one of them is zero. */
+#define GIMG_BMP_RGB32_ALPHA_HEURISTIC 1
+
+/**
  * @brief Load options (limits, strictness, etc.).
  * @see api_options
  */
@@ -151,7 +162,24 @@ typedef struct {
    * installed, which is what B.2.4.1's "until redefined" means.  Ignored for
    * non-JPEG. */
   const GIMG_JPEG_Tables * jpeg_tables;
-  uint8_t _reserved[8];
+  /** BMP: what the fourth byte of a 32-bit BI_RGB pixel means.
+   *
+   * BI_RGB leaves that byte undefined, and writers split roughly evenly
+   * between storing alpha there and storing zero.  There is no way to tell
+   * the two apart from the file, so this is a policy and not a deduction.
+   *
+   * GIMG_BMP_RGB32_ALPHA_IGNORE (0, the default) decodes such an image fully
+   * opaque, which is what every other decoder does and what the format says
+   * the byte means.  GIMG_BMP_RGB32_ALPHA_HEURISTIC reads the byte as alpha
+   * when any pixel in the image sets it, which recovers an alpha channel a
+   * writer put there without declaring it - at the cost of making an image
+   * whose spare bits are merely dirty come out full of holes.
+   *
+   * A file that declares its alpha - BI_BITFIELDS or BI_ALPHABITFIELDS with
+   * an alpha mask, or a V3 or later header - is not affected by this: its
+   * mask is honored as written either way.  Ignored for non-BMP. */
+  uint8_t bmp_rgb32_alpha;
+  uint8_t _reserved[7];
 } GIMG_Load_Options;
 
 /**

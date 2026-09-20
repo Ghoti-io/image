@@ -140,6 +140,17 @@ def true_color_fixtures() -> None:
     write("bmp_4x4_32bit_zero_high_byte.bmp",
           assemble(info_header(4, 4, 32), b"", b"".join(rows)))
 
+    # 32-bit BI_RGB whose spare high bytes are *not* all zero.  BI_RGB does
+    # not define that byte, so this must still decode opaque by default; with
+    # GIMG_BMP_RGB32_ALPHA_HEURISTIC it becomes an alpha ramp instead.  This
+    # is bmpsuite's q/rgb32fakealpha.bmp in miniature.
+    rows = []
+    for y, row in enumerate(bottom_up(PATTERN)):
+        spare = [0, 85, 170, 255][y]
+        rows.append(b"".join(bytes([b, g, r, spare]) for (r, g, b) in row))
+    write("bmp_4x4_32bit_dirty_high_byte.bmp",
+          assemble(info_header(4, 4, 32), b"", b"".join(rows)))
+
     # 32-bit BI_BITFIELDS with an explicit alpha mask and a real alpha ramp.
     # The four masks live inside the header, which makes it a 56-byte
     # BITMAPV3INFOHEADER; a plain 40-byte header with BI_BITFIELDS carries

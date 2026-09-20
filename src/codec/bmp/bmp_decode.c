@@ -17,10 +17,14 @@
  * truncated palette cannot be read past.
  *
  * 32-bit alpha: BI_RGB leaves the high byte undefined, and writers split
- * roughly evenly between storing alpha there and storing zero.  Honoring a
- * zero byte would make the whole image transparent, so for BI_RGB we scan the
- * high bytes first and treat the channel as opaque when every one of them is
- * zero.  An explicit BI_BITFIELDS alpha mask is always honored as-is.
+ * roughly evenly between storing alpha there and storing zero.  There is
+ * nothing in the file that tells the two apart, so the default is to ignore
+ * the byte and decode opaque, which is what the format says it means and what
+ * every other decoder does.  GIMG_Load_Options.bmp_rgb32_alpha asks instead
+ * for the heuristic - read it as alpha when any pixel sets it - for a caller
+ * whose files are known to carry it.  An explicit alpha mask, from
+ * BI_BITFIELDS, BI_ALPHABITFIELDS or a V3 or later header, is always honored
+ * as written and is not affected by either.
  *
  * RLE: runs are clipped to the row and the decoder refuses to advance past
  * the last row, so a hostile stream cannot write outside the raster.  Pixels
@@ -125,11 +129,13 @@ static GIMG_Result bmp_decode_uncompressed(
   uint8_t * dest = (uint8_t *)gimg_raster_pixels(raster);
   size_t dest_stride = gimg_raster_stride_bytes(raster);
 
-  // For BI_RGB at 32bpp the high byte is only alpha if something set it.
+  // BI_RGB at 32bpp does not define the fourth byte, so by default it says
+  // nothing about transparency and the image decodes opaque.  A caller who
+  // knows their files put alpha there asks for the heuristic instead.
   bool use_alpha = h->alpha.mask != 0;
-  if (use_alpha && h->bit_count == 32 &&
-      h->compression == GIMG_BMP_BI_RGB) {
-    use_alpha = bmp_rgb32_has_alpha(state, stride);
+  if (use_alpha && h->bit_count == 32 && h->compression == GIMG_BMP_BI_RGB) {
+    use_alpha = state->rgb32_alpha == GIMG_BMP_RGB32_ALPHA_HEURISTIC &&
+        bmp_rgb32_has_alpha(state, stride);
   }
 
   for (uint32_t y = 0; y < h->height; y++) {

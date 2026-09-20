@@ -179,6 +179,49 @@ TEST(BmpDecode, Rgb32ZeroHighByteIsOpaque) {
   expect_pattern(img);
 }
 
+TEST(BmpDecode, Rgb32DirtyHighByteIsStillOpaque) {
+  // BI_RGB does not define the fourth byte, so a file whose spare bytes are
+  // merely dirty must not come out full of holes.  Pillow, GdkPixbuf and
+  // netpbm all decode bmpsuite's q/rgb32fakealpha.bmp opaque, and this
+  // fixture is that file in miniature.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_32bit_dirty_high_byte.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  expect_pattern(img);
+}
+
+TEST(BmpDecode, Rgb32HighByteIsAlphaWhenTheCallerAsksForIt) {
+  // GIMG_BMP_RGB32_ALPHA_HEURISTIC is for a caller whose writers are known to
+  // put alpha in the undeclared byte.  The fixture's spare bytes ramp 255,
+  // 170, 85, 0 reading down from the top.
+  const uint8_t expected_alpha[4] = {255, 170, 85, 0};
+
+  GIMG_Load_Options options = {};
+  options.bmp_rgb32_alpha = GIMG_BMP_RGB32_ALPHA_HEURISTIC;
+
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_32bit_dirty_high_byte.bmp", &options), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  for (uint32_t y = 0; y < 4; y++) {
+    for (uint32_t x = 0; x < 4; x++) {
+      EXPECT_EQ(img.at(x, y).a, expected_alpha[y])
+          << "alpha at (" << x << "," << y << ")";
+    }
+  }
+}
+
+TEST(BmpDecode, Rgb32AllZeroHighBytesStayOpaqueUnderTheHeuristic) {
+  // The heuristic's whole point: a file whose spare bytes are uniformly zero
+  // is opaque, not invisible, however the caller asked for it to be read.
+  GIMG_Load_Options options = {};
+  options.bmp_rgb32_alpha = GIMG_BMP_RGB32_ALPHA_HEURISTIC;
+
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_32bit_zero_high_byte.bmp", &options), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  expect_pattern(img);
+}
+
 TEST(BmpDecode, Rgb32BitfieldsAlphaIsHonored) {
   // With an explicit alpha mask the channel is real and must survive.  The
   // fixture ramps alpha per row: 255, 170, 85, 0 from the top.

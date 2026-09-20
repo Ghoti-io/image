@@ -607,6 +607,8 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   state->palette_count = header.palette_count;
   state->pixels = pixels;
   state->pixels_size = pixels_size;
+  state->rgb32_alpha = options ? options->bmp_rgb32_alpha
+                               : (uint8_t)GIMG_BMP_RGB32_ALPHA_IGNORE;
 
   GIMG_Doc * doc = NULL;
   r = gimg_doc_create_with_allocator(alloc, &doc);

@@ -101,6 +101,11 @@ typedef struct {
   uint32_t palette_count;
   unsigned char * pixels; ///< Raw pixel bytes as stored in the file.
   size_t pixels_size;
+  /** GIMG_Load_Options.bmp_rgb32_alpha as the load was given it.  Kept here
+   * rather than read again at decode because a save re-decodes its source
+   * item with no options of its own, and must not reinterpret the pixels
+   * differently from the load that produced them. */
+  uint8_t rgb32_alpha;
 } gimg_bmp_doc_state_t;
 
 /**
