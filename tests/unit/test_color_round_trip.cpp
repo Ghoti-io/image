@@ -1,7 +1,11 @@
 /**
  * @file
  *
- * Does a color space survive a conversion?
+ * Does what a file says about its samples survive a conversion?
+ *
+ * Two things travel this road: the color space and the physical resolution.
+ * Both live on the document rather than in any one format's syntax, and both
+ * are written by machinery each codec keeps to itself.
  *
  * Each codec carries an ICC profile in a different place - a BMP in a
  * BITMAPV5HEADER, a PNG in iCCP, a JPEG in APP2 segments - and each writer
@@ -248,6 +252,65 @@ TEST(ColorRoundTrip, DropAllCarriesNoProfileAnywhere) {
     std::vector<uint8_t> got;
     ASSERT_TRUE(profile_of(written, got));
     EXPECT_TRUE(got.empty()) << "DROP_ALL must drop the profile too";
+  }
+}
+
+TEST(ColorRoundTrip, EveryCodecPairKeepsTheResolution) {
+  // The resolution takes the same road as the color: it lives on the document
+  // and each writer has its own place to put it - biXPelsPerMeter, pHYs, the
+  // JFIF density. Each leg is tested in its own codec's tests; this is the
+  // matrix, which is where an omission made three times would show.
+  static const char * const formats[] = {"bmp", "png", "jpeg"};
+  const std::vector<uint8_t> profile = a_profile();
+
+  for (const char * from : formats) {
+    GIMG_Raster * raster = tagged(profile);
+    ASSERT_NE(raster, nullptr);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+    // A fresh document carries no common metadata until something asks for
+    // it, so this is the call that makes the resolution sayable at all.
+    GIMG_Meta_Common * meta = nullptr;
+    ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &meta), GIMG_OK);
+    ASSERT_NE(meta, nullptr);
+    gimg_meta_common_set_dpi(meta, 300u, 300u);
+
+    GIMG_Stream * stream = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&stream), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, stream, from, &opts, &report), GIMG_OK)
+        << "writing " << from;
+    const void * bytes = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(stream, &bytes, &size);
+    std::vector<uint8_t> first(static_cast<const uint8_t *>(bytes),
+        static_cast<const uint8_t *>(bytes) + size);
+    gimg_stream_destroy(stream);
+    gimg_doc_destroy(doc);
+
+    for (const char * to : formats) {
+      SCOPED_TRACE(std::string(from) + " -> " + to);
+      std::vector<uint8_t> second;
+      ASSERT_TRUE(convert(first, to, second));
+
+      GIMG_Stream * in = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory(second.data(), second.size(), &in),
+          GIMG_OK);
+      GIMG_Doc * back = nullptr;
+      ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &back), GIMG_OK);
+      GIMG_Meta_Common * back_meta = gimg_doc_meta_common(back);
+      uint32_t x = 0, y = 0;
+      if (back_meta) {
+        gimg_meta_common_dpi(back_meta, &x, &y);
+      }
+      EXPECT_EQ(x, 300u) << "horizontal resolution";
+      EXPECT_EQ(y, 300u) << "vertical resolution";
+      gimg_doc_destroy(back);
+      gimg_stream_destroy(in);
+    }
   }
 }
 
