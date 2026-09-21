@@ -1251,8 +1251,50 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
 
-  if (frame_count > 1u) {
-    const uint16_t loops = options ? options->gif_loop_count : 0u;
+  // The NETSCAPE2.0 Application Extension, which is where every decoder looks
+  // for a loop count (89a 26 describes the block; the count inside it is a
+  // convention rather than part of the specification).
+  //
+  // Unlike the background colour and the aspect ratio, this block can be left
+  // out, and leaving it out is a different instruction from any count: browsers
+  // play such a file once.  So a document that declares no count is written
+  // with no block, which is what gimg_doc_clear_loop_count() has always said
+  // happens and until now did not - the writer put a count of zero in every
+  // animation it produced, turning "said nothing" into "repeat forever".
+  //
+  // It also used to ignore the document entirely, so loading an animation that
+  // asked to repeat five times and saving it produced one that repeats for
+  // ever.  ImageMagick and Pillow both preserve the count and both preserve
+  // its absence; this was the odd one out in both directions.
+  //
+  // `gif_loop_count` stays an override rather than the source, because its
+  // zero already means "repeat forever" and has no spelling for "not set".
+  // Non-zero means the caller asked for a count and gets it; zero means they
+  // did not ask, and the document answers.  A caller who wants "for ever" on a
+  // document that says otherwise says so with gimg_doc_set_loop_count(doc, 0).
+  // Frame count does not gate this.  A loop count on a still image has nothing
+  // to repeat, but files carry one - gif_4x2_netscape_loop.gif is a real
+  // single-frame GIF with the block - and this codec's own loader reads it
+  // from them.  Dropping on write what the accessor reports on read is the
+  // silent loss this whole arrangement exists to prevent, and Pillow keeps it
+  // too.  ImageMagick is the one that drops it, which costs it a round trip.
+  bool write_loop = false;
+  uint16_t loops = 0u;
+  {
+    uint32_t declared = 0u;
+    if (options && options->gif_loop_count != 0u) {
+      write_loop = true;
+      loops = options->gif_loop_count;
+    }
+    else if (gimg_doc_loop_count(doc, &declared)) {
+      write_loop = true;
+      // 89a 26's count is two bytes.  A document carrying more than that came
+      // from a format with a wider field - APNG's num_plays is four - and the
+      // nearest thing GIF can say is the largest count it has.
+      loops = declared > 0xFFFFu ? (uint16_t)0xFFFFu : (uint16_t)declared;
+    }
+  }
+  if (write_loop) {
     unsigned char ext[14] = {0x21u, 0xFFu, 0x0Bu, 'N', 'E', 'T', 'S', 'C', 'A',
         'P', 'E', '2', '.', '0'};
     r = gif_write(stream, ext, sizeof(ext));

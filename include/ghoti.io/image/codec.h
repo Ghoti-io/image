@@ -573,14 +573,23 @@ typedef struct {
    * the same way whatever this says.  Ignored for non-GIF. */
   uint16_t gif_alpha_threshold;
 
-  /** How many times a written GIF animation repeats.
+  /** How many times a written GIF animation repeats, overriding the document.
    *
-   * Only meaningful when the document holds more than one frame, and written
-   * as the NETSCAPE2.0 Application Extension that every decoder reads for
-   * this (89a 26 describes the block; the loop count inside it is a
-   * convention, not part of the specification).  0, the default, means repeat
-   * forever, which is what the convention assigns to zero and what nearly
-   * every animation asks for.  Ignored for non-GIF and for a single frame. */
+   * Written as the NETSCAPE2.0 Application Extension that every decoder reads
+   * for this (89a 26 describes the block; the loop count inside it is a
+   * convention, not part of the specification).
+   *
+   * **This is an override, not the source.** The count normally comes from
+   * gimg_doc_set_loop_count(), so a loaded animation keeps the count it
+   * declared without the caller carrying it across.  A non-zero value here
+   * wins; zero - the default - means the caller did not ask and the document
+   * answers.  Zero cannot mean "repeat forever" here because it cannot also
+   * mean "not set"; say that on the document instead, which has a spelling for
+   * both (a count of 0, or no count at all).
+   *
+   * A document declaring no count at all gets no NETSCAPE2.0 block, which is a
+   * different instruction from a count of zero: browsers play such a file
+   * once.  Ignored for non-GIF. */
   uint16_t gif_loop_count;
 } GIMG_Save_Options;
 

@@ -814,12 +814,17 @@ TEST(GifEncode, AnAnimationCarriesItsDelayAndLoopCount) {
   EXPECT_EQ(loops, 7u);
 }
 
-TEST(GifEncode, ALoopCountSurvivesALoadAndSaveWhenTheCallerCarriesIt) {
-  // The documented round trip, run rather than asserted.  Save does not reach
-  // into the document for the count on its own: gif_loop_count's 0 already
-  // means forever, so it has no spelling for "unset" and cannot fall back
-  // without changing what an existing caller's 0 means.  Two lines of caller
-  // code close it, and this is those two lines.
+TEST(GifEncode, TheSaveOptionOverridesWhatTheDocumentDeclares) {
+  // `gif_loop_count` is an override rather than the source of the count,
+  // because its zero already means "repeat forever" and so has no spelling for
+  // "not set".  Non-zero means the caller asked; zero means they did not, and
+  // the document answers.  This is the first half - the document says 5 and
+  // the caller says 7, and 7 wins.
+  //
+  // This test used to be called "a loop count survives a load and save when
+  // the caller carries it", and carrying it was two lines of caller code
+  // because the writer ignored the document entirely.  Those two lines are no
+  // longer needed; the test below is what they were standing in for.
   Loaded source;
   ASSERT_EQ(source.load("gif_4x2_netscape_loop.gif"), GIMG_OK);
   uint32_t loops = 0;
@@ -834,15 +839,108 @@ TEST(GifEncode, ALoopCountSurvivesALoadAndSaveWhenTheCallerCarriesIt) {
 
   GIMG_Save_Options options;
   memset(&options, 0, sizeof(options));
-  options.gif_loop_count = static_cast<uint16_t>(loops);  // the two lines
+  options.gif_loop_count = 7;
   std::vector<uint8_t> bytes;
-  ASSERT_EQ(save_frames(frames, &options, bytes), GIMG_OK);
+  ASSERT_EQ(save_frames(frames, &options, bytes,
+                [](GIMG_Doc * doc) { gimg_doc_set_loop_count(doc, 5u); }),
+      GIMG_OK);
 
   Loaded again;
   ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
   uint32_t round_tripped = 0;
   EXPECT_EQ(gimg_doc_loop_count(again.doc(), &round_tripped), 1);
+  EXPECT_EQ(round_tripped, 7u) << "the caller asked for 7 out loud";
+}
+
+TEST(GifEncode, ALoopCountSurvivesALoadAndSaveWithNoHelpFromTheCaller) {
+  // The second half.  The writer used to ignore the document, so an animation
+  // that asked to repeat five times came back asking to repeat for ever -
+  // a round trip through this codec silently rewrote the instruction.
+  // ImageMagick and Pillow both preserve it.
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(4, 2, sixteen));
+  frames.push_back(make_raster(4, 2, sixteen));
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes,
+                [](GIMG_Doc * doc) { gimg_doc_set_loop_count(doc, 5u); }),
+      GIMG_OK);
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  uint32_t round_tripped = 0;
+  ASSERT_EQ(gimg_doc_loop_count(again.doc(), &round_tripped), 1);
   EXPECT_EQ(round_tripped, 5u);
+}
+
+TEST(GifEncode, ADocumentWithNoLoopCountGetsNoNetscapeBlock) {
+  // "Say nothing" is a different instruction from any count - browsers play
+  // such a file once - and GIF, unlike APNG, can express it by leaving the
+  // block out.  gimg_doc_clear_loop_count() has always documented exactly
+  // this, and until now it was not true: every animation this writer produced
+  // carried a count of zero, which says "repeat for ever".
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(4, 2, sixteen));
+  frames.push_back(make_raster(4, 2, sixteen));
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes, nullptr), GIMG_OK);
+
+  const std::string all(bytes.begin(), bytes.end());
+  EXPECT_EQ(all.find("NETSCAPE2.0"), std::string::npos)
+      << "a count of zero is not the same as no count at all";
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  uint32_t round_tripped = 9;
+  EXPECT_EQ(gimg_doc_loop_count(again.doc(), &round_tripped), 0);
+}
+
+TEST(GifEncode, ALoopCountOnAStillImageIsKeptRatherThanDropped) {
+  // A count on a still image has nothing to repeat, but real files carry one -
+  // gif_4x2_netscape_loop.gif is a single-frame GIF with the block - and this
+  // codec's loader reports it.  Dropping on write what the accessor reports on
+  // read is the silent loss the rest of this is about, so the frame count does
+  // not gate the block.  Pillow keeps it; ImageMagick drops it and loses the
+  // round trip.
+  GIMG_Raster * raster = make_raster(4, 2, sixteen);
+  ASSERT_NE(raster, nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, nullptr, bytes,
+                [](GIMG_Doc * doc) { gimg_doc_set_loop_count(doc, 5u); }),
+      GIMG_OK);
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(again.doc()), 1u) << "still a still image";
+  uint32_t round_tripped = 0;
+  ASSERT_EQ(gimg_doc_loop_count(again.doc(), &round_tripped), 1);
+  EXPECT_EQ(round_tripped, 5u);
+}
+
+TEST(GifEncode, ACountWiderThanTheFieldIsClampedRatherThanTruncated) {
+  // 89a 26's count is two bytes and APNG's num_plays is four, so a document
+  // that arrived from an APNG can carry more than GIF can say.  65536 written
+  // into two bytes truncates to 0, which is the one value that means something
+  // else entirely - "repeat for ever" instead of "repeat a great many times".
+  // The largest count the field has is the nearest true thing.
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(4, 2, sixteen));
+  frames.push_back(make_raster(4, 2, sixteen));
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes,
+                [](GIMG_Doc * doc) { gimg_doc_set_loop_count(doc, 100000u); }),
+      GIMG_OK);
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  uint32_t round_tripped = 0;
+  ASSERT_EQ(gimg_doc_loop_count(again.doc(), &round_tripped), 1);
+  EXPECT_EQ(round_tripped, 65535u) << "not 0, which would mean for ever";
 }
 
 // ---------------------------------------------------------------------------

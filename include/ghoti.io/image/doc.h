@@ -93,6 +93,17 @@ GIMG_API int gimg_doc_loop_count(const GIMG_Doc * doc, uint32_t * out_count);
 /**
  * @brief Say how many times the animation should be played.
  *
+ * A GIF written for this document carries the count in its NETSCAPE2.0 block
+ * and an APNG in acTL's `num_plays`, whatever format it arrived as. GIF's
+ * field is two bytes wide where APNG's is four, so a count above 65535 is
+ * written as 65535 rather than truncated - truncation would land on 0, the one
+ * value that means something else entirely.
+ *
+ * ::GIMG_Save_Options::gif_loop_count overrides this when it is non-zero. Its
+ * zero already means "repeat forever" and so cannot also mean "not set", which
+ * is why the option is an override rather than the source: a caller who wants
+ * "for ever" on a document that says otherwise says so here, with a count of 0.
+ *
  * @param doc Document.
  * @param count Times to play; 0 means forever.
  */
@@ -103,7 +114,14 @@ GIMG_API void gimg_doc_set_loop_count(GIMG_Doc * doc, uint32_t count);
  *
  * This is the only way to express "say nothing", which is a different output
  * from any count: a GIF written for a document with no loop count carries no
- * NETSCAPE2.0 block at all.
+ * NETSCAPE2.0 block at all, and browsers play such a file once.
+ *
+ * **APNG cannot say it.** acTL is what makes a PNG an APNG and it always
+ * carries a `num_plays`, so a document declaring no count is written there as
+ * 0 - the format's own word for "repeat forever" and what every encoder writes
+ * with nothing to say. A GIF with no NETSCAPE2.0 block converted to APNG
+ * therefore gains an instruction it did not have; that is a limit of the
+ * destination, not a choice made here.
  *
  * @param doc Document.
  */

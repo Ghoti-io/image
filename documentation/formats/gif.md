@@ -138,13 +138,37 @@ returning 0 rather than inventing a number. Every browser plays such a file
 once, but that is a viewer's policy, and a library that quietly applied it
 would leave the caller unable to tell a policy from a reading.
 
-The count is **not** applied on save automatically: `gif_loop_count` is a save
-option whose 0 already means forever, so it has no way to say "unset" and
-cannot fall back to the document without changing what an existing caller's 0
-means. A caller that wants a round trip to preserve the count reads it and
-passes it, which is two lines and is visible in the code rather than implied
-by it. `gimg_doc_copy()` does carry it, so "load, copy, edit, save" keeps it
-as long as the save option is set from it.
+### Writing how many times to play
+
+The count goes back into the file from the document, so a load and a save
+preserve it with no help from the caller. That was not always so: the writer
+ignored the document and put `gif_loop_count` in every animation it produced,
+which meant an animation asking to repeat five times came back asking to repeat
+for ever. ImageMagick and Pillow both preserve the count, and both preserve its
+absence; this was the odd one out in both directions.
+
+A document declaring **no** count gets **no NETSCAPE2.0 block**, which is a
+different instruction from a count of zero - browsers play such a file once.
+The writer used to put a zero-count block in every animation, turning "said
+nothing" into "repeat for ever"; `gimg_doc_clear_loop_count()` had documented
+the correct behaviour all along.
+
+`gif_loop_count` stays a save option, but as an **override** rather than the
+source. Its zero already means "repeat for ever" and so cannot also mean "not
+set", so a non-zero value means the caller asked and gets it, and zero means
+they did not ask and the document answers. A caller who wants "for ever" on a
+document that says otherwise says so with `gimg_doc_set_loop_count(doc, 0)`,
+which the document model can express and the option cannot.
+
+Frame count does not gate the block. A count on a still image has nothing to
+repeat, but real files carry one - `gif_4x2_netscape_loop.gif` is a single-frame
+GIF with the block - and this codec's loader reports it, so dropping it on write
+would lose what the accessor reads. Pillow keeps it too; ImageMagick drops it
+and loses the round trip.
+
+89a 26's count is two bytes where APNG's `num_plays` is four, so a count above
+65535 arriving from an APNG is written as 65535. Truncating would land on 0,
+the one value that means something else entirely.
 
 ### The canvas cache
 
@@ -269,8 +293,9 @@ or many".
   decoder ignoring the control block shows the background rather than a stray
   colour. That costs one of the 256 entries.
 - `gif_interlace` writes the four-pass order; it changes no pixel.
-- `gif_loop_count` writes the NETSCAPE2.0 Application Extension, and is
-  written only for a document of more than one frame. 0 means forever.
+- `gif_loop_count` overrides the count the document declares when it is
+  non-zero; the NETSCAPE2.0 Application Extension is written from the document
+  otherwise, and not at all when the document declares no count.
 - A document whose frames differ in size is refused: the canvas is the first
   frame's, so a differing size asks a placement question the caller has not
   been asked.
@@ -739,13 +764,16 @@ place.
 ### Writing it
 
 The writer emits the byte the document's ratio implies, and **needs no save
-option to do it**. That is worth stating because the loop count, twenty lines
-away in the same header, does need one: `gif_loop_count`'s zero already means
-"play forever", so it has no spelling for "unset" and cannot fall back to the
-document without changing what an existing caller's zero means. Zero here means
-"no information given" in the format and "declares nothing" in the document
-model - the same statement twice - so reading the document is unambiguous, and
-a caller who wants no ratio in the file declares none.
+option to do it**. Zero here means "no information given" in the format and
+"declares nothing" in the document model - the same statement twice - so
+reading the document is unambiguous, and a caller who wants no ratio in the
+file declares none.
+
+The loop count, twenty lines away in the same header, is the case where that
+does not hold: `gif_loop_count`'s zero already means "play for ever", so it has
+no spelling for "unset". That is why it survives as an override on top of the
+document rather than being replaced by it - see "Writing how many times to
+play".
 
 89a 18 can hold only (N + 15) / 64 for N of 1 to 255, which is 16/64 to 270/64.
 A document declaring anything outside that range gets a zero byte: saying

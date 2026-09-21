@@ -2532,8 +2532,26 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
 
   // APNG: acTL (num_frames, num_plays) before first fcTL per spec.
+  //
+  // The count comes from the document, which is where the loader put the
+  // acTL's own num_plays.  Taking it from the codec state instead - which is
+  // what this did - made gimg_doc_set_loop_count() a no-op that reported
+  // success on an APNG and wrote zero on anything else, so a loop count
+  // carried in from a GIF was lost and one the caller set was ignored.
+  //
+  // Unlike GIF, APNG has no way to say nothing: acTL is what makes a PNG an
+  // APNG and it always carries a num_plays.  A document that declares no count
+  // therefore gets zero, which is the format's own word for "repeat forever"
+  // and what every encoder writes with nothing to say.  A GIF with no
+  // NETSCAPE2.0 block converted to APNG cannot keep "said nothing"; that is a
+  // limit of the destination, not a choice made here.
   if (is_apng) {
-    uint32_t num_plays = (state && state->is_apng) ? state->num_plays : 0u;
+    // Nothing falls back to the loaded file's own num_plays here.  The loader
+    // put that value in the document, so a document that now declares none is
+    // one a caller cleared on purpose, and reaching back past them for the old
+    // number would make gimg_doc_clear_loop_count() a no-op.
+    uint32_t num_plays = 0u;
+    (void)gimg_doc_loop_count(doc, &num_plays);
     unsigned char actl[GIMG_PNG_acTL_LEN];
     gimg_png_build_actl(actl, (uint32_t)num_items, num_plays);
     r = gimg_png_write_chunk(stream, GIMG_PNG_acTL, actl, sizeof(actl));

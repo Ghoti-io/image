@@ -2063,6 +2063,58 @@ TEST(PngBackground, APaletteCannotStateAColourItDoesNotHold) {
       << "no palette entry is this colour";
 }
 
+// -- acTL num_plays ---------------------------------------------------------
+
+/** num_plays out of an acTL payload (APNG: num_frames then num_plays). */
+uint32_t ActlPlays(const std::vector<uint8_t> & png) {
+  std::vector<uint8_t> actl;
+  if (!FindChunk(png, "acTL", actl) || actl.size() != 8u) {
+    return 0xFFFFFFFFu;
+  }
+  return ((uint32_t)actl[4] << 24) | ((uint32_t)actl[5] << 16) |
+      ((uint32_t)actl[6] << 8) | (uint32_t)actl[7];
+}
+
+TEST(PngLoopCount, SettingItReachesTheFileAndNotJustTheAccessor) {
+  // The writer took num_plays from the codec's own state, which made
+  // gimg_doc_set_loop_count() a no-op that reported success on an APNG: the
+  // accessor gave the new count and the file kept the old one.  It also meant
+  // a count carried in from a GIF was dropped, because a document that did not
+  // come from an APNG had no state to take it from and got zero.
+  std::vector<uint8_t> saved =
+      LoadEditSave("png_apng_3plays.png", [](GIMG_Doc * doc) {
+        gimg_doc_set_loop_count(doc, 7u);
+      });
+  ASSERT_FALSE(saved.empty());
+  EXPECT_EQ(ActlPlays(saved), 7u) << "the fixture arrived declaring 3";
+}
+
+TEST(PngLoopCount, ClearingItWritesForeverBecauseAPNGCannotSayNothing) {
+  // acTL is what makes a PNG an APNG and it always carries a num_plays, so
+  // unlike GIF there is no way to leave the count out.  A document declaring
+  // none gets zero - the format's own word for "repeat for ever" and what
+  // every encoder writes with nothing to say.
+  //
+  // What must *not* happen is a fall back to the loaded file's own num_plays.
+  // The loader put that value in the document, so a document that now declares
+  // none is one a caller cleared on purpose, and reaching back past them for
+  // the old number would make gimg_doc_clear_loop_count() a no-op.
+  std::vector<uint8_t> saved =
+      LoadEditSave("png_apng_3plays.png", [](GIMG_Doc * doc) {
+        gimg_doc_clear_loop_count(doc);
+      });
+  ASSERT_FALSE(saved.empty());
+  EXPECT_EQ(ActlPlays(saved), 0u) << "the fixture arrived declaring 3";
+}
+
+TEST(PngLoopCount, AnUntouchedAPNGKeepsTheCountItArrivedWith) {
+  // The control.  A writer that ignored the document in the other direction -
+  // always writing zero - would pass the test above and fail this one.
+  std::vector<uint8_t> saved = LoadAndSave("png_apng_3plays.png");
+  ASSERT_FALSE(saved.empty());
+  EXPECT_EQ(ActlPlays(saved), 3u);
+}
+
 TEST(PngAncillaryRetarget, ChunksThatDoNotDependOnTheColorTypeAreUntouched) {
   // pHYs, tIME, gAMA, text, and anything unknown mean the same thing whatever
   // the color type, so a change of color type must not disturb them.
