@@ -81,13 +81,20 @@ Rgba all_256(uint32_t x, uint32_t y) {
  * destroying the document destroys it.  Callers must not free it themselves.
  */
 GIMG_Result save_raster(GIMG_Raster * raster, const GIMG_Save_Options * options,
-    std::vector<uint8_t> & out) {
+    std::vector<uint8_t> & out,
+    const std::function<void(GIMG_Doc *)> & prepare = nullptr) {
   GIMG_Doc * doc = nullptr;
   if (gimg_doc_create(&doc) != GIMG_OK) {
     return GIMG_ERR_OOM;
   }
   GIMG_Item * item = gimg_doc_item(doc, 0);
   gimg_item_set_raster(item, raster);
+  if (prepare) {
+    // The hook the document-level tests need: the raster is attached and the
+    // document is about to be written, which is the only moment a property of
+    // *this* document can be set.
+    prepare(doc);
+  }
   GIMG_Stream * stream = nullptr;
   if (gimg_stream_create_memory_output(&stream) != GIMG_OK) {
     gimg_doc_destroy(doc);
@@ -884,6 +891,86 @@ GIMG_Result save_with(const GIMG_Save_Options * options,
 }
 
 } // namespace
+
+TEST(GifEncode, APixelAspectRatioSurvivesALoadAndSave) {
+  // The writer used to put a zero in the Pixel Aspect Ratio byte always, so a
+  // file that declared a non-square pixel came back declaring nothing - the
+  // loader read it, the accessor reported it, and saving threw it away.
+  //
+  // It needs no save option, which is what separates it from the loop count.
+  // `gif_loop_count`'s zero already means "forever", so it had no spelling for
+  // "unset" and could not read the document without changing what an existing
+  // caller's zero meant.  Zero here means "no information given" in the format
+  // and "declares nothing" in the document, which is the same statement twice.
+  Loaded source;
+  ASSERT_EQ(source.load("gif_8x8_pixel_aspect.gif"), GIMG_OK);
+  uint32_t num = 0, den = 0;
+  ASSERT_EQ(gimg_doc_pixel_aspect_ratio(source.doc(), &num, &den), 1);
+  ASSERT_EQ(num, 128u);
+  ASSERT_EQ(den, 64u);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Report report;
+  memset(&report, 0, sizeof(report));
+  ASSERT_EQ(gimg_doc_save(source.doc(), out, "gif", nullptr, &report), GIMG_OK);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &data, &size);
+  std::vector<uint8_t> bytes(static_cast<const uint8_t *>(data),
+      static_cast<const uint8_t *>(data) + size);
+  gimg_stream_destroy(out);
+
+  // The byte itself, so a failure says which half broke.
+  ASSERT_GT(bytes.size(), 12u);
+  EXPECT_EQ(bytes[12], 113u) << "the Pixel Aspect Ratio byte of the new file";
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  uint32_t rn = 0, rd = 0;
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(again.doc(), &rn, &rd), 1);
+  EXPECT_EQ(rn, 128u);
+  EXPECT_EQ(rd, 64u);
+}
+
+TEST(GifEncode, ARatioTheFormatCannotHoldIsWrittenAsNoneRatherThanTheNearest) {
+  // 89a 18 can only express (N + 15) / 64 for N of 1 to 255, which is 16/64 to
+  // 270/64.  A document declaring something outside that gets a zero byte:
+  // saying nothing is true, and rounding to the nearest expressible ratio
+  // would put a number in the file that the caller never asked for and could
+  // not tell apart from one they did.
+  for (const auto & pair : std::vector<std::pair<uint32_t, uint32_t>>{
+           {100u, 1u}, {1u, 100u}, {5u, 1u}, {1u, 5u}}) {
+    GIMG_Raster * raster = make_raster(8, 8, sixteen);
+    ASSERT_NE(raster, nullptr);
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster(raster, nullptr, bytes,
+                  [&](GIMG_Doc * doc) {
+                    gimg_doc_set_pixel_aspect_ratio(doc, pair.first,
+                        pair.second);
+                  }),
+        GIMG_OK);
+    ASSERT_GT(bytes.size(), 12u);
+    EXPECT_EQ(bytes[12], 0u)
+        << pair.first << ":" << pair.second << " is not expressible";
+  }
+  // The edges of the range are expressible, and are written.
+  for (const auto & pair : std::vector<std::pair<uint32_t, uint32_t>>{
+           {16u, 64u}, {270u, 64u}, {1u, 4u}, {2u, 1u}}) {
+    GIMG_Raster * raster = make_raster(8, 8, sixteen);
+    ASSERT_NE(raster, nullptr);
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster(raster, nullptr, bytes,
+                  [&](GIMG_Doc * doc) {
+                    gimg_doc_set_pixel_aspect_ratio(doc, pair.first,
+                        pair.second);
+                  }),
+        GIMG_OK);
+    ASSERT_GT(bytes.size(), 12u);
+    EXPECT_NE(bytes[12], 0u)
+        << pair.first << ":" << pair.second << " is expressible";
+  }
+}
 
 TEST(GifComments, ACommentIsPublishedForOutsideDecodersToRead) {
   // Written to tests/out/gif/ with a sidecar naming the text, so that

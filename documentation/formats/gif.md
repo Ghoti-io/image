@@ -35,7 +35,8 @@ come from `doc->allocator`.
   the Global Color Table flag and size, the background colour index - reported
   as a colour by `gimg_doc_background_color()`, resolved through the table -
   and the pixel aspect ratio, reported by `gimg_doc_pixel_aspect_ratio()` as
-  the (N + 15) / 64 that 89a 18 defines. The colour resolution and sort flags
+  the (N + 15) / 64 that 89a 18 defines and written back out on save - see
+  "The pixel aspect ratio". The colour resolution and sort flags
   are read past; no decoder acts on either. The three version bytes are read
   to consume them and to refuse a header that stops inside them, and then
   discarded: a file saying "89a" may use nothing 89a added and one saying
@@ -420,7 +421,7 @@ no table of their own.
 | Area | Supported | Rejected / limitation |
 |------|-----------|-----------------------|
 | Header | 87a and 89a, read identically | Anything not beginning `GIF` &rarr; `GIMG_ERR_FORMAT` |
-| Logical Screen Descriptor | Size and Global Color Table; the background index resolved to a colour, painted only when `gif_background` asks; the Pixel Aspect Ratio byte resolved to a ratio, reported but never applied | Truncated &rarr; `GIMG_ERR_FORMAT`. The colour resolution and sort flags are read past |
+| Logical Screen Descriptor | Size and Global Color Table; the background index resolved to a colour, painted only when `gif_background` asks; the Pixel Aspect Ratio byte resolved to a ratio, reported and written back but never applied | Truncated &rarr; `GIMG_ERR_FORMAT`. The colour resolution and sort flags are read past |
 | Colour tables | Read: global, local, 2–256 entries, absent. Write: one global table when the frames share 255 colours or fewer, otherwise one per frame | Truncated &rarr; `GIMG_ERR_FORMAT` |
 | LZW | Minimum code size 2–8 | Outside that &rarr; `GIMG_ERR_CORRUPT`; a stream yielding fewer pixels than the descriptor promises &rarr; `GIMG_ERR_CORRUPT` |
 | Interlace | Four-pass, decoded and written | — |
@@ -571,9 +572,120 @@ covers the whole canvas - so it has no uncovered pixel - and whose background
 index is 0, which resolves to the same red that frame paints. It passed whether
 or not the background was painted.
 
+## The pixel aspect ratio
+
+The other field of the Logical Screen Descriptor this codec reads and does not
+act on, and the one where the disagreement is not about behaviour but about
+whether anybody looks at it at all.
+
+**What the specification says.** 89a 18 calls the byte a factor for computing
+an approximation of the aspect ratio of a pixel in the original image, and
+gives the formula: when the value is not 0, the ratio is (N + 15) / 64. Zero
+means no information was given - which is not the same as "square", and the
+distinction matters, because square is a claim and silence is not.
+
+**What this codec does.** Reads it, applies the formula, and reports the result
+through `gimg_doc_pixel_aspect_ratio()` as an unreduced numerator over 64.
+Nothing is resampled. Since this codec also **writes** it (see below), a GIF
+that declares a non-square pixel still declares it after a load and save.
+
+**What everyone else does.** Measured on four files identical but for the byte:
+
+| | reports it | applies it |
+|---|---|---|
+| here | yes, as a ratio | no |
+| giflib | yes, as the raw byte | no |
+| ImageMagick | no | no |
+| Pillow | no | no |
+| GdkPixbuf | no | no |
+| Chromium | no | no |
+
+An image with the byte at 255 - a pixel more than four times as wide as tall -
+comes out of every one of them as an unstretched square-pixel raster of the
+declared dimensions. Chromium lays it out at its intrinsic 16x16 with no CSS
+sizing at all. `giftext` prints `Aspect = 255` and giflib's own documentation
+lists the field under unimplemented features, noting that it was ignored
+entirely before 5.0 and is now read and preserved. Neither ImageMagick's nor
+Pillow's verbose output mentions it in any form.
+
+So the count is: **nobody applies it, and this codec and giflib are the only
+two that will tell you it is there** - this one being the only one that turns
+it into a ratio rather than handing back the raw byte.
+
+**In the wild it is rare and it is always 1.** Seven of the 121 corpus files
+set the byte, and all seven set it to 49, which is exactly 64/64. Those writers
+were not describing a non-square pixel; they were saying square out loud rather
+than staying silent, which is a distinction the format allows and which this
+codec preserves - `gimg_doc_pixel_aspect_ratio()` reports 64:64 for such a file
+and reports nothing for a file with a zero byte. All seven come back with the
+byte intact through a load and save.
+
+### Why there is no option to apply it
+
+The background colour got one because painting it is a decision about *pixel
+values*, which is what a decoder produces. Applying an aspect ratio is a
+decision about *geometry*: it means resampling the raster to square pixels,
+which is a different kind of thing and does not belong behind a decode flag.
+
+- It would change the raster's dimensions, so `gimg_item_decode()` would stop
+  returning the logical screen the file describes. Everything downstream
+  assumes it does - the encoder most of all, which composites frames against a
+  canvas of exactly that size.
+- It needs a resampling filter, and choosing one is an image-processing
+  decision. This library puts those in `ops` and says so: the CMYK conversion
+  and the colour quantization are both there for the same reason.
+- There is no resampler here to call. A general `gimg_ops_resize()` would be
+  the right home, and writing one is a feature rather than a flag - it is
+  listed under "Not implemented" rather than pretended at.
+
+Reporting the ratio is what lets a caller do it themselves, at the moment they
+know what they want: a viewer scales its window, a converter scales the raster,
+and each needs a different filter.
+
+### Writing it
+
+The writer emits the byte the document's ratio implies, and **needs no save
+option to do it**. That is worth stating because the loop count, twenty lines
+away in the same header, does need one: `gif_loop_count`'s zero already means
+"play forever", so it has no spelling for "unset" and cannot fall back to the
+document without changing what an existing caller's zero means. Zero here means
+"no information given" in the format and "declares nothing" in the document
+model - the same statement twice - so reading the document is unambiguous, and
+a caller who wants no ratio in the file declares none.
+
+89a 18 can hold only (N + 15) / 64 for N of 1 to 255, which is 16/64 to 270/64.
+A document declaring anything outside that range gets a zero byte: saying
+nothing is true, and writing the nearest expressible ratio would put a number
+in the file the caller never asked for and could not tell apart from one they
+did.
+
+Before this the writer put a zero there always, so a file that declared a
+non-square pixel came back declaring nothing - the loader read it, the accessor
+reported it, and the save threw it away. PNG never had that problem, for an
+unrelated reason: its `pHYs` chunk survives as raw metadata under
+`GIMG_META_PRESERVE_ALL`, so the aspect ratio came back without the writer
+knowing it existed.
+
+### Tested
+
+`gif_8x8_pixel_aspect.gif` declares byte 113, which the formula turns into
+128/64. The value is chosen to be discriminating rather than round: a reader
+that drops the + 15 reports 113/64, and one that divides by the wrong constant
+reports something else again. Until that fixture existed no test ran the
+arithmetic against a file - the only aspect-ratio test loaded a fixture whose
+byte was zero and checked that nothing was reported.
+
+Both halves were watched failing. Making the reader drop the + 15 fails
+`ANonZeroAspectByteIsReadAsTheFormulaDefinesIt` and, downstream,
+`APixelAspectRatioSurvivesALoadAndSave`; making the writer go back to a
+constant zero fails that round-trip test and
+`ARatioTheFormatCannotHoldIsWrittenAsNoneRatherThanTheNearest`, which also
+checks that the four ratios at and outside the representable edges are written
+and refused correctly.
+
 ## Tested scope
 
-- **Fixtures**: thirteen files from `tests/data/gif/generate.py`. Pillow writes
+- **Fixtures**: fourteen files from `tests/data/gif/generate.py`. Pillow writes
   the two ordinary ones; the rest are assembled byte by byte, because the
   cases a decoder gets wrong are the ones common writers never produce - no
   Global Color Table, an index past the end of the palette, extensions that
@@ -730,6 +842,11 @@ or not the background was painted.
   that, which was the point of putting it there.
 - **Plain Text rendering** (89a 25). The block is walked past. No decoder in
   use renders it, and doing so would mean shipping a bitmap font.
+- **Resampling to square pixels.** The Pixel Aspect Ratio is read, reported and
+  written, and never applied - applying it means resizing, and there is no
+  resampler in this library to do it with. A general `gimg_ops_resize()` is
+  where it would go, and every other decoder measured leaves it alone too. See
+  "The pixel aspect ratio".
 - **The background colour is not painted by default**, and disposal 2 restores
   to transparent rather than to it. Both are deliberate and both are available:
   `GIMG_Decode_Options.gif_background` = `GIMG_GIF_BACKGROUND_PAINT` gives the

@@ -1062,6 +1062,36 @@ static GIMG_Result gif_emit_frame(GIMG_Stream * stream,
   return r;
 }
 
+/**
+ * The Pixel Aspect Ratio byte for what the document declares (89a 18).
+ *
+ * Carried without a save option, which the loop count needed and this does
+ * not.  `gif_loop_count`'s zero already means "forever", so it had no spelling
+ * for "unset" and could not fall back to the document without changing what an
+ * existing caller's zero meant.  Here zero means the same thing on both sides
+ * of the conversion - the format calls it "no information given" and the
+ * document model calls it "declares nothing" - so reading the document is
+ * unambiguous and a caller who wants no ratio written simply declares none.
+ *
+ * 89a 18 defines the byte as ratio = (N + 15) / 64 for N from 1 to 255, so the
+ * only ratios it can hold run from 16/64 to 270/64.  A document declaring
+ * anything outside that gets a zero: saying nothing is right, and saying the
+ * nearest expressible thing would be a number the caller never asked for.
+ */
+static unsigned char gif_aspect_byte(const GIMG_Doc * doc) {
+  uint32_t num = 0u, den = 0u;
+  if (!gimg_doc_pixel_aspect_ratio(doc, &num, &den) || num == 0u ||
+      den == 0u) {
+    return 0u;
+  }
+  const uint64_t scaled =
+      ((uint64_t)num * 64u + (uint64_t)den / 2u) / (uint64_t)den;
+  if (scaled < 16u || scaled > 270u) {
+    return 0u;
+  }
+  return (unsigned char)(scaled - 15u);
+}
+
 GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report) {
@@ -1135,9 +1165,11 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   {
     // Packed field, background index, aspect ratio.  The background index
     // names entry 0, which is the transparent one when there is a global
-    // table and nothing at all when there is not.
+    // table and nothing at all when there is not.  The aspect ratio is
+    // whatever the document declares, which for a document loaded from a GIF
+    // is what that file declared.
     const uint8_t global_bits = gif_table_bits(global_count);
-    unsigned char tail[3] = {0x70u, 0x00u, 0x00u};
+    unsigned char tail[3] = {0x70u, 0x00u, gif_aspect_byte(doc)};
     if (use_global) {
       tail[0] = (unsigned char)(0x80u | 0x70u | global_bits);
     }

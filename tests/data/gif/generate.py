@@ -274,6 +274,27 @@ def background_index():
     write("gif_12x8_background_index.gif", data)
 
 
+def pixel_aspect_ratio():
+    """A screen descriptor that declares a non-square pixel.
+
+    No other fixture sets the Pixel Aspect Ratio byte, so until this one the
+    only thing tested was that a zero byte declares nothing - the arithmetic
+    89a 18 defines was never run against a file.
+
+    The byte is 113, which the formula (N + 15) / 64 turns into 128/64, a pixel
+    twice as wide as it is tall.  That value is chosen to be discriminating
+    rather than round: a reader that forgets the + 15 reports 113/64, one that
+    divides by the wrong constant reports something else again, and both are
+    visibly not 128/64.
+    """
+    cw, ch = 8, 8
+    idx = [(x // 2 + y // 2) % 4 for y in range(ch) for x in range(cw)]
+    data = (header() + lsd(cw, ch, gct_bits=1, aspect=113) + table(PALETTE, 1)
+            + image_block(idx, cw, ch, 2)
+            + TRAILER)
+    write("gif_8x8_pixel_aspect.gif", data)
+
+
 def disposal_previous():
     """Three frames whose middle one asks to be undone (disposal 3).
 
@@ -384,6 +405,7 @@ def main():
     gif87a_header()
     offset_frames()
     background_index()
+    pixel_aspect_ratio()
     disposal_previous()
     disposal_cycle()
     netscape_loop()

@@ -385,16 +385,31 @@ TEST(GifCanvasCache, TheTwoBackgroundSettingsDoNotShareACachedCanvas) {
       << "frame 1 was seeded from a painted canvas";
 }
 
-TEST(GifScreen, APixelAspectRatioIsReportedAsARatio) {
-  // 89a 18: zero says nothing, and any other N means (N + 15) / 64.  None of
-  // the fixtures set one, so this pins the "said nothing" half; the arithmetic
-  // is pinned by the unit test on the setter.
+TEST(GifScreen, AZeroAspectByteDeclaresNothing) {
+  // 89a 18: zero is "no information given", which is not the same as "square"
+  // and must not be reported as a ratio of any kind.
   Loaded img;
   ASSERT_EQ(img.load("gif_16x8_plain.gif"), GIMG_OK);
   uint32_t num = 7, den = 7;
   EXPECT_EQ(gimg_doc_pixel_aspect_ratio(img.doc(), &num, &den), 0);
-  EXPECT_EQ(num, 7u);
+  EXPECT_EQ(num, 7u) << "the out-params are left alone when nothing is said";
   EXPECT_EQ(den, 7u);
+}
+
+TEST(GifScreen, ANonZeroAspectByteIsReadAsTheFormulaDefinesIt) {
+  // 89a 18 defines the byte as ratio = (N + 15) / 64.  The fixture's byte is
+  // 113, so the answer is 128/64 - a pixel twice as wide as it is tall.
+  //
+  // 113 rather than something round on purpose: a reader that drops the + 15
+  // reports 113/64 and a reader that divides by the wrong constant reports
+  // something else again, and this assertion tells all three apart.  Until the
+  // fixture existed, no test ran this arithmetic against a file at all.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_8x8_pixel_aspect.gif"), GIMG_OK);
+  uint32_t num = 0, den = 0;
+  ASSERT_EQ(gimg_doc_pixel_aspect_ratio(img.doc(), &num, &den), 1);
+  EXPECT_EQ(num, 128u);
+  EXPECT_EQ(den, 64u);
 }
 
 // ---------------------------------------------------------------------------
