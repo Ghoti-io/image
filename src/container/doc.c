@@ -168,6 +168,69 @@ GIMG_API void gimg_doc_clear_loop_count(GIMG_Doc * doc) {
   doc->has_loop_count = 0;
 }
 
+GIMG_API int gimg_doc_background_color(
+    const GIMG_Doc * doc, uint8_t * out_rgba) {
+  if (!doc || !doc->has_background) {
+    return 0;
+  }
+  if (out_rgba) {
+    memcpy(out_rgba, doc->background, sizeof(doc->background));
+  }
+  return 1;
+}
+
+GIMG_API void gimg_doc_set_background_color(
+    GIMG_Doc * doc, const uint8_t * rgba) {
+  if (!doc || !rgba) {
+    return;
+  }
+  memcpy(doc->background, rgba, sizeof(doc->background));
+  doc->has_background = 1;
+}
+
+GIMG_API void gimg_doc_clear_background_color(GIMG_Doc * doc) {
+  if (!doc) {
+    return;
+  }
+  memset(doc->background, 0, sizeof(doc->background));
+  doc->has_background = 0;
+}
+
+GIMG_API int gimg_doc_pixel_aspect_ratio(
+    const GIMG_Doc * doc, uint32_t * out_num, uint32_t * out_den) {
+  if (!doc || !doc->has_aspect) {
+    return 0;
+  }
+  if (out_num) {
+    *out_num = doc->aspect_num;
+  }
+  if (out_den) {
+    *out_den = doc->aspect_den;
+  }
+  return 1;
+}
+
+GIMG_API void gimg_doc_set_pixel_aspect_ratio(
+    GIMG_Doc * doc, uint32_t num, uint32_t den) {
+  // A zero term is not a ratio, and storing one would hand the caller a
+  // division by zero later dressed up as an answer.
+  if (!doc || num == 0u || den == 0u) {
+    return;
+  }
+  doc->aspect_num = num;
+  doc->aspect_den = den;
+  doc->has_aspect = 1;
+}
+
+GIMG_API void gimg_doc_clear_pixel_aspect_ratio(GIMG_Doc * doc) {
+  if (!doc) {
+    return;
+  }
+  doc->aspect_num = 0;
+  doc->aspect_den = 0;
+  doc->has_aspect = 0;
+}
+
 GIMG_API void gimg_item_frame_delay(
     const GIMG_Item * item, uint16_t * num, uint16_t * den) {
   if (!item) {
@@ -282,7 +345,8 @@ GIMG_API GIMG_Result gimg_doc_copy(const GIMG_Doc * src, GIMG_Doc ** out_doc) {
 // Document copy: duplicate structure and attached rasters for save variants or
 // moving to another doc. Copied: item count; per-item frame_delay, dispose_op,
 // blend_op; attached rasters (via gimg_raster_copy); meta_common (deep);
-// meta_raw (deep); the document's loop count. Not copied: loaded_by_codec,
+// meta_raw (deep); the document's loop count, background colour and pixel
+// aspect ratio. Not copied: loaded_by_codec,
 // codec_private — the result is
 // a synthetic document. Items without an attached raster (e.g. loaded but not
 // decoded) yield items with no raster in the copy. Caller owns the new doc.
@@ -306,6 +370,14 @@ GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
       *out_doc = NULL;
       return r;
     }
+  }
+  uint8_t background[4];
+  if (gimg_doc_background_color(src, background)) {
+    gimg_doc_set_background_color(doc, background);
+  }
+  uint32_t aspect_num = 0, aspect_den = 0;
+  if (gimg_doc_pixel_aspect_ratio(src, &aspect_num, &aspect_den)) {
+    gimg_doc_set_pixel_aspect_ratio(doc, aspect_num, aspect_den);
   }
   uint32_t loop = 0;
   if (gimg_doc_loop_count(src, &loop)) {

@@ -283,6 +283,23 @@ NETSCAPE2.0 Application Extension, APNG in `acTL`'s `num_plays`:
   a reading. `gimg_doc_copy()` carries the count; writing it back out is the
   caller's to do through the format's save option.
 
+The document also carries two things about the screen a file is drawn on,
+neither of which this library applies - both are reported so that a caller who
+wants to honour them can:
+
+- **Background colour:** `gimg_doc_background_color()` / `set` / `clear`.
+  Reported as RGBA rather than as the index GIF states (89a 18) or the bKGD
+  PNG states, because once a raster is decoded the palette an index referred to
+  is gone. Filled by GIF, resolved through the Global Color Table; a file with
+  no global table declares none. **Nothing paints it** - a GIF decodes onto a
+  transparent canvas, matching every viewer real files were authored against.
+- **Pixel aspect ratio:** `gimg_doc_pixel_aspect_ratio()` / `set` / `clear`,
+  as a width-over-height ratio. This is "is a pixel square", which is not a
+  physical density: GIF states it in its Pixel Aspect Ratio byte and PNG in
+  `pHYs` when the unit specifier says "aspect ratio only", and a density from
+  either arrives separately through `gimg_meta_common_dpi()`. A ratio of 1/1 is
+  a real answer and is distinguished from the file having said nothing.
+
 Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read them on save.
 
 @section api_options_raster_formats_12bit Raster formats (12-bit)

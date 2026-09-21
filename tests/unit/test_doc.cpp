@@ -10,6 +10,7 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
+#include <cstring>
 #include <gtest/gtest.h>
 
 TEST(Doc, CreateHasOneItem) {
@@ -319,6 +320,95 @@ TEST(DocLoopCount, NullsAreTolerated) {
   // A caller that only wants to know whether one was declared passes no
   // out-param at all.
   EXPECT_EQ(gimg_doc_loop_count(doc, nullptr), 1);
+  gimg_doc_destroy(doc);
+}
+
+// ---------------------------------------------------------------------------
+// Background colour and pixel aspect ratio
+// ---------------------------------------------------------------------------
+//
+// Both are three-state for the same reason the loop count is: a file may state
+// a value, or state nothing, and the two are different instructions.
+
+TEST(DocScreen, ANewDocumentDeclaresNeither) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  uint8_t rgba[4] = {1, 2, 3, 4};
+  uint32_t num = 5, den = 6;
+  EXPECT_EQ(gimg_doc_background_color(doc, rgba), 0);
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(doc, &num, &den), 0);
+  EXPECT_EQ(rgba[0], 1u);
+  EXPECT_EQ(num, 5u);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocScreen, ABackgroundColourRoundTripsAndClears) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  const uint8_t want[4] = {10, 20, 30, 40};
+  gimg_doc_set_background_color(doc, want);
+  uint8_t got[4] = {0, 0, 0, 0};
+  ASSERT_EQ(gimg_doc_background_color(doc, got), 1);
+  EXPECT_EQ(memcmp(got, want, 4), 0);
+  gimg_doc_clear_background_color(doc);
+  EXPECT_EQ(gimg_doc_background_color(doc, nullptr), 0);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocScreen, ASquareRatioIsAnAnswerAndNotAnAbsence) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  gimg_doc_set_pixel_aspect_ratio(doc, 1u, 1u);
+  uint32_t num = 0, den = 0;
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(doc, &num, &den), 1)
+      << "square is something the file said, not the file saying nothing";
+  EXPECT_EQ(num, 1u);
+  EXPECT_EQ(den, 1u);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocScreen, AZeroTermIsRefusedRatherThanStored) {
+  // Storing one would hand the caller a division by zero later, dressed up as
+  // an answer the file gave.
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  gimg_doc_set_pixel_aspect_ratio(doc, 4u, 0u);
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(doc, nullptr, nullptr), 0);
+  gimg_doc_set_pixel_aspect_ratio(doc, 0u, 4u);
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(doc, nullptr, nullptr), 0);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocScreen, ACopyKeepsBoth) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  const uint8_t want[4] = {7, 8, 9, 255};
+  gimg_doc_set_background_color(doc, want);
+  gimg_doc_set_pixel_aspect_ratio(doc, 79u, 64u);
+  GIMG_Doc * copy = nullptr;
+  ASSERT_EQ(gimg_doc_copy(doc, &copy), GIMG_OK);
+  uint8_t got[4] = {0, 0, 0, 0};
+  uint32_t num = 0, den = 0;
+  EXPECT_EQ(gimg_doc_background_color(copy, got), 1);
+  EXPECT_EQ(memcmp(got, want, 4), 0);
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(copy, &num, &den), 1);
+  EXPECT_EQ(num, 79u);
+  EXPECT_EQ(den, 64u);
+  gimg_doc_destroy(copy);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocScreen, NullsAreTolerated) {
+  EXPECT_EQ(gimg_doc_background_color(nullptr, nullptr), 0);
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(nullptr, nullptr, nullptr), 0);
+  gimg_doc_set_background_color(nullptr, nullptr);
+  gimg_doc_set_pixel_aspect_ratio(nullptr, 1u, 1u);
+  gimg_doc_clear_background_color(nullptr);
+  gimg_doc_clear_pixel_aspect_ratio(nullptr);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  gimg_doc_set_background_color(doc, nullptr);
+  EXPECT_EQ(gimg_doc_background_color(doc, nullptr), 0);
   gimg_doc_destroy(doc);
 }
 

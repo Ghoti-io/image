@@ -2385,3 +2385,33 @@ TEST(PngLoopCount, AStillPngDeclaresNone) {
   EXPECT_EQ(png_loop_count("png_1x1_gray.png", &loops), 0);
   EXPECT_EQ(loops, 0xABCDu);
 }
+
+TEST(PngScreen, APhysAspectOnlyChunkIsReportedAsARatio) {
+  // pHYs with unit specifier 0 states a pixel aspect ratio and no physical
+  // size (11.3.4.3).  That is not a density, so it cannot arrive as a DPI, and
+  // it used to be dropped entirely.  GIF says the same thing in its own byte,
+  // and both arrive through the same accessor.
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(png_test::load_png_file("png_phys_aspect_4_3.png", buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+
+  uint32_t num = 0, den = 0;
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(doc, &num, &den), 1);
+  EXPECT_EQ(num, 4u);
+  EXPECT_EQ(den, 3u);
+
+  // And it is not mistaken for a resolution: no density was stated.
+  GIMG_Meta_Common * common = gimg_doc_meta_common(doc);
+  if (common) {
+    uint32_t x_dpi = 0, y_dpi = 0;
+    gimg_meta_common_dpi(common, &x_dpi, &y_dpi);
+    EXPECT_EQ(x_dpi, 0u);
+    EXPECT_EQ(y_dpi, 0u);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}

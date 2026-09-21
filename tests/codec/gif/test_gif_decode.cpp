@@ -217,6 +217,53 @@ TEST(GifDecode, NetscapeLoopCountIsRead) {
   EXPECT_EQ(img.at(0, 0), kRed);
 }
 
+TEST(GifScreen, TheBackgroundColourIsResolvedAndReported) {
+  // 89a 18 names an index into the Global Color Table; what reaches the caller
+  // is the colour, because once decode has resolved the palette away an index
+  // is a number nothing can be done with.  The fixture's table is generate.py's
+  // PALETTE and its background index is 0, which is red.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_16x8_plain.gif"), GIMG_OK);
+  uint8_t rgba[4] = {0, 0, 0, 0};
+  ASSERT_EQ(gimg_doc_background_color(img.doc(), rgba), 1);
+  EXPECT_EQ(Rgba({rgba[0], rgba[1], rgba[2], rgba[3]}), kRed);
+}
+
+TEST(GifScreen, NoGlobalTableMeansNoBackgroundColour) {
+  // The index has nothing to resolve against, so nothing is reported rather
+  // than a colour invented from an index that names no entry.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_8x4_no_global_table.gif"), GIMG_OK);
+  uint8_t rgba[4] = {9, 9, 9, 9};
+  EXPECT_EQ(gimg_doc_background_color(img.doc(), rgba), 0);
+  EXPECT_EQ(rgba[0], 9u) << "the out-param is left alone when nothing is said";
+}
+
+TEST(GifScreen, TheDecodedCanvasIsTransparentDespiteTheBackgroundColour) {
+  // Reporting it and painting it are different things.  The fixture declares
+  // red, and the pixels a caller gets are the frame's - see the deviations
+  // table for why no decoder paints it.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_12x8_offset_frame.gif"), GIMG_OK);
+  ASSERT_EQ(gimg_doc_background_color(img.doc(), nullptr), 1);
+  ASSERT_EQ(img.decode(nullptr, 1), GIMG_OK);
+  // The second frame is a 4x4 patch at (6,2); a pixel outside it shows the
+  // first frame, not the background colour.
+  EXPECT_EQ(img.at(0, 0), kRed);
+}
+
+TEST(GifScreen, APixelAspectRatioIsReportedAsARatio) {
+  // 89a 18: zero says nothing, and any other N means (N + 15) / 64.  None of
+  // the fixtures set one, so this pins the "said nothing" half; the arithmetic
+  // is pinned by the unit test on the setter.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_16x8_plain.gif"), GIMG_OK);
+  uint32_t num = 7, den = 7;
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(img.doc(), &num, &den), 0);
+  EXPECT_EQ(num, 7u);
+  EXPECT_EQ(den, 7u);
+}
+
 // ---------------------------------------------------------------------------
 // Comments
 // ---------------------------------------------------------------------------

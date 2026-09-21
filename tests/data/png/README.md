@@ -22,6 +22,7 @@ Generated files:
 | `png_exif_orientation.png` | 1×1 gray + eXIf with Orientation tag 6 (90° CW); used for meta_common test |
 | `png_iccp.png` | 1×1 gray + iCCP chunk (tiny zlib-compressed profile) |
 | `png_apng_2frame.png` | 2-frame APNG: default image is first frame (1×1 gray 0, then 0x80); frame 0 delay 50/100, dispose NONE, blend SOURCE; frame 1 delay 25/100, dispose BACKGROUND, blend OVER |
+| `png_phys_aspect_4_3.png` | `pHYs` with unit specifier 0: a 4:3 pixel aspect ratio and no physical size, which is the case a DPI cannot represent and which the loader used to drop |
 | `png_apng_3plays.png` | The 2-frame APNG with `acTL` num_plays=3 instead of 0: the only fixture here whose play count differs from what a zeroed structure holds, so it is the one that can tell a count that was read from one that was never set |
 | `png_apng_3frame.png` | 3-frame APNG: gray 0, 0x80, 0xC0; frame 0 delay 50/100 dispose NONE blend SOURCE; frame 1 delay 25/100 dispose BACKGROUND blend OVER; frame 2 delay 10/100 dispose PREVIOUS blend OVER |
 | `png_apng_2frame_16bit_rgba.png` | 2-frame APNG 16-bit RGBA: frame 0 black opaque, frame 1 red 50% alpha with blend OVER (dispose NONE). Used to test 16-bit alpha compositing. |

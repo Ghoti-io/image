@@ -32,9 +32,14 @@ come from `doc->allocator`.
 ## Parts implemented
 
 - **Header** (89a 17) and **Logical Screen Descriptor** (89a 18): canvas size,
-  the Global Color Table flag and size, the background colour index, and the
-  pixel aspect ratio. The colour resolution and sort flags are read past; no
-  decoder acts on either.
+  the Global Color Table flag and size, the background colour index - reported
+  as a colour by `gimg_doc_background_color()`, resolved through the table -
+  and the pixel aspect ratio, reported by `gimg_doc_pixel_aspect_ratio()` as
+  the (N + 15) / 64 that 89a 18 defines. The colour resolution and sort flags
+  are read past; no decoder acts on either. The three version bytes are read
+  to consume them and to refuse a header that stops inside them, and then
+  discarded: a file saying "89a" may use nothing 89a added and one saying
+  "87a" is read identically, so there is no decision the spelling informs.
 - **Global and Local Color Tables** (89a 18, 20), 2 to 256 entries. A frame is
   resolved at load to the table it is read through, so decode never reaches
   back to the screen descriptor. A file with **no** Global Color Table is
@@ -256,7 +261,7 @@ two frames.
 | Area | Supported | Rejected / limitation |
 |------|-----------|-----------------------|
 | Header | 87a and 89a, read identically | Anything not beginning `GIF` &rarr; `GIMG_ERR_FORMAT` |
-| Logical Screen Descriptor | Size, background index, aspect ratio, Global Color Table | Truncated &rarr; `GIMG_ERR_FORMAT` |
+| Logical Screen Descriptor | Size and Global Color Table; the background index resolved to a colour and the Pixel Aspect Ratio byte resolved to a ratio, both reported but neither applied | Truncated &rarr; `GIMG_ERR_FORMAT`. The colour resolution and sort flags are read past |
 | Colour tables | Global, local, 2–256 entries, absent | Truncated &rarr; `GIMG_ERR_FORMAT` |
 | LZW | Minimum code size 2–8 | Outside that &rarr; `GIMG_ERR_CORRUPT`; a stream yielding fewer pixels than the descriptor promises &rarr; `GIMG_ERR_CORRUPT` |
 | Interlace | Four-pass, decoded and written | — |
@@ -276,7 +281,7 @@ two frames.
 |---|---|---|
 | An index the colour table does not have | Draws nothing; the pixel keeps what the canvas already held | giflib does the same. Pillow paints it opaque black. Pinned by `gif_8x2_index_past_palette.gif`, where a four-entry table is addressed with index 7 — expressible because the code size is set independently of the table size |
 | The colour under a fully transparent pixel | Zero in all three channels | giflib the same; Pillow writes the palette colour. Invisible by definition, and the reason `verify_gif_output.py` does not compare those channels |
-| The logical screen before any frame is drawn | Transparent | 89a 18 names a background colour index, and the viewers every real file was authored against ignore it. Filling it would put a colour on screen that no other decoder shows. The index is kept in the document state for a caller that wants it |
+| The logical screen before any frame is drawn | Transparent | 89a 18 names a background colour index, and the viewers every real file was authored against ignore it. Filling it would put a colour on screen that no other decoder shows. The colour that index names is reported by `gimg_doc_background_color()`, resolved through the Global Color Table, so a caller who wants to honour it can |
 | Plain Text extension | Walked past, never rendered | No decoder in use renders it either. A file using it looks the same here as everywhere |
 | A file that ends without a trailer | Keeps the frames already read | Common enough in the wild that the frames are worth more than the refusal. A file truncated **inside** a frame is still refused |
 | What "restore to background" leaves behind (disposal 2, 89a 23) | Transparent | ImageMagick's `-coalesce` agrees. Pillow gives an opaque pixel instead - sometimes the background colour, sometimes the previous frame showing through. Adding a Global Color Table, the obvious suspect, changes nothing. Pinned by `tests/out/gif/animation_6x3.gif`, whose second frame is transparent exactly where the first was opaque |
@@ -455,8 +460,9 @@ two frames.
 
 - **Plain Text rendering** (89a 25). The block is walked past. No decoder in
   use renders it, and doing so would mean shipping a bitmap font.
-- **The background colour index is not applied.** It is read and kept; the
-  canvas starts transparent. See the deviations table for why.
+- **The background colour is not painted.** The canvas starts transparent; the
+  colour is reported through `gimg_doc_background_color()` for a caller who
+  wants it. See the deviations table for why nothing here paints it.
 
 ---
 

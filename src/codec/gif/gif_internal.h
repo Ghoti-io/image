@@ -173,9 +173,6 @@ typedef struct {
   bool has_loop;      ///< A NETSCAPE2.0 Application Extension was seen.
   uint16_t loop_count; ///< Its repeat count; 0 means forever.
 
-  /** "87a" or "89a" as the header spelled it, with a terminating zero. */
-  char version[4];
-
   gimg_gif_frame_t * frames; ///< One per image block, in stream order.
   size_t frame_count;        ///< Length of `frames`.
 

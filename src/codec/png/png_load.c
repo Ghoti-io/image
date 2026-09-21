@@ -803,6 +803,16 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
     const unsigned char * p = state->ancillary[i].payload;
     if (p[8] != GIMG_PNG_PHYS_UNIT_METER) {
+      // Unit 0 means the two numbers are a pixel aspect ratio and nothing
+      // more (11.3.4.3).  That is not a density, so it cannot become a DPI;
+      // it used to be dropped here, which lost the only thing such a chunk
+      // says.  GIF states the same thing in its Pixel Aspect Ratio byte, and
+      // both reach a caller through gimg_doc_pixel_aspect_ratio().
+      gimg_doc_set_pixel_aspect_ratio(doc,
+          ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+              ((uint32_t)p[2] << 8) | (uint32_t)p[3],
+          ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) |
+              ((uint32_t)p[6] << 8) | (uint32_t)p[7]);
       break;
     }
     uint32_t x_ppm = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |

@@ -110,6 +110,63 @@ GIMG_API void gimg_doc_set_loop_count(GIMG_Doc * doc, uint32_t count);
 GIMG_API void gimg_doc_clear_loop_count(GIMG_Doc * doc);
 
 /**
+ * @brief Get the colour the file says to put behind the image.
+ *
+ * GIF names it as an index into the Global Color Table (89a 18) and PNG as
+ * bKGD; both are reported here as RGBA, because by the time a caller has a
+ * decoded raster the palette an index referred to is gone.
+ *
+ * **This library does not paint it.** A GIF decodes onto a transparent canvas,
+ * because that is what every viewer real files were authored against does -
+ * see the GIF page's deviations. The colour is reported so that a caller who
+ * wants to honour it can, not because anything here has.
+ *
+ * @param doc Document.
+ * @param out_rgba Receives four bytes, red first.  Untouched when the document
+ *        declares no background colour.
+ * @return 1 when the document declares one, 0 when it does not or when @p doc
+ *         is NULL.
+ */
+GIMG_API int gimg_doc_background_color(
+    const GIMG_Doc * doc, uint8_t * out_rgba);
+
+/** @brief Say what colour belongs behind the image (four bytes, red first). */
+GIMG_API void gimg_doc_set_background_color(
+    GIMG_Doc * doc, const uint8_t * rgba);
+
+/** @brief Remove a background colour, so the document declares none. */
+GIMG_API void gimg_doc_clear_background_color(GIMG_Doc * doc);
+
+/**
+ * @brief Get the shape of a pixel, as a ratio of width to height.
+ *
+ * Not a physical size: this is the answer to "is a pixel square", which GIF
+ * states in the Pixel Aspect Ratio byte (89a 18) and PNG in pHYs when its unit
+ * specifier says "aspect ratio only". A file that states a physical density
+ * instead reports that through `gimg_meta_common_dpi()`, and a file may state
+ * either, both or neither.
+ *
+ * A ratio of 1/1 is a square pixel and is a real answer, distinct from the
+ * file having said nothing - which is why this reports whether it was stated
+ * rather than defaulting to 1.
+ *
+ * @param doc Document.
+ * @param out_num Receives the width term; untouched when none is declared.
+ * @param out_den Receives the height term; untouched when none is declared.
+ * @return 1 when the document declares a ratio, 0 when it does not or when
+ *         @p doc is NULL.
+ */
+GIMG_API int gimg_doc_pixel_aspect_ratio(
+    const GIMG_Doc * doc, uint32_t * out_num, uint32_t * out_den);
+
+/** @brief Say what shape a pixel is.  A zero in either term is ignored. */
+GIMG_API void gimg_doc_set_pixel_aspect_ratio(
+    GIMG_Doc * doc, uint32_t num, uint32_t den);
+
+/** @brief Remove a pixel aspect ratio, so the document declares none. */
+GIMG_API void gimg_doc_clear_pixel_aspect_ratio(GIMG_Doc * doc);
+
+/**
  * @brief Get frame delay numerator and denominator (e.g. fcTL delay_num/den).
  * @param item Item.
  * @param num On output, delay numerator (0 if item is NULL).

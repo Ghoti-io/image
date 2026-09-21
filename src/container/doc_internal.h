@@ -65,6 +65,21 @@ struct GIMG_Doc {
    * different instructions and a caller has to be able to tell them apart. */
   uint32_t loop_count;
   int has_loop_count;
+
+  /** The colour a viewer is told to put behind the image, and whether the file
+   * named one.  GIF names it as an index into the Global Color Table (89a 18)
+   * and PNG as bKGD; both are resolved to RGBA here, because an index is
+   * meaningless once the palette has been resolved away. */
+  uint8_t background[4];
+  int has_background;
+
+  /** The shape of a pixel, as a ratio of width to height, and whether the file
+   * named one.  GIF's Pixel Aspect Ratio byte (89a 18) and PNG's pHYs with the
+   * unit specifier set to "aspect ratio only" say the same thing; neither is a
+   * physical size, which is why this is not the DPI in GIMG_Meta_Common. */
+  uint32_t aspect_num;
+  uint32_t aspect_den;
+  int has_aspect;
 };
 
 #endif // GHOTI_IO_GIMG_SRC_CONTAINER_DOC_INTERNAL_H

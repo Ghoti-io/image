@@ -367,6 +367,7 @@ def main() -> None:
     _write_color_typed_ancillary_fixtures()
     _write_filter_validity_fixtures()
     _write_apng_frame_bounds_fixtures()
+    _write_png_aspect_only()
     _write_jpeg_with_resolution()
     _write_apng16_oracle_expected()
 
@@ -897,6 +898,23 @@ def _write_apng_frame_bounds_fixtures() -> None:
     write_png("png_apng_frame_zero_size.png",
         signature + ihdr + actl + fctl0 + idat + fctl_zero + fdat_ok + iend)
 
+
+
+def _write_png_aspect_only() -> None:
+    """A PNG whose pHYs states a pixel aspect ratio and no physical size.
+
+    Unit specifier 0 means the two numbers are a ratio and nothing else
+    (11.3.4.3), which is not a density and so cannot become a DPI. The loader
+    used to drop such a chunk, losing the only thing it says. 4:3 here, which
+    is a shape no square-pixel default would produce by accident.
+    """
+    signature = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
+    phys = png_chunk(b"pHYs", struct.pack(">IIB", 4, 3, 0))
+    data = (signature + png_chunk(b"IHDR", ihdr) + phys
+            + png_chunk(b"IDAT", idat_zlib(bytes([0x00, 0x00])))
+            + png_chunk(b"IEND", b""))
+    write_png("png_phys_aspect_4_3.png", data)
 
 
 def _write_jpeg_with_resolution() -> None:

@@ -338,8 +338,10 @@ GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
     // colour.  The specification names a background index (89a 18), but the
     // viewers everyone's files were authored against ignore it and start
     // transparent; filling it would put a colour on screen that no other
-    // decoder shows.  The index is kept in the document state for a caller
-    // that wants it.
+    // decoder shows.  The colour that index names is reported through
+    // gimg_doc_background_color(), resolved against the Global Color Table, so
+    // a caller who does want to honour it can - this codec simply does not
+    // decide that on their behalf.
     for (uint32_t y = 0; y < state->canvas_height; y++) {
       memset(canvas + (size_t)y * stride, 0, (size_t)state->canvas_width * 4u);
     }

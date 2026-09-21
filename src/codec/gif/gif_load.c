@@ -515,6 +515,11 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // without the cache, which costs time and nothing else.
   state->cache_lock_ready = (GCU_MUTEX_CREATE(state->cache_lock) == 0);
 
+  // The three version bytes are read to consume them and to refuse a header
+  // that stops inside them; which three they are is not kept.  A file saying
+  // "89a" may use nothing 89a added and one saying "87a" is read the same way,
+  // so there is no decision the spelling could inform - see
+  // documentation/formats/gif.md.
   unsigned char version[GIMG_GIF_HEADER_LEN - GIMG_GIF_SIGNATURE_LEN];
   r = gimg_stream_read_exact(stream, version, sizeof(version));
   if (r != GIMG_OK) {
@@ -522,8 +527,6 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
     gimg_gif_free_doc_state(codec, state);
     return r;
   }
-  memcpy(state->version, version, sizeof(version));
-  state->version[sizeof(version)] = '\0';
 
   unsigned char lsd[GIMG_GIF_LSD_LEN];
   r = gimg_stream_read_exact(stream, lsd, sizeof(lsd));
@@ -685,6 +688,25 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
     // the previous frame showing, which the compositor in decode does by not
     // writing that pixel rather than by blending it.
     gimg_item_set_blend_op(item, GIMG_BLEND_SOURCE);
+  }
+
+  // The background colour is resolved here rather than reported as the index
+  // the file gave: once decode has turned palette indices into RGBA, the table
+  // that index referred to is gone, so an index would be a number a caller
+  // could not use.  Nothing is reported when there is no global table to
+  // resolve against, or when the index names an entry it does not have.
+  if (state->has_global_palette &&
+      state->background_index < state->global_palette_count) {
+    const gimg_gif_rgb_t * bg = &state->global_palette[state->background_index];
+    const uint8_t rgba[4] = {bg->r, bg->g, bg->b, 0xFFu};
+    gimg_doc_set_background_color(doc, rgba);
+  }
+
+  // Pixel Aspect Ratio (89a 18): zero means the file says nothing, and any
+  // other value N means the pixel is (N + 15) / 64 as wide as it is tall.
+  if (state->aspect_ratio != 0u) {
+    gimg_doc_set_pixel_aspect_ratio(
+        doc, (uint32_t)state->aspect_ratio + 15u, 64u);
   }
 
   // Comments reach the caller two ways, because one of them is lossy on
