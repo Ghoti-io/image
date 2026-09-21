@@ -1,0 +1,8 @@
+# Reference decoders and corpora the sweep in tests/data/bmp/ corroborates
+# against. Pinned by commit, not by branch: "bmplib agrees on 79 of 91 files"
+# names a specific decoder, and a claim measured against a moving HEAD cannot
+# be reproduced or compared against the next run.
+#
+# name      ref
+bmplib      e7910ac36bfdc6c46fcaf5f8291ed9956ba98fd8
+bmpsuite    555e43af40c330249234279b6d2bc6162370a2f0
