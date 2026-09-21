@@ -43,3 +43,8 @@ tests/data/out
 
 # Pycache files (for generated test fixtures, in any directory)
 **/__pycache__
+
+# Compiled giflib oracle tool. The source is tracked in tests/tools/gif-oracle;
+# the binary it builds is not. Rebuild it with `make gif-oracle-tools`, which
+# needs the giflib headers (Debian/Ubuntu: libgif-dev).
+tests/tools/gif-oracle/build

@@ -617,6 +617,22 @@ jpeg-oracle-tools: ## Build the libjpeg oracle tools into tests/tools/jpeg-oracl
 	@echo "  export GIMG_JPEG_ORACLE_DIR=$(CURDIR)/$(JPEG_ORACLE_OUT)"
 
 
+# giflib oracle tool. Source is tracked in tests/tools/gif-oracle; the binary
+# it builds is not. Needs the giflib headers (Debian/Ubuntu: libgif-dev; the
+# runtime library alone is not enough).  giflib ships no pkg-config file, so
+# there is nothing to ask and the link flag is named directly.
+GIF_ORACLE_DIR := tests/tools/gif-oracle
+GIF_ORACLE_OUT := $(GIF_ORACLE_DIR)/build
+
+gif-oracle-tools: ## Build the giflib oracle tool into tests/tools/gif-oracle/build (needs libgif-dev)
+	@mkdir -p $(GIF_ORACLE_OUT)
+	@printf '### Building oracle tool dump_gif_pixels_giflib ###\n'
+	@$(CC) -O2 -g -std=c17 -Wall -Wextra \
+		-o $(GIF_ORACLE_OUT)/dump_gif_pixels_giflib$(EXE_EXTENSION) \
+		$(GIF_ORACLE_DIR)/dump_gif_pixels_giflib.c -lgif || { \
+		echo "Could not build the giflib oracle. Install the giflib headers (Debian/Ubuntu: apt install libgif-dev)."; \
+		exit 1; }
+
 # IJG v10 (Independent JPEG Group reference, third_party/jpeg-10). Decode precision 8-12 only;
 # rejects 16-bit and extended DHT (242 AC symbols). See tests/data/jpeg/README.md.
 jpeg-ijg10-build: ## Build IJG v10 (configure + make) in third_party/jpeg-10. Requires source from ijg.org (jpegsrc.v10.tar.gz).
@@ -663,7 +679,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 # General commands
 .PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build coverage check-symbols
 .PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode
-.PHONY: bmp-dump-raster bmpsuite bmp-oracle-tools jpeg-oracle-tools
+.PHONY: bmp-dump-raster bmpsuite bmp-oracle-tools jpeg-oracle-tools gif-oracle-tools
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-watch uninstall watch
 # Debug build commands
