@@ -10,7 +10,7 @@ The `image` library provides:
 - **Configurable allocator** — Pluggable malloc/free/realloc (`GIMG_Allocator`) for embedding and custom memory management; all owned allocations use the allocator (default is stdlib when NULL is passed)
 - Multi-image container model (documents, items, frames/pages)
 - Pixel formats, color representation, and metadata (common + raw preservation)
-- Codec framework and format support: PNG (including APNG), JPEG and BMP today; GIF, TIFF and others per the spec roadmap
+- Codec framework and format support: PNG (including APNG), JPEG, BMP and GIF today; TIFF and others per the spec roadmap
 - Transformations and image operations
 
 ## Dependencies
@@ -46,7 +46,7 @@ See the examples directory for usage examples.
 - [Examples](@ref examples) - Example programs demonstrating library usage
 - [Function Index](@ref functions_index) - Complete API reference
 - [Format and specification references](@ref format_references) - One page per format: the specification implemented, the parts covered, deviations, and tested scope
-  - [PNG and APNG](@ref format_png), [JPEG](@ref format_jpeg), [BMP](@ref format_bmp)
+  - [PNG and APNG](@ref format_png), [JPEG](@ref format_jpeg), [BMP](@ref format_bmp), [GIF](@ref format_gif)
   - [Adding a format](@ref format_adding) - the checklist and page template for a new codec
 
 ## Macros and Utilities
