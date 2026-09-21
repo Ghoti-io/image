@@ -254,3 +254,124 @@ GIMG_Result gimg_bmp_huffman_expand(const unsigned char * data, size_t size,
   }
   return GIMG_OK;
 }
+
+// ---------------------------------------------------------------------------
+// Encoding
+// ---------------------------------------------------------------------------
+
+/** MSB-first bit writer, counting past the end rather than writing past it so
+ * that a caller can size a buffer by encoding into none. */
+typedef struct {
+  unsigned char * data; ///< NULL to measure without writing.
+  size_t capacity;
+  size_t bit;
+  bool overflow;
+} gimg_bmp_g31d_out_t;
+
+static void g31d_put_bits(
+    gimg_bmp_g31d_out_t * o, uint32_t code, unsigned int bits) {
+  for (unsigned int i = 0; i < bits; i++) {
+    unsigned int bit = (code >> (bits - 1u - i)) & 1u;
+    size_t byte = o->bit >> 3;
+    if (o->data) {
+      if (byte >= o->capacity) {
+        o->overflow = true;
+        return;
+      }
+      if ((o->bit & 7u) == 0u) {
+        o->data[byte] = 0;
+      }
+      o->data[byte] |= (unsigned char)(bit << (7u - (o->bit & 7u)));
+    }
+    o->bit++;
+  }
+}
+
+/** Find a code for an exact run length in one colour's table. */
+static const gimg_bmp_g31d_code_t * g31d_code_for(bool white, uint32_t run) {
+  const gimg_bmp_g31d_code_t * table =
+      white ? gimg_bmp_g31d_white : gimg_bmp_g31d_black;
+  size_t count = white
+      ? sizeof(gimg_bmp_g31d_white) / sizeof(gimg_bmp_g31d_white[0])
+      : sizeof(gimg_bmp_g31d_black) / sizeof(gimg_bmp_g31d_black[0]);
+  for (size_t i = 0; i < count; i++) {
+    if (table[i].run == run) {
+      return &table[i];
+    }
+  }
+  return NULL;
+}
+
+/**
+ * Write one run as a makeup code, or several, followed by a terminating one.
+ *
+ * T.4 states runs of 64 and over as a makeup code carrying a multiple of 64
+ * and then a terminating code of 0 to 63.  The largest makeup either colour
+ * has is 2560, so a longer run takes more than one - and a terminating code is
+ * always written, including for a remainder of zero, because that is what ends
+ * the run.
+ */
+static bool g31d_put_run(
+    gimg_bmp_g31d_out_t * o, bool white, uint32_t run) {
+  while (run >= GIMG_BMP_G31D_TERMINATING) {
+    uint32_t makeup = run - (run % GIMG_BMP_G31D_TERMINATING);
+    if (makeup > 2560u) {
+      makeup = 2560u;
+    }
+    const gimg_bmp_g31d_code_t * code = g31d_code_for(white, makeup);
+    if (!code) {
+      return false;
+    }
+    g31d_put_bits(o, code->code, code->bits);
+    run -= makeup;
+  }
+  const gimg_bmp_g31d_code_t * code = g31d_code_for(white, run);
+  if (!code) {
+    return false;
+  }
+  g31d_put_bits(o, code->code, code->bits);
+  return true;
+}
+
+GIMG_Result gimg_bmp_huffman_encode(const unsigned char * rows, uint32_t width,
+    uint32_t height, size_t stride, unsigned char * out, size_t capacity,
+    size_t * out_size) {
+  if (!rows || !width || !height || !out_size) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_bmp_g31d_out_t o = {out, capacity, 0, false};
+
+  for (uint32_t y = 0; y < height; y++) {
+    const unsigned char * row = rows + ((size_t)y * stride);
+    // Every T.4 line begins with a white run, which is empty when the line
+    // starts on black.  Writing that zero-length code is not optional: a
+    // decoder counts colours by alternation, so leaving it out inverts the
+    // line.
+    bool white = true;
+    uint32_t x = 0;
+    while (x < width) {
+      uint32_t run = 0;
+      while (x + run < width) {
+        bool bit = ((row[(x + run) >> 3] >> (7u - ((x + run) & 7u))) & 1u) != 0;
+        if (bit == white) {  // A set bit is black, which is not white.
+          break;
+        }
+        run++;
+      }
+      if (!g31d_put_run(&o, white, run)) {
+        return GIMG_ERR_INTERNAL;
+      }
+      x += run;
+      white = !white;
+    }
+    // An end-of-line after every line, which is what T.4 says and what makes
+    // the result readable by decoders stricter than this one's.
+    g31d_put_bits(&o, 1u, 12u);
+  }
+
+  if (o.overflow) {
+    return GIMG_ERR_LIMIT;
+  }
+  *out_size = (o.bit + 7u) / 8u;
+  return GIMG_OK;
+}

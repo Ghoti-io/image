@@ -576,6 +576,103 @@ static size_t bmp_rle24_row(const unsigned char * bgr, uint32_t width,
   return used;
 }
 
+/**
+ * Write a BI_JPEG or BI_PNG wrapper: a BMP header whose pixel data is a whole
+ * image in another format.
+ *
+ * The payload is produced by this library's own codec for that format, by
+ * saving a copy of the raster.  A copy, because a document takes ownership of
+ * the raster it is given and this one belongs to the caller's document.
+ *
+ * biBitCount is written as zero, which is what a conformant BI_PNG file does:
+ * the embedded stream carries its own depth, and stating a second one here
+ * would be a claim this writer cannot keep.
+ */
+static GIMG_Result bmp_save_wrapper(GIMG_Stream * stream,
+    const GIMG_Raster * raster, uint8_t wrapper, const GIMG_Allocator * alloc,
+    GIMG_Save_Report * report) {
+  const char * format_name =
+      wrapper == GIMG_BMP_WRAPPER_JPEG ? "jpeg" : "png";
+
+  GIMG_Raster * copy = NULL;
+  GIMG_Result r = gimg_raster_copy_with_allocator(alloc, raster, &copy);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  GIMG_Doc * inner = NULL;
+  r = gimg_doc_create_with_allocator(alloc, &inner);
+  if (r == GIMG_OK) {
+    r = gimg_doc_set_item_count(inner, 1);
+  }
+  if (r != GIMG_OK) {
+    gimg_raster_destroy(copy);
+    if (inner) {
+      gimg_doc_destroy(inner);
+    }
+    return r;
+  }
+  gimg_item_set_raster(gimg_doc_item(inner, 0), copy); // Takes ownership.
+
+  GIMG_Stream * payload = NULL;
+  r = gimg_stream_create_memory_output(&payload);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(inner);
+    return r;
+  }
+  GIMG_Save_Report inner_report;
+  memset(&inner_report, 0, sizeof(inner_report));
+  r = gimg_doc_save(inner, payload, format_name, NULL, &inner_report);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(payload);
+    gimg_doc_destroy(inner);
+    return r;
+  }
+
+  const void * bytes = NULL;
+  size_t size = 0;
+  gimg_stream_output_buffer(payload, &bytes, &size);
+
+  uint32_t width = gimg_raster_width(raster);
+  uint32_t height = gimg_raster_height(raster);
+  size_t data_offset =
+      (size_t)GIMG_BMP_FILE_HEADER_SIZE + (size_t)GIMG_BMP_INFOHEADER_SIZE;
+  size_t file_size;
+  if (!size || !gcu_safe_add_size(data_offset, size, &file_size) ||
+      file_size > UINT32_MAX) {
+    gimg_stream_destroy(payload);
+    gimg_doc_destroy(inner);
+    // bfSize cannot describe it, so the file cannot say how long it is.
+    return size ? GIMG_ERR_LIMIT : GIMG_ERR_INTERNAL;
+  }
+
+  unsigned char header[GIMG_BMP_FILE_HEADER_SIZE + GIMG_BMP_INFOHEADER_SIZE];
+  memset(header, 0, sizeof(header));
+  header[0] = 'B';
+  header[1] = 'M';
+  gimg_bmp_write_u32(header + 2, (uint32_t)file_size);
+  gimg_bmp_write_u32(header + 10, (uint32_t)data_offset);
+  unsigned char * dib = header + GIMG_BMP_FILE_HEADER_SIZE;
+  gimg_bmp_write_u32(dib + 0, GIMG_BMP_INFOHEADER_SIZE);
+  gimg_bmp_write_u32(dib + 4, width);
+  gimg_bmp_write_u32(dib + 8, height);
+  bmp_write_u16(dib + 12, 1u); // Planes.
+  bmp_write_u16(dib + 14, 0u); // biBitCount: the payload states its own.
+  gimg_bmp_write_u32(dib + 16,
+      wrapper == GIMG_BMP_WRAPPER_JPEG ? GIMG_BMP_BI_JPEG : GIMG_BMP_BI_PNG);
+  gimg_bmp_write_u32(dib + 20, (uint32_t)size); // biSizeImage.
+
+  r = bmp_write_all(stream, header, sizeof(header));
+  if (r == GIMG_OK) {
+    r = bmp_write_all(stream, bytes, size);
+  }
+  if (r == GIMG_OK) {
+    report->bytes_written = file_size;
+  }
+  gimg_stream_destroy(payload);
+  gimg_doc_destroy(inner);
+  return r;
+}
+
 // ---------------------------------------------------------------------------
 // Save
 // ---------------------------------------------------------------------------
@@ -617,6 +714,7 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   const bool want_top_down = options && options->bmp_top_down;
   const bool allow_2bit = options && options->bmp_allow_2bit;
   const bool allow_rle24 = options && options->bmp_allow_rle24;
+  const bool allow_huffman = options && options->bmp_allow_huffman;
 
   if (want_rle == GIMG_BMP_RLE_AUTO && want_top_down) {
     // The format does not allow the pair: an RLE stream's end-of-line walks
@@ -665,6 +763,18 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
   GIMG_Result result = GIMG_OK;
   const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
+
+  // A wrapper's pixel data is a whole other image, so none of the palette,
+  // depth or compression work below applies to it.
+  if (options && options->bmp_wrapper != GIMG_BMP_WRAPPER_NONE) {
+    result = bmp_save_wrapper(
+        stream, raster, options->bmp_wrapper, alloc, report);
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    return result;
+  }
+
   unsigned char * row_buffer = NULL;
   unsigned char * encoded = NULL;
   bmp_color_table_t * table = NULL;
@@ -781,7 +891,59 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     // only reached when the indexed forms were not taken.
     const bool rle_true_color = want_rle == GIMG_BMP_RLE_AUTO && allow_rle24 &&
         !indexed && plan.bit_count == 24u;
-    if (rle_true_color) {
+    const bool want_huffman = want_rle == GIMG_BMP_RLE_AUTO && allow_huffman &&
+        indexed && plan.bit_count == 1u;
+    if (want_huffman) {
+      // Huffman 1D, like RLE24, exists only in OS/2's vocabulary.  The rows
+      // are packed exactly as they would have been written plainly and then
+      // encoded, so the encoder is fed the same bytes the decoder produces.
+      unsigned char * packed =
+          (unsigned char *)gimg_calloc(alloc, plan.stride, (size_t)height);
+      if (!packed) {
+        result = GIMG_ERR_OOM;
+        goto done;
+      }
+      size_t src_stride = gimg_raster_stride_bytes(raster);
+      const uint8_t * pixels =
+          (const uint8_t *)gimg_raster_pixels_const(raster);
+      for (uint32_t y = 0; y < height; y++) {
+        uint32_t source_row = height - 1u - y;
+        bmp_pack_row(format, pixels + ((size_t)source_row * src_stride), width,
+            plan.bit_count, table, packed + ((size_t)y * plan.stride));
+      }
+
+      // Measure first: the encoder counts bits without writing when given no
+      // buffer, so the allocation is exact rather than a worst case.
+      size_t needed = 0;
+      result = gimg_bmp_huffman_encode(
+          packed, width, height, plan.stride, NULL, 0, &needed);
+      if (result == GIMG_OK && needed && needed < plan.pixel_bytes) {
+        encoded = (unsigned char *)gimg_malloc(alloc, needed);
+        if (!encoded) {
+          gimg_free(alloc, packed);
+          result = GIMG_ERR_OOM;
+          goto done;
+        }
+        result = gimg_bmp_huffman_encode(
+            packed, width, height, plan.stride, encoded, needed, &encoded_size);
+        if (result == GIMG_OK) {
+          use_rle = true;
+          plan.os2 = true;
+          plan.dib_size = GIMG_BMP_OS2V2_MAX_SIZE;
+          plan.compression = GIMG_BMP_OS2_HUFFMAN1D;
+          plan.pixel_bytes = encoded_size;
+        }
+        else {
+          gimg_free(alloc, encoded);
+          encoded = NULL;
+        }
+      }
+      gimg_free(alloc, packed);
+      if (result != GIMG_OK) {
+        goto done;
+      }
+    }
+    else if (rle_true_color) {
       // RLE24 exists only in OS/2's vocabulary, so writing it means writing an
       // OS/2 header.  The two headers share their first 40 bytes, so this is
       // a length and a compression number rather than a different writer.

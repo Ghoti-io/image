@@ -205,6 +205,12 @@ Rgba twelve_colors(uint32_t x, uint32_t y) {
       (uint8_t)(n * 9u), 255};
 }
 
+/** Two colors in wide runs: 1 bit per pixel, and what Huffman 1D is for. */
+Rgba two_colors_in_runs(uint32_t x, uint32_t y) {
+  return (((x / 32u) + y) % 2u) ? Rgba{255, 255, 255, 255}
+                                : Rgba{16, 32, 48, 255};
+}
+
 /** Four colors, which is what 2 bits per pixel holds and nothing fewer. */
 Rgba four_colors(uint32_t x, uint32_t y) {
   static const Rgba kPalette[4] = {{200, 30, 40, 255}, {30, 200, 40, 255},
@@ -695,6 +701,122 @@ TEST(BmpEncode, Rle24NeedsItsOwnOptionAndWritesAnOs2Header) {
   expect_round_trip(bytes, 512, 8, true_color_in_runs);
   publish_for_verification("rle24_os2_512x8.bmp", bytes, 512, 8,
       true_color_in_runs);
+}
+
+TEST(BmpEncode, TwoColorImageIsWrittenAsHuffman1DWhenAllowed) {
+  // Huffman 1D lives only in an OS/2 header, where compression 3 is CCITT
+  // Group 3 coding and a Windows reader would see BI_BITFIELDS - so writing it
+  // changes what kind of file this is, which is why it has an option of its
+  // own.  A two-colour image in wide flat runs is what the encoding is for.
+  GIMG_Raster * plain = make_raster(256, 16, two_colors_in_runs);
+  ASSERT_NE(plain, nullptr);
+  GIMG_Save_Options rle_only;
+  memset(&rle_only, 0, sizeof(rle_only));
+  rle_only.bmp_rle = GIMG_BMP_RLE_AUTO;
+  std::vector<uint8_t> without;
+  ASSERT_EQ(save_raster_with_options(plain, &rle_only, without), GIMG_OK);
+  EXPECT_EQ(read_u32(without, 14), 40u) << "still a Windows header";
+  EXPECT_EQ(read_u32(without, 30), 0u) << "BI_RGB";
+
+  GIMG_Raster * raster = make_raster(256, 16, two_colors_in_runs);
+  ASSERT_NE(raster, nullptr);
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+  options.bmp_allow_huffman = 1;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u32(bytes, 14), 64u) << "BITMAPCOREHEADER2";
+  EXPECT_EQ(read_u16(bytes, 28), 1u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 30), 3u) << "OS/2 Huffman 1D";
+  EXPECT_LT(bytes.size(), without.size()) << "smaller than the packed rows";
+
+  expect_round_trip(bytes, 256, 16, two_colors_in_runs);
+  publish_for_verification("huffman1d_os2_256x16.bmp", bytes, 256, 16,
+      two_colors_in_runs);
+}
+
+TEST(BmpEncode, Huffman1DNeedsItsOwnOption) {
+  // Asking for compression is not asking for a file Windows cannot read.
+  GIMG_Raster * raster = make_raster(256, 16, two_colors_in_runs);
+  ASSERT_NE(raster, nullptr);
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+  EXPECT_NE(read_u32(bytes, 30), 3u) << "no Huffman without the option";
+}
+
+TEST(BmpEncode, PngWrapperCarriesAWholePngAsItsPixelData) {
+  // A BI_PNG file's "pixel data" is a whole PNG.  The wrapper was meant for
+  // spooling to printers rather than interchange, so it is written only when
+  // asked for - but when it is asked for, the payload must be a real PNG and
+  // the header must say so.
+  GIMG_Raster * raster = make_raster(16, 8, twelve_colors);
+  ASSERT_NE(raster, nullptr);
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_wrapper = GIMG_BMP_WRAPPER_PNG;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u32(bytes, 14), 40u) << "BITMAPINFOHEADER";
+  EXPECT_EQ(read_u32(bytes, 18), 16u);
+  EXPECT_EQ(read_u32(bytes, 22), 8u);
+  EXPECT_EQ(read_u16(bytes, 28), 0u) << "biBitCount: the payload states it";
+  EXPECT_EQ(read_u32(bytes, 30), 5u) << "BI_PNG";
+  uint32_t offset = read_u32(bytes, 10);
+  ASSERT_EQ(offset, 54u);
+  EXPECT_EQ(read_u32(bytes, 34), bytes.size() - offset) << "biSizeImage";
+  // The payload begins with the PNG signature, which is the only way to say
+  // that what was embedded is the thing the header claims.
+  ASSERT_GT(bytes.size(), offset + 8u);
+  const uint8_t kPngMagic[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  for (size_t i = 0; i < 8; i++) {
+    EXPECT_EQ(bytes[offset + i], kPngMagic[i]) << "PNG signature byte " << i;
+  }
+
+  expect_round_trip(bytes, 16, 8, twelve_colors);
+}
+
+TEST(BmpEncode, JpegWrapperCarriesAWholeJpegAsItsPixelData) {
+  GIMG_Raster * raster = make_raster(16, 8, twelve_colors);
+  ASSERT_NE(raster, nullptr);
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_wrapper = GIMG_BMP_WRAPPER_JPEG;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u32(bytes, 30), 4u) << "BI_JPEG";
+  uint32_t offset = read_u32(bytes, 10);
+  ASSERT_GT(bytes.size(), offset + 2u);
+  EXPECT_EQ(bytes[offset], 0xFFu) << "SOI";
+  EXPECT_EQ(bytes[offset + 1u], 0xD8u) << "SOI";
+  EXPECT_EQ(read_u32(bytes, 34), bytes.size() - offset) << "biSizeImage";
+
+  // JPEG is lossy, so the round trip is not exact - what must hold is that the
+  // wrapper decodes at all, and to the right size.
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  EXPECT_EQ(img.width(), 16u);
+  EXPECT_EQ(img.height(), 8u);
+}
+
+TEST(BmpEncode, NoWrapperIsWrittenWithoutTheOption) {
+  GIMG_Raster * raster = make_raster(16, 8, twelve_colors);
+  ASSERT_NE(raster, nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_NE(read_u32(bytes, 30), 4u);
+  EXPECT_NE(read_u32(bytes, 30), 5u);
 }
 
 TEST(BmpEncode, TooManyColorsStaysTrueColor) {

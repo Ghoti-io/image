@@ -357,6 +357,28 @@ GIMG_Result gimg_bmp_read_linked_path(GIMG_Stream * stream,
 GIMG_Result gimg_bmp_huffman_expand(const unsigned char * data, size_t size,
     uint32_t width, uint32_t height, size_t stride, unsigned char * out);
 
+/**
+ * @brief Encode packed 1-bit rows as a CCITT Group 3 one-dimensional stream.
+ *
+ * The inverse of gimg_bmp_huffman_expand, over the same tables.  A set bit is
+ * black, which is the polarity q/pal1huffmsb.bmp and g/pal1.bmp settle between
+ * them.
+ *
+ * @param rows Packed 1-bit rows, in the order the file will store them.
+ * @param width Image width in pixels.
+ * @param height Image height in rows.
+ * @param stride Padded row size of the source.
+ * @param out Receives the encoded bytes; NULL to measure only.
+ * @param capacity Bytes available at @a out; ignored when measuring.
+ * @param out_size Receives the encoded length, whether measuring or writing.
+ * @return GIMG_OK, GIMG_ERR_LIMIT if the buffer was short, or
+ *   GIMG_ERR_INTERNAL if a run had no code, which cannot happen for runs
+ *   inside a row.
+ */
+GIMG_Result gimg_bmp_huffman_encode(const unsigned char * rows, uint32_t width,
+    uint32_t height, size_t stride, unsigned char * out, size_t capacity,
+    size_t * out_size);
+
 GIMG_Result gimg_bmp_verify_signature(GIMG_Stream * stream);
 
 /** @brief Load callback: stream -> document with gimg_bmp_doc_state_t. */

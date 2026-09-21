@@ -159,6 +159,13 @@ typedef GIMG_Result (*GIMG_ICC_Resolver_Fn)(void * user, const char * path,
 /** BMP: always write 24- or 32-bit color. */
 #define GIMG_BMP_PALETTE_NEVER 1
 
+/** BMP: write the pixel data plainly, not as a wrapped image. Default. */
+#define GIMG_BMP_WRAPPER_NONE 0
+/** BMP: write a `BI_JPEG` wrapper, whose pixel data is a whole JPEG. */
+#define GIMG_BMP_WRAPPER_JPEG 1
+/** BMP: write a `BI_PNG` wrapper, whose pixel data is a whole PNG. */
+#define GIMG_BMP_WRAPPER_PNG 2
+
 /** BMP: never run-length encode. */
 #define GIMG_BMP_RLE_NEVER 0
 /** BMP: write BI_RLE8 for an 8-bit indexed image when it comes out smaller. */
@@ -497,6 +504,37 @@ typedef struct {
    * encodings are permitted, not that anything should be compressed.
    * Ignored for non-BMP. */
   uint8_t bmp_allow_rle24;
+
+  /** Whether the BMP writer may use the OS/2 Huffman 1D encoding.
+   *
+   * 0 (the default) never writes it.  Like RLE24 it lives only in an OS/2
+   * BITMAPCOREHEADER2 - compression 3 there is CCITT Group 3 one-dimensional
+   * coding, where a Windows reader sees BI_BITFIELDS - so a file carrying it
+   * is not a Windows BMP, and of the decoders reachable from here only bmplib
+   * reads one.
+   *
+   * 1 lets a two-colour image be written that way when the encoded stream
+   * comes out smaller than the packed rows, which for large flat areas it
+   * comfortably is.  Requires bmp_rle to be GIMG_BMP_RLE_AUTO as well: this
+   * says which encodings are permitted, not that anything should be
+   * compressed.  Ignored for non-BMP. */
+  uint8_t bmp_allow_huffman;
+
+  /** Whether the BMP writer wraps a whole JPEG or PNG as the pixel data.
+   *
+   * GIMG_BMP_WRAPPER_NONE (0, the default) writes pixels.  The wrapper forms
+   * exist so a BMP can carry an already-compressed image, and were meant for
+   * spooling to printers rather than for interchange: most readers refuse
+   * them, and every decoder reachable from here except this one does.  A
+   * caller who wants a JPEG can save a JPEG, which is why nothing reaches for
+   * these on its own.
+   *
+   * GIMG_BMP_WRAPPER_JPEG and GIMG_BMP_WRAPPER_PNG write that format's stream
+   * as the pixel data, with biCompression saying which.  The payload is
+   * produced by this library's own codec for that format, so its own save
+   * options do not reach it - a wrapper is a container choice, and the picture
+   * inside it is written at that codec's defaults.  Ignored for non-BMP. */
+  uint8_t bmp_wrapper;
 
   /** Whether the BMP writer stores rows top to bottom.
    *
