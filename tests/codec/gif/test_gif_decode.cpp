@@ -13,9 +13,12 @@
  */
 
 #include "gif_test_utils.h"
+#include <atomic>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <gtest/gtest.h>
+#include <thread>
+#include <vector>
 
 using gif_test::Loaded;
 using gif_test::Rgba;
@@ -207,6 +210,165 @@ TEST(GifDecode, NetscapeLoopCountIsRead) {
   ASSERT_EQ(img.decode(), GIMG_OK);
   EXPECT_EQ(img.width(), 4u);
   EXPECT_EQ(img.at(0, 0), kRed);
+}
+
+// ---------------------------------------------------------------------------
+// The canvas cache
+// ---------------------------------------------------------------------------
+//
+// Decoding frame N composites frames 0 through N, and the decoder keeps the
+// canvas it arrived at so the next frame does not have to build it again.
+// That is an optimization, which means it has exactly one thing to prove: the
+// answer must not depend on it.  Every test below fixes some order of decodes
+// against the answer a decoder with no cache at all would give - a freshly
+// loaded document per frame - rather than against pixels written out here, so
+// that they keep checking the invariant even if the fixture changes.
+//
+// The fixture is the one built for this: seven frames using every disposal
+// method, over overlapping patches, with transparency under each of them.
+
+namespace {
+
+/** Every pixel of a decoded frame, so two decodes can be compared whole. */
+std::vector<uint8_t> frame_pixels(const Loaded & img) {
+  std::vector<uint8_t> out;
+  for (uint32_t y = 0; y < img.height(); y++) {
+    for (uint32_t x = 0; x < img.width(); x++) {
+      const Rgba p = img.at(x, y);
+      out.insert(out.end(), {p.r, p.g, p.b, p.a});
+    }
+  }
+  return out;
+}
+
+/** Decode one frame of a document loaded for that frame alone: no cache. */
+std::vector<uint8_t> decode_cold(const char * fixture, size_t index) {
+  Loaded fresh;
+  EXPECT_EQ(fresh.load(fixture), GIMG_OK);
+  EXPECT_EQ(fresh.decode(nullptr, index), GIMG_OK);
+  return frame_pixels(fresh);
+}
+
+const char * const kCycle = "gif_10x6_disposal_cycle.gif";
+
+} // namespace
+
+TEST(GifCanvasCache, ForwardWalkMatchesAColdDecodeOfEachFrame) {
+  // The order a player uses, and the only one the cache is ever warm for.  A
+  // cache that stored the canvas before disposal, or applied a disposal twice,
+  // shows up here from the second frame on.
+  Loaded img;
+  ASSERT_EQ(img.load(kCycle), GIMG_OK);
+  const size_t count = gimg_doc_item_count(img.doc());
+  ASSERT_EQ(count, 7u);
+  for (size_t i = 0; i < count; i++) {
+    ASSERT_EQ(img.decode(nullptr, i), GIMG_OK) << "frame " << i;
+    EXPECT_EQ(frame_pixels(img), decode_cold(kCycle, i)) << "frame " << i;
+  }
+}
+
+TEST(GifCanvasCache, ReverseWalkMatchesAColdDecodeOfEachFrame) {
+  // Backwards the cache is always ahead of what is asked for, so every frame
+  // replays from the beginning.  What this pins is that being unusable is all
+  // that happens - that a cache for a later frame is not mistaken for one that
+  // can be built on.
+  Loaded img;
+  ASSERT_EQ(img.load(kCycle), GIMG_OK);
+  const size_t count = gimg_doc_item_count(img.doc());
+  for (size_t i = count; i-- > 0;) {
+    ASSERT_EQ(img.decode(nullptr, i), GIMG_OK) << "frame " << i;
+    EXPECT_EQ(frame_pixels(img), decode_cold(kCycle, i)) << "frame " << i;
+  }
+}
+
+TEST(GifCanvasCache, JumpingAboutMatchesAColdDecodeOfEachFrame) {
+  // Neither walk: the seeks a scrubbing UI makes.  Each one lands on a cache
+  // left by some unrelated frame, which is the case neither walk above covers.
+  Loaded img;
+  ASSERT_EQ(img.load(kCycle), GIMG_OK);
+  for (size_t i : {size_t(3), size_t(1), size_t(6), size_t(6), size_t(0),
+           size_t(4), size_t(2), size_t(5)}) {
+    ASSERT_EQ(img.decode(nullptr, i), GIMG_OK) << "frame " << i;
+    EXPECT_EQ(frame_pixels(img), decode_cold(kCycle, i)) << "frame " << i;
+  }
+}
+
+TEST(GifCanvasCache, DecodingOneFrameTwiceGivesTheSamePixels) {
+  // The cache is written after the frame it was asked for, so decoding that
+  // same frame again reads back a cache for a frame after it.  Off by one in
+  // either direction and the second answer differs from the first.
+  Loaded img;
+  ASSERT_EQ(img.load(kCycle), GIMG_OK);
+  ASSERT_EQ(img.decode(nullptr, 4), GIMG_OK);
+  const std::vector<uint8_t> first = frame_pixels(img);
+  ASSERT_EQ(img.decode(nullptr, 4), GIMG_OK);
+  EXPECT_EQ(frame_pixels(img), first);
+}
+
+TEST(GifCanvasCache, ASingleImageGifStillDecodes) {
+  // Nothing caches a one-frame file - there is no later frame to hand a head
+  // start to - so this is the path where cache_state is null throughout.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_16x8_plain.gif"), GIMG_OK);
+  ASSERT_EQ(img.decode(nullptr, 0), GIMG_OK);
+  EXPECT_EQ(frame_pixels(img), decode_cold("gif_16x8_plain.gif", 0));
+}
+
+TEST(GifCanvasCache, ThreadsSharingOneDocumentAgreeWithAColdDecode) {
+  // The document is const to decode, and the cache is the one thing decode
+  // writes through it.  Four threads walking the same document at once is what
+  // says the lock around that write is doing its job: without it they tear
+  // each other's canvas, and under ASan they read one that has been freed.
+  //
+  // The expected pixels are computed first, on this thread, so that a thread
+  // is comparing against an answer no thread produced.
+  Loaded img;
+  ASSERT_EQ(img.load(kCycle), GIMG_OK);
+  const size_t count = gimg_doc_item_count(img.doc());
+  std::vector<std::vector<uint8_t>> expected;
+  for (size_t i = 0; i < count; i++) {
+    expected.push_back(decode_cold(kCycle, i));
+  }
+
+  std::atomic<int> mismatches{0};
+  std::atomic<int> failures{0};
+  std::vector<std::thread> threads;
+  for (int t = 0; t < 4; t++) {
+    threads.emplace_back([&, t]() {
+      // Each thread walks in a different direction and starts somewhere else,
+      // so they are contending rather than politely taking turns.
+      for (int pass = 0; pass < 8; pass++) {
+        for (size_t k = 0; k < count; k++) {
+          const size_t i =
+              (t % 2) ? count - 1 - k : (k + (size_t)t) % count;
+          GIMG_Item * item = gimg_doc_item(img.doc(), i);
+          GIMG_Raster * raster = nullptr;
+          if (gimg_item_decode(item, nullptr, &raster) != GIMG_OK) {
+            failures++;
+            continue;
+          }
+          std::vector<uint8_t> got;
+          const uint8_t * px = static_cast<const uint8_t *>(
+              gimg_raster_pixels_const(raster));
+          const size_t stride = gimg_raster_stride_bytes(raster);
+          const uint32_t w = gimg_raster_width(raster);
+          const uint32_t h = gimg_raster_height(raster);
+          for (uint32_t y = 0; y < h; y++) {
+            got.insert(got.end(), px + y * stride, px + y * stride + w * 4u);
+          }
+          if (got != expected[i]) {
+            mismatches++;
+          }
+          gimg_raster_destroy(raster);
+        }
+      }
+    });
+  }
+  for (std::thread & th : threads) {
+    th.join();
+  }
+  EXPECT_EQ(failures.load(), 0);
+  EXPECT_EQ(mismatches.load(), 0);
 }
 
 int main(int argc, char ** argv) {

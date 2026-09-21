@@ -65,12 +65,49 @@ canvas as it stands after frame N**, having replayed frames 0 through N - the
 same arrangement the APNG path uses, and the reason the container model needed
 nothing new for GIF: items, frame delay, dispose and blend were already there.
 
-Replaying from the start makes decoding frame N cost N frame expansions, so
-walking a whole animation is quadratic in its length. Measured: a 36-frame
-1200x1200 animation decodes all its frames in 1.9 s; a 358-frame one of the
-same size takes minutes. Nothing caches the canvas between calls, so a caller
-walking an animation in order pays the full replay every frame. See
-"Not implemented" for what fixing it would take.
+### The canvas cache
+
+Replaying from the start would make decoding frame N cost N frame expansions,
+so walking a whole animation would be quadratic in its length. The decoder
+keeps the canvas it arrived at, together with the index of the frame that
+canvas is the input to, and a decode that asks for a frame at or after that
+index starts from it instead of from an empty screen. A forward walk - the
+order every player uses - is then linear.
+
+Measured on the largest animations installed on this machine, forward against
+the same walk taken backwards, where the cache is always ahead of what is
+asked for and so every frame replays from the beginning:
+
+| Frames | Size | Cached | Full replay |
+|---|---|---|---|
+| 39 | 1200x1200 | 0.22 s | 2.64 s |
+| 50 | 1200x1200 | 0.28 s | 4.14 s |
+| 60 | 831x779 | 0.31 s | 4.88 s |
+| 358 | 1200x1200 | 1.09 s | 49.91 s |
+
+The last row gains most because 357 of that file's 358 frames are 1x1 pixels
+padding a still image's duration: each replay of them is nearly free, and what
+the replay actually costs is clearing and compositing a 1200x1200 canvas
+sixty-four thousand times.
+
+Three things are worth stating about it, because a cache is only ever as good
+as its guarantees:
+
+- **The answer does not depend on it.** The cache is populated only from a
+  prefix that decoded successfully, and replay is deterministic, so the pixels
+  are those a decoder with no cache would produce - including the results for
+  corrupt files, where the frame that fails is the same one either way. That
+  is checked rather than argued: see "Tested scope".
+- **What is cached is the canvas *after* the frame's disposal**, which is not
+  the canvas returned to the caller. The picture a frame describes is what it
+  painted; the next frame starts from what disposal left behind (89a 23). The
+  two differ for disposal 2 and 3, so the cache holds a copy that has been
+  disposed of rather than the raster itself.
+- **It is the one thing decode writes through a `const` document**, and the
+  mutex in `gimg_gif_doc_state_t` is what makes that safe. A single-image GIF
+  is left out: there is no later frame to hand a head start to, so the cache
+  would be a canvas-sized allocation nothing would ever read. The cost for an
+  animation is one extra canvas held for the life of the document.
 
 ## Save
 
@@ -131,7 +168,7 @@ two frames.
 
 ## Tested scope
 
-- **Fixtures**: eleven files from `tests/data/gif/generate.py`. Pillow writes
+- **Fixtures**: twelve files from `tests/data/gif/generate.py`. Pillow writes
   the two ordinary ones; the rest are assembled byte by byte, because the
   cases a decoder gets wrong are the ones common writers never produce - no
   Global Color Table, an index past the end of the palette, extensions that
@@ -171,6 +208,45 @@ two frames.
   checked pixel by pixel, **not one differs in a pixel either side calls
   visible**.
 
+- **The canvas cache is checked against a decoder that has none.** The cache
+  is an optimization, so it has exactly one thing to prove: that the answer is
+  the same without it. Every frame of every corpus file is decoded three ways
+  - forward through one document, where the cache is warm; backward through
+  one document, where it is always ahead and so never usable; and one
+  freshly-loaded document per frame, which is a decoder with no cache at all -
+  and the three must agree. **1233 frames across all 121 corpus files, byte
+  for byte identical in all three orders.** That includes the 358-frame
+  1200x1200 file, which was previously only spot-checked because walking it
+  was too slow to do in a harness - the cache is what made checking it whole
+  affordable.
+
+  `gif_10x6_disposal_cycle.gif` is the fixture written for this: seven frames
+  using every disposal method over overlapping patches, with transparency
+  under each, so that a cache which stored the wrong canvas shows up as a
+  pixel rather than as nothing. ImageMagick agrees with our compositing of all
+  seven. The tests in `test_gif_decode.cpp` fix the forward, backward and
+  scattered orders against a cold decode of the same frame, rather than
+  against pixels written out by hand, so they keep checking the invariant even
+  if the fixture changes.
+
+  Deliberate breakage confirms they bite: caching the canvas before its
+  disposal is applied, and seeding from a cache one frame too far along, are
+  both caught. Labelling the cache with `index` instead of `index + 1` is
+  **not** caught - and that turns out to be right, because it is an equivalent
+  mutation: repainting the last cached frame and re-applying its disposal
+  lands on the same canvas for all four disposal methods. Diffing its output
+  over 131 files found no difference at all, so it costs a frame of work per
+  decode and changes nothing. That was settled by running the corpus, not by
+  the argument just given.
+
+- **The lock is shown to be load-bearing.** Four threads decoding one document
+  at once is a test, and under ThreadSanitizer the committed code reports no
+  race while the same code with the mutex removed reports one immediately, in
+  `gif_cache_store` and in the seeding read. ASan alone does not catch it: the
+  window is a 240-byte `memcpy` and it simply never lost. There is no TSan
+  target in this repository - the check was a one-off build - which is worth
+  knowing when judging what `make test-asan` passing does and does not cover.
+
 - **Encoder output is read back by decoders that are not ours.** The encode
   tests leave each file in `tests/out/gif/` with one sidecar per frame holding
   the pixels that frame was meant to show, and `verify_gif_output.py` decodes
@@ -193,7 +269,13 @@ two frames.
 
 - **Fuzzing.** `make fuzz-gif` builds a libFuzzer harness over load and decode
   with ASan and UBSan. Seeded with the fixtures and the encoder's own output,
-  2.1 million executions found nothing in GIF.
+  2.1 million executions found nothing in GIF. The harness now decodes every
+  item twice, forward and then backward, because that is what reaches both
+  sides of the canvas cache - reading one back and building on it, and
+  recognizing one that is for a later frame as unusable - and because a
+  document whose later frames fail leaves a cache behind for the prefix that
+  succeeded, which only a second pass reaches. 256 thousand executions of the
+  two-pass harness on the cached decoder found nothing new.
 
   It did find something in BMP. The magic probe hands any input to whichever
   codec claims it, so the GIF harness reached the BMP loader, and a file whose
@@ -237,13 +319,6 @@ two frames.
   choice of disposal per frame. The decoder already reads everything such a
   file would contain.
 
-- **Nothing caches the composited canvas between decodes.** Decoding frames
-  0..N in order replays 0..i for each i. Keeping the canvas after each frame,
-  together with the disposal that follows it, would make a forward walk linear
-  instead of quadratic. It is left out for now because the decode callback
-  takes the document as const and two threads decoding one document would race
-  on such a cache - so it is a question about the library's threading contract
-  rather than about GIF.
 - **Plain Text rendering** (89a 25). The block is walked past. No decoder in
   use renders it, and doing so would mean shipping a bitmap font.
 - **The loop count is not exposed.** It is read into the document state and

@@ -188,6 +188,78 @@ static void gif_clear_rect(const gimg_gif_doc_state_t * state,
   }
 }
 
+/**
+ * Apply a frame's disposal, which is what turns the canvas the frame was
+ * drawn on into the canvas the next frame starts from (89a 23).
+ *
+ * `saved` is the canvas as it stood before this frame was painted, and is
+ * only consulted for GIMG_GIF_DISPOSAL_PREVIOUS.
+ */
+static void gif_dispose(const gimg_gif_doc_state_t * state,
+    const gimg_gif_frame_t * frame, uint8_t * canvas, size_t stride,
+    const uint8_t * saved, size_t canvas_bytes) {
+  if (frame->disposal == GIMG_GIF_DISPOSAL_BACKGROUND) {
+    gif_clear_rect(state, frame, canvas, stride);
+  }
+  else if (frame->disposal == GIMG_GIF_DISPOSAL_PREVIOUS && saved) {
+    memcpy(canvas, saved, canvas_bytes);
+  }
+}
+
+/**
+ * Record the canvas the frame after `index` starts from.
+ *
+ * The raster handed back to the caller holds the canvas *before* disposal,
+ * because that is the picture the frame describes; the next frame starts from
+ * the canvas *after* it.  The two differ, so the snapshot is a copy that gets
+ * disposed of rather than the raster itself.
+ *
+ * Failing to take the snapshot is not a decode failure - the answer is
+ * already computed and correct, and all that is lost is the head start for
+ * the next frame.
+ */
+static void gif_cache_store(gimg_gif_doc_state_t * state,
+    const GIMG_Allocator * alloc, size_t index, const uint8_t * canvas,
+    size_t stride, size_t canvas_bytes, const uint8_t * saved) {
+  // Asked first, because the answer is usually no and the work below is a
+  // canvas-sized copy.  A walk in reverse replaces nothing at all, and paying
+  // that copy for every frame of it would be most of an animation's worth of
+  // memory moved for nothing.  The check is made again below, under the same
+  // lock as the write, so this one racing is only ever wasted work.
+  GCU_MUTEX_LOCK(state->cache_lock);
+  const bool worth_taking =
+      !state->cache_canvas || state->cache_next <= index;
+  GCU_MUTEX_UNLOCK(state->cache_lock);
+  if (!worth_taking) {
+    return;
+  }
+
+  uint8_t * snapshot = (uint8_t *)gimg_malloc(alloc, canvas_bytes);
+  if (!snapshot) {
+    return;
+  }
+  memcpy(snapshot, canvas, canvas_bytes);
+  gif_dispose(
+      state, &state->frames[index], snapshot, stride, saved, canvas_bytes);
+
+  GCU_MUTEX_LOCK(state->cache_lock);
+  // A cache already further along is left where it is.  Two threads walking
+  // the same document in opposite directions would otherwise take turns
+  // dragging the cache backwards, and neither would ever get a head start.
+  // This is the test that counts: another thread may have moved the cache on
+  // since the one above.
+  if (!state->cache_canvas || state->cache_next <= index) {
+    gimg_free(alloc, state->cache_canvas);
+    state->cache_canvas = snapshot;
+    state->cache_stride = stride;
+    state->cache_bytes = canvas_bytes;
+    state->cache_next = index + 1u;
+    snapshot = NULL;
+  }
+  GCU_MUTEX_UNLOCK(state->cache_lock);
+  gimg_free(alloc, snapshot);
+}
+
 GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster) {
   if (!codec || !item || !out_raster) {
@@ -228,20 +300,55 @@ GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
 
   uint8_t * canvas = (uint8_t *)gimg_raster_pixels(raster);
   size_t stride = gimg_raster_stride_bytes(raster);
-  // The logical screen starts empty rather than filled with the background
-  // colour.  The specification names a background index (89a 18), but the
-  // viewers everyone's files were authored against ignore it and start
-  // transparent; filling it would put a colour on screen that no other
-  // decoder shows.  The index is kept in the document state for a caller that
-  // wants it.
-  for (uint32_t y = 0; y < state->canvas_height; y++) {
-    memset(canvas + (size_t)y * stride, 0, (size_t)state->canvas_width * 4u);
+  size_t canvas_bytes = 0;
+  if (!gcu_safe_mul_size(stride, (size_t)state->canvas_height,
+          &canvas_bytes)) {
+    gimg_raster_destroy(raster);
+    return GIMG_ERR_LIMIT;
+  }
+
+  // The cache is the one mutable thing in the document state, and decode is
+  // handed the document as const.  `codec_private` is a plain `void *`, so
+  // reading it back gives a pointer that was never const to begin with - the
+  // const is on the caller's view of the document, not on the state - and the
+  // mutex is what makes writing through it safe.  A single-image GIF is left
+  // out: there is no second frame to give a head start to, so the cache would
+  // be a canvas-sized allocation that nothing ever reads.
+  gimg_gif_doc_state_t * cache_state =
+      (state->frame_count > 1u && state->cache_lock_ready)
+      ? (gimg_gif_doc_state_t *)doc->codec_private
+      : NULL;
+
+  size_t start = 0;
+  bool seeded = false;
+  if (cache_state) {
+    GCU_MUTEX_LOCK(cache_state->cache_lock);
+    if (cache_state->cache_canvas && cache_state->cache_next <= index &&
+        cache_state->cache_stride == stride &&
+        cache_state->cache_bytes == canvas_bytes) {
+      memcpy(canvas, cache_state->cache_canvas, canvas_bytes);
+      start = cache_state->cache_next;
+      seeded = true;
+    }
+    GCU_MUTEX_UNLOCK(cache_state->cache_lock);
+  }
+
+  if (!seeded) {
+    // The logical screen starts empty rather than filled with the background
+    // colour.  The specification names a background index (89a 18), but the
+    // viewers everyone's files were authored against ignore it and start
+    // transparent; filling it would put a colour on screen that no other
+    // decoder shows.  The index is kept in the document state for a caller
+    // that wants it.
+    for (uint32_t y = 0; y < state->canvas_height; y++) {
+      memset(canvas + (size_t)y * stride, 0, (size_t)state->canvas_width * 4u);
+    }
   }
 
   uint8_t * saved = NULL;
   unsigned char * indices = NULL;
 
-  for (size_t i = 0; i <= index; i++) {
+  for (size_t i = start; i <= index; i++) {
     const gimg_gif_frame_t * frame = &state->frames[i];
     size_t pixels = (size_t)frame->width * (size_t)frame->height;
 
@@ -258,30 +365,32 @@ GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
       break;
     }
 
-    // Only the frame that is about to be replaced needs keeping, and only
-    // when the next disposal asks for it, so the copy is made here rather
-    // than kept for every frame.
-    if (i < index && frame->disposal == GIMG_GIF_DISPOSAL_PREVIOUS) {
+    // Only a frame that says it is to be replaced by what was under it needs
+    // keeping, so the copy is made here rather than for every frame.  The
+    // last frame is copied too, even though its disposal does not apply to
+    // the picture being returned, because the cache records the canvas after
+    // that disposal.
+    if (frame->disposal == GIMG_GIF_DISPOSAL_PREVIOUS) {
       if (!saved) {
-        saved = (uint8_t *)gimg_malloc(alloc, stride * state->canvas_height);
+        saved = (uint8_t *)gimg_malloc(alloc, canvas_bytes);
         if (!saved) {
           r = GIMG_ERR_OOM;
           break;
         }
       }
-      memcpy(saved, canvas, stride * state->canvas_height);
+      memcpy(saved, canvas, canvas_bytes);
     }
 
     gif_paint(state, frame, indices, canvas, stride);
 
     if (i < index) {
-      if (frame->disposal == GIMG_GIF_DISPOSAL_BACKGROUND) {
-        gif_clear_rect(state, frame, canvas, stride);
-      }
-      else if (frame->disposal == GIMG_GIF_DISPOSAL_PREVIOUS && saved) {
-        memcpy(canvas, saved, stride * state->canvas_height);
-      }
+      gif_dispose(state, frame, canvas, stride, saved, canvas_bytes);
     }
+  }
+
+  if (r == GIMG_OK && cache_state) {
+    gif_cache_store(
+        cache_state, alloc, index, canvas, stride, canvas_bytes, saved);
   }
 
   gimg_free(alloc, indices);

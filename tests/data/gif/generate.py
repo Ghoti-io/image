@@ -260,6 +260,41 @@ def disposal_previous():
     write("gif_8x8_disposal_previous.gif", data)
 
 
+def disposal_cycle():
+    """Seven frames that use every disposal method, over an offset patch.
+
+    A GIF frame is decoded by replaying the frames before it, so the canvas
+    each frame starts from is the previous frame *after* its disposal was
+    applied.  This fixture is the one that makes that chain visible: every
+    disposal value appears, transparency appears with each of them, and the
+    patches overlap so that getting the order wrong shows up as a pixel rather
+    than as nothing.  A decoder that caches the replayed canvas has to arrive
+    at the same picture as one that replays from the beginning every time, and
+    that is what the tests check it against.
+    """
+    cw, ch = 10, 6
+    full = [(x + y) % 6 for y in range(ch) for x in range(cw)]
+    # (disposal, transparent index, left, top, w, h, fill index)
+    patches = [
+        (0, None, 0, 0, 4, 4, 1),
+        (1, 0, 3, 1, 5, 4, 2),
+        (2, None, 1, 2, 6, 3, 3),
+        (3, 4, 2, 0, 4, 5, 4),
+        (2, 2, 0, 3, 9, 3, 5),
+        (1, None, 5, 0, 5, 6, 6),
+    ]
+    data = (header() + lsd(cw, ch, gct_bits=2) + table(PALETTE, 2)
+            + gce(delay=3, disposal=1) + image_block(full, cw, ch, 3))
+    for disposal, transparent, left, top, w, h, fill in patches:
+        # A chequer rather than a flat fill, so that a frame written at the
+        # wrong offset cannot line up with the one it replaced.
+        idx = [fill if (x + y) % 2 == 0 else (fill + 3) % 8
+               for y in range(h) for x in range(w)]
+        data += (gce(delay=3, disposal=disposal, transparent=transparent)
+                 + image_block(idx, w, h, 3, left=left, top=top))
+    write("gif_10x6_disposal_cycle.gif", data + TRAILER)
+
+
 def netscape_loop():
     """The Application Extension everything uses to say "repeat"."""
     w, h = 4, 2
@@ -314,6 +349,7 @@ def main():
     gif87a_header()
     offset_frames()
     disposal_previous()
+    disposal_cycle()
     netscape_loop()
     transparent_over_previous()
     truncated()

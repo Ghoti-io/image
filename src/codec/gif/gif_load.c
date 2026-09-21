@@ -409,6 +409,10 @@ void gimg_gif_free_doc_state(GIMG_Codec * codec, void * codec_private) {
     gimg_free(alloc, state->frames[i].lzw);
   }
   gimg_free(alloc, state->frames);
+  gimg_free(alloc, state->cache_canvas);
+  if (state->cache_lock_ready) {
+    GCU_MUTEX_DESTROY(state->cache_lock);
+  }
   gimg_free(alloc, state);
 }
 
@@ -434,6 +438,11 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
     return GIMG_ERR_OOM;
   }
   state->allocator = alloc;
+  // The lock is created here, before any path that can free the state, so
+  // that the teardown has one rule rather than one per exit.  A failure to
+  // create it is not a failure to load: the flag stays false and decode does
+  // without the cache, which costs time and nothing else.
+  state->cache_lock_ready = (GCU_MUTEX_CREATE(state->cache_lock) == 0);
 
   unsigned char version[GIMG_GIF_HEADER_LEN - GIMG_GIF_SIGNATURE_LEN];
   r = gimg_stream_read_exact(stream, version, sizeof(version));

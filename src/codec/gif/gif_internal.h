@@ -20,6 +20,7 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
+#include <ghoti.io/cutil/mutex.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -148,6 +149,30 @@ typedef struct {
 
   gimg_gif_frame_t * frames; ///< One per image block, in stream order.
   size_t frame_count;        ///< Length of `frames`.
+
+  /** @name Canvas cache.
+   *
+   * Decoding frame N means replaying frames 0 through N, so walking an
+   * animation from end to end costs work proportional to the square of the
+   * frame count.  The cache holds one composited canvas and the index of the
+   * frame it is the starting point for, which turns the forward walk every
+   * player performs back into a linear one.  A walk in any other order still
+   * works; it just replays from the beginning whenever the cached canvas is
+   * for a frame later than the one being asked for.
+   *
+   * These fields are the only mutable state in the document, and decode takes
+   * the document as `const`.  Writing them is therefore what the mutex is
+   * for: the cache is an optimization, so two threads decoding the same
+   * document must not be able to see a half-copied canvas.  Everything else
+   * here is written once by load and only read afterwards.
+   * @{ */
+  uint8_t * cache_canvas;  ///< Canvas with frames [0, cache_next) composited.
+  size_t cache_stride;     ///< Row stride the cached canvas was written with.
+  size_t cache_bytes;      ///< Length of `cache_canvas`.
+  size_t cache_next;       ///< The frame `cache_canvas` is the input to.
+  bool cache_lock_ready;   ///< `cache_lock` was created and must be destroyed.
+  GCU_MUTEX_T cache_lock;  ///< Guards every field in this group.
+  /** @} */
 } gimg_gif_doc_state_t;
 
 /** @brief Read and check the three signature bytes, leaving the version. */

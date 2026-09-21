@@ -252,7 +252,12 @@ SOURCES := $(shell find src -type f -name '*.c')
 LIBOBJECTS := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SOURCES))
 
 
-TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cflags gtest`
+# -pthread is ours, not gtest's: the GIF decode tests start threads to check
+# that two of them decoding one document do not race on its canvas cache.
+# glibc 2.34 and later put the pthread entry points in libc, so this links
+# without it here - which is exactly why it is written down rather than left
+# to luck on a machine with an older one.
+TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cflags gtest` -pthread
 
 # The checks `make test` runs besides the tests themselves. Named in a
 # variable so that a build which cannot satisfy them can clear it: the

@@ -16,6 +16,13 @@
  * is composited over the frames before it, so item N exercises a replay of
  * 0..N and the disposal handling between them.
  *
+ * They are decoded twice, forward and then backward, because the decoder
+ * keeps the composited canvas between calls.  Forward is the path where that
+ * cache is read back and built on; backward is the path where it is always
+ * for a later frame and so has to be recognized as unusable.  Decoding a
+ * document whose later frames fail also leaves a cache behind for a prefix
+ * that succeeded, which only a second pass reaches.
+ *
  * Build with: make fuzz-gif (uses clang -fsanitize=fuzzer,address,undefined).
  * Run: ./build/linux/release/apps/fuzz_gif_load [corpus_dir]
  *
@@ -53,14 +60,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   }
 
   size_t n = gimg_doc_item_count(doc);
-  for (size_t i = 0; i < n; i++) {
-    GIMG_Raster * raster = nullptr;
-    GIMG_Result dr =
-        gimg_item_decode(gimg_doc_item(doc, i), fuzz_decode_options(), &raster);
-    if (raster != nullptr) {
-      gimg_raster_destroy(raster);
+  for (size_t pass = 0; pass < 2u; pass++) {
+    for (size_t k = 0; k < n; k++) {
+      const size_t i = pass ? n - 1u - k : k;
+      GIMG_Raster * raster = nullptr;
+      GIMG_Result dr = gimg_item_decode(
+          gimg_doc_item(doc, i), fuzz_decode_options(), &raster);
+      if (raster != nullptr) {
+        gimg_raster_destroy(raster);
+      }
+      (void)dr;  // GIMG_ERR_* expected for hostile pixel data.
     }
-    (void)dr;  // GIMG_ERR_* expected for hostile pixel data.
   }
 
   gimg_doc_destroy(doc);
