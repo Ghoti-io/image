@@ -198,7 +198,10 @@ The form follows the raster and the caller's options, in this order:
   DEFLATE makes PNG's unpredictable - so both forms need not be written to
   find out. `GIMG_BMP_PALETTE_NEVER` turns it off. An image with more colors
   than that stays true color: reducing them would be an image-processing
-  decision and not a codec's. Transparency rules the palette out whatever the
+  decision and not a codec's. It has an explicit route, the same shape as the
+  CMYK one below: `gimg_ops_quantize()` reduces the colors on request
+  (\ref module_palette "Palettes and colour reduction") and the result takes
+  the indexed path above with no option changed. Transparency rules the palette out whatever the
   color count, because a BMP palette has no alpha.
 - **Compression.** `GIMG_Save_Options.bmp_rle` defaults to
   `GIMG_BMP_RLE_NEVER`. `GIMG_BMP_RLE_AUTO` writes `BI_RLE8` for an 8-bit

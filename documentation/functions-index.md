@@ -32,6 +32,15 @@ The complete API reference is generated from the header files. Below is a catego
 - **Sample-level** (see `ghoti.io/image/bitdepth.h`): `gimg_bitdepth_8_to_12`, `gimg_bitdepth_8_to_16`, `gimg_bitdepth_12_to_8`, `gimg_bitdepth_12_to_16`, `gimg_bitdepth_16_to_8`, `gimg_bitdepth_16_to_12` — bitshift/scale and clamp; 12-bit range 0..4095, 16-bit 0..65535. Codecs (e.g. JPEG) use these when raster depth differs from codec precision.
 - **Raster-level:** `gimg_ops_convert_bit_depth` — convert a raster to another bit depth (8, 12, or 16) with the same channel model (GRAY or RGBA); uses the library bit-depth functions. See `ghoti.io/image/ops.h`.
 
+## Palettes and colour reduction
+
+- **How many colours:** `gimg_ops_count_colors` — distinct colours in a raster, giving up at a limit the caller sets, because a photograph has hundreds of thousands and the question is usually only "too many?". Every fully transparent pixel counts as one colour. See `ghoti.io/image/ops.h`.
+- **Exact palette:** `gimg_ops_palette_from_raster` — the one table that reproduces an image of 256 colours or fewer; `GIMG_ERR_UNSUPPORTED` when there are more, which is the signal to quantize.
+- **Choose a palette:** `gimg_ops_palette_build` — median cut over one raster or several. Several, because the frames of an animation must share a table or the animation shimmers.
+- **Apply a palette:** `gimg_ops_palette_apply` — map a raster onto a table, optionally with Floyd-Steinberg dithering. Also takes a table the caller already has.
+- **Both at once:** `gimg_ops_quantize` — reduce one raster to at most **GIMG_Quantize_Options**`.max_colors`. The result is a raster in the source's own pixel format, so the GIF, PNG and BMP writers accept it through the palette path they already had. An image already within budget comes back untouched.
+- Types: **GIMG_Palette**, **GIMG_Quantize_Options**, **GIMG_Quantize_Method**, **GIMG_Dither**. Background and the measurements behind the choices: \ref module_palette "Palettes and colour reduction".
+
 ## Copy and convenience helpers
 
 - **Document copy:** `gimg_doc_copy` / `gimg_doc_copy_with_allocator` — duplicate document structure (item count, per-item frame delay/dispose/blend) and attached rasters (each copied via `gimg_raster_copy`); doc-level meta_common and meta_raw are deep-copied if present. The copy is synthetic (no `loaded_by_codec`). Use to save a variant or duplicate a doc.
