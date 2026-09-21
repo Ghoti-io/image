@@ -101,8 +101,16 @@ The value of these pages is that a claim on them can be traced to something
 that runs. The PNG page can say the encoder is about 9% smaller than the
 published conformance suite's own files because a sweep measured it; the JPEG
 page can say which two samples of 984 the reference codec differs at, and
-which way; the BMP page can say that its encoder output has **no** external
-verification, which is the more useful sentence of the three.
+which way.
+
+The BMP page is the argument for writing the gaps down. It used to say that
+its encoder output had **no** external verification - and that sentence, sitting
+there in plain sight, is what eventually got an oracle built: `tools/oracle/`
+now fetches and builds bmplib, and thirteen encoder outputs are read back by
+three decoders that are not ours. The gap closed because it had been named.
+The page still names the one that has not closed - `BI_JPEG` and `BI_PNG`
+output, which no outside reader will take - so that one has somewhere to start
+too.
 
 A format page that only lists features is a marketing document. Name the
 oracle, name its limit, and name what nothing checks.

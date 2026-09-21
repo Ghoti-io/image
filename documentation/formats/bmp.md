@@ -392,11 +392,21 @@ reconstruct one.
 - **Encoder output is read back by decoders that are not ours.** The encode
   tests leave each file they write in `tests/out/bmp/` with a sidecar holding
   the pixels it was meant to hold, and `verify_bmp_output.py` decodes them
-  with Pillow and with GdkPixbuf; `make test` fails when they disagree. Our
-  decoder agreeing with our encoder proves nothing about either - a channel
-  swap, a row flip or a stride error that both halves share reads as success
-  from the inside. Every form the writer can produce is covered: 1-, 4- and
-  8-bit indexed, RLE8, top-down, 24-bit and 32-bit with alpha.
+  with Pillow, with GdkPixbuf and with bmplib; `make test` fails when they
+  disagree. Our decoder agreeing with our encoder proves nothing about either
+  - a channel swap, a row flip or a stride error that both halves share reads
+  as success from the inside. Thirteen files cover the writer's forms: 1-, 2-,
+  4- and 8-bit indexed, RLE4, RLE8, RLE8 with an absolute run, OS/2 RLE24,
+  OS/2 Huffman 1D, top-down, 24-bit, 32-bit with alpha, and a V5 header
+  carrying a profile. bmplib is what makes the list that long: it is the only
+  one of the three that reads the 2-bit, RLE24 and Huffman outputs, so
+  `tools/oracle/fetch.sh bmplib` has to have been run for `make test` to pass.
+- **The two wrapper forms are the gap in that paragraph.** `BI_JPEG` and
+  `BI_PNG` output is checked for a correct header and a real JPEG or PNG
+  payload, and round-tripped, but only through this library's own decoders.
+  No outside reader has confirmed either: Pillow, GdkPixbuf and bmplib all
+  refuse a wrapped BMP, which is why those two files are not written to
+  `tests/out/bmp/` at all rather than published and silently skipped.
 - **Both mask placements are covered:** the three masks following a 40-byte
   `BITMAPINFOHEADER` (`bmp_4x4_16bit_565.bmp`) and the four inside a 56-byte
   `BITMAPV3INFOHEADER` (`bmp_4x4_32bit_alpha.bmp`).

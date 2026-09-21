@@ -15,7 +15,7 @@ which point back here.
 |---|---|---|---|---|
 | PNG, including APNG | \ref format_png "PNG and APNG" | read, write, animation, palette, ICC, 16 bpc | ISO/IEC 15948 and the APNG extension | all color types and depths; APNG |
 | JPEG | \ref format_jpeg "JPEG" | read, write, ICC, CMYK, 16 bpc | all fourteen frame headers of ITU-T T.81 | sequential, progressive, lossless and hierarchical, Huffman and arithmetic |
-| BMP | \ref format_bmp "BMP" | read, write, palette, ICC | the Windows and OS/2 DIB header versions, 1–32 bpp, RLE4/RLE8/RLE24, bitfields, embedded JPEG and PNG, V4/V5 colour | 1/4/8-bit indexed with optional RLE8, 24-bit `BI_RGB`, or 32-bit `BI_BITFIELDS` when alpha is present |
+| BMP | \ref format_bmp "BMP" | read, write, palette, ICC | the Windows and OS/2 DIB header versions, 1–32 and 64 bpp, RLE4/RLE8/RLE24, OS/2 Huffman 1D, bitfields, embedded JPEG and PNG, `BA` bitmap arrays as the several images they hold, V4/V5 colour with embedded or linked profiles | 1/2/4/8-bit indexed with optional RLE4/RLE8, 24-bit `BI_RGB`, 32-bit `BI_BITFIELDS` when alpha is present, OS/2 RLE24 and Huffman 1D, and `BI_JPEG`/`BI_PNG` wrappers on request |
 
 Formats with no codec yet - GIF, TIFF, WebP and the rest of the roadmap - have
 no page here. A page is written with the codec, not after it.

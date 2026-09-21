@@ -1,10 +1,14 @@
 /**
  * @file
  *
- * Register the BMP codec with its magic probe ('B' 'M') and load/save/decode
- * callbacks.  Capabilities: read, write, palette (1/2/4/8-bit indexed bitmaps
- * are decoded through their palette), and ICC (a V5 header's PROFILE_EMBEDDED
- * is read, and one is written).
+ * Register the BMP codec with its two magic probes ('B' 'M', and the OS/2
+ * bitmap array's 'B' 'A') and load/save/decode callbacks.  Capabilities:
+ * read, write, palette (1/2/4/8-bit indexed bitmaps are decoded through their
+ * palette), and ICC (a V5 header's PROFILE_EMBEDDED is read, and one is
+ * written; PROFILE_LINKED is reported as a path, never followed).
+ *
+ * GIMG_CAP_ANIMATION stays off even though a 'BA' file decodes to several
+ * items: the entries are alternative renditions of one picture, not frames.
  *
  * Copyright 2026 by Corey Pennycuff
  */
