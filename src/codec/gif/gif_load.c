@@ -19,6 +19,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/stream.h>
 #include <string.h>
 
@@ -394,6 +395,75 @@ static GIMG_Result gif_read_application(GIMG_Stream * stream,
   return GIMG_OK;
 }
 
+/**
+ * Append one Comment Extension's bytes to the run kept for the document.
+ *
+ * Framed as a four-byte big-endian length so that several comments survive in
+ * one block and the writer can put each back as its own extension.  See
+ * GIMG_GIF_RAW_COMMENT.
+ *
+ * Takes ownership of neither argument; the caller frees `text`.
+ */
+static GIMG_Result gif_append_comment(gimg_gif_doc_state_t * state,
+    const GIMG_Allocator * alloc, const unsigned char * text, size_t len) {
+  size_t framed = 0;
+  size_t need = 0;
+  if (!gcu_safe_add_size(len, GIMG_GIF_RAW_COMMENT_PREFIX, &framed) ||
+      !gcu_safe_add_size(state->comments_size, framed, &need)) {
+    return GIMG_ERR_LIMIT;
+  }
+  // A length that does not fit the prefix cannot be written back, so it is not
+  // taken in.  max_chunk_size already bounds a comment far below this; the
+  // check is here so the framing cannot be violated by a limit set higher.
+  if (len > 0xFFFFFFFFu) {
+    return GIMG_ERR_LIMIT;
+  }
+  unsigned char * grown =
+      (unsigned char *)gimg_realloc(alloc, state->comments, need);
+  if (!grown) {
+    return GIMG_ERR_OOM;
+  }
+  state->comments = grown;
+  unsigned char * at = state->comments + state->comments_size;
+  at[0] = (unsigned char)(len >> 24);
+  at[1] = (unsigned char)((len >> 16) & 0xFFu);
+  at[2] = (unsigned char)((len >> 8) & 0xFFu);
+  at[3] = (unsigned char)(len & 0xFFu);
+  if (len > 0u && text) {
+    memcpy(at + GIMG_GIF_RAW_COMMENT_PREFIX, text, len);
+  }
+  state->comments_size = need;
+  return GIMG_OK;
+}
+
+/**
+ * Whether a comment's bytes are text a caller can be handed as a C string.
+ *
+ * The same test the JPEG codec applies to a COM segment: printable ASCII plus
+ * tab, newline and carriage return, stopping at the first NUL.  89a 24 calls
+ * the field 7-bit ASCII, so anything else is a writer doing something the
+ * specification did not describe, and it stays in the raw block rather than
+ * being presented as a description.
+ */
+static bool gif_comment_looks_like_text(
+    const unsigned char * text, size_t len, size_t * out_len) {
+  size_t used = len;
+  for (size_t i = 0; i < len; i++) {
+    if (text[i] == 0) {
+      used = i;
+      break;
+    }
+  }
+  for (size_t i = 0; i < used; i++) {
+    const unsigned char c = text[i];
+    if (c != 0x09u && c != 0x0Au && c != 0x0Du && (c < 0x20u || c > 0x7Eu)) {
+      return false;
+    }
+  }
+  *out_len = used;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
@@ -409,6 +479,7 @@ void gimg_gif_free_doc_state(GIMG_Codec * codec, void * codec_private) {
     gimg_free(alloc, state->frames[i].lzw);
   }
   gimg_free(alloc, state->frames);
+  gimg_free(alloc, state->comments);
   gimg_free(alloc, state->cache_canvas);
   if (state->cache_lock_ready) {
     GCU_MUTEX_DESTROY(state->cache_lock);
@@ -529,10 +600,24 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
       else if (label == GIMG_GIF_EXT_APPLICATION) {
         r = gif_read_application(stream, diagnostics, alloc, limits, state);
       }
+      else if (label == GIMG_GIF_EXT_COMMENT) {
+        // Kept, not walked past: a comment is the only place a GIF has to put
+        // text, and discarding it loses the one piece of metadata the format
+        // carries.  All of them are kept, because a file may hold several and
+        // only the first becomes the normalized description.
+        unsigned char * text = NULL;
+        size_t len = 0;
+        r = gif_read_sub_blocks(
+            stream, diagnostics, alloc, limits, &text, &len);
+        if (r == GIMG_OK) {
+          r = gif_append_comment(state, alloc, text, len);
+        }
+        gimg_free(alloc, text);
+      }
       else {
-        // Comment and Plain Text carry nothing this codec renders.  Plain
-        // Text is rendered by no modern decoder at all, and a GIF that uses
-        // it looks to every one of them the way it looks here.
+        // Plain Text is rendered by no modern decoder at all, and a GIF that
+        // uses it looks to every one of them the way it looks here.  Other
+        // extension labels are not ours to interpret.
         r = gif_read_sub_blocks(
             stream, diagnostics, alloc, limits, NULL, NULL);
       }
@@ -600,6 +685,40 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
     // the previous frame showing, which the compositor in decode does by not
     // writing that pixel rather than by blending it.
     gimg_item_set_blend_op(item, GIMG_BLEND_SOURCE);
+  }
+
+  // Comments reach the caller two ways, because one of them is lossy on
+  // purpose.  Every comment is kept verbatim in the raw block, in stream
+  // order; the first one that is text is also normalized into the common
+  // description, which is the field a caller reads without knowing what format
+  // it loaded.  A caller that wants them all reads the raw block - which is
+  // what the description's own documentation says to do.
+  if (state->comments && state->comments_size > 0u) {
+    GIMG_Meta_Raw * raw = NULL;
+    if (gimg_doc_ensure_meta_raw(doc, &raw) == GIMG_OK && raw) {
+      (void)gimg_meta_raw_attach(raw, "gif", GIMG_GIF_RAW_COMMENT,
+          state->comments, state->comments_size);
+    }
+    size_t text_len = 0;
+    const unsigned char * first =
+        state->comments + GIMG_GIF_RAW_COMMENT_PREFIX;
+    const size_t first_len = ((size_t)state->comments[0] << 24) |
+        ((size_t)state->comments[1] << 16) |
+        ((size_t)state->comments[2] << 8) | (size_t)state->comments[3];
+    if (first_len > 0u &&
+        gif_comment_looks_like_text(first, first_len, &text_len) &&
+        text_len > 0u) {
+      GIMG_Meta_Common * common = NULL;
+      if (gimg_doc_ensure_meta_common(doc, &common) == GIMG_OK && common) {
+        char * buf = (char *)gimg_malloc(alloc, text_len + 1u);
+        if (buf) {
+          memcpy(buf, first, text_len);
+          buf[text_len] = '\0';
+          (void)gimg_meta_common_set_description(common, buf);
+          gimg_free(alloc, buf);
+        }
+      }
+    }
   }
 
   // The NETSCAPE2.0 count reaches the caller here rather than staying in the

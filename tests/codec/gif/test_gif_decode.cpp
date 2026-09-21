@@ -16,7 +16,9 @@
 #include <atomic>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <gtest/gtest.h>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -213,6 +215,80 @@ TEST(GifDecode, NetscapeLoopCountIsRead) {
   ASSERT_EQ(img.decode(), GIMG_OK);
   EXPECT_EQ(img.width(), 4u);
   EXPECT_EQ(img.at(0, 0), kRed);
+}
+
+// ---------------------------------------------------------------------------
+// Comments
+// ---------------------------------------------------------------------------
+//
+// A Comment Extension (89a 24) is the only place a GIF has to put text, so it
+// is kept rather than walked past.  A file may hold any number of them: every
+// one is preserved verbatim in the raw block, and the first that reads as text
+// is also normalized into the common description.  The fixture holds two, one
+// before the image and one after it.
+
+namespace {
+
+/** Pull the comments out of a loaded document's raw metadata block. */
+std::vector<std::string> raw_comments(const GIMG_Doc * doc) {
+  std::vector<std::string> out;
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  size_t size = 0;
+  if (!raw ||
+      gimg_meta_raw_get(raw, "gif", 0xFEu, nullptr, &size) != GIMG_OK ||
+      size == 0) {
+    return out;
+  }
+  std::vector<uint8_t> block(size);
+  if (gimg_meta_raw_get(raw, "gif", 0xFEu, block.data(), &size) != GIMG_OK) {
+    return out;
+  }
+  size_t offset = 0;
+  while (offset + 4u <= size) {
+    const size_t len = (size_t(block[offset]) << 24) |
+        (size_t(block[offset + 1]) << 16) |
+        (size_t(block[offset + 2]) << 8) | size_t(block[offset + 3]);
+    offset += 4u;
+    if (len > size - offset) {
+      break;
+    }
+    out.emplace_back(reinterpret_cast<const char *>(block.data() + offset), len);
+    offset += len;
+  }
+  return out;
+}
+
+} // namespace
+
+TEST(GifComments, EveryCommentIsKeptInStreamOrder) {
+  Loaded img;
+  ASSERT_EQ(img.load("gif_6x3_extensions.gif"), GIMG_OK);
+  const std::vector<std::string> comments = raw_comments(img.doc());
+  ASSERT_EQ(comments.size(), 2u)
+      << "one before the image and one after it; both are the file's";
+  EXPECT_EQ(comments[0], "a comment nothing renders");
+  EXPECT_EQ(comments[1], "trailing comment");
+}
+
+TEST(GifComments, TheFirstBecomesTheNormalizedDescription) {
+  Loaded img;
+  ASSERT_EQ(img.load("gif_6x3_extensions.gif"), GIMG_OK);
+  GIMG_Meta_Common * common = gimg_doc_meta_common(img.doc());
+  ASSERT_NE(common, nullptr);
+  ASSERT_NE(gimg_meta_common_description(common), nullptr);
+  EXPECT_STREQ(
+      gimg_meta_common_description(common), "a comment nothing renders");
+}
+
+TEST(GifComments, AFileWithNoneCarriesNoDescriptionAndNoRawBlock) {
+  // Nothing is manufactured for a file that said nothing, so a caller can tell
+  // "no comment" from "an empty comment".
+  Loaded img;
+  ASSERT_EQ(img.load("gif_16x8_plain.gif"), GIMG_OK);
+  EXPECT_TRUE(raw_comments(img.doc()).empty());
+  GIMG_Meta_Common * common = gimg_doc_meta_common(img.doc());
+  EXPECT_TRUE(common == nullptr ||
+      gimg_meta_common_description(common) == nullptr);
 }
 
 TEST(GifDecode, AGifWithNoNetscapeBlockDeclaresNoLoopCount) {

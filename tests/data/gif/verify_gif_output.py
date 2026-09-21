@@ -192,6 +192,9 @@ def verify_directory(dirpath):
 
     for name in names:
         path = os.path.join(dirpath, name)
+        problem = check_comment(dirpath, name, path)
+        if problem:
+            errors.append(problem)
         indices = frames_for(dirpath, name)
         if not indices:
             errors.append("%s: no %s.expected.<i>.rgba beside it, so nothing "
@@ -235,6 +238,56 @@ def verify_directory(dirpath):
                 checked += 1
 
     return errors, checked
+
+
+def comment_pillow(path):
+    from PIL import Image
+    with Image.open(path) as im:
+        raw = im.info.get("comment")
+    return raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+
+
+def comment_imagemagick(path):
+    proc = subprocess.run(["magick", "identify", "-format", "%c", path],
+                          capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode(errors="replace").strip())
+    return proc.stdout.decode("utf-8", "replace")
+
+
+def check_comment(dirpath, name, path):
+    """Ask outside decoders to read back the comment the encoder wrote.
+
+    Containment rather than equality, because the two decoders disagree about
+    a file holding several comments and neither is wrong: reading one GIF with
+    two, ImageMagick reports the last and Pillow reports both joined by a
+    newline. What is being checked is that the text this library wrote is
+    there and readable, not whose joining rule is right.
+    """
+    sidecar = os.path.join(dirpath, name + ".expected.comment")
+    if not os.path.exists(sidecar):
+        return None
+    with open(sidecar, "rb") as f:
+        want = f.read().decode("utf-8")
+
+    read_by_someone = False
+    for decoder_name, fn in (("Pillow", comment_pillow),
+                             ("ImageMagick", comment_imagemagick)):
+        try:
+            got = fn(path)
+        except Exception:
+            continue  # a decoder that is absent or unhappy is not evidence
+        if got is None:
+            return ("%s: %s read the file but found no comment, and one was "
+                    "written" % (name, decoder_name))
+        read_by_someone = True
+        if want not in got:
+            return ("%s: %s reads the comment as %r, which does not contain "
+                    "the %r that was written" % (name, decoder_name, got, want))
+    if not read_by_someone:
+        return ("%s: a comment was written and no outside decoder read it. "
+                "Install Pillow (pip install Pillow) or ImageMagick." % name)
+    return None
 
 
 def main():

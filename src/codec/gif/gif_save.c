@@ -39,6 +39,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <string.h>
@@ -361,6 +362,92 @@ static GIMG_Result gif_write_sub_blocks(
   return gif_write(stream, &terminator, 1u);
 }
 
+/**
+ * Write one Comment Extension: the introducer, the label, and the text as a
+ * sub-block chain (89a 24).
+ */
+static GIMG_Result gif_write_comment(
+    GIMG_Stream * stream, const unsigned char * text, size_t len) {
+  const unsigned char head[2] = {0x21u, 0xFEu};
+  GIMG_Result r = gif_write(stream, head, sizeof(head));
+  if (r != GIMG_OK) {
+    return r;
+  }
+  return gif_write_sub_blocks(stream, text, len);
+}
+
+/**
+ * Write the document's comments, before the first image (89a 24 places no
+ * constraint; every writer puts them here and a reader looking for a
+ * file-level comment looks here).
+ *
+ * The raw block is preferred when present, because it holds every comment the
+ * source carried rather than just the one that was normalized.  The common
+ * description is the fallback, which is what a caller who built a document by
+ * hand - or edited the description of a loaded one - will have set.
+ *
+ * A caller who edits the description of a document that also carries a raw
+ * block is asking two things at once; the raw block wins, because it is the
+ * more specific statement.  Dropping the raw block (GIMG_META_KEEP_COMMON_ONLY)
+ * is how the caller says the description is the one they mean.
+ */
+static GIMG_Result gif_write_comments(GIMG_Stream * stream,
+    const GIMG_Doc * doc, const GIMG_Save_Options * options,
+    const GIMG_Allocator * alloc) {
+  const GIMG_Meta_Policy policy =
+      options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
+  if (policy == GIMG_META_DROP_ALL) {
+    return GIMG_OK;
+  }
+
+  if (policy != GIMG_META_KEEP_COMMON_ONLY) {
+    GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+    size_t size = 0;
+    if (raw &&
+        gimg_meta_raw_get(raw, "gif", GIMG_GIF_RAW_COMMENT, NULL, &size) ==
+            GIMG_OK &&
+        size > 0u) {
+      unsigned char * block = (unsigned char *)gimg_malloc(alloc, size);
+      if (!block) {
+        return GIMG_ERR_OOM;
+      }
+      GIMG_Result r =
+          gimg_meta_raw_get(raw, "gif", GIMG_GIF_RAW_COMMENT, block, &size);
+      size_t offset = 0;
+      while (r == GIMG_OK &&
+          offset + GIMG_GIF_RAW_COMMENT_PREFIX <= size) {
+        const size_t len = ((size_t)block[offset] << 24) |
+            ((size_t)block[offset + 1] << 16) |
+            ((size_t)block[offset + 2] << 8) | (size_t)block[offset + 3];
+        offset += GIMG_GIF_RAW_COMMENT_PREFIX;
+        if (len > size - offset) {
+          // A block whose framing does not add up is not this writer's to
+          // guess at; what has been written stays, and the rest is dropped
+          // rather than read past the end of the buffer.
+          break;
+        }
+        if (len > 0u) {
+          r = gif_write_comment(stream, block + offset, len);
+        }
+        offset += len;
+      }
+      gimg_free(alloc, block);
+      return r;
+    }
+  }
+
+  if (policy == GIMG_META_KEEP_RAW_ONLY) {
+    return GIMG_OK;
+  }
+  GIMG_Meta_Common * common = gimg_doc_meta_common(doc);
+  const char * desc = common ? gimg_meta_common_description(common) : NULL;
+  if (desc && *desc) {
+    return gif_write_comment(
+        stream, (const unsigned char *)desc, strlen(desc));
+  }
+  return GIMG_OK;
+}
+
 /** Reorder rows into the four-pass interlace order (89a 20). */
 static void gif_interlace_rows(const unsigned char * src, unsigned char * dst,
     uint32_t width, uint32_t height) {
@@ -496,6 +583,11 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (r != GIMG_OK) {
       return r;
     }
+  }
+
+  r = gif_write_comments(stream, doc, options, alloc);
+  if (r != GIMG_OK) {
+    return r;
   }
 
   for (size_t i = 0; i < frame_count; i++) {

@@ -60,8 +60,32 @@ GIMG_API void gimg_meta_common_dpi(
 
 /**
  * @brief Normalized description/comment (populated from format-native storage
- * on load, e.g. JPEG COM or PNG tEXt "Description"/"Comment"; written on save
- * when set and policy allows). UTF-8, null-terminated; storage is internal.
+ * on load, e.g. JPEG COM, GIF's Comment Extension, or PNG tEXt
+ * "Description"/"Comment"; written on save when set and policy allows). UTF-8,
+ * null-terminated; storage is internal.
+ *
+ * @warning **This is at most one comment, and a file may hold several.** JPEG
+ * permits any number of COM segments and GIF any number of Comment Extensions;
+ * what appears here is the **first** one that is readable as text. The rest are
+ * not lost - every one of them is kept verbatim in the document's raw
+ * metadata, under that format's id - but they are not here, and a caller that
+ * reads only this field will silently see one of them and not know there were
+ * others. Read `gimg_doc_meta_raw()` as well when it matters which, or how
+ * many, a file carried. Each format's page documents the id and the framing
+ * its raw block uses.
+ *
+ * Reference decoders do not agree on what to do with several, which is part of
+ * why this field cannot: reading one GIF holding two comments, ImageMagick
+ * reports the last, Pillow reports both joined by a newline, and this library
+ * reports the first here and all of them in the raw block. None is wrong;
+ * there is no convention to be right about.
+ *
+ * @note On save, what a format does with text that is **not 7-bit ASCII** is
+ * the format's own decision and is stated on its page, because some of them
+ * specify ASCII and no more. GIF is the case worth knowing: 89a 24 calls a
+ * comment 7-bit ASCII, and this library writes the UTF-8 bytes as given
+ * anyway, matching every GIF writer in use rather than the text of the
+ * specification. A reader that assumes ASCII will see the encoded bytes.
  */
 GIMG_API GIMG_Result gimg_meta_common_set_description(
     GIMG_Meta_Common * meta, const char * description);

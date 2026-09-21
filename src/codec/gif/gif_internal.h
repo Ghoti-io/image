@@ -52,12 +52,36 @@ extern const unsigned char gimg_gif_signature[GIMG_GIF_SIGNATURE_LEN];
 /** @} */
 
 /** @name Extension labels (89a 23, 24, 25, 26).
+ *
+ * Plain Text is listed for the reader's sake and is deliberately not tested
+ * for: it falls into the same branch as any other label this codec does not
+ * interpret, which walks the sub-block chain and keeps nothing.  Naming it
+ * here without using it would suggest the loader tells it apart, so the
+ * comment says that it does not.
  * @{ */
-#define GIMG_GIF_EXT_PLAIN_TEXT 0x01u   ///< Plain Text Extension.
+#define GIMG_GIF_EXT_PLAIN_TEXT 0x01u   ///< Plain Text Extension (walked past).
 #define GIMG_GIF_EXT_GRAPHIC_CONTROL 0xF9u ///< Graphic Control Extension.
 #define GIMG_GIF_EXT_COMMENT 0xFEu      ///< Comment Extension.
 #define GIMG_GIF_EXT_APPLICATION 0xFFu  ///< Application Extension.
 /** @} */
+
+/**
+ * `tag_or_chunk_id` under which every Comment Extension is kept in the
+ * document's raw metadata, against the format id "gif".  The value is the
+ * extension's own label (89a 24), the way the JPEG codec uses its marker byte.
+ *
+ * The block holds **all** of a file's comments, in stream order, because a GIF
+ * may carry any number of them and only the first is normalized into
+ * `gimg_meta_common_description()`.  Each is framed as a **four-byte
+ * big-endian length followed by that many bytes**.  Four rather than JPEG's
+ * two: a JPEG COM segment cannot exceed 65535 bytes and a GIF comment can, as
+ * its sub-block chain has no declared total and is bounded only by
+ * `max_chunk_size`.
+ */
+#define GIMG_GIF_RAW_COMMENT 0xFEu
+
+/** Bytes of length prefix in front of each comment in that block. */
+#define GIMG_GIF_RAW_COMMENT_PREFIX 4u
 
 /**
  * The largest colour table any GIF can carry: the size field is three bits, so
@@ -74,8 +98,13 @@ extern const unsigned char gimg_gif_signature[GIMG_GIF_SIGNATURE_LEN];
 
 /** @name Disposal methods, the three bits of the Graphic Control Extension's
  * packed field (89a 23).
+ *
+ * The compositor tests only for BACKGROUND and PREVIOUS.  UNSPECIFIED and NONE
+ * are both "leave the canvas as it is", which is what the canvas already
+ * holds, so neither needs a branch - and the two are named here so that a
+ * reader meeting a 0 or a 1 in a file can see they are not an omission.
  * @{ */
-#define GIMG_GIF_DISPOSAL_UNSPECIFIED 0u ///< No disposal specified.
+#define GIMG_GIF_DISPOSAL_UNSPECIFIED 0u ///< No disposal specified; leave it.
 #define GIMG_GIF_DISPOSAL_NONE 1u        ///< Leave the frame in place.
 #define GIMG_GIF_DISPOSAL_BACKGROUND 2u  ///< Restore to background colour.
 #define GIMG_GIF_DISPOSAL_PREVIOUS 3u    ///< Restore to what was there before.
@@ -149,6 +178,13 @@ typedef struct {
 
   gimg_gif_frame_t * frames; ///< One per image block, in stream order.
   size_t frame_count;        ///< Length of `frames`.
+
+  /** Every Comment Extension the file carried, in stream order, each behind a
+   * four-byte big-endian length.  See GIMG_GIF_RAW_COMMENT for why they are
+   * kept together rather than one per block, and why the prefix is four bytes
+   * rather than the two the JPEG codec uses for the same job. */
+  unsigned char * comments;
+  size_t comments_size; ///< Length of `comments`.
 
   /** @name Canvas cache.
    *

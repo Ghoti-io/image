@@ -49,8 +49,10 @@ come from `doc->allocator`.
   transparency flag with its colour index.
 - **Application Extension** (89a 26): the NETSCAPE2.0 and ANIMEXTS1.0 loop
   counts, reported through `gimg_doc_loop_count()`.
-- **Comment** (89a 24) and **Plain Text** (89a 25) extensions are walked past
-  by their sub-block chains rather than parsed.
+- **Comment Extension** (89a 24): every one a file carries, kept rather than
+  walked past. See "Comments" below.
+- **Plain Text** (89a 25) is walked past by its sub-block chain rather than
+  parsed.
 - **Trailer** (89a 27).
 - **Data Sub-blocks** (89a 15) everywhere they appear. A chain is joined
   before it is interpreted, because an LZW code may straddle the boundary
@@ -64,6 +66,56 @@ disposed of (89a 23). `gimg_item_decode()` therefore returns the **whole
 canvas as it stands after frame N**, having replayed frames 0 through N - the
 same arrangement the APNG path uses, and the reason the container model needed
 nothing new for GIF: items, frame delay, dispose and blend were already there.
+
+### Comments
+
+A Comment Extension (89a 24) is the only place a GIF has to put text, so it is
+read, written, and editable rather than discarded. A file may carry **any
+number** of them, at any point between blocks, and all of them are kept.
+
+They arrive two ways, because one of them is lossy on purpose:
+
+- **Every comment, verbatim and in stream order**, in the document's raw
+  metadata under the format id `"gif"` and `tag_or_chunk_id` `0xFE` — the
+  extension's own label. Within that block each comment is framed as a
+  **four-byte big-endian length followed by that many bytes**. Four rather
+  than the two the JPEG codec uses for the same job, because a JPEG COM
+  segment cannot exceed 65535 bytes and a GIF comment can: its sub-block chain
+  declares no total and is bounded only by `max_chunk_size`.
+- **The first one that reads as text**, in `gimg_meta_common_description()`,
+  which is the field a caller reads without knowing what format it loaded.
+  "Reads as text" is the same test the JPEG codec applies to a COM segment:
+  printable ASCII plus tab, newline and carriage return, stopping at the first
+  NUL. A comment that is not text stays in the raw block and is not presented
+  as a description.
+
+Create, update and delete are `gimg_meta_common_set_description()` and the
+save-time `GIMG_Meta_Policy`, with no GIF-specific API:
+
+| | |
+|---|---|
+| Read | load fills both of the above |
+| Create / update | set the description; save writes a Comment Extension |
+| Delete one | set the description to `NULL` |
+| Delete all | `GIMG_META_DROP_ALL` |
+| Keep only what was loaded | `GIMG_META_KEEP_RAW_ONLY` |
+| Keep only what you set | `GIMG_META_KEEP_COMMON_ONLY` |
+
+The raw block wins over the description when both are present, because it is
+the more specific statement — it names every comment rather than one.
+`GIMG_META_KEEP_COMMON_ONLY` is how a caller says the description is the one
+they mean. Comments are written **before the first image**: 89a places no
+constraint, but that is where every writer puts them and where a reader
+looking for a file-level comment looks.
+
+**Non-ASCII text is written as given, and this is a deliberate deviation.**
+89a 24 calls a comment 7-bit ASCII; `gimg_meta_common_description()` is UTF-8.
+Refusing non-ASCII would make the field useless for most of the world's text,
+and transliterating would corrupt it quietly, so the bytes go out as they came
+in — which is what every GIF writer in use does, and what every reader in use
+copes with. A reader that assumes ASCII will see the encoded bytes. This is
+stated on `gimg_meta_common_set_description()` too, so a caller meets it
+before writing rather than after.
 
 ### How many times to play
 
@@ -211,7 +263,8 @@ two frames.
 | Image geometry | Any position and size within a 65535 canvas | Zero width or height &rarr; `GIMG_ERR_CORRUPT` |
 | Graphic Control Extension | Delay, disposal 0–3, transparent index | A block length other than 4, or an unterminated one &rarr; `GIMG_ERR_CORRUPT` |
 | Application Extension | NETSCAPE2.0 and ANIMEXTS1.0 loop counts | Others walked past |
-| Comment, Plain Text | Walked past | Never rendered — see below |
+| Comment Extension | All of them read and written; the first normalized into the common description | Text that is not 7-bit ASCII is kept raw but not normalized |
+| Plain Text | Walked past | Never rendered — see below |
 | Trailer | Read; a file that ends without one keeps the frames already read | — |
 | Frame count | `max_frame_count` enforced at load | Exceeded &rarr; `GIMG_ERR_LIMIT` |
 | Sub-block chains | Joined before interpreting | `max_chunk_size` exceeded &rarr; `GIMG_ERR_LIMIT` |
@@ -308,6 +361,25 @@ two frames.
   window is a 240-byte `memcpy` and it simply never lost. There is no TSan
   target in this repository - the check was a one-off build - which is worth
   knowing when judging what `make test-asan` passing does and does not cover.
+
+- **Real files carry them.** Nine of the 121 corpus GIFs hold a Comment
+  Extension, and what they hold is what the field is for in practice - writer
+  credits: "GifBuilder 0.3.2 by Yves Piguet", "Made with GIMP" on three, and
+  " -dl-" on five. All nine are plain ASCII, so all nine normalize into the
+  description as well as being kept raw. That the feature was being discarded
+  was not theoretical.
+
+- **Comments are read back by decoders that are not ours too.** The encode
+  tests publish `commented_16x8.gif` with a `.expected.comment` sidecar, and
+  `verify_gif_output.py` asks Pillow and ImageMagick to read the comment out of
+  it; `make test` fails when neither finds it or either disagrees.
+
+  It checks **containment rather than equality**, because the two decoders
+  disagree about a file holding several comments and neither is wrong. Reading
+  one GIF carrying two, ImageMagick reports the last, Pillow reports both
+  joined by a newline, and this library reports the first as the description
+  and all of them in the raw block. There is no convention to be right about,
+  so what is checked is that the text written is there and readable.
 
 - **Encoder output is read back by decoders that are not ours.** The encode
   tests leave each file in `tests/out/gif/` with one sidecar per frame holding

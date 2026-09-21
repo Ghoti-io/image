@@ -15,8 +15,10 @@
 #include <fstream>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
+#include <functional>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -106,9 +108,16 @@ GIMG_Result save_raster(GIMG_Raster * raster, const GIMG_Save_Options * options,
   return r;
 }
 
-/** Save several rasters as one animation.  Takes ownership of each. */
+/**
+ * Save several rasters as one animation.  Takes ownership of each.
+ *
+ * `prepare`, when given, is called with the document after the rasters are
+ * attached and before it is saved - the hook the metadata tests need to set a
+ * description on the very document that is about to be written.
+ */
 GIMG_Result save_frames(const std::vector<GIMG_Raster *> & rasters,
-    const GIMG_Save_Options * options, std::vector<uint8_t> & out) {
+    const GIMG_Save_Options * options, std::vector<uint8_t> & out,
+    const std::function<void(GIMG_Doc *)> & prepare = nullptr) {
   GIMG_Doc * doc = nullptr;
   if (gimg_doc_create(&doc) != GIMG_OK) {
     return GIMG_ERR_OOM;
@@ -120,6 +129,9 @@ GIMG_Result save_frames(const std::vector<GIMG_Raster *> & rasters,
   for (size_t i = 0; i < rasters.size(); i++) {
     gimg_item_set_raster(gimg_doc_item(doc, i), rasters[i]);
     gimg_item_set_frame_delay(gimg_doc_item(doc, i), 5, 100);
+  }
+  if (prepare) {
+    prepare(doc);
   }
   GIMG_Stream * stream = nullptr;
   if (gimg_stream_create_memory_output(&stream) != GIMG_OK) {
@@ -143,7 +155,8 @@ GIMG_Result save_frames(const std::vector<GIMG_Raster *> & rasters,
 
 /** Leave a file and its per-frame expectations for the verifier. */
 void publish(const char * name, const std::vector<uint8_t> & bytes,
-    const std::vector<std::vector<uint8_t>> & frames_rgba) {
+    const std::vector<std::vector<uint8_t>> & frames_rgba,
+    const char * comment = nullptr) {
   const std::string path = std::string(GIMG_TEST_OUT_GIF) + "/" + name;
   std::ofstream out(path, std::ios::binary);
   ASSERT_TRUE(out) << "cannot write " << path;
@@ -156,6 +169,13 @@ void publish(const char * name, const std::vector<uint8_t> & bytes,
     ASSERT_TRUE(side) << "cannot write the expectation beside " << path;
     side.write(reinterpret_cast<const char *>(frames_rgba[i].data()),
         static_cast<std::streamsize>(frames_rgba[i].size()));
+  }
+  if (comment) {
+    // Read back by outside decoders the same way the pixels are; see
+    // verify_gif_output.py for why it checks containment rather than equality.
+    std::ofstream side(path + ".expected.comment", std::ios::binary);
+    ASSERT_TRUE(side) << "cannot write the comment expectation beside " << path;
+    side << comment;
   }
 }
 
@@ -433,6 +453,133 @@ TEST(GifEncode, ALoopCountSurvivesALoadAndSaveWhenTheCallerCarriesIt) {
   uint32_t round_tripped = 0;
   EXPECT_EQ(gimg_doc_loop_count(again.doc(), &round_tripped), 1);
   EXPECT_EQ(round_tripped, 5u);
+}
+
+// ---------------------------------------------------------------------------
+// Comments, written
+// ---------------------------------------------------------------------------
+//
+// Create, update and delete, through the public metadata API.  Each case is
+// checked by reading the bytes back, so what is asserted is what a file
+// carries and not what the writer intended.
+
+namespace {
+
+/** Count the Comment Extensions in a GIF's bytes, and collect their text. */
+std::vector<std::string> comments_in(const std::vector<uint8_t> & bytes) {
+  std::vector<std::string> out;
+  for (size_t i = 0; i + 2u < bytes.size(); i++) {
+    if (bytes[i] != 0x21u || bytes[i + 1] != 0xFEu) {
+      continue;
+    }
+    // A sub-block chain: a length byte, that many bytes, until a zero length.
+    std::string text;
+    size_t at = i + 2u;
+    while (at < bytes.size() && bytes[at] != 0u) {
+      const size_t len = bytes[at];
+      if (at + 1u + len > bytes.size()) {
+        break;
+      }
+      text.append(reinterpret_cast<const char *>(&bytes[at + 1u]), len);
+      at += 1u + len;
+    }
+    out.push_back(text);
+  }
+  return out;
+}
+
+/** Save one small raster with the given options. */
+GIMG_Result save_with(const GIMG_Save_Options * options,
+    std::vector<uint8_t> & bytes,
+    const std::function<void(GIMG_Doc *)> & prepare) {
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(4, 2, sixteen));
+  if (!frames[0]) {
+    return GIMG_ERR_OOM;
+  }
+  return save_frames(frames, options, bytes, prepare);
+}
+
+} // namespace
+
+TEST(GifComments, ACommentIsPublishedForOutsideDecodersToRead) {
+  // Written to tests/out/gif/ with a sidecar naming the text, so that
+  // verify_gif_output.py asks Pillow and ImageMagick whether they can read it.
+  // Our own reader agreeing with our own writer would prove nothing.
+  static const char * const kText = "ghoti.io image test comment";
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(16, 8, sixteen));
+  ASSERT_NE(frames[0], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes,
+                [](GIMG_Doc * doc) {
+                  GIMG_Meta_Common * common = nullptr;
+                  ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &common), GIMG_OK);
+                  ASSERT_EQ(gimg_meta_common_set_description(common, kText),
+                      GIMG_OK);
+                }),
+      GIMG_OK);
+  publish("commented_16x8.gif", bytes, {expectation(16, 8, sixteen)}, kText);
+}
+
+TEST(GifComments, ADescriptionIsWrittenAsACommentExtension) {
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_with(nullptr, bytes,
+                [](GIMG_Doc * doc) {
+                  GIMG_Meta_Common * common = nullptr;
+                  ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &common), GIMG_OK);
+                  ASSERT_EQ(
+                      gimg_meta_common_set_description(common, "written here"),
+                      GIMG_OK);
+                }),
+      GIMG_OK);
+  const std::vector<std::string> found = comments_in(bytes);
+  ASSERT_EQ(found.size(), 1u);
+  EXPECT_EQ(found[0], "written here");
+}
+
+TEST(GifComments, NoDescriptionMeansNoCommentExtension) {
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_with(nullptr, bytes, [](GIMG_Doc *) {}), GIMG_OK);
+  EXPECT_TRUE(comments_in(bytes).empty())
+      << "a file with nothing to say must not carry an empty comment";
+}
+
+TEST(GifComments, DropAllRemovesIt) {
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.metadata_policy = GIMG_META_DROP_ALL;
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_with(&options, bytes,
+                [](GIMG_Doc * doc) {
+                  GIMG_Meta_Common * common = nullptr;
+                  ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &common), GIMG_OK);
+                  ASSERT_EQ(gimg_meta_common_set_description(common, "gone"),
+                      GIMG_OK);
+                }),
+      GIMG_OK);
+  EXPECT_TRUE(comments_in(bytes).empty());
+}
+
+TEST(GifComments, ALongCommentIsChainedAcrossSubBlocks) {
+  // A sub-block holds 255 bytes at most (89a 15), so anything longer has to be
+  // split - and read back as one string, which is what says the chain was
+  // written correctly rather than truncated at the first block.
+  const std::string various(700u, 'x');
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_with(nullptr, bytes,
+                [&various](GIMG_Doc * doc) {
+                  GIMG_Meta_Common * common = nullptr;
+                  ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &common), GIMG_OK);
+                  ASSERT_EQ(gimg_meta_common_set_description(
+                                common, various.c_str()),
+                      GIMG_OK);
+                }),
+      GIMG_OK);
+  const std::vector<std::string> found = comments_in(bytes);
+  ASSERT_EQ(found.size(), 1u);
+  EXPECT_EQ(found[0].size(), 700u);
+  EXPECT_EQ(found[0], various);
 }
 
 int main(int argc, char ** argv) {
