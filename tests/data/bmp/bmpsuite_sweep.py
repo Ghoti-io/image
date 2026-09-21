@@ -101,6 +101,19 @@ ORACLE_IS_WRONG = {
         "rgba16-1924.bmp": "GdkPixbuf misreads this channel layout",
         "rgba32-1010102.bmp": "GdkPixbuf misreads this channel layout",
     },
+    # The b/badrle* files are bmpsuite's deliberate buffer-overrun attempts,
+    # listed there with no expected rendering at all.  bmplib carries on
+    # decoding a stream this library stops trusting, so the two disagree about
+    # everything past the first malformation.  Neither is wrong: the question
+    # the file asks is whether a decoder stays inside its buffer, and both do.
+    "bmplib": {
+        "badrle.bmp": "no correct rendering; bmplib decodes past the malformation",
+        "badrlebis.bmp": "no correct rendering; bmplib decodes past the malformation",
+        "badrleter.bmp": "no correct rendering; bmplib decodes past the malformation",
+        "badrle4.bmp": "no correct rendering; bmplib decodes past the malformation",
+        "badrle4bis.bmp": "no correct rendering; bmplib decodes past the malformation",
+        "badrle4ter.bmp": "no correct rendering; bmplib decodes past the malformation",
+    },
     # netpbm's bmptopnm gets the default layouts right and the declared masks
     # wrong, so it is trusted only where no BITFIELDS segment is involved.
     "netpbm": {
@@ -231,7 +244,37 @@ def pnm_to_rgba(data):
     return bytes(out)
 
 
-ORACLES = {"pil": oracle_pil, "pixbuf": oracle_pixbuf, "netpbm": oracle_netpbm}
+# bmplib is not installed by any package here; it is built from source into
+# third_party/bmplib by `make bmp-oracle-tools`, because it is the only decoder
+# reachable from here that reads OS/2 Huffman 1D, OS/2 bitmap arrays and 64-bit
+# BMPs.  When the tool has not been built, this oracle is simply absent, which
+# is the same treatment the other three get when they are not installed.
+BMPLIB_TOOL = os.environ.get(
+    "BMP_ORACLE_BMPLIB",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "..", "..", "tools", "bmp-oracle", "build",
+                 "dump_bmp_pixels_bmplib"))
+
+
+def oracle_bmplib(path):
+    if not os.path.isfile(BMPLIB_TOOL):
+        raise FileNotFoundError(BMPLIB_TOOL)
+    proc = subprocess.run([BMPLIB_TOOL, path], capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode(errors="replace").strip())
+    data = proc.stdout
+    if len(data) < 12 or data[:4] != b"BMPO":
+        raise RuntimeError("tool wrote no raster")
+    w = int.from_bytes(data[4:8], "little")
+    h = int.from_bytes(data[8:12], "little")
+    body = data[12:]
+    if len(body) != w * h * 4:
+        raise RuntimeError("tool wrote %d bytes for %dx%d" % (len(body), w, h))
+    return bytes(body)
+
+
+ORACLES = {"pil": oracle_pil, "pixbuf": oracle_pixbuf,
+           "netpbm": oracle_netpbm, "bmplib": oracle_bmplib}
 
 
 # ---------------------------------------------------------------------------
