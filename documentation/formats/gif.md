@@ -191,9 +191,21 @@ two frames.
   eight-bit literals. That is fixed in `compress`; the lesson is that a
   generator's constants are as much a part of a corpus as its variety.
 
+- **Fuzzing.** `make fuzz-gif` builds a libFuzzer harness over load and decode
+  with ASan and UBSan. Seeded with the fixtures and the encoder's own output,
+  2.1 million executions found nothing in GIF.
+
+  It did find something in BMP. The magic probe hands any input to whichever
+  codec claims it, so the GIF harness reached the BMP loader, and a file whose
+  OS/2 `BA` array contains another `BA` recursed until the stack ran out - not
+  a result this library can return. The entry cap and the strictly-advancing
+  `offNext` check both bound the breadth of one level and neither bounds the
+  depth. Nesting is now refused; the minimised input is kept verbatim in
+  `tests/codec/bmp/test_bmp_decode.cpp`. Worth recording as the argument for
+  pointing a new codec's fuzzer at the whole registry rather than one format.
+
 ### Gaps in the testing
 
-- No fuzz harness yet. PNG and JPEG have one; GIF does not.
 - The encoder's animation output is checked frame by frame against outside
   decoders, but no outside decoder is asked whether the **timing** is right,
   because none of them reports it in a form worth comparing.

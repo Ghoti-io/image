@@ -162,6 +162,8 @@ When implementing a new codec (or auditing an existing one), ensure:
 |-------|----------------|--------------------|-----------------|
 | **PNG** | Enforced in chunk reader before reading payload | Enforced in decode (frame and full-image paths) | Enforced in load for APNG (acTL num_frames vs actual fcTL/fdAT) |
 | **JPEG** | Applied via max segment payload in load | Enforced in load (after SOF) and in entropy decode | N/A (still image; multi-item from EXIF thumbnail counts as one “frame”) |
+| **BMP** | N/A (a DIB has no chunk structure; `max_memory` bounds a linked ICC profile instead) | Enforced in load (after the DIB header) and in decode | N/A (still image; an OS/2 `BA` array's entries are capped at 64 by the codec) |
+| **GIF** | Enforced while joining a sub-block chain, which has no declared total and would otherwise be believed 255 bytes at a time | Enforced in load (per image descriptor) and in decode (the logical screen) | Enforced in load, before each image block is read |
 
 New codecs should enforce the same limits that apply to their format and document which of these (or format-specific limits) they use.
 
