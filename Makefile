@@ -441,6 +441,12 @@ $(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/bmp -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
+# Tests in tests/codec/gif/ (object name from basename for link).
+$(OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp
+	@printf "\n### Compiling Test Object: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
 # Test in tests/codec/png/ (object name from basename for link)
 $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
 	@printf "\n### Compiling Test Object: test_png_chunk ###\n"
@@ -470,6 +476,7 @@ TEST_OUT_PNG := $(IMAGE_ROOT)/tests/out/png
 TEST_OUT_JPEG := $(IMAGE_ROOT)/tests/out/jpeg
 # Test data path for BMP tests (fixtures from tests/data/bmp/generate.py).
 TEST_DATA_BMP := $(IMAGE_ROOT)/tests/data/bmp
+TEST_DATA_GIF := $(IMAGE_ROOT)/tests/data/gif
 # Output directory for BMP encode test output.
 TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
@@ -1049,6 +1056,11 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/bmp -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp
+	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
 	@mkdir -p $(@D)
