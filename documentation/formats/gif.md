@@ -90,6 +90,45 @@ padding a still image's duration: each replay of them is nearly free, and what
 the replay actually costs is clearing and compositing a 1200x1200 canvas
 sixty-four thousand times.
 
+Beating our own previous self says nothing about whether the result is fast,
+so the same walk was timed against two decoders that are not ours, each
+decoding every frame to RGBA. Best of several runs; fixed startup is 26 ms for
+Pillow and about 3 ms for the other two, so it is not hiding in the margins.
+
+| Frames | Size | Here | ImageMagick | Pillow |
+|---|---|---|---|---|
+| 39 | 1200x1200 | 0.18 s | 0.69 s | 0.33 s |
+| 50 | 1200x1200 | 0.24 s | 0.86 s | 0.44 s |
+| 60 | 831x779 | 0.27 s | 1.03 s | 0.51 s |
+| 358 | 1200x1200 | 0.96 s | *refuses* | 2.15 s |
+
+ImageMagick does not lose the last row, it declines it: `-coalesce`
+materializes all 358 composited frames at once, about 2 GB, and stops with
+"cache resources exhausted". Decoding one frame at a time is why that does not
+arise here - **peak RSS walking every frame is 28 MB for the 358-frame file
+and 28 MB for the 39-frame one**, flat in frame count, because what is live is
+one canvas and one cache no matter how long the animation is.
+
+Where the remaining time goes was profiled rather than guessed, because the
+guess was wrong - the cache's own copying is not the dominant cost on an
+ordinary animation:
+
+| | 39 frames | 358 frames |
+|---|---|---|
+| LZW expansion (in `compress`) | 42% | 36% |
+| Compositing | 17% | 12% |
+| `memmove`, which is the cache's copies | 11% | 30% |
+| `memset` | 4% | 5% |
+
+So what a normal animation spends its time on is decoding, which is the work
+that cannot be removed. The cache's copies only dominate on the pathological
+file, where there is almost no LZW to do. Updating the cache in place - on a
+forward step it holds exactly the pre-frame canvas, so replaying the paint
+into it would be bounded by the frame rectangle rather than the canvas, and
+disposal 3 would become a no-op - would buy that `memmove` share and no more.
+It is left alone deliberately: a single-digit percentage is not worth the
+re-check under the lock that it would need.
+
 Three things are worth stating about it, because a cache is only ever as good
 as its guarantees:
 
