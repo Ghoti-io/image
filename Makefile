@@ -312,7 +312,15 @@ JPEG_TEST_UTILS_OBJ := $(OBJ_DIR)/tests/jpeg_test_utils.o
 
 # Explicit list of dependency files (no wildcard: same set on all platforms, faster make startup).
 TEST_DEPFILES := $(foreach pair,$(TEST_PAIRS),$(OBJ_DIR)/tests/$(basename $(notdir $(word 1,$(subst |, ,$(pair))))).d)
-DEPFILES := $(LIBOBJECTS:.o=.d) $(TEST_HELPER_OBJ:.o=.d) $(TEST_DEPFILES) $(PNG_TEST_UTILS_OBJ:.o=.d) $(JPEG_TEST_UTILS_OBJ:.o=.d)
+# The dump and oracle tools under tests/ are built by rules of their own rather
+# than through TEST_PAIRS, so their .d files were generated and never included.
+# A header change then left them stale indefinitely: dump_bmp_raster was
+# twenty-one hours behind codec.h, which had grown a field in GIMG_Load_Options
+# since - so the tool zeroed the struct it was compiled against, the library
+# read a field past the end of that, and the bmpsuite sweep died in a function
+# pointer made of stack garbage. A wildcard over the whole directory covers
+# every such rule, including ones added later.
+DEPFILES := $(LIBOBJECTS:.o=.d) $(TEST_HELPER_OBJ:.o=.d) $(TEST_DEPFILES) $(PNG_TEST_UTILS_OBJ:.o=.d) $(JPEG_TEST_UTILS_OBJ:.o=.d) $(wildcard $(OBJ_DIR)/tests/*.d)
 -include $(DEPFILES)
 # The sanitizer build needs the same header dependencies.  Without them a
 # header change never rebuilt its objects, so `make test-asan` could run against
