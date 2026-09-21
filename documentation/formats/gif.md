@@ -222,6 +222,12 @@ as its guarantees:
   painted; the next frame starts from what disposal left behind (89a 23). The
   two differ for disposal 2 and 3, so the cache holds a copy that has been
   disposed of rather than the raster itself.
+- **The `gif_background` setting is part of the key.** The two settings give
+  different pixels wherever no frame has drawn, so a canvas cached under one
+  cannot seed a decode under the other; a decode that asks for the other
+  setting replaces the cache rather than reading it. A caller who alternates
+  gets no head start, and a caller who does not - which is all of them - is
+  unaffected.
 - **A second forward walk gets no benefit unless the cache is cleared first.**
   Moving only forward is what stops two walks in opposite directions from
   dragging it back and forth, and the price is that starting over at frame 0
@@ -414,7 +420,7 @@ no table of their own.
 | Area | Supported | Rejected / limitation |
 |------|-----------|-----------------------|
 | Header | 87a and 89a, read identically | Anything not beginning `GIF` &rarr; `GIMG_ERR_FORMAT` |
-| Logical Screen Descriptor | Size and Global Color Table; the background index resolved to a colour and the Pixel Aspect Ratio byte resolved to a ratio, both reported but neither applied | Truncated &rarr; `GIMG_ERR_FORMAT`. The colour resolution and sort flags are read past |
+| Logical Screen Descriptor | Size and Global Color Table; the background index resolved to a colour, painted only when `gif_background` asks; the Pixel Aspect Ratio byte resolved to a ratio, reported but never applied | Truncated &rarr; `GIMG_ERR_FORMAT`. The colour resolution and sort flags are read past |
 | Colour tables | Read: global, local, 2–256 entries, absent. Write: one global table when the frames share 255 colours or fewer, otherwise one per frame | Truncated &rarr; `GIMG_ERR_FORMAT` |
 | LZW | Minimum code size 2–8 | Outside that &rarr; `GIMG_ERR_CORRUPT`; a stream yielding fewer pixels than the descriptor promises &rarr; `GIMG_ERR_CORRUPT` |
 | Interlace | Four-pass, decoded and written | — |
@@ -434,10 +440,10 @@ no table of their own.
 |---|---|---|
 | An index the colour table does not have | Draws nothing; the pixel keeps what the canvas already held | giflib does the same. Pillow paints it opaque black. Pinned by `gif_8x2_index_past_palette.gif`, where a four-entry table is addressed with index 7 — expressible because the code size is set independently of the table size |
 | The colour under a fully transparent pixel | Zero in all three channels | giflib the same; Pillow writes the palette colour. Invisible by definition, and the reason `verify_gif_output.py` does not compare those channels |
-| The logical screen before any frame is drawn | Transparent | See "The background colour" below: ImageMagick paints it and Pillow paints something, but only for a file that never mentions transparency. The colour is reported by `gimg_doc_background_color()` either way |
+| The logical screen before any frame is drawn | Transparent by default; the declared colour with `gif_background` = `GIMG_GIF_BACKGROUND_PAINT` | See "The background colour" below: ImageMagick paints it and Pillow paints something, but only for a file that never mentions transparency. The colour is reported by `gimg_doc_background_color()` either way |
 | Plain Text extension | Walked past, never rendered | No decoder in use renders it either. A file using it looks the same here as everywhere |
 | A file that ends without a trailer | Keeps the frames already read | Common enough in the wild that the frames are worth more than the refusal. A file truncated **inside** a frame is still refused |
-| What "restore to background" leaves behind (disposal 2, 89a 23) | Transparent | Browsers and ImageMagick agree; Pillow paints the declared background colour, which is what 89a 23 literally says. See "The background colour" below. Pinned by `gif_12x8_background_index.gif` and by `tests/out/gif/animation_6x3.gif` |
+| What "restore to background" leaves behind (disposal 2, 89a 23) | Transparent by default; the declared colour under the same option | Browsers and ImageMagick agree with the default; Pillow paints the declared background colour, which is what 89a 23 literally says. See "The background colour" below. Pinned by `gif_12x8_background_index.gif` and by `tests/out/gif/animation_6x3.gif` |
 
 ## The background colour
 
@@ -479,7 +485,7 @@ transparent uncovered screen, matching this codec exactly. The deviation is
 therefore narrower than it looks: it applies only to files that never mention
 transparency at all.
 
-**Why this codec starts transparent.** Not because the specification is wrong,
+**Why the default is transparent.** Not because the specification is wrong,
 but because the two possible mistakes are not equal in cost. Painting the
 background makes every such GIF opaque, and a caller who wanted the alpha
 cannot get it back - the information is destroyed in the decoder, before they
@@ -494,13 +500,70 @@ in the wild were authored against browsers, which restore to transparent, so a
 file that depends on the literal reading is vanishingly rare and a file that
 depends on the browser reading is everywhere.
 
-**Both halves are pinned by tests that were watched failing.** Making the
-decoder paint the background fails
-`GifScreen.AnUncoveredPixelIsTransparentNotTheBackgroundColour` and nothing
-else; making disposal 2 restore the background colour fails
-`GifScreen.RestoreToBackgroundLeavesTransparentNotTheBackgroundColour` and
-nothing else. Neither catches the other, which is right - they are independent
-behaviours in independent code paths.
+### Asking for the other behaviour
+
+`GIMG_Decode_Options.gif_background` selects it:
+
+| value | screen before any frame | disposal 2 |
+|---|---|---|
+| `GIMG_GIF_BACKGROUND_TRANSPARENT` (0, default) | transparent | transparent |
+| `GIMG_GIF_BACKGROUND_PAINT` | the declared colour | the declared colour |
+
+The default lives at zero, so a zero-initialized `GIMG_Decode_Options` and a
+NULL one decode identically - the same rule the JPEG upsampling option
+follows, and for the same reason: adding an option must never quietly change
+what an existing caller gets.
+
+`GIMG_GIF_BACKGROUND_PAINT` has **no effect on a file with no Global Color
+Table**, because 89a 18 says the index is to be ignored there and there is no
+colour to paint. `gimg_doc_background_color()` returns 0 for such a file, and
+the option cannot invent what the accessor declines to report.
+
+**Setting it does not make this decoder agree with another one.** It makes it
+agree with the specification, and nothing in the table above does that. A
+caller who is chasing ImageMagick's output wants the painted screen and the
+transparent disposal; one chasing Pillow wants the reverse and a different
+palette entry again. Neither is expressible here, deliberately - two more
+values would encode two other decoders' inconsistencies as though they were
+choices worth offering.
+
+### If you are not seeing what you expect
+
+Most reports of "the background is wrong" turn out to be one of these:
+
+- **The file declares a transparent index.** Then ImageMagick and Pillow both
+  return a transparent screen too, and the default already agrees with them.
+  The disagreement only exists for files that never mention transparency.
+- **The file has no Global Color Table.** Nothing is declared, so nothing is
+  painted under either setting, and `gimg_doc_background_color()` says so.
+- **The comparison is against a flattened image.** A PNG or a screenshot of a
+  browser has already composited the transparency onto something - usually
+  white, sometimes a page colour. A transparent pixel here and a white pixel
+  there are the same result viewed differently.
+- **The expectation came from `magick convert` without `-coalesce`.** That
+  writes the *image block*, at the size the image block has, not the logical
+  screen: on the fixture above it produces a 4x4 file, not a 12x8 one, and the
+  question of what surrounds it never arises.
+- **Disposal 2 was expected to restore the background.** It is the clause the
+  specification is clearest about and the one browsers ignore most
+  universally. The option honours it; the default does not.
+
+**Every part of this is pinned by a test that was watched failing.** Making
+the decoder paint the screen fails
+`AnUncoveredPixelIsTransparentNotTheBackgroundColour` and nothing else; making
+disposal 2 restore the colour fails
+`RestoreToBackgroundLeavesTransparentNotTheBackgroundColour` and nothing else;
+flipping the default to painting fails both, plus
+`TheDefaultOptionsDecodeExactlyAsNoOptionsDo`; and dropping the setting from
+the canvas cache's key fails
+`TheTwoBackgroundSettingsDoNotShareACachedCanvas` in both directions.
+
+That last one took two attempts, and the first attempt is the more useful
+half. It decoded frame 0 and frame 1 with the default and then asked for frame
+0 again with the option set - and passed against a decoder with no cache key at
+all, because the cache only moves forward and so never seeds a request for a
+frame *behind* it. A cache test has to ask for a frame at or after where the
+cache is parked, or it is testing nothing. The mutant is what said so.
 
 That fixture exists because the deviation was previously untested. The test
 that claimed to cover it used `gif_12x8_offset_frame.gif`, whose first frame
@@ -667,11 +730,13 @@ or not the background was painted.
   that, which was the point of putting it there.
 - **Plain Text rendering** (89a 25). The block is walked past. No decoder in
   use renders it, and doing so would mean shipping a bitmap font.
-- **The background colour is not painted**, and disposal 2 restores to
-  transparent rather than to it. Both are deliberate; the colour is reported
-  through `gimg_doc_background_color()` for a caller who wants to honour it.
-  See "The background colour" for what the specification says, what the other
-  decoders do, and why this one differs.
+- **The background colour is not painted by default**, and disposal 2 restores
+  to transparent rather than to it. Both are deliberate and both are available:
+  `GIMG_Decode_Options.gif_background` = `GIMG_GIF_BACKGROUND_PAINT` gives the
+  specification's reading of 89a 18 and 23. See "The background colour" for
+  what the specification says, what the other decoders do, why the default is
+  the other way, and why turning the option on still does not reproduce any
+  other decoder.
 
 ---
 

@@ -642,6 +642,23 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
 #define GIMG_JPEG_CHROMA_UPSAMPLE_FANCY  1  /**< Triangle filter (smooth). */
 #define GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE  2  /**< Box filter (replicate). */
 
+/** @name GIF background colour (89a 18 and 23)
+ *
+ * What the decoder puts where no frame has drawn: the screen before the first
+ * frame, and the rectangle disposal method 2 asks to have cleared.
+ *
+ * The two values are "what a browser shows" and "what the specification says".
+ * They are different, and which one a caller wants depends on what they are
+ * building rather than on which is correct.  See \ref format_gif "GIF" -
+ * "The background colour" - for the measurements behind that, including why
+ * neither setting makes this decoder agree with ImageMagick or Pillow.
+ * @{ */
+/** Leave it transparent.  The default, and what browsers do. */
+#define GIMG_GIF_BACKGROUND_TRANSPARENT 0u
+/** Paint the colour the Background Color Index names, as 89a 18 and 23 say. */
+#define GIMG_GIF_BACKGROUND_PAINT 1u
+/** @} */
+
 /**
  * @brief Decode options.
  * @see api_options
@@ -659,7 +676,29 @@ typedef struct {
    * 12/16→GRAY16/RGB16 with 12-bit left-justified); 8, 12, or 16 = decode to
    * that bit depth (conversion via library when different from file). */
   uint8_t jpeg_precision;
-  uint8_t _reserved[6];
+  /** GIF: what goes where no frame has drawn.
+   *
+   * GIMG_GIF_BACKGROUND_TRANSPARENT (0, default) leaves the logical screen
+   * empty and clears disposal method 2 to transparent, which is what every
+   * browser does and what the animations in the wild were authored against.
+   *
+   * GIMG_GIF_BACKGROUND_PAINT paints the colour the Background Color Index
+   * names (89a 18), and restores that colour for disposal method 2 (89a 23) -
+   * the literal reading of the specification.  It has no effect on a file with
+   * no Global Color Table, where 89a 18 says the index is to be ignored.
+   *
+   * Painting it is lossy in one direction: it makes every such GIF opaque, and
+   * a caller who wanted the alpha cannot recover it afterwards.  That is why
+   * the default is the other one - the colour is reported by
+   * gimg_doc_background_color() whichever is set, so compositing over it later
+   * is always available.
+   *
+   * **Turning it on does not make this decoder match another one.**  Of the
+   * decoders measured, ImageMagick honours 89a 18 but not 89a 23 and Pillow
+   * the reverse; neither does both, so neither setting reproduces either of
+   * them exactly.  \ref format_gif "GIF" has the table. */
+  uint8_t gif_background;
+  uint8_t _reserved[5];
 } GIMG_Decode_Options;
 
 /**

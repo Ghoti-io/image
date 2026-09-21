@@ -203,6 +203,14 @@ typedef struct {
   size_t cache_stride;     ///< Row stride the cached canvas was written with.
   size_t cache_bytes;      ///< Length of `cache_canvas`.
   size_t cache_next;       ///< The frame `cache_canvas` is the input to.
+  /** The `gif_background` setting the cached canvas was composited under.
+   *
+   * The two settings produce different pixels wherever no frame has drawn, so
+   * a canvas cached under one is wrong as a starting point for the other.  It
+   * is part of the key rather than a reason to drop the cache: a caller who
+   * alternates gets no head start, and a caller who does not - which is all of
+   * them - is unaffected. */
+  uint8_t cache_background;
   bool cache_lock_ready;   ///< `cache_lock` was created and must be destroyed.
   GCU_MUTEX_T cache_lock;  ///< Guards every field in this group.
   /** @} */
@@ -227,6 +235,16 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
 /** @brief Release the document state attached by load. */
 void gimg_gif_free_doc_state(GIMG_Codec * codec, void * codec_private);
+
+/**
+ * @brief Paint one canvas row range with the declared background colour.
+ *
+ * Shared by the initial screen and by disposal method 2, so the two cannot
+ * drift apart; both are 89a's one background colour under two names.
+ */
+void gimg_gif_paint_background(const gimg_gif_doc_state_t * state,
+    uint8_t * canvas, size_t stride, uint32_t left, uint32_t top,
+    uint32_t width, uint32_t height);
 
 /**
  * @brief Forget the cached canvas, so the next decode starts from an empty

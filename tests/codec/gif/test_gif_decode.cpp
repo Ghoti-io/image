@@ -17,6 +17,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/ops.h>
 #include <gtest/gtest.h>
 #include <string>
 #include <thread>
@@ -290,6 +291,98 @@ TEST(GifScreen, RestoreToBackgroundLeavesTransparentNotTheBackgroundColour) {
       << "magenta here means disposal 2 restored the background colour";
   // The second frame's own pixels are still drawn.
   EXPECT_EQ(img.at(6, 4), kGreen);
+}
+
+TEST(GifScreen, PaintingTheBackgroundIsAvailableAsADecodeOption) {
+  // The other reading of 89a 18 and 23, for a caller who wants it.  Same
+  // fixture, same two pixels, opposite answers.
+  GIMG_Decode_Options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.gif_background = GIMG_GIF_BACKGROUND_PAINT;
+
+  Loaded img;
+  ASSERT_EQ(img.load("gif_12x8_background_index.gif"), GIMG_OK);
+  ASSERT_EQ(img.decode(&opts, 0), GIMG_OK);
+  EXPECT_EQ(img.at(0, 0), kMagenta) << "89a 18: the screen no image covers";
+  // The frame's own pixels are still the frame's.
+  EXPECT_EQ(img.at(3, 3), kBlue);
+
+  ASSERT_EQ(img.decode(&opts, 1), GIMG_OK);
+  EXPECT_EQ(img.at(3, 3), kMagenta) << "89a 23: restore to background colour";
+  EXPECT_EQ(img.at(6, 4), kGreen);
+}
+
+TEST(GifScreen, TheDefaultOptionsDecodeExactlyAsNoOptionsDo) {
+  // The house rule for every option in GIMG_Decode_Options: a zero-initialized
+  // struct and a NULL pointer must mean the same thing, so that adding an
+  // option never quietly changes what an existing caller gets.
+  GIMG_Decode_Options zeroed;
+  memset(&zeroed, 0, sizeof(zeroed));
+
+  Loaded with_null;
+  ASSERT_EQ(with_null.load("gif_12x8_background_index.gif"), GIMG_OK);
+  ASSERT_EQ(with_null.decode(nullptr, 0), GIMG_OK);
+  Loaded with_zero;
+  ASSERT_EQ(with_zero.load("gif_12x8_background_index.gif"), GIMG_OK);
+  ASSERT_EQ(with_zero.decode(&zeroed, 0), GIMG_OK);
+
+  EXPECT_EQ(with_null.at(0, 0), kTransparent);
+  EXPECT_EQ(with_zero.at(0, 0), kTransparent);
+  EXPECT_TRUE(gimg_ops_raster_equal(with_null.raster(), with_zero.raster()));
+}
+
+TEST(GifScreen, PaintingHasNoEffectWithoutAGlobalColourTable) {
+  // 89a 18 says the index is to be ignored when there is no Global Color
+  // Table, so there is no colour to paint and the option has nothing to do.
+  GIMG_Decode_Options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.gif_background = GIMG_GIF_BACKGROUND_PAINT;
+  Loaded img;
+  ASSERT_EQ(img.load("gif_8x4_no_global_table.gif"), GIMG_OK);
+  ASSERT_EQ(gimg_doc_background_color(img.doc(), nullptr), 0);
+  ASSERT_EQ(img.decode(&opts, 0), GIMG_OK);
+  Loaded plain;
+  ASSERT_EQ(plain.load("gif_8x4_no_global_table.gif"), GIMG_OK);
+  ASSERT_EQ(plain.decode(nullptr, 0), GIMG_OK);
+  EXPECT_TRUE(gimg_ops_raster_equal(img.raster(), plain.raster()));
+}
+
+TEST(GifCanvasCache, TheTwoBackgroundSettingsDoNotShareACachedCanvas) {
+  // The cache holds a canvas composited under one setting, and the two differ
+  // wherever no frame has drawn.  Seeding one from the other would hand back a
+  // magenta screen to a caller who asked for a transparent one, or the
+  // reverse - and only for the frames that happened to hit a warm cache, which
+  // is the kind of wrong that shows up as an intermittent bug months later.
+  //
+  // The fixture's frames are patches, so the pixel at (0,0) is never drawn by
+  // either of them and answers only to the setting.
+  GIMG_Decode_Options paint;
+  memset(&paint, 0, sizeof(paint));
+  paint.gif_background = GIMG_GIF_BACKGROUND_PAINT;
+
+  // The order matters, and getting it wrong makes this test prove nothing.
+  // The cache only moves forward, so asking for frame 0 after a walk to the
+  // end never seeds at all and cannot catch anything: the request has to be
+  // for a frame at or after where the cache is parked.  Decoding frame 0 leaves
+  // it parked at 1, so frame 1 under the other setting is the case that would
+  // wrongly seed.
+  Loaded a;
+  ASSERT_EQ(a.load("gif_12x8_background_index.gif"), GIMG_OK);
+  ASSERT_EQ(a.decode(nullptr, 0), GIMG_OK);
+  ASSERT_EQ(a.at(0, 0), kTransparent);
+  ASSERT_EQ(a.decode(&paint, 1), GIMG_OK);
+  EXPECT_EQ(a.at(0, 0), kMagenta)
+      << "frame 1 was seeded from a canvas composited without painting";
+
+  // The same in the other direction, on a document whose cache was warmed by
+  // a painting decode.
+  Loaded b;
+  ASSERT_EQ(b.load("gif_12x8_background_index.gif"), GIMG_OK);
+  ASSERT_EQ(b.decode(&paint, 0), GIMG_OK);
+  ASSERT_EQ(b.at(0, 0), kMagenta);
+  ASSERT_EQ(b.decode(nullptr, 1), GIMG_OK);
+  EXPECT_EQ(b.at(0, 0), kTransparent)
+      << "frame 1 was seeded from a painted canvas";
 }
 
 TEST(GifScreen, APixelAspectRatioIsReportedAsARatio) {

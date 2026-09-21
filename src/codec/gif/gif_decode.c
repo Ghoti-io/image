@@ -171,7 +171,13 @@ static void gif_paint(const gimg_gif_doc_state_t * state,
 
 /** Clear a frame's rectangle back to transparent (the disposal case). */
 static void gif_clear_rect(const gimg_gif_doc_state_t * state,
-    const gimg_gif_frame_t * frame, uint8_t * canvas, size_t stride) {
+    const gimg_gif_frame_t * frame, uint8_t * canvas, size_t stride,
+    uint8_t background) {
+  if (background == GIMG_GIF_BACKGROUND_PAINT) {
+    gimg_gif_paint_background(state, canvas, stride, frame->left, frame->top,
+        frame->width, frame->height);
+    return;
+  }
   for (uint32_t y = 0; y < frame->height; y++) {
     uint32_t cy = (uint32_t)frame->top + y;
     if (cy >= state->canvas_height) {
@@ -189,6 +195,41 @@ static void gif_clear_rect(const gimg_gif_doc_state_t * state,
 }
 
 /**
+ * Fill a rectangle with the colour the Background Color Index names (89a 18).
+ *
+ * A file with no Global Color Table is left alone: 89a 18 says the index is
+ * then to be ignored, so there is no colour to paint and the rectangle keeps
+ * whatever the transparent path put there.
+ */
+void gimg_gif_paint_background(const gimg_gif_doc_state_t * state,
+    uint8_t * canvas, size_t stride, uint32_t left, uint32_t top,
+    uint32_t width, uint32_t height) {
+  if (!state->has_global_palette ||
+      state->background_index >= state->global_palette_count) {
+    return;
+  }
+  const gimg_gif_rgb_t bg = state->global_palette[state->background_index];
+  for (uint32_t y = 0; y < height; y++) {
+    const uint32_t cy = top + y;
+    if (cy >= state->canvas_height) {
+      break;
+    }
+    uint8_t * row = canvas + (size_t)cy * stride;
+    for (uint32_t x = 0; x < width; x++) {
+      const uint32_t cx = left + x;
+      if (cx >= state->canvas_width) {
+        break;
+      }
+      uint8_t * px = row + (size_t)cx * 4u;
+      px[0] = bg.r;
+      px[1] = bg.g;
+      px[2] = bg.b;
+      px[3] = 255u;
+    }
+  }
+}
+
+/**
  * Apply a frame's disposal, which is what turns the canvas the frame was
  * drawn on into the canvas the next frame starts from (89a 23).
  *
@@ -197,9 +238,9 @@ static void gif_clear_rect(const gimg_gif_doc_state_t * state,
  */
 static void gif_dispose(const gimg_gif_doc_state_t * state,
     const gimg_gif_frame_t * frame, uint8_t * canvas, size_t stride,
-    const uint8_t * saved, size_t canvas_bytes) {
+    const uint8_t * saved, size_t canvas_bytes, uint8_t background) {
   if (frame->disposal == GIMG_GIF_DISPOSAL_BACKGROUND) {
-    gif_clear_rect(state, frame, canvas, stride);
+    gif_clear_rect(state, frame, canvas, stride, background);
   }
   else if (frame->disposal == GIMG_GIF_DISPOSAL_PREVIOUS && saved) {
     memcpy(canvas, saved, canvas_bytes);
@@ -220,15 +261,21 @@ static void gif_dispose(const gimg_gif_doc_state_t * state,
  */
 static void gif_cache_store(gimg_gif_doc_state_t * state,
     const GIMG_Allocator * alloc, size_t index, const uint8_t * canvas,
-    size_t stride, size_t canvas_bytes, const uint8_t * saved) {
+    size_t stride, size_t canvas_bytes, const uint8_t * saved,
+    uint8_t background) {
   // Asked first, because the answer is usually no and the work below is a
   // canvas-sized copy.  A walk in reverse replaces nothing at all, and paying
   // that copy for every frame of it would be most of an animation's worth of
   // memory moved for nothing.  The check is made again below, under the same
   // lock as the write, so this one racing is only ever wasted work.
+  //
+  // A canvas cached under the other `gif_background` setting counts as stale
+  // rather than as "further along": it holds different pixels everywhere no
+  // frame has drawn, so it can neither be used nor be worth keeping in
+  // preference to this one.
   GCU_MUTEX_LOCK(state->cache_lock);
-  const bool worth_taking =
-      !state->cache_canvas || state->cache_next <= index;
+  const bool worth_taking = !state->cache_canvas ||
+      state->cache_background != background || state->cache_next <= index;
   GCU_MUTEX_UNLOCK(state->cache_lock);
   if (!worth_taking) {
     return;
@@ -239,8 +286,8 @@ static void gif_cache_store(gimg_gif_doc_state_t * state,
     return;
   }
   memcpy(snapshot, canvas, canvas_bytes);
-  gif_dispose(
-      state, &state->frames[index], snapshot, stride, saved, canvas_bytes);
+  gif_dispose(state, &state->frames[index], snapshot, stride, saved,
+      canvas_bytes, background);
 
   GCU_MUTEX_LOCK(state->cache_lock);
   // A cache already further along is left where it is.  Two threads walking
@@ -248,12 +295,14 @@ static void gif_cache_store(gimg_gif_doc_state_t * state,
   // dragging the cache backwards, and neither would ever get a head start.
   // This is the test that counts: another thread may have moved the cache on
   // since the one above.
-  if (!state->cache_canvas || state->cache_next <= index) {
+  if (!state->cache_canvas || state->cache_background != background ||
+      state->cache_next <= index) {
     gimg_free(alloc, state->cache_canvas);
     state->cache_canvas = snapshot;
     state->cache_stride = stride;
     state->cache_bytes = canvas_bytes;
     state->cache_next = index + 1u;
+    state->cache_background = background;
     snapshot = NULL;
   }
   GCU_MUTEX_UNLOCK(state->cache_lock);
@@ -308,6 +357,10 @@ GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
   }
 
   const GIMG_Limits * limits = options ? options->limits : NULL;
+  const uint8_t background = (options &&
+      options->gif_background == GIMG_GIF_BACKGROUND_PAINT)
+      ? (uint8_t)GIMG_GIF_BACKGROUND_PAINT
+      : (uint8_t)GIMG_GIF_BACKGROUND_TRANSPARENT;
   size_t canvas_pixels = 0;
   if (!gcu_safe_mul_size((size_t)state->canvas_width,
           (size_t)state->canvas_height, &canvas_pixels)) {
@@ -353,6 +406,7 @@ GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
   if (cache_state) {
     GCU_MUTEX_LOCK(cache_state->cache_lock);
     if (cache_state->cache_canvas && cache_state->cache_next <= index &&
+        cache_state->cache_background == background &&
         cache_state->cache_stride == stride &&
         cache_state->cache_bytes == canvas_bytes) {
       memcpy(canvas, cache_state->cache_canvas, canvas_bytes);
@@ -381,6 +435,10 @@ GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
     // recoverable direction is the one to take.
     for (uint32_t y = 0; y < state->canvas_height; y++) {
       memset(canvas + (size_t)y * stride, 0, (size_t)state->canvas_width * 4u);
+    }
+    if (background == GIMG_GIF_BACKGROUND_PAINT) {
+      gimg_gif_paint_background(state, canvas, stride, 0u, 0u,
+          state->canvas_width, state->canvas_height);
     }
   }
 
@@ -423,13 +481,14 @@ GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
     gif_paint(state, frame, indices, canvas, stride);
 
     if (i < index) {
-      gif_dispose(state, frame, canvas, stride, saved, canvas_bytes);
+      gif_dispose(
+          state, frame, canvas, stride, saved, canvas_bytes, background);
     }
   }
 
   if (r == GIMG_OK && cache_state) {
-    gif_cache_store(
-        cache_state, alloc, index, canvas, stride, canvas_bytes, saved);
+    gif_cache_store(cache_state, alloc, index, canvas, stride, canvas_bytes,
+        saved, background);
   }
 
   gimg_free(alloc, indices);

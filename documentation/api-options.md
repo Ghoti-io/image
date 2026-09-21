@@ -135,8 +135,9 @@ Format-specific behavior is described on the format's own page: \ref format_png 
 | Field     | Description |
 |-----------|-------------|
 | `limits`  | Pointer to **GIMG_Limits**; `NULL` = use defaults. Enforced during decode (e.g. max decoded pixels). |
-| `jpeg_chroma_upsampling` | JPEG only: chroma upsampling for 4:2:0/4:2:2. **GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE** (0) = box/replicate; **GIMG_JPEG_CHROMA_UPSAMPLE_FANCY** (1) = triangle filter. When options is NULL, FANCY is used (default). Ignored for non-JPEG. |
+| `jpeg_chroma_upsampling` | JPEG only: chroma upsampling for 4:2:0/4:2:2. **GIMG_JPEG_CHROMA_UPSAMPLE_DEFAULT** (0) = FANCY; **GIMG_JPEG_CHROMA_UPSAMPLE_FANCY** (1) = triangle filter; **GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE** (2) = box/replicate. SIMPLE deliberately does not live at zero, so that a zero-initialized struct and a NULL pointer select the same filter. Ignored for non-JPEG. |
 | `jpeg_precision` | JPEG decode-to precision: `0` = use file precision (8→GRAY8/RGBA8; 12→GRAY16/RGB16, left-justified); `8`, `12`, or `16` = decode to that bit depth (library conversion when different from file). A *file* precision of 16 does not exist in T.81 and is rejected on load; this option is about the output raster. Ignored for non-JPEG. |
+| `gif_background` | GIF only: what goes where no frame has drawn. **GIMG_GIF_BACKGROUND_TRANSPARENT** (0, default) leaves the logical screen empty and clears disposal method 2 to transparent, which is what browsers do; **GIMG_GIF_BACKGROUND_PAINT** paints the colour the Background Color Index names, which is what GIF89a 18 and 23 say. No effect on a file with no Global Color Table, where 89a 18 says the index is to be ignored. The colour is reported by `gimg_doc_background_color()` under either setting. See \ref format_gif "GIF" for why the default is the first, and for why the second still does not reproduce ImageMagick or Pillow. Ignored for non-GIF. |
 | `_reserved` | Reserved; set to zero. |
 
 Used by `gimg_item_decode()`.
