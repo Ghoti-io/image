@@ -190,6 +190,29 @@ TEST(BmpDecode, BitmapArrayEntryOffsetsCountFromTheContainer) {
   EXPECT_EQ(img.at(0, 0), (Rgba{255, 0, 0, 255}));
 }
 
+TEST(BmpDecode, ANestedBitmapArrayIsRefused) {
+  // A bitmap array holds bitmaps.  OS/2 never nested them, and the loader
+  // dispatches on the magic - so an entry that begins 'BA' comes straight back
+  // into the array reader.  A file can nest that to any depth, and each level
+  // is another frame on the stack.
+  //
+  // Found by the GIF fuzz harness, which reached BMP through the shared magic
+  // probe and produced a stack overflow: not any result this library can
+  // return, and not something the entry cap or the strictly-advancing offNext
+  // check prevented, because both bound the breadth of one level rather than
+  // the depth.
+  //
+  // The bytes are the crashing input the fuzzer minimised, kept verbatim.
+  static const unsigned char kNested[] = {0x42, 0x41, 0x46, 0x37, 0x38, 0x61,
+      0x00, 0x00, 0x00, 0x00, 0x74, 0xFF, 0x2B, 0x00, 0x42, 0x41, 0x46, 0x38,
+      0x39, 0x61, 0x00, 0x00, 0x00, 0x00, 0x74, 0xFF, 0x2B, 0x00, 0x00, 0x51,
+      0x30, 0x00, 0x00, 0x00, 0x1E, 0x1C, 0xFF, 0x3B, 0x3B};
+  std::vector<uint8_t> bytes(kNested, kNested + sizeof(kNested));
+  Loaded img;
+  const GIMG_Result r = img.load_bytes(bytes);
+  EXPECT_NE(r, GIMG_OK) << "a nested bitmap array must not load";
+}
+
 TEST(BmpDecode, Huffman1DBlackIsPaletteIndexOne) {
   // ITU-T T.4 names its runs "white" and "black"; no BMP document says which
   // palette index each means, and the format's own author calls the

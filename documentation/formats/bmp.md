@@ -377,6 +377,15 @@ reconstruct one.
   one that reads OS/2 Huffman 1D, the OS/2 `BA` container and 64-bit files, the
   three the "Not implemented" section below names. It is used as a separate
   process and never linked, because it is LGPL/GPL and this library is not.
+- **A nested bitmap array is refused.** An OS/2 `BA` container whose entry is
+  itself a `BA` recursed without bound, because the loader dispatches on the
+  magic and an entry beginning `BA` comes straight back into the array reader.
+  The 64-entry cap and the strictly-advancing `offNext` check both bound one
+  level's breadth; neither bounds depth. Found by the GIF fuzz harness, which
+  reaches this codec through the shared magic probe, as a stack overflow
+  rather than as any `GIMG_Result`. The minimised input is pinned verbatim by
+  `BmpDecode.ANestedBitmapArrayIsRefused`.
+
 - **Properties that need no oracle at all.** `bmp_8x2_4bit.bmp` and
   `bmp_8x2_8bit.bmp` encode the same indices through the same palette, so
   their decoded output must be identical - which catches a defect in exactly

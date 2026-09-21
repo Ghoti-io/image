@@ -867,6 +867,21 @@ static GIMG_Result bmp_load_array(GIMG_Codec * codec, GIMG_Stream * stream,
     // palette.  Handing the entry its own bytes alone would put every pixel
     // offset 14 bytes past where it belongs.  It is cut off at the next entry
     // so that one entry's pixel data cannot run into the next one's.
+    // An array holds bitmaps, not arrays.  OS/2 never nested them, and
+    // nothing can be done with a nested one that a flat list cannot express -
+    // but gimg_bmp_load() dispatches on the magic, so an entry beginning 'BA'
+    // would come straight back here.  A file can nest that to any depth, and
+    // each level is another frame on the stack: found by the GIF fuzz harness,
+    // which reached it through the shared magic probe, as a stack overflow
+    // rather than as any error this library can return.
+    if (begin + GIMG_BMP_SIGNATURE_LEN <= end &&
+        file[begin] == gimg_bmp_array_signature[0] &&
+        file[begin + 1] == gimg_bmp_array_signature[1]) {
+      r = GIMG_ERR_CORRUPT;
+      bmp_load_diag(diagnostics, begin, "bitmap array entry is another array");
+      break;
+    }
+
     GIMG_Stream * sub = NULL;
     r = gimg_stream_create_memory(file, end, &sub);
     if (r != GIMG_OK) {
