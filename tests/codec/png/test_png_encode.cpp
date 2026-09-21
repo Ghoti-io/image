@@ -127,6 +127,151 @@ TEST(PngEncode, MetaCommonDescriptionWrittenAndReadAsText) {
   gimg_stream_destroy(in_s);
 }
 
+namespace {
+
+/** Save a document as PNG and load the result back.  Returns the bytes. */
+std::vector<uint8_t> png_round_trip(GIMG_Doc * doc, GIMG_Doc ** out_doc,
+    GIMG_Stream ** keep_stream) {
+  GIMG_Stream * out_s = nullptr;
+  EXPECT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  EXPECT_EQ(gimg_doc_save(doc, out_s, "png", &opts, &report), GIMG_OK);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out_s, &data, &size);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(data),
+      static_cast<const uint8_t *>(data) + size);
+  gimg_stream_destroy(out_s);
+  EXPECT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), keep_stream),
+      GIMG_OK);
+  EXPECT_EQ(gimg_doc_load(*keep_stream, nullptr, nullptr, out_doc), GIMG_OK);
+  return saved;
+}
+
+GIMG_Doc * png_gray_doc() {
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(8, 8, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, nullptr, 0,
+          &raster) != GIMG_OK) {
+    return nullptr;
+  }
+  memset(gimg_raster_pixels(raster), 128, 8 * 8);
+  GIMG_Doc * doc = nullptr;
+  gimg_doc_from_raster(raster, &doc);
+  gimg_raster_destroy(raster);
+  return doc;
+}
+
+} // namespace
+
+TEST(PngEncode, APixelAspectRatioIsWrittenAsAUnitZeroPhys) {
+  // PNG 11.3.4.3: pHYs with unit 0 states a ratio and no physical size, which
+  // is what gimg_doc_pixel_aspect_ratio() carries.  Before this the writer
+  // only ever emitted unit 1, so a ratio a caller set was never written at
+  // all - the accessor reported it and the file did not have it.
+  GIMG_Doc * doc = png_gray_doc();
+  ASSERT_NE(doc, nullptr);
+  gimg_doc_set_pixel_aspect_ratio(doc, 2u, 1u);
+
+  GIMG_Doc * back = nullptr;
+  GIMG_Stream * keep = nullptr;
+  png_round_trip(doc, &back, &keep);
+  gimg_doc_destroy(doc);
+
+  uint32_t num = 0, den = 0;
+  const int said = gimg_doc_pixel_aspect_ratio(back, &num, &den);
+  EXPECT_EQ(said, 1);
+  EXPECT_EQ(num, 2u);
+  EXPECT_EQ(den, 1u);
+  gimg_doc_destroy(back);
+  gimg_stream_destroy(keep);
+}
+
+TEST(PngEncode, ASetAspectRatioBeatsThePhysTheFileArrivedWith) {
+  // The update half of CRUD, and the one that was silently broken: a pHYs the
+  // file came with was preserved verbatim, so setting a new ratio changed what
+  // the accessor reported and not what was written.  A caller saw success and
+  // got the old value back on the next load.
+  std::vector<uint8_t> file;
+  ASSERT_TRUE(png_test::load_png_file("png_phys_aspect_4_3.png", file));
+  GIMG_Stream * in_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(file.data(), file.size(), &in_s),
+      GIMG_OK);
+  GIMG_Doc * source = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_s, nullptr, nullptr, &source), GIMG_OK);
+  uint32_t num = 0, den = 0;
+  ASSERT_EQ(gimg_doc_pixel_aspect_ratio(source, &num, &den), 1);
+  ASSERT_EQ(num, 4u);
+  ASSERT_EQ(den, 3u);
+
+  gimg_doc_set_pixel_aspect_ratio(source, 5u, 2u);
+  GIMG_Doc * back = nullptr;
+  GIMG_Stream * keep = nullptr;
+  png_round_trip(source, &back, &keep);
+  gimg_doc_destroy(source);
+  gimg_stream_destroy(in_s);
+
+  uint32_t rn = 0, rd = 0;
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(back, &rn, &rd), 1);
+  EXPECT_EQ(rn, 5u) << "the preserved chunk won and the new ratio was lost";
+  EXPECT_EQ(rd, 2u);
+  gimg_doc_destroy(back);
+  gimg_stream_destroy(keep);
+}
+
+TEST(PngEncode, ClearingAnAspectRatioRemovesTheChunkTheFileArrivedWith) {
+  // The delete half.  A cleared ratio has to stop being written, or "remove
+  // this" means "keep it".
+  std::vector<uint8_t> file;
+  ASSERT_TRUE(png_test::load_png_file("png_phys_aspect_4_3.png", file));
+  GIMG_Stream * in_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(file.data(), file.size(), &in_s),
+      GIMG_OK);
+  GIMG_Doc * source = nullptr;
+  ASSERT_EQ(gimg_doc_load(in_s, nullptr, nullptr, &source), GIMG_OK);
+  ASSERT_EQ(gimg_doc_pixel_aspect_ratio(source, nullptr, nullptr), 1);
+  gimg_doc_clear_pixel_aspect_ratio(source);
+
+  GIMG_Doc * back = nullptr;
+  GIMG_Stream * keep = nullptr;
+  png_round_trip(source, &back, &keep);
+  gimg_doc_destroy(source);
+  gimg_stream_destroy(in_s);
+  uint32_t rn = 9, rd = 9;
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(back, &rn, &rd), 0);
+  EXPECT_EQ(rn, 9u);
+  gimg_doc_destroy(back);
+  gimg_stream_destroy(keep);
+}
+
+TEST(PngEncode, APhysicalResolutionWinsOverAPixelAspectRatio) {
+  // The two share one chunk and cannot both be written.  A resolution says
+  // everything a ratio says and a size as well, so it is the one kept.
+  GIMG_Doc * doc = png_gray_doc();
+  ASSERT_NE(doc, nullptr);
+  GIMG_Meta_Common * meta = nullptr;
+  ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &meta), GIMG_OK);
+  gimg_meta_common_set_dpi(meta, 300u, 300u);
+  gimg_doc_set_pixel_aspect_ratio(doc, 2u, 1u);
+
+  GIMG_Doc * back = nullptr;
+  GIMG_Stream * keep = nullptr;
+  png_round_trip(doc, &back, &keep);
+  gimg_doc_destroy(doc);
+
+  uint32_t x_dpi = 0, y_dpi = 0;
+  GIMG_Meta_Common * rm = gimg_doc_meta_common(back);
+  ASSERT_NE(rm, nullptr);
+  gimg_meta_common_dpi(rm, &x_dpi, &y_dpi);
+  EXPECT_EQ(x_dpi, 300u);
+  EXPECT_EQ(y_dpi, 300u);
+  // The ratio is not reported, because a unit 1 pHYs is a resolution.
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(back, nullptr, nullptr), 0);
+  gimg_doc_destroy(back);
+  gimg_stream_destroy(keep);
+}
+
 TEST(PngEncode, SaveToMemoryOutputSucceeds) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(png_test::load_png_file("png_1x1_gray.png", buf))

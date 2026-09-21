@@ -642,6 +642,40 @@ Reporting the ratio is what lets a caller do it themselves, at the moment they
 know what they want: a viewer scales its window, a converter scales the raster,
 and each needs a different filter.
 
+### Reading, writing, changing and removing it
+
+The ratio is a property of the document, and the four operations on it are
+`gimg_doc_pixel_aspect_ratio()`, `gimg_doc_set_pixel_aspect_ratio()` and
+`gimg_doc_clear_pixel_aspect_ratio()`. Every format in this library that can
+state one carries all four through a save:
+
+| | states it as | read | create | update | delete |
+|---|---|---|---|---|---|
+| GIF | Pixel Aspect Ratio byte, 89a 18 | yes | yes | yes | yes |
+| PNG | `pHYs` with unit 0, 11.3.4.3 | yes | yes | yes | yes |
+| JPEG | JFIF APP0 density with units 0 | yes | yes | yes | yes |
+| BMP | — | — | — | — | — |
+
+BMP has no row because it cannot say this: `biXPelsPerMeter` and
+`biYPelsPerMeter` are a physical resolution, which is the *other* thing - it
+reaches a caller through `gimg_meta_common_dpi()`, and a non-square pixel
+expressed that way is a consequence of the two differing rather than a
+statement in its own right.
+
+The ratio crosses formats, because all three are saying the same thing: a JPEG
+declaring 2:1 saved as a GIF comes back as 128:64, which is that ratio in the
+only form 89a 18 can hold.
+
+**Update and delete were the half that was silently broken**, in PNG and JPEG
+rather than here. Both preserve the chunk or segment the file arrived with, so
+setting a ratio changed what the accessor reported and not what was written: a
+caller saw success, saved, and got the old value back on the next load. The
+document now wins for the aspect-ratio-carrying forms specifically - a unit 0
+`pHYs`, a units 0 APP0 - while a physical resolution in the same chunk is left
+to the rule it already had. A load and save with nothing edited still produces
+the same bytes, because the loader put the document's value there in the first
+place.
+
 ### Writing it
 
 The writer emits the byte the document's ratio implies, and **needs no save
@@ -661,10 +695,10 @@ did.
 
 Before this the writer put a zero there always, so a file that declared a
 non-square pixel came back declaring nothing - the loader read it, the accessor
-reported it, and the save threw it away. PNG never had that problem, for an
-unrelated reason: its `pHYs` chunk survives as raw metadata under
-`GIMG_META_PRESERVE_ALL`, so the aspect ratio came back without the writer
-knowing it existed.
+reported it, and the save threw it away. PNG did not lose a straight round trip,
+for an unrelated reason: its `pHYs` survives as raw metadata under
+`GIMG_META_PRESERVE_ALL`, so the ratio came back without the writer knowing it
+existed - which is also why *changing* it there did not work until now.
 
 ### Tested
 

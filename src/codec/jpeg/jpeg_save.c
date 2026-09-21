@@ -293,6 +293,56 @@ static GIMG_Result jpeg_write_icc_from_info(GIMG_Stream * stream,
 /** Build minimal APP0 JFIF (14 bytes), per JFIF 1.01. Lh=16 so segment is
  * 2+16 bytes. If x_dpi and y_dpi are both 0, use units=0 and density 1,1;
  * else units=1 (dots per inch). No thumbnail (Xthumbnail=0, Ythumbnail=0). */
+/**
+ * Put the document's pixel aspect ratio into a JFIF APP0's density fields.
+ *
+ * JFIF 1.02 units 0 means the two density fields are the pixel's aspect ratio
+ * and not a resolution, which is what PNG's pHYs unit 0 and GIF's Pixel Aspect
+ * Ratio byte also say; all three reach a caller through
+ * gimg_doc_pixel_aspect_ratio(), so all three are written from it.
+ *
+ * This runs over a *preserved* APP0 as well as a freshly built one, because
+ * otherwise gimg_doc_set_pixel_aspect_ratio() on a loaded JPEG would be a
+ * no-op that reports success: the accessor would give the new value and the
+ * file would keep the old one.  A physical resolution wins over a ratio - a
+ * size says more - so a document with DPI is left alone here.
+ *
+ * The density fields are sixteen bits each.  A ratio whose terms do not fit is
+ * not written at all rather than rounded to something that does, for the same
+ * reason GIF writes a zero for a ratio outside its range: a number the caller
+ * did not ask for is worse than no number.
+ */
+static void jpeg_apply_aspect_to_app0(unsigned char * buf, size_t len,
+    const GIMG_Doc * doc, uint32_t x_dpi, uint32_t y_dpi) {
+  if (!buf || len < 14u || memcmp(buf, "JFIF\0", 5) != 0) {
+    return;
+  }
+  if (x_dpi > 0u && y_dpi > 0u) {
+    return;
+  }
+  uint32_t par_x = 0u, par_y = 0u;
+  const bool declared =
+      gimg_doc_pixel_aspect_ratio(doc, &par_x, &par_y) != 0 && par_x > 0u &&
+      par_y > 0u;
+  if (declared && par_x <= 0xFFFFu && par_y <= 0xFFFFu) {
+    buf[7] = 0u;
+    buf[8] = (unsigned char)(par_x >> 8);
+    buf[9] = (unsigned char)(par_x & 0xFFu);
+    buf[10] = (unsigned char)(par_y >> 8);
+    buf[11] = (unsigned char)(par_y & 0xFFu);
+    return;
+  }
+  // Nothing declared: a unit 0 segment claiming a non-square pixel is saying
+  // something the document no longer says, so it goes back to the 1:1 that
+  // means "square, and no size given".
+  if (buf[7] == 0u) {
+    buf[8] = 0u;
+    buf[9] = 1u;
+    buf[10] = 0u;
+    buf[11] = 1u;
+  }
+}
+
 static void jpeg_build_minimal_app0(
     unsigned char * buf, uint32_t x_dpi, uint32_t y_dpi) {
   memcpy(buf, "JFIF\0", 5);
@@ -3731,6 +3781,7 @@ have_scan:
         r = gimg_meta_raw_get(
             meta_raw, "jpeg", GIMG_JPEG_RAW_APP0, app0_buf, &app0_len);
         if (r == GIMG_OK) {
+          jpeg_apply_aspect_to_app0(app0_buf, app0_len, doc, x_dpi, y_dpi);
           r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP0, app0_buf,
               app0_len, &report->bytes_written);
         }
@@ -3744,6 +3795,7 @@ have_scan:
     else if (!suppress_jfif) {
       unsigned char app0[14];
       jpeg_build_minimal_app0(app0, x_dpi, y_dpi);
+      jpeg_apply_aspect_to_app0(app0, sizeof(app0), doc, x_dpi, y_dpi);
       r = jpeg_write_app_segment(
           stream, GIMG_JPEG_MARKER_APP0, app0, 14, &report->bytes_written);
       if (r != GIMG_OK) {

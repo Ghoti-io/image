@@ -297,21 +297,31 @@ static bool gimg_png_raster_to_ihdr(const GIMG_Raster * raster,
 }
 
 /**
- * Build a pHYs payload (9 bytes): pixels per meter on each axis, then the unit
- * specifier (11.3.4.3). Always unit 1, because a resolution this library has
- * is a physical one - unit 0 states an aspect ratio and no size at all.
+ * Build a pHYs payload (9 bytes): two axis values, then the unit specifier
+ * (11.3.4.3).
+ *
+ * Unit 1 makes the values pixels per metre - a physical size.  Unit 0 makes
+ * them a ratio and no size at all, which is how PNG states a non-square pixel
+ * without claiming to know how big it is, and is what
+ * gimg_doc_pixel_aspect_ratio() reports for such a file.
  */
+static void gimg_png_build_phys_unit(
+    unsigned char * out, uint32_t x, uint32_t y, uint8_t unit) {
+  out[0] = (unsigned char)(x >> 24);
+  out[1] = (unsigned char)(x >> 16);
+  out[2] = (unsigned char)(x >> 8);
+  out[3] = (unsigned char)(x & 0xFFu);
+  out[4] = (unsigned char)(y >> 24);
+  out[5] = (unsigned char)(y >> 16);
+  out[6] = (unsigned char)(y >> 8);
+  out[7] = (unsigned char)(y & 0xFFu);
+  out[8] = (unsigned char)unit;
+}
+
+/** A physical resolution, in pixels per metre (unit 1). */
 static void gimg_png_build_phys(
     unsigned char * out, uint32_t x_ppm, uint32_t y_ppm) {
-  out[0] = (unsigned char)(x_ppm >> 24);
-  out[1] = (unsigned char)(x_ppm >> 16);
-  out[2] = (unsigned char)(x_ppm >> 8);
-  out[3] = (unsigned char)(x_ppm & 0xFFu);
-  out[4] = (unsigned char)(y_ppm >> 24);
-  out[5] = (unsigned char)(y_ppm >> 16);
-  out[6] = (unsigned char)(y_ppm >> 8);
-  out[7] = (unsigned char)(y_ppm & 0xFFu);
-  out[8] = (unsigned char)GIMG_PNG_PHYS_UNIT_METER;
+  gimg_png_build_phys_unit(out, x_ppm, y_ppm, GIMG_PNG_PHYS_UNIT_METER);
 }
 
 /** Build IHDR payload (13 bytes). @a interlace_method 0 or 1 (Adam7). */
@@ -2081,6 +2091,25 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
           have_description_or_comment_from_ancillary = true;
         }
         if (t == GIMG_PNG_pHYs) {
+          // A pHYs stating unit 0 is a pixel aspect ratio, and the document
+          // owns that: the loader put it there, and a caller who has since
+          // set or cleared it must be able to make that stick.  Writing the
+          // chunk the file arrived with would make
+          // gimg_doc_set_pixel_aspect_ratio() a no-op that reports success -
+          // the accessor would give the new value and the file would keep the
+          // old one, which is only visible after a round trip.  So the chunk
+          // is dropped here and re-made below from whatever the document now
+          // says, which for a document nobody edited is the same nine bytes.
+          //
+          // A pHYs stating unit 1 is a physical resolution and is left alone;
+          // that one belongs to the common metadata's DPI, which has its own
+          // rule about the file's own chunk winning.
+          const unsigned char * pp =
+              (const unsigned char *)state->ancillary[i].payload;
+          if (pp && state->ancillary[i].payload_size == 9u &&
+              pp[8] == GIMG_PNG_PHYS_UNIT_UNKNOWN) {
+            continue;
+          }
           have_phys_from_ancillary = true;
         }
         const void * chunk_payload = state->ancillary[i].payload;
@@ -2177,6 +2206,29 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
         unsigned char phys[9];
         gimg_png_build_phys(phys, gimg_dpi_to_pixels_per_meter(x_dpi),
             gimg_dpi_to_pixels_per_meter(y_dpi));
+        r = gimg_png_write_chunk(stream, GIMG_PNG_pHYs, phys, sizeof(phys));
+        if (r != GIMG_OK) {
+          gimg_free(alloc, zlib_buf);
+          return r;
+        }
+        report->bytes_written += 8 + sizeof(phys) + 4;
+      }
+    }
+    // A pixel aspect ratio the document declares, as a unit 0 pHYs
+    // (11.3.4.3).  Only when no physical resolution was written: the two
+    // share one chunk, and a size says more than a ratio does.
+    if (!have_phys_from_ancillary) {
+      uint32_t x_dpi = 0, y_dpi = 0;
+      if (meta_common) {
+        gimg_meta_common_dpi(meta_common, &x_dpi, &y_dpi);
+      }
+      uint32_t par_x = 0, par_y = 0;
+      if (!(x_dpi > 0 && y_dpi > 0) &&
+          gimg_doc_pixel_aspect_ratio(doc, &par_x, &par_y) && par_x > 0u &&
+          par_y > 0u) {
+        unsigned char phys[9];
+        gimg_png_build_phys_unit(
+            phys, par_x, par_y, GIMG_PNG_PHYS_UNIT_UNKNOWN);
         r = gimg_png_write_chunk(stream, GIMG_PNG_pHYs, phys, sizeof(phys));
         if (r != GIMG_OK) {
           gimg_free(alloc, zlib_buf);

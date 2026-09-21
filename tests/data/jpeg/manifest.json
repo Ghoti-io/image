@@ -10,6 +10,16 @@
     "has_icc": false
   },
   {
+    "file": "jfif_aspect_2_1.jpg",
+    "width": 16,
+    "height": 16,
+    "mode": "RGB",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": false
+  },
+  {
     "file": "baseline_16x16_ycbcr.jpg",
     "width": 16,
     "height": 16,

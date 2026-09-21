@@ -47,6 +47,147 @@ struct RasterGuard {
   }
 };
 
+namespace jfif_aspect {
+
+/** Load a fixture into a document, decoded and ready to re-save. */
+GIMG_Doc * load(const char * name, GIMG_Stream ** keep,
+    std::vector<uint8_t> & bytes) {
+  if (!jpeg_test::load_jpeg_file(name, bytes)) {
+    return nullptr;
+  }
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), keep) != GIMG_OK) {
+    return nullptr;
+  }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_load(*keep, nullptr, nullptr, &doc) != GIMG_OK) {
+    return nullptr;
+  }
+  gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr);
+  return doc;
+}
+
+/** Save as JPEG and load the result back. */
+GIMG_Doc * round_trip(GIMG_Doc * doc, GIMG_Stream ** keep,
+    std::vector<uint8_t> & saved) {
+  GIMG_Stream * out_s = nullptr;
+  if (gimg_stream_create_memory_output(&out_s) != GIMG_OK) {
+    return nullptr;
+  }
+  GIMG_Save_Report report = {};
+  if (gimg_doc_save(doc, out_s, "jpeg", nullptr, &report) != GIMG_OK) {
+    gimg_stream_destroy(out_s);
+    return nullptr;
+  }
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out_s, &data, &size);
+  saved.assign(static_cast<const uint8_t *>(data),
+      static_cast<const uint8_t *>(data) + size);
+  gimg_stream_destroy(out_s);
+  if (gimg_stream_create_memory(saved.data(), saved.size(), keep) != GIMG_OK) {
+    return nullptr;
+  }
+  GIMG_Doc * back = nullptr;
+  if (gimg_doc_load(*keep, nullptr, nullptr, &back) != GIMG_OK) {
+    return nullptr;
+  }
+  return back;
+}
+
+} // namespace jfif_aspect
+
+TEST(JpegEncode, AJfifDensityWithUnitsZeroIsAPixelAspectRatio) {
+  // JFIF 1.02: units 0 means the density fields are the pixel's aspect ratio
+  // and the file states no size at all - the same thing PNG says with a unit 0
+  // pHYs and GIF with its Pixel Aspect Ratio byte.  The loader used to handle
+  // units 1 only, so a JPEG declaring a non-square pixel declared nothing here.
+  GIMG_Stream * keep = nullptr;
+  std::vector<uint8_t> bytes;
+  GIMG_Doc * doc = jfif_aspect::load("jfif_aspect_2_1.jpg", &keep, bytes);
+  ASSERT_NE(doc, nullptr);
+  uint32_t num = 0, den = 0;
+  const int said = gimg_doc_pixel_aspect_ratio(doc, &num, &den);
+  EXPECT_EQ(said, 1);
+  EXPECT_EQ(num, 2u);
+  EXPECT_EQ(den, 1u);
+  // It is not a resolution, and must not be reported as one.
+  GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
+  if (meta) {
+    uint32_t x_dpi = 0, y_dpi = 0;
+    gimg_meta_common_dpi(meta, &x_dpi, &y_dpi);
+    EXPECT_EQ(x_dpi, 0u) << "units 0 says nothing about physical size";
+    EXPECT_EQ(y_dpi, 0u);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(keep);
+}
+
+TEST(JpegEncode, EqualJfifDensitiesAreNotAClaimAboutShape) {
+  // Every encoder writes units 0 with density 1:1 whether it knows anything or
+  // not - it is the JFIF way of writing "no information".  Recording it would
+  // turn boilerplate into a declaration and put a pHYs in every PNG converted
+  // from a JPEG.
+  GIMG_Stream * keep = nullptr;
+  std::vector<uint8_t> bytes;
+  GIMG_Doc * doc = jfif_aspect::load("baseline_16x16_ycbcr.jpg", &keep, bytes);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_pixel_aspect_ratio(doc, nullptr, nullptr), 0);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(keep);
+}
+
+TEST(JpegEncode, APixelAspectRatioSurvivesASaveAndCanBeChangedAndCleared) {
+  // The whole of CRUD through the file.  The update half is the one that was
+  // silently broken everywhere: the APP0 the file arrived with was preserved
+  // verbatim, so setting a ratio changed what the accessor reported and not
+  // what was written, and a caller saw success and got the old value back.
+  GIMG_Stream * keep = nullptr;
+  std::vector<uint8_t> bytes;
+  GIMG_Doc * doc = jfif_aspect::load("jfif_aspect_2_1.jpg", &keep, bytes);
+  ASSERT_NE(doc, nullptr);
+
+  // Read, then save unchanged: it comes back.
+  {
+    GIMG_Stream * k2 = nullptr;
+    std::vector<uint8_t> saved;
+    GIMG_Doc * back = jfif_aspect::round_trip(doc, &k2, saved);
+    ASSERT_NE(back, nullptr);
+    uint32_t n = 0, d = 0;
+    EXPECT_EQ(gimg_doc_pixel_aspect_ratio(back, &n, &d), 1);
+    EXPECT_EQ(n, 2u);
+    EXPECT_EQ(d, 1u);
+    gimg_doc_destroy(back);
+    gimg_stream_destroy(k2);
+  }
+  // Update.
+  gimg_doc_set_pixel_aspect_ratio(doc, 5u, 4u);
+  {
+    GIMG_Stream * k2 = nullptr;
+    std::vector<uint8_t> saved;
+    GIMG_Doc * back = jfif_aspect::round_trip(doc, &k2, saved);
+    ASSERT_NE(back, nullptr);
+    uint32_t n = 0, d = 0;
+    EXPECT_EQ(gimg_doc_pixel_aspect_ratio(back, &n, &d), 1);
+    EXPECT_EQ(n, 5u) << "the preserved APP0 won and the new ratio was lost";
+    EXPECT_EQ(d, 4u);
+    gimg_doc_destroy(back);
+    gimg_stream_destroy(k2);
+  }
+  // Delete.
+  gimg_doc_clear_pixel_aspect_ratio(doc);
+  {
+    GIMG_Stream * k2 = nullptr;
+    std::vector<uint8_t> saved;
+    GIMG_Doc * back = jfif_aspect::round_trip(doc, &k2, saved);
+    ASSERT_NE(back, nullptr);
+    EXPECT_EQ(gimg_doc_pixel_aspect_ratio(back, nullptr, nullptr), 0);
+    gimg_doc_destroy(back);
+    gimg_stream_destroy(k2);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(keep);
+}
+
 TEST(JpegEncode, SaveGrayscaleThenLoadDecode) {
   // Create synthetic doc with 16x16 grayscale raster.
   GIMG_Doc * doc = nullptr;

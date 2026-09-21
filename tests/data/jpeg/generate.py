@@ -36,6 +36,23 @@ def write_jpeg(name: str, img: Image.Image, **save_kw) -> None:
     print("Wrote", path)
 
 
+def _patch_jfif_density(path: str, units: int, x: int, y: int) -> None:
+    """Rewrite the APP0 JFIF density fields in place.
+
+    JFIF 1.02: after the "JFIF\\0" identifier come a two-byte version, the
+    units byte, then Xdensity and Ydensity as big-endian sixteen-bit values.
+    """
+    data = bytearray(open(path, "rb").read())
+    at = data.find(b"JFIF\0")
+    if at < 0:
+        raise SystemExit("no APP0 JFIF in " + path)
+    data[at + 7] = units
+    data[at + 8:at + 10] = x.to_bytes(2, "big")
+    data[at + 10:at + 12] = y.to_bytes(2, "big")
+    open(path, "wb").write(bytes(data))
+    print("Patched", path, "units=%d density=%d:%d" % (units, x, y))
+
+
 def main() -> None:
     os.makedirs(SCRIPT_DIR, exist_ok=True)
     manifest: list[dict] = []
@@ -47,6 +64,26 @@ def main() -> None:
         "file": "baseline_8x8_gray.jpg",
         "width": 8, "height": 8, "mode": "L",
         "progressive": False, "quality": 85, "has_exif": False, "has_icc": False,
+    })
+
+    # ---- JFIF density units 0: a pixel aspect ratio and no size ----
+    # JFIF 1.02 gives the APP0 density fields a unit specifier.  Unit 1 is dots
+    # per inch; unit 0 means the two numbers are the pixel's aspect ratio and
+    # the file says nothing about physical size - the same statement PNG makes
+    # with a unit 0 pHYs and GIF with its Pixel Aspect Ratio byte.
+    #
+    # Pillow cannot write that, so the segment is patched after the fact: the
+    # density fields are 2 and 1, a pixel twice as wide as it is tall, which no
+    # encoder emits by accident (1:1 is the boilerplate everything writes).
+    aspect_src = Image.new("RGB", (16, 16), color=(0xC8, 0x3C, 0x28))
+    write_jpeg("jfif_aspect_2_1.jpg", aspect_src)
+    _patch_jfif_density(
+        os.path.join(SCRIPT_DIR, "jfif_aspect_2_1.jpg"), units=0, x=2, y=1)
+    manifest.append({
+        "file": "jfif_aspect_2_1.jpg",
+        "width": 16, "height": 16, "mode": "RGB",
+        "progressive": False, "quality": 85, "has_exif": False,
+        "has_icc": False,
     })
 
     # ---- Baseline 16×16 YCbCr (RGB saved as JPEG; Pillow writes 4:2:0) ----

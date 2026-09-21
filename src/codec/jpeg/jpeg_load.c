@@ -1843,15 +1843,28 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
   }
   if (state->app0_jfif && state->app0_jfif_len >= 14) {
-    uint8_t units = state->app0_jfif[7];
+    const uint8_t units = state->app0_jfif[7];
+    const uint32_t xd = (uint32_t)(((unsigned char)state->app0_jfif[8] << 8) |
+        (unsigned char)state->app0_jfif[9]);
+    const uint32_t yd = (uint32_t)(((unsigned char)state->app0_jfif[10] << 8) |
+        (unsigned char)state->app0_jfif[11]);
     if (units == 1) {
-      uint32_t x_dpi = (uint32_t)((state->app0_jfif[8] << 8) |
-          (unsigned char)state->app0_jfif[9]);
-      uint32_t y_dpi = (uint32_t)((state->app0_jfif[10] << 8) |
-          (unsigned char)state->app0_jfif[11]);
       if (gimg_doc_ensure_meta_common(doc, &meta_common) == GIMG_OK) {
-        gimg_meta_common_set_dpi(meta_common, x_dpi, y_dpi);
+        gimg_meta_common_set_dpi(meta_common, xd, yd);
       }
+    }
+    else if (units == 0 && xd > 0u && yd > 0u && xd != yd) {
+      // JFIF 1.02: units 0 means the density fields are not a resolution at
+      // all - they are the pixel's aspect ratio, and the file says nothing
+      // about how big anything is.  That is exactly what PNG's pHYs unit 0
+      // says and what GIF's Pixel Aspect Ratio byte says, so all three reach a
+      // caller through gimg_doc_pixel_aspect_ratio().
+      //
+      // Equal densities are the JFIF way of writing "square pixels, no size",
+      // which every encoder emits as 1:1 whether it knows anything or not.
+      // Recording it would turn that boilerplate into a claim the writer never
+      // made, and would put a pHYs in every PNG converted from a JPEG.
+      gimg_doc_set_pixel_aspect_ratio(doc, xd, yd);
     }
   }
   // Populate meta_common description from first COM when 7-bit ASCII text.
