@@ -51,6 +51,10 @@ tests/tools/gif-oracle/build
 
 # libFuzzer writes a crash-<hash> file beside the binary when it finds one.
 # The interesting ones become test fixtures; none of them belong in the tree.
+# slow-unit-* is the same idea for an input that took longer than -timeout:
+# worth reading (see tests/fuzz/README.md on what they have turned out to be),
+# never worth committing, and written on every run that trips one.
 crash-*
 leak-*
 timeout-*
+slow-unit-*
