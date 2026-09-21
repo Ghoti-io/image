@@ -260,6 +260,35 @@ static void gif_cache_store(gimg_gif_doc_state_t * state,
   gimg_free(alloc, snapshot);
 }
 
+/**
+ * Forget the cached canvas, so the next decode starts from an empty screen.
+ *
+ * The cache only ever moves forward (see gif_cache_store), which is what stops
+ * two walks in opposite directions from dragging it back and forth.  The cost
+ * is that a *second* forward walk over the same document finds the cache
+ * parked at the end, where it helps nothing, and replays every frame from the
+ * beginning - turning a linear walk quadratic.
+ *
+ * The GIF writer makes exactly that second walk: it reads every frame once to
+ * see whether they share a palette, then again to encode them.  Without this,
+ * re-encoding a 358-frame animation took 110 seconds instead of 4.3.  Rather
+ * than weaken the forward-only rule, which earns its keep everywhere else, the
+ * one caller that knowingly starts over says so.
+ */
+void gimg_gif_cache_reset(gimg_gif_doc_state_t * state) {
+  if (!state || !state->cache_lock_ready) {
+    return;
+  }
+  GCU_MUTEX_LOCK(state->cache_lock);
+  uint8_t * stale = state->cache_canvas;
+  state->cache_canvas = NULL;
+  state->cache_next = 0u;
+  state->cache_bytes = 0u;
+  state->cache_stride = 0u;
+  GCU_MUTEX_UNLOCK(state->cache_lock);
+  gimg_free(state->allocator, stale);
+}
+
 GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster) {
   if (!codec || !item || !out_raster) {

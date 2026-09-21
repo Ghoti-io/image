@@ -23,18 +23,23 @@
  * edge has nowhere to go.  A partially transparent pixel is therefore refused
  * unless the caller sets `gif_alpha_threshold` and says which way to round.
  *
- * WHAT IS NOT OPTIMIZED
- * =====================
+ * HOW A FRAME IS MADE SMALL
+ * =========================
  *
- * A frame is cropped to the rectangle that changed - see "Frame optimization"
- * below - but within that rectangle every pixel is written with its own
- * colour.  A writer aiming at the smallest files also marks the pixels that
- * did not change as transparent, so that the previous frame shows through and
- * the code stream compresses into long runs of one index.  Measured on a
- * 358-frame animation, that is where the remaining difference against its
- * original encoder is: our blocks for its 89 large frames are geometrically
- * smaller than the original's and take twice the bytes.
- * See documentation/formats/gif.md.
+ * A frame handed to this encoder is the whole canvas as it should look; a GIF
+ * frame is a patch.  Two things turn one into the other, and both are checked
+ * by decoding the result rather than by reasoning about it:
+ *
+ *   - the frame is cropped to the rectangle in which it differs from what is
+ *     already on the screen, and
+ *   - inside that rectangle, a pixel that matches what is already on the
+ *     screen is written as the transparent index, so the screen shows through
+ *     and the code stream compresses into runs of one index.
+ *
+ * Both need the same thing to be true: the encoder has to know what the screen
+ * holds at the moment each frame is drawn.  That is `screen` in
+ * gimg_gif_save() - not simply the frame before, because disposal 2 blanks a
+ * rectangle after its frame has been shown.  See "Frame optimization" below.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -172,33 +177,89 @@ static bool gif_pixel_transparent(
   return a < alpha_threshold;
 }
 
+/**
+ * Whether the encoder would store the same thing for both pixels.
+ *
+ * The equivalence every comparison in this file uses.  Both transparent is the
+ * same pixel whatever colour sits under the transparency; otherwise it is the
+ * three colour bytes, because alpha above the threshold is not stored at all.
+ */
+static bool gif_pixel_same(
+    const uint8_t * a, const uint8_t * b, uint16_t alpha_threshold) {
+  const bool at = gif_pixel_transparent(a, alpha_threshold, NULL);
+  const bool bt = gif_pixel_transparent(b, alpha_threshold, NULL);
+  if (at || bt) {
+    return at && bt;
+  }
+  return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+}
+
 // ---------------------------------------------------------------------------
 // Frame optimization
 // ---------------------------------------------------------------------------
 //
 // A frame supplied to this encoder is the whole canvas as it should look, but
 // a GIF frame is a patch.  Writing every frame at full size is always correct
-// and is what this codec used to do; writing only the rectangle that changed
-// is smaller, and is what every other encoder does.
+// and is what this codec used to do; writing only what changed is smaller, and
+// is what every other encoder does.
 //
-// It rests on one invariant.  If each frame is drawn with disposal 1 - leave
-// it in place - over a canvas that already holds the frame before it, and its
-// rectangle covers every pixel that differs, then after drawing it the canvas
-// holds exactly that frame.  By induction the canvas is always right.
+// THE SCREEN
+// ----------
 //
-// The induction has exactly one hole: painting cannot make an opaque pixel
-// transparent.  GIF has no way to erase within a frame, so a frame that turns
-// an opaque pixel see-through cannot be expressed as a patch over its
-// predecessor alone.  Disposal 2 is the only eraser, and it erases exactly the
-// rectangle of the frame that carries it.
+// Everything here is written against one value: what the logical screen holds
+// at the moment a frame is drawn.  `screen` in gimg_gif_save() carries it.
+// Comparing against the previous frame instead would be almost right and wrong
+// where it matters, because disposal 2 blanks a rectangle after its frame has
+// been shown, and the frame after that paints onto the hole rather than onto
+// its predecessor.
 //
-// So for such a transition the previous frame is grown to cover what has to be
-// erased and given disposal 2, and the frame after it is grown to cover that
-// same rectangle - because disposal 2 has just blanked it, and everything in it
-// that should still be visible has to be painted again.  Both stay rectangles
-// bounded by what actually changed.  Writing the whole canvas would also be
-// correct and is what this codec did before; on a 358-frame animation with a
-// fading element it cost 89 full-canvas frames and 94% of the output.
+// Two pixels count as equal when the encoder would store the same thing for
+// both - gif_pixel_same().  Both transparent is equal whatever colour sits
+// under the transparency, because that colour is never shown and never
+// written.  The screen buffer holds real RGBA, so it can disagree in those
+// invisible bytes; every comparison goes through gif_pixel_same(), so it never
+// notices.
+//
+// CROPPING
+// --------
+//
+// If a frame is drawn with disposal 1 - leave it in place - over a screen, and
+// its rectangle covers every pixel in which it differs from that screen, then
+// after drawing it the screen holds that frame.  By induction the screen is
+// always right.
+//
+// MASKING
+// -------
+//
+// Inside that rectangle, a pixel equal to the screen need not be written at
+// all: the transparent index leaves what is already there, which is the pixel
+// wanted.  So the planner writes the transparent index for every such pixel.
+// It costs one palette entry and buys long runs of a single index, which is
+// what the LZW stream is good at.  On a 358-frame animation this is the
+// difference between 2.03x the original encoder's size and 1.06x.
+//
+// Masking is decided for the whole canvas at plan time, before the frame's
+// rectangle is known - the rectangle depends on the frame that follows, which
+// has not been read yet.  That is harmless: the rectangle is always a subset,
+// so a decision made outside it is never written.  It can reserve the
+// transparent entry for a frame whose rectangle turns out to contain no masked
+// pixel, which costs one of the 256 colours and nothing else.
+//
+// THE ONE HOLE
+// ------------
+//
+// Painting cannot make an opaque pixel transparent.  GIF has no eraser except
+// disposal 2, which blanks exactly the rectangle of the frame carrying it.  So
+// where a frame needs a pixel see-through that the screen has opaque, the
+// previous frame is grown to cover what must be erased and given disposal 2.
+// Writing the whole canvas would also be correct and is what this codec did
+// before; on a 358-frame animation with a fading element it cost 89
+// full-canvas frames and 94% of the output.
+//
+// Nothing has to be grown to repaint the hole.  The frame after a disposal 2
+// is compared against the screen *after* that disposal, so whatever the hole
+// must show is a difference, and cropping picks it up on its own.  What the
+// hole should leave transparent is not a difference, and is left alone.
 //
 // The same test applies to the wrap from the last frame back to the first,
 // because a loop makes that a transition like any other, and a first frame
@@ -218,7 +279,12 @@ static gif_rect_t gif_rect_union(gif_rect_t a, gif_rect_t b) {
 }
 
 /**
- * Where `cur` needs a pixel transparent that `prev` has opaque, as a rectangle.
+ * Where `cur` needs a pixel transparent that the screen has opaque, as a
+ * rectangle.
+ *
+ * `prev` is the screen as it stands once the frame before `cur` has been
+ * painted, which is that frame: disposal has not happened yet, because what
+ * this answers is what the disposal has to be.
  *
  * A non-empty answer means the transition cannot be written as a patch alone:
  * painting cannot erase.  The rectangle is what has to be cleared, and clearing
@@ -264,16 +330,19 @@ static bool gif_clear_needed(const uint8_t * prev, size_t prev_stride,
 }
 
 /**
- * The smallest rectangle covering every pixel where `cur` differs from `prev`.
+ * The smallest rectangle covering every pixel where `cur` differs from the
+ * screen.
  *
- * Two pixels are the same when the encoder would store the same thing for
- * both: both transparent, or the same three colour bytes.  Comparing the raw
- * RGBA instead would call two transparent pixels different because of colour
- * nothing will ever show, and crop nothing.
+ * `prev` is the screen as it stands when `cur` is about to be painted, after
+ * the previous frame's disposal.  That is what makes the disposal 2 case fall
+ * out rather than needing a correction: a blanked pixel that must show
+ * something differs from the hole and is inside the answer; one that must stay
+ * blank does not and is not.
  *
- * A frame identical to the one before it has no changed pixels at all, and
- * gets a one-pixel rectangle: GIF has no zero-sized image block, and one pixel
- * repainted its own colour is the cheapest way to say "nothing happened".
+ * A frame identical to what is already on screen has no changed pixels at all,
+ * and gets a one-pixel rectangle: GIF has no zero-sized image block, and one
+ * pixel repainted its own colour is the cheapest way to say "nothing
+ * happened".
  */
 static gif_rect_t gif_changed_rect(const uint8_t * prev, size_t prev_stride,
     const uint8_t * cur, size_t cur_stride, uint32_t w, uint32_t h,
@@ -284,18 +353,8 @@ static gif_rect_t gif_changed_rect(const uint8_t * prev, size_t prev_stride,
     const uint8_t * p = prev + (size_t)y * prev_stride;
     const uint8_t * c = cur + (size_t)y * cur_stride;
     for (uint32_t x = 0; x < w; x++) {
-      const uint8_t * pp = p + (size_t)x * 4u;
-      const uint8_t * cc = c + (size_t)x * 4u;
-      const bool pt = gif_pixel_transparent(pp, alpha_threshold, NULL);
-      const bool ct = gif_pixel_transparent(cc, alpha_threshold, NULL);
-      bool same;
-      if (pt || ct) {
-        same = pt && ct;
-      }
-      else {
-        same = pp[0] == cc[0] && pp[1] == cc[1] && pp[2] == cc[2];
-      }
-      if (same) {
+      if (gif_pixel_same(p + (size_t)x * 4u, c + (size_t)x * 4u,
+              alpha_threshold)) {
         continue;
       }
       any = true;
@@ -343,51 +402,43 @@ typedef struct {
 
 
 /**
- * Collect a raster's distinct colours into a palette and index every pixel.
+ * Collect a frame's distinct colours into a palette and index every pixel.
  *
- * Transparent pixels all take one reserved index, so a frame that uses
- * transparency has 255 colours available rather than 256.
+ * `pixels` is the frame as it should look, and `screen` what the logical
+ * screen holds where it is about to be drawn - or NULL when nothing is known
+ * to be there, which is the first frame of a document.  A pixel equal to the
+ * screen is written as the transparent index rather than as its own colour,
+ * because leaving the screen showing through produces the pixel wanted and
+ * costs one index instead of a colour; see "Frame optimization" above.
+ *
+ * Transparent pixels - masked or genuine - all take one reserved index, so a
+ * frame that uses transparency has 255 colours available rather than 256.
  */
-static GIMG_Result gif_plan_frame(const GIMG_Raster * raster,
+static GIMG_Result gif_plan_frame_once(const uint8_t * pixels, size_t stride,
+    uint32_t width, uint32_t height, const uint8_t * screen,
     const GIMG_Allocator * alloc, uint16_t alpha_threshold,
     gif_frame_plan_t * plan) {
-  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
-  if (!fmt || fmt->layout != GIMG_LAYOUT_INTERLEAVED ||
-      fmt->channel_count != 4u || fmt->bits_per_channel[0] != 8u) {
-    // Every decode in this library hands back RGBA8; anything else reaching
-    // here is a raster the caller built, and converting it is not this
-    // codec's job.
-    return GIMG_ERR_UNSUPPORTED;
-  }
-  const uint32_t width = gimg_raster_width(raster);
-  const uint32_t height = gimg_raster_height(raster);
-  if (width == 0u || height == 0u || width > 0xFFFFu || height > 0xFFFFu) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
-
-  size_t pixels = 0;
-  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &pixels)) {
+  size_t pixel_count = 0;
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &pixel_count)) {
     return GIMG_ERR_LIMIT;
   }
-  plan->indices = (unsigned char *)gimg_malloc(alloc, pixels);
+  plan->indices = (unsigned char *)gimg_malloc(alloc, pixel_count);
   if (!plan->indices) {
     return GIMG_ERR_OOM;
   }
+  const size_t screen_stride = (size_t)width * 4u;
 
-  const uint8_t * base =
-      (const uint8_t *)gimg_raster_pixels_const(raster);
-  const size_t stride = gimg_raster_stride_bytes(raster);
-
-  // A first pass settles whether any pixel is transparent, because that
-  // decides which index the colours start at: the transparent one has to be a
-  // real entry in the table and cannot also be a colour.
+  // A first pass settles whether any pixel will be stored as transparent,
+  // because that decides which index the colours start at: the transparent one
+  // has to be a real entry in the table and cannot also be a colour.
   bool needs_transparent = false;
   for (uint32_t y = 0; y < height && !needs_transparent; y++) {
-    const uint8_t * row = base + (size_t)y * stride;
+    const uint8_t * row = pixels + (size_t)y * stride;
+    const uint8_t * ref = screen ? screen + (size_t)y * screen_stride : NULL;
     for (uint32_t x = 0; x < width; x++) {
+      const uint8_t * px = row + (size_t)x * 4u;
       bool refused = false;
-      if (gif_pixel_transparent(row + (size_t)x * 4u, alpha_threshold,
-              &refused)) {
+      if (gif_pixel_transparent(px, alpha_threshold, &refused)) {
         needs_transparent = true;
         break;
       }
@@ -395,6 +446,10 @@ static GIMG_Result gif_plan_frame(const GIMG_Raster * raster,
         gimg_free(alloc, plan->indices);
         plan->indices = NULL;
         return GIMG_ERR_UNSUPPORTED;
+      }
+      if (ref && gif_pixel_same(px, ref + (size_t)x * 4u, alpha_threshold)) {
+        needs_transparent = true;
+        break;
       }
     }
   }
@@ -421,16 +476,20 @@ static GIMG_Result gif_plan_frame(const GIMG_Raster * raster,
   }
 
   for (uint32_t y = 0; y < height; y++) {
-    const uint8_t * row = base + (size_t)y * stride;
+    const uint8_t * row = pixels + (size_t)y * stride;
+    const uint8_t * ref = screen ? screen + (size_t)y * screen_stride : NULL;
     for (uint32_t x = 0; x < width; x++) {
       const uint8_t * px = row + (size_t)x * 4u;
       bool refused = false;
-      const bool transparent =
-          gif_pixel_transparent(px, alpha_threshold, &refused);
+      bool transparent = gif_pixel_transparent(px, alpha_threshold, &refused);
       if (refused) {
         gimg_free(alloc, plan->indices);
         plan->indices = NULL;
         return GIMG_ERR_UNSUPPORTED;
+      }
+      if (!transparent && ref &&
+          gif_pixel_same(px, ref + (size_t)x * 4u, alpha_threshold)) {
+        transparent = true;
       }
       if (transparent) {
         plan->indices[(size_t)y * width + x] = 0u;
@@ -460,6 +519,206 @@ static GIMG_Result gif_plan_frame(const GIMG_Raster * raster,
   if (plan->palette_count == 0u) {
     // Every pixel was transparent: the table still needs its one entry.
     plan->palette_count = 1u;
+  }
+  return GIMG_OK;
+}
+
+/**
+ * gif_plan_frame_once(), and without masking if masking is what did not fit.
+ *
+ * Masking spends a palette entry on the transparent index.  A frame of exactly
+ * 256 colours has none to spare, so a frame that would have been written
+ * before masking existed must still be written now: the answer is to write it
+ * the long way, with every pixel its own colour, rather than to refuse it.
+ *
+ * Masking usually *reduces* the colour count, because a masked pixel
+ * contributes no colour, so this is reached only by a frame that both fills
+ * the table with pixels that changed and has at least one that did not.  The
+ * retry costs a second pass over a frame that is about to be refused anyway
+ * when the colours are genuinely too many.
+ */
+static GIMG_Result gif_plan_frame(const uint8_t * pixels, size_t stride,
+    uint32_t width, uint32_t height, const uint8_t * screen,
+    const GIMG_Allocator * alloc, uint16_t alpha_threshold,
+    gif_frame_plan_t * plan) {
+  const GIMG_Result r = gif_plan_frame_once(
+      pixels, stride, width, height, screen, alloc, alpha_threshold, plan);
+  if (r != GIMG_ERR_UNSUPPORTED || !screen) {
+    return r;
+  }
+  return gif_plan_frame_once(
+      pixels, stride, width, height, NULL, alloc, alpha_threshold, plan);
+}
+
+// ---------------------------------------------------------------------------
+// The Global Color Table
+// ---------------------------------------------------------------------------
+//
+// 89a 18 lets one table serve every frame.  This writer used to decline it and
+// give each frame a table of its own, on the grounds that two frames of an
+// animation rarely share a palette.  Measured on the 19 multi-frame files in
+// the test corpus that turned out to be wrong: 17 of them use 255 colours or
+// fewer across *every* frame, and their per-frame tables are 2% to 29% of the
+// file.  A twelve-frame spinner of sixteen colours was spending 576 bytes of
+// 1964 on twelve copies of the same table.
+//
+// So the frames are walked once before anything is written, to collect the
+// colours they use between them.  If they fit one table, that table is written
+// once and no frame carries its own; if they do not, nothing is written and
+// every frame carries its own exactly as before.
+//
+// The walk costs one extra decode of each frame - about a quarter again on
+// the slowest file in the corpus - and is skipped for a single-frame document,
+// where one global table and one local table are the same size and the
+// question does not arise.
+//
+// It is an upper bound rather than the exact answer: it counts the colours in
+// the frames as handed over, and masking will only ever remove some.  A bound
+// is what is wanted, because a table that is large enough stays large enough.
+
+/** Colours to leave for the frames, after index 0 is reserved transparent. */
+#define GIMG_GIF_GLOBAL_MAX (GIMG_GIF_MAX_PALETTE - 1u)
+
+/**
+ * Collect every colour every frame uses, if they fit in one table.
+ *
+ * Index 0 is kept for transparency whether or not any frame turns out to need
+ * it.  Nearly every frame after the first does - that is what masking is - and
+ * a table cannot be extended once it is written.
+ *
+ * @return false when they do not fit, when a frame cannot be read, or when a
+ *   pixel is partly transparent with no threshold to round it by.  All three
+ *   mean "write local tables instead"; the last is refused for real by the
+ *   main pass, which reaches the same pixel and reports it.
+ */
+static bool gif_collect_global_palette(const GIMG_Doc * doc,
+    size_t frame_count, uint32_t canvas_w, uint32_t canvas_h,
+    uint16_t alpha_threshold, gif_color_lut_t * lut,
+    gimg_gif_rgb_t * palette, uint16_t * out_count) {
+  gif_lut_init(lut);
+  uint16_t next_index = 1u; // 0 is the transparent one.
+  palette[0].r = 0u;
+  palette[0].g = 0u;
+  palette[0].b = 0u;
+
+  for (size_t i = 0; i < frame_count; i++) {
+    GIMG_Item * item = gimg_doc_item((GIMG_Doc *)doc, i);
+    if (!item) {
+      return false;
+    }
+    GIMG_Raster * raster = gimg_item_raster(item);
+    bool owned = false;
+    if (!raster) {
+      if (gimg_item_decode(item, NULL, &raster) != GIMG_OK || !raster) {
+        return false;
+      }
+      owned = true;
+    }
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    bool ok = fmt && fmt->layout == GIMG_LAYOUT_INTERLEAVED &&
+        fmt->channel_count == 4u && fmt->bits_per_channel[0] == 8u &&
+        gimg_raster_width(raster) == canvas_w &&
+        gimg_raster_height(raster) == canvas_h;
+    if (ok) {
+      const uint8_t * base =
+          (const uint8_t *)gimg_raster_pixels_const(raster);
+      const size_t stride = gimg_raster_stride_bytes(raster);
+      for (uint32_t y = 0; y < canvas_h && ok; y++) {
+        const uint8_t * row = base + (size_t)y * stride;
+        for (uint32_t x = 0; x < canvas_w; x++) {
+          const uint8_t * px = row + (size_t)x * 4u;
+          bool refused = false;
+          if (gif_pixel_transparent(px, alpha_threshold, &refused)) {
+            continue; // Index 0, already reserved.
+          }
+          if (refused) {
+            ok = false;
+            break;
+          }
+          const uint32_t key = gif_rgb_key(px);
+          uint8_t found = 0u;
+          if (gif_lut_get(lut, key, &found)) {
+            continue;
+          }
+          if (!gif_lut_put(lut, key, (uint8_t)next_index,
+                  GIMG_GIF_GLOBAL_MAX)) {
+            ok = false; // More colours between them than one table can hold.
+            break;
+          }
+          palette[next_index].r = px[0];
+          palette[next_index].g = px[1];
+          palette[next_index].b = px[2];
+          next_index++;
+        }
+      }
+    }
+    if (owned) {
+      gimg_raster_destroy(raster);
+    }
+    if (!ok) {
+      return false;
+    }
+  }
+  *out_count = next_index;
+  return true;
+}
+
+/**
+ * Index a frame against a table it is already known to fit.
+ *
+ * The same work gif_plan_frame() does, without the part that builds a palette:
+ * every colour is in the global table by construction, because the table was
+ * collected from these very frames.  A pixel equal to the screen, or
+ * transparent, takes index 0.
+ */
+static GIMG_Result gif_plan_frame_global(const uint8_t * pixels, size_t stride,
+    uint32_t width, uint32_t height, const uint8_t * screen,
+    const GIMG_Allocator * alloc, uint16_t alpha_threshold,
+    const gif_color_lut_t * lut, gif_frame_plan_t * plan) {
+  size_t pixel_count = 0;
+  if (!gcu_safe_mul_size((size_t)width, (size_t)height, &pixel_count)) {
+    return GIMG_ERR_LIMIT;
+  }
+  plan->indices = (unsigned char *)gimg_malloc(alloc, pixel_count);
+  if (!plan->indices) {
+    return GIMG_ERR_OOM;
+  }
+  const size_t screen_stride = (size_t)width * 4u;
+  plan->palette_count = 0u; // The frame carries no table of its own.
+  plan->transparent_index = 0u;
+  plan->has_transparency = false;
+
+  for (uint32_t y = 0; y < height; y++) {
+    const uint8_t * row = pixels + (size_t)y * stride;
+    const uint8_t * ref = screen ? screen + (size_t)y * screen_stride : NULL;
+    for (uint32_t x = 0; x < width; x++) {
+      const uint8_t * px = row + (size_t)x * 4u;
+      bool refused = false;
+      bool clear = gif_pixel_transparent(px, alpha_threshold, &refused);
+      if (refused) {
+        gimg_free(alloc, plan->indices);
+        plan->indices = NULL;
+        return GIMG_ERR_UNSUPPORTED;
+      }
+      if (!clear && ref &&
+          gif_pixel_same(px, ref + (size_t)x * 4u, alpha_threshold)) {
+        clear = true;
+      }
+      if (clear) {
+        plan->indices[(size_t)y * width + x] = 0u;
+        plan->has_transparency = true;
+        continue;
+      }
+      uint8_t index = 0u;
+      if (!gif_lut_get(lut, gif_rgb_key(px), &index)) {
+        // Unreachable: the table was collected from these frames.  Refusing
+        // beats writing an index that names the wrong colour.
+        gimg_free(alloc, plan->indices);
+        plan->indices = NULL;
+        return GIMG_ERR_INTERNAL;
+      }
+      plan->indices[(size_t)y * width + x] = index;
+    }
   }
   return GIMG_OK;
 }
@@ -703,16 +962,22 @@ static GIMG_Result gif_compress_indices(const GIMG_Allocator * alloc,
  *
  * `plan` covers the whole canvas; `rect` says which part of it to write.  The
  * indices are cropped here rather than by the planner, because which rectangle
- * a frame needs is not known until the frame after it has been looked at, and
- * the palette is the frame's own either way.
+ * a frame needs is not known until the frame after it has been looked at.
+ *
+ * A `plan` whose palette_count is zero is indexed against the Global Color
+ * Table: no local table is written, and `global_count` says how wide the
+ * indices are.
  */
 static GIMG_Result gif_emit_frame(GIMG_Stream * stream,
     const GIMG_Allocator * alloc, const gif_frame_plan_t * plan,
     gif_rect_t rect, uint32_t canvas_w, uint32_t canvas_h,
-    unsigned char disposal, uint16_t delay_cs, bool interlace) {
+    unsigned char disposal, uint16_t delay_cs, bool interlace,
+    uint16_t global_count) {
   (void)canvas_h;
-  const uint8_t bits = gif_table_bits(plan->palette_count);
-  const uint8_t min_code_size = gif_min_code_size(plan->palette_count);
+  const bool local = plan->palette_count != 0u;
+  const uint16_t table_count = local ? plan->palette_count : global_count;
+  const uint8_t bits = gif_table_bits(table_count);
+  const uint8_t min_code_size = gif_min_code_size(table_count);
 
   // A Graphic Control Extension is written when the frame needs one: to carry
   // a delay, to name the transparent index, or to say how to dispose of it.
@@ -745,11 +1010,11 @@ static GIMG_Result gif_emit_frame(GIMG_Stream * stream,
     r = gif_write_u16(stream, (uint16_t)rect.h);
   }
   if (r == GIMG_OK) {
-    const unsigned char packed =
-        (unsigned char)(0x80u | (interlace ? 0x40u : 0x00u) | bits);
+    const unsigned char packed = (unsigned char)((local ? 0x80u : 0x00u) |
+        (interlace ? 0x40u : 0x00u) | (local ? bits : 0u));
     r = gif_write(stream, &packed, 1u);
   }
-  if (r == GIMG_OK) {
+  if (r == GIMG_OK && local) {
     r = gif_write_table(stream, plan->palette, plan->palette_count, bits);
   }
   if (r != GIMG_OK) {
@@ -837,13 +1102,29 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return GIMG_ERR_UNSUPPORTED;
   }
 
+  // One table for every frame when the frames fit one, which is the common
+  // case for an animation and saves a copy of the table per frame; otherwise
+  // none, and each frame carries its own.  89a 18 makes it optional.
+  gif_color_lut_t global_lut;
+  gimg_gif_rgb_t global_palette[GIMG_GIF_MAX_PALETTE];
+  uint16_t global_count = 0u;
+  const bool use_global = frame_count > 1u &&
+      gif_collect_global_palette(doc, frame_count, canvas_w, canvas_h,
+          alpha_threshold, &global_lut, global_palette, &global_count);
+  if (frame_count > 1u && doc->loaded_by_codec == codec && doc->codec_private) {
+    // The walk above left this document's canvas cache at the last frame it
+    // touched, and the encoding pass below starts again at the first.  The
+    // cache only moves forward, so left alone it would help nothing and every
+    // frame would replay from the beginning: 110 seconds instead of 4.3 on a
+    // 358-frame animation.  Nothing else in the library walks a document
+    // twice, which is why this is the one place that has to say so.
+    gimg_gif_cache_reset((gimg_gif_doc_state_t *)doc->codec_private);
+  }
+
   GIMG_Result r = gif_write(stream, "GIF89a", 6u);
   if (r != GIMG_OK) {
     return r;
   }
-  // No Global Color Table: each frame carries its own, because two frames of
-  // an animation rarely share one and a global table that fits neither is
-  // wasted bytes.  89a 18 makes it optional.
   r = gif_write_u16(stream, (uint16_t)canvas_w);
   if (r == GIMG_OK) {
     r = gif_write_u16(stream, (uint16_t)canvas_h);
@@ -852,10 +1133,18 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return r;
   }
   {
-    // Packed field, background index, aspect ratio.  No global table, so the
-    // background index names nothing and is written as zero.
+    // Packed field, background index, aspect ratio.  The background index
+    // names entry 0, which is the transparent one when there is a global
+    // table and nothing at all when there is not.
+    const uint8_t global_bits = gif_table_bits(global_count);
     unsigned char tail[3] = {0x70u, 0x00u, 0x00u};
+    if (use_global) {
+      tail[0] = (unsigned char)(0x80u | 0x70u | global_bits);
+    }
     r = gif_write(stream, tail, sizeof(tail));
+    if (r == GIMG_OK && use_global) {
+      r = gif_write_table(stream, global_palette, global_count, global_bits);
+    }
     if (r != GIMG_OK) {
       return r;
     }
@@ -886,6 +1175,13 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   // the frame after it needs a cleared screen, so nothing can be emitted until
   // the next one has been looked at.  `held` is the frame planned but not yet
   // written, and `held_rect` the rectangle it would use if no clear is needed.
+  //
+  // `screen` is what the logical screen holds, and the order inside the loop
+  // exists to keep it honest: a frame is emitted, the screen is advanced past
+  // it and past its disposal, and only then is the next frame cropped and
+  // planned against it.  Doing either of those first would measure the frame
+  // against its predecessor instead of against the screen, which differs
+  // exactly where disposal 2 has blanked something.
   gif_frame_plan_t held;
   memset(&held, 0, sizeof(held));
   bool holding = false;
@@ -894,14 +1190,21 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   uint8_t * prev_rgba = NULL;
   uint8_t * first_rgba = NULL;
   const size_t canvas_bytes = (size_t)canvas_w * (size_t)canvas_h * 4u;
+  const size_t flat = (size_t)canvas_w * 4u;
+
+  uint8_t * screen = (uint8_t *)gimg_malloc(alloc, canvas_bytes);
+  if (!screen) {
+    return GIMG_ERR_OOM;
+  }
+  // 89a 18 gives the logical screen a background colour and no decoder in use
+  // paints it; an empty screen is what a viewer actually shows.
+  memset(screen, 0, canvas_bytes);
 
   for (size_t i = 0; i <= frame_count; i++) {
     // One extra turn, to flush the frame still held after the last one.
     const bool flushing = i == frame_count;
 
     uint8_t * cur_rgba = NULL;
-    gif_frame_plan_t plan;
-    memset(&plan, 0, sizeof(plan));
     uint16_t delay_cs = 0u;
 
     if (!flushing) {
@@ -919,13 +1222,22 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         }
         owned = true;
       }
-      if (gimg_raster_width(raster) != canvas_w ||
-          gimg_raster_height(raster) != canvas_h) {
-        if (owned) {
-          gimg_raster_destroy(raster);
+      {
+        // Every decode in this library hands back RGBA8; anything else
+        // reaching here is a raster the caller built, and converting it is not
+        // this codec's job.
+        const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+        const bool usable = fmt && fmt->layout == GIMG_LAYOUT_INTERLEAVED &&
+            fmt->channel_count == 4u && fmt->bits_per_channel[0] == 8u &&
+            gimg_raster_width(raster) == canvas_w &&
+            gimg_raster_height(raster) == canvas_h;
+        if (!usable) {
+          if (owned) {
+            gimg_raster_destroy(raster);
+          }
+          r = GIMG_ERR_UNSUPPORTED;
+          goto done;
         }
-        r = GIMG_ERR_UNSUPPORTED;
-        goto done;
       }
 
       // A flat copy of the frame's pixels, kept so the next frame can be
@@ -943,18 +1255,11 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
             (const uint8_t *)gimg_raster_pixels_const(raster);
         const size_t stride = gimg_raster_stride_bytes(raster);
         for (uint32_t y = 0; y < canvas_h; y++) {
-          memcpy(cur_rgba + (size_t)y * canvas_w * 4u, base + (size_t)y * stride,
-              (size_t)canvas_w * 4u);
+          memcpy(cur_rgba + (size_t)y * flat, base + (size_t)y * stride, flat);
         }
       }
-
-      r = gif_plan_frame(raster, alloc, alpha_threshold, &plan);
       if (owned) {
         gimg_raster_destroy(raster);
-      }
-      if (r != GIMG_OK) {
-        gimg_free(alloc, cur_rgba);
-        goto done;
       }
 
       uint16_t delay_num = 0, delay_den = 0;
@@ -966,15 +1271,15 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
 
     if (holding) {
-      // What the held frame has to do for the one that follows it. On the
+      // What the held frame has to do for the one that follows it.  On the
       // flushing turn that is the wrap back to frame 0, which a loop makes a
-      // transition like any other.
+      // transition like any other.  The screen at this point holds the frame
+      // before the held one; painting the held one makes it `prev_rgba`, which
+      // is what the comparison below is against.
       const uint8_t * next_rgba = flushing ? first_rgba : cur_rgba;
-      const size_t flat = (size_t)canvas_w * 4u;
       bool clear_after = false;
       gif_rect_t clear_rect = {0u, 0u, 0u, 0u};
       gif_rect_t emit_rect = held_rect;
-      gif_rect_t next_rect = {0u, 0u, canvas_w, canvas_h};
       if (next_rgba && frame_count > 1u) {
         clear_after = gif_clear_needed(prev_rgba, flat, next_rgba, flat,
             canvas_w, canvas_h, alpha_threshold, &clear_rect);
@@ -983,45 +1288,65 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           // erases exactly this frame's rectangle and nothing else.
           emit_rect = gif_rect_union(held_rect, clear_rect);
         }
-        if (!flushing) {
-          next_rect = gif_changed_rect(prev_rgba, flat, next_rgba, flat,
-              canvas_w, canvas_h, alpha_threshold);
-          if (clear_after) {
-            // Everything just blanked has to be painted again by the frame
-            // that follows, or it stays blank.
-            next_rect = gif_rect_union(next_rect, emit_rect);
-          }
-        }
       }
       const unsigned char disposal = (unsigned char)(frame_count <= 1u ? 0u
               : clear_after                                            ? 2u
                                                                        : 1u);
       r = gif_emit_frame(stream, alloc, &held, emit_rect, canvas_w, canvas_h,
-          disposal, held_delay, interlace);
+          disposal, held_delay, interlace, global_count);
       gimg_free(alloc, held.indices);
       memset(&held, 0, sizeof(held));
       holding = false;
       if (r != GIMG_OK) {
         gimg_free(alloc, cur_rgba);
-        gimg_free(alloc, plan.indices);
         goto done;
       }
-      held_rect = next_rect;
-    }
-    else if (!flushing) {
-      // The first frame is always the whole screen: there is nothing before
-      // it to patch.
-      held_rect.x = 0u;
-      held_rect.y = 0u;
-      held_rect.w = canvas_w;
-      held_rect.h = canvas_h;
+
+      // Advance the screen past the frame just written and past its disposal.
+      // The frame is on the screen whole: its rectangle covered everything it
+      // changed, and the pixels it left transparent were the ones already
+      // right.  Disposal 2 then blanks its rectangle (89a 23).
+      memcpy(screen, prev_rgba, canvas_bytes);
+      if (clear_after) {
+        for (uint32_t y = 0; y < emit_rect.h; y++) {
+          memset(screen + (size_t)(emit_rect.y + y) * flat +
+                  (size_t)emit_rect.x * 4u,
+              0, (size_t)emit_rect.w * 4u);
+        }
+      }
     }
 
     if (flushing) {
       gimg_free(alloc, cur_rgba);
       break;
     }
-    held = plan;
+
+    if (i == 0u) {
+      // The first frame is written whole.  Cropping it to the pixels it draws
+      // would also be correct - the wrap check below clears whatever the last
+      // frame left where this one is transparent - but a first frame covering
+      // the logical screen is what every file in the wild does, and it is what
+      // decoders that paint the background colour under it need.
+      held_rect.x = 0u;
+      held_rect.y = 0u;
+      held_rect.w = canvas_w;
+      held_rect.h = canvas_h;
+    }
+    else {
+      held_rect = gif_changed_rect(
+          screen, flat, cur_rgba, flat, canvas_w, canvas_h, alpha_threshold);
+    }
+    // At i == 0 the screen is empty, so masking against it marks exactly the
+    // pixels that are transparent anyway.
+    r = use_global
+        ? gif_plan_frame_global(cur_rgba, flat, canvas_w, canvas_h, screen,
+              alloc, alpha_threshold, &global_lut, &held)
+        : gif_plan_frame(cur_rgba, flat, canvas_w, canvas_h, screen, alloc,
+              alpha_threshold, &held);
+    if (r != GIMG_OK) {
+      gimg_free(alloc, cur_rgba);
+      goto done;
+    }
     held_delay = delay_cs;
     holding = true;
     if (i == 0u) {
@@ -1041,6 +1366,7 @@ done:
     gimg_free(alloc, prev_rgba);
   }
   gimg_free(alloc, first_rgba);
+  gimg_free(alloc, screen);
   gimg_free(alloc, held.indices);
   if (r != GIMG_OK) {
     return r;

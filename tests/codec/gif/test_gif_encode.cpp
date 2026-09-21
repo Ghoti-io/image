@@ -367,10 +367,28 @@ Rgba patch_changed(uint32_t x, uint32_t y) {
   return patch_base(x, y);
 }
 
-/** Every image block in a GIF, as position and size. */
+/** Every image block in a GIF, as position and size, plus its control block. */
 struct Block {
   uint32_t x, y, w, h;
+  /** Whether the image descriptor carried a Local Color Table. */
+  bool local_table;
+  /** The Graphic Control Extension packed field, or 0 when there was none. */
+  uint8_t gce;
+  bool transparent() const {
+    return (gce & 0x01u) != 0u;
+  }
+  uint8_t disposal() const {
+    return static_cast<uint8_t>((gce >> 2) & 0x07u);
+  }
 };
+
+/** Entries in the Global Color Table, or 0 when the file has none. */
+uint32_t global_table_entries(const std::vector<uint8_t> & bytes) {
+  if (bytes.size() < 13u || !(bytes[10] & 0x80u)) {
+    return 0u;
+  }
+  return 1u << ((bytes[10] & 7u) + 1u);
+}
 
 std::vector<Block> image_blocks(const std::vector<uint8_t> & bytes) {
   std::vector<Block> out;
@@ -381,11 +399,15 @@ std::vector<Block> image_blocks(const std::vector<uint8_t> & bytes) {
   auto u16 = [&bytes](size_t at) {
     return uint32_t(bytes[at]) | (uint32_t(bytes[at + 1]) << 8);
   };
+  uint8_t pending_gce = 0u;
   while (i < bytes.size()) {
     if (bytes[i] == 0x3Bu) {
       break;
     }
     if (bytes[i] == 0x21u) {
+      if (bytes[i + 1u] == 0xF9u && i + 3u < bytes.size()) {
+        pending_gce = bytes[i + 3u];
+      }
       i += 2u;
       while (i < bytes.size() && bytes[i] != 0u) {
         i += 1u + bytes[i];
@@ -393,9 +415,11 @@ std::vector<Block> image_blocks(const std::vector<uint8_t> & bytes) {
       i += 1u;
     }
     else if (bytes[i] == 0x2Cu) {
-      out.push_back(
-          Block{u16(i + 1u), u16(i + 3u), u16(i + 5u), u16(i + 7u)});
-      const uint8_t packed = bytes[i + 9u];
+      const uint8_t descriptor = bytes[i + 9u];
+      out.push_back(Block{u16(i + 1u), u16(i + 3u), u16(i + 5u), u16(i + 7u),
+          (descriptor & 0x80u) != 0u, pending_gce});
+      pending_gce = 0u;
+      const uint8_t packed = descriptor;
       i += 10u;
       if (packed & 0x80u) {
         i += size_t(3) << ((packed & 7u) + 1u);
@@ -464,6 +488,254 @@ TEST(GifEncode, AnUnchangedFrameCostsOnePixel) {
   ASSERT_EQ(blocks.size(), 2u);
   EXPECT_EQ(blocks[1].w, 1u);
   EXPECT_EQ(blocks[1].h, 1u);
+}
+
+namespace {
+
+/** A field whose corners alone change between frames. */
+Rgba corners_base(uint32_t x, uint32_t y) {
+  return Rgba{static_cast<uint8_t>(20u + (x % 7u) * 15u),
+      static_cast<uint8_t>(30u + (y % 6u) * 18u), 120u, 255};
+}
+
+Rgba corners_changed(uint32_t x, uint32_t y) {
+  const bool corner = (x == 1u && y == 1u) || (x == 22u && y == 14u);
+  return corner ? Rgba{255u, 0u, 255u, 255u} : corners_base(x, y);
+}
+
+} // namespace
+
+TEST(GifEncode, UnchangedPixelsInsideAFrameAreWrittenAsTransparent) {
+  // Cropping cannot help when the two pixels that changed are at opposite
+  // corners: the rectangle has to span almost the whole canvas.  What makes
+  // that cheap is that everything inside it which did *not* change is written
+  // as the transparent index, so the screen shows through and the code stream
+  // becomes a run of one index.
+  //
+  // The signature is that the second frame declares a transparent index even
+  // though the raster handed to the encoder has no transparent pixel in it.
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(24, 16, corners_base));
+  frames.push_back(make_raster(24, 16, corners_changed));
+  for (GIMG_Raster * f : frames) {
+    ASSERT_NE(f, nullptr);
+  }
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes), GIMG_OK);
+
+  const std::vector<Block> blocks = image_blocks(bytes);
+  ASSERT_EQ(blocks.size(), 2u);
+  EXPECT_EQ(blocks[1].x, 1u);
+  EXPECT_EQ(blocks[1].y, 1u);
+  EXPECT_EQ(blocks[1].w, 22u);
+  EXPECT_EQ(blocks[1].h, 14u);
+  EXPECT_TRUE(blocks[1].transparent())
+      << "the frame spans the canvas and is opaque; without masking there is "
+         "nothing for a transparent index to be for";
+  // Leaving the screen showing through is only correct if the screen holds
+  // what it should, so the frames go to outside decoders to composite.
+  publish("masked_24x16.gif", bytes,
+      {expectation(24, 16, corners_base),
+          expectation(24, 16, corners_changed)});
+}
+
+TEST(GifEncode, FramesThatShareAPaletteShareOneTable) {
+  // 89a 18 lets one table serve every frame, and this writer used to decline
+  // it.  For a short animation of few colours that was most of the file: a
+  // twelve-frame spinner of sixteen colours spent 576 of its 1964 bytes on
+  // twelve copies of the same table.
+  std::vector<GIMG_Raster *> frames;
+  for (int i = 0; i < 4; i++) {
+    frames.push_back(make_raster(24, 16,
+        i % 2 == 0 ? patch_base : patch_changed));
+  }
+  for (GIMG_Raster * f : frames) {
+    ASSERT_NE(f, nullptr);
+  }
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes), GIMG_OK);
+
+  EXPECT_GT(global_table_entries(bytes), 0u) << "no Global Color Table";
+  const std::vector<Block> blocks = image_blocks(bytes);
+  ASSERT_EQ(blocks.size(), 4u);
+  for (size_t i = 0; i < blocks.size(); i++) {
+    EXPECT_FALSE(blocks[i].local_table)
+        << "frame " << i << " carries a table of its own as well";
+  }
+  publish("global_table_24x16.gif", bytes,
+      {expectation(24, 16, patch_base), expectation(24, 16, patch_changed),
+          expectation(24, 16, patch_base),
+          expectation(24, 16, patch_changed)});
+}
+
+TEST(GifEncode, ASingleFrameGetsNoGlobalTable) {
+  // One global table and one local table are the same size, so there is
+  // nothing to win and the walk that would find out is skipped.
+  std::vector<uint8_t> bytes;
+  GIMG_Raster * raster = make_raster(16, 8, sixteen);
+  ASSERT_NE(raster, nullptr);
+  ASSERT_EQ(save_raster(raster, nullptr, bytes), GIMG_OK);
+  EXPECT_EQ(global_table_entries(bytes), 0u);
+  const std::vector<Block> blocks = image_blocks(bytes);
+  ASSERT_EQ(blocks.size(), 1u);
+  EXPECT_TRUE(blocks[0].local_table);
+}
+
+TEST(GifEncode, FramesThatDoNotShareAPaletteKeepTheirOwnTables) {
+  // Between them these two use more colours than one table can hold, so there
+  // is no global table to write and each frame carries its own - which is
+  // what this encoder did for every animation before.
+  auto half_of_256 = [](uint32_t base) {
+    return [base](uint32_t x, uint32_t y) {
+      const uint32_t i = base + (y * 16u + x);
+      return Rgba{static_cast<uint8_t>(i), static_cast<uint8_t>(i >> 1),
+          static_cast<uint8_t>(i ^ 0x5Au), 255};
+    };
+  };
+  std::vector<GIMG_Raster *> frames;
+  for (uint32_t base : {0u, 256u}) {
+    GIMG_Raster * r = nullptr;
+    ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                  nullptr, 0, &r),
+        GIMG_OK);
+    auto * p = static_cast<uint8_t *>(gimg_raster_pixels(r));
+    const size_t stride = gimg_raster_stride_bytes(r);
+    const auto fn = half_of_256(base);
+    for (uint32_t y = 0; y < 16u; y++) {
+      for (uint32_t x = 0; x < 16u; x++) {
+        const Rgba c = fn(x, y);
+        uint8_t * px = p + y * stride + x * 4u;
+        px[0] = c.r;
+        px[1] = c.g;
+        px[2] = c.b;
+        px[3] = c.a;
+      }
+    }
+    frames.push_back(r);
+  }
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes), GIMG_OK);
+  EXPECT_EQ(global_table_entries(bytes), 0u);
+  const std::vector<Block> blocks = image_blocks(bytes);
+  ASSERT_EQ(blocks.size(), 2u);
+  for (const Block & b : blocks) {
+    EXPECT_TRUE(b.local_table);
+  }
+}
+
+TEST(GifEncode, SavingALoadedAnimationSurvivesAWarmCanvasCache) {
+  // Saving walks the frames twice - once to see whether they share a palette,
+  // once to write them - and the decoder's canvas cache only ever moves
+  // forward.  A caller who has already walked the document leaves that cache
+  // at the last frame, and the writer's own first walk leaves it there again.
+  //
+  // Getting that wrong is a performance fault rather than a wrong answer (110
+  // seconds instead of 4.3 on a 358-frame animation, before the writer began
+  // clearing the cache between its two passes), which is exactly the kind that
+  // no assertion about pixels would catch.  What this pins is the half that
+  // can be asserted: that the output is right whatever state the cache was
+  // left in.  The seven frames of the fixture use every disposal method.
+  Loaded source;
+  ASSERT_EQ(source.load("gif_10x6_disposal_cycle.gif"), GIMG_OK);
+  const size_t frames = gimg_doc_item_count(source.doc());
+  ASSERT_GT(frames, 2u);
+
+  // Walk it forward first, so the cache is parked at the end before saving.
+  std::vector<std::vector<Rgba>> expected;
+  for (size_t i = 0; i < frames; i++) {
+    ASSERT_EQ(source.decode(nullptr, i), GIMG_OK) << "frame " << i;
+    std::vector<Rgba> frame;
+    for (uint32_t y = 0; y < source.height(); y++) {
+      for (uint32_t x = 0; x < source.width(); x++) {
+        frame.push_back(source.at(x, y));
+      }
+    }
+    expected.push_back(frame);
+  }
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Report report;
+  memset(&report, 0, sizeof(report));
+  ASSERT_EQ(gimg_doc_save(source.doc(), out, "gif", nullptr, &report), GIMG_OK);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &data, &size);
+  std::vector<uint8_t> bytes(static_cast<const uint8_t *>(data),
+      static_cast<const uint8_t *>(data) + size);
+  gimg_stream_destroy(out);
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(again.doc()), frames);
+  for (size_t i = 0; i < frames; i++) {
+    ASSERT_EQ(again.decode(nullptr, i), GIMG_OK) << "frame " << i;
+    size_t at = 0;
+    for (uint32_t y = 0; y < again.height(); y++) {
+      for (uint32_t x = 0; x < again.width(); x++, at++) {
+        const Rgba got = again.at(x, y);
+        const Rgba want = expected[i][at];
+        // A pixel both sides call invisible may differ in the colour beneath.
+        if (got.a == 0u && want.a == 0u) {
+          continue;
+        }
+        EXPECT_EQ(got, want)
+            << "frame " << i << " at " << x << "," << y;
+      }
+    }
+  }
+}
+
+TEST(GifEncode, MaskingGivesUpRatherThanRefusingAFullPalette) {
+  // Masking spends a palette entry on the transparent index.  A frame of
+  // exactly 256 colours has none to spare - and such a frame was writable
+  // before masking existed, so it must still be.  The encoder falls back to
+  // writing every pixel its own colour.
+  //
+  // Reaching this needs a frame that both fills the table with pixels that
+  // changed and has at least one that did not, because masking usually
+  // *reduces* the colour count: a masked pixel contributes no colour.
+  const uint32_t w = 17u, h = 16u; // 272 pixels: 256 colours and a tail
+  auto colour_at = [](size_t i) {
+    const size_t c = i < 256u ? i : 0u;
+    return Rgba{static_cast<uint8_t>(c), static_cast<uint8_t>(255u - c),
+        static_cast<uint8_t>(c ^ 0x5Au), 255};
+  };
+  // Built by hand, because the pattern depends on the pixel's index rather
+  // than on its coordinates, which is all make_raster's callback is given.
+  auto build = [&](bool all_colours) {
+    GIMG_Raster * r = nullptr;
+    if (gimg_raster_create(w, h, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr,
+            0, &r) != GIMG_OK) {
+      return static_cast<GIMG_Raster *>(nullptr);
+    }
+    auto * base = static_cast<uint8_t *>(gimg_raster_pixels(r));
+    const size_t stride = gimg_raster_stride_bytes(r);
+    for (uint32_t y = 0; y < h; y++) {
+      for (uint32_t x = 0; x < w; x++) {
+        const size_t i = size_t(y) * w + x;
+        // The second frame is every colour; the first is flat except at the
+        // one pixel that will therefore be unchanged, and so maskable.
+        const Rgba p = (all_colours || i == 256u) ? colour_at(i)
+                                                  : Rgba{0, 0, 0, 255};
+        uint8_t * px = base + y * stride + x * 4u;
+        px[0] = p.r;
+        px[1] = p.g;
+        px[2] = p.b;
+        px[3] = p.a;
+      }
+    }
+    return r;
+  };
+  std::vector<GIMG_Raster *> frames{build(false), build(true)};
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes), GIMG_OK);
+  const std::vector<Block> blocks = image_blocks(bytes);
+  ASSERT_EQ(blocks.size(), 2u);
+  // No entry to spare, so the frame cannot claim a transparent one.
+  EXPECT_FALSE(blocks[1].transparent());
 }
 
 TEST(GifEncode, ALaterFrameIsTransparentWhereAnEarlierOneWasOpaque) {

@@ -229,6 +229,17 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 void gimg_gif_free_doc_state(GIMG_Codec * codec, void * codec_private);
 
 /**
+ * @brief Forget the cached canvas, so the next decode starts from an empty
+ *   screen.
+ *
+ * For a caller that deliberately walks the same document forward twice: the
+ * cache only moves forward, so the second walk would otherwise find it parked
+ * at the end and replay every frame from the beginning.  The GIF writer is
+ * that caller.
+ */
+void gimg_gif_cache_reset(gimg_gif_doc_state_t * state);
+
+/**
  * @brief Expand one frame's LZW code stream to one palette index per pixel.
  *
  * De-interlaces on the way out when the frame says it is interlaced, so the

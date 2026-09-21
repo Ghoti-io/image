@@ -222,6 +222,12 @@ as its guarantees:
   painted; the next frame starts from what disposal left behind (89a 23). The
   two differ for disposal 2 and 3, so the cache holds a copy that has been
   disposed of rather than the raster itself.
+- **A second forward walk gets no benefit unless the cache is cleared first.**
+  Moving only forward is what stops two walks in opposite directions from
+  dragging it back and forth, and the price is that starting over at frame 0
+  finds it at the end. The encoder is the one caller that does start over -
+  once to see whether the frames share a palette, once to write them - and it
+  clears the cache itself between the two. See "One table or many".
 - **It is the one thing decode writes through a `const` document**, and the
   mutex in `gimg_gif_doc_state_t` is what makes that safe. A single-image GIF
   is left out: there is no later frame to hand a head start to, so the cache
@@ -230,18 +236,23 @@ as its guarantees:
 
 ## Save
 
-The encoder writes GIF89a, one image block per frame, with no Global Color
-Table - every frame carries its own, which 89a 18 permits and which costs less
-than a global table that suits neither of two frames. A frame after the first
-is written as **the rectangle that changed** rather than the whole canvas; see
-"Frame optimization" below.
+The encoder writes GIF89a, one image block per frame. A frame after the first
+is written as **the rectangle that changed**, and inside that rectangle the
+pixels that did not change are written as **the transparent index**; see
+"Frame optimization" below. An animation whose frames share few enough colours
+gets **one Global Color Table** instead of one table per frame; see "One table
+or many".
 
 - **A palette is built, never chosen.** An image of 256 colours or fewer has
   exactly one palette that reproduces it, up to the order of its entries, and
   building that table stores what is already there. An image with more is
   refused with `GIMG_ERR_UNSUPPORTED` rather than quantized, because deciding
   which colours to discard is an image-processing decision and not a codec's.
-  The PNG writer in this library draws the line in the same place.
+  The PNG writer in this library draws the line in the same place. A caller
+  who wants a photograph as a GIF reduces it first with `gimg_ops_quantize()`
+  - see \ref module_palette "Palettes and colour reduction" - which hands back
+  an ordinary raster that this writer then accepts through the path above,
+  having been told nothing.
 - **Transparency is the same argument one bit down.** GIF designates a single
   index transparent and treats every other pixel as opaque (89a 23); a
   half-covered edge has nowhere to go. A partially transparent pixel is
@@ -253,64 +264,150 @@ is written as **the rectangle that changed** rather than the whole canvas; see
 - `gif_interlace` writes the four-pass order; it changes no pixel.
 - `gif_loop_count` writes the NETSCAPE2.0 Application Extension, and is
   written only for a document of more than one frame. 0 means forever.
-- A document whose frames differ in size is refused: this writer produces
-  full-canvas frames, so a differing size asks a placement question the caller
-  has not been asked.
+- A document whose frames differ in size is refused: the canvas is the first
+  frame's, so a differing size asks a placement question the caller has not
+  been asked.
+
+### One table or many
+
+89a 18 lets one table serve every frame. This writer used to decline it and
+give each frame a Local Color Table, on the grounds that two frames of an
+animation rarely share a palette. Measured on the 19 multi-frame files in the
+corpus, that was wrong: **17 of them use 255 colours or fewer across every
+frame**, and their per-frame tables run from 2% to 29% of the file. A
+twelve-frame spinner of sixteen colours was spending 576 of its 1964 bytes on
+twelve copies of the same table.
+
+So the frames are walked once before anything is written, to collect the
+colours they use between them. If they fit one table it is written once and no
+frame carries its own; if they do not - more than 255 colours between them, a
+frame that cannot be read, or a partly transparent pixel with no threshold to
+round it by - nothing is written and every frame carries its own, exactly as
+before. Index 0 is kept for transparency whether or not any frame turns out to
+need it, because nearly every frame after the first does (that is what masking
+is) and a table cannot be extended once it is written.
+
+The walk is an **upper bound** rather than the exact answer: it counts the
+colours in the frames as they were handed over, and masking only ever removes
+some. A bound is what is wanted, because a table large enough stays large
+enough.
+
+It costs **one extra decode of every frame**, which on the slowest file in the
+corpus is about a quarter again: 5.4 s against 4.3 s for a 358-frame
+1200x1200 animation. It is skipped entirely for a single-frame document, where
+one global table and one local table are the same size and the question does
+not arise.
+
+That quarter was 25x before the interaction with the canvas cache was
+measured. The cache only ever moves forward (see "The canvas cache"), so the
+walk left it parked at the last frame, where it helped nothing, and the
+encoding pass then replayed every frame from the beginning - 110 seconds
+instead of 4.3. The writer now clears the cache between the two walks rather
+than the cache weakening its forward-only rule, which earns its keep
+everywhere else: it is the only caller in the library that knowingly walks a
+document twice, so it is the one that has to say so.
+
+The **background colour index** is written as 0, which the global table makes
+the transparent entry - the conventional choice, and consistent with this
+codec's own reading that the logical screen starts empty. With no global table
+it names nothing and is written as 0 for want of anything better.
 
 ### Frame optimization
 
 A frame handed to this encoder is the whole canvas as it should look. A GIF
 frame is a patch. Writing every frame at full size is always correct and is
-what this codec did at first; writing only the rectangle that changed is
-smaller, and is what every other encoder does.
+what this codec did at first; two things turn one into the other, and both are
+checked by decoding the result rather than by reasoning about it.
 
-It rests on one invariant. If each frame is drawn with **disposal 1** - leave
-it in place - over a canvas that already holds the frame before it, and its
-rectangle covers every pixel that differs, then after drawing it the canvas
-holds exactly that frame. By induction the canvas is always right. Two pixels
-count as differing when the encoder would store something different for them:
-both transparent is the same pixel, whatever colour sits under the
-transparency.
+Both rest on the same value: **what the logical screen holds at the moment a
+frame is drawn**. Comparing against the previous frame instead would be almost
+right and wrong where it matters, because disposal 2 blanks a rectangle after
+its frame has been shown, and the frame after that paints onto the hole rather
+than onto its predecessor. The encoder carries the screen explicitly and
+advances it past each frame and its disposal before looking at the next one.
 
-The induction has exactly one hole. **Painting cannot make an opaque pixel
-transparent** - GIF has no eraser except disposal 2, which blanks exactly the
-rectangle of the frame carrying it. So where a frame needs a pixel see-through
-that its predecessor had opaque, the predecessor is grown to cover what must
-be erased and given disposal 2, and the frame after it is grown to cover that
-same rectangle, because everything just blanked has to be painted again. Both
-stay rectangles bounded by what actually changed. The same test applies to the
-wrap from the last frame back to the first, since a loop makes that a
-transition like any other.
+Two pixels count as equal when the encoder would store the same thing for both.
+Both transparent is equal whatever colour sits under the transparency, because
+that colour is never shown and never written.
 
-A frame identical to its predecessor gets a **one-pixel** rectangle: a GIF
-image block cannot be zero-sized, and one pixel repainted its own colour is
-the cheapest way to say that nothing happened.
+**Cropping.** If a frame is drawn with disposal 1 - leave it in place - and its
+rectangle covers every pixel in which it differs from the screen, then after
+drawing it the screen holds that frame. By induction the screen is always
+right.
 
-Measured by re-encoding real animations and comparing every decoded frame
-against the original's:
+**Masking.** Inside that rectangle, a pixel equal to the screen need not be
+written at all: the transparent index leaves what is already there, which is
+the pixel wanted. It costs one palette entry and buys long runs of a single
+index, which is what the LZW stream is good at. This is where most of the
+saving is.
 
-| | Before | Now |
-|---|---|---|
-| Three 39–60 frame animations | 1.02–1.10x | 1.02–1.10x |
-| 358-frame 1200x1200 | **8.0x** | **2.03x** |
+A frame identical to what is already on screen gets a **one-pixel** rectangle:
+a GIF image block cannot be zero-sized, and one pixel repainted its own colour
+is the cheapest way to say that nothing happened.
 
-The large animations do not improve because their frames genuinely differ
-across most of the canvas - there is nothing to crop. The pathological file
-improves because 357 of its 358 frames change one pixel; those now cost one
-pixel each instead of a full 1200x1200 frame.
+#### The one hole
 
-**It is still 2x, and where the rest goes is known.** 89 of that file's frames
-change a large region, and our blocks for them are *geometrically smaller*
-than the original's - about 994x1040 against its 1200x1200 - yet take twice
-the bytes: 2.52 MB against 1.32 MB. The difference is that the original marks
-unchanged pixels inside the rectangle as transparent, which compresses into
-long runs of one index, and this encoder writes their real colours. That is
-the half listed under "Not implemented".
+**Painting cannot make an opaque pixel transparent** - GIF has no eraser except
+disposal 2, which blanks exactly the rectangle of the frame carrying it. So
+where a frame needs a pixel see-through that the screen has opaque, the
+previous frame is grown to cover what must be erased and given disposal 2.
+The same test applies to the wrap from the last frame back to the first, since
+a loop makes that a transition like any other, and a first frame that is
+transparent where the last was opaque would otherwise be wrong on every pass
+but the first.
+
+Nothing has to be grown to repaint the hole. The frame after a disposal 2 is
+compared against the screen *after* that disposal, so whatever the hole must
+show is a difference and cropping picks it up on its own; what the hole should
+leave blank is not a difference and is left alone.
+
+#### When masking gives up
+
+Masking spends a palette entry on the transparent index, and a frame of exactly
+256 colours has none to spare. Such a frame was writable before masking
+existed, so it must still be: the encoder falls back to writing every pixel its
+own colour rather than refusing it. Reaching that needs a frame which both
+fills the table with pixels that changed and has at least one that did not,
+because masking usually *reduces* the colour count - a masked pixel contributes
+no colour at all.
+
+#### Measured
+
+By re-encoding real animations and comparing every decoded frame against the
+original's. "Cropping only" is the state this codec was in before masking:
+
+| | Full frames | Cropping | And masking | And one table |
+|---|---|---|---|---|
+| 39 frames, 1200x1200 | 1.05x | 1.05x | 0.95x | **0.94x** |
+| 50 frames, 1200x1200 | 1.02x | 1.02x | 0.83x | **0.82x** |
+| 60 frames, 831x779 | 1.10x | 1.10x | 1.03x | **1.00x** |
+| 358 frames, 1200x1200 | 8.0x | 2.03x | 0.97x | **0.95x** |
+
+Cropping alone does nothing for the first three, because their frames genuinely
+differ across most of the canvas - there is no rectangle to shrink to. Masking
+is what reaches inside the rectangle, and it is what moves them. The 358-frame
+file gains from both: 357 of its frames change one pixel, which cropping
+reduces to one pixel each, and the 89 that change a large region are where
+masking then does its work. A shared table is worth a percent or two on all of
+them, and much more on a short animation of few colours, where per-frame tables
+were most of the file.
+
+**Across the whole corpus of 121 files written by unknown encoders over about
+thirty years, 21,370,660 bytes become 18,744,067** - 0.877x in aggregate, with
+every visible pixel of every frame unchanged, and **no file larger than the one
+it came from**: the worst is 1.00x. Being smaller than the original was never
+the goal, and on a format this old it says more about what the original
+encoders left on the table than about this one. It is worth recording because
+the same number was 8x on the file that mattered most, before any of the three
+changes in that table.
 
 **Every claim above is checked by decoding.** All 121 corpus files survive
-decode, re-encode and decode again with every visible pixel identical, and the
-encode tests publish a three-frame animation whose patch frames are 3x2 for
-giflib, ImageMagick, Pillow and GdkPixbuf to composite and check.
+decode, re-encode and decode again with every frame's visible pixels identical,
+and the re-encoded file is read back by giflib as well as by this decoder. The
+encode tests publish animations for giflib, ImageMagick and Pillow to composite
+and check - among them one whose second frame spans the canvas and is opaque,
+and so can only be small if masking happened, and one whose four frames carry
+no table of their own.
 
 ## Compliance checklist
 
@@ -318,7 +415,7 @@ giflib, ImageMagick, Pillow and GdkPixbuf to composite and check.
 |------|-----------|-----------------------|
 | Header | 87a and 89a, read identically | Anything not beginning `GIF` &rarr; `GIMG_ERR_FORMAT` |
 | Logical Screen Descriptor | Size and Global Color Table; the background index resolved to a colour and the Pixel Aspect Ratio byte resolved to a ratio, both reported but neither applied | Truncated &rarr; `GIMG_ERR_FORMAT`. The colour resolution and sort flags are read past |
-| Colour tables | Global, local, 2–256 entries, absent | Truncated &rarr; `GIMG_ERR_FORMAT` |
+| Colour tables | Read: global, local, 2–256 entries, absent. Write: one global table when the frames share 255 colours or fewer, otherwise one per frame | Truncated &rarr; `GIMG_ERR_FORMAT` |
 | LZW | Minimum code size 2–8 | Outside that &rarr; `GIMG_ERR_CORRUPT`; a stream yielding fewer pixels than the descriptor promises &rarr; `GIMG_ERR_CORRUPT` |
 | Interlace | Four-pass, decoded and written | — |
 | Image geometry | Any position and size within a 65535 canvas | Zero width or height &rarr; `GIMG_ERR_CORRUPT` |
@@ -329,7 +426,7 @@ giflib, ImageMagick, Pillow and GdkPixbuf to composite and check.
 | Trailer | Read; a file that ends without one keeps the frames already read | — |
 | Frame count | `max_frame_count` enforced at load | Exceeded &rarr; `GIMG_ERR_LIMIT` |
 | Sub-block chains | Joined before interpreting | `max_chunk_size` exceeded &rarr; `GIMG_ERR_LIMIT` |
-| Write | 1–256 colours, transparency, interlace, animation with delays and loop, comments, frames cropped to what changed | More than 256 colours, or partial alpha with no threshold &rarr; `GIMG_ERR_UNSUPPORTED` |
+| Write | 1–256 colours, transparency, interlace, animation with delays and loop, comments, a shared global table where one serves, frames cropped to what changed with unchanged pixels masked out | More than 256 colours (reduce first with `gimg_ops_quantize()`), or partial alpha with no threshold &rarr; `GIMG_ERR_UNSUPPORTED` |
 
 ## Where this codec differs from the reference implementations
 
@@ -492,17 +589,13 @@ giflib, ImageMagick, Pillow and GdkPixbuf to composite and check.
 
 ## Not implemented
 
-- **Colour quantization.** An image of more than 256 colours cannot be
-  written. Closing this means choosing a quantizer - median cut, octree - and
-  a dithering policy, which is an image-processing feature that belongs beside
-  the other operations rather than inside a codec. The `ops` module is where
-  it would go, and then GIF save would need no change at all.
-- **Unchanged pixels inside a frame are not marked transparent.** The frame is
-  cropped to what changed, but within that rectangle every pixel is written
-  with its own colour rather than as the transparent index where it matches
-  what is already on screen. That is the remaining half of frame optimization
-  and is measurably where the bytes are: see "Frame optimization" under Save.
-
+- **Colour quantization, inside the codec.** An image of more than 256 colours
+  is still refused here, and deliberately: which colours to discard is a
+  judgement about the picture, not a fact about the format. It is available
+  one call away, in `gimg_ops_quantize()` - see
+  \ref module_palette "Palettes and colour reduction" - which hands back an
+  ordinary raster this writer accepts. GIF save needed no change at all for
+  that, which was the point of putting it there.
 - **Plain Text rendering** (89a 25). The block is walked past. No decoder in
   use renders it, and doing so would mean shipping a bitmap font.
 - **The background colour is not painted.** The canvas starts transparent; the
