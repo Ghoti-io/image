@@ -230,10 +230,11 @@ as its guarantees:
 
 ## Save
 
-The encoder writes GIF89a, one image block per frame, **each the full size of
-the canvas**, with no Global Color Table - every frame carries its own, which
-89a 18 permits and which costs less than a global table that suits neither of
-two frames.
+The encoder writes GIF89a, one image block per frame, with no Global Color
+Table - every frame carries its own, which 89a 18 permits and which costs less
+than a global table that suits neither of two frames. A frame after the first
+is written as **the rectangle that changed** rather than the whole canvas; see
+"Frame optimization" below.
 
 - **A palette is built, never chosen.** An image of 256 colours or fewer has
   exactly one palette that reproduces it, up to the order of its entries, and
@@ -256,6 +257,61 @@ two frames.
   full-canvas frames, so a differing size asks a placement question the caller
   has not been asked.
 
+### Frame optimization
+
+A frame handed to this encoder is the whole canvas as it should look. A GIF
+frame is a patch. Writing every frame at full size is always correct and is
+what this codec did at first; writing only the rectangle that changed is
+smaller, and is what every other encoder does.
+
+It rests on one invariant. If each frame is drawn with **disposal 1** - leave
+it in place - over a canvas that already holds the frame before it, and its
+rectangle covers every pixel that differs, then after drawing it the canvas
+holds exactly that frame. By induction the canvas is always right. Two pixels
+count as differing when the encoder would store something different for them:
+both transparent is the same pixel, whatever colour sits under the
+transparency.
+
+The induction has exactly one hole. **Painting cannot make an opaque pixel
+transparent** - GIF has no eraser except disposal 2, which blanks exactly the
+rectangle of the frame carrying it. So where a frame needs a pixel see-through
+that its predecessor had opaque, the predecessor is grown to cover what must
+be erased and given disposal 2, and the frame after it is grown to cover that
+same rectangle, because everything just blanked has to be painted again. Both
+stay rectangles bounded by what actually changed. The same test applies to the
+wrap from the last frame back to the first, since a loop makes that a
+transition like any other.
+
+A frame identical to its predecessor gets a **one-pixel** rectangle: a GIF
+image block cannot be zero-sized, and one pixel repainted its own colour is
+the cheapest way to say that nothing happened.
+
+Measured by re-encoding real animations and comparing every decoded frame
+against the original's:
+
+| | Before | Now |
+|---|---|---|
+| Three 39–60 frame animations | 1.02–1.10x | 1.02–1.10x |
+| 358-frame 1200x1200 | **8.0x** | **2.03x** |
+
+The large animations do not improve because their frames genuinely differ
+across most of the canvas - there is nothing to crop. The pathological file
+improves because 357 of its 358 frames change one pixel; those now cost one
+pixel each instead of a full 1200x1200 frame.
+
+**It is still 2x, and where the rest goes is known.** 89 of that file's frames
+change a large region, and our blocks for them are *geometrically smaller*
+than the original's - about 994x1040 against its 1200x1200 - yet take twice
+the bytes: 2.52 MB against 1.32 MB. The difference is that the original marks
+unchanged pixels inside the rectangle as transparent, which compresses into
+long runs of one index, and this encoder writes their real colours. That is
+the half listed under "Not implemented".
+
+**Every claim above is checked by decoding.** All 121 corpus files survive
+decode, re-encode and decode again with every visible pixel identical, and the
+encode tests publish a three-frame animation whose patch frames are 3x2 for
+giflib, ImageMagick, Pillow and GdkPixbuf to composite and check.
+
 ## Compliance checklist
 
 | Area | Supported | Rejected / limitation |
@@ -273,7 +329,7 @@ two frames.
 | Trailer | Read; a file that ends without one keeps the frames already read | — |
 | Frame count | `max_frame_count` enforced at load | Exceeded &rarr; `GIMG_ERR_LIMIT` |
 | Sub-block chains | Joined before interpreting | `max_chunk_size` exceeded &rarr; `GIMG_ERR_LIMIT` |
-| Write | 1–256 colours, transparency, interlace, animation with delays and loop | More than 256 colours, or partial alpha with no threshold &rarr; `GIMG_ERR_UNSUPPORTED` |
+| Write | 1–256 colours, transparency, interlace, animation with delays and loop, comments, frames cropped to what changed | More than 256 colours, or partial alpha with no threshold &rarr; `GIMG_ERR_UNSUPPORTED` |
 
 ## Where this codec differs from the reference implementations
 
@@ -441,22 +497,11 @@ two frames.
   a dithering policy, which is an image-processing feature that belongs beside
   the other operations rather than inside a codec. The `ops` module is where
   it would go, and then GIF save would need no change at all.
-- **Frame optimization.** Every frame is written at full canvas size, with
-  disposal 2 so that each starts from an empty screen. An optimizing encoder
-  writes each frame as the smallest rectangle that changed and marks unchanged
-  pixels transparent.
-
-  What that costs here was measured by re-encoding real animations. Three
-  36-frame files came back at 1.0 to 1.1 times their original size, because
-  their frames genuinely differ. One came back **eight times** larger - 1.3 MB
-  to 10.7 MB - and it is worth saying why: 357 of its 358 frames are 1x1
-  pixels, a way of padding a still image's duration, and each of those no-ops
-  is written here as a full 1200x1200 frame. The inflation is not uniform; it
-  is proportional to how little each frame actually changes.
-
-  Closing it means a per-frame difference against the previous canvas and a
-  choice of disposal per frame. The decoder already reads everything such a
-  file would contain.
+- **Unchanged pixels inside a frame are not marked transparent.** The frame is
+  cropped to what changed, but within that rectangle every pixel is written
+  with its own colour rather than as the transparent index where it matches
+  what is already on screen. That is the remaining half of frame optimization
+  and is measurably where the bytes are: see "Frame optimization" under Save.
 
 - **Plain Text rendering** (89a 25). The block is walked past. No decoder in
   use renders it, and doing so would mean shipping a bitmap font.

@@ -353,7 +353,118 @@ Rgba anim_second(uint32_t x, uint32_t y) {
   return Rgba{220u, static_cast<uint8_t>(10u + x * 25u), 30u, 255};
 }
 
+/** A plain background, the same in every frame of the patch test. */
+Rgba patch_base(uint32_t x, uint32_t y) {
+  return Rgba{static_cast<uint8_t>(30u + (x % 5u) * 20u),
+      static_cast<uint8_t>(40u + (y % 4u) * 25u), 90u, 255};
+}
+
+/** The same picture with one 3x2 block recoloured, at (10,6). */
+Rgba patch_changed(uint32_t x, uint32_t y) {
+  if (x >= 10u && x < 13u && y >= 6u && y < 8u) {
+    return Rgba{250u, 12u, 200u, 255};
+  }
+  return patch_base(x, y);
+}
+
+/** Every image block in a GIF, as position and size. */
+struct Block {
+  uint32_t x, y, w, h;
+};
+
+std::vector<Block> image_blocks(const std::vector<uint8_t> & bytes) {
+  std::vector<Block> out;
+  size_t i = 13u;
+  if (bytes.size() > 10u && (bytes[10] & 0x80u)) {
+    i += size_t(3) << ((bytes[10] & 7u) + 1u);
+  }
+  auto u16 = [&bytes](size_t at) {
+    return uint32_t(bytes[at]) | (uint32_t(bytes[at + 1]) << 8);
+  };
+  while (i < bytes.size()) {
+    if (bytes[i] == 0x3Bu) {
+      break;
+    }
+    if (bytes[i] == 0x21u) {
+      i += 2u;
+      while (i < bytes.size() && bytes[i] != 0u) {
+        i += 1u + bytes[i];
+      }
+      i += 1u;
+    }
+    else if (bytes[i] == 0x2Cu) {
+      out.push_back(
+          Block{u16(i + 1u), u16(i + 3u), u16(i + 5u), u16(i + 7u)});
+      const uint8_t packed = bytes[i + 9u];
+      i += 10u;
+      if (packed & 0x80u) {
+        i += size_t(3) << ((packed & 7u) + 1u);
+      }
+      i += 1u;  // LZW minimum code size
+      while (i < bytes.size() && bytes[i] != 0u) {
+        i += 1u + bytes[i];
+      }
+      i += 1u;
+    }
+    else {
+      break;
+    }
+  }
+  return out;
+}
+
 } // namespace
+
+TEST(GifEncode, AFrameIsWrittenAsOnlyTheRectangleThatChanged) {
+  // The caller hands this encoder whole composited canvases; a GIF frame is a
+  // patch.  Writing every frame at full size is correct and was what this did,
+  // but it means an animation where one small block moves costs a full canvas
+  // per frame.  Here one 3x2 block at (10,6) changes and nothing else does.
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(24, 16, patch_base));
+  frames.push_back(make_raster(24, 16, patch_changed));
+  frames.push_back(make_raster(24, 16, patch_base));
+  for (GIMG_Raster * f : frames) {
+    ASSERT_NE(f, nullptr);
+  }
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes), GIMG_OK);
+
+  const std::vector<Block> blocks = image_blocks(bytes);
+  ASSERT_EQ(blocks.size(), 3u);
+  // The first frame has nothing before it to patch, so it is the whole screen.
+  EXPECT_EQ(blocks[0].w, 24u);
+  EXPECT_EQ(blocks[0].h, 16u);
+  // The others are the changed block and no more.
+  for (size_t i = 1; i < 3u; i++) {
+    EXPECT_EQ(blocks[i].x, 10u) << "frame " << i;
+    EXPECT_EQ(blocks[i].y, 6u) << "frame " << i;
+    EXPECT_EQ(blocks[i].w, 3u) << "frame " << i;
+    EXPECT_EQ(blocks[i].h, 2u) << "frame " << i;
+  }
+
+  // Smaller is only worth anything if it still says the same thing.  The
+  // sidecars go to outside decoders through verify_gif_output.py.
+  publish("patched_24x16.gif", bytes,
+      {expectation(24, 16, patch_base), expectation(24, 16, patch_changed),
+          expectation(24, 16, patch_base)});
+}
+
+TEST(GifEncode, AnUnchangedFrameCostsOnePixel) {
+  // A GIF image block cannot be zero-sized, so a frame identical to the one
+  // before it is written as one pixel repainting its own colour.
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(24, 16, patch_base));
+  frames.push_back(make_raster(24, 16, patch_base));
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes), GIMG_OK);
+  const std::vector<Block> blocks = image_blocks(bytes);
+  ASSERT_EQ(blocks.size(), 2u);
+  EXPECT_EQ(blocks[1].w, 1u);
+  EXPECT_EQ(blocks[1].h, 1u);
+}
 
 TEST(GifEncode, ALaterFrameIsTransparentWhereAnEarlierOneWasOpaque) {
   // The frames this encoder writes are whole canvases that have already been
