@@ -302,13 +302,14 @@ adding or restricting features.
 | **File header** | `BM` magic, `bfOffBits` honored for the pixel data | Magic other than `BM` &rarr; `GIMG_ERR_FORMAT`. `bfOffBits` below 14 or past the end of a sized stream &rarr; `GIMG_ERR_CORRUPT`. `bfSize` and the reserved words are not trusted |
 | **DIB header** | Sizes 12, 40, 52, 56, 108 and 124 as Windows headers; every multiple of 4 from 16 to 64 as an OS/2 `BITMAPCOREHEADER2`. All normalized into one internal header | Any other size &rarr; `GIMG_ERR_UNSUPPORTED`. Guessing at an unknown size shifts everything after the header, so it is refused rather than approximated. 40, 52 and 56 belong to both vocabularies and are read as Windows |
 | **Dimensions** | 16-bit unsigned (core header), 32-bit signed elsewhere; a negative height means top-down rows | Zero width or height &rarr; `GIMG_ERR_CORRUPT`; a width above `INT32_MAX`, which is a negative `biWidth`, &rarr; `GIMG_ERR_CORRUPT` |
-| **Bit depth** | 1, 2, 4, 8 (palette), 16, 24, 32 | Any other value &rarr; `GIMG_ERR_UNSUPPORTED`, except under `BI_JPEG` and `BI_PNG`, where the embedded stream carries its own depth and `biBitCount` is not a constraint on it |
+| **Bit depth** | 1, 2, 4, 8 (palette), 16, 24, 32, 64 | Any other value &rarr; `GIMG_ERR_UNSUPPORTED`, except under `BI_JPEG` and `BI_PNG`, where the embedded stream carries its own depth and `biBitCount` is not a constraint on it |
 | **Compression** | Windows: `BI_RGB`, `BI_RLE8`, `BI_RLE4`, `BI_BITFIELDS`, `BI_JPEG`, `BI_PNG`, `BI_ALPHABITFIELDS`. OS/2 2.x: RGB, RLE8, RLE4, RLE24 | OS/2 Huffman 1D &rarr; `GIMG_ERR_UNSUPPORTED`, named as such rather than misread as `BI_BITFIELDS`. Unknown values &rarr; `GIMG_ERR_UNSUPPORTED`. `BI_RLE8` at other than 8 bpp, `BI_RLE4` at other than 4, RLE24 at other than 24, or bitfields at other than 16 or 32 &rarr; `GIMG_ERR_CORRUPT`. RLE with a negative height &rarr; `GIMG_ERR_CORRUPT`: an RLE stream's end-of-line walks one way only |
 | **Channel masks** | Read from a V2+ header, or from the words following a 40-byte header; alpha from a V3+ header or from `BI_ALPHABITFIELDS` | A red, green or blue mask of zero &rarr; `GIMG_ERR_CORRUPT`; a mask whose set bits are not one contiguous run &rarr; `GIMG_ERR_CORRUPT`, because there is no unambiguous shift to read it by. An alpha mask of zero is legal and means no alpha |
 | **Palette** | 4-byte entries after an info header, 3-byte after a core header; `biClrUsed` of 0 means 2^bpp | A `biClrUsed` above 2^bpp is clamped to 2^bpp, not rejected: the surplus entries are unreachable, not wrong. An index past the entries the file carried &rarr; `GIMG_ERR_CORRUPT` on decode, since reading it would be an out-of-bounds read |
 | **Pixel data** | `stride x height` bytes read from `bfOffBits`; stride is `(width x bpp + 31) / 32 x 4` in checked `size_t` arithmetic | A file shorter than that &rarr; the stream's error. A stride or buffer size that overflows &rarr; `GIMG_ERR_LIMIT`. `biSizeImage` is ignored except as an upper bound on an embedded stream |
 | **RLE** | RLE8, RLE4 and RLE24: encoded runs, absolute runs padded to 16 bits, end-of-line, end-of-bitmap, delta. Overhanging runs are clipped | An absolute run or a delta that runs off the end of the data &rarr; `GIMG_ERR_CORRUPT`. RLE data needs a sized stream, since its length is not predictable from the header and it is taken from `bfOffBits` to the end of the file; an unsized stream &rarr; `GIMG_ERR_UNSUPPORTED` |
 | **Embedded streams** | `BI_JPEG` and `BI_PNG` are loaded through that format's own codec and decoded by it, with the caller's load options unchanged | The payload goes to the codec the header named, never to the prober, so a wrapper cannot nest. A payload that is not of that format &rarr; that codec's error |
+| **64 bits per pixel** | `BI_RGB` only, BGRA of s2.13 fixed point in linear light; each sample goes through the sRGB transfer function to reach the 8-bit raster | Microsoft publishes no specification for it; what is implemented is what bmplib and GIMP agree on, pinned by `q/rgba64.bmp` and `bmp_4x1_rgba64.bmp`. Any compression other than `BI_RGB` at 64bpp &rarr; `GIMG_ERR_CORRUPT`: no channel mask can describe a sample that is not an integer. Samples outside 0.0 to 1.0, which s2.13 can hold, clamp |
 | **Color** | V4: `LCS_sRGB`, `LCS_WINDOWS_COLOR_SPACE`, `LCS_CALIBRATED_RGB` endpoints and gammas. V5: `bV5Intent`, `PROFILE_EMBEDDED` | `PROFILE_LINKED` names a file and is not followed - the image decodes untagged. A gamut matching neither sRGB nor Adobe RGB, or three gammas that disagree, leaves that field unknown rather than approximated. A profile running past the end of the file, or exceeding `max_memory`, yields no profile rather than no image |
 | **Resolution** | `biXPelsPerMeter` / `biYPelsPerMeter` read into and written from the document's common metadata | Both axes must be stated: one alone describes a pixel's shape rather than its size. A negative value reads as "not stated" |
 | **Document shape** | One item, decoded to `GIMG_PIXEL_RGBA8` | BMP holds a single image; an item index above 0 &rarr; `GIMG_ERR_UNSUPPORTED` |
@@ -357,8 +358,8 @@ reconstruct one.
   suite, used as a development oracle from a scratch directory and not
   vendored - the same treatment PngSuite gets for PNG. `make bmpsuite
   BMPSUITE=<dir>` runs all 91 files through the codec and reports what agreed
-  with what; today, 11 are refused as intended, 37 are checked against a
-  decoder written from the specification, 79 are corroborated by another
+  with what; today, 10 are refused as intended, 37 are checked against a
+  decoder written from the specification, 80 are corroborated by another
   decoder, and nothing disagrees. `tools/oracle/fetch.sh` provides the corpus,
   at the commit `tools/oracle/VERSIONS` pins.
 - **No other decoder is treated as the answer.** Four may be present - Pillow,
@@ -468,16 +469,6 @@ Listed so the absences are visible rather than discovered.
   bmplib reading the single entry in `x/ba-bm.bmp` gives exactly what this
   codec decodes from `g/pal8.bmp`. Splitting the container is the whole job;
   what comes out is already covered.
-- **64 bits per pixel.** A high-dynamic-range form some Microsoft software
-  writes, with 16 bits per channel. Microsoft publishes no specification for
-  it, and the channels are not plain integers: they are s2.13 fixed point
-  carrying linear light, so reading one is a colour conversion and not a
-  widening. bmplib offers three answers for the same bytes - leave the values
-  alone, treat them as linear, or convert to sRGB gamma, its default - and on
-  `q/rgba64.bmp` the second pixel comes out (255, 8, 8), (255, 1, 1) or
-  (32, 0, 0) accordingly. Deciding which of those this codec would return is
-  the work, not the unpacking; until that is decided the file is refused
-  rather than given a plausible-looking answer.
 - **Following a linked color profile.** `PROFILE_LINKED` states a file path
   rather than carrying a profile. It is deliberately not followed: opening a
   path an image file names is acting on data, and is the shape of a directory

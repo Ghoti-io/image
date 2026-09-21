@@ -137,6 +137,28 @@ TEST(BmpDecode, Rgb24TopDown) {
   expect_pattern(img);
 }
 
+TEST(BmpDecode, Rgba64IsConvertedFromLinearLightNotWidened) {
+  // A 64-bit BMP stores s2.13 fixed point - 8192 is 1.0 - carrying linear
+  // light, not the gamma-encoded bytes every other depth holds.  Reading one
+  // is a colour conversion: the sample goes to linear, the sRGB transfer
+  // function is applied, and that is the byte.  A decoder that treats the
+  // samples as plain 16-bit integers and scales them would give 0 and 127 for
+  // the second and fourth pixels here instead of 8 and 188.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x1_rgba64.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  ASSERT_EQ(img.width(), 4u);
+  ASSERT_EQ(img.height(), 1u);
+  EXPECT_EQ(img.at(0, 0), (Rgba{255, 0, 0, 255}));
+  // 20/8192 is inside the curve's linear toe, where the encoding is v * 12.92.
+  EXPECT_EQ(img.at(1, 0), (Rgba{255, 8, 8, 255}));
+  EXPECT_EQ(img.at(2, 0), (Rgba{0, 0, 255, 255}));
+  // Half of full scale in linear light is 188, not 128: that difference is the
+  // whole point of the transfer function.  Alpha carries no transfer function,
+  // so it does scale straight off the sample, and is 128.
+  EXPECT_EQ(img.at(3, 0), (Rgba{188, 188, 188, 128}));
+}
+
 TEST(BmpDecode, SinglePixel) {
   Loaded img;
   ASSERT_EQ(img.load("bmp_1x1_24bit.bmp"), GIMG_OK);

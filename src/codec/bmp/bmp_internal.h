@@ -137,7 +137,7 @@ typedef struct {
   uint32_t width;         ///< Image width in pixels (always positive).
   uint32_t height;        ///< Image height in pixels (always positive).
   bool top_down;          ///< True when the file stored rows top to bottom.
-  uint16_t bit_count;     ///< Bits per pixel: 1, 2, 4, 8, 16, 24, or 32.
+  uint16_t bit_count;     ///< Bits per pixel: 1, 2, 4, 8, 16, 24, 32, or 64.
   bool os2_v2;            ///< True for a BITMAPCOREHEADER2 (OS/2 2.x).
   gimg_bmp_compression_t compression; ///< How the pixel data is stored.
   uint32_t size_image;    ///< biSizeImage as read; untrusted, 0 means unset.

@@ -41,6 +41,7 @@
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
+#include <math.h>
 #include <string.h>
 
 #include "../../container/doc_internal.h"
@@ -87,6 +88,85 @@ static void bmp_put_rgb(
   px[1] = g;
   px[2] = b;
   px[3] = 255u;
+}
+
+/**
+ * Convert one s2.13 sample to an 8-bit sRGB-encoded value.
+ *
+ * A 64-bit BMP stores each channel as signed 2.13 fixed point - 8192 is 1.0 -
+ * carrying linear light rather than the gamma-encoded bytes every other BMP
+ * depth holds.  Microsoft publishes no specification for it; what is written
+ * here is what bmplib and GIMP agree on, and `q/rgba64.bmp` pins it.
+ *
+ * Reading one is therefore a colour conversion, not a widening: the sample is
+ * taken to linear light, the sRGB transfer function is applied, and the result
+ * is the byte this codec's RGBA8 raster holds.  Out-of-range samples - s2.13
+ * reaches -4.0 to +3.999, and the format allows it - clamp, because there is
+ * nowhere in eight bits to put them.
+ */
+static uint8_t bmp_s2_13_to_srgb8(int16_t sample) {
+  double linear = (double)sample / 8192.0;
+  if (linear <= 0.0) {
+    return 0u;
+  }
+  if (linear >= 1.0) {
+    return 255u;
+  }
+  double encoded = linear <= 0.0031308
+      ? linear * 12.92
+      : 1.055 * pow(linear, 1.0 / 2.4) - 0.055;
+  double scaled = encoded * 255.0 + 0.5;
+  return scaled >= 255.0 ? 255u : (uint8_t)scaled;
+}
+
+/** Read a little-endian signed 16-bit sample. */
+static int16_t bmp_read_s16(const unsigned char * p) {
+  return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+/**
+ * Decode a 64-bit image, whose layout is fixed rather than mask-described.
+ *
+ * The channel order is the same BGRA every other BMP depth uses; only the
+ * sample type differs.
+ */
+static GIMG_Result bmp_decode_rgba64(
+    const gimg_bmp_doc_state_t * state, GIMG_Raster * raster) {
+  const gimg_bmp_header_t * h = &state->header;
+
+  size_t stride;
+  GIMG_Result result = gimg_bmp_row_stride(h->width, h->bit_count, &stride);
+  if (result != GIMG_OK) {
+    return result;
+  }
+
+  size_t required;
+  if (!gcu_safe_mul_size(stride, (size_t)h->height, &required) ||
+      required > state->pixels_size) {
+    return GIMG_ERR_INTERNAL;
+  }
+
+  uint8_t * dest_base = (uint8_t *)gimg_raster_pixels(raster);
+  size_t dest_stride = gimg_raster_stride_bytes(raster);
+
+  for (uint32_t y = 0; y < h->height; y++) {
+    const unsigned char * src = state->pixels + ((size_t)y * stride);
+    uint8_t * row = dest_base + ((size_t)bmp_dest_row(h, y) * dest_stride);
+    for (uint32_t x = 0; x < h->width; x++) {
+      const unsigned char * px = src + ((size_t)x * 8u);
+      uint8_t * dest = row + ((size_t)x * 4u);
+      dest[0] = bmp_s2_13_to_srgb8(bmp_read_s16(px + 4));
+      dest[1] = bmp_s2_13_to_srgb8(bmp_read_s16(px + 2));
+      dest[2] = bmp_s2_13_to_srgb8(bmp_read_s16(px));
+      // Alpha is a coverage fraction, not a colour: it carries no transfer
+      // function, so it scales straight off the s2.13 value.
+      int16_t a = bmp_read_s16(px + 6);
+      dest[3] = a <= 0 ? 0u
+          : a >= 8192 ? 255u
+                      : (uint8_t)(((int32_t)a * 255 + 4096) / 8192);
+    }
+  }
+  return GIMG_OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,9 +492,9 @@ GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return r;
   }
 
-  r = gimg_bmp_is_rle(h->compression)
-      ? bmp_decode_rle(state, raster)
-      : bmp_decode_uncompressed(state, raster);
+  r = gimg_bmp_is_rle(h->compression) ? bmp_decode_rle(state, raster)
+      : h->bit_count == 64                ? bmp_decode_rgba64(state, raster)
+                                          : bmp_decode_uncompressed(state, raster);
   if (r != GIMG_OK) {
     gimg_raster_destroy(raster);
     return r;

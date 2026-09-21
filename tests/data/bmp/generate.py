@@ -536,6 +536,28 @@ def embedded_fixtures() -> None:
     write("bmp_embedded_png_not_a_png.bmp", assemble(dib, b"", b"not a png!!!!!!!"))
 
 
+def rgba64_fixture() -> None:
+    """A 64-bit image, whose samples are s2.13 fixed point in linear light.
+
+    8192 is 1.0.  The four pixels are chosen to pin the conversion rather than
+    to look like anything: full red, then two values inside the sRGB curve's
+    linear toe and above it, then a half-covered pixel.  A decoder that treats
+    the samples as plain 16-bit integers, or that skips the transfer function,
+    gets a visibly different answer for every one of them.
+    """
+    # (blue, green, red, alpha) as the file stores them.
+    pixels = [
+        (0, 0, 8192, 8192),      # red, opaque
+        (20, 20, 8192, 8192),    # inside the linear toe: 12.92 * v
+        (8192, 0, 0, 8192),      # blue, opaque
+        (4096, 4096, 4096, 4096),  # mid grey, half covered
+    ]
+    body = b"".join(struct.pack("<4h", *px) for px in pixels)
+    # One row of four pixels; 64 bits per pixel is already 4-byte aligned.
+    dib = info_header(4, 1, 64)
+    write("bmp_4x1_rgba64.bmp", assemble(dib, b"", body))
+
+
 def malformed_fixtures() -> None:
     colors = [(255, 0, 0), (0, 255, 0)]
     palette = b"".join(bytes([b, g, r, 0]) for (r, g, b) in colors)
@@ -603,5 +625,7 @@ if __name__ == "__main__":
     color_fixtures()
     print("Embedded-stream fixtures:")
     embedded_fixtures()
+    print("64-bit fixture:")
+    rgba64_fixture()
     print("Malformed fixtures:")
     malformed_fixtures()

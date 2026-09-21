@@ -197,7 +197,8 @@ static bool bmp_header_size_os2_v2(uint32_t size) {
 /** True for bit depths that have a defined pixel layout. */
 static bool bmp_bit_count_known(uint16_t bit_count) {
   return bit_count == 1 || bit_count == 2 || bit_count == 4 ||
-      bit_count == 8 || bit_count == 16 || bit_count == 24 || bit_count == 32;
+      bit_count == 8 || bit_count == 16 || bit_count == 24 ||
+      bit_count == 32 || bit_count == 64;
 }
 
 /** Number of palette entries implied by a bit depth when biClrUsed is 0. */
@@ -394,6 +395,15 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
       break;
   }
 
+  // 64 bits per pixel is a fixed BGRA layout of s2.13 samples.  No mask can
+  // describe a sample that is not an integer, so BI_BITFIELDS at 64 is not a
+  // thing, and neither is any RLE: the encodings all index bytes.
+  if (out->bit_count == 64 && out->compression != GIMG_BMP_COMP_RGB) {
+    bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
+        "64 bits per pixel is only defined for BI_RGB");
+    return GIMG_ERR_CORRUPT;
+  }
+
   if (!gimg_bmp_is_embedded(out->compression) &&
       !bmp_bit_count_known(out->bit_count)) {
     bmp_load_diag(
@@ -460,6 +470,13 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
       return GIMG_ERR_CORRUPT;
     }
     out->has_masks = true;
+  }
+  else if (out->bit_count == 64) {
+    // 64bpp has a fixed BGRA layout of s2.13 samples.  A channel mask states
+    // which bits of an integer pixel a channel occupies, which is not a
+    // question that can be asked of a fixed-point sample, so no masks are
+    // installed and the decoder reads the layout directly.
+    out->has_masks = false;
   }
   else if (out->bit_count >= 16) {
     if (!bmp_default_masks(out)) {
