@@ -358,17 +358,22 @@ reconstruct one.
   vendored - the same treatment PngSuite gets for PNG. `make bmpsuite
   BMPSUITE=<dir>` runs all 91 files through the codec and reports what agreed
   with what; today, 11 are refused as intended, 37 are checked against a
-  decoder written from the specification, 72 are corroborated by an installed
-  decoder, and nothing disagrees.
-- **No installed decoder is treated as the answer.** Three may be present -
-  Pillow, GdkPixbuf and netpbm's `bmptopnm` - and no two of them agree: see
-  the differences table above. What checks the codec is a set of decoders
+  decoder written from the specification, 79 are corroborated by another
+  decoder, and nothing disagrees. `tools/oracle/fetch.sh` provides the corpus,
+  at the commit `tools/oracle/VERSIONS` pins.
+- **No other decoder is treated as the answer.** Four may be present - Pillow,
+  GdkPixbuf, netpbm's `bmptopnm`, and bmplib, which is built from source by
+  `tools/oracle/fetch.sh` because no package here ships it - and no two of them
+  agree: see the differences table above. What checks the codec is a set of decoders
   written from the format description inside `bmpsuite_sweep.py`, for RLE4,
   RLE8, RLE24 and the `BI_BITFIELDS` channel layouts, with the installed ones
   as corroboration and each one's reach declared per file. They earn their
   place: `q/rgb16-231.bmp` and `q/rgb16-3103.bmp` have channel layouts none of
   the three installed decoders reads correctly, and `q/rgb24rle24.bmp` is
-  refused by all of them.
+  refused by all of them. bmplib earns its place differently: it is the only
+  one that reads OS/2 Huffman 1D, the OS/2 `BA` container and 64-bit files, the
+  three the "Not implemented" section below names. It is used as a separate
+  process and never linked, because it is LGPL/GPL and this library is not.
 - **Properties that need no oracle at all.** `bmp_8x2_4bit.bmp` and
   `bmp_8x2_8bit.bmp` encode the same indices through the same palette, so
   their decoded output must be identical - which catches a defect in exactly
@@ -450,15 +455,29 @@ Listed so the absences are visible rather than discovered.
   Group 3 one-dimensional Huffman coding, not `BI_BITFIELDS`. It is
   recognized as such and refused with `GIMG_ERR_UNSUPPORTED` rather than
   misread as a channel layout; bmpsuite's `q/pal1huffmsb.bmp` is the case.
-  No other decoder reachable from here implements it either.
+  Of the four decoders the sweep can reach, only bmplib reads it - and what it
+  reads is exactly what this codec decodes from `g/pal1.bmp`, the same picture
+  stored uncompressed, to the pixel. So the target is known should this be
+  implemented: the work is the CCITT Group 3 one-dimensional decoder, not
+  deciding what the answer should be.
 - **The OS/2 `BA` bitmap array container.** A file beginning `BA` holds a
   sequence of bitmaps for different devices rather than one image.
-  bmpsuite's `x/ba-bm.bmp` is the case, and nothing reachable from here reads
-  one. The probe does not claim such a file, so it is refused as an
-  unrecognized format rather than misread as a bitmap.
+  bmpsuite's `x/ba-bm.bmp` is the case. The probe does not claim such a file,
+  so it is refused as an unrecognized format rather than misread as a bitmap.
+  This one needs no oracle to implement: the entries are ordinary bitmaps, and
+  bmplib reading the single entry in `x/ba-bm.bmp` gives exactly what this
+  codec decodes from `g/pal8.bmp`. Splitting the container is the whole job;
+  what comes out is already covered.
 - **64 bits per pixel.** A high-dynamic-range form some Microsoft software
-  writes, with 16 bits per channel. bmpsuite's `q/rgba64.bmp` is the case; no
-  decoder reachable from here reads one.
+  writes, with 16 bits per channel. Microsoft publishes no specification for
+  it, and the channels are not plain integers: they are s2.13 fixed point
+  carrying linear light, so reading one is a colour conversion and not a
+  widening. bmplib offers three answers for the same bytes - leave the values
+  alone, treat them as linear, or convert to sRGB gamma, its default - and on
+  `q/rgba64.bmp` the second pixel comes out (255, 8, 8), (255, 1, 1) or
+  (32, 0, 0) accordingly. Deciding which of those this codec would return is
+  the work, not the unpacking; until that is decided the file is refused
+  rather than given a plausible-looking answer.
 - **Following a linked color profile.** `PROFILE_LINKED` states a file path
   rather than carrying a profile. It is deliberately not followed: opening a
   path an image file names is acting on data, and is the shape of a directory
