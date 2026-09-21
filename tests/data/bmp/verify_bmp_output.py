@@ -59,7 +59,36 @@ def load_pixbuf(path):
     return bytes(out), (w, h)
 
 
-DECODERS = (("Pillow", load_pillow), ("GdkPixbuf", load_pixbuf))
+# bmplib is not installed by any package here; it is built from source by
+# tools/oracle/fetch.sh.  It is listed because it is the only decoder reachable
+# from here that reads what this writer can now produce at a caller's request:
+# Pillow refuses a 2-bit BMP outright ("Unsupported BMP pixel depth"), and
+# nothing installed reads OS/2 RLE24 at all.  Without it those files would have
+# no outside opinion, which this script treats as a failure rather than a pass.
+BMPLIB_TOOL = os.environ.get(
+    "BMP_ORACLE_BMPLIB",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "..", "..", "tools", "bmp-oracle", "build",
+                 "dump_bmp_pixels_bmplib"))
+
+
+def load_bmplib(path):
+    import subprocess
+    if not os.path.isfile(BMPLIB_TOOL):
+        raise FileNotFoundError(BMPLIB_TOOL)
+    proc = subprocess.run([BMPLIB_TOOL, path], capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode(errors="replace").strip())
+    data = proc.stdout
+    if len(data) < 12 or data[:4] != b"BMPO":
+        raise RuntimeError("tool wrote no raster")
+    w = int.from_bytes(data[4:8], "little")
+    h = int.from_bytes(data[8:12], "little")
+    return bytes(data[12:]), (w, h)
+
+
+DECODERS = (("Pillow", load_pillow), ("GdkPixbuf", load_pixbuf),
+            ("bmplib", load_bmplib))
 
 
 def compare(got, want, check_alpha):
@@ -92,8 +121,9 @@ def verify_directory(dirpath):
 
     available = [(name, fn) for name, fn in DECODERS if importable(fn)]
     if not available:
-        return ["no outside BMP decoder is installed (Pillow or GdkPixbuf); "
-                "install one: pip install Pillow"], 0
+        return ["no outside BMP decoder is available (Pillow, GdkPixbuf or "
+                "bmplib); install one: pip install Pillow, or run "
+                "tools/oracle/fetch.sh bmplib"], 0
 
     for name in names:
         path = os.path.join(dirpath, name)
@@ -123,7 +153,18 @@ def verify_directory(dirpath):
         if agreed:
             checked += 1
         else:
-            errors.append("%s: no outside decoder read it and agreed" % name)
+            # Saying only "nothing read it" is true and unhelpful when the
+            # one decoder that could is a source build away.  A 2-bit or an
+            # OS/2 RLE24 file is exactly that case: Pillow refuses the first
+            # outright and nothing installed reads the second, which is also
+            # why the writer only produces either when asked to.
+            hint = ""
+            if not any(n == "bmplib" for n, _ in available):
+                hint = (" - bmplib is not built, and it is the only decoder "
+                        "here that reads 2-bit or OS/2 RLE24 files; run "
+                        "tools/oracle/fetch.sh bmplib")
+            errors.append(
+                "%s: no outside decoder read it and agreed%s" % (name, hint))
 
     return errors, checked
 
@@ -131,7 +172,9 @@ def verify_directory(dirpath):
 def importable(fn):
     try:
         fn(os.devnull)
-    except ImportError:
+    except (ImportError, FileNotFoundError):
+        # Not installed, or - for bmplib - not built.  Either way it has no
+        # opinion to offer, which is different from disagreeing.
         return False
     except Exception:
         return True

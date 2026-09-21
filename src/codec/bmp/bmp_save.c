@@ -270,10 +270,14 @@ static bool bmp_collect_colors(
 }
 
 /** The smallest depth this writer will emit that addresses `count` entries. */
-static uint16_t bmp_depth_for(uint32_t count) {
-  // 2 bits per pixel is deliberately absent: see the file comment.
+static uint16_t bmp_depth_for(uint32_t count, bool allow_2bit) {
   if (count <= 2u) {
     return 1u;
+  }
+  // 2 bits per pixel is a Windows CE addition the desktop API does not accept,
+  // so it is never chosen unless the caller said they can read it back.
+  if (allow_2bit && count <= 4u) {
+    return 2u;
   }
   if (count <= 16u) {
     return 4u;
@@ -401,6 +405,177 @@ static size_t bmp_rle8_row(const unsigned char * indices, uint32_t width,
   return used;
 }
 
+/**
+ * Run-length encode one row of 4-bit indices, appending to `out`.
+ *
+ * The shape is RLE8's, with one difference that is the whole of RLE4: an
+ * encoded pair's value byte holds *two* nibbles and the run alternates between
+ * them, so a run of one repeated index stores that index in both halves, and a
+ * run of two alternating indices is expressible as a single pair.  An absolute
+ * run packs two indices per byte and pads to a 16-bit boundary.
+ *
+ * @return the number of bytes appended, or SIZE_MAX if `capacity` was short.
+ */
+static size_t bmp_rle4_row(const unsigned char * indices, uint32_t width,
+    unsigned char * out, size_t capacity) {
+  size_t used = 0;
+  uint32_t x = 0;
+
+#define BMP_RLE4_PUT(byte)                                                     \
+  do {                                                                         \
+    if (used >= capacity) {                                                    \
+      return SIZE_MAX;                                                         \
+    }                                                                          \
+    out[used++] = (unsigned char)(byte);                                       \
+  } while (0)
+
+  while (x < width) {
+    // An encoded run alternates two nibbles, so what repeats is the *pair*:
+    // a, b, a, b, ...  A run of one repeated value is the case a == b.
+    unsigned char a = indices[x];
+    unsigned char b = (x + 1u < width) ? indices[x + 1u] : a;
+    uint32_t run = 1;
+    while (x + run < width && run < 255u &&
+        indices[x + run] == ((run & 1u) ? b : a)) {
+      run++;
+    }
+    if (run >= 4u || (run >= 3u && a == b)) {
+      BMP_RLE4_PUT(run);
+      BMP_RLE4_PUT((unsigned)(a << 4) | (b & 0x0Fu));
+      x += run;
+      continue;
+    }
+
+    // Gather literals until an encodable run starts.
+    uint32_t start = x;
+    uint32_t literals = 0;
+    while (x < width && literals < 255u) {
+      unsigned char ra = indices[x];
+      unsigned char rb = (x + 1u < width) ? indices[x + 1u] : ra;
+      uint32_t ahead = 1;
+      while (x + ahead < width && ahead < 4u &&
+          indices[x + ahead] == ((ahead & 1u) ? rb : ra)) {
+        ahead++;
+      }
+      if (ahead >= 4u || (ahead >= 3u && ra == rb)) {
+        break;
+      }
+      x++;
+      literals++;
+    }
+    if (literals < 3u) {
+      // Counts below three are escapes, so short stretches go out as encoded
+      // pairs of one - which in RLE4 means both nibbles set to the index.
+      for (uint32_t i = 0; i < literals; i++) {
+        unsigned char v = indices[start + i];
+        BMP_RLE4_PUT(1);
+        BMP_RLE4_PUT((unsigned)(v << 4) | (v & 0x0Fu));
+      }
+      continue;
+    }
+    BMP_RLE4_PUT(0);
+    BMP_RLE4_PUT(literals);
+    // Two indices to the byte, high nibble first.
+    size_t bytes = ((size_t)literals + 1u) / 2u;
+    for (size_t i = 0; i < bytes; i++) {
+      unsigned char hi = indices[start + (i * 2u)];
+      unsigned char lo = ((i * 2u) + 1u < literals)
+          ? indices[start + (i * 2u) + 1u]
+          : 0u;
+      BMP_RLE4_PUT((unsigned)(hi << 4) | (lo & 0x0Fu));
+    }
+    if (bytes & 1u) {
+      BMP_RLE4_PUT(0); // Pad to a 16-bit boundary.
+    }
+  }
+
+  BMP_RLE4_PUT(0); // End of line.
+  BMP_RLE4_PUT(0);
+#undef BMP_RLE4_PUT
+  return used;
+}
+
+/**
+ * Run-length encode one row of BGR triples, appending to `out`.
+ *
+ * OS/2's RLE24 has RLE8's escape structure with a three-byte value: an encoded
+ * run is a count and one BGR triple, and an absolute run is a count followed
+ * by that many triples, padded to a 16-bit boundary.
+ *
+ * @return the number of bytes appended, or SIZE_MAX if `capacity` was short.
+ */
+static size_t bmp_rle24_row(const unsigned char * bgr, uint32_t width,
+    unsigned char * out, size_t capacity) {
+  size_t used = 0;
+  uint32_t x = 0;
+
+#define BMP_RLE24_PUT(byte)                                                    \
+  do {                                                                         \
+    if (used >= capacity) {                                                    \
+      return SIZE_MAX;                                                         \
+    }                                                                          \
+    out[used++] = (unsigned char)(byte);                                       \
+  } while (0)
+#define BMP_RLE24_SAME(i, j)                                                   \
+  (bgr[(i) * 3u] == bgr[(j) * 3u] &&                                           \
+      bgr[((i) * 3u) + 1u] == bgr[((j) * 3u) + 1u] &&                          \
+      bgr[((i) * 3u) + 2u] == bgr[((j) * 3u) + 2u])
+
+  while (x < width) {
+    uint32_t run = 1;
+    while (x + run < width && run < 255u && BMP_RLE24_SAME(x + run, x)) {
+      run++;
+    }
+    // An encoded run costs four bytes and an absolute triple costs three, so a
+    // run pays from two upwards.
+    if (run >= 2u) {
+      BMP_RLE24_PUT(run);
+      BMP_RLE24_PUT(bgr[x * 3u]);
+      BMP_RLE24_PUT(bgr[(x * 3u) + 1u]);
+      BMP_RLE24_PUT(bgr[(x * 3u) + 2u]);
+      x += run;
+      continue;
+    }
+
+    uint32_t start = x;
+    uint32_t literals = 0;
+    while (x < width && literals < 255u) {
+      if (x + 1u < width && BMP_RLE24_SAME(x + 1u, x)) {
+        break;
+      }
+      x++;
+      literals++;
+    }
+    if (literals < 3u) {
+      for (uint32_t i = 0; i < literals; i++) {
+        BMP_RLE24_PUT(1);
+        BMP_RLE24_PUT(bgr[(start + i) * 3u]);
+        BMP_RLE24_PUT(bgr[((start + i) * 3u) + 1u]);
+        BMP_RLE24_PUT(bgr[((start + i) * 3u) + 2u]);
+      }
+      continue;
+    }
+    BMP_RLE24_PUT(0);
+    BMP_RLE24_PUT(literals);
+    for (uint32_t i = 0; i < literals; i++) {
+      BMP_RLE24_PUT(bgr[(start + i) * 3u]);
+      BMP_RLE24_PUT(bgr[((start + i) * 3u) + 1u]);
+      BMP_RLE24_PUT(bgr[((start + i) * 3u) + 2u]);
+    }
+    // The run is `literals * 3` bytes; pad when that is odd, which is when
+    // the count is.
+    if (literals & 1u) {
+      BMP_RLE24_PUT(0);
+    }
+  }
+
+  BMP_RLE24_PUT(0); // End of line.
+  BMP_RLE24_PUT(0);
+#undef BMP_RLE24_SAME
+#undef BMP_RLE24_PUT
+  return used;
+}
+
 // ---------------------------------------------------------------------------
 // Save
 // ---------------------------------------------------------------------------
@@ -410,6 +585,11 @@ typedef struct {
   uint16_t bit_count;       ///< Bits per pixel to write.
   uint32_t compression;     ///< biCompression, in the Windows vocabulary.
   uint32_t dib_size;        ///< DIB header length: 40, or 56 with masks.
+  /** True when dib_size names an OS/2 BITMAPCOREHEADER2 rather than a Windows
+   * header.  The two share their first 40 bytes, so only the length and the
+   * vocabulary of `compression` differ - and they differ in a way that matters:
+   * 4 is RLE24 in one and BI_JPEG in the other. */
+  bool os2;
   uint32_t palette_entries; ///< Palette entries to write; 0 for true color.
   bool top_down;            ///< True to write rows top to bottom.
   size_t stride;            ///< Bytes per row of uncompressed pixel data.
@@ -435,6 +615,8 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   const uint8_t want_rle =
       options ? options->bmp_rle : (uint8_t)GIMG_BMP_RLE_NEVER;
   const bool want_top_down = options && options->bmp_top_down;
+  const bool allow_2bit = options && options->bmp_allow_2bit;
+  const bool allow_rle24 = options && options->bmp_allow_rle24;
 
   if (want_rle == GIMG_BMP_RLE_AUTO && want_top_down) {
     // The format does not allow the pair: an RLE stream's end-of-line walks
@@ -529,7 +711,7 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           goto done;
         }
         if (bmp_collect_colors(raster, table) && table->count > 0) {
-          uint16_t depth = bmp_depth_for(table->count);
+          uint16_t depth = bmp_depth_for(table->count, allow_2bit);
           size_t plain_stride = 0, indexed_stride = 0;
           if (gimg_bmp_row_stride(width, 24u, &plain_stride) == GIMG_OK &&
               gimg_bmp_row_stride(width, depth, &indexed_stride) == GIMG_OK) {
@@ -593,7 +775,75 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     // both have to state its length before any of it is written.
     size_t encoded_size = 0;
     bool use_rle = false;
-    if (want_rle == GIMG_BMP_RLE_AUTO && indexed && plan.bit_count == 8u) {
+    const bool rle_indexed = want_rle == GIMG_BMP_RLE_AUTO && indexed &&
+        (plan.bit_count == 8u || plan.bit_count == 4u);
+    // RLE24 needs a true-color image and an OS/2 header to put it in, so it is
+    // only reached when the indexed forms were not taken.
+    const bool rle_true_color = want_rle == GIMG_BMP_RLE_AUTO && allow_rle24 &&
+        !indexed && plan.bit_count == 24u;
+    if (rle_true_color) {
+      // RLE24 exists only in OS/2's vocabulary, so writing it means writing an
+      // OS/2 header.  The two headers share their first 40 bytes, so this is
+      // a length and a compression number rather than a different writer.
+      size_t per_row;
+      size_t capacity;
+      if (!gcu_safe_mul_size((size_t)width, 4u, &per_row) ||
+          !gcu_safe_add_size(per_row, 2u, &per_row) ||
+          !gcu_safe_mul_size(per_row, (size_t)height, &capacity) ||
+          !gcu_safe_add_size(capacity, 2u, &capacity)) {
+        result = GIMG_ERR_LIMIT;
+        goto done;
+      }
+      encoded = (unsigned char *)gimg_malloc(alloc, capacity);
+      unsigned char * bgr = (unsigned char *)gimg_malloc(alloc,
+          (size_t)width * 3u);
+      if (!encoded || !bgr) {
+        gimg_free(alloc, bgr);
+        result = GIMG_ERR_OOM;
+        goto done;
+      }
+
+      size_t src_stride = gimg_raster_stride_bytes(raster);
+      const uint8_t * pixels =
+          (const uint8_t *)gimg_raster_pixels_const(raster);
+      encoded_size = 0;
+      for (uint32_t y = 0; y < height && encoded_size != SIZE_MAX; y++) {
+        uint32_t source_row = height - 1u - y;
+        const uint8_t * src = pixels + ((size_t)source_row * src_stride);
+        for (uint32_t x = 0; x < width; x++) {
+          uint8_t rgba[4];
+          bmp_sample(format, src, x, rgba);
+          bgr[(x * 3u) + 0u] = rgba[2];
+          bgr[(x * 3u) + 1u] = rgba[1];
+          bgr[(x * 3u) + 2u] = rgba[0];
+        }
+        size_t n = bmp_rle24_row(bgr, width, encoded + encoded_size,
+            capacity - encoded_size);
+        if (n == SIZE_MAX) {
+          encoded_size = SIZE_MAX;
+          break;
+        }
+        encoded_size += n;
+      }
+      gimg_free(alloc, bgr);
+
+      if (encoded_size != SIZE_MAX && encoded_size + 2u <= capacity) {
+        encoded[encoded_size++] = 0; // End of bitmap.
+        encoded[encoded_size++] = 1;
+        if (encoded_size < plan.pixel_bytes) {
+          use_rle = true;
+          plan.os2 = true;
+          plan.dib_size = GIMG_BMP_OS2V2_MAX_SIZE;
+          plan.compression = GIMG_BMP_OS2_RLE24;
+          plan.pixel_bytes = encoded_size;
+        }
+      }
+      if (!use_rle) {
+        gimg_free(alloc, encoded);
+        encoded = NULL;
+      }
+    }
+    else if (rle_indexed) {
       // Worst case per row: every pixel its own encoded pair, plus the
       // end-of-line, plus the end-of-bitmap at the end of the image.
       size_t per_row;
@@ -632,8 +882,11 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
               ((uint32_t)rgba[1] << 8) | (uint32_t)rgba[2];
           indices[x] = (unsigned char)bmp_color_table_lookup(table, packed);
         }
-        size_t n = bmp_rle8_row(indices, width, encoded + encoded_size,
-            capacity - encoded_size);
+        size_t n = plan.bit_count == 8u
+            ? bmp_rle8_row(indices, width, encoded + encoded_size,
+                  capacity - encoded_size)
+            : bmp_rle4_row(indices, width, encoded + encoded_size,
+                  capacity - encoded_size);
         if (n == SIZE_MAX) {
           encoded_size = SIZE_MAX;
           break;
@@ -647,7 +900,8 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         encoded[encoded_size++] = 1;
         if (encoded_size < plan.pixel_bytes) {
           use_rle = true;
-          plan.compression = GIMG_BMP_BI_RLE8;
+          plan.compression = plan.bit_count == 8u ? GIMG_BMP_BI_RLE8
+                                                  : GIMG_BMP_BI_RLE4;
           plan.pixel_bytes = encoded_size;
         }
       }

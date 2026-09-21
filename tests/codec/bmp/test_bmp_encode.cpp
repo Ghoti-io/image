@@ -205,6 +205,32 @@ Rgba twelve_colors(uint32_t x, uint32_t y) {
       (uint8_t)(n * 9u), 255};
 }
 
+/** Four colors, which is what 2 bits per pixel holds and nothing fewer. */
+Rgba four_colors(uint32_t x, uint32_t y) {
+  static const Rgba kPalette[4] = {{200, 30, 40, 255}, {30, 200, 40, 255},
+      {40, 30, 200, 255}, {220, 220, 40, 255}};
+  return kPalette[((x / 3u) + y) % 4u];
+}
+
+/** Twelve colors in long runs: 4 bits per pixel, and worth RLE4. */
+Rgba twelve_colors_in_runs(uint32_t x, uint32_t y) {
+  (void)y;
+  uint8_t n = (uint8_t)((x / 16u) % 12u);
+  return Rgba{(uint8_t)(n * 21u), (uint8_t)(255u - n * 17u),
+      (uint8_t)(n * 9u), 255};
+}
+
+/** True color in long runs: too many colors to index, but very compressible.
+ *
+ * At 512 wide and 8 tall this is 64 runs of 8 pixels on each of 8 rows, every
+ * run a different colour - 512 of them, which is past what a palette holds.
+ */
+Rgba true_color_in_runs(uint32_t x, uint32_t y) {
+  uint32_t n = ((x / 8u) * 8u) + y;
+  return Rgba{(uint8_t)(n & 0xFFu), (uint8_t)((n >> 8) + 1u),
+      (uint8_t)((n * 13u) & 0xFFu), 255};
+}
+
 /** Thirty-two colors in runs of eight: 8 bits per pixel, and compressible. */
 Rgba thirty_two_colors_in_runs(uint32_t x, uint32_t y) {
   (void)y;
@@ -562,6 +588,113 @@ TEST(BmpEncode, ThirtyTwoColorImageIsWrittenAtEightBitsPerPixel) {
   expect_round_trip(bytes, 256, 8, thirty_two_colors_in_runs);
   publish_for_verification("indexed_8bit_256x8.bmp", bytes, 256, 8,
       thirty_two_colors_in_runs);
+}
+
+TEST(BmpEncode, TwoBitDepthIsOnlyUsedWhenTheCallerAsksForIt) {
+  // 2 bits per pixel is a Windows CE addition the desktop API does not accept,
+  // so a four-colour image goes out at 4 bits unless the caller says they can
+  // read 2 back.  Nobody gets the smaller file by accident.
+  GIMG_Raster * raster = make_raster(64, 8, four_colors);
+  ASSERT_NE(raster, nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+  EXPECT_EQ(read_u16(bytes, 28), 4u) << "biBitCount without the option";
+  expect_round_trip(bytes, 64, 8, four_colors);
+}
+
+TEST(BmpEncode, FourColorImageIsWrittenAtTwoBitsPerPixelWhenAllowed) {
+  GIMG_Raster * raster = make_raster(64, 8, four_colors);
+  ASSERT_NE(raster, nullptr);
+
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_allow_2bit = 1;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u16(bytes, 28), 2u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 30), 0u) << "BI_RGB";
+  EXPECT_EQ(read_u32(bytes, 46), 4u) << "biClrUsed";
+  // 64 pixels at 2 bits is 16 bytes a row, already 4-byte aligned.
+  EXPECT_EQ(read_u32(bytes, 34), 16u * 8u) << "biSizeImage";
+
+  expect_round_trip(bytes, 64, 8, four_colors);
+  publish_for_verification("indexed_2bit_64x8.bmp", bytes, 64, 8, four_colors);
+}
+
+TEST(BmpEncode, FourBitImageInRunsIsWrittenAsRle4) {
+  // RLE4's alternating nibbles make it larger than plain rows on most images
+  // that are not synthetic, so it is written only where it actually wins - and
+  // the writer measures rather than assumes.
+  GIMG_Raster * raster = make_raster(256, 8, twelve_colors_in_runs);
+  ASSERT_NE(raster, nullptr);
+
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u16(bytes, 28), 4u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 30), 2u) << "BI_RLE4";
+  EXPECT_LT(read_u32(bytes, 34), 128u * 8u) << "smaller than the plain rows";
+
+  expect_round_trip(bytes, 256, 8, twelve_colors_in_runs);
+  publish_for_verification("rle4_256x8.bmp", bytes, 256, 8,
+      twelve_colors_in_runs);
+}
+
+TEST(BmpEncode, Rle4IsNotWrittenWhenItWouldBeLarger) {
+  // Twelve colours changing every four pixels encodes to more than it saves.
+  // The writer must fall back to plain rows rather than produce a bigger file
+  // for having been asked to compress.
+  GIMG_Raster * raster = make_raster(64, 8, twelve_colors);
+  ASSERT_NE(raster, nullptr);
+
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+  EXPECT_EQ(read_u32(bytes, 30), 0u) << "BI_RGB: RLE4 would have been larger";
+  expect_round_trip(bytes, 64, 8, twelve_colors);
+}
+
+TEST(BmpEncode, Rle24NeedsItsOwnOptionAndWritesAnOs2Header) {
+  // RLE24 exists only in OS/2's vocabulary: compression 4 means RLE24 in a
+  // BITMAPCOREHEADER2 and BI_JPEG in a Windows header, so writing it changes
+  // what kind of file this is.  That is why it has an option of its own.
+  GIMG_Raster * plain = make_raster(512, 8, true_color_in_runs);
+  ASSERT_NE(plain, nullptr);
+  GIMG_Save_Options rle_only;
+  memset(&rle_only, 0, sizeof(rle_only));
+  rle_only.bmp_rle = GIMG_BMP_RLE_AUTO;
+  std::vector<uint8_t> without;
+  ASSERT_EQ(save_raster_with_options(plain, &rle_only, without), GIMG_OK);
+  EXPECT_EQ(read_u32(without, 14), 40u) << "still a Windows header";
+  EXPECT_EQ(read_u32(without, 30), 0u) << "BI_RGB";
+
+  GIMG_Raster * raster = make_raster(512, 8, true_color_in_runs);
+  ASSERT_NE(raster, nullptr);
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+  options.bmp_allow_rle24 = 1;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+  EXPECT_EQ(read_u32(bytes, 14), 64u) << "BITMAPCOREHEADER2";
+  EXPECT_EQ(read_u16(bytes, 28), 24u) << "biBitCount";
+  EXPECT_EQ(read_u32(bytes, 30), 4u) << "OS/2 RLE24";
+  EXPECT_LT(bytes.size(), without.size()) << "smaller than the plain rows";
+
+  expect_round_trip(bytes, 512, 8, true_color_in_runs);
+  publish_for_verification("rle24_os2_512x8.bmp", bytes, 512, 8,
+      true_color_in_runs);
 }
 
 TEST(BmpEncode, TooManyColorsStaysTrueColor) {

@@ -316,7 +316,7 @@ adding or restricting features.
 | **Document shape** | One item, decoded to `GIMG_PIXEL_RGBA8`; an OS/2 `BA` container is as many items as it holds entries | A plain BMP holds a single image, so an item index above 0 &rarr; `GIMG_ERR_UNSUPPORTED`. The `BA` exception is real: its entries are one picture rendered for different displays, and which to use is the caller's choice, not this codec's |
 | **`BA` bitmap array** | The `'BA'` chain is walked and each entry loaded as the ordinary bitmap it is, through the same re-entry a `BI_JPEG` wrapper uses | An entry's `bfOffBits` counts from the start of the *container*, not the entry. The chain must advance: an `offNext` at or before the header holding it &rarr; `GIMG_ERR_CORRUPT`, which is also what makes a cycle impossible. At most 64 entries, and a container needs a sized stream since the chain is walked by absolute offset |
 | **Limits** | `max_decoded_pixels` at load and at decode, `max_memory` on the pixel buffer and on an embedded ICC profile | Exceeded &rarr; `GIMG_ERR_LIMIT`, before the allocation rather than after |
-| **Save** | 32-bit `BI_BITFIELDS` with a V3 header when alpha is present; 1-, 4- or 8-bit indexed, optionally `BI_RLE8`; 24-bit `BI_RGB` otherwise. Bottom-up or top-down. A V4 or V5 header when the raster states a color space | A 12- or 16-bit GRAY or RGBA raster is narrowed to 8 bits first; any other raster &rarr; `GIMG_ERR_UNSUPPORTED`. A zero dimension &rarr; `GIMG_ERR_FORMAT`. A file larger than `UINT32_MAX` &rarr; `GIMG_ERR_LIMIT`, since `bfSize` cannot describe it. Top-down together with RLE &rarr; `GIMG_ERR_UNSUPPORTED`. No RLE4, no RLE24, no 2-bit output |
+| **Save** | 32-bit `BI_BITFIELDS` with a V3 header when alpha is present; 1-, 4- or 8-bit indexed (2-bit on request), optionally `BI_RLE8` or `BI_RLE4`; 24-bit `BI_RGB` otherwise, or OS/2 RLE24 on request. Bottom-up or top-down. A V4 or V5 header when the raster states a color space | A 12- or 16-bit GRAY or RGBA raster is narrowed to 8 bits first; any other raster &rarr; `GIMG_ERR_UNSUPPORTED`. A zero dimension &rarr; `GIMG_ERR_FORMAT`. A file larger than `UINT32_MAX` &rarr; `GIMG_ERR_LIMIT`, since `bfSize` cannot describe it. Top-down together with RLE &rarr; `GIMG_ERR_UNSUPPORTED`. 2-bit and RLE24 are written only when `bmp_allow_2bit` or `bmp_allow_rle24` says so: Pillow refuses a 2-bit file outright and nothing installed here reads RLE24, so neither is something to produce by accident. Every RLE is measured against the plain rows and used only when it is smaller |
 
 ## Where this codec differs from other decoders
 
@@ -467,16 +467,14 @@ Listed so the absences are visible rather than discovered.
   question is rarely "may I open this" and usually "what would this even mean
   here".
 
-- **Writing RLE4 and RLE24.** `BI_RLE8` is written on request; the other two
-  are not. RLE4's alternating nibbles make it larger than RLE8 on most images
-  that are not synthetic, and RLE24 is an OS/2 encoding Windows never reads.
-- **Writing 2 bits per pixel.** It is read but never written: a Windows CE
-  addition the desktop API does not accept, and an image that fits in four
-  colors fits in 1 or 4 bits as well.
 - **Writing a `BI_JPEG` or `BI_PNG` wrapper.** Both are read; neither is
   written. Wrapping a JPEG or a PNG inside a BMP produces a file most readers
   refuse - the wrapper is worth reading and not worth making, and a caller who
   wants a JPEG can save one.
+- **Writing Huffman 1D.** Read but not written, for the same reason: the
+  encoding belongs to OS/2 2.x, and a file carrying it is not a Windows BMP.
+  Unlike the wrapper above this one is merely unbuilt rather than unwanted -
+  the decoder's tables would serve an encoder unchanged.
 
 ---
 

@@ -461,12 +461,42 @@ typedef struct {
    * `bmptopnm` refuses several of bmpsuite's RLE files, to name one reader in
    * reach of this repository.
    *
-   * GIMG_BMP_RLE_AUTO writes BI_RLE8 when the image is being stored at 8 bits
-   * through a palette and the encoded rows come out smaller than the plain
-   * ones.  It applies to nothing else: RLE4's alternating nibbles make it
-   * larger than RLE8 on most images that are not synthetic, and RLE24 is an
-   * OS/2 encoding that Windows never reads.  Ignored for non-BMP. */
+   * GIMG_BMP_RLE_AUTO writes BI_RLE8 or BI_RLE4 - whichever matches the depth
+   * the image is being stored at - when the encoded rows come out smaller than
+   * the plain ones.  Both are measured rather than assumed: RLE4's alternating
+   * nibbles make it larger than RLE4's plain rows on most images that are not
+   * synthetic, so it is written only where it actually wins.  RLE24 is not
+   * reached from here; it needs bmp_allow_rle24, because it can only be
+   * written in an OS/2 header.  Ignored for non-BMP. */
   uint8_t bmp_rle;
+
+  /** Whether the BMP writer may store an indexed image at 2 bits per pixel.
+   *
+   * 0 (the default) uses 1, 4 or 8 bits, which is what the desktop Windows
+   * API accepts.  2 bits per pixel is a Windows CE addition: it is read by
+   * this codec and by little else, and an image that fits in four colors fits
+   * in 1 or 4 bits as well, so writing one trades reach for a few bytes.
+   *
+   * 1 lets the depth chooser use it when the palette has three or four
+   * entries.  A caller who knows what will read the file can have those bytes;
+   * nobody gets them by accident.  Ignored for non-BMP. */
+  uint8_t bmp_allow_2bit;
+
+  /** Whether the BMP writer may use the OS/2 RLE24 encoding.
+   *
+   * 0 (the default) never writes it.  RLE24 exists only in an OS/2
+   * BITMAPCOREHEADER2, where compression 4 means RLE24 and Windows reads the
+   * same number as BI_JPEG - so a file carrying it is not a Windows BMP at
+   * all, and handing one to a Windows reader is worse than handing it
+   * something merely uncompressed.
+   *
+   * 1 lets a true-color image be written as an OS/2 bitmap with RLE24 when
+   * the encoded rows come out smaller.  The header changes vocabulary with
+   * it; that is not a side effect but the whole of what this option means.
+   * Requires bmp_rle to be GIMG_BMP_RLE_AUTO as well: this says which
+   * encodings are permitted, not that anything should be compressed.
+   * Ignored for non-BMP. */
+  uint8_t bmp_allow_rle24;
 
   /** Whether the BMP writer stores rows top to bottom.
    *
