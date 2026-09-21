@@ -703,7 +703,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 
 # General commands
 .PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build coverage check-symbols
-.PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif
+.PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif fuzz-gif-encode
 .PHONY: bmp-dump-raster bmpsuite bmp-oracle-tools jpeg-oracle-tools gif-oracle-tools
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-verify-gif test-watch uninstall watch
@@ -1408,6 +1408,15 @@ fuzz-gif: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for GIF load/decode (req
 	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_gif_load.cpp -o $(OBJ_DIR)/fuzz_gif_load.o
 	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_gif_load$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_gif_load.o $(LDFLAGS) $(FUZZ_LIBS)
 	@echo "Fuzz harness: $(APP_DIR)/fuzz_gif_load$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_gif_load tests/fuzz/corpus"
+
+fuzz-gif-encode: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for GIF round-trip load->save->load (requires clang++)
+	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
+		echo "fuzz-gif-encode requires $(FUZZ_CXX); install clang or set FUZZ_CXX"; exit 1; \
+	fi
+	@mkdir -p $(OBJ_DIR) $(APP_DIR)
+	$(FUZZ_CXX) $(CXXFLAGS) $(INCLUDE) $(FUZZ_FLAGS) -c tests/fuzz/fuzz_gif_encode.cpp -o $(OBJ_DIR)/fuzz_gif_encode.o
+	$(FUZZ_CXX) $(FUZZ_FLAGS) -o $(APP_DIR)/fuzz_gif_encode$(EXE_EXTENSION) $(OBJ_DIR)/fuzz_gif_encode.o $(LDFLAGS) $(FUZZ_LIBS)
+	@echo "Fuzz harness: $(APP_DIR)/fuzz_gif_encode$(EXE_EXTENSION). Run with corpus: LD_LIBRARY_PATH=\"$(TEST_LD_PATH)\" $(APP_DIR)/fuzz_gif_encode tests/fuzz/corpus"
 
 fuzz-bmp-encode: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for BMP round-trip load->save->load (requires clang++)
 	@if [ -z "$(FUZZ_CXX_OK)" ]; then \
