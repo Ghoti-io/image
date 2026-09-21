@@ -259,11 +259,23 @@ LIBOBJECTS := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SOURCES))
 # to luck on a machine with an older one.
 TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cflags gtest` -pthread
 
-# The checks `make test` runs besides the tests themselves. Named in a
+# The checks the test targets run besides the tests themselves. Named in a
 # variable so that a build which cannot satisfy them can clear it: the
 # coverage target does, because --coverage links the gcov runtime, whose
 # mangle_path check-symbols is right to reject in a shipping library and
 # wrong to reject in an instrumented one. Spelled as text's TEST_GATES is.
+#
+# Every target that builds $(APP_DIR)/$(TARGET) and runs the tests against it
+# depends on this: test, test-quiet, test-valgrind and test-valgrind-quiet.
+# For a while only `test` did, and the gate sat failing for as long as it took
+# somebody to run the one target that is not the readable one - which is the
+# same as not having a gate. A check that only runs where nobody looks reports
+# nothing either way.
+#
+# test-asan is the exception, and deliberately. check-symbols inspects
+# $(APP_DIR)/$(TARGET), which the ASan targets do not build; making it a
+# dependency there would link a release library as a side effect of asking for
+# an instrumented run, to re-check exactly what `make test` already checked.
 TEST_GATES ?= check-symbols
 
 
@@ -867,7 +879,7 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 	printf "\033[0;32mGIF output verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
-test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
+test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;36m%-30s %8s %10s %s\033[0m\n" "Test Suite" "Tests" "Time" "Status"; \
@@ -935,7 +947,7 @@ test-verify-gif: ## Run only GIF output verification (run 'make test' for full t
 		printf "\033[0;32mGIF output verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
-test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
+test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 ifeq ($(OS_NAME), Linux)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
@@ -958,7 +970,7 @@ endif
 # even when Valgrind reports 0 errors and 0 leaks. Use test-valgrind-noleak to
 # pass when Valgrind is clean regardless of test results.
 test-valgrind-quiet: ## Run tests under valgrind with minimal output (Linux only)
-test-valgrind-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
+test-valgrind-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 ifeq ($(OS_NAME), Linux)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;35m%-30s %8s %10s %s\033[0m\n" "Test Suite (Valgrind)" "Tests" "Time" "Status"; \
