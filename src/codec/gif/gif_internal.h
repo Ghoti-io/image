@@ -162,6 +162,11 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
 GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
+/** @brief Save callback: document -> GIF, one image block per frame. */
+GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
+    GIMG_Stream * stream, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report);
+
 /** @brief Release the document state attached by load. */
 void gimg_gif_free_doc_state(GIMG_Codec * codec, void * codec_private);
 

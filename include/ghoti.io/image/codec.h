@@ -546,6 +546,42 @@ typedef struct {
    * format does not allow compression and top-down rows together - an RLE
    * stream's end-of-line walks one way only.  Ignored for non-BMP. */
   uint8_t bmp_top_down;
+
+  /** Whether the GIF writer stores rows in the four-pass interlaced order
+   * (89a 20).
+   *
+   * 0 (the default) writes them top to bottom.  1 interlaces them, which lets
+   * a reader show a coarse version of the picture before the whole file has
+   * arrived - the reason the format has it, and worth little now that files
+   * arrive faster than they are looked at.  It changes no pixel either way.
+   * Ignored for non-GIF. */
+  uint8_t gif_interlace;
+
+  /** What the GIF writer does with a pixel that is neither fully opaque nor
+   * fully transparent.
+   *
+   * GIF has one bit of transparency: a single palette index is designated
+   * transparent and every other pixel is opaque (89a 23).  There is no way to
+   * store a half-covered edge, so an alpha of 128 cannot be written, only
+   * decided about - and which way to decide is the caller's business, not the
+   * codec's.
+   *
+   * 0 (the default) refuses such a raster with GIMG_ERR_UNSUPPORTED rather
+   * than choosing silently.  A value of 1 to 255 is a threshold: alpha at or
+   * above it becomes opaque, below it becomes the transparent index.  128 is
+   * the usual choice.  Fully opaque and fully transparent pixels are written
+   * the same way whatever this says.  Ignored for non-GIF. */
+  uint16_t gif_alpha_threshold;
+
+  /** How many times a written GIF animation repeats.
+   *
+   * Only meaningful when the document holds more than one frame, and written
+   * as the NETSCAPE2.0 Application Extension that every decoder reads for
+   * this (89a 26 describes the block; the loop count inside it is a
+   * convention, not part of the specification).  0, the default, means repeat
+   * forever, which is what the convention assigns to zero and what nearly
+   * every animation asks for.  Ignored for non-GIF and for a single frame. */
+  uint16_t gif_loop_count;
 } GIMG_Save_Options;
 
 /** @name PNG row filters (PNG 9.2, Table 9.1)

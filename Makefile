@@ -445,7 +445,7 @@ $(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
 $(OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_GIF=\"$(TEST_OUT_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Test in tests/codec/png/ (object name from basename for link)
 $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
@@ -479,6 +479,7 @@ TEST_DATA_BMP := $(IMAGE_ROOT)/tests/data/bmp
 TEST_DATA_GIF := $(IMAGE_ROOT)/tests/data/gif
 # Output directory for BMP encode test output.
 TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
+TEST_OUT_GIF := $(IMAGE_ROOT)/tests/out/gif
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
 	@mkdir -p $(@D)
@@ -688,7 +689,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 .PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode
 .PHONY: bmp-dump-raster bmpsuite bmp-oracle-tools jpeg-oracle-tools gif-oracle-tools
 # Release build commands
-.PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-watch uninstall watch
+.PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-verify-gif test-watch uninstall watch
 # Debug build commands
 .PHONY: all-debug install-debug test-debug test-valgrind-debug test-watch-debug uninstall-debug watch-debug
 
@@ -837,7 +838,7 @@ endif
 
 test: ## Make and run the Unit tests, then verify PNG, JPEG and BMP output with outside decoders
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
-	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP)
+	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
 		printf "\033[0;30;43m\n"; \
@@ -855,11 +856,14 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 	printf "\033[0;32mJPEG output verification passed.\033[0m\n"; \
 	printf "\033[0;30;43m\n############################\n### Verifying BMP output ###\n############################\033[0m\n\n"; \
 	python3 $(CURDIR)/tests/data/bmp/verify_bmp_output.py $(TEST_OUT_BMP) && \
-	printf "\033[0;32mBMP output verification passed.\033[0m\n"
+	printf "\033[0;32mBMP output verification passed.\033[0m\n"; \
+	printf "\033[0;30;43m\n############################\n### Verifying GIF output ###\n############################\033[0m\n\n"; \
+	python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
+	printf "\033[0;32mGIF output verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
 test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
-	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP)
+	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;36m%-30s %8s %10s %s\033[0m\n" "Test Suite" "Tests" "Time" "Status"; \
 	printf "\033[1;36m%-30s %8s %10s %s\033[0m\n" "------------------------------" "--------" "----------" "------"; \
@@ -897,7 +901,8 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
 		python3 $(CURDIR)/tests/data/png/verify_png_output.py $(TEST_OUT_PNG) && \
 		python3 $(CURDIR)/tests/data/jpeg/verify_jpeg_output.py $(TEST_OUT_JPEG) && \
 		python3 $(CURDIR)/tests/data/bmp/verify_bmp_output.py $(TEST_OUT_BMP) && \
-		printf "\033[0;32mPNG, JPEG and BMP output verification passed.\033[0m\n"; \
+		python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
+		printf "\033[0;32mPNG, JPEG, BMP and GIF output verification passed.\033[0m\n"; \
 	else \
 		printf "\033[0;31m%-30s %8d %6dms FAIL (%d failed)\033[0m\n" "TOTAL" "$$total_tests" "$$total_time" "$$total_failed"; \
 		printf "$$failed_suites\n"; \
@@ -917,7 +922,12 @@ test-verify-jpeg: ## Run only JPEG output verification (run 'make test' for full
 test-verify-bmp: ## Run only BMP output verification (run 'make test' for full test + verify)
 	@mkdir -p $(TEST_OUT_BMP)
 	@python3 $(CURDIR)/tests/data/bmp/verify_bmp_output.py $(TEST_OUT_BMP) && \
-		printf "\033[0;32mBMP output verification passed.\033[0m\n"
+		printf "\033[0;32mBMP output verification passed.\033[0m\n
+
+test-verify-gif: ## Run only GIF output verification (run 'make test' for full test + verify)
+	@mkdir -p $(TEST_OUT_GIF)
+	@python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
+		printf "\033[0;32mGIF output verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
 test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES)
@@ -1060,7 +1070,7 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
 $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_GIF=\"$(TEST_OUT_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp
 	@mkdir -p $(@D)
