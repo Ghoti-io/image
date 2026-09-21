@@ -71,7 +71,6 @@ REJECT = {
     "rletopdown.bmp": "RLE with top-down rows, which the format forbids",
     # Recognized, deliberately not implemented.  Each is listed in
     # documentation/formats/bmp.md under "Not implemented".
-    "pal1huffmsb.bmp": "OS/2 Huffman 1D compression",
 }
 
 # Files where an installed decoder is known to be wrong, with what is wrong

@@ -315,9 +315,8 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
         out->compression = GIMG_BMP_COMP_RLE24;
         break;
       case GIMG_BMP_OS2_HUFFMAN1D:
-        bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
-            "OS/2 Huffman 1D compression is not implemented");
-        return GIMG_ERR_UNSUPPORTED;
+        out->compression = GIMG_BMP_COMP_HUFFMAN1D;
+        break;
       default:
         bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
             "unsupported compression method");
@@ -369,6 +368,13 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
       if (out->bit_count != 4) {
         bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
             "RLE4 requires 4 bits per pixel");
+        return GIMG_ERR_CORRUPT;
+      }
+      break;
+    case GIMG_BMP_COMP_HUFFMAN1D:
+      if (out->bit_count != 1) {
+        bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
+            "Huffman 1D requires 1 bit per pixel");
         return GIMG_ERR_CORRUPT;
       }
       break;
@@ -646,6 +652,7 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
 
   bool variable_length =
       gimg_bmp_is_rle(header->compression) ||
+      header->compression == GIMG_BMP_COMP_HUFFMAN1D ||
       gimg_bmp_is_embedded(header->compression);
 
   size_t needed;
@@ -1015,6 +1022,49 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   state->palette_count = header.palette_count;
   state->pixels = pixels;
   state->pixels_size = pixels_size;
+
+  // A Huffman stream is expanded here rather than at decode, into exactly the
+  // packed rows an uncompressed 1-bit image would have carried.  After this
+  // the state holds an ordinary 1-bit raster and every path downstream - the
+  // palette lookup, the bottom-up flip, the limits - is the one that was
+  // already there and already tested.
+  if (header.compression == GIMG_BMP_COMP_HUFFMAN1D) {
+    size_t stride;
+    r = gimg_bmp_row_stride(header.width, header.bit_count, &stride);
+    size_t expanded_size = 0;
+    if (r == GIMG_OK &&
+        !gcu_safe_mul_size(stride, (size_t)header.height, &expanded_size)) {
+      r = GIMG_ERR_LIMIT;
+    }
+    if (r == GIMG_OK && limits && limits->max_memory &&
+        expanded_size > limits->max_memory) {
+      r = GIMG_ERR_LIMIT;
+    }
+    unsigned char * expanded = NULL;
+    if (r == GIMG_OK) {
+      expanded = (unsigned char *)gimg_malloc(alloc, expanded_size);
+      if (!expanded) {
+        r = GIMG_ERR_OOM;
+      }
+    }
+    if (r == GIMG_OK) {
+      r = gimg_bmp_huffman_expand(state->pixels, state->pixels_size,
+          header.width, header.height, stride, expanded);
+      if (r != GIMG_OK) {
+        bmp_load_diag(diagnostics, (size_t)data_offset,
+            "the Huffman 1D stream could not be decoded");
+      }
+    }
+    if (r != GIMG_OK) {
+      gimg_free(alloc, expanded);
+      gimg_bmp_free_doc_state(codec, state);
+      return r;
+    }
+    gimg_free(alloc, state->pixels);
+    state->pixels = expanded;
+    state->pixels_size = expanded_size;
+    state->header.compression = GIMG_BMP_COMP_RGB;
+  }
   state->rgb32_alpha = options ? options->bmp_rgb32_alpha
                                : (uint8_t)GIMG_BMP_RGB32_ALPHA_IGNORE;
 

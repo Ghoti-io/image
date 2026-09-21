@@ -190,6 +190,36 @@ TEST(BmpDecode, BitmapArrayEntryOffsetsCountFromTheContainer) {
   EXPECT_EQ(img.at(0, 0), (Rgba{255, 0, 0, 255}));
 }
 
+TEST(BmpDecode, Huffman1DBlackIsPaletteIndexOne) {
+  // ITU-T T.4 names its runs "white" and "black"; no BMP document says which
+  // palette index each means, and the format's own author calls the
+  // documentation close to non-existent.  It is settled by measurement:
+  // bmpsuite stores one picture as both q/pal1huffmsb.bmp and g/pal1.bmp, and
+  // only black = index 1 makes those decode alike.  The palette here is red
+  // and blue rather than black and white so that the opposite choice would be
+  // obvious rather than merely darker.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_8x2_huffman1d.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  ASSERT_EQ(img.width(), 8u);
+  ASSERT_EQ(img.height(), 2u);
+  // White runs first: three of index 0, then five of index 1.
+  EXPECT_EQ(img.at(0, 0), (Rgba{255, 0, 0, 255}));
+  EXPECT_EQ(img.at(3, 0), (Rgba{0, 0, 255, 255}));
+}
+
+TEST(BmpDecode, Huffman1DLineStartingOnBlackOpensWithAnEmptyWhiteRun) {
+  // Every T.4 line begins with a white run, so a line whose first pixel is
+  // black opens with a white run of zero.  A decoder that skipped that code
+  // would read the black run as white and invert the whole line.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_8x2_huffman1d.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  EXPECT_EQ(img.at(0, 1), (Rgba{0, 0, 255, 255}));
+  EXPECT_EQ(img.at(1, 1), (Rgba{0, 0, 255, 255}));
+  EXPECT_EQ(img.at(2, 1), (Rgba{255, 0, 0, 255}));
+}
+
 TEST(BmpDecode, SinglePixel) {
   Loaded img;
   ASSERT_EQ(img.load("bmp_1x1_24bit.bmp"), GIMG_OK);
@@ -414,10 +444,19 @@ TEST(BmpDecode, Os2V2HeaderMayStopAtSixteenBytes) {
 
 TEST(BmpLoad, Os2CompressionThreeIsHuffmanAndNotBitfields) {
   // 3 is BI_BITFIELDS to a Windows header and Huffman 1D to an OS/2 one.
-  // Reading it as bitfields would look for masks that are not there and
-  // decode whatever followed the header as a channel layout.
+  // Reading it as bitfields would look for masks that are not there, and would
+  // also refuse the file for having 1 bit per pixel where bitfields need 16 or
+  // 32 - so a file that loads at all has been read under the right vocabulary.
   Loaded img;
-  EXPECT_EQ(img.load("bmp_8x2_os2v2_huffman.bmp"), GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(img.load("bmp_8x2_huffman1d.bmp"), GIMG_OK);
+}
+
+TEST(BmpLoad, Huffman1DStreamThatMatchesNoCodeIsCorrupt) {
+  // The fixture's pixel data is eight zero bytes, which is neither a run of
+  // codes nor a valid end-of-line.  Decoding has to stop rather than loop or
+  // invent pixels; the file is refused, not returned half-filled.
+  Loaded img;
+  EXPECT_EQ(img.load("bmp_8x2_os2v2_huffman.bmp"), GIMG_ERR_CORRUPT);
 }
 
 TEST(BmpDecode, Os2Rle24) {

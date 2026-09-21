@@ -599,6 +599,49 @@ def bitmap_array_fixture() -> None:
     write("bmp_array_2_entries.bmp", out)
 
 
+def huffman_fixture() -> None:
+    """An OS/2 BMP compressed with CCITT Group 3 one-dimensional coding.
+
+    bmpsuite's q/pal1huffmsb.bmp is the conformance case and is checked against
+    g/pal1.bmp, the same picture stored plainly.  This one is small enough to
+    reason about by hand and exists to pin two things that picture cannot say
+    on its own: that a line beginning with black opens with a zero-length white
+    run, and which palette index T.4's "black" means.
+
+    The palette is deliberately not black-and-white - index 0 is red and index
+    1 is blue - so that a decoder which inverted the two colours would produce
+    a visibly different image rather than a plausible one.
+    """
+    # T.4 terminating codes, as (bits, length).
+    W = {0: ("00110101", 8), 3: ("1000", 4), 6: ("1110", 4)}
+    B = {2: ("11", 2), 5: ("0011", 4)}
+
+    def encode(runs):
+        """runs: alternating (white, black, white, ...) run lengths."""
+        out = ""
+        for i, n in enumerate(runs):
+            table = W if i % 2 == 0 else B
+            out += table[n][0]
+            assert len(table[n][0]) == table[n][1]
+        return out
+
+    # Image rows, top to bottom: WWWBBBBB then BBWWWWWW.  The second opens with
+    # a white run of zero, which is the case a line starting on black needs.
+    top = encode([3, 5])
+    bottom = encode([0, 2, 6])
+    # BMP stores the last row first, so the bottom row is encoded first.
+    stream = bottom + top
+    stream += "0" * ((-len(stream)) % 8)
+    data = bytes(int(stream[i:i + 8], 2) for i in range(0, len(stream), 8))
+
+    # A 64-byte BITMAPCOREHEADER2 with ulCompression 3: Huffman 1D to OS/2,
+    # which is BI_BITFIELDS to Windows at the same number.
+    dib = struct.pack("<IiiHHIIiiII", 64, 8, 2, 1, 1, 3, len(data), 0, 0, 0, 0)
+    dib += struct.pack("<HHHHIIII", 0, 0, 0, 0, 0, 0, 0, 0)
+    palette = bytes([0, 0, 255, 0]) + bytes([255, 0, 0, 0])  # red, then blue
+    write("bmp_8x2_huffman1d.bmp", assemble(dib, palette, data))
+
+
 def malformed_fixtures() -> None:
     colors = [(255, 0, 0), (0, 255, 0)]
     palette = b"".join(bytes([b, g, r, 0]) for (r, g, b) in colors)
@@ -670,5 +713,7 @@ if __name__ == "__main__":
     rgba64_fixture()
     print("Bitmap array fixture:")
     bitmap_array_fixture()
+    print("Huffman 1D fixture:")
+    huffman_fixture()
     print("Malformed fixtures:")
     malformed_fixtures()

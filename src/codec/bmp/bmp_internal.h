@@ -123,6 +123,7 @@ typedef enum {
   GIMG_BMP_COMP_RLE8,      ///< 8-bit run-length encoding.
   GIMG_BMP_COMP_RLE4,      ///< 4-bit run-length encoding.
   GIMG_BMP_COMP_RLE24,     ///< 24-bit run-length encoding (OS/2 2.x).
+  GIMG_BMP_COMP_HUFFMAN1D, ///< CCITT Group 3 one-dimensional (OS/2 2.x).
   GIMG_BMP_COMP_BITFIELDS, ///< Uncompressed, channel layout given by masks.
   GIMG_BMP_COMP_JPEG,      ///< The pixel data is a whole JPEG stream.
   GIMG_BMP_COMP_PNG        ///< The pixel data is a whole PNG stream.
@@ -307,6 +308,25 @@ GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
  * @return GIMG_OK, GIMG_ERR_FORMAT if the magic does not match, or an I/O
  *   error.
  */
+/**
+ * @brief Expand a CCITT Group 3 one-dimensional stream into packed 1-bit rows.
+ *
+ * Writes exactly what an uncompressed 1-bit image of the same size would have
+ * held, so that everything downstream - palette lookup, row order, limits -
+ * needs no knowledge that the file was compressed at all.
+ *
+ * @param data Encoded bytes.
+ * @param size Their length.
+ * @param width Image width in pixels.
+ * @param height Image height in rows.
+ * @param stride Padded row size of the destination, from gimg_bmp_row_stride.
+ * @param out Receives `stride * height` bytes; zeroed first.
+ * @return GIMG_OK, or GIMG_ERR_CORRUPT if the stream ends early or holds bits
+ *   no code matches.
+ */
+GIMG_Result gimg_bmp_huffman_expand(const unsigned char * data, size_t size,
+    uint32_t width, uint32_t height, size_t stride, unsigned char * out);
+
 GIMG_Result gimg_bmp_verify_signature(GIMG_Stream * stream);
 
 /** @brief Load callback: stream -> document with gimg_bmp_doc_state_t. */
