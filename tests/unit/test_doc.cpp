@@ -240,6 +240,88 @@ TEST(Doc, EnsureDecodedAlreadyHasRaster) {
   gimg_doc_destroy(doc);
 }
 
+// ---------------------------------------------------------------------------
+// Loop count
+// ---------------------------------------------------------------------------
+//
+// The count is document-level because that is where both animated formats put
+// it, and it is a tri-state rather than a number: absent, forever (0), or a
+// finite count.  Every test here is about keeping those three apart, because
+// the bug this API exists to prevent is a player that cannot tell "repeat
+// forever" from "the file did not say".
+
+TEST(DocLoopCount, ANewDocumentDeclaresNone) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  uint32_t count = 0xABCDu;
+  EXPECT_EQ(gimg_doc_loop_count(doc, &count), 0);
+  // The out-param is left alone when there is nothing to report, so a caller
+  // that ignores the return value does not read a count the document never
+  // gave.
+  EXPECT_EQ(count, 0xABCDu);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocLoopCount, ZeroIsAnAnswerAndNotAnAbsence) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  gimg_doc_set_loop_count(doc, 0u);
+  uint32_t count = 0xABCDu;
+  EXPECT_EQ(gimg_doc_loop_count(doc, &count), 1) << "0 means forever, not unset";
+  EXPECT_EQ(count, 0u);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocLoopCount, ClearingReturnsToDeclaringNone) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  gimg_doc_set_loop_count(doc, 7u);
+  uint32_t count = 0;
+  ASSERT_EQ(gimg_doc_loop_count(doc, &count), 1);
+  ASSERT_EQ(count, 7u);
+  gimg_doc_clear_loop_count(doc);
+  EXPECT_EQ(gimg_doc_loop_count(doc, &count), 0);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocLoopCount, ACopyKeepsIt) {
+  // codec_private does not survive a copy, so if the count lived only in the
+  // codec's state this would lose it - which is the whole reason it does not.
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  gimg_doc_set_loop_count(doc, 4u);
+  GIMG_Doc * copy = nullptr;
+  ASSERT_EQ(gimg_doc_copy(doc, &copy), GIMG_OK);
+  uint32_t count = 0;
+  EXPECT_EQ(gimg_doc_loop_count(copy, &count), 1);
+  EXPECT_EQ(count, 4u);
+  gimg_doc_destroy(copy);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocLoopCount, ACopyOfADocumentWithNoneDeclaresNone) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Doc * copy = nullptr;
+  ASSERT_EQ(gimg_doc_copy(doc, &copy), GIMG_OK);
+  EXPECT_EQ(gimg_doc_loop_count(copy, nullptr), 0);
+  gimg_doc_destroy(copy);
+  gimg_doc_destroy(doc);
+}
+
+TEST(DocLoopCount, NullsAreTolerated) {
+  EXPECT_EQ(gimg_doc_loop_count(nullptr, nullptr), 0);
+  gimg_doc_set_loop_count(nullptr, 1u);
+  gimg_doc_clear_loop_count(nullptr);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  gimg_doc_set_loop_count(doc, 2u);
+  // A caller that only wants to know whether one was declared passes no
+  // out-param at all.
+  EXPECT_EQ(gimg_doc_loop_count(doc, nullptr), 1);
+  gimg_doc_destroy(doc);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

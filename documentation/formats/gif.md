@@ -48,7 +48,7 @@ come from `doc->allocator`.
 - **Graphic Control Extension** (89a 23): delay, disposal method, and the
   transparency flag with its colour index.
 - **Application Extension** (89a 26): the NETSCAPE2.0 and ANIMEXTS1.0 loop
-  counts are read into the document state.
+  counts, reported through `gimg_doc_loop_count()`.
 - **Comment** (89a 24) and **Plain Text** (89a 25) extensions are walked past
   by their sub-block chains rather than parsed.
 - **Trailer** (89a 27).
@@ -64,6 +64,29 @@ disposed of (89a 23). `gimg_item_decode()` therefore returns the **whole
 canvas as it stands after frame N**, having replayed frames 0 through N - the
 same arrangement the APNG path uses, and the reason the container model needed
 nothing new for GIF: items, frame delay, dispose and blend were already there.
+
+### How many times to play
+
+`gimg_doc_loop_count()` reports what the NETSCAPE2.0 Application Extension
+said (89a 26). It is a document-level property rather than a per-item one,
+because that is where the format puts it, and APNG's `acTL` `num_plays` is
+reported through the same accessor - a caller animating either format asks one
+question.
+
+It answers three things, not two. A count of **zero means forever**, which is
+the format's own convention and not a stand-in for "absent"; a file carrying
+no NETSCAPE2.0 block at all declares **nothing**, and the accessor says so by
+returning 0 rather than inventing a number. Every browser plays such a file
+once, but that is a viewer's policy, and a library that quietly applied it
+would leave the caller unable to tell a policy from a reading.
+
+The count is **not** applied on save automatically: `gif_loop_count` is a save
+option whose 0 already means forever, so it has no way to say "unset" and
+cannot fall back to the document without changing what an existing caller's 0
+means. A caller that wants a round trip to preserve the count reads it and
+passes it, which is two lines and is visible in the code rather than implied
+by it. `gimg_doc_copy()` does carry it, so "load, copy, edit, save" keeps it
+as long as the save option is set from it.
 
 ### The canvas cache
 
@@ -360,10 +383,6 @@ two frames.
 
 - **Plain Text rendering** (89a 25). The block is walked past. No decoder in
   use renders it, and doing so would mean shipping a bitmap font.
-- **The loop count is not exposed.** It is read into the document state and
-  written from `gif_loop_count`, but there is no public accessor for a caller
-  to ask what a loaded file said. The item model has nowhere for a
-  document-level property to live yet.
 - **The background colour index is not applied.** It is read and kept; the
   canvas starts transparent. See the deviations table for why.
 

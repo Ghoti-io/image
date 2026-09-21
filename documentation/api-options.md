@@ -268,6 +268,21 @@ For multi-frame formats (e.g. APNG), each **GIMG_Item** carries frame timing and
 - **Dispose:** `gimg_item_dispose_op()` / `gimg_item_set_dispose_op()` — **GIMG_Dispose_Op**: `GIMG_DISPOSE_NONE`, `GIMG_DISPOSE_BACKGROUND`, `GIMG_DISPOSE_PREVIOUS`. How to clear the frame region before the next frame.
 - **Blend:** `gimg_item_blend_op()` / `gimg_item_set_blend_op()` — **GIMG_Blend_Op**: `GIMG_BLEND_SOURCE`, `GIMG_BLEND_OVER`. How to composite the frame over the canvas.
 
+Alongside them, the **document** carries how many times the animation asks to
+be played, because that is where both animated formats put it - GIF in a
+NETSCAPE2.0 Application Extension, APNG in `acTL`'s `num_plays`:
+
+- **Loop count:** `gimg_doc_loop_count()` / `gimg_doc_set_loop_count()` /
+  `gimg_doc_clear_loop_count()`. Three states, not two. `gimg_doc_loop_count()`
+  returns 1 when the document declares a count and writes it to the out-param,
+  or 0 when it declares none, leaving the out-param untouched. A declared count
+  of **0 means repeat forever**, which both formats agree on; "declares none"
+  is a separate answer, and what to do about it is the player's policy. A GIF
+  with no NETSCAPE2.0 block is shown once by every browser, and that convention
+  is deliberately not applied here, so that a caller can tell a convention from
+  a reading. `gimg_doc_copy()` carries the count; writing it back out is the
+  caller's to do through the format's save option.
+
 Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read them on save.
 
 @section api_options_raster_formats_12bit Raster formats (12-bit)

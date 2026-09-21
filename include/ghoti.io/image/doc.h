@@ -70,6 +70,46 @@ GIMG_API GIMG_Item * gimg_doc_item(const GIMG_Doc * doc, size_t index);
 GIMG_API GIMG_Result gimg_doc_set_item_count(GIMG_Doc * doc, size_t count);
 
 /**
+ * @brief Get how many times the animation asks to be played.
+ *
+ * Both animated formats this library reads carry such a count - GIF in a
+ * NETSCAPE2.0 Application Extension, APNG in acTL's `num_plays` - and in both
+ * a count of zero means "repeat forever".  A file may also carry no count at
+ * all, which is not the same instruction: it is the absence of one, and what
+ * to do about it is the player's policy rather than the file's.  A GIF with
+ * no NETSCAPE2.0 block is shown once by every browser; that convention is not
+ * applied here, because a library that guesses leaves the caller unable to
+ * tell a guess from a reading.
+ *
+ * @param doc Document.
+ * @param out_count On output, the count; 0 means forever.  Untouched when the
+ *        document declares no count, so initialize it if the return value is
+ *        not checked.
+ * @return 1 when the document declares a loop count, 0 when it does not or
+ *         when @p doc is NULL.
+ */
+GIMG_API int gimg_doc_loop_count(const GIMG_Doc * doc, uint32_t * out_count);
+
+/**
+ * @brief Say how many times the animation should be played.
+ *
+ * @param doc Document.
+ * @param count Times to play; 0 means forever.
+ */
+GIMG_API void gimg_doc_set_loop_count(GIMG_Doc * doc, uint32_t count);
+
+/**
+ * @brief Remove a loop count, so the document declares none.
+ *
+ * This is the only way to express "say nothing", which is a different output
+ * from any count: a GIF written for a document with no loop count carries no
+ * NETSCAPE2.0 block at all.
+ *
+ * @param doc Document.
+ */
+GIMG_API void gimg_doc_clear_loop_count(GIMG_Doc * doc);
+
+/**
  * @brief Get frame delay numerator and denominator (e.g. fcTL delay_num/den).
  * @param item Item.
  * @param num On output, delay numerator (0 if item is NULL).

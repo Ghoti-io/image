@@ -56,6 +56,15 @@ struct GIMG_Doc {
    * performs on its own behalf (a save re-decoding its source). */
   GIMG_Limits load_limits;
   int has_load_limits;
+
+  /** How many times the animation asks to be played, and whether it asked at
+   * all.  Document-level rather than per-item because that is where both
+   * formats that carry one put it: GIF in a NETSCAPE2.0 Application Extension
+   * (89a 26) and APNG in acTL's num_plays.  Zero means forever in both, which
+   * is why the flag is needed - "play forever" and "said nothing" are
+   * different instructions and a caller has to be able to tell them apart. */
+  uint32_t loop_count;
+  int has_loop_count;
 };
 
 #endif // GHOTI_IO_GIMG_SRC_CONTAINER_DOC_INTERNAL_H

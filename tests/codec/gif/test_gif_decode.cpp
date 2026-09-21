@@ -203,13 +203,28 @@ TEST(GifDecode, TruncatedFileIsRefusedRatherThanGuessedAt) {
 }
 
 TEST(GifDecode, NetscapeLoopCountIsRead) {
-  // Not exposed through the public item model yet; what this pins is that the
-  // Application Extension is walked correctly and the image after it is found.
+  // The fixture's Application Extension says five.  This also pins that the
+  // block is walked correctly and the image after it is still found.
   Loaded img;
   ASSERT_EQ(img.load("gif_4x2_netscape_loop.gif"), GIMG_OK);
+  uint32_t loops = 0;
+  EXPECT_EQ(gimg_doc_loop_count(img.doc(), &loops), 1);
+  EXPECT_EQ(loops, 5u);
   ASSERT_EQ(img.decode(), GIMG_OK);
   EXPECT_EQ(img.width(), 4u);
   EXPECT_EQ(img.at(0, 0), kRed);
+}
+
+TEST(GifDecode, AGifWithNoNetscapeBlockDeclaresNoLoopCount) {
+  // Every browser plays such a file once, but that is a viewer's convention
+  // and not something the file says.  Reporting it as "no count" rather than
+  // as 1 is what lets a caller apply that convention knowingly - and what
+  // keeps it distinguishable from a file that really does ask for one play.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_16x8_plain.gif"), GIMG_OK);
+  uint32_t loops = 0xABCDu;
+  EXPECT_EQ(gimg_doc_loop_count(img.doc(), &loops), 0);
+  EXPECT_EQ(loops, 0xABCDu);
 }
 
 // ---------------------------------------------------------------------------

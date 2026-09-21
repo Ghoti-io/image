@@ -142,6 +142,32 @@ GIMG_API GIMG_Result gimg_doc_set_item_count(GIMG_Doc * doc, size_t count) {
   return GIMG_OK;
 }
 
+GIMG_API int gimg_doc_loop_count(const GIMG_Doc * doc, uint32_t * out_count) {
+  if (!doc || !doc->has_loop_count) {
+    return 0;
+  }
+  if (out_count) {
+    *out_count = doc->loop_count;
+  }
+  return 1;
+}
+
+GIMG_API void gimg_doc_set_loop_count(GIMG_Doc * doc, uint32_t count) {
+  if (!doc) {
+    return;
+  }
+  doc->loop_count = count;
+  doc->has_loop_count = 1;
+}
+
+GIMG_API void gimg_doc_clear_loop_count(GIMG_Doc * doc) {
+  if (!doc) {
+    return;
+  }
+  doc->loop_count = 0;
+  doc->has_loop_count = 0;
+}
+
 GIMG_API void gimg_item_frame_delay(
     const GIMG_Item * item, uint16_t * num, uint16_t * den) {
   if (!item) {
@@ -256,7 +282,8 @@ GIMG_API GIMG_Result gimg_doc_copy(const GIMG_Doc * src, GIMG_Doc ** out_doc) {
 // Document copy: duplicate structure and attached rasters for save variants or
 // moving to another doc. Copied: item count; per-item frame_delay, dispose_op,
 // blend_op; attached rasters (via gimg_raster_copy); meta_common (deep);
-// meta_raw (deep). Not copied: loaded_by_codec, codec_private — the result is
+// meta_raw (deep); the document's loop count. Not copied: loaded_by_codec,
+// codec_private — the result is
 // a synthetic document. Items without an attached raster (e.g. loaded but not
 // decoded) yield items with no raster in the copy. Caller owns the new doc.
 GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
@@ -279,6 +306,13 @@ GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
       *out_doc = NULL;
       return r;
     }
+  }
+  uint32_t loop = 0;
+  if (gimg_doc_loop_count(src, &loop)) {
+    // Unlike codec_private, this is a property of the animation rather than of
+    // the codec that read it, so it survives into the synthetic copy - which
+    // is what makes "load, copy, save" preserve how many times to play.
+    gimg_doc_set_loop_count(doc, loop);
   }
   for (size_t i = 0; i < n; i++) {
     const GIMG_Item * si = gimg_doc_item(src, i);

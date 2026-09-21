@@ -602,6 +602,13 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
     gimg_item_set_blend_op(item, GIMG_BLEND_SOURCE);
   }
 
+  // The NETSCAPE2.0 count reaches the caller here rather than staying in the
+  // codec's private state.  A GIF that carries no such block declares nothing,
+  // which is not the same as declaring zero: zero means forever.
+  if (state->has_loop) {
+    gimg_doc_set_loop_count(doc, state->loop_count);
+  }
+
   doc->loaded_by_codec = codec;
   doc->codec_private = state;
   *out_doc = doc;

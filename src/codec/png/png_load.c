@@ -741,6 +741,10 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     doc->items[i].raster = NULL;
   }
   if (state->is_apng) {
+    // acTL's num_plays, handed to the caller rather than left in the codec's
+    // private state.  A still PNG has no acTL and so declares nothing, which
+    // is not the same as declaring zero: zero means forever.
+    gimg_doc_set_loop_count(doc, state->num_plays);
     for (size_t i = 0; i < state->frame_count; i++) {
       const gimg_png_fctl_t * f = &state->frames[i].fctl;
       doc->items[i].frame_delay_num = f->delay_num;

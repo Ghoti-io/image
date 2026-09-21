@@ -283,6 +283,22 @@ def main() -> None:
     )
     write_png("png_apng_2frame.png", apng_2frame)
 
+    # ---- The same 2-frame APNG, but asking to be played a finite 3 times ----
+    # Every other APNG fixture here carries num_plays=0, which is also what a
+    # zeroed structure holds, so none of them can tell "the count was read" from
+    # "the count was never set".  This one can.
+    apng_3plays = (
+        signature
+        + png_chunk(b"IHDR", ihdr_1x1_gray)
+        + png_chunk(b"acTL", struct.pack(">II", 2, 3))
+        + png_chunk(b"fcTL", fctl0)
+        + png_chunk(b"IDAT", idat_frame0)
+        + png_chunk(b"fcTL", fctl1)
+        + png_chunk(b"fdAT", fdat_payload)
+        + iend
+    )
+    write_png("png_apng_3plays.png", apng_3plays)
+
     # ---- 3-frame APNG (dispose/blend variants): gray 0, 0x80, 0xC0 ----
     # Frame 0: NONE/SOURCE; frame 1: BACKGROUND/OVER; frame 2: PREVIOUS/OVER
     actl3 = struct.pack(">II", 3, 0)

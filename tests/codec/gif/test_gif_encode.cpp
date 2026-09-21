@@ -396,6 +396,43 @@ TEST(GifEncode, AnAnimationCarriesItsDelayAndLoopCount) {
   gimg_item_frame_delay(gimg_doc_item(img.doc(), 0), &num, &den);
   EXPECT_EQ(num, 5u) << "hundredths of a second, as written";
   EXPECT_EQ(den, 100u);
+
+  // The count written is the count read back, which is what makes the round
+  // trip below mean anything.
+  uint32_t loops = 0;
+  EXPECT_EQ(gimg_doc_loop_count(img.doc(), &loops), 1);
+  EXPECT_EQ(loops, 7u);
+}
+
+TEST(GifEncode, ALoopCountSurvivesALoadAndSaveWhenTheCallerCarriesIt) {
+  // The documented round trip, run rather than asserted.  Save does not reach
+  // into the document for the count on its own: gif_loop_count's 0 already
+  // means forever, so it has no spelling for "unset" and cannot fall back
+  // without changing what an existing caller's 0 means.  Two lines of caller
+  // code close it, and this is those two lines.
+  Loaded source;
+  ASSERT_EQ(source.load("gif_4x2_netscape_loop.gif"), GIMG_OK);
+  uint32_t loops = 0;
+  ASSERT_EQ(gimg_doc_loop_count(source.doc(), &loops), 1);
+  ASSERT_EQ(loops, 5u);
+
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(4, 2, sixteen));
+  frames.push_back(make_raster(4, 2, sixteen));
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.gif_loop_count = static_cast<uint16_t>(loops);  // the two lines
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, &options, bytes), GIMG_OK);
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  uint32_t round_tripped = 0;
+  EXPECT_EQ(gimg_doc_loop_count(again.doc(), &round_tripped), 1);
+  EXPECT_EQ(round_tripped, 5u);
 }
 
 int main(int argc, char ** argv) {

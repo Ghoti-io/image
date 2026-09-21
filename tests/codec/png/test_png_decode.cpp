@@ -2335,3 +2335,53 @@ TEST(PngChrm, AChrmOfTheWrongLengthIsRefusedBeforeTheColorIsRead) {
   }
   gimg_stream_destroy(s);
 }
+
+// ---------------------------------------------------------------------------
+// Loop count
+// ---------------------------------------------------------------------------
+//
+// acTL's num_plays, read out through the same document-level accessor GIF
+// uses.  The three cases that matter are a finite count, forever, and a file
+// that carries no acTL at all and so says nothing.
+
+namespace {
+
+/** Load a fixture and report what it declares about looping. */
+int png_loop_count(const char * fixture, uint32_t * out_count) {
+  std::vector<uint8_t> buf;
+  EXPECT_TRUE(png_test::load_png_file(fixture, buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  EXPECT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  const int declared = gimg_doc_loop_count(doc, out_count);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  return declared;
+}
+
+} // namespace
+
+TEST(PngLoopCount, AFinitePlayCountIsRead) {
+  // Every other APNG fixture here carries num_plays=0, which is also what a
+  // zeroed structure holds - so none of them can tell a count that was read
+  // from one that was never set.  This fixture asks for three.
+  uint32_t loops = 0;
+  EXPECT_EQ(png_loop_count("png_apng_3plays.png", &loops), 1);
+  EXPECT_EQ(loops, 3u);
+}
+
+TEST(PngLoopCount, ZeroPlaysMeansForeverAndIsStillAnAnswer) {
+  uint32_t loops = 0xABCDu;
+  EXPECT_EQ(png_loop_count("png_apng_2frame.png", &loops), 1);
+  EXPECT_EQ(loops, 0u);
+}
+
+TEST(PngLoopCount, AStillPngDeclaresNone) {
+  // No acTL, so nothing to report - not a count of zero, which would mean the
+  // opposite of what a still image wants.
+  uint32_t loops = 0xABCDu;
+  EXPECT_EQ(png_loop_count("png_1x1_gray.png", &loops), 0);
+  EXPECT_EQ(loops, 0xABCDu);
+}
