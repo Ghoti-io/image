@@ -33,6 +33,7 @@ const Rgba kRed{255, 0, 0, 255};
 const Rgba kGreen{0, 255, 0, 255};
 const Rgba kBlue{0, 0, 255, 255};
 const Rgba kYellow{255, 255, 0, 255};
+const Rgba kMagenta{255, 0, 255, 255};
 const Rgba kTransparent{0, 0, 0, 0};
 
 } // namespace
@@ -239,17 +240,56 @@ TEST(GifScreen, NoGlobalTableMeansNoBackgroundColour) {
   EXPECT_EQ(rgba[0], 9u) << "the out-param is left alone when nothing is said";
 }
 
-TEST(GifScreen, TheDecodedCanvasIsTransparentDespiteTheBackgroundColour) {
-  // Reporting it and painting it are different things.  The fixture declares
-  // red, and the pixels a caller gets are the frame's - see the deviations
-  // table for why no decoder paints it.
+TEST(GifDecode, APatchLeavesTheRestOfTheCanvasAlone) {
+  // The second frame is a 4x4 patch at (6,2) on a 12x8 canvas, so a pixel
+  // outside it must still show the first frame.
+  //
+  // This used to be called "the canvas is transparent despite the background
+  // colour" and proved no such thing: that fixture's first frame covers the
+  // whole canvas, so it has no uncovered pixel at all, and its background
+  // index is 0, which resolves to the same red the first frame paints.  The
+  // assertion held whether or not the background was painted.  What the name
+  // claimed is tested below, on a fixture built to ask it.
   Loaded img;
   ASSERT_EQ(img.load("gif_12x8_offset_frame.gif"), GIMG_OK);
-  ASSERT_EQ(gimg_doc_background_color(img.doc(), nullptr), 1);
   ASSERT_EQ(img.decode(nullptr, 1), GIMG_OK);
-  // The second frame is a 4x4 patch at (6,2); a pixel outside it shows the
-  // first frame, not the background colour.
   EXPECT_EQ(img.at(0, 0), kRed);
+}
+
+TEST(GifScreen, AnUncoveredPixelIsTransparentNotTheBackgroundColour) {
+  // 89a 18 says the background colour is what covers the pixels no image
+  // covers.  This decoder reports that colour and does not paint it, and the
+  // fixture is built so the difference is visible: a 12x8 canvas whose largest
+  // frame is 4x4, declaring magenta, with nothing drawn in magenta.
+  //
+  // Painting it would make every such GIF opaque, and a caller who wanted the
+  // alpha could not get it back.  Not painting it loses nothing, because the
+  // colour is reported and compositing over it is one line.  The direction
+  // that is recoverable is the one to choose.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_12x8_background_index.gif"), GIMG_OK);
+  uint8_t rgba[4] = {0, 0, 0, 0};
+  ASSERT_EQ(gimg_doc_background_color(img.doc(), rgba), 1);
+  EXPECT_EQ(Rgba({rgba[0], rgba[1], rgba[2], rgba[3]}), kMagenta)
+      << "the index must still be read and resolved";
+  ASSERT_EQ(img.decode(nullptr, 0), GIMG_OK);
+  EXPECT_EQ(img.at(0, 0), kTransparent)
+      << "the corner is outside every frame; magenta here means the background "
+         "colour was painted";
+}
+
+TEST(GifScreen, RestoreToBackgroundLeavesTransparentNotTheBackgroundColour) {
+  // 89a 23 disposal 2 is worded "restore to the background color", and the
+  // animations in the wild were authored against browsers, which restore to
+  // transparent.  Frame 0 is a 4x4 patch at (2,2) asking for disposal 2, so by
+  // frame 1 that area has been disposed of and nothing has redrawn it.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_12x8_background_index.gif"), GIMG_OK);
+  ASSERT_EQ(img.decode(nullptr, 1), GIMG_OK);
+  EXPECT_EQ(img.at(3, 3), kTransparent)
+      << "magenta here means disposal 2 restored the background colour";
+  // The second frame's own pixels are still drawn.
+  EXPECT_EQ(img.at(6, 4), kGreen);
 }
 
 TEST(GifScreen, APixelAspectRatioIsReportedAsARatio) {

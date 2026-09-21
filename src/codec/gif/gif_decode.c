@@ -364,13 +364,21 @@ GIMG_Result gimg_gif_decode(GIMG_Codec * codec, const GIMG_Item * item,
 
   if (!seeded) {
     // The logical screen starts empty rather than filled with the background
-    // colour.  The specification names a background index (89a 18), but the
-    // viewers everyone's files were authored against ignore it and start
-    // transparent; filling it would put a colour on screen that no other
-    // decoder shows.  The colour that index names is reported through
-    // gimg_doc_background_color(), resolved against the Global Color Table, so
-    // a caller who does want to honour it can - this codec simply does not
-    // decide that on their behalf.
+    // colour.  89a 18 says that colour covers the pixels no image covers, and
+    // this is a deliberate deviation from it, so it is worth being exact about
+    // who does what: browsers start transparent, and so does ImageMagick and
+    // Pillow *when the file declares a transparent index anywhere*.  For a
+    // file that never mentions transparency, ImageMagick paints the declared
+    // background and Pillow paints an opaque colour of its own choosing.  That
+    // narrow case is the only one where this codec's answer differs from
+    // theirs.
+    //
+    // The reason to differ there is that the two mistakes are not equal.
+    // Painting it makes every such GIF opaque and a caller who wanted the
+    // alpha cannot get it back.  Not painting it loses nothing: the colour is
+    // reported by gimg_doc_background_color(), resolved against the Global
+    // Color Table, and compositing over it is one line in the caller.  The
+    // recoverable direction is the one to take.
     for (uint32_t y = 0; y < state->canvas_height; y++) {
       memset(canvas + (size_t)y * stride, 0, (size_t)state->canvas_width * 4u);
     }

@@ -239,6 +239,41 @@ def offset_frames():
     write("gif_12x8_offset_frame.gif", data)
 
 
+def background_index():
+    """A canvas larger than anything drawn on it, declaring a vivid background.
+
+    Every other fixture has background index 0 and a first frame covering the
+    whole canvas, so no pixel of any of them is ever *uncovered* - which made
+    "the screen is not painted with the background colour" impossible to test:
+    the assertion passed whether or not it was painted.
+
+    Here the canvas is 12x8, the background index is 4 (magenta), and nothing
+    drawn uses magenta.  Frame 0 is a 4x4 patch at (2,2) with disposal 2, so
+    both of the questions 89a asks about the background colour - what an
+    uncovered pixel is, and what "restore to background" restores to - have an
+    answer that is magenta if the colour is honoured and transparent if it is
+    not.
+
+    **No frame declares a transparent index**, and that is the point rather
+    than an omission.  ImageMagick and Pillow both switch on whether the file
+    mentions transparency at all: a file that does gets a transparent screen
+    from them, and a file that does not gets the background colour (ImageMagick)
+    or opaque black (Pillow).  So a fixture that declared one would be agreed
+    on by everybody and would pin nothing.  This is the case where this codec
+    genuinely differs from them, which is the case worth holding still.
+    """
+    cw, ch = 12, 8
+    first = [2] * 16                      # blue
+    second = [1] * 4                      # green
+    data = (header() + lsd(cw, ch, gct_bits=2, background=4) + table(PALETTE, 2)
+            + gce(delay=10, disposal=2)
+            + image_block(first, 4, 4, 3, left=2, top=2)
+            + gce(delay=10, disposal=1)
+            + image_block(second, 2, 2, 3, left=6, top=4)
+            + TRAILER)
+    write("gif_12x8_background_index.gif", data)
+
+
 def disposal_previous():
     """Three frames whose middle one asks to be undone (disposal 3).
 
@@ -348,6 +383,7 @@ def main():
     extensions_to_skip()
     gif87a_header()
     offset_frames()
+    background_index()
     disposal_previous()
     disposal_cycle()
     netscape_loop()

@@ -434,14 +434,83 @@ no table of their own.
 |---|---|---|
 | An index the colour table does not have | Draws nothing; the pixel keeps what the canvas already held | giflib does the same. Pillow paints it opaque black. Pinned by `gif_8x2_index_past_palette.gif`, where a four-entry table is addressed with index 7 — expressible because the code size is set independently of the table size |
 | The colour under a fully transparent pixel | Zero in all three channels | giflib the same; Pillow writes the palette colour. Invisible by definition, and the reason `verify_gif_output.py` does not compare those channels |
-| The logical screen before any frame is drawn | Transparent | 89a 18 names a background colour index, and the viewers every real file was authored against ignore it. Filling it would put a colour on screen that no other decoder shows. The colour that index names is reported by `gimg_doc_background_color()`, resolved through the Global Color Table, so a caller who wants to honour it can |
+| The logical screen before any frame is drawn | Transparent | See "The background colour" below: ImageMagick paints it and Pillow paints something, but only for a file that never mentions transparency. The colour is reported by `gimg_doc_background_color()` either way |
 | Plain Text extension | Walked past, never rendered | No decoder in use renders it either. A file using it looks the same here as everywhere |
 | A file that ends without a trailer | Keeps the frames already read | Common enough in the wild that the frames are worth more than the refusal. A file truncated **inside** a frame is still refused |
-| What "restore to background" leaves behind (disposal 2, 89a 23) | Transparent | ImageMagick's `-coalesce` agrees. Pillow gives an opaque pixel instead - sometimes the background colour, sometimes the previous frame showing through. Adding a Global Color Table, the obvious suspect, changes nothing. Pinned by `tests/out/gif/animation_6x3.gif`, whose second frame is transparent exactly where the first was opaque |
+| What "restore to background" leaves behind (disposal 2, 89a 23) | Transparent | Browsers and ImageMagick agree; Pillow paints the declared background colour, which is what 89a 23 literally says. See "The background colour" below. Pinned by `gif_12x8_background_index.gif` and by `tests/out/gif/animation_6x3.gif` |
+
+## The background colour
+
+89a 18 gives the Logical Screen Descriptor a Background Color Index, and says
+two things about it that this codec does not do. Because it is a deliberate
+deviation, here is exactly what the specification says, what everyone does, and
+why.
+
+**What the specification says.** Section 18 defines the index as naming the
+colour for the pixels on the screen that no image covers, and adds that when
+the Global Color Table Flag is zero the field should be zero and should be
+ignored. Section 23 then gives disposal method 2 the name "restore to
+background color" and says the area the graphic used must be restored to it.
+Both are unambiguous.
+
+**What everyone does.** Measured, with a 12x8 canvas whose largest frame is
+4x4, declaring magenta, with nothing drawn in magenta - which is
+`gif_12x8_background_index.gif` in the fixtures:
+
+| | here | ImageMagick | Pillow | Chromium | giflib |
+|---|---|---|---|---|---|
+| A pixel no frame covers | transparent | **magenta** | opaque red | transparent | n/a |
+| After disposal 2 | transparent | transparent | **magenta** | transparent | n/a |
+
+Bold is the specification's answer. **Nobody implements both, and the two that
+implement one implement different ones.** ImageMagick honours the background
+for the uncovered screen and not for disposal 2; Pillow does the reverse, and
+for the uncovered screen paints entry 0 rather than the entry the index names.
+giflib has no row because it does not composite at all - it hands back each
+image as stored, reports `SBackGroundColor`, and leaves the screen to the
+caller. Its own documentation lists the canvas background under unimplemented
+features, alongside the frame positioning, and says browsers and modern viewers
+ignore them.
+
+There is one more variable, and it explains most of the disagreement:
+**ImageMagick and Pillow both switch on whether the file declares a transparent
+index anywhere.** Add one to the file above and both of them return a
+transparent uncovered screen, matching this codec exactly. The deviation is
+therefore narrower than it looks: it applies only to files that never mention
+transparency at all.
+
+**Why this codec starts transparent.** Not because the specification is wrong,
+but because the two possible mistakes are not equal in cost. Painting the
+background makes every such GIF opaque, and a caller who wanted the alpha
+cannot get it back - the information is destroyed in the decoder, before they
+ever see it. Not painting it loses nothing: `gimg_doc_background_color()`
+reports the colour, resolved through the Global Color Table, and compositing
+over it is one line in the caller. Given a choice between a lossy default and a
+recoverable one, a library takes the recoverable one and leaves the policy to
+the caller.
+
+Disposal 2 is the same argument with history behind it as well: the animations
+in the wild were authored against browsers, which restore to transparent, so a
+file that depends on the literal reading is vanishingly rare and a file that
+depends on the browser reading is everywhere.
+
+**Both halves are pinned by tests that were watched failing.** Making the
+decoder paint the background fails
+`GifScreen.AnUncoveredPixelIsTransparentNotTheBackgroundColour` and nothing
+else; making disposal 2 restore the background colour fails
+`GifScreen.RestoreToBackgroundLeavesTransparentNotTheBackgroundColour` and
+nothing else. Neither catches the other, which is right - they are independent
+behaviours in independent code paths.
+
+That fixture exists because the deviation was previously untested. The test
+that claimed to cover it used `gif_12x8_offset_frame.gif`, whose first frame
+covers the whole canvas - so it has no uncovered pixel - and whose background
+index is 0, which resolves to the same red that frame paints. It passed whether
+or not the background was painted.
 
 ## Tested scope
 
-- **Fixtures**: twelve files from `tests/data/gif/generate.py`. Pillow writes
+- **Fixtures**: thirteen files from `tests/data/gif/generate.py`. Pillow writes
   the two ordinary ones; the rest are assembled byte by byte, because the
   cases a decoder gets wrong are the ones common writers never produce - no
   Global Color Table, an index past the end of the palette, extensions that
@@ -598,9 +667,11 @@ no table of their own.
   that, which was the point of putting it there.
 - **Plain Text rendering** (89a 25). The block is walked past. No decoder in
   use renders it, and doing so would mean shipping a bitmap font.
-- **The background colour is not painted.** The canvas starts transparent; the
-  colour is reported through `gimg_doc_background_color()` for a caller who
-  wants it. See the deviations table for why nothing here paints it.
+- **The background colour is not painted**, and disposal 2 restores to
+  transparent rather than to it. Both are deliberate; the colour is reported
+  through `gimg_doc_background_color()` for a caller who wants to honour it.
+  See "The background colour" for what the specification says, what the other
+  decoders do, and why this one differs.
 
 ---
 
