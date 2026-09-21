@@ -32,6 +32,8 @@ struct GIMG_Raster {
   void * pixels;       ///< Owned buffer or borrowed pointer.
   GIMG_Color_Info color_info;
   void * color_icc_owned; ///< If non-NULL, raster owns ICC bytes; color_info.icc_bytes points here.
+  char * color_icc_linked_path_owned; ///< If non-NULL, raster owns the linked
+                                      ///< profile path; color_info.icc_linked_path points here.
 };
 
 /**

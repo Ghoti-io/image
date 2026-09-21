@@ -1016,6 +1016,116 @@ TEST(BmpDecode, V5LinkedProfileIsNotFollowed) {
   expect_pattern(img);
 }
 
+TEST(BmpDecode, V5LinkedProfilePathIsReportedEvenThoughItIsNotOpened) {
+  // Not following the path does not mean discarding it.  The path is the only
+  // record that this image wanted a profile at all, and a caller cannot decide
+  // what to do about it without being told.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v5_linked_profile.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  ASSERT_NE(color->icc_linked_path, nullptr);
+  EXPECT_STREQ(color->icc_linked_path, "C:\\does\\not\\exist.icc");
+  EXPECT_EQ(color->icc_size, 0u);
+}
+
+namespace {
+
+/** A resolver that answers with a profile of its own, for the test below. */
+struct ResolverState {
+  std::string seen;
+  std::vector<uint8_t> profile;
+  int calls = 0;
+};
+
+GIMG_Result test_resolver(void * user, const char * path,
+    const void ** out_profile, size_t * out_size) {
+  ResolverState * st = static_cast<ResolverState *>(user);
+  st->calls++;
+  st->seen = path;
+  *out_profile = st->profile.data();
+  *out_size = st->profile.size();
+  return GIMG_OK;
+}
+
+GIMG_Result refusing_resolver(void * user, const char * path,
+    const void ** out_profile, size_t * out_size) {
+  static_cast<ResolverState *>(user)->calls++;
+  (void)path;
+  (void)out_profile;
+  (void)out_size;
+  return GIMG_ERR_UNSUPPORTED;
+}
+
+} // namespace
+
+TEST(BmpDecode, V5LinkedProfileIsAttachedWhenAResolverSuppliesIt) {
+  // The library still opens nothing.  The caller is handed the path and hands
+  // back bytes, which is the only arrangement where the decision sits with the
+  // code that knows where the image came from.
+  ResolverState st;
+  st.profile.assign(64, 0xAB);
+
+  GIMG_Load_Options options;
+  memset(&options, 0, sizeof(options));
+  options.icc_resolver = test_resolver;
+  options.icc_resolver_user = &st;
+
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v5_linked_profile.bmp", &options), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  EXPECT_EQ(st.calls, 1);
+  EXPECT_EQ(st.seen, "C:\\does\\not\\exist.icc");
+
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  ASSERT_EQ(color->icc_size, 64u);
+  ASSERT_NE(color->icc_bytes, nullptr);
+  EXPECT_EQ(static_cast<const uint8_t *>(color->icc_bytes)[0], 0xABu);
+  // Nothing is unresolved any more, so there is nothing left to report.
+  EXPECT_EQ(color->icc_linked_path, nullptr);
+}
+
+TEST(BmpDecode, V5LinkedProfileResolverThatRefusesLeavesTheImageUntagged) {
+  // A resolver saying no is an answer, not a failure: the image is fine, it
+  // simply has no profile, and the path is still reported.
+  ResolverState st;
+  GIMG_Load_Options options;
+  memset(&options, 0, sizeof(options));
+  options.icc_resolver = refusing_resolver;
+  options.icc_resolver_user = &st;
+
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v5_linked_profile.bmp", &options), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+
+  EXPECT_EQ(st.calls, 1);
+  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(color, nullptr);
+  EXPECT_EQ(color->icc_size, 0u);
+  ASSERT_NE(color->icc_linked_path, nullptr);
+  expect_pattern(img);
+}
+
+TEST(BmpDecode, V5EmbeddedProfileDoesNotReachTheResolver) {
+  // A file that carries its profile has nothing to resolve.  Calling the
+  // resolver anyway would invite a caller to override what the file actually
+  // said, which is not what this is for.
+  ResolverState st;
+  st.profile.assign(64, 0xAB);
+  GIMG_Load_Options options;
+  memset(&options, 0, sizeof(options));
+  options.icc_resolver = test_resolver;
+  options.icc_resolver_user = &st;
+
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v5_icc.bmp", &options), GIMG_OK);
+  EXPECT_EQ(st.calls, 0);
+}
+
 TEST(BmpDecode, V5ProfilePastTheEndOfTheFileLeavesTheImageAlone) {
   // A picture is not wrong because its colour annotation is, so a profile
   // that runs off the end yields no profile rather than no image.

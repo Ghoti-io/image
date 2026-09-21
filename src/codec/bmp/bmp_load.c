@@ -754,6 +754,7 @@ void gimg_bmp_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   }
   gimg_free(alloc, state->array_entries);
   gimg_free(alloc, state->icc);
+  gimg_free(alloc, state->icc_linked_path);
   gimg_free(alloc, state->palette);
   gimg_free(alloc, state->pixels);
   gimg_free(alloc, state);
@@ -1078,6 +1079,59 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   if (state->icc) {
     state->color.icc_bytes = state->icc;
     state->color.icc_size = state->icc_size;
+  }
+
+  // PROFILE_LINKED names a file rather than carrying a profile.  The path is
+  // read and never opened: opening a path that arrived inside an image is
+  // acting on data, and is the shape of a directory traversal.  It is reported
+  // instead, and a caller who wants the profile hands one back through
+  // icc_resolver - which is the only place that knows where this image came
+  // from and what it is willing to read.
+  if (!state->icc) {
+    r = gimg_bmp_read_linked_path(
+        stream, &header, alloc, &state->icc_linked_path);
+    if (r != GIMG_OK) {
+      gimg_bmp_free_doc_state(codec, state);
+      return r;
+    }
+  }
+  if (state->icc_linked_path && options && options->icc_resolver) {
+    const void * supplied = NULL;
+    size_t supplied_size = 0;
+    if (options->icc_resolver(options->icc_resolver_user,
+            state->icc_linked_path, &supplied, &supplied_size) == GIMG_OK &&
+        supplied && supplied_size) {
+      // Whatever a resolver hands back is held to the ceiling an embedded
+      // profile is held to.  A caller choosing to read a file is not a reason
+      // to stop bounding what gets attached to a raster.
+      if (supplied_size > GIMG_BMP_ICC_MAX_SIZE ||
+          (limits && limits->max_memory &&
+              supplied_size > limits->max_memory)) {
+        bmp_load_diag(diagnostics, 0u,
+            "the resolved ICC profile is larger than the codec allows");
+      }
+      else {
+        void * copy = gimg_malloc(alloc, supplied_size);
+        if (!copy) {
+          gimg_bmp_free_doc_state(codec, state);
+          return GIMG_ERR_OOM;
+        }
+        // Copied before the callback's memory can go anywhere: ownership was
+        // never transferred, and the documented contract is that the bytes
+        // need only outlive the call.
+        memcpy(copy, supplied, supplied_size);
+        state->icc = copy;
+        state->icc_size = supplied_size;
+        state->color.icc_bytes = state->icc;
+        state->color.icc_size = state->icc_size;
+        // The profile is here, so there is nothing unresolved left to report.
+        gimg_free(alloc, state->icc_linked_path);
+        state->icc_linked_path = NULL;
+      }
+    }
+  }
+  if (state->icc_linked_path) {
+    state->color.icc_linked_path = state->icc_linked_path;
   }
 
   if (gimg_bmp_is_embedded(header.compression)) {

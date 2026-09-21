@@ -73,6 +73,22 @@ typedef struct {
   GIMG_Rendering_Intent intent;
   const void * icc_bytes; ///< Opaque; library does not take ownership.
   size_t icc_size;        ///< ICC profile size in bytes.
+  /** Path of a profile the file named rather than carried, or NULL.
+   *
+   * BMP's PROFILE_LINKED states a file path instead of a profile.  The path is
+   * reported and never opened: following a path an image file names is acting
+   * on data, and is the shape of a directory traversal.  A caller who wants
+   * the profile supplies GIMG_Load_Options.icc_resolver, which is the only
+   * place that knows where the image came from and what it is willing to read.
+   *
+   * These are bytes as the file stored them, NUL-terminated, in whatever
+   * encoding the writer used - bmpsuite's own case is a Windows path holding a
+   * byte that is not ASCII and names no stated codepage - so treat this as a
+   * path to show a user or hand to a resolver, not as UTF-8.
+   *
+   * Set only when the profile was not resolved; when a resolver supplied one,
+   * icc_bytes carries it and this stays NULL. */
+  const char * icc_linked_path;
   GIMG_CMYK_Polarity cmyk_polarity; ///< Interpretation of CMYK channels; use when
                                     ///< raster format is GIMG_PIXEL_CMYK8.
   uint8_t _reserved[7];

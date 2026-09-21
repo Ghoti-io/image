@@ -247,6 +247,7 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
   r->ownership = ownership;
   gimg_color_info_default(&r->color_info);
   r->color_icc_owned = NULL;
+  r->color_icc_linked_path_owned = NULL;
 
   if (ownership == GIMG_RASTER_OWNED) {
     size_t total = stride_bytes * height;
@@ -278,6 +279,10 @@ GIMG_API void gimg_raster_destroy(GIMG_Raster * raster) {
   if (raster->color_icc_owned) {
     gimg_free(alloc, raster->color_icc_owned);
     raster->color_icc_owned = NULL;
+  }
+  if (raster->color_icc_linked_path_owned) {
+    gimg_free(alloc, raster->color_icc_linked_path_owned);
+    raster->color_icc_linked_path_owned = NULL;
   }
   if (raster->ownership == GIMG_RASTER_OWNED && raster->pixels) {
     gimg_free(alloc, raster->pixels);
@@ -335,6 +340,10 @@ GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
     gimg_free(alloc, raster->color_icc_owned);
     raster->color_icc_owned = NULL;
   }
+  if (raster->color_icc_linked_path_owned) {
+    gimg_free(alloc, raster->color_icc_linked_path_owned);
+    raster->color_icc_linked_path_owned = NULL;
+  }
   raster->color_info = *info;
   if (info->icc_size > 0 && info->icc_bytes) {
     void * copy = gimg_malloc(alloc, info->icc_size);
@@ -345,6 +354,22 @@ GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
     memcpy(copy, info->icc_bytes, info->icc_size);
     raster->color_icc_owned = copy;
     raster->color_info.icc_bytes = copy;
+  }
+  // The linked path is copied for the same reason the profile is: a raster
+  // outlives the document that read it, and a caller reading either off the
+  // raster afterwards must not be reading freed memory.
+  if (info->icc_linked_path) {
+    size_t len = strlen(info->icc_linked_path);
+    char * copy = (char *)gimg_malloc(alloc, len + 1u);
+    if (!copy) {
+      gimg_free(alloc, raster->color_icc_owned);
+      raster->color_icc_owned = NULL;
+      gimg_color_info_default(&raster->color_info);
+      return GIMG_ERR_OOM;
+    }
+    memcpy(copy, info->icc_linked_path, len + 1u);
+    raster->color_icc_linked_path_owned = copy;
+    raster->color_info.icc_linked_path = copy;
   }
   return GIMG_OK;
 }

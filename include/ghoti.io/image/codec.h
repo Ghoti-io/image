@@ -137,6 +137,20 @@ GIMG_API GIMG_Result gimg_jpeg_tables_load(
 GIMG_API void gimg_jpeg_tables_destroy(GIMG_JPEG_Tables * tables);
 
 /**
+ * @brief Supply the bytes of a profile a file named rather than carried.
+ *
+ * @param user GIMG_Load_Options.icc_resolver_user, untouched.
+ * @param path The path the file stated, NUL-terminated, as stored - not
+ *   necessarily UTF-8, and not necessarily meaningful on this machine.
+ * @param out_profile Receives the profile bytes, which the library copies.
+ * @param out_size Receives their length.
+ * @return GIMG_OK to attach the profile; anything else leaves the image
+ *   untagged, which is not an error.
+ */
+typedef GIMG_Result (*GIMG_ICC_Resolver_Fn)(void * user, const char * path,
+    const void ** out_profile, size_t * out_size);
+
+/**
  * @brief BMP: what to make of the fourth byte of a 32-bit BI_RGB pixel.
  * @see api_options
  */
@@ -202,6 +216,26 @@ typedef struct {
    * mask is honored as written either way.  Ignored for non-BMP. */
   uint8_t bmp_rgb32_alpha;
   uint8_t _reserved[7];
+  /** Called when a file names an ICC profile rather than carrying one.
+   *
+   * BMP's PROFILE_LINKED is the case: the header holds a file path. This
+   * library never opens it. Opening a path that arrived inside an image is
+   * acting on data, and only the caller knows where the image came from, which
+   * directories are theirs, and whether a Windows path out of a 1990s BMP
+   * should be mapped onto a local profile at all.
+   *
+   * So the decision is handed over whole. Return GIMG_OK with the profile
+   * bytes to attach them, or anything else to leave the image untagged - which
+   * is also what happens when no resolver is set, and is not an error. The
+   * bytes are copied before the call returns; ownership stays with the caller
+   * and nothing here frees them.
+   *
+   * A profile larger than the codec's ceiling, or than
+   * GIMG_Limits.max_memory, is refused the same way an oversized embedded one
+   * is. Ignored by formats that have no such thing. */
+  GIMG_ICC_Resolver_Fn icc_resolver;
+  /** Passed to icc_resolver untouched. */
+  void * icc_resolver_user;
 } GIMG_Load_Options;
 
 /**

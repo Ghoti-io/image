@@ -366,3 +366,55 @@ uint32_t gimg_bmp_color_to_header(
   }
   return GIMG_BMP_V4HEADER_SIZE;
 }
+
+GIMG_Result gimg_bmp_read_linked_path(GIMG_Stream * stream,
+    const gimg_bmp_header_t * header, const GIMG_Allocator * alloc,
+    char ** out_path) {
+  *out_path = NULL;
+
+  if (header->header_size < GIMG_BMP_V5HEADER_SIZE ||
+      header->cs_type != GIMG_BMP_PROFILE_LINKED || !header->profile_size) {
+    return GIMG_OK;
+  }
+
+  // bV5ProfileData is measured from the start of the DIB header, the same as
+  // an embedded profile's.
+  size_t at = (size_t)GIMG_BMP_FILE_HEADER_SIZE + (size_t)header->profile_offset;
+  size_t size = (size_t)header->profile_size;
+
+  // A path is a path.  Anything longer than this is not one, and is not worth
+  // allocating on the say-so of a header field.
+  if (size > GIMG_BMP_LINKED_PATH_MAX) {
+    return GIMG_OK;
+  }
+  size_t stream_size = gimg_stream_size(stream);
+  if (stream_size && (at > stream_size || size > stream_size - at)) {
+    return GIMG_OK;
+  }
+
+  size_t resume = gimg_stream_tell(stream);
+  if (gimg_stream_seek(stream, at) != GIMG_OK) {
+    return GIMG_OK;
+  }
+  char * path = (char *)gimg_malloc(alloc, size + 1u);
+  if (!path) {
+    (void)gimg_stream_seek(stream, resume);
+    return GIMG_ERR_OOM;
+  }
+  GIMG_Result r = gimg_stream_read_exact(stream, path, size);
+  (void)gimg_stream_seek(stream, resume);
+  if (r != GIMG_OK) {
+    gimg_free(alloc, path);
+    return GIMG_OK;
+  }
+  // The stored bytes may or may not include their own terminator; terminating
+  // here means the caller is handed a C string either way, and a path holding
+  // an interior NUL ends where that NUL says rather than running on.
+  path[size] = '\0';
+  if (path[0] == '\0') {
+    gimg_free(alloc, path);
+    return GIMG_OK;
+  }
+  *out_path = path;
+  return GIMG_OK;
+}

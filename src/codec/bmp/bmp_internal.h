@@ -74,6 +74,14 @@ extern const unsigned char gimg_bmp_array_signature[GIMG_BMP_SIGNATURE_LEN];
  */
 #define GIMG_BMP_ICC_MAX_SIZE (4u * 1024u * 1024u)
 
+/** Longest PROFILE_LINKED path this codec will read.
+ *
+ * bV5ProfileSize is 32 bits, and for a linked profile it measures a file name
+ * rather than a profile.  Four kibibytes is past any path a filesystem will
+ * accept, so a header naming more than this is describing something that is
+ * not a path and the field is ignored. */
+#define GIMG_BMP_LINKED_PATH_MAX 4096u
+
 /** Where a V4 header's color fields begin: after the four channel masks,
  * which a V4 header carries whether or not the compression uses them. */
 #define GIMG_BMP_V4_TAIL_AT 56
@@ -213,6 +221,9 @@ typedef struct {
   GIMG_Color_Info color;
   void * icc;      ///< An embedded ICC profile, owned here; NULL when none.
   size_t icc_size;
+  /** The path a PROFILE_LINKED file named, owned here, NUL-terminated; NULL
+   * when the file carried no such path or a resolver supplied the profile. */
+  char * icc_linked_path;
   /** For BI_JPEG and BI_PNG, the document the embedded stream loaded into.
    * Decode hands the work to its first item rather than doing any of its own:
    * the "pixel data" of such a file is a whole JPEG or PNG, and this library
@@ -302,6 +313,25 @@ uint32_t gimg_bmp_color_to_header(
 GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
     const gimg_bmp_header_t * header, const GIMG_Limits * limits,
     const GIMG_Allocator * alloc, void ** out_profile, size_t * out_size);
+
+/**
+ * @brief Read the file path a PROFILE_LINKED V5 header names.
+ *
+ * The path is read and never opened.  The bytes are taken as stored and
+ * NUL-terminated here, because the format states no encoding for them and the
+ * only published example holds a byte that is not ASCII.
+ *
+ * @param stream Stream positioned anywhere; restored before returning.
+ * @param header Parsed header.
+ * @param alloc Allocator for the path bytes.
+ * @param out_path Receives the path, owned by the caller; NULL if none.
+ * @return GIMG_OK - a path that cannot be read yields none rather than
+ *   refusing the image, the same trade an unreadable embedded profile gets -
+ *   or GIMG_ERR_OOM.
+ */
+GIMG_Result gimg_bmp_read_linked_path(GIMG_Stream * stream,
+    const gimg_bmp_header_t * header, const GIMG_Allocator * alloc,
+    char ** out_path);
 
 /**
  * @brief Read and verify the "BM" signature, leaving the stream after it.

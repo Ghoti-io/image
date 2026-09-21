@@ -311,7 +311,7 @@ adding or restricting features.
 | **RLE** | RLE8, RLE4 and RLE24: encoded runs, absolute runs padded to 16 bits, end-of-line, end-of-bitmap, delta. Overhanging runs are clipped | An absolute run or a delta that runs off the end of the data &rarr; `GIMG_ERR_CORRUPT`. RLE data needs a sized stream, since its length is not predictable from the header and it is taken from `bfOffBits` to the end of the file; an unsized stream &rarr; `GIMG_ERR_UNSUPPORTED` |
 | **Embedded streams** | `BI_JPEG` and `BI_PNG` are loaded through that format's own codec and decoded by it, with the caller's load options unchanged | The payload goes to the codec the header named, never to the prober, so a wrapper cannot nest. A payload that is not of that format &rarr; that codec's error |
 | **64 bits per pixel** | `BI_RGB` only, BGRA of s2.13 fixed point in linear light; each sample goes through the sRGB transfer function to reach the 8-bit raster | Microsoft publishes no specification for it; what is implemented is what bmplib and GIMP agree on, pinned by `q/rgba64.bmp` and `bmp_4x1_rgba64.bmp`. Any compression other than `BI_RGB` at 64bpp &rarr; `GIMG_ERR_CORRUPT`: no channel mask can describe a sample that is not an integer. Samples outside 0.0 to 1.0, which s2.13 can hold, clamp |
-| **Color** | V4: `LCS_sRGB`, `LCS_WINDOWS_COLOR_SPACE`, `LCS_CALIBRATED_RGB` endpoints and gammas. V5: `bV5Intent`, `PROFILE_EMBEDDED` | `PROFILE_LINKED` names a file and is not followed - the image decodes untagged. A gamut matching neither sRGB nor Adobe RGB, or three gammas that disagree, leaves that field unknown rather than approximated. A profile running past the end of the file, or exceeding `max_memory`, yields no profile rather than no image |
+| **Color** | V4: `LCS_sRGB`, `LCS_WINDOWS_COLOR_SPACE`, `LCS_CALIBRATED_RGB` endpoints and gammas. V5: `bV5Intent`, `PROFILE_EMBEDDED`, and `PROFILE_LINKED` as a reported path | `PROFILE_LINKED` names a file, which is never opened here: the path is reported as `icc_linked_path` and a caller's `icc_resolver` may supply the bytes, which are then held to the same ceiling an embedded profile is. A path longer than 4096 bytes is not a path and is ignored. A gamut matching neither sRGB nor Adobe RGB, or three gammas that disagree, leaves that field unknown rather than approximated. A profile running past the end of the file, or exceeding `max_memory`, yields no profile rather than no image |
 | **Resolution** | `biXPelsPerMeter` / `biYPelsPerMeter` read into and written from the document's common metadata | Both axes must be stated: one alone describes a pixel's shape rather than its size. A negative value reads as "not stated" |
 | **Document shape** | One item, decoded to `GIMG_PIXEL_RGBA8`; an OS/2 `BA` container is as many items as it holds entries | A plain BMP holds a single image, so an item index above 0 &rarr; `GIMG_ERR_UNSUPPORTED`. The `BA` exception is real: its entries are one picture rendered for different displays, and which to use is the caller's choice, not this codec's |
 | **`BA` bitmap array** | The `'BA'` chain is walked and each entry loaded as the ordinary bitmap it is, through the same re-entry a `BI_JPEG` wrapper uses | An entry's `bfOffBits` counts from the start of the *container*, not the entry. The chain must advance: an `offNext` at or before the header holding it &rarr; `GIMG_ERR_CORRUPT`, which is also what makes a cycle impossible. At most 64 entries, and a container needs a sized stream since the chain is walked by absolute offset |
@@ -454,10 +454,19 @@ reconstruct one.
 
 Listed so the absences are visible rather than discovered.
 
-- **Following a linked color profile.** `PROFILE_LINKED` states a file path
-  rather than carrying a profile. It is deliberately not followed: opening a
-  path an image file names is acting on data, and is the shape of a directory
-  traversal. Such a file decodes untagged. `PROFILE_EMBEDDED` is read.
+- **Opening a linked color profile.** `PROFILE_LINKED` states a file path
+  rather than carrying a profile, and this codec never opens it: following a
+  path that arrived inside an image is acting on data, and is the shape of a
+  directory traversal. The path is *reported* instead, as
+  `GIMG_Color_Info.icc_linked_path`, and a caller who wants the profile
+  supplies `GIMG_Load_Options.icc_resolver` and hands the bytes back. That
+  keeps every path decision with the code that knows where the image came
+  from - which directories are its own, and whether a Windows path out of a
+  1990s BMP should be mapped onto a local profile at all. The one published
+  example, bmpsuite's `q/rgb24lprof.bmp`, names `C:\temp\test?.icc`, so the
+  question is rarely "may I open this" and usually "what would this even mean
+  here".
+
 - **Writing RLE4 and RLE24.** `BI_RLE8` is written on request; the other two
   are not. RLE4's alternating nibbles make it larger than RLE8 on most images
   that are not synthetic, and RLE24 is an OS/2 encoding Windows never reads.

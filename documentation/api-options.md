@@ -47,6 +47,8 @@ T.81 describes none.
 | `strictness`| **GIMG_Strictness** — how to handle recoverable issues (see below). |
 | `jpeg_tables` | For JPEG: tables to install before reading an abbreviated stream (T.81 B.4). Ignored by other codecs. |
 | `bmp_rgb32_alpha` | For BMP: what the undefined fourth byte of a 32-bit `BI_RGB` pixel means. `GIMG_BMP_RGB32_ALPHA_IGNORE` (0, default) decodes such an image opaque; `GIMG_BMP_RGB32_ALPHA_HEURISTIC` reads the byte as alpha when any pixel sets it. A file that *declares* its alpha is unaffected either way. Ignored by other codecs. |
+| `icc_resolver` | Called when a file names an ICC profile rather than carrying one - BMP's `PROFILE_LINKED` is the case. The library never opens the path itself; it hands the path over and takes bytes back, so the decision sits with the code that knows where the image came from. Return `GIMG_OK` with the bytes to attach them, or anything else to leave the image untagged, which is not an error. The bytes are copied before the call returns. Unset (the default) means no profile is resolved and the path is reported as `GIMG_Color_Info.icc_linked_path`. |
+| `icc_resolver_user` | Passed to `icc_resolver` untouched. |
 | `_reserved` | Reserved; set to zero. |
 
 Used by `gimg_doc_load()`.
