@@ -29,6 +29,18 @@
 /** BMP file signature bytes ('B', 'M'). */
 extern const unsigned char gimg_bmp_signature[GIMG_BMP_SIGNATURE_LEN];
 
+/** OS/2 bitmap array signature bytes ('B', 'A'). */
+extern const unsigned char gimg_bmp_array_signature[GIMG_BMP_SIGNATURE_LEN];
+
+/**
+ * Size of a BITMAPARRAYFILEHEADER: the 'BA' magic, cbSize, offNext, and the
+ * two display dimensions.  An ordinary BITMAPFILEHEADER follows immediately
+ * after, at this offset rather than at cbSize - bmpsuite's x/ba-bm.bmp writes
+ * a cbSize of 40 for a structure that is 14 bytes long, so cbSize joins bfSize
+ * and biSizeImage among the fields this codec does not trust.
+ */
+#define GIMG_BMP_ARRAY_HEADER_SIZE 14
+
 /** Size of the BITMAPFILEHEADER on disk. */
 #define GIMG_BMP_FILE_HEADER_SIZE 14
 
@@ -205,6 +217,14 @@ typedef struct {
    * the "pixel data" of such a file is a whole JPEG or PNG, and this library
    * has a codec for each. */
   GIMG_Doc * embedded;
+  /** For an OS/2 'BA' container, one loaded document per entry, each holding
+   * an ordinary bitmap.  The header, palette and pixel fields above are unused
+   * when this is set: a container holds no pixels of its own, and decode
+   * forwards to the entry the item index names.  The entries are alternative
+   * renderings of one picture for different devices, so they are exposed as
+   * items and the choice of which to use is left to the caller. */
+  GIMG_Doc ** array_entries;
+  size_t array_count;
   /** GIMG_Load_Options.bmp_rgb32_alpha as the load was given it.  Kept here
    * rather than read again at decode because a save re-decodes its source
    * item with no options of its own, and must not reinterpret the pixels

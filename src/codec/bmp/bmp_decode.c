@@ -452,13 +452,15 @@ GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
                   0))) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  if (item->index != 0) {
-    // BMP holds a single image.
+  const gimg_bmp_doc_state_t * state =
+      (const gimg_bmp_doc_state_t *)doc->codec_private;
+
+  if (item->index != 0 && !state->array_count) {
+    // A BMP holds a single image.  An OS/2 bitmap array is the exception: it
+    // holds several, and they are the document's items.
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  const gimg_bmp_doc_state_t * state =
-      (const gimg_bmp_doc_state_t *)doc->codec_private;
   const gimg_bmp_header_t * h = &state->header;
 
   // BI_JPEG and BI_PNG: the "pixel data" is a whole JPEG or PNG, which load
@@ -466,6 +468,17 @@ GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
   // decode, only a document to ask.  The BMP header's biWidth and biBitCount
   // describe the image it stands in for; the stream inside is the image, and
   // where the two disagree the stream is what the pixels actually are.
+  // A bitmap array holds no pixels of its own; the entry the item names does.
+  if (state->array_count) {
+    if ((size_t)item->index >= state->array_count ||
+        !state->array_entries[item->index]) {
+      return GIMG_ERR_INTERNAL;
+    }
+    return gimg_item_decode(
+        gimg_doc_item(state->array_entries[item->index], 0), options,
+        out_raster);
+  }
+
   if (gimg_bmp_is_embedded(h->compression)) {
     if (!state->embedded) {
       return GIMG_ERR_INTERNAL;

@@ -740,10 +740,155 @@ void gimg_bmp_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   if (state->embedded) {
     gimg_doc_destroy(state->embedded);
   }
+  for (size_t i = 0; i < state->array_count; i++) {
+    if (state->array_entries[i]) {
+      gimg_doc_destroy(state->array_entries[i]);
+    }
+  }
+  gimg_free(alloc, state->array_entries);
   gimg_free(alloc, state->icc);
   gimg_free(alloc, state->palette);
   gimg_free(alloc, state->pixels);
   gimg_free(alloc, state);
+}
+
+/** Largest number of entries a bitmap array may hold.
+ *
+ * The chain is a linked list inside attacker-controlled data.  Offsets are
+ * required to increase below, which already makes a cycle impossible, but a
+ * file can still name a great many tiny entries; this bounds the work and the
+ * allocation that follows from one header.  OS/2 wrote a handful - one per
+ * display type - so any real file is far under this.
+ */
+#define GIMG_BMP_ARRAY_MAX_ENTRIES 64u
+
+/**
+ * Load an OS/2 'BA' bitmap array: a chain of headers, each introducing an
+ * ordinary bitmap.
+ *
+ * The entries are alternative renderings of one picture for different display
+ * devices, not pages of different pictures, so they become the document's
+ * items and choosing between them is left to the caller.  Each entry is loaded
+ * by re-entering this codec on a stream over its bytes, which is the same
+ * mechanism a BI_JPEG or BI_PNG wrapper already uses: an entry is a whole BMP,
+ * and there is no reason to parse one a second way.
+ */
+static GIMG_Result bmp_load_array(GIMG_Codec * codec, GIMG_Stream * stream,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    const GIMG_Allocator * alloc, GIMG_Doc *** out_entries,
+    size_t * out_count) {
+  *out_entries = NULL;
+  *out_count = 0;
+
+  size_t size = gimg_stream_size(stream);
+  if (!size) {
+    // The chain is walked by absolute offset, so it needs a stream that knows
+    // where its end is - the same requirement RLE has, for the same reason.
+    bmp_load_diag(diagnostics, 0u, "a bitmap array requires a sized stream");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  unsigned char * file = (unsigned char *)gimg_malloc(alloc, size);
+  if (!file) {
+    return GIMG_ERR_OOM;
+  }
+  GIMG_Result r = gimg_stream_seek(stream, 0u);
+  if (r == GIMG_OK) {
+    r = gimg_stream_read_exact(stream, file, size);
+  }
+  if (r != GIMG_OK) {
+    gimg_free(alloc, file);
+    return r;
+  }
+
+  // First pass: walk the chain and record where each entry starts, refusing a
+  // chain that does not move forward.  An offNext that pointed backwards or at
+  // itself would loop here forever.
+  uint32_t starts[GIMG_BMP_ARRAY_MAX_ENTRIES];
+  size_t count = 0;
+  uint32_t at = 0;
+  while (count < GIMG_BMP_ARRAY_MAX_ENTRIES) {
+    if ((size_t)at + GIMG_BMP_ARRAY_HEADER_SIZE > size) {
+      gimg_free(alloc, file);
+      bmp_load_diag(diagnostics, (size_t)at, "bitmap array header past the end");
+      return GIMG_ERR_CORRUPT;
+    }
+    if (file[at] != gimg_bmp_array_signature[0] ||
+        file[at + 1] != gimg_bmp_array_signature[1]) {
+      gimg_free(alloc, file);
+      bmp_load_diag(diagnostics, (size_t)at, "bitmap array entry lacks 'BA'");
+      return GIMG_ERR_CORRUPT;
+    }
+    starts[count++] = at;
+    uint32_t next = bmp_read_u32(file + at + 6);
+    if (!next) {
+      break;
+    }
+    if (next <= at) {
+      gimg_free(alloc, file);
+      bmp_load_diag(diagnostics, (size_t)at, "bitmap array chain does not advance");
+      return GIMG_ERR_CORRUPT;
+    }
+    at = next;
+  }
+
+  GIMG_Doc ** entries =
+      (GIMG_Doc **)gimg_malloc(alloc, count * sizeof(GIMG_Doc *));
+  if (!entries) {
+    gimg_free(alloc, file);
+    return GIMG_ERR_OOM;
+  }
+  for (size_t i = 0; i < count; i++) {
+    entries[i] = NULL;
+  }
+
+  for (size_t i = 0; i < count; i++) {
+    // An entry runs from just past its own header to the start of the next
+    // one, or to the end of the file for the last.
+    size_t begin = (size_t)starts[i] + GIMG_BMP_ARRAY_HEADER_SIZE;
+    size_t end = (i + 1 < count) ? (size_t)starts[i + 1] : size;
+    if (begin >= end) {
+      r = GIMG_ERR_CORRUPT;
+      bmp_load_diag(diagnostics, begin, "bitmap array entry is empty");
+      break;
+    }
+    // The stream spans the file from its start, not from the entry, because an
+    // entry's bfOffBits counts from the beginning of the container: in
+    // bmpsuite's x/ba-bm.bmp it is 808, which is the 14-byte array header plus
+    // the entry's own 14-byte file header, 12-byte core header and 768-byte
+    // palette.  Handing the entry its own bytes alone would put every pixel
+    // offset 14 bytes past where it belongs.  It is cut off at the next entry
+    // so that one entry's pixel data cannot run into the next one's.
+    GIMG_Stream * sub = NULL;
+    r = gimg_stream_create_memory(file, end, &sub);
+    if (r != GIMG_OK) {
+      break;
+    }
+    r = gimg_stream_seek(sub, begin);
+    if (r == GIMG_OK) {
+      r = gimg_bmp_load(codec, sub, options, diagnostics, &entries[i]);
+    }
+    gimg_stream_destroy(sub);
+    if (r != GIMG_OK) {
+      bmp_load_diag(diagnostics, begin, "a bitmap array entry did not load");
+      break;
+    }
+  }
+
+  gimg_free(alloc, file);
+  if (r != GIMG_OK) {
+    for (size_t i = 0; i < count; i++) {
+      if (entries[i]) {
+        gimg_doc_destroy(entries[i]);
+      }
+    }
+    gimg_free(alloc, entries);
+    return r;
+  }
+
+  *out_entries = entries;
+  *out_count = count;
+  return GIMG_OK;
 }
 
 GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
@@ -754,13 +899,62 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   }
   *out_doc = NULL;
 
-  GIMG_Result r = gimg_bmp_verify_signature(stream);
+  const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
+  const GIMG_Limits * limits = options ? options->limits : NULL;
+
+  // An OS/2 bitmap array holds bitmaps rather than being one, so it is settled
+  // before the file header is read: what follows a 'BA' is another header, not
+  // a DIB.
+  unsigned char magic[GIMG_BMP_SIGNATURE_LEN];
+  size_t peeked = 0;
+  GIMG_Result r = gimg_stream_peek(stream, magic, sizeof(magic), &peeked);
   if (r != GIMG_OK) {
     return r;
   }
+  if (peeked >= sizeof(magic) && magic[0] == gimg_bmp_array_signature[0] &&
+      magic[1] == gimg_bmp_array_signature[1]) {
+    GIMG_Doc ** entries = NULL;
+    size_t count = 0;
+    r = bmp_load_array(
+        codec, stream, options, diagnostics, alloc, &entries, &count);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    gimg_bmp_doc_state_t * state = (gimg_bmp_doc_state_t *)gimg_calloc(
+        alloc, 1u, sizeof(gimg_bmp_doc_state_t));
+    if (!state) {
+      for (size_t i = 0; i < count; i++) {
+        gimg_doc_destroy(entries[i]);
+      }
+      gimg_free(alloc, entries);
+      return GIMG_ERR_OOM;
+    }
+    state->allocator = alloc;
+    state->array_entries = entries;
+    state->array_count = count;
 
-  const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
-  const GIMG_Limits * limits = options ? options->limits : NULL;
+    GIMG_Doc * doc = NULL;
+    r = gimg_doc_create_with_allocator(alloc, &doc);
+    if (r == GIMG_OK) {
+      r = gimg_doc_set_item_count(doc, count);
+    }
+    if (r != GIMG_OK) {
+      if (doc) {
+        gimg_doc_destroy(doc);
+      }
+      gimg_bmp_free_doc_state(codec, state);
+      return r;
+    }
+    doc->loaded_by_codec = codec;
+    doc->codec_private = state;
+    *out_doc = doc;
+    return GIMG_OK;
+  }
+
+  r = gimg_bmp_verify_signature(stream);
+  if (r != GIMG_OK) {
+    return r;
+  }
 
   // Remainder of the file header: size, two reserved words, data offset.
   unsigned char file_rest[GIMG_BMP_FILE_HEADER_SIZE - GIMG_BMP_SIGNATURE_LEN];

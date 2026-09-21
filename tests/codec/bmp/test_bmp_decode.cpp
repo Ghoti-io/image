@@ -159,6 +159,37 @@ TEST(BmpDecode, Rgba64IsConvertedFromLinearLightNotWidened) {
   EXPECT_EQ(img.at(3, 0), (Rgba{188, 188, 188, 128}));
 }
 
+TEST(BmpDecode, BitmapArrayExposesEveryEntry) {
+  // An OS/2 'BA' file holds several bitmaps - the same picture rendered for
+  // different displays - rather than being one.  Each becomes an item, so a
+  // caller can choose; decoding item 1 must give the second entry and not the
+  // first over again.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_array_2_entries.bmp"), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(img.doc()), 2u);
+
+  ASSERT_EQ(img.decode(nullptr, 0), GIMG_OK);
+  ASSERT_EQ(img.width(), 2u);
+  EXPECT_EQ(img.at(0, 0), (Rgba{255, 0, 0, 255}));
+  EXPECT_EQ(img.at(1, 0), (Rgba{0, 255, 0, 255}));
+
+  ASSERT_EQ(img.decode(nullptr, 1), GIMG_OK);
+  EXPECT_EQ(img.at(0, 0), (Rgba{0, 0, 255, 255}));
+  EXPECT_EQ(img.at(1, 0), (Rgba{255, 255, 255, 255}));
+}
+
+TEST(BmpDecode, BitmapArrayEntryOffsetsCountFromTheContainer) {
+  // An entry's bfOffBits is an offset into the whole file, not into the entry.
+  // Reading it as entry-relative puts the pixel data 14 bytes early - the size
+  // of the array header - which lands inside the entry's own file header and
+  // decodes to something that is still an image.  The first pixel is the check
+  // that says which reading was used.
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_array_2_entries.bmp"), GIMG_OK);
+  ASSERT_EQ(img.decode(nullptr, 0), GIMG_OK);
+  EXPECT_EQ(img.at(0, 0), (Rgba{255, 0, 0, 255}));
+}
+
 TEST(BmpDecode, SinglePixel) {
   Loaded img;
   ASSERT_EQ(img.load("bmp_1x1_24bit.bmp"), GIMG_OK);

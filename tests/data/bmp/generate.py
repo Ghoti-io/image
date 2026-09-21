@@ -558,6 +558,47 @@ def rgba64_fixture() -> None:
     write("bmp_4x1_rgba64.bmp", assemble(dib, b"", body))
 
 
+def bitmap_array_fixture() -> None:
+    """An OS/2 'BA' container holding two bitmaps.
+
+    bmpsuite's x/ba-bm.bmp holds exactly one entry, so nothing published
+    exercises the chain.  Two entries, each a different colour, make a test
+    able to say that entry 1 is reached and is not entry 0 again.
+
+    Each entry's bfOffBits counts from the start of the *container*, which is
+    what x/ba-bm.bmp does and what the OS/2 documentation means by a file
+    offset.  Writing it relative to the entry would put the pixels 14 bytes
+    early, so this fixture is only correct if that is respected.
+    """
+    def entry(pixels_bgr):
+        dib = info_header(2, 1, 24)
+        return dib, b"", pad_row(pixels_bgr)
+
+    red_green = bytes([0, 0, 255, 0, 255, 0])
+    blue_white = bytes([255, 0, 0, 255, 255, 255])
+    parts = [entry(red_green), entry(blue_white)]
+
+    # Two passes: the first to size everything, the second to write the
+    # offsets, since each header names where the next one starts.
+    ba_size = 14
+    sizes = [ba_size + 14 + len(d) + len(p) + len(px) for d, p, px in parts]
+    starts, at = [], 0
+    for size in sizes:
+        starts.append(at)
+        at += size
+
+    out = b""
+    for i, (dib, palette, pixels) in enumerate(parts):
+        nxt = starts[i + 1] if i + 1 < len(parts) else 0
+        # usType 'BA', cbSize, offNext, cxDisplay, cyDisplay.
+        out += struct.pack("<2sIIHH", b"BA", ba_size, nxt, 0, 0)
+        data_offset = starts[i] + ba_size + 14 + len(dib) + len(palette)
+        out += struct.pack("<2sIHHI", b"BM", 14 + len(dib) + len(palette) +
+                           len(pixels), 0, 0, data_offset)
+        out += dib + palette + pixels
+    write("bmp_array_2_entries.bmp", out)
+
+
 def malformed_fixtures() -> None:
     colors = [(255, 0, 0), (0, 255, 0)]
     palette = b"".join(bytes([b, g, r, 0]) for (r, g, b) in colors)
@@ -627,5 +668,7 @@ if __name__ == "__main__":
     embedded_fixtures()
     print("64-bit fixture:")
     rgba64_fixture()
+    print("Bitmap array fixture:")
+    bitmap_array_fixture()
     print("Malformed fixtures:")
     malformed_fixtures()

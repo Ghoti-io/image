@@ -72,7 +72,6 @@ REJECT = {
     # Recognized, deliberately not implemented.  Each is listed in
     # documentation/formats/bmp.md under "Not implemented".
     "pal1huffmsb.bmp": "OS/2 Huffman 1D compression",
-    "ba-bm.bmp": "the OS/2 'BA' bitmap array container",
 }
 
 # Files where an installed decoder is known to be wrong, with what is wrong

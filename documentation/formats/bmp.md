@@ -312,7 +312,8 @@ adding or restricting features.
 | **64 bits per pixel** | `BI_RGB` only, BGRA of s2.13 fixed point in linear light; each sample goes through the sRGB transfer function to reach the 8-bit raster | Microsoft publishes no specification for it; what is implemented is what bmplib and GIMP agree on, pinned by `q/rgba64.bmp` and `bmp_4x1_rgba64.bmp`. Any compression other than `BI_RGB` at 64bpp &rarr; `GIMG_ERR_CORRUPT`: no channel mask can describe a sample that is not an integer. Samples outside 0.0 to 1.0, which s2.13 can hold, clamp |
 | **Color** | V4: `LCS_sRGB`, `LCS_WINDOWS_COLOR_SPACE`, `LCS_CALIBRATED_RGB` endpoints and gammas. V5: `bV5Intent`, `PROFILE_EMBEDDED` | `PROFILE_LINKED` names a file and is not followed - the image decodes untagged. A gamut matching neither sRGB nor Adobe RGB, or three gammas that disagree, leaves that field unknown rather than approximated. A profile running past the end of the file, or exceeding `max_memory`, yields no profile rather than no image |
 | **Resolution** | `biXPelsPerMeter` / `biYPelsPerMeter` read into and written from the document's common metadata | Both axes must be stated: one alone describes a pixel's shape rather than its size. A negative value reads as "not stated" |
-| **Document shape** | One item, decoded to `GIMG_PIXEL_RGBA8` | BMP holds a single image; an item index above 0 &rarr; `GIMG_ERR_UNSUPPORTED` |
+| **Document shape** | One item, decoded to `GIMG_PIXEL_RGBA8`; an OS/2 `BA` container is as many items as it holds entries | A plain BMP holds a single image, so an item index above 0 &rarr; `GIMG_ERR_UNSUPPORTED`. The `BA` exception is real: its entries are one picture rendered for different displays, and which to use is the caller's choice, not this codec's |
+| **`BA` bitmap array** | The `'BA'` chain is walked and each entry loaded as the ordinary bitmap it is, through the same re-entry a `BI_JPEG` wrapper uses | An entry's `bfOffBits` counts from the start of the *container*, not the entry. The chain must advance: an `offNext` at or before the header holding it &rarr; `GIMG_ERR_CORRUPT`, which is also what makes a cycle impossible. At most 64 entries, and a container needs a sized stream since the chain is walked by absolute offset |
 | **Limits** | `max_decoded_pixels` at load and at decode, `max_memory` on the pixel buffer and on an embedded ICC profile | Exceeded &rarr; `GIMG_ERR_LIMIT`, before the allocation rather than after |
 | **Save** | 32-bit `BI_BITFIELDS` with a V3 header when alpha is present; 1-, 4- or 8-bit indexed, optionally `BI_RLE8`; 24-bit `BI_RGB` otherwise. Bottom-up or top-down. A V4 or V5 header when the raster states a color space | A 12- or 16-bit GRAY or RGBA raster is narrowed to 8 bits first; any other raster &rarr; `GIMG_ERR_UNSUPPORTED`. A zero dimension &rarr; `GIMG_ERR_FORMAT`. A file larger than `UINT32_MAX` &rarr; `GIMG_ERR_LIMIT`, since `bfSize` cannot describe it. Top-down together with RLE &rarr; `GIMG_ERR_UNSUPPORTED`. No RLE4, no RLE24, no 2-bit output |
 
@@ -358,8 +359,8 @@ reconstruct one.
   suite, used as a development oracle from a scratch directory and not
   vendored - the same treatment PngSuite gets for PNG. `make bmpsuite
   BMPSUITE=<dir>` runs all 91 files through the codec and reports what agreed
-  with what; today, 10 are refused as intended, 37 are checked against a
-  decoder written from the specification, 80 are corroborated by another
+  with what; today, 9 are refused as intended, 37 are checked against a
+  decoder written from the specification, 81 are corroborated by another
   decoder, and nothing disagrees. `tools/oracle/fetch.sh` provides the corpus,
   at the commit `tools/oracle/VERSIONS` pins.
 - **No other decoder is treated as the answer.** Four may be present - Pillow,
@@ -461,14 +462,6 @@ Listed so the absences are visible rather than discovered.
   stored uncompressed, to the pixel. So the target is known should this be
   implemented: the work is the CCITT Group 3 one-dimensional decoder, not
   deciding what the answer should be.
-- **The OS/2 `BA` bitmap array container.** A file beginning `BA` holds a
-  sequence of bitmaps for different devices rather than one image.
-  bmpsuite's `x/ba-bm.bmp` is the case. The probe does not claim such a file,
-  so it is refused as an unrecognized format rather than misread as a bitmap.
-  This one needs no oracle to implement: the entries are ordinary bitmaps, and
-  bmplib reading the single entry in `x/ba-bm.bmp` gives exactly what this
-  codec decodes from `g/pal8.bmp`. Splitting the container is the whole job;
-  what comes out is already covered.
 - **Following a linked color profile.** `PROFILE_LINKED` states a file path
   rather than carrying a profile. It is deliberately not followed: opening a
   path an image file names is acting on data, and is the shape of a directory

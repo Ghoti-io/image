@@ -92,9 +92,15 @@ public:
     return gimg_doc_load(stream_, options, nullptr, &doc_);
   }
 
-  /** Decode item 0; returns the decode result. */
-  GIMG_Result decode(const GIMG_Decode_Options * options = nullptr) {
-    GIMG_Item * item = gimg_doc_item(doc_, 0);
+  /** Decode one item; returns the decode result.  Defaults to item 0, which
+   * is every BMP but an OS/2 bitmap array. */
+  GIMG_Result decode(const GIMG_Decode_Options * options = nullptr,
+      size_t item_index = 0) {
+    if (raster_) {
+      gimg_raster_destroy(raster_);
+      raster_ = nullptr;
+    }
+    GIMG_Item * item = gimg_doc_item(doc_, item_index);
     if (!item) {
       return GIMG_ERR_INTERNAL;
     }

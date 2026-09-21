@@ -13,6 +13,7 @@
 #include <ghoti.io/image/codec.h>
 
 #include "../codec_internal.h"
+#include "../../core/alloc_internal.h"
 #include "bmp_internal.h"
 
 // GIMG_CAP_16BPC is deliberately absent: a BMP sample is a byte at most, so a
@@ -38,6 +39,25 @@ static void gimg_bmp_register(void) {
     return;
   }
   codec->capabilities = BMP_CAPABILITIES;
+
+  // A second magic for the OS/2 'BA' bitmap array, so that such a file is
+  // claimed by this codec rather than falling through as an unrecognized
+  // format.  The stub creator takes one magic; the registry has always
+  // iterated however many a codec carries.
+  gimg_codec_magic_t * magics = (gimg_codec_magic_t *)gimg_malloc(
+      gimg_alloc_or_default(codec->allocator),
+      2u * sizeof(gimg_codec_magic_t));
+  if (magics) {
+    magics[0] = codec->magics[0];
+    magics[1].bytes = gimg_bmp_array_signature;
+    magics[1].length = GIMG_BMP_SIGNATURE_LEN;
+    magics[1].offset = 0;
+    // magics[0] still owns the copied 'BM' bytes; only the array itself is
+    // replaced, and the old one is freed here rather than leaked.
+    gimg_free(gimg_alloc_or_default(codec->allocator), codec->magics);
+    codec->magics = magics;
+    codec->magic_count = 2;
+  }
   gimg_codec_set_load_cb(codec, (gimg_codec_load_fn)gimg_bmp_load);
   gimg_codec_set_save_cb(codec, (gimg_codec_save_fn)gimg_bmp_save);
   gimg_codec_set_decode_cb(codec, (gimg_codec_decode_fn)gimg_bmp_decode);

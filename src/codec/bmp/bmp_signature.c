@@ -11,6 +11,9 @@
 
 const unsigned char gimg_bmp_signature[GIMG_BMP_SIGNATURE_LEN] = {0x42, 0x4D};
 
+const unsigned char gimg_bmp_array_signature[GIMG_BMP_SIGNATURE_LEN] = {
+    0x42, 0x41};
+
 GIMG_Result gimg_bmp_verify_signature(GIMG_Stream * stream) {
   unsigned char magic[GIMG_BMP_SIGNATURE_LEN];
   GIMG_Result r = gimg_stream_read_exact(stream, magic, sizeof(magic));
