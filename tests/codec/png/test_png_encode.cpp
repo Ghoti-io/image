@@ -17,6 +17,7 @@
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
+#include <functional>
 #include <gtest/gtest.h>
 #include <vector>
 
@@ -1669,6 +1670,54 @@ std::vector<uint8_t> LoadAndSave(const char * fixture) {
   return SaveWithFilter(fixture, GIMG_PNG_FILTER_ADAPTIVE, &r);
 }
 
+/**
+ * Load a fixture, let `prepare` change the document, save it.
+ *
+ * The hook is what separates "the accessor says so" from "the file says so":
+ * a setter whose value the writer ignores reports success either way, and only
+ * reading the bytes back out catches it.
+ */
+std::vector<uint8_t> LoadEditSave(
+    const char * fixture, const std::function<void(GIMG_Doc *)> & prepare) {
+  std::vector<uint8_t> buf;
+  if (!png_test::load_png_file(fixture, buf)) {
+    return {};
+  }
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(buf.data(), buf.size(), &s) != GIMG_OK) {
+    return {};
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (r != GIMG_OK) {
+    return {};
+  }
+  if (prepare) {
+    prepare(doc);
+  }
+  GIMG_Stream * out_s = nullptr;
+  if (gimg_stream_create_memory_output(&out_s) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return {};
+  }
+  GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
+  opts.png_filter = GIMG_PNG_FILTER_ADAPTIVE;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  std::vector<uint8_t> saved;
+  if (r == GIMG_OK) {
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out_s, &p, &n);
+    saved.assign(static_cast<const uint8_t *>(p),
+        static_cast<const uint8_t *>(p) + n);
+  }
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+  return saved;
+}
+
 // -- bKGD -------------------------------------------------------------------
 
 TEST(PngAncillaryRetarget, AGrayBackgroundBecomesThreeEqualSamples) {
@@ -1892,6 +1941,126 @@ TEST(PngAncillaryRetarget, APaletteThatStaysAPaletteKeepsItsHistogram) {
   EXPECT_EQ(bkgd, want_bkgd);
   ASSERT_TRUE(FindChunk(saved, "hIST", hist));
   EXPECT_EQ(hist.size(), 8u) << "one 16-bit frequency per palette entry";
+}
+
+TEST(PngBackground, ChangingItChangesTheFileAndNotJustTheAccessor) {
+  // The file's own bKGD used to be copied across untouched, which made
+  // gimg_doc_set_background_color() a no-op that reported success: the
+  // accessor gave the new colour, the file kept the old one, and only a round
+  // trip showed the difference.  So this asks the bytes.
+  //
+  // The fixture is a palette image, where a background is an *index*, so the
+  // new colour also has to be found in the PLTE being written rather than
+  // written as a colour that color type cannot hold.  Entry 2 is pure green.
+  std::vector<uint8_t> saved =
+      LoadEditSave("png_palette_trns_bkgd_hist.png", [](GIMG_Doc * doc) {
+        const uint8_t green[4] = {0x00, 0xFF, 0x00, 0xFF};
+        gimg_doc_set_background_color(doc, green);
+      });
+  ASSERT_FALSE(saved.empty());
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  ASSERT_EQ(ct, 3) << "a palette frame is written back as one";
+
+  std::vector<uint8_t> bkgd;
+  ASSERT_TRUE(FindChunk(saved, "bKGD", bkgd));
+  const std::vector<uint8_t> want = {2};
+  EXPECT_EQ(bkgd, want) << "PLTE entry 2 is the green that was asked for; the "
+                           "fixture arrived naming entry 1";
+}
+
+TEST(PngBackground, ClearingItRemovesTheChunk) {
+  // "Say nothing" is a different output from any colour, and the only way to
+  // say it in PNG is to write no bKGD at all.  A writer that kept the file's
+  // own chunk turned a deletion into a no-op.
+  std::vector<uint8_t> saved =
+      LoadEditSave("png_gray8_bkgd_sbit.png", [](GIMG_Doc * doc) {
+        gimg_doc_clear_background_color(doc);
+      });
+  ASSERT_FALSE(saved.empty());
+  std::vector<uint8_t> bkgd;
+  EXPECT_FALSE(FindChunk(saved, "bKGD", bkgd))
+      << "the document declares no background, so the file must not";
+
+  // And the chunk beside it is untouched, so this is a deletion and not a
+  // policy that dropped everything.
+  std::vector<uint8_t> sbit;
+  EXPECT_TRUE(FindChunk(saved, "sBIT", sbit));
+}
+
+TEST(PngBackground, AnUnchangedBackgroundKeepsTheOriginalBytes) {
+  // The document holds eight bits a sample and this file's bKGD holds sixteen,
+  // so a writer that rebuilt the chunk from the document every time would turn
+  // 1234 5678 9abc into 1212 5656 9a9a - a quiet loss of precision on a round
+  // trip that changed nothing.
+  //
+  // The rule is that the file's own bytes go back when they still state what
+  // the document states; the tests above are what happens when they do not.
+  std::vector<uint8_t> saved = LoadAndSave("png_rgb16_bkgd.png");
+  ASSERT_FALSE(saved.empty());
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  ASSERT_EQ(ct, 2);
+  ASSERT_EQ(bd, 16);
+
+  std::vector<uint8_t> bkgd;
+  ASSERT_TRUE(FindChunk(saved, "bKGD", bkgd));
+  const std::vector<uint8_t> want = {
+      0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC};
+  EXPECT_EQ(bkgd, want) << "sixteen bits a sample, not eight doubled";
+}
+
+TEST(PngBackground, AGrayImageStatesNoBackgroundItCannotHold) {
+  // Color types 0 and 4 state a background as one gray level, and no gray
+  // level is this green.  Writing the red channel, or a luminance, would put a
+  // colour in the file that the caller never asked for and could not tell
+  // apart from one they did - so nothing is written.
+  //
+  // ImageMagick makes the other trade: asked for a lime background on a
+  // grayscale PNG it promotes the image to truecolor and says it cannot write
+  // the gray that was requested.  Growing the pixels to carry an advisory
+  // chunk is the wrong way round for a library; the pixels are the payload.
+  std::vector<uint8_t> saved =
+      LoadEditSave("png_gray8_bkgd_sbit.png", [](GIMG_Doc * doc) {
+        const uint8_t green[4] = {0x00, 0xFF, 0x00, 0xFF};
+        gimg_doc_set_background_color(doc, green);
+      });
+  ASSERT_FALSE(saved.empty());
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  EXPECT_EQ(ct, 0) << "the image stays gray; it is not grown to fit a hint";
+  std::vector<uint8_t> bkgd;
+  EXPECT_FALSE(FindChunk(saved, "bKGD", bkgd));
+
+  // A gray the type *can* hold is written, so this is a refusal and not a
+  // writer that lost the ability to state one.
+  std::vector<uint8_t> gray =
+      LoadEditSave("png_gray8_bkgd_sbit.png", [](GIMG_Doc * doc) {
+        const uint8_t v[4] = {0xC8, 0xC8, 0xC8, 0xFF};
+        gimg_doc_set_background_color(doc, v);
+      });
+  ASSERT_FALSE(gray.empty());
+  ASSERT_TRUE(FindChunk(gray, "bKGD", bkgd));
+  const std::vector<uint8_t> want = {0x00, 0xC8};
+  EXPECT_EQ(bkgd, want);
+}
+
+TEST(PngBackground, APaletteCannotStateAColourItDoesNotHold) {
+  // A palette image names its background by index, so the only colours it can
+  // state are the ones in its PLTE.  A nearest entry would be a colour nobody
+  // asked for, and an absent advisory chunk is a smaller lie than a wrong one.
+  std::vector<uint8_t> saved =
+      LoadEditSave("png_palette_trns_bkgd_hist.png", [](GIMG_Doc * doc) {
+        const uint8_t odd[4] = {0x01, 0x02, 0x03, 0xFF};
+        gimg_doc_set_background_color(doc, odd);
+      });
+  ASSERT_FALSE(saved.empty());
+  uint8_t ct = 0, bd = 0;
+  ReadIhdr(saved, &ct, &bd);
+  ASSERT_EQ(ct, 3);
+  std::vector<uint8_t> bkgd;
+  EXPECT_FALSE(FindChunk(saved, "bKGD", bkgd))
+      << "no palette entry is this colour";
 }
 
 TEST(PngAncillaryRetarget, ChunksThatDoNotDependOnTheColorTypeAreUntouched) {

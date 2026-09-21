@@ -501,6 +501,66 @@ in the wild were authored against browsers, which restore to transparent, so a
 file that depends on the literal reading is vanishingly rare and a file that
 depends on the browser reading is everywhere.
 
+### Reading it, and the one thing the alpha says
+
+A GIF has no way to leave the Background Color Index out. A file with a Global
+Color Table always names one of its entries, so "this file states no
+background" is not directly expressible - what an encoder writes instead is the
+index of an entry that is **marked transparent**, which says the same thing by
+naming the absence of a colour.
+
+So the index alone does not answer the question; the transparency flag beside
+it does. `gimg_doc_background_color()` reports both: the entry's colour, and an
+alpha of 0 when the first frame's control block marks that entry transparent.
+A caller that composites over the result gets the no-op the file asked for, and
+a caller that wants to know which entry was named can still see it.
+
+It is the **first** frame's flag, because that is the control block in force
+when the screen is first shown. ImageMagick does the same, and the pair
+`gif_4x4_background_masked_first.gif` and `gif_4x4_background_masked_later.gif`
+differ in nothing else:
+
+| | here | ImageMagick |
+|---|---|---|
+| frame 0 marks the entry transparent | `255,0,0,0` | `srgba(255,0,0,0)` |
+| only frame 1 does | `255,0,0,255` | `red` |
+
+### Writing it
+
+The writer used to put a zero in the field always, which made
+`gimg_doc_set_background_color()` a no-op that reported success: the accessor
+gave the new colour and the file kept naming entry 0. Only a round trip showed
+it. Both of the libraries that matter do better - `magick -background lime`
+repoints the index at an entry it adds, and Pillow honours
+`info["background"]` - so a GIF this library wrote was the odd one out.
+
+Now:
+
+| the document declares | the file says |
+|---|---|
+| a colour the global table holds | that entry's index |
+| a colour it does not hold | a new entry, appended, and its index |
+| nothing, or a colour at alpha 0 | index 0, which the first frame marks transparent |
+
+Appending can take the table up to the next power of two and cost a few bytes.
+That is the honest price of stating something the file would otherwise not
+state, and it is only paid when a caller actually asks for a colour the frames
+do not paint - across the 41-file measurement corpus, **not one output changed
+size**.
+
+The last row is why the first frame's control block is made to mark entry 0
+transparent even when that frame has no masked pixels of its own. Without it a
+document declaring no background produced a file naming entry 0, which is
+black, and reading it back reported a black background nobody had declared.
+Saying so costs nothing: the flag and the index byte are already in the control
+block every animated frame carries, and index 0 is the mask index the planner
+reserves, so no colour is ever stored there and no pixel changes.
+
+A single-frame GIF is written with a local colour table and no global one, so
+it has no entry to name; 89a 18 says the field is then to be zero and ignored,
+and `gimg_doc_background_color()` reports nothing for such a file in both
+directions.
+
 ### Asking for the other behaviour
 
 `GIMG_Decode_Options.gif_background` selects it:

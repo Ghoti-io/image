@@ -27,7 +27,8 @@ large payload.
 - **Ancillary chunks:** tEXt, zTXt, iTXt, iCCP, sRGB, gAMA, cHRM, eXIf, and others as raw or typed per spec (11.3).
 - **Color chunk policy:** PNG allows at most one of sRGB, iCCP, or gAMA+cHRM for color interpretation. If multiple are present, this implementation uses the first in priority order: **sRGB > iCCP > gAMA/cHRM**. The chosen chunk is applied to `GIMG_Color_Info`; iCCP bytes are stored for round-trip in ancillary and (when chosen) the decompressed profile is attached to the decoded raster.
 - **Filtering and interlace:** Filter types (None, Sub, Up, Average, Paeth) per [PNG-Filters](https://www.w3.org/TR/PNG-Filters.html); Adam7 interlace (seven passes) per [Interlaced data order](https://www.w3.org/TR/PNG-DataRep.html#DR.Interlaced-data-order).
-- **pHYs** (11.3.4.3): a density in pixels per meter arrives as a DPI through `gimg_meta_common_dpi()`; unit specifier 0, which states a pixel aspect ratio and no physical size, arrives through `gimg_doc_pixel_aspect_ratio()`. That second case used to be dropped, which lost the only thing such a chunk says. **bKGD is not yet reported** through `gimg_doc_background_color()` the way GIF's background index is - the accessor exists and PNG does not fill it.
+- **pHYs** (11.3.4.3): a density in pixels per meter arrives as a DPI through `gimg_meta_common_dpi()`; unit specifier 0, which states a pixel aspect ratio and no physical size, arrives through `gimg_doc_pixel_aspect_ratio()`. That second case used to be dropped, which lost the only thing such a chunk says.
+- **bKGD** (11.3.4.1): the colour a viewer is told to put behind the image, reported through `gimg_doc_background_color()` - the same accessor GIF's Background Color Index arrives through. See "The background colour" below; it is reported, never painted.
 - **APNG:** acTL, fcTL, fdAT; frame timing, dispose (None/Background/Previous), blend (Source/Over) per APNG spec. acTL's `num_plays` is reported through `gimg_doc_loop_count()`, the same document-level accessor GIF's NETSCAPE2.0 count uses: 0 means forever, and a still PNG has no acTL and so declares nothing at all. Saving still takes the count from the loaded PNG's own state, so a PNG round trip preserves it; a count carried in from another format is not written unless the caller sets it.
 
 ## Save metadata policies
@@ -109,6 +110,86 @@ V5 embedded ICC profile came out as an untagged PNG and the profile was read
 only to be dropped. `GIMG_META_DROP_ALL` and `GIMG_META_KEEP_RAW_ONLY` still
 drop it, as they drop the rest.
 
+## The background colour
+
+bKGD (11.3.4.1) names a colour to present the image against. What its payload
+means depends on the colour type in the IHDR beside it: one byte is a palette
+index, two bytes a gray level, six bytes three 16-bit samples, and in every
+case only the low `bit_depth` bits of a sample carry data.
+
+**It is reported, never painted.** The spec says so itself - there is no
+requirement that a viewer use it - and the decoders real files are authored
+against mostly do not:
+
+| | reads bKGD | composites onto it |
+|---|---|---|
+| here | yes, as RGBA | no |
+| ImageMagick 7 | yes | **yes** - `-flatten` and `-alpha remove` both produce it |
+| Pillow 11.1 | **no** - `im.info` has no such key at all | no |
+| GdkPixbuf | no | no |
+| Chromium | no - a transparent pixel stays `0,0,0,0` on a canvas | no |
+| libpng | yes (`png_get_bKGD`) | only if the application asks (`png_set_background`) |
+
+ImageMagick is the only one that acts on it, and it is the reason the value is
+worth reporting: compositing over a reported colour is one line in a caller,
+while un-compositing a background the decoder painted is not possible at all.
+
+### Reading it
+
+The value arrives as 8-bit RGBA, because by the time a caller has a decoded
+raster the palette an index referred to is gone. Samples at other depths come
+to eight bits by 13.12, the rule the pixels took, so the background matches an
+image area painted the same value. The alpha is always 255: bKGD names a colour
+to put *behind* the image, and a transparent one would say nothing.
+
+A payload whose length is wrong for the colour type states nothing, rather than
+a colour guessed from the bytes that are there - `png_gray8_bad_bkgd.png` has
+three bytes where colour type 0 calls for two, and reading the first two would
+give a plausible gray that never looked wrong.
+
+### Writing it
+
+The document owns the value, the same way it owns a unit 0 pHYs. The chunk the
+file arrived with is dropped and the chunk written is made from whatever the
+document now says - otherwise `gimg_doc_set_background_color()` would be a
+no-op that reported success, with the accessor giving the new colour and the
+file keeping the old one.
+
+For a document nobody edited that re-make is the *same bytes*: the original
+payload is put back verbatim when it still states what the document states and
+the colour type has not changed. That matters because the document holds eight
+bits a sample and a 16-bit file's bKGD holds sixteen - rebuilding it every time
+would turn `1234 5678 9abc` into `1212 5656 9a9a` on a round trip that changed
+nothing. `png_rgb16_bkgd.png` is the fixture that catches it.
+
+Where the colour type cannot hold the colour asked for, **nothing is written**:
+
+| colour type | can state | what a colour it cannot state does |
+|---|---|---|
+| 0, 4 (gray) | one gray level | refused unless the three samples already agree |
+| 3 (palette) | an index into the PLTE being written | refused unless that palette holds the colour |
+| 2, 6 (colour) | any colour | always writable |
+
+An absent advisory chunk is a smaller lie than a wrong one, and a nearest
+palette entry or a luminance would be a colour the caller never asked for and
+could not tell apart from one they did. ImageMagick makes the other trade:
+asked for a lime background on a grayscale PNG it promotes the image to
+truecolour and warns that it cannot write the gray requested. Growing the
+pixels to carry an advisory chunk is the wrong way round for a library - the
+pixels are the payload.
+
+Clearing the background writes no bKGD at all, which is the only way PNG has to
+say nothing. It is written after PLTE, where Table 5.3 puts it and where the
+index a palette image needs is finally known, and it is not written under
+`GIMG_META_DROP_ALL`, `GIMG_META_KEEP_RAW_ONLY` (which passes the file's own
+chunks through untouched) or `GIMG_META_KEEP_COMMON_ONLY` (a background is not
+one of the fields `GIMG_Meta_Common` calls common).
+
+A colour type change still retargets the chunk where it can - a 4-bit gray
+background on an image promoted to colour type 6 becomes three equal 8-bit
+samples - because the document's value and the file's agree there, and the
+rewrite is the exact translation of what both say.
+
 ## Conformance
 
 - **PNG:** Implementation follows PNG 1.2 (W3C Recommendation 10 Nov 2003) and ISO/IEC 15948:2004, with the color chunks the Third Edition adds. Chunk layout, ordering, filtering, and interlace (Adam7) are as specified. No intentional deviations.
@@ -144,8 +225,9 @@ Short reference for chunks, depths, filters, and limitations. Update when adding
 | **Interlace (clause 8)** | Adam7, read and written, at every bit depth. Below 8 bits samples are placed by bit: a pass row is not a byte-slice of an image row | — |
 | **zlib (10.3)** | RFC 1950 wrapper checked on read: method, window, FDICT, and the trailing Adler-32 | Bad header &rarr; `GIMG_ERR_FORMAT`; failed inflate or Adler-32 mismatch &rarr; `GIMG_ERR_CORRUPT` |
 | **Ancillary, interpreted** | tEXt, zTXt, iTXt (description), iCCP, sRGB, gAMA, cHRM, eXIf (orientation), cICP | A text chunk that cannot be decoded - a compression method other than the 0 of 11.3.3, a truncated keyword, a zlib stream that fails its own checks - is skipped and the image still loads, which is what libpng does with one. It is not a reason to refuse a picture. The chunks whose length the spec fixes are checked on read - gAMA 4, cHRM 32, sRGB 1, pHYs 9, tIME 7, cICP 4 - and any other length &rarr; `GIMG_ERR_FORMAT`, since there is nothing to interpret a short one as and keeping it would write the same malformation back out |
-| **Ancillary, preserved only** | sBIT, bKGD, tIME, sPLT, hIST, mDCv, cLLi, and any unknown chunk, kept in read order and written back by the policies that preserve what a file came with | Not acted on when decoding. sBIT and bKGD are advisory and a decoder is not required to use them; mDCv and cLLi describe a mastering display and mean something only to an HDR pipeline this library does not have |
-| **Ancillary whose shape follows the color type** | bKGD (11.3.4.1), sBIT (11.3.2.4) and hIST (11.3.4.2) are rewritten on save when the color type being written is not the one the frame arrived as. A background color translates wherever the destination can hold it - gray becomes R=G=B, a palette index becomes the color it names, a color becomes gray only when its samples already agree - rescaling between depths by 13.12 | sBIT does not survive a change of depth: rescaling spreads the value over the whole of the new sample, so a count taken before it would misdescribe what is stored. hIST has no meaning without the palette it counts. Those are dropped, as is any of the three whose length was already wrong for the file it came from: an absent advisory chunk is a smaller lie than a wrong one |
+| **Ancillary, preserved only** | sBIT, tIME, sPLT, hIST, mDCv, cLLi, and any unknown chunk, kept in read order and written back by the policies that preserve what a file came with | Not acted on when decoding. sBIT is advisory and a decoder is not required to use it; mDCv and cLLi describe a mastering display and mean something only to an HDR pipeline this library does not have |
+| **Ancillary the document owns** | bKGD (11.3.4.1) is reported through `gimg_doc_background_color()`, and the chunk written comes from the document rather than from the file - see "The background colour". A unit 0 pHYs (11.3.4.3) is the same arrangement for `gimg_doc_pixel_aspect_ratio()` | Otherwise the setter would be a no-op that reported success: the accessor would give the new value and the file would keep the old one, which only a round trip reveals. The file's own bytes still go back verbatim when they state what the document states, so an untouched round trip is byte for byte |
+| **Ancillary whose shape follows the color type** | bKGD (11.3.4.1), sBIT (11.3.2.4) and hIST (11.3.4.2) are laid out according to the color type, and the one being written is not always the one the frame arrived as. A background color translates wherever the destination can hold it - gray becomes R=G=B, a palette index becomes the color it names, a color becomes gray only when its samples already agree - rescaling between depths by 13.12 | sBIT does not survive a change of depth: rescaling spreads the value over the whole of the new sample, so a count taken before it would misdescribe what is stored. hIST has no meaning without the palette it counts. Those are dropped, as is any of the three whose length was already wrong for the file it came from: an absent advisory chunk is a smaller lie than a wrong one |
 | **pHYs (11.3.4.3)** | Read into the document's common metadata as dots per inch, and written from it when the file did not bring a pHYs of its own. An inch is exactly 0.0254 m, so the conversion is integer arithmetic - 5000/127 and back - and every resolution from 1 to 1200 dpi survives the round trip exactly | Only unit specifier 1 states a physical size. Unit 0 gives an aspect ratio, which says how a pixel is shaped and not how big it is, so it yields no dpi. A pHYs the file came with is the one written back; the metadata copy is a fallback for a document that arrived from somewhere else, such as a JPEG's JFIF density |
 | **Color precedence** | cICP > sRGB > iCCP > gAMA/cHRM, which is the order the Third Edition sets | A cICP naming code points `GIMG_Color_Info` cannot hold (BT.2020, PQ, HLG, limited range) leaves the color **unknown** rather than being approximated; the chunk is preserved for a caller that can read it |
 | **APNG** | acTL, fcTL, fdAT; dispose None/Background/Previous, blend Source/Over; 8- and 16-bit compositing | acTL after IDAT, duplicate acTL, out-of-order sequence numbers, more fcTL than acTL declared &rarr; `GIMG_ERR_FORMAT`. A frame must lie inside the canvas the IHDR describes - width and height above zero, `x_offset + width` at most the image width and likewise for the height - or `GIMG_ERR_FORMAT`. That is a memory-safety constraint and not a formality: compositing writes the frame into the canvas at that offset. The compositing clips as well, so no path can write past the canvas even if one reached it with bad values |

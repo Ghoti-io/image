@@ -140,6 +140,15 @@ document state, and the encoder's row and encoding buffers.
   either direction. An inch is exactly 0.0254 m, so the conversion is integer
   arithmetic and every resolution from 1 to 1200 dpi round-trips exactly. A
   negative value is read as "not stated" rather than as an enormous density.
+- **No background colour, and no pixel aspect ratio:** a BMP header states a
+  physical resolution and nothing else about the screen around the image.
+  `biXPelsPerMeter`/`biYPelsPerMeter` are a density, which is a size and not a
+  shape, so they go to the common metadata above and never to
+  `gimg_doc_pixel_aspect_ratio()`; and no version of the header - not
+  `BITMAPV4HEADER`, not `BITMAPV5HEADER` - has a field for the colour behind
+  the image. So `gimg_doc_background_color()` reports nothing for a BMP, and a
+  background carried in from a PNG's `bKGD` or a GIF's Background Color Index
+  is dropped on save rather than written somewhere it does not belong.
 - **Row order:** rows are written into the raster top-down whichever way the
   file stored them, by choosing the destination row rather than reversing the
   buffer afterwards.

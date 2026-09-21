@@ -241,6 +241,42 @@ TEST(GifScreen, NoGlobalTableMeansNoBackgroundColour) {
   EXPECT_EQ(rgba[0], 9u) << "the out-param is left alone when nothing is said";
 }
 
+TEST(GifScreen, ABackgroundEntryTheFirstFrameMasksIsNotAColour) {
+  // 89a 18 has no way to leave the Background Color Index out - a file with a
+  // Global Color Table always names one of its entries - so an encoder that
+  // means "nothing is behind this" says it by naming an entry that is marked
+  // transparent.  The alpha carries that half of the answer: the entry is
+  // still reported, so a caller can see which one was named, but at alpha 0,
+  // so a caller that composites over it gets the no-op the file asked for.
+  //
+  // ImageMagick reads this file as srgba(255,0,0,0) and its sibling below as
+  // plain red.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_4x4_background_masked_first.gif"), GIMG_OK);
+  uint8_t rgba[4] = {9, 9, 9, 9};
+  ASSERT_EQ(gimg_doc_background_color(img.doc(), rgba), 1);
+  EXPECT_EQ(rgba[0], 255u);
+  EXPECT_EQ(rgba[1], 0u);
+  EXPECT_EQ(rgba[2], 0u);
+  EXPECT_EQ(rgba[3], 0u)
+      << "frame 0 marks entry 0 transparent, so nothing is behind the image";
+}
+
+TEST(GifScreen, ABackgroundEntryOnlyALaterFrameMasksIsStillAColour) {
+  // The same file with the transparency flag moved to the second frame.  The
+  // control block that matters is the one in force when the screen is first
+  // shown, which is frame 0's; a reader that looks at any frame, or at the
+  // last one, answers this the same way it answers the test above and is
+  // caught by the pair.
+  Loaded img;
+  ASSERT_EQ(img.load("gif_4x4_background_masked_later.gif"), GIMG_OK);
+  uint8_t rgba[4] = {9, 9, 9, 9};
+  ASSERT_EQ(gimg_doc_background_color(img.doc(), rgba), 1);
+  EXPECT_EQ(rgba[0], 255u);
+  EXPECT_EQ(rgba[3], 255u)
+      << "frame 0 says nothing about transparency, so the entry is a colour";
+}
+
 TEST(GifDecode, APatchLeavesTheRestOfTheCanvasAlone) {
   // The second frame is a 4x4 patch at (6,2) on a 12x8 canvas, so a pixel
   // outside it must still show the first frame.

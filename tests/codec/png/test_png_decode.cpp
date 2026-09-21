@@ -2415,3 +2415,71 @@ TEST(PngScreen, APhysAspectOnlyChunkIsReportedAsARatio) {
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }
+
+TEST(PngMeta, TheBackgroundColourIsReadFromBKGD) {
+  // bKGD (11.3.4.1) was parsed and preserved as bytes but never reported:
+  // gimg_doc_background_color() existed, GIF filled it, and PNG did not.  A
+  // caller asking a PNG what colour belongs behind it got "nothing stated" for
+  // every file that stated one.
+  //
+  // What the payload means depends on the color type beside it, which is the
+  // reason for three files rather than one - a reader that handled only its
+  // own favourite shape would pass a single-fixture test.  The expected values
+  // are ImageMagick's, which reports srgb(128,128,128), srgb(32,64,96) and
+  // srgb(119,119,119) for these three.
+  struct Case {
+    const char * file;
+    uint8_t r, g, b;
+    const char * why;
+  };
+  const Case cases[] = {
+      {"png_gray8_bkgd_sbit.png", 128, 128, 128,
+          "two bytes are a gray level, and gray is R=G=B"},
+      {"png_palette_trns_bkgd_hist.png", 0x20, 0x40, 0x60,
+          "one byte is an index, and PLTE entry 1 is this colour"},
+      {"png_gray4_trns_bkgd_sbit.png", 119, 119, 119,
+          "gray 7 of 15 rescales to 119 at eight bits (13.12)"},
+      {"png_rgb16_bkgd.png", 0x12, 0x56, 0x9A,
+          "16-bit samples come down to eight by the same rule"},
+  };
+  for (const Case & c : cases) {
+    std::vector<uint8_t> buf;
+    ASSERT_TRUE(png_test::load_png_file(c.file, buf))
+        << "Run tests/data/png/generate.py";
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+
+    uint8_t rgba[4] = {9, 9, 9, 9};
+    EXPECT_EQ(gimg_doc_background_color(doc, rgba), 1) << c.file;
+    EXPECT_EQ(rgba[0], c.r) << c.file << ": " << c.why;
+    EXPECT_EQ(rgba[1], c.g) << c.file << ": " << c.why;
+    EXPECT_EQ(rgba[2], c.b) << c.file << ": " << c.why;
+    EXPECT_EQ(rgba[3], 255u)
+        << "bKGD names a colour to put behind the image; a transparent one "
+           "would say nothing";
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+  }
+}
+
+TEST(PngMeta, ABKGDOfTheWrongLengthIsNotAColour) {
+  // Three bytes where color type 0 calls for two.  The file is malformed and
+  // there is no way to know which two of the three were meant, so nothing is
+  // reported rather than a colour guessed from a payload that does not say
+  // one.  Reading it as the first two bytes would give a plausible gray and
+  // never look wrong.
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(png_test::load_png_file("png_gray8_bad_bkgd.png", buf))
+      << "Run tests/data/png/generate.py";
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  uint8_t rgba[4] = {9, 9, 9, 9};
+  EXPECT_EQ(gimg_doc_background_color(doc, rgba), 0);
+  EXPECT_EQ(rgba[0], 9u) << "the out-param is left alone when nothing is said";
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}

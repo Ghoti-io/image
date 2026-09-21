@@ -2027,6 +2027,21 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   gimg_png_deferred_t deferred[8];
   size_t deferred_count = 0;
 
+  // The bKGD the file arrived with, kept so the writer can put those exact
+  // bytes back when nothing about the background has changed.  Rebuilding it
+  // from the document would be a lossy way of saying the same thing: the
+  // document holds eight bits a sample and a 16-bit file's bKGD holds sixteen.
+  const unsigned char * src_bkgd = NULL;
+  size_t src_bkgd_size = 0;
+  for (size_t i = 0; state && state->ancillary && i < state->ancillary_count;
+      i++) {
+    if (state->ancillary[i].type == GIMG_PNG_bKGD) {
+      src_bkgd = (const unsigned char *)state->ancillary[i].payload;
+      src_bkgd_size = state->ancillary[i].payload_size;
+      break;
+    }
+  }
+
   GIMG_Meta_Policy policy =
       options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
 
@@ -2089,6 +2104,21 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
             gimg_png_text_keyword_is_description_or_comment(
                 state->ancillary[i].payload, state->ancillary[i].payload_size)) {
           have_description_or_comment_from_ancillary = true;
+        }
+        if (t == GIMG_PNG_bKGD) {
+          // The document owns the background colour, for the same reason it
+          // owns a unit 0 pHYs below: the loader put the file's bKGD there,
+          // and a caller who has since set or cleared it must be able to make
+          // that stick.  Writing the chunk the file arrived with would make
+          // gimg_doc_set_background_color() a no-op that reports success -
+          // the accessor would give the new colour and the file would keep the
+          // old one, which only a round trip reveals.
+          //
+          // So it is dropped here and re-made after PLTE, where the palette it
+          // may have to index into has been written.  For a document nobody
+          // edited that re-make is the same bytes: the original payload is put
+          // back verbatim when it still states what the document states.
+          continue;
         }
         if (t == GIMG_PNG_pHYs) {
           // A pHYs stating unit 0 is a pixel aspect ratio, and the document
@@ -2430,6 +2460,75 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       return r;
     }
     report->bytes_written += 8 + deferred[i].size + 4;
+  }
+
+  // The background colour the document declares, as bKGD (11.3.4.1).  Here
+  // rather than with the other ancillary chunks because 5.6 Table 5.3 puts it
+  // after PLTE, and because for a palette image it *is* an index into that
+  // PLTE and cannot be written before the palette is known.
+  //
+  // Not written under the policies that mean "say nothing of your own":
+  // DROP_ALL keeps no ancillary at all, KEEP_RAW_ONLY passes the file's own
+  // chunks through untouched above, and a background colour is not one of the
+  // fields GIMG_Meta_Common calls common.
+  if (policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_RAW_ONLY &&
+      policy != GIMG_META_KEEP_COMMON_ONLY) {
+    uint8_t bg[4];
+    if (gimg_doc_background_color(doc, bg)) {
+      const unsigned char * bkgd = NULL;
+      size_t bkgd_size = 0;
+      unsigned char built[6];
+      unsigned char index_buf[1];
+
+      // Unchanged and going back out as the same color type: the bytes the
+      // file came with are both exactly right and more precise than anything
+      // rebuilt from eight-bit RGBA could be.
+      uint8_t was[4];
+      if (src_bkgd && state && color_type == state->ihdr.color_type &&
+          bit_depth == state->ihdr.bit_depth &&
+          gimg_png_bkgd_to_rgba(src_bkgd, src_bkgd_size,
+              state->ihdr.color_type, state->ihdr.bit_depth, state->plte,
+              state->plte_size, was) &&
+          memcmp(was, bg, 4) == 0) {
+        bkgd = src_bkgd;
+        bkgd_size = src_bkgd_size;
+      }
+      else if (color_type == 3) {
+        // A palette image states its background as an index, so it can only
+        // state a colour its palette already holds.  One that is not in there
+        // is not written: a nearest entry would be a colour the caller never
+        // asked for, and an absent advisory chunk is a smaller lie.
+        const unsigned char * plte =
+            (palette_state && palette_state->plte) ? palette_state->plte : NULL;
+        const size_t entries =
+            plte ? palette_state->plte_size / 3u : (size_t)0u;
+        for (size_t e = 0; e < entries && e < 256u; e++) {
+          if (plte[e * 3u] == bg[0] && plte[e * 3u + 1u] == bg[1] &&
+              plte[e * 3u + 2u] == bg[2]) {
+            index_buf[0] = (unsigned char)e;
+            bkgd = index_buf;
+            bkgd_size = 1u;
+            break;
+          }
+        }
+      }
+      else if (gimg_png_build_bkgd(bg, color_type, bit_depth, built,
+                   &bkgd_size)) {
+        // A gray image can only state a gray background; build refuses any
+        // other colour rather than picking a luminance the caller did not ask
+        // for.
+        bkgd = built;
+      }
+
+      if (bkgd && bkgd_size > 0) {
+        r = gimg_png_write_chunk(stream, GIMG_PNG_bKGD, bkgd, bkgd_size);
+        if (r != GIMG_OK) {
+          gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
+          return r;
+        }
+        report->bytes_written += 8 + bkgd_size + 4;
+      }
+    }
   }
 
   // APNG: acTL (num_frames, num_plays) before first fcTL per spec.

@@ -786,6 +786,30 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
   }
 
+  // bKGD (11.3.4.1) names a colour to present the image against.  It is
+  // reported, not painted: the spec itself says viewers need not use it, and
+  // of the decoders real files are authored against only ImageMagick does -
+  // Chromium, GdkPixbuf and Pillow ignore it, and Pillow does not so much as
+  // read it.  Compositing over a reported colour is one line in a caller;
+  // un-compositing a background this library painted is not possible at all.
+  //
+  // GIF says the same thing as an index into its Global Color Table, and both
+  // arrive as RGBA through gimg_doc_background_color(), because by the time a
+  // caller has a decoded raster the palette an index referred to is gone.
+  for (size_t i = 0; i < state->ancillary_count; i++) {
+    if (state->ancillary[i].type != GIMG_PNG_bKGD) {
+      continue;
+    }
+    uint8_t rgba[4];
+    if (gimg_png_bkgd_to_rgba(
+            (const unsigned char *)state->ancillary[i].payload,
+            state->ancillary[i].payload_size, state->ihdr.color_type,
+            state->ihdr.bit_depth, state->plte, state->plte_size, rgba)) {
+      gimg_doc_set_background_color(doc, rgba);
+    }
+    break; // 5.6: one bKGD per datastream.
+  }
+
   // Populate meta_common description from first tEXt/zTXt/iTXt with keyword
   // "Description" or "Comment".
   // pHYs (11.3.4.3) states the physical size of a pixel, which is the same

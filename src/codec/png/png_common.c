@@ -413,3 +413,132 @@ GIMG_Result gimg_png_text_chunk_decode(gimg_png_chunk_type_t type,
 
   return GIMG_ERR_INTERNAL;
 }
+
+//
+// bKGD (11.3.4.1) as a colour
+// ===========================
+//
+// bKGD is not self-describing: what its payload means is a function of the
+// color type in the IHDR beside it. One byte is a palette index, two bytes a
+// gray level, six bytes three 16-bit samples - and in every case only the low
+// `bit_depth` bits of each sample carry data.
+//
+// Both sides of the codec need the same answer to "what colour is this".
+// Load reports it through gimg_doc_background_color(), which is RGBA because
+// by then the palette an index referred to is gone; save compares the colour a
+// preserved chunk states against the one the document now states, to tell a
+// document nobody edited from one where a caller changed the background.
+// Two readings of one chunk that could drift apart is exactly the bug this
+// avoids, so there is one reading and it lives here.
+//
+
+/**
+ * @brief Resolve a bKGD payload to 8-bit RGBA (11.3.4.1).
+ *
+ * The alpha is always 255: bKGD names a colour to put *behind* the image, and
+ * a background that is itself transparent would say nothing.
+ *
+ * @return true when the payload is a well-formed bKGD for @a color_type and
+ *         names a colour; false when its length is wrong for the color type,
+ *         or when it is a palette index the PLTE does not have.
+ */
+bool gimg_png_bkgd_to_rgba(const unsigned char * payload, size_t payload_size,
+    uint8_t color_type, uint8_t bit_depth, const unsigned char * plte,
+    size_t plte_size, uint8_t * out_rgba) {
+  if (!payload || !out_rgba) {
+    return false;
+  }
+  uint32_t r = 0u, g = 0u, b = 0u;
+  uint8_t depth = bit_depth;
+  if (color_type == 3) {
+    // A palette index, and the PLTE entries are three 8-bit samples whatever
+    // the bit depth of the indices (11.2.2).
+    if (payload_size != 1u || !plte) {
+      return false;
+    }
+    const size_t entries = plte_size / 3u;
+    if ((size_t)payload[0] >= entries) {
+      return false;
+    }
+    const unsigned char * e = plte + (size_t)payload[0] * 3u;
+    r = e[0];
+    g = e[1];
+    b = e[2];
+    depth = 8u;
+  }
+  else if (color_type == 0 || color_type == 4) {
+    if (payload_size != 2u) {
+      return false;
+    }
+    r = g = b = ((uint32_t)payload[0] << 8) | (uint32_t)payload[1];
+  }
+  else if (color_type == 2 || color_type == 6) {
+    if (payload_size != 6u) {
+      return false;
+    }
+    r = ((uint32_t)payload[0] << 8) | (uint32_t)payload[1];
+    g = ((uint32_t)payload[2] << 8) | (uint32_t)payload[3];
+    b = ((uint32_t)payload[4] << 8) | (uint32_t)payload[5];
+  }
+  else {
+    return false;
+  }
+  // A sample deeper or shallower than eight bits is brought to eight by the
+  // rule decoding uses on the pixels beside it (13.12), so the background
+  // matches an image area painted the same value.
+  if (depth == 0u || depth > 16u) {
+    return false;
+  }
+  const uint32_t from_max = (depth >= 16u) ? 0xFFFFu : ((1u << depth) - 1u);
+  if (from_max == 0u) {
+    return false;
+  }
+  out_rgba[0] = (uint8_t)(((uint64_t)r * 255u + from_max / 2u) / from_max);
+  out_rgba[1] = (uint8_t)(((uint64_t)g * 255u + from_max / 2u) / from_max);
+  out_rgba[2] = (uint8_t)(((uint64_t)b * 255u + from_max / 2u) / from_max);
+  out_rgba[3] = 255u;
+  return true;
+}
+
+/**
+ * @brief Build a bKGD payload (11.3.4.1) stating @a rgba, for the color type
+ *        and depth actually being written.
+ *
+ * Colour type 3 gets no payload here: a palette index is only meaningful
+ * against a particular PLTE, so the caller that owns the palette resolves it.
+ * Gray types get one only when the three samples already agree, because no
+ * gray level says any other colour - the same rule the retargeting of a
+ * preserved chunk follows, for the same reason.
+ *
+ * @return true when @a out_buf (6 bytes) and @a out_size were filled.
+ */
+bool gimg_png_build_bkgd(const uint8_t * rgba, uint8_t color_type,
+    uint8_t bit_depth, unsigned char * out_buf, size_t * out_size) {
+  if (!rgba || !out_buf || !out_size || bit_depth == 0u || bit_depth > 16u) {
+    return false;
+  }
+  const uint32_t to_max =
+      (bit_depth >= 16u) ? 0xFFFFu : ((1u << bit_depth) - 1u);
+  if (color_type == 0 || color_type == 4) {
+    if (rgba[0] != rgba[1] || rgba[1] != rgba[2]) {
+      return false;
+    }
+    const uint16_t v =
+        (uint16_t)(((uint32_t)rgba[0] * to_max + 127u) / 255u);
+    out_buf[0] = (unsigned char)(v >> 8);
+    out_buf[1] = (unsigned char)(v & 0xFFu);
+    *out_size = 2u;
+    return true;
+  }
+  if (color_type == 2 || color_type == 6) {
+    for (int i = 0; i < 3; i++) {
+      const uint16_t v =
+          (uint16_t)(((uint32_t)rgba[i] * to_max + 127u) / 255u);
+      out_buf[i * 2] = (unsigned char)(v >> 8);
+      out_buf[i * 2 + 1] = (unsigned char)(v & 0xFFu);
+    }
+    *out_size = 6u;
+    return true;
+  }
+  return false;
+}

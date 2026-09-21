@@ -664,6 +664,52 @@ static bool gif_collect_global_palette(const GIMG_Doc * doc,
 }
 
 /**
+ * Choose the Background Color Index for the Logical Screen Descriptor (89a
+ * 18), adding the colour to the global table when it is not already in it.
+ *
+ * 89a 18 has no way to leave the field out: a file with a Global Color Table
+ * always names one of its entries.  What it can say is that the entry named is
+ * the transparent one, which is how an encoder writes "nothing is behind
+ * this", and which every frame this writer emits marks transparent because
+ * index 0 is the mask index the planner reserves.  So a document that declares
+ * no background - or declares one at alpha 0, which is the same statement -
+ * gets index 0, and reading that file back reports the colour at alpha 0
+ * again.
+ *
+ * A colour the table does not already hold is appended.  That can push the
+ * table up to the next power of two and cost a few bytes, which is the honest
+ * price of stating something the file would otherwise not state; a table with
+ * no room left cannot state it at all and keeps index 0.
+ *
+ * @param count In/out: entries in @a palette, grown by one when the colour had
+ *              to be added.
+ */
+static uint8_t gif_background_index(const GIMG_Doc * doc,
+    gimg_gif_rgb_t * palette, uint16_t * count) {
+  uint8_t rgba[4];
+  if (!gimg_doc_background_color(doc, rgba) || rgba[3] == 0u) {
+    return 0u;
+  }
+  // Entry 0 is the transparent one and is not a colour, so the search starts
+  // at 1 even when the background happens to be black.
+  for (uint16_t i = 1u; i < *count; i++) {
+    if (palette[i].r == rgba[0] && palette[i].g == rgba[1] &&
+        palette[i].b == rgba[2]) {
+      return (uint8_t)i;
+    }
+  }
+  if (*count >= GIMG_GIF_MAX_PALETTE) {
+    return 0u;
+  }
+  const uint16_t at = *count;
+  palette[at].r = rgba[0];
+  palette[at].g = rgba[1];
+  palette[at].b = rgba[2];
+  *count = (uint16_t)(at + 1u);
+  return (uint8_t)at;
+}
+
+/**
  * Index a frame against a table it is already known to fit.
  *
  * The same work gif_plan_frame() does, without the part that builds a palette:
@@ -972,23 +1018,38 @@ static GIMG_Result gif_emit_frame(GIMG_Stream * stream,
     const GIMG_Allocator * alloc, const gif_frame_plan_t * plan,
     gif_rect_t rect, uint32_t canvas_w, uint32_t canvas_h,
     unsigned char disposal, uint16_t delay_cs, bool interlace,
-    uint16_t global_count) {
+    uint16_t global_count, bool mask_background) {
   (void)canvas_h;
   const bool local = plan->palette_count != 0u;
   const uint16_t table_count = local ? plan->palette_count : global_count;
   const uint8_t bits = gif_table_bits(table_count);
   const uint8_t min_code_size = gif_min_code_size(table_count);
 
+  // `mask_background` asks this frame to say that entry 0 - the index the
+  // screen descriptor names as the background when the document declares none
+  // - is transparent.  89a 18 has no way to leave that field out, so naming a
+  // transparent entry is the only way a file can say "nothing is behind this",
+  // and without it a reader sees entry 0's colour, which is black, and reports
+  // a background nobody declared.
+  //
+  // It costs no bytes and changes no pixel.  The flag and the index byte are
+  // already in the control block every animated frame carries, and a frame
+  // that has no masked pixels has no pixel at index 0 to begin with: index 0
+  // is the mask index the planner reserves and no colour is ever put there.
+  const bool transparent = plan->has_transparency || mask_background;
+  const uint8_t transparent_index =
+      plan->has_transparency ? plan->transparent_index : 0u;
+
   // A Graphic Control Extension is written when the frame needs one: to carry
   // a delay, to name the transparent index, or to say how to dispose of it.
-  if (plan->has_transparency || delay_cs != 0u || disposal != 0u) {
+  if (transparent || delay_cs != 0u || disposal != 0u) {
     unsigned char gce[8] = {
         0x21u, 0xF9u, 0x04u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u};
     gce[3] = (unsigned char)(((unsigned char)(disposal << 2)) |
-        (unsigned char)(plan->has_transparency ? 0x01u : 0x00u));
+        (unsigned char)(transparent ? 0x01u : 0x00u));
     gce[4] = (unsigned char)(delay_cs & 0xFFu);
     gce[5] = (unsigned char)((delay_cs >> 8) & 0xFFu);
-    gce[6] = plan->transparent_index;
+    gce[6] = transparent_index;
     GIMG_Result gr = gif_write(stream, gce, sizeof(gce));
     if (gr != GIMG_OK) {
       return gr;
@@ -1162,14 +1223,22 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   if (r != GIMG_OK) {
     return r;
   }
+  unsigned char background = 0u;
   {
-    // Packed field, background index, aspect ratio.  The background index
-    // names entry 0, which is the transparent one when there is a global
-    // table and nothing at all when there is not.  The aspect ratio is
-    // whatever the document declares, which for a document loaded from a GIF
-    // is what that file declared.
+    // Packed field, background index, aspect ratio.  Both the background and
+    // the aspect ratio are whatever the document declares, which for a
+    // document loaded from a GIF is what that file declared.
+    //
+    // The background index has to be chosen before the table size is, because
+    // stating a colour the table does not already hold adds an entry and can
+    // take the table up to the next power of two.  Without a Global Color
+    // Table there is no entry to name and 89a 18 says the field is then to be
+    // zero and ignored, so nothing is stated and nothing is read back.
+    if (use_global) {
+      background = gif_background_index(doc, global_palette, &global_count);
+    }
     const uint8_t global_bits = gif_table_bits(global_count);
-    unsigned char tail[3] = {0x70u, 0x00u, gif_aspect_byte(doc)};
+    unsigned char tail[3] = {0x70u, background, gif_aspect_byte(doc)};
     if (use_global) {
       tail[0] = (unsigned char)(0x80u | 0x70u | global_bits);
     }
@@ -1217,6 +1286,7 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   gif_frame_plan_t held;
   memset(&held, 0, sizeof(held));
   bool holding = false;
+  bool first_emit = true;
   gif_rect_t held_rect = {0u, 0u, 0u, 0u};
   uint16_t held_delay = 0u;
   uint8_t * prev_rgba = NULL;
@@ -1325,7 +1395,9 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
               : clear_after                                            ? 2u
                                                                        : 1u);
       r = gif_emit_frame(stream, alloc, &held, emit_rect, canvas_w, canvas_h,
-          disposal, held_delay, interlace, global_count);
+          disposal, held_delay, interlace, global_count,
+          first_emit && use_global && background == 0u);
+      first_emit = false;
       gimg_free(alloc, held.indices);
       memset(&held, 0, sizeof(held));
       holding = false;

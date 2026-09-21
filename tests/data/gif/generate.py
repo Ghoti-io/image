@@ -274,6 +274,42 @@ def background_index():
     write("gif_12x8_background_index.gif", data)
 
 
+def background_masked():
+    """Two files that differ only in *which* frame marks the background entry
+    transparent.
+
+    89a has no way to leave the Background Color Index out: a file with a
+    Global Color Table always names one of its entries.  What an encoder can do
+    instead is name an entry that is marked transparent, which is how "nothing
+    is behind this" is said - and it is what this codec's own writer says for a
+    document that declares no background.
+
+    So the index alone does not answer "what colour goes behind the image"; the
+    transparency flag beside it does.  ImageMagick agrees and is precise about
+    which flag: it is the *first* frame's.  A file whose frame 0 marks the
+    background entry transparent reports srgba(255,0,0,0) there, and the same
+    file with the flag moved to frame 1 reports plain red.
+
+    Both files below have background index 0, which the palette makes red, and
+    two frames.  Only the frame carrying `transparent=0` differs, so a reader
+    that looks at the wrong frame - or at any frame - gives the same answer to
+    both and is caught.
+    """
+    cw, ch = 4, 4
+    body = [1] * (cw * ch)  # green, so the background entry is never painted
+    for name, first, second in (
+            ("gif_4x4_background_masked_first.gif", 0, None),
+            ("gif_4x4_background_masked_later.gif", None, 0)):
+        data = (header() + lsd(cw, ch, gct_bits=1, background=0)
+                + table(PALETTE, 1)
+                + gce(delay=10, disposal=1, transparent=first)
+                + image_block(body, cw, ch, 2)
+                + gce(delay=10, disposal=1, transparent=second)
+                + image_block(body, cw, ch, 2)
+                + TRAILER)
+        write(name, data)
+
+
 def pixel_aspect_ratio():
     """A screen descriptor that declares a non-square pixel.
 
@@ -405,6 +441,7 @@ def main():
     gif87a_header()
     offset_frames()
     background_index()
+    background_masked()
     pixel_aspect_ratio()
     disposal_previous()
     disposal_cycle()

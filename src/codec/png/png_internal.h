@@ -289,6 +289,38 @@ gimg_png_retarget_t gimg_png_retarget_ancillary(gimg_png_chunk_type_t type,
     const gimg_png_doc_state_t * state, uint8_t out_color_type,
     uint8_t out_bit_depth, unsigned char * out_buf, size_t * out_size);
 
+/**
+ * @brief Resolve a bKGD payload (11.3.4.1) to 8-bit RGBA.
+ *
+ * What the payload means depends on the color type beside it: one byte is a
+ * palette index, two bytes a gray level, six bytes three 16-bit samples, and
+ * only the low @a bit_depth bits of each sample carry data. Samples are
+ * brought to eight bits by 13.12, the rule the pixels took.
+ *
+ * The alpha is always 255 - bKGD names a colour to put behind the image, and
+ * a transparent one would say nothing.
+ *
+ * @param plte PLTE payload, needed only for color type 3.
+ * @return true when the payload is well formed for @a color_type and names a
+ *         colour the palette has.
+ */
+bool gimg_png_bkgd_to_rgba(const unsigned char * payload, size_t payload_size,
+    uint8_t color_type, uint8_t bit_depth, const unsigned char * plte,
+    size_t plte_size, uint8_t * out_rgba);
+
+/**
+ * @brief Build a bKGD payload (11.3.4.1) stating @a rgba for the color type
+ *        and depth being written.
+ *
+ * Color type 3 is refused: an index only means something against a particular
+ * PLTE. Gray types are refused unless the three samples already agree.
+ *
+ * @param out_buf Receives the payload; must have room for 6 bytes.
+ * @return true when @a out_buf and @a out_size were filled.
+ */
+bool gimg_png_build_bkgd(const uint8_t * rgba, uint8_t color_type,
+    uint8_t bit_depth, unsigned char * out_buf, size_t * out_size);
+
 uint8_t gimg_png_get_sample_bits(
     const unsigned char * row, uint32_t x, uint8_t depth);
 

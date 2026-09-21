@@ -113,13 +113,24 @@ GIMG_API void gimg_doc_clear_loop_count(GIMG_Doc * doc);
  * @brief Get the colour the file says to put behind the image.
  *
  * GIF names it as an index into the Global Color Table (89a 18) and PNG as
- * bKGD; both are reported here as RGBA, because by the time a caller has a
- * decoded raster the palette an index referred to is gone.
+ * bKGD (11.3.4.1); both are reported here as RGBA, because by the time a
+ * caller has a decoded raster the palette an index referred to is gone. JPEG
+ * and BMP have no such field, so a document from one of those never declares
+ * a background.
  *
- * **This library does not paint it.** A GIF decodes onto a transparent canvas,
- * because that is what every viewer real files were authored against does -
- * see the GIF page's deviations. The colour is reported so that a caller who
- * wants to honour it can, not because anything here has.
+ * **The alpha is part of the answer.** A GIF has no way to leave the field
+ * out - a file with a Global Color Table always names one of its entries - so
+ * an encoder says "nothing is behind this" by naming an entry its first frame
+ * marks transparent. That arrives here as the entry's colour at alpha 0,
+ * which composites to the no-op the file asked for while still saying which
+ * entry was named. PNG has no such convention and always reports alpha 255.
+ *
+ * **This library does not paint it.** A GIF decodes onto a transparent canvas
+ * unless ::GIMG_GIF_BACKGROUND_PAINT is asked for, because that is what every
+ * viewer real files were authored against does - see the GIF page's
+ * deviations. A PNG's bKGD is never painted by anyone but ImageMagick, and the
+ * spec itself says viewers need not use it. The colour is reported so that a
+ * caller who wants to honour it can, not because anything here has.
  *
  * @param doc Document.
  * @param out_rgba Receives four bytes, red first.  Untouched when the document
@@ -130,11 +141,32 @@ GIMG_API void gimg_doc_clear_loop_count(GIMG_Doc * doc);
 GIMG_API int gimg_doc_background_color(
     const GIMG_Doc * doc, uint8_t * out_rgba);
 
-/** @brief Say what colour belongs behind the image (four bytes, red first). */
+/**
+ * @brief Say what colour belongs behind the image (four bytes, red first).
+ *
+ * What a save can do with it depends on what the format can hold. GIF puts it
+ * in the Global Color Table and points the Background Color Index at it,
+ * adding an entry when the table does not already have that colour. PNG writes
+ * a bKGD, which for a palette image is an index and so can only state a colour
+ * the palette holds, and for a grayscale image is one gray level and so can
+ * only state a gray. Where a format cannot state the colour asked for, nothing
+ * is written rather than the nearest thing it could say. JPEG and BMP have
+ * nowhere to put one at all.
+ *
+ * An alpha of 0 is the same statement as declaring none, and GIF writes it as
+ * such.
+ */
 GIMG_API void gimg_doc_set_background_color(
     GIMG_Doc * doc, const uint8_t * rgba);
 
-/** @brief Remove a background colour, so the document declares none. */
+/**
+ * @brief Remove a background colour, so the document declares none.
+ *
+ * This is the only way to express "say nothing", which is a different output
+ * from any colour: a PNG written for such a document carries no bKGD at all,
+ * and a GIF names the entry its first frame marks transparent, which is the
+ * nearest thing 89a 18 has to leaving the field out.
+ */
 GIMG_API void gimg_doc_clear_background_color(GIMG_Doc * doc);
 
 /**

@@ -290,10 +290,19 @@ wants to honour them can:
 
 - **Background colour:** `gimg_doc_background_color()` / `set` / `clear`.
   Reported as RGBA rather than as the index GIF states (89a 18) or the bKGD
-  PNG states, because once a raster is decoded the palette an index referred to
-  is gone. Filled by GIF, resolved through the Global Color Table; a file with
-  no global table declares none. **Nothing paints it** - a GIF decodes onto a
-  transparent canvas, matching every viewer real files were authored against.
+  PNG states (11.3.4.1), because once a raster is decoded the palette an index
+  referred to is gone. Filled by GIF, resolved through the Global Color Table,
+  and by PNG from bKGD; JPEG and BMP have no field for one. **The alpha is part
+  of the answer**: GIF cannot leave the field out, so an encoder says "nothing
+  is behind this" by naming an entry its first frame marks transparent, and
+  that arrives as the colour at alpha 0. **Nothing paints it** unless
+  `gif_background` asks - a GIF decodes onto a transparent canvas, matching
+  every viewer real files were authored against, and of the PNG decoders in
+  common use only ImageMagick composites onto a bKGD at all. Setting or
+  clearing it reaches the file: GIF repoints its index and adds a table entry
+  if it must, PNG writes or removes the chunk, and a format that cannot state
+  the colour asked for writes nothing rather than the nearest thing it could
+  say.
 - **Pixel aspect ratio:** `gimg_doc_pixel_aspect_ratio()` / `set` / `clear`,
   as a width-over-height ratio. This is "is a pixel square", which is not a
   physical density: GIF states it in its Pixel Aspect Ratio byte and PNG in

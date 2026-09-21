@@ -892,6 +892,121 @@ GIMG_Result save_with(const GIMG_Save_Options * options,
 
 } // namespace
 
+TEST(GifEncode, TheBackgroundColourIsWrittenToTheScreenDescriptor) {
+  // The writer used to put a zero in the Background Color Index always, which
+  // made gimg_doc_set_background_color() a no-op that reported success: the
+  // accessor gave the new colour and the file kept naming entry 0.  Only a
+  // round trip showed it, which is why this asks the file and not the
+  // accessor.
+  //
+  // Both ImageMagick and Pillow do this - `magick -background lime` repoints
+  // the index at an entry it adds, and Pillow honours info["background"] - so
+  // a GIF this library wrote was the odd one out.
+  const Rgba want{0, 255, 0, 255}; // a green nothing in `sixteen` paints
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(8, 8, sixteen));
+  frames.push_back(make_raster(8, 8, with_hole));
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes,
+                [&](GIMG_Doc * doc) {
+                  const uint8_t rgba[4] = {want.r, want.g, want.b, want.a};
+                  gimg_doc_set_background_color(doc, rgba);
+                }),
+      GIMG_OK);
+
+  // The index must name something other than entry 0, which is the transparent
+  // one the planner reserves and can never be a colour.
+  ASSERT_GT(bytes.size(), 12u);
+  EXPECT_NE(bytes[11], 0u) << "the Background Color Index of the new file";
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  uint8_t rgba[4] = {9, 9, 9, 9};
+  ASSERT_EQ(gimg_doc_background_color(again.doc(), rgba), 1);
+  EXPECT_EQ(Rgba({rgba[0], rgba[1], rgba[2], rgba[3]}), want);
+}
+
+TEST(GifEncode, ABackgroundColourNoPixelUsesIsAddedToTheTable) {
+  // The colour a document declares need not be one the frames paint, and a
+  // global table built only from the pixels will not have it.  Writing index 0
+  // then would silently turn "the background is this colour" into "nothing is
+  // behind this", which is a different statement and one the caller did not
+  // make.  Adding an entry can take the table to the next power of two; that
+  // is the price of saying something the file would otherwise not say.
+  //
+  // `sixteen` paints i*17, 255-i*9, i*5+3 for i of 0 to 15, so no pixel is
+  // ever this.
+  const Rgba want{1, 2, 3, 255};
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(8, 8, sixteen));
+  frames.push_back(make_raster(8, 8, with_hole));
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes,
+                [&](GIMG_Doc * doc) {
+                  const uint8_t rgba[4] = {want.r, want.g, want.b, want.a};
+                  gimg_doc_set_background_color(doc, rgba);
+                }),
+      GIMG_OK);
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  uint8_t rgba[4] = {9, 9, 9, 9};
+  ASSERT_EQ(gimg_doc_background_color(again.doc(), rgba), 1);
+  EXPECT_EQ(Rgba({rgba[0], rgba[1], rgba[2], rgba[3]}), want)
+      << "a colour no frame paints still has to reach the file";
+}
+
+TEST(GifEncode, ADocumentWithNoBackgroundNamesTheTransparentEntry) {
+  // 89a 18 has no way to leave the field out, so "nothing is behind this" is
+  // said by naming an entry that is marked transparent - entry 0, which is the
+  // planner's mask index.  Reading the file back must give that statement
+  // again and not a black background the document never declared.
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(8, 8, sixteen));
+  frames.push_back(make_raster(8, 8, with_hole));
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes, nullptr), GIMG_OK);
+
+  ASSERT_GT(bytes.size(), 12u);
+  EXPECT_EQ(bytes[11], 0u) << "entry 0 is the transparent one";
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  uint8_t rgba[4] = {9, 9, 9, 9};
+  ASSERT_EQ(gimg_doc_background_color(again.doc(), rgba), 1);
+  EXPECT_EQ(rgba[3], 0u)
+      << "an opaque colour here is a background nobody declared";
+}
+
+TEST(GifEncode, ABackgroundAtAlphaZeroIsTheSameStatementAsNone) {
+  // gimg_doc_background_color() reports a transparent entry as the colour at
+  // alpha 0, so a document that came from such a file carries one.  Writing it
+  // as an opaque entry would turn "nothing is behind this" into a colour on a
+  // round trip through this codec, which is the bug in the other direction
+  // from the one above.
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(8, 8, sixteen));
+  frames.push_back(make_raster(8, 8, with_hole));
+  ASSERT_NE(frames[0], nullptr);
+  ASSERT_NE(frames[1], nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes,
+                [](GIMG_Doc * doc) {
+                  const uint8_t rgba[4] = {200u, 100u, 50u, 0u};
+                  gimg_doc_set_background_color(doc, rgba);
+                }),
+      GIMG_OK);
+
+  ASSERT_GT(bytes.size(), 12u);
+  EXPECT_EQ(bytes[11], 0u) << "alpha 0 names the transparent entry";
+}
+
 TEST(GifEncode, APixelAspectRatioSurvivesALoadAndSave) {
   // The writer used to put a zero in the Pixel Aspect Ratio byte always, so a
   // file that declared a non-square pixel came back declaring nothing - the

@@ -813,6 +813,31 @@ def _write_color_typed_ancillary_fixtures() -> None:
         + iend)
 
 
+    # ---- 16-bit RGB + bKGD ------------------------------------------------
+    #
+    # A background stated at sixteen bits a sample, which the document model
+    # cannot hold: gimg_doc_background_color() reports eight bits, because that
+    # is what a caller with a decoded raster can use.
+    #
+    # So the writer must not rebuild this chunk from the document when nothing
+    # about the background has changed - it has to put back the bytes the file
+    # came with, or a 16-bit background quietly becomes an 8-bit one on a round
+    # trip that changed nothing.  The three samples are chosen so that the low
+    # byte is not a copy of the high byte and not zero: 0x1234 read as 8-bit is
+    # 0x12, and a writer that rebuilt it would emit 0x1212.
+    rgb16 = b""
+    for y in range(4):
+        rgb16 += b"\x00"
+        for x in range(4):
+            rgb16 += struct.pack(">HHH", 0x1000 + x, 0x2000 + y, 0x3000)
+    write_png("png_rgb16_bkgd.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 16, 2, 0, 0, 0))
+        + png_chunk(b"bKGD", struct.pack(">HHH", 0x1234, 0x5678, 0x9ABC))
+        + png_chunk(b"IDAT", idat_zlib(rgb16))
+        + iend)
+
+
 
 def _write_filter_validity_fixtures() -> None:
     """Rows whose filter byte is not one of the five clause 9 defines.

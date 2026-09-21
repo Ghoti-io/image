@@ -694,11 +694,30 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // the file gave: once decode has turned palette indices into RGBA, the table
   // that index referred to is gone, so an index would be a number a caller
   // could not use.  Nothing is reported when there is no global table to
-  // resolve against, or when the index names an entry it does not have.
+  // resolve against, or when the index names an entry it does not have; 89a 18
+  // says the field is to be ignored in the first case, and the second is a
+  // file naming an entry that does not exist.
+  //
+  // The alpha carries the other half of the answer.  A file whose first frame
+  // marks the background entry transparent is not naming a colour to put
+  // behind the image - it is naming the absence of one, which is how an
+  // encoder says "nothing is behind this" in a format that has no way to leave
+  // the field out.  That is reported as the entry's colour at alpha 0, so a
+  // caller that composites over it gets the no-op the file asked for and a
+  // caller that wants to know which entry was named can still see it.
+  //
+  // The rule is the *first* frame's transparent index rather than any frame's,
+  // because that is the control block in force when the screen is first shown,
+  // and because it is what ImageMagick does: a two-frame file whose background
+  // entry is transparent in frame 0 reports srgba(r,g,b,0) there, and the same
+  // file with the flag moved to frame 1 reports the opaque colour.
   if (state->has_global_palette &&
       state->background_index < state->global_palette_count) {
     const gimg_gif_rgb_t * bg = &state->global_palette[state->background_index];
-    const uint8_t rgba[4] = {bg->r, bg->g, bg->b, 0xFFu};
+    const bool masked = state->frame_count > 0u &&
+        state->frames[0].has_control && state->frames[0].has_transparency &&
+        state->frames[0].transparent_index == state->background_index;
+    const uint8_t rgba[4] = {bg->r, bg->g, bg->b, masked ? 0x00u : 0xFFu};
     gimg_doc_set_background_color(doc, rgba);
   }
 
