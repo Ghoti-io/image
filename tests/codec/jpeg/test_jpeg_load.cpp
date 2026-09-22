@@ -6600,3 +6600,92 @@ TEST(JpegLoad, ALosslessScanHeaderOutsideT81IsRefused) {
       << "a valid lossless scan header must be accepted, or the five above "
          "are being refused for some reason other than the one named";
 }
+
+namespace {
+
+/** One marker segment: the marker's low byte and its payload (no length). */
+struct Segment {
+  uint8_t marker;
+  std::vector<uint8_t> payload;
+};
+
+/** SOI, then @p segs each with a computed length, then EOI. */
+std::vector<uint8_t> make_segments(const std::vector<Segment> & segs) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  for (const Segment & s : segs) {
+    buf.push_back(0xFF);
+    buf.push_back(s.marker);
+    buf.push_back((uint8_t)((s.payload.size() + 2u) >> 8));
+    buf.push_back((uint8_t)((s.payload.size() + 2u) & 0xFFu));
+    buf.insert(buf.end(), s.payload.begin(), s.payload.end());
+  }
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+/** A frame-header payload: 8-bit, 8x8, one 1x1 component. Serves for DHP. */
+std::vector<uint8_t> one_component_frame() {
+  return {0x08, 0x00, 0x08, 0x00, 0x08, 0x01, 0x01, 0x11, 0x00};
+}
+
+} // namespace
+
+/**
+ * The hierarchical framing rules are checked, and none had been.
+ *
+ * T.81 B.3 builds a hierarchical sequence out of one DHP followed by frames,
+ * each optionally preceded by an EXP that says whether to expand the
+ * reference image horizontally, vertically, or neither. The rules around that
+ * are small and entirely structural - one DHP, EXP only inside a sequence,
+ * one byte of payload, factors of 0 or 1, at most one EXP per frame - and no
+ * fixture breaks any of them, so every one of these refusals was unreached.
+ *
+ * Each case asserts the reason rather than the code, since all six return
+ * GIMG_ERR_FORMAT from within twenty lines of one another and a test that
+ * checked only the code could not tell which one it had reached.
+ */
+TEST(JpegLoad, TheHierarchicalFramingRulesAreEnforced) {
+  const std::vector<uint8_t> frame = one_component_frame();
+
+  // A second DHP: B.3.2 allows one.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDEu, frame}, {0xDEu, frame}}), "a second DHP"));
+
+  // DHP after a frame header has already been seen. The loader tells this
+  // apart from a second DHP, which is why the reason is asserted rather than
+  // the code: writing "a second DHP" here failed, and that is the check
+  // saying it had reached a different branch than the test claimed.
+  EXPECT_TRUE(RefusedBecause(make_segments({{0xC0u, frame}, {0xDEu, frame}}),
+      "DHP after a frame header"))
+      << "DHP must open the sequence, not follow a frame";
+
+  // EXP with no DHP before it.
+  EXPECT_TRUE(RefusedBecause(make_segments({{0xDFu, {0x00u}}}),
+      "EXP outside a hierarchical sequence"));
+
+  // EXP whose payload is not the single byte Table B.11 gives it.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDEu, frame}, {0xDFu, {0x00u, 0x00u}}}),
+      "EXP payload is not one byte"));
+
+  // Expansion factors above one.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDEu, frame}, {0xDFu, {0x22u}}}), "Eh/Ev must be 0 or 1"));
+
+  // Two EXP before one frame.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDEu, frame}, {0xDFu, {0x11u}}, {0xDFu, {0x11u}}}),
+      "two EXP segments before one frame"));
+
+  // The control: one DHP and one well-formed EXP are not refused for any of
+  // the reasons above. The file has no frame after them, so it is incomplete
+  // and will be rejected - what matters is that it is rejected for that and
+  // not for the framing.
+  const std::string why =
+      refusal_reason(make_segments({{0xDEu, frame}, {0xDFu, {0x11u}}}));
+  EXPECT_EQ(why.find("EXP"), std::string::npos)
+      << "a lone well-formed EXP after a DHP must not trip an EXP rule, but "
+         "the loader said: "
+      << why;
+}
