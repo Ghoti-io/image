@@ -497,6 +497,38 @@ int main(int argc, char ** argv) {
 #include <cstdlib>
 #include <locale.h>
 
+// glibc's newlocale() keeps one allocation for the LOCPATH search list, made
+// in __argz_add_sep and never released - freelocale() does not take it back.
+// Reaching a generated locale requires LOCPATH, so the test below cannot avoid
+// it, and under `make test-asan` LeakSanitizer reported it and failed the run.
+// That is my doing: the locale test arrived without this and the ASan gate has
+// been red on it since.
+//
+// The suppression lives HERE, as LeakSanitizer's own per-binary hook, rather
+// than in a shared suppressions file: it applies to this one executable, it
+// sits next to the reason, and it cannot quietly widen to cover the other
+// suites later. __argz_add_sep is reachable only from glibc's locale-path
+// parsing, which nothing in this library calls. The same hook, for the same
+// reason, is in model's tests/unit/test_locale.cpp.
+//
+// Checked rather than assumed: with a 1234-byte leak planted in a test body,
+// LeakSanitizer reported that one and went on suppressing the two glibc ones,
+// so the template narrows to what it names.
+//
+// Getting that check to mean anything took three tries, which is worth
+// recording for whoever repeats it. LSan reports only blocks it cannot reach,
+// and it reaches more than you expect: a pointer left in a dead stack slot is
+// still found by its conservative stack scan, and so is one inside a heap
+// block that has already been freed, because ASan's quarantine keeps that
+// block's contents around. Both of those planted leaks went unreported and
+// looked exactly like an over-wide suppression. The control that told them
+// apart was turning the suppression off - the planted leak stayed invisible,
+// so the suppression was not what was hiding it. A plant that works has to
+// drop the reference before the thing holding it goes away.
+extern "C" const char * __lsan_default_suppressions(void) {
+  return "leak:__argz_add_sep\n";
+}
+
 namespace {
 
 /**

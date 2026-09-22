@@ -1105,12 +1105,26 @@ endif
 ####################################################################
 # Sanitizer builds (ASan + UBSan): separate build dir, run test suite
 ####################################################################
-# -fno-sanitize-recover=undefined makes UBSan abort instead of printing and
-# carrying on.  Without it a UBSan finding is a line in a log and the suite
-# still passes, which is exactly how a signed overflow in exif.c's read_u32
-# survived being reported by all four fuzz harnesses at once: nothing was
-# watching, because nothing failed.
-ASAN_UBSAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g
+# -fno-sanitize-recover makes UBSan abort instead of printing and carrying on.
+# Without it a UBSan finding is a line in a log and the suite still passes,
+# which is exactly how a signed overflow in exif.c's read_u32 survived being
+# reported by all four fuzz harnesses at once: nothing was watching, because
+# nothing failed.
+#
+# float-cast-overflow is named explicitly because the two sanitizer builds here
+# do not otherwise agree on what "undefined" covers.  It is in clang's
+# -fsanitize=undefined group and not in GCC's, so the fuzz harnesses below -
+# which are built with clang - have always checked it, while `make test-asan`,
+# built with GCC, never has.  That is not a hypothetical gap: the comment on
+# FUZZ_FLAGS records a double-to-uint32 conversion in the PNG colour writer
+# that came out of a fuzz run, and this gate could not have seen it.  Measured
+# rather than assumed - `(int)1e30` under the old flags prints -2147483648 and
+# exits 0, and under these it aborts.
+#
+# One list feeds both the checks and the no-recover set, because those two
+# drifting apart is how a check gets enabled and then quietly allowed to pass.
+UBSAN_CHECKS := undefined,float-cast-overflow
+ASAN_UBSAN_FLAGS := -fsanitize=address,$(UBSAN_CHECKS) -fno-sanitize-recover=$(UBSAN_CHECKS) -fno-omit-frame-pointer -g
 ASAN_BUILD_DIR := ./build/$(BUILD)-asan
 ASAN_OBJ_DIR := $(ASAN_BUILD_DIR)/objects
 ASAN_APP_DIR := $(ASAN_BUILD_DIR)/apps
@@ -1421,8 +1435,11 @@ FUZZ_CXX ?= clang++
 # somebody is reading the output - which is how a signed-overflow shift in the
 # EXIF reader once went unacted upon while all four harnesses reported it, and
 # how a double-to-uint32 conversion in the PNG colour writer nearly did again.
-FUZZ_FLAGS := -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1
-FUZZ_LIB_FLAGS := -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1
+# The same UBSAN_CHECKS list as the ASan gate, so the two cannot drift: clang
+# already has float-cast-overflow inside "undefined", but naming it keeps one
+# list rather than two that happen to agree today.
+FUZZ_FLAGS := -fsanitize=fuzzer,address,$(UBSAN_CHECKS) -fno-sanitize-recover=$(UBSAN_CHECKS) -fno-omit-frame-pointer -g -O1
+FUZZ_LIB_FLAGS := -fsanitize=fuzzer-no-link,address,$(UBSAN_CHECKS) -fno-sanitize-recover=$(UBSAN_CHECKS) -fno-omit-frame-pointer -g -O1
 # Check if clang++ is available for fuzz
 FUZZ_CXX_OK := $(shell which $(FUZZ_CXX) 2>/dev/null)
 
