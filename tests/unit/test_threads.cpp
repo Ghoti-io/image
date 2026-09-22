@@ -110,6 +110,58 @@ std::string save_once(uint32_t seed, const char * format, uint8_t quality) {
 } // namespace
 
 /**
+ * Reading the version from several threads, **the first read included**.
+ *
+ * gimg_version_string() used to fill a static buffer behind an unsynchronized
+ * `initialized` flag: the first caller wrote the buffer, later callers only
+ * read it. The whole of that race therefore lives in the *first* call, which
+ * is precisely what a test destroys by asking for the value before it starts
+ * its threads. An earlier version of this test opened with
+ *
+ *     const std::string expected = gimg_version_string();
+ *
+ * and then compared every thread against it. That one line filled the buffer
+ * single-threaded, so the eight threads did nothing but read and TSan reported
+ * a clean run against the very bug this is here to catch. It is the same
+ * warm-up flaw as the one AaaColdStart.ConcurrentSavesFromNothing exists to
+ * avoid, and it was sitting two tests below it.
+ *
+ * So no call is made from this thread until after the join, and each thread is
+ * compared against what the other threads saw rather than against a value
+ * prepared for them. The integer accessors used to build the reference return
+ * a constant and touch nothing, so reading them afterwards warms nothing.
+ */
+TEST(AaaColdStart, TheVersionIsSafeToReadFromNothing) {
+  std::vector<std::string> seen(8);
+  std::atomic<int> unstable{0};
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 8; i++) {
+    threads.emplace_back([&seen, &unstable, i]() {
+      // The first call in the process happens here, on one of eight threads.
+      const std::string mine = gimg_version_string();
+      for (int j = 0; j < 500; j++) {
+        if (std::string(gimg_version_string()) != mine) {
+          unstable++;
+        }
+      }
+      seen[(size_t)i] = mine;
+    });
+  }
+  for (auto & t : threads) {
+    t.join();
+  }
+
+  char expected[64];
+  std::snprintf(expected, sizeof(expected), "%u.%u.%u", gimg_version_major(),
+      gimg_version_minor(), gimg_version_patch());
+  EXPECT_EQ(unstable.load(), 0) << "the string changed under a reader";
+  for (int i = 0; i < 8; i++) {
+    EXPECT_EQ(seen[(size_t)i], std::string(expected))
+        << "thread " << i << " saw a different version string";
+  }
+}
+
+/**
  * Concurrent saves with **nothing run before them**.
  *
  * This test is first in the file deliberately, and the ordering is the whole
@@ -206,33 +258,6 @@ TEST(Threads, ConcurrentSavesMatchSolitaryOnes) {
           << " produced different bytes when run concurrently";
     }
   }
-}
-
-/**
- * Reading the version from several threads at once.
- *
- * gimg_version_string() used to fill a static buffer behind an
- * unsynchronized flag. The value is a compile-time constant now, so there is
- * nothing left to race on - and every thread must see the whole string.
- */
-TEST(Threads, TheVersionIsReadableFromEveryThread) {
-  const std::string expected = gimg_version_string();
-  ASSERT_FALSE(expected.empty());
-  std::atomic<int> wrong{0};
-  std::vector<std::thread> threads;
-  for (int i = 0; i < 8; i++) {
-    threads.emplace_back([&expected, &wrong]() {
-      for (int j = 0; j < 500; j++) {
-        if (std::string(gimg_version_string()) != expected) {
-          wrong++;
-        }
-      }
-    });
-  }
-  for (auto & t : threads) {
-    t.join();
-  }
-  EXPECT_EQ(wrong.load(), 0);
 }
 
 /** The version accessors agree with the string, and with each other. */
