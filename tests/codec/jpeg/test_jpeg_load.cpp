@@ -7,6 +7,7 @@
  */
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ghoti.io/image/bitdepth.h>
@@ -22,6 +23,7 @@
 #include <vector>
 #if !defined(_WIN32)
 #include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 #include "jpeg_test_utils.h"
@@ -4980,4 +4982,312 @@ TEST(JpegLoad, AProgressiveScanMissingItsPaddingByteStillDecodes) {
   EXPECT_EQ(lr, GIMG_OK)
       << "loading reads the headers; shortness is a decode-time finding";
   if (lr == GIMG_OK) { gimg_doc_destroy(doc); }
+}
+
+namespace {
+
+/**
+ * The [start, end) byte range of every entropy-coded segment in @p f.
+ *
+ * Truncating the *file* can only ever shorten the last scan, which is why the
+ * test above exercises exactly one of the decoder's five "the segment ran out
+ * of bits" paths: a progressive file's earlier scans are followed by more
+ * markers and stay whole no matter how much is cut off the end. Locating each
+ * segment separately is what makes the DC, DC-refinement and AC-initial
+ * decoders reachable at all.
+ *
+ * A segment runs from the end of the SOS header to the next marker that is
+ * neither a stuffed zero (FF 00, B.1.1.5) nor a restart (FF D0-D7, B.2.1),
+ * both of which are part of the entropy data rather than the end of it.
+ */
+std::vector<std::pair<size_t, size_t>> entropy_segments(
+    const std::vector<uint8_t> & f) {
+  std::vector<std::pair<size_t, size_t>> out;
+  size_t i = 0;
+  while (i + 1 < f.size()) {
+    if (f[i] != 0xFF) { i++; continue; }
+    const uint8_t m = f[i + 1];
+    if (m == 0xFF) { i++; continue; }              // fill byte
+    if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+    if (m == 0xD9) { break; }                      // EOI
+    if (m == 0x00) { i += 2; continue; }
+    if (i + 3 >= f.size()) { break; }
+    const size_t len = ((size_t)f[i + 2] << 8) | (size_t)f[i + 3];
+    if (m != 0xDA) { i += 2 + len; continue; }
+    const size_t start = i + 2 + len;
+    size_t j = start;
+    while (j + 1 < f.size()) {
+      if (f[j] == 0xFF && f[j + 1] != 0x00 &&
+          !(f[j + 1] >= 0xD0 && f[j + 1] <= 0xD7)) {
+        break;
+      }
+      j++;
+    }
+    if (start >= j) { return out; }  // malformed; stop rather than guess
+    out.push_back({start, j});
+    i = j;
+  }
+  return out;
+}
+
+/** @p f with @p cut bytes removed from the end of entropy segment @p index. */
+bool cut_segment(const std::vector<uint8_t> & f, size_t index, size_t cut,
+    std::vector<uint8_t> & out) {
+  const std::vector<std::pair<size_t, size_t>> segs = entropy_segments(f);
+  if (index >= segs.size()) { return false; }
+  const size_t start = segs[index].first, end = segs[index].second;
+  if (cut == 0 || cut > end - start) { return false; }
+  out.assign(f.begin(), f.begin() + (long)(end - cut));
+  out.insert(out.end(), f.begin() + (long)end, f.end());
+  return true;
+}
+
+/** Sets the recovery variable for a scope, so a failed assertion cannot leak
+ * it into the tests that run after this one. */
+class WithStuffZeroRecovery {
+public:
+  WithStuffZeroRecovery() { setenv("GIMG_JPEG_RECOVER_STUFF_ZERO", "1", 1); }
+  ~WithStuffZeroRecovery() { unsetenv("GIMG_JPEG_RECOVER_STUFF_ZERO"); }
+};
+
+/** Redirects fd 2 to a temporary file for a scope and hands back what was
+ * written. The recovery mode announces itself on stderr once per bitstream,
+ * and a sweep of it would otherwise bury the test output in warnings. */
+class CapturedStderr {
+public:
+  CapturedStderr() {
+    fflush(stderr);
+    saved_ = dup(2);
+    sink_ = tmpfile();
+    if (sink_ && saved_ >= 0) { dup2(fileno(sink_), 2); }
+  }
+
+  ~CapturedStderr() { restore(); if (sink_) { fclose(sink_); } }
+
+  /** Everything written to stderr since construction. */
+  std::string text() {
+    restore();
+    if (!sink_) { return std::string(); }
+    fseek(sink_, 0, SEEK_SET);
+    std::string s;
+    char buf[512];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, sink_)) > 0) { s.append(buf, n); }
+    return s;
+  }
+
+private:
+  void restore() {
+    if (saved_ < 0) { return; }
+    fflush(stderr);
+    dup2(saved_, 2);
+    close(saved_);
+    saved_ = -1;
+  }
+
+  int saved_ = -1;
+  FILE * sink_ = nullptr;
+};
+
+/** One truncation: which scan, how deep, and what decoding it produced. */
+struct CutResult {
+  size_t segment;
+  size_t cut;
+  size_t segment_len;
+  GIMG_Result result;
+  uint32_t w, h;
+
+  /** Nothing of the scan's entropy data is left, rather than some of it. */
+  bool empties_the_scan() const { return cut == segment_len; }
+};
+
+/**
+ * Decode every scan of @p file truncated by every depth, in file order.
+ *
+ * @p max_cuts caps how deep to cut into each scan, 0 meaning all the way. The
+ * cap is what makes a large fixture affordable, and cutting from the shallow
+ * end is not an arbitrary choice: a shallow cut into a long scan runs the
+ * decoder out of bits in its *last* block, which is the only place the
+ * is_last_block arms can be reached. A small fixture is swept to the bottom
+ * instead, where a deep cut starves the first block of many.
+ */
+std::vector<CutResult> sweep_cuts(
+    const std::vector<uint8_t> & file, size_t max_cuts = 0) {
+  std::vector<CutResult> out;
+  const std::vector<std::pair<size_t, size_t>> segs = entropy_segments(file);
+  for (size_t si = 0; si < segs.size(); si++) {
+    const size_t len = segs[si].second - segs[si].first;
+    const size_t deepest = (max_cuts && max_cuts < len) ? max_cuts : len;
+    for (size_t cut = 1; cut <= deepest; cut++) {
+      std::vector<uint8_t> bytes;
+      if (!cut_segment(file, si, cut, bytes)) { continue; }
+      CutResult r{si, cut, len, GIMG_OK, 0, 0};
+      r.result = decode_size(bytes, &r.w, &r.h);
+      out.push_back(r);
+    }
+  }
+  return out;
+}
+
+/**
+ * A fixture to sweep, and how deep to cut into each of its scans.
+ *
+ * Four are needed because the arms being exercised are selected by two
+ * different things. Which *decoder* runs is chosen by the scan header, so a
+ * baseline file is required to reach the baseline block decoder at all - a
+ * progressive file never calls it. Which *arm* runs is chosen by whether the
+ * block that runs out of bits is the last one of its scan, so a long scan cut
+ * shallowly and a short scan cut to the bone reach opposite sides of the same
+ * `if`.
+ */
+struct SweepFixture {
+  const char * name;
+  size_t max_cuts;  ///< 0 sweeps every depth; see sweep_cuts().
+  bool progressive;
+};
+
+const SweepFixture kSweepFixtures[] = {
+    // Tiny, ten scans, every progressive scan type: swept to the bottom, so
+    // the decoder starves in the first block of many.
+    {"progressive_sample.jpg", 0, true},
+    // Long scans: swept shallowly, so it starves in the last block instead.
+    {"progressive_640x480_ycbcr.jpg", 12, true},
+    // Baseline, one long scan: the only way into jpeg_decode_block().
+    {"baseline_640x480_ycbcr.jpg", 24, false},
+    {"baseline_8x8_gray.jpg", 0, false},
+};
+
+} // namespace
+
+/**
+ * Truncating any one scan is either decoded or refused - never anything else.
+ *
+ * Each scan is cut back a byte at a time, so the entropy decoder runs out of
+ * bits at a different place in each case: part-way through a Huffman codeword,
+ * between a symbol and its magnitude bits, in the middle of a refinement run.
+ * Those are separate arms in five separate decoders, and none of them had ever
+ * executed, because the only truncation the suite did was to the end of the
+ * file - which can only shorten the final scan of the final fixture.
+ *
+ * The sweep asserts the two things that must hold everywhere: the result is a
+ * decode or a clean refusal, and a decode is of the right image. It also
+ * asserts that something, somewhere, IS refused - a sweep in which nothing is
+ * ever rejected would pass just as happily against a decoder that accepted
+ * anything at all.
+ */
+TEST(JpegLoad, TruncatingAnyScanIsDecodedOrRefusedCleanly) {
+  int swept = 0, refused = 0;
+  for (const SweepFixture & fx : kSweepFixtures) {
+    std::vector<uint8_t> file;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(fx.name, file)) << fx.name;
+
+    uint32_t w0 = 0, h0 = 0;
+    ASSERT_EQ(decode_size(file, &w0, &h0), GIMG_OK) << fx.name;
+    ASSERT_GT(w0, 0u) << fx.name;
+
+    const std::vector<CutResult> results = sweep_cuts(file, fx.max_cuts);
+    ASSERT_FALSE(results.empty()) << fx.name;
+
+    for (const CutResult & r : results) {
+      swept++;
+      if (r.result == GIMG_OK) {
+        EXPECT_EQ(r.w, w0) << fx.name << " scan " << r.segment << " cut "
+                           << r.cut;
+        EXPECT_EQ(r.h, h0) << fx.name << " scan " << r.segment << " cut "
+                           << r.cut;
+        continue;
+      }
+      refused++;
+      EXPECT_EQ(r.result, GIMG_ERR_CORRUPT)
+          << fx.name << " scan " << r.segment << " cut " << r.cut
+          << ": a short scan is corrupt input, not an internal error";
+    }
+  }
+  EXPECT_GT(swept, 100) << "the sweep got much smaller than it was written to "
+                           "be; check the fixtures still parse";
+  EXPECT_GT(refused, 0)
+      << "no truncation of any scan was refused, so this sweep is not "
+         "distinguishing a decoder that checks from one that does not";
+}
+
+/**
+ * GIMG_JPEG_RECOVER_STUFF_ZERO decodes a truncated scan, but not an absent one.
+ *
+ * Turning refusals into decodes is the option's entire contract, so it is
+ * stated here as a differential over the same sweep: what the strict decoder
+ * rejects, the recovering decoder must accept. Asserting only that recovery
+ * succeeds would pass just as well if the strict decoder had succeeded too,
+ * which is to say if the option did nothing at all.
+ *
+ * The boundary is deliberate and is asserted rather than skipped. Recovery
+ * stuffs zero bits when a bitstream runs out part-way through a block; a scan
+ * whose entropy data is gone entirely never reaches a bitstream, because
+ * jpeg_entropy.c rejects a Huffman scan with no data before building one (an
+ * arithmetic scan may legitimately be empty, T.81 D.2.9, and is excepted
+ * there). Recovering those would mean inventing a whole scan rather than the
+ * tail of one. Sweeping past that distinction without naming it would leave
+ * the test asserting whichever behaviour the code happened to have.
+ *
+ * The option is read only by the progressive decoder, so only the progressive
+ * fixtures are swept here.
+ */
+TEST(JpegLoad, TheStuffZeroRecoveryOptionDecodesATruncatedScan) {
+  int recovered_cases = 0;
+  for (const SweepFixture & fx : kSweepFixtures) {
+    if (!fx.progressive) { continue; }
+    std::vector<uint8_t> file;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(fx.name, file)) << fx.name;
+
+    uint32_t w0 = 0, h0 = 0;
+    ASSERT_EQ(decode_size(file, &w0, &h0), GIMG_OK) << fx.name;
+
+    const std::vector<CutResult> strict = sweep_cuts(file, fx.max_cuts);
+    int refused_truncated = 0;
+    for (const CutResult & r : strict) {
+      if (r.result != GIMG_OK && !r.empties_the_scan()) { refused_truncated++; }
+    }
+    ASSERT_GT(refused_truncated, 0)
+        << fx.name
+        << ": no merely-truncated scan was refused without the option, so "
+           "there is nothing here for it to recover and this fixture would "
+           "pass without exercising it";
+
+    std::string warnings;
+    std::vector<CutResult> recovered;
+    {
+      WithStuffZeroRecovery on;
+      CapturedStderr captured;
+      recovered = sweep_cuts(file, fx.max_cuts);
+      warnings = captured.text();
+    }
+
+    ASSERT_EQ(recovered.size(), strict.size()) << fx.name;
+    for (const CutResult & r : recovered) {
+      if (r.empties_the_scan()) {
+        EXPECT_EQ(r.result, GIMG_ERR_CORRUPT)
+            << fx.name << " scan " << r.segment
+            << " has no entropy data left; recovery fills in a missing tail, "
+               "not a missing scan";
+        continue;
+      }
+      recovered_cases++;
+      EXPECT_EQ(r.result, GIMG_OK)
+          << fx.name << " scan " << r.segment << " cut " << r.cut << " of "
+          << r.segment_len << ": recovery is supposed to decode this";
+      if (r.result == GIMG_OK) {
+        EXPECT_EQ(r.w, w0) << fx.name << " scan " << r.segment << " cut "
+                           << r.cut;
+        EXPECT_EQ(r.h, h0) << fx.name << " scan " << r.segment << " cut "
+                           << r.cut;
+      }
+    }
+
+    // Recovery is not silent: it says on stderr that it is inventing data.
+    EXPECT_NE(warnings.find("premature end of data segment"), std::string::npos)
+        << fx.name
+        << ": recovery must announce that the image is not what the file "
+           "said; stderr held: "
+        << warnings;
+  }
+  EXPECT_GT(recovered_cases, 0) << "no progressive fixture was swept";
 }
