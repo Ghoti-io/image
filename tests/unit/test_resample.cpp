@@ -118,6 +118,15 @@ GIMG_Result resize_with(const GIMG_Raster * src, uint32_t w, uint32_t h,
   return gimg_ops_resize(src, w, h, &o, out);
 }
 
+GIMG_Result resize_linear(const GIMG_Raster * src, uint32_t w, uint32_t h,
+    GIMG_Resample_Filter f, GIMG_Raster ** out) {
+  GIMG_Resize_Options o;
+  gimg_resize_options_default(&o);
+  o.filter = f;
+  o.space = GIMG_RESAMPLE_SPACE_LINEAR;
+  return gimg_ops_resize(src, w, h, &o, out);
+}
+
 } // namespace
 
 /**
@@ -582,6 +591,154 @@ TEST(Resize, SixteenBitSamplesKeepTheirRange) {
   gimg_raster_destroy(src);
 }
 
+
+/**
+ * Averaging in linear light gives a different, lighter answer than averaging
+ * the encoded values - and this is the case that shows why the option exists.
+ *
+ * Reduce a black-and-white checkerboard to a single pixel. Half the light is
+ * present, so the honest answer is the encoding of 0.5, which sRGB puts near
+ * 188. Averaging the encoded values instead gives 128, which is the encoding
+ * of about 21% of the light: the picture comes out much darker than the
+ * scene. Every library that resamples in the encoded space has this, which is
+ * why it is the default here - it is what the oracles do - and why the other
+ * setting is offered at all.
+ */
+TEST(Resize, LinearLightAveragesTheLightRatherThanTheEncoding) {
+  GIMG_Raster * src = make_raster(64, 64, &GIMG_PIXEL_GRAY8);
+  ASSERT_NE(src, nullptr);
+  for (uint32_t y = 0; y < 64; y++) {
+    for (uint32_t x = 0; x < 64; x++) {
+      *px8(src, x, y, 1) = ((x + y) & 1u) ? 255u : 0u;
+    }
+  }
+  GIMG_Raster * encoded = nullptr;
+  GIMG_Raster * linear = nullptr;
+  ASSERT_EQ(resize_with(src, 1, 1, GIMG_FILTER_BOX, &encoded), GIMG_OK);
+  ASSERT_EQ(resize_linear(src, 1, 1, GIMG_FILTER_BOX, &linear), GIMG_OK);
+
+  const int got_encoded = *cpx8(encoded, 0, 0, 1);
+  const int got_linear = *cpx8(linear, 0, 0, 1);
+  EXPECT_GE(got_encoded, 126);
+  EXPECT_LE(got_encoded, 129) << "the encoded average should be about 128";
+  EXPECT_GE(got_linear, 185);
+  EXPECT_LE(got_linear, 192)
+      << "half the light encodes to about 188 in sRGB; got " << got_linear;
+
+  gimg_raster_destroy(encoded);
+  gimg_raster_destroy(linear);
+  gimg_raster_destroy(src);
+}
+
+/**
+ * Linearizing and re-encoding is exactly reversible, so a resize that changes
+ * no dimension changes no sample.
+ *
+ * This is what the reverse table is built by walking the forward one for. The
+ * analytic inverse rounds on its own and loses a count here and there in the
+ * darks - where sRGB is steepest - and a caller who resized to the size they
+ * already had would find the picture very slightly altered.
+ */
+TEST(Resize, LinearLightAtTheSameSizeIsStillTheIdentity) {
+  for (GIMG_Resample_Filter f : kAveragingFilters) {
+    GIMG_Raster * src = make_raster(256, 1, &GIMG_PIXEL_GRAY8);
+    ASSERT_NE(src, nullptr);
+    for (uint32_t v = 0; v < 256; v++) {
+      *px8(src, v, 0, 1) = (unsigned char)v;
+    }
+    GIMG_Raster * dst = nullptr;
+    ASSERT_EQ(resize_linear(src, 256, 1, f, &dst), GIMG_OK) << filter_name(f);
+    for (uint32_t v = 0; v < 256; v++) {
+      ASSERT_EQ(*cpx8(dst, v, 0, 1), (unsigned char)v)
+          << filter_name(f) << ": sample " << v
+          << " did not survive the round trip through linear light";
+    }
+    gimg_raster_destroy(dst);
+    gimg_raster_destroy(src);
+  }
+}
+
+/**
+ * Alpha is left alone by the transfer.
+ *
+ * It is a coverage fraction, not a light level; there is nothing non-linear
+ * about it to undo. Running it through sRGB's curve would make a half-covered
+ * pixel report about three quarters coverage, which is both wrong and
+ * invisible in any picture that is either wholly opaque or wholly clear.
+ */
+TEST(Resize, LinearLightLeavesAlphaAlone) {
+  GIMG_Raster * src = make_raster(16, 16, &GIMG_PIXEL_RGBA8);
+  ASSERT_NE(src, nullptr);
+  for (uint32_t y = 0; y < 16; y++) {
+    for (uint32_t x = 0; x < 16; x++) {
+      unsigned char * p = px8(src, x, y, 4);
+      p[0] = 200u;
+      p[1] = 100u;
+      p[2] = 50u;
+      p[3] = 128u; // half covered, and it must stay half covered
+    }
+  }
+  for (GIMG_Resample_Filter f : kAveragingFilters) {
+    for (uint32_t size : {8u, 16u, 40u}) {
+      GIMG_Raster * dst = nullptr;
+      ASSERT_EQ(resize_linear(src, size, size, f, &dst), GIMG_OK);
+      for (uint32_t y = 0; y < size; y++) {
+        for (uint32_t x = 0; x < size; x++) {
+          ASSERT_EQ(cpx8(dst, x, y, 4)[3], 128u)
+              << filter_name(f) << " at " << x << "," << y
+              << ": alpha went through the transfer function";
+        }
+      }
+      gimg_raster_destroy(dst);
+    }
+  }
+  gimg_raster_destroy(src);
+}
+
+/** A constant image is still constant when the averaging is done in light. */
+TEST(Resize, LinearLightKeepsAConstantConstant) {
+  for (unsigned char value : {0u, 1u, 17u, 128u, 254u, 255u}) {
+    GIMG_Raster * src = make_raster(40, 24, &GIMG_PIXEL_GRAY8);
+    ASSERT_NE(src, nullptr);
+    for (uint32_t y = 0; y < 24; y++) {
+      for (uint32_t x = 0; x < 40; x++) {
+        *px8(src, x, y, 1) = value;
+      }
+    }
+    for (GIMG_Resample_Filter f : kAveragingFilters) {
+      GIMG_Raster * dst = nullptr;
+      ASSERT_EQ(resize_linear(src, 13, 61, f, &dst), GIMG_OK);
+      for (uint32_t y = 0; y < 61; y++) {
+        for (uint32_t x = 0; x < 13; x++) {
+          ASSERT_EQ(*cpx8(dst, x, y, 1), value)
+              << filter_name(f) << " value " << (int)value;
+        }
+      }
+      gimg_raster_destroy(dst);
+    }
+    gimg_raster_destroy(src);
+  }
+}
+
+/**
+ * NEAREST returns a sample rather than an average, so there is nothing for the
+ * colour space to change. Asking for linear light gets the same bytes, which
+ * is worth pinning: the alternative would be a path that quietly linearizes
+ * and re-encodes a value for no reason and loses a count doing it.
+ */
+TEST(Resize, LinearLightMakesNoDifferenceToNearest) {
+  GIMG_Raster * src = make_noise_gray8(33, 21, 0xBEEFu);
+  ASSERT_NE(src, nullptr);
+  GIMG_Raster * a = nullptr;
+  GIMG_Raster * b = nullptr;
+  ASSERT_EQ(resize_with(src, 17, 44, GIMG_FILTER_NEAREST, &a), GIMG_OK);
+  ASSERT_EQ(resize_linear(src, 17, 44, GIMG_FILTER_NEAREST, &b), GIMG_OK);
+  EXPECT_TRUE(gimg_ops_raster_equal(a, b));
+  gimg_raster_destroy(a);
+  gimg_raster_destroy(b);
+  gimg_raster_destroy(src);
+}
+
 TEST(Resize, WhatIsRefused) {
   GIMG_Raster * src = make_noise_gray8(8, 8, 1u);
   ASSERT_NE(src, nullptr);
@@ -603,13 +760,26 @@ TEST(Resize, WhatIsRefused) {
   dst = nullptr;
   EXPECT_EQ(gimg_ops_resize(src, 4, 4, &o, &dst), GIMG_ERR_UNSUPPORTED);
 
-  // Linear light is named by the enum but not implemented yet. Refusing is
-  // the honest answer: filtering the encoded values and calling it linear
-  // would give a caller who asked for one thing another.
   gimg_resize_options_default(&o);
-  o.space = GIMG_RESAMPLE_SPACE_LINEAR;
+  o.space = (GIMG_Resample_Space)77;
   dst = nullptr;
   EXPECT_EQ(gimg_ops_resize(src, 4, 4, &o, &dst), GIMG_ERR_UNSUPPORTED);
+
+  // Linear light applies sRGB's curve, which says something about light. Ink
+  // amounts and unnamed channels are not light, so they are refused rather
+  // than run through a curve that means nothing for them.
+  GIMG_Raster * cmyk = nullptr;
+  ASSERT_EQ(gimg_raster_create(8, 8, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED,
+                nullptr, 0, &cmyk),
+      GIMG_OK);
+  dst = nullptr;
+  EXPECT_EQ(resize_linear(cmyk, 4, 4, GIMG_FILTER_BOX, &dst),
+      GIMG_ERR_UNSUPPORTED);
+  // ...but the same raster resizes perfectly well in the encoded space.
+  dst = nullptr;
+  EXPECT_EQ(resize_with(cmyk, 4, 4, GIMG_FILTER_BOX, &dst), GIMG_OK);
+  gimg_raster_destroy(dst);
+  gimg_raster_destroy(cmyk);
 
   // An indexed raster: the average of two palette indices is not an index.
   GIMG_Pixel_Format indexed;

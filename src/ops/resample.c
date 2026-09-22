@@ -432,6 +432,246 @@ static void gimg_resample_nearest(const unsigned char * src, size_t src_stride,
   }
 }
 
+
+/**
+ * sRGB's transfer function and its inverse, as a pair of lookup tables.
+ *
+ * The forward table maps a sample to a linear value on 0..65535; the reverse
+ * maps a linear value back to a sample.  The reverse is built by walking the
+ * forward one rather than by evaluating the analytic inverse, so that
+ * rev[fwd[v]] == v for every v: the analytic inverse rounds independently and
+ * loses a count here and there in the darks, where sRGB is steepest and where
+ * a resize that changes nothing would then change something.
+ */
+typedef struct {
+  uint16_t * forward; /**< max + 1 entries. */
+  uint16_t * reverse; /**< 65536 entries. */
+} gimg_transfer_tables;
+
+#define GIMG_LINEAR_MAX 65535u
+
+static void gimg_transfer_free(
+    const GIMG_Allocator * alloc, gimg_transfer_tables * t) {
+  gimg_free(alloc, t->forward);
+  gimg_free(alloc, t->reverse);
+  t->forward = NULL;
+  t->reverse = NULL;
+}
+
+static GIMG_Result gimg_transfer_build(
+    const GIMG_Allocator * alloc, uint32_t max, gimg_transfer_tables * out) {
+  memset(out, 0, sizeof(*out));
+  const size_t count = (size_t)max + 1u;
+  out->forward = (uint16_t *)gimg_malloc(alloc, count * sizeof(uint16_t));
+  out->reverse = (uint16_t *)gimg_malloc(
+      alloc, ((size_t)GIMG_LINEAR_MAX + 1u) * sizeof(uint16_t));
+  if (!out->forward || !out->reverse) {
+    gimg_transfer_free(alloc, out);
+    return GIMG_ERR_OOM;
+  }
+  for (size_t v = 0; v < count; v++) {
+    const double c = (double)v / (double)max;
+    const double linear = (c <= 0.04045)
+        ? (c / 12.92)
+        : pow((c + 0.055) / 1.055, 2.4);
+    double scaled = linear * (double)GIMG_LINEAR_MAX + 0.5;
+    if (scaled < 0.0) {
+      scaled = 0.0;
+    }
+    if (scaled > (double)GIMG_LINEAR_MAX) {
+      scaled = (double)GIMG_LINEAR_MAX;
+    }
+    out->forward[v] = (uint16_t)scaled;
+  }
+  // Fill the reverse table by handing each linear value to whichever sample
+  // it is nearest, walking the forward table once.  It is monotonic, so the
+  // boundary between two samples is the midpoint between their linear values.
+  size_t v = 0;
+  for (size_t l = 0; l <= GIMG_LINEAR_MAX; l++) {
+    while (v + 1u < count) {
+      const uint32_t here = out->forward[v];
+      const uint32_t next = out->forward[v + 1u];
+      if ((uint32_t)l * 2u >= (uint32_t)here + next) {
+        v++;
+      }
+      else {
+        break;
+      }
+    }
+    out->reverse[l] = (uint16_t)v;
+  }
+  return GIMG_OK;
+}
+
+
+/**
+ * Run both passes, source bytes in and destination bytes out.
+ *
+ * The intermediate is at the same width as the destination and the same
+ * height as the source, and holds samples at the width they were read at, so
+ * the horizontal pass rounds before the vertical one reads.  Keeping it wider
+ * would be more accurate and would stop the result being comparable, byte for
+ * byte, with the resampler this arrangement follows.
+ */
+static GIMG_Result gimg_resample_two_pass(const GIMG_Allocator * alloc,
+    const unsigned char * src, size_t src_stride, uint32_t src_w,
+    uint32_t src_h, unsigned char * dst, size_t dst_stride, uint32_t dst_w,
+    uint32_t dst_h, GIMG_Resample_Filter filter, uint8_t channels, bool wide,
+    uint32_t max, bool premultiply) {
+  const size_t bpp = (size_t)channels * (wide ? 2u : 1u);
+  size_t mid_stride = 0u;
+  if (!gcu_safe_mul_size((size_t)dst_w, bpp, &mid_stride)) {
+    return GIMG_ERR_LIMIT;
+  }
+  size_t mid_bytes = 0u;
+  if (!gcu_safe_mul_size(mid_stride, (size_t)src_h, &mid_bytes)) {
+    return GIMG_ERR_LIMIT;
+  }
+  unsigned char * mid = (unsigned char *)gimg_malloc(alloc, mid_bytes);
+  if (!mid) {
+    return GIMG_ERR_OOM;
+  }
+
+  gimg_resample_axis horizontal;
+  gimg_resample_axis vertical;
+  GIMG_Result r =
+      gimg_resample_axis_build(alloc, filter, src_w, dst_w, &horizontal);
+  if (r != GIMG_OK) {
+    gimg_free(alloc, mid);
+    return r;
+  }
+  r = gimg_resample_axis_build(alloc, filter, src_h, dst_h, &vertical);
+  if (r != GIMG_OK) {
+    gimg_resample_axis_free(alloc, &horizontal);
+    gimg_free(alloc, mid);
+    return r;
+  }
+
+  gimg_resample_horizontal(src, src_stride, mid, mid_stride, src_h,
+      &horizontal, channels, wide, max, premultiply);
+  gimg_resample_vertical(mid, mid_stride, dst, dst_stride, dst_w, &vertical,
+      channels, wide, max, premultiply);
+
+  gimg_resample_axis_free(alloc, &horizontal);
+  gimg_resample_axis_free(alloc, &vertical);
+  gimg_free(alloc, mid);
+  return GIMG_OK;
+}
+
+/**
+ * Resample with the samples linearized first and re-encoded afterwards.
+ *
+ * Averaging sRGB values averages the wrong quantity: the encoding is roughly a
+ * 2.2 power, so the mean of two encoded values is darker than the encoding of
+ * their mean, and a reduction of a high-contrast picture comes out visibly
+ * murkier than it should.
+ *
+ * The work is done at sixteen bits whatever the source width, because
+ * linearizing an eight-bit sample and rounding it straight back to eight bits
+ * throws away most of the dark end - sRGB spends a quarter of its range on the
+ * bottom two percent of the light.
+ *
+ * **Alpha is not transferred.**  It is a coverage fraction, not a light
+ * level, and there is nothing non-linear about it to undo; running it through
+ * the curve would make every partial transparency wrong.
+ */
+static GIMG_Result gimg_resample_linear_light(const GIMG_Allocator * alloc,
+    const GIMG_Raster * src, GIMG_Raster * dst, GIMG_Resample_Filter filter,
+    uint8_t channels, uint8_t bits, uint32_t max, bool has_alpha) {
+  (void)bits;
+  gimg_transfer_tables tables;
+  GIMG_Result r = gimg_transfer_build(alloc, max, &tables);
+  if (r != GIMG_OK) {
+    return r;
+  }
+
+  const uint32_t src_w = gimg_raster_width(src);
+  const uint32_t src_h = gimg_raster_height(src);
+  const uint32_t dst_w = gimg_raster_width(dst);
+  const uint32_t dst_h = gimg_raster_height(dst);
+  const size_t src_bpp = gimg_raster_bytes_per_pixel(gimg_raster_format(src));
+  const bool src_wide = (max > 255u);
+  const size_t lin_bpp = (size_t)channels * 2u;
+
+  size_t lin_src_stride = 0u;
+  size_t lin_src_bytes = 0u;
+  size_t lin_dst_stride = 0u;
+  size_t lin_dst_bytes = 0u;
+  if (!gcu_safe_mul_size((size_t)src_w, lin_bpp, &lin_src_stride) ||
+      !gcu_safe_mul_size(lin_src_stride, (size_t)src_h, &lin_src_bytes) ||
+      !gcu_safe_mul_size((size_t)dst_w, lin_bpp, &lin_dst_stride) ||
+      !gcu_safe_mul_size(lin_dst_stride, (size_t)dst_h, &lin_dst_bytes)) {
+    gimg_transfer_free(alloc, &tables);
+    return GIMG_ERR_LIMIT;
+  }
+  unsigned char * lin_src = (unsigned char *)gimg_malloc(alloc, lin_src_bytes);
+  unsigned char * lin_dst = (unsigned char *)gimg_malloc(alloc, lin_dst_bytes);
+  if (!lin_src || !lin_dst) {
+    gimg_free(alloc, lin_src);
+    gimg_free(alloc, lin_dst);
+    gimg_transfer_free(alloc, &tables);
+    return GIMG_ERR_OOM;
+  }
+
+  const unsigned char * sp = (const unsigned char *)gimg_raster_pixels_const(src);
+  const size_t sp_stride = gimg_raster_stride_bytes(src);
+  for (uint32_t y = 0; y < src_h; y++) {
+    const unsigned char * srow = sp + ((size_t)y * sp_stride);
+    uint16_t * lrow = (uint16_t *)(lin_src + ((size_t)y * lin_src_stride));
+    for (uint32_t x = 0; x < src_w; x++) {
+      const unsigned char * spx = srow + ((size_t)x * src_bpp);
+      uint16_t * lpx = lrow + ((size_t)x * channels);
+      for (uint8_t c = 0; c < channels; c++) {
+        const uint32_t v = gimg_resample_get(spx, src_wide, c);
+        if (has_alpha && c == 3u) {
+          lpx[c] = (uint16_t)gimg_resample_div_round(v * GIMG_LINEAR_MAX, max);
+        }
+        else {
+          lpx[c] = tables.forward[(v > max) ? max : v];
+        }
+      }
+    }
+  }
+
+  r = gimg_resample_two_pass(alloc, lin_src, lin_src_stride, src_w, src_h,
+      lin_dst, lin_dst_stride, dst_w, dst_h, filter, channels, true,
+      GIMG_LINEAR_MAX, has_alpha);
+  if (r != GIMG_OK) {
+    gimg_free(alloc, lin_src);
+    gimg_free(alloc, lin_dst);
+    gimg_transfer_free(alloc, &tables);
+    return r;
+  }
+
+  unsigned char * dp = (unsigned char *)gimg_raster_pixels(dst);
+  const size_t dp_stride = gimg_raster_stride_bytes(dst);
+  const size_t dst_bpp = gimg_raster_bytes_per_pixel(gimg_raster_format(dst));
+  for (uint32_t y = 0; y < dst_h; y++) {
+    const uint16_t * lrow =
+        (const uint16_t *)(lin_dst + ((size_t)y * lin_dst_stride));
+    unsigned char * drow = dp + ((size_t)y * dp_stride);
+    for (uint32_t x = 0; x < dst_w; x++) {
+      const uint16_t * lpx = lrow + ((size_t)x * channels);
+      unsigned char * dpx = drow + ((size_t)x * dst_bpp);
+      for (uint8_t c = 0; c < channels; c++) {
+        uint32_t v;
+        if (has_alpha && c == 3u) {
+          v = gimg_resample_div_round((uint32_t)lpx[c] * max, GIMG_LINEAR_MAX);
+        }
+        else {
+          v = tables.reverse[lpx[c]];
+        }
+        gimg_resample_put(dpx, src_wide, c, (v > max) ? max : v);
+      }
+    }
+  }
+
+  gimg_free(alloc, lin_src);
+  gimg_free(alloc, lin_dst);
+  gimg_transfer_free(alloc, &tables);
+  return GIMG_OK;
+}
+
 GIMG_API void gimg_resize_options_default(GIMG_Resize_Options * options) {
   if (!options) {
     return;
@@ -475,13 +715,8 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
   if (options->filter < 0 || options->filter >= GIMG_FILTER_COUNT) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  if (options->space == GIMG_RESAMPLE_SPACE_LINEAR) {
-    // Accepted by the enum but not yet implemented; refusing is the honest
-    // answer, since silently filtering in the encoded values would give a
-    // caller who asked for linear light a result that is not one.
-    return GIMG_ERR_UNSUPPORTED;
-  }
-  if (options->space != GIMG_RESAMPLE_SPACE_ENCODED) {
+  if (options->space != GIMG_RESAMPLE_SPACE_ENCODED &&
+      options->space != GIMG_RESAMPLE_SPACE_LINEAR) {
     return GIMG_ERR_UNSUPPORTED;
   }
   const GIMG_Resample_Filter filter = gimg_resample_resolve(options->filter);
@@ -523,6 +758,17 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
   const bool has_alpha =
       (fmt->channel_model == GIMG_CHANNEL_RGBA && channels == 4u);
 
+  if (options->space == GIMG_RESAMPLE_SPACE_LINEAR &&
+      fmt->channel_model != GIMG_CHANNEL_GRAY &&
+      fmt->channel_model != GIMG_CHANNEL_RGBA) {
+    // The transfer function being applied is sRGB's, which says something
+    // about light. CMYK samples are ink amounts and GIMG_CHANNEL_UNKNOWN
+    // samples are whatever the file happened to carry; running either through
+    // a curve for display-referred colour would be arithmetic with no meaning
+    // behind it.
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
   const void * src_pixels = gimg_raster_pixels_const(src);
   if (!src_pixels) {
     return GIMG_ERR_INTERNAL;
@@ -555,50 +801,22 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
   }
 
   const GIMG_Allocator * alloc = gimg_raster_allocator(src);
-  // The intermediate is the source's own format, so the horizontal pass
-  // rounds to the sample width before the vertical one reads it.  Keeping it
-  // wider would be more accurate and would stop the result being comparable,
-  // byte for byte, with the resampler this arrangement follows.
-  GIMG_Raster * mid = NULL;
-  r = gimg_raster_create_with_allocator(
-      alloc, dst_width, src_h, fmt, GIMG_RASTER_OWNED, NULL, 0, &mid);
+  if (options->space == GIMG_RESAMPLE_SPACE_LINEAR) {
+    r = gimg_resample_linear_light(alloc, src, *out_raster, filter, channels,
+        bits, max, has_alpha);
+  }
+  else {
+    r = gimg_resample_two_pass(alloc,
+        (const unsigned char *)src_pixels, gimg_raster_stride_bytes(src),
+        src_w, src_h, (unsigned char *)gimg_raster_pixels(*out_raster),
+        gimg_raster_stride_bytes(*out_raster), dst_width, dst_height, filter,
+        channels, wide, max, has_alpha);
+  }
   if (r != GIMG_OK) {
     gimg_raster_destroy(*out_raster);
     *out_raster = NULL;
     return r;
   }
-
-  gimg_resample_axis horizontal;
-  gimg_resample_axis vertical;
-  r = gimg_resample_axis_build(alloc, filter, src_w, dst_width, &horizontal);
-  if (r != GIMG_OK) {
-    gimg_raster_destroy(mid);
-    gimg_raster_destroy(*out_raster);
-    *out_raster = NULL;
-    return r;
-  }
-  r = gimg_resample_axis_build(alloc, filter, src_h, dst_height, &vertical);
-  if (r != GIMG_OK) {
-    gimg_resample_axis_free(alloc, &horizontal);
-    gimg_raster_destroy(mid);
-    gimg_raster_destroy(*out_raster);
-    *out_raster = NULL;
-    return r;
-  }
-
-  gimg_resample_horizontal((const unsigned char *)src_pixels,
-      gimg_raster_stride_bytes(src), (unsigned char *)gimg_raster_pixels(mid),
-      gimg_raster_stride_bytes(mid), src_h, &horizontal, channels, wide, max,
-      has_alpha);
-  gimg_resample_vertical((const unsigned char *)gimg_raster_pixels_const(mid),
-      gimg_raster_stride_bytes(mid),
-      (unsigned char *)gimg_raster_pixels(*out_raster),
-      gimg_raster_stride_bytes(*out_raster), dst_width, &vertical, channels,
-      wide, max, has_alpha);
-
-  gimg_resample_axis_free(alloc, &horizontal);
-  gimg_resample_axis_free(alloc, &vertical);
-  gimg_raster_destroy(mid);
 
   r = gimg_ops_carry_color(src, *out_raster);
   if (r != GIMG_OK) {
