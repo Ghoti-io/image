@@ -621,18 +621,43 @@ static const uint32_t kJpegRawCom = 0xFEu;
  * Payload: JFIF\0 v1.1 units=1 X=300 Y=300 ThumbX=2 ThumbY=2, then 12 RGB
  * bytes.
  */
-std::vector<uint8_t> make_jpeg_with_jfif_thumbnail() {
+/**
+ * A JPEG whose APP0 carries a JFIF thumbnail, laid out as JFIF 1.02 says.
+ *
+ * The payload is "JFIF\0" (5), version (2), units (1), Xdensity (2),
+ * Ydensity (2), **Xthumbnail (1), Ythumbnail (1)** - fourteen bytes - and
+ * then the thumbnail, 3 bytes per pixel for RGB.
+ *
+ * The two dimensions being a byte each is the part that matters. The fixture
+ * this replaces wrote them as a pair of 16-bit fields, matching what the
+ * reader did rather than what the format says, and so passed against a reader
+ * that could not read a real file.
+ *
+ * @param rgb  false writes one byte per pixel instead of three, which is not
+ *   JFIF but is produced for grayscale images and is tolerated on load.
+ */
+std::vector<uint8_t> make_jpeg_with_jfif_thumbnail(bool rgb = true) {
+  const uint8_t tw = 2u, thh = 2u;
+  std::vector<uint8_t> payload = {'J', 'F', 'I', 'F', 0x00,
+      0x01, 0x02,              // version 1.02
+      0x01,                    // units: dots per inch
+      0x01, 0x2C, 0x01, 0x2C,  // 300 x 300
+      tw, thh};                // Xthumbnail, Ythumbnail: one byte each
+  for (int i = 0; i < tw * thh; i++) {
+    payload.push_back((uint8_t)(0x11 + i * 0x11));
+    if (rgb) {
+      payload.push_back((uint8_t)(0x22 + i * 0x11));
+      payload.push_back((uint8_t)(0x33 + i * 0x11));
+    }
+  }
+
   std::vector<uint8_t> buf;
   append(buf, (const unsigned char *)"\xFF\xD8", 2);
-  // APP0: length 30 (2 + 28), payload 28 bytes
-  // Bytes 0-4: JFIF\0, 5-6: 01 01, 7: units=1, 8-11: X=300 Y=300,
-  // 12-13: ThumbX=2, 14-15: ThumbY=2, 16-27: 2*2*3 RGB
-  static const unsigned char app0_with_thumb[] = {0xFF, 0xE0, 0x00,
-      0x1E, // marker, length 30
-      'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x01, 0x01, 0x2C, 0x01, 0x2C, 0x00,
-      0x02, 0x00, 0x02, // ThumbX=2, ThumbY=2
-      0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
-  append(buf, app0_with_thumb, sizeof(app0_with_thumb));
+  buf.push_back(0xFF);
+  buf.push_back(0xE0);
+  buf.push_back((uint8_t)((payload.size() + 2u) >> 8));
+  buf.push_back((uint8_t)((payload.size() + 2u) & 0xFFu));
+  buf.insert(buf.end(), payload.begin(), payload.end());
   append(buf,
       (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
                              "\x00",
@@ -1915,10 +1940,64 @@ TEST(JpegLoad, JfifThumbnailDecodeSecondItem) {
       << "Second item (JFIF thumbnail) should have raster attached";
   EXPECT_EQ(gimg_raster_width(thumb), 2u);
   EXPECT_EQ(gimg_raster_height(thumb), 2u);
-  uint64_t hash = jpeg_test::raster_pixel_hash(thumb);
-  // Our test image has pixels 0x11,0x22,0x33; 0x44,0x55,0x66; 0x77,0x88,0x99;
-  // 0xAA,0xBB,0xCC (RGBA with A=255). Hash is deterministic.
-  (void)hash;
+
+  // The pixels were being hashed and the hash thrown away, which asserted
+  // nothing: the dimensions alone are satisfied by a thumbnail read from the
+  // wrong offset. The fixture's bytes ascend by 0x11 so a shifted read shows
+  // as a wrong value rather than as plausible noise.
+  const unsigned char * px = (const unsigned char *)gimg_raster_pixels(thumb);
+  const size_t stride = gimg_raster_stride_bytes(thumb);
+  ASSERT_NE(px, nullptr);
+  for (uint32_t y = 0; y < 2u; y++) {
+    for (uint32_t x = 0; x < 2u; x++) {
+      const int i = (int)(y * 2u + x);
+      const unsigned char * q = px + (size_t)y * stride + (size_t)x * 4u;
+      EXPECT_EQ(q[0], (unsigned char)(0x11 + i * 0x11))
+          << "red at (" << x << "," << y << ")";
+      EXPECT_EQ(q[1], (unsigned char)(0x22 + i * 0x11))
+          << "green at (" << x << "," << y << ")";
+      EXPECT_EQ(q[2], (unsigned char)(0x33 + i * 0x11))
+          << "blue at (" << x << "," << y << ")";
+      EXPECT_EQ(q[3], 255u) << "alpha at (" << x << "," << y << ")";
+    }
+  }
+  gimg_doc_destroy(doc);
+}
+
+/**
+ * A one-byte-per-pixel JFIF thumbnail is read as grayscale.
+ *
+ * JFIF says the thumbnail is RGB, but writers emit a single byte per pixel
+ * for grayscale images and the loader tolerates it rather than discarding a
+ * thumbnail that is plainly there. Which of the two it is comes from the
+ * payload's length, so the branch is chosen by arithmetic on a size rather
+ * than by anything stated in the file - and the grayscale half had never run.
+ */
+TEST(JpegLoad, AOneBytePerPixelJfifThumbnailIsReadAsGray) {
+  const std::vector<uint8_t> jpeg = make_jpeg_with_jfif_thumbnail(false);
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+
+  ASSERT_EQ(gimg_doc_item_count(doc), 2u)
+      << "a grayscale JFIF thumbnail is still a thumbnail";
+  GIMG_Raster * thumb = gimg_item_raster(gimg_doc_item(doc, 1));
+  ASSERT_NE(thumb, nullptr);
+  EXPECT_EQ(gimg_raster_width(thumb), 2u);
+  EXPECT_EQ(gimg_raster_height(thumb), 2u);
+
+  const unsigned char * px = (const unsigned char *)gimg_raster_pixels(thumb);
+  const size_t stride = gimg_raster_stride_bytes(thumb);
+  ASSERT_NE(px, nullptr);
+  for (uint32_t y = 0; y < 2u; y++) {
+    for (uint32_t x = 0; x < 2u; x++) {
+      const int i = (int)(y * 2u + x);
+      EXPECT_EQ(px[(size_t)y * stride + x], (unsigned char)(0x11 + i * 0x11))
+          << "gray at (" << x << "," << y << ")";
+    }
+  }
   gimg_doc_destroy(doc);
 }
 
@@ -1958,9 +2037,11 @@ TEST(JpegLoad, JfifThumbnailRoundTrip) {
   }
   gimg_item_set_raster(gimg_doc_item(doc, 1), thumb_raster);
 
+  // JFIF 1.02 layout: Xthumbnail and Ythumbnail are one byte each at 12 and
+  // 13, and the RGB starts at 14. Fourteen fixed bytes plus 2*2*3 = 26.
   static const unsigned char app0_payload[] = {'J', 'F', 'I', 'F', 0x00, 0x01,
-      0x01, 0x01, 0x01, 0x2C, 0x01, 0x2C, 0x00, 0x02, 0x00, 0x02, 0x11, 0x22,
-      0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
+      0x02, 0x01, 0x01, 0x2C, 0x01, 0x2C, 0x02, 0x02, 0x11, 0x22, 0x33, 0x44,
+      0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
   GIMG_Meta_Raw * raw = nullptr;
   r = gimg_doc_ensure_meta_raw(doc, &raw);
   ASSERT_EQ(r, GIMG_OK);
@@ -1985,8 +2066,8 @@ TEST(JpegLoad, JfifThumbnailRoundTrip) {
   ASSERT_EQ(out_buf[2], 0xFF);
   ASSERT_EQ(out_buf[3], 0xE0) << "expected APP0 after SOI";
   ASSERT_EQ(out_buf[4], 0x00);
-  ASSERT_EQ(out_buf[5], 0x1E)
-      << "APP0 segment length 30 (2+28) with JFIF thumbnail";
+  ASSERT_EQ(out_buf[5], 0x1C)
+      << "APP0 segment length 28 (2+26) with a 2x2 JFIF thumbnail";
   ASSERT_EQ(out_buf[6], 'J');
   ASSERT_EQ(out_buf[7], 'F');
 

@@ -2115,11 +2115,18 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // JFIF embedded thumbnail (APP0 bytes 12-15 = X,Y; offset 16 = pixels).
   // Only add second item if EXIF did not already provide a thumbnail.
   if (gimg_doc_item_count(doc) == 1 && state->app0_jfif &&
-      state->app0_jfif_len >= 16) {
-    uint16_t tx = (uint16_t)((state->app0_jfif[12] << 8) |
-        (unsigned char)state->app0_jfif[13]);
-    uint16_t ty = (uint16_t)((state->app0_jfif[14] << 8) |
-        (unsigned char)state->app0_jfif[15]);
+      state->app0_jfif_len >= GIMG_JPEG_JFIF_APP0_FIXED_LEN) {
+    // JFIF 1.02: the APP0 payload is "JFIF\0" (5), version (2), units (1),
+    // Xdensity (2), Ydensity (2), Xthumbnail (1), Ythumbnail (1) - fourteen
+    // bytes - and then 3 * Xthumbnail * Ythumbnail bytes of RGB.  The two
+    // thumbnail dimensions are a byte each.  This read them as a pair of
+    // 16-bit fields at 12 and 14, so a real file's 2x2 thumbnail came out as
+    // 514 wide by whatever its first two pixel bytes happened to say, the
+    // length check then failed, and the thumbnail was silently dropped.  The
+    // fixture that was meant to cover this had been written to the same
+    // misreading, so it passed.
+    uint16_t tx = (uint16_t)(unsigned char)state->app0_jfif[12];
+    uint16_t ty = (uint16_t)(unsigned char)state->app0_jfif[13];
     if (tx > 0 && ty > 0) {
       size_t thumb_pixels = 0;
       if (gimg_safe_pixel_count((uint32_t)tx, (uint32_t)ty, &thumb_pixels) ==
@@ -2129,11 +2136,16 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         size_t need_gray = 0;
         int use_rgb = -1; // 0 = grayscale, 1 = RGB
         if (gcu_safe_mul_size(thumb_pixels, 3u, &need_rgb) &&
-            gcu_safe_add_size(16u, need_rgb, &need_rgb) &&
+            gcu_safe_add_size(
+                GIMG_JPEG_JFIF_APP0_FIXED_LEN, need_rgb, &need_rgb) &&
             state->app0_jfif_len >= need_rgb) {
           use_rgb = 1;
         }
-        else if (gcu_safe_add_size(16u, thumb_pixels, &need_gray) &&
+        // One byte per pixel is not JFIF, which says RGB; it is tolerated
+        // because writers produce it for grayscale images and the alternative
+        // is discarding a thumbnail that is plainly there.
+        else if (gcu_safe_add_size(
+                     GIMG_JPEG_JFIF_APP0_FIXED_LEN, thumb_pixels, &need_gray) &&
             state->app0_jfif_len >= need_gray) {
           use_rgb = 0;
         }
@@ -2146,7 +2158,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           if (r == GIMG_OK && thumb_raster) {
             void * pixels = gimg_raster_pixels(thumb_raster);
             size_t stride = gimg_raster_stride_bytes(thumb_raster);
-            const unsigned char * src = state->app0_jfif + 16;
+            const unsigned char * src =
+                state->app0_jfif + GIMG_JPEG_JFIF_APP0_FIXED_LEN;
             if (use_rgb) {
               for (uint32_t y = 0; y < (uint32_t)ty; y++) {
                 for (uint32_t x = 0; x < (uint32_t)tx; x++) {

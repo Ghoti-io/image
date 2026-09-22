@@ -304,6 +304,17 @@ static inline void gimg_jpeg_sampling_max(int num_components,
 #include "jpeg_zigzag_internal.h"
 
 /** Max APP2 ICC_PROFILE chunks (1-based index in spec; 255 max). */
+/**
+ * Bytes of fixed JFIF APP0 payload before the thumbnail data.
+ *
+ * JFIF 1.02: "JFIF\0" (5) + version (2) + units (1) + Xdensity (2) +
+ * Ydensity (2) + Xthumbnail (1) + Ythumbnail (1). The thumbnail's RGB
+ * follows, 3 bytes per pixel. Named because the reader and the writer both
+ * need it and they had drifted: the writer built a fourteen-byte minimal
+ * APP0 while the reader expected the thumbnail to start at sixteen.
+ */
+#define GIMG_JPEG_JFIF_APP0_FIXED_LEN 14u
+
 #define GIMG_JPEG_MAX_ICC_CHUNKS 255u
 
 /**
