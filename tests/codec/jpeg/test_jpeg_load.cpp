@@ -6060,3 +6060,135 @@ TEST(JpegLoad, EveryFailedLoadOfAMetadataRichJpegFreesEverything) {
     if (f.outstanding != 0) { break; }
   }
 }
+
+namespace {
+
+/** One APP2 ICC_PROFILE segment payload: the 14-byte header then @p body. */
+std::vector<uint8_t> icc_chunk(uint8_t index, uint8_t total,
+    const std::string & body) {
+  std::vector<uint8_t> v;
+  const char tag[] = "ICC_PROFILE\0";
+  v.insert(v.end(), tag, tag + 12);
+  v.push_back(index);
+  v.push_back(total);
+  v.insert(v.end(), body.begin(), body.end());
+  return v;
+}
+
+} // namespace
+
+/**
+ * An ICC profile split across APP2 segments is reassembled in index order.
+ *
+ * A profile larger than a JPEG segment is split across numbered APP2 chunks,
+ * and the loader keeps each by its index and joins them once the last arrives.
+ * Only the single-chunk form had ever been loaded, so none of the assembly ran
+ * - not the accumulation, not the join, and not the validation around them.
+ *
+ * The chunks are supplied **out of order**, which is what makes the index
+ * mean something: a loader that simply appended as segments arrived would
+ * produce a profile of exactly the right length with the halves swapped. And
+ * the expected bytes are the bodies alone, because each chunk carries its own
+ * fourteen-byte header that must not end up in the middle of the profile.
+ */
+TEST(JpegLoad, IccChunksAreAssembledInIndexOrderWithoutTheirHeaders) {
+  const std::string first = "AAAAAAAA";
+  const std::string second = "BBBBBBBBBBBB";
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_with_apps({{0xE2u, icc_chunk(2, 2, second)},
+                                 {0xE2u, icc_chunk(1, 2, first)}},
+      jpeg));
+
+  const std::vector<uint8_t> got = raw_block_of(jpeg, kJpegRawApp2Icc);
+  const std::string want = first + second;
+  ASSERT_EQ(got.size(), want.size())
+      << "the assembled profile is the two bodies and nothing else - no "
+         "segment headers, no padding";
+  EXPECT_TRUE(std::equal(got.begin(), got.end(), want.begin()))
+      << "the chunks were joined in arrival order rather than index order";
+}
+
+/**
+ * An ICC chunk header that cannot be true is refused.
+ *
+ * Every one of these describes a profile that does not exist: a total of
+ * zero, an index of zero when indices start at one, an index past the total,
+ * a total beyond what the loader will hold. They are separate checks and none
+ * had run. The file is rejected rather than half-assembled, because a
+ * partially filled chunk table is a colour profile made of whatever was in
+ * memory.
+ */
+TEST(JpegLoad, AnImpossibleIccChunkHeaderIsRefused) {
+  struct Case {
+    const char * what;
+    uint8_t index, total;
+  } cases[] = {
+      {"total of zero", 1u, 0u},
+      {"index of zero", 0u, 2u},
+      {"index past the total", 3u, 2u},
+  };
+  for (const Case & c : cases) {
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_with_apps({{0xE2u, icc_chunk(c.index, c.total, "x")}}, jpeg));
+    EXPECT_EQ(load_result(jpeg), GIMG_ERR_FORMAT) << c.what;
+  }
+
+  // Two chunks that disagree about how many there are.
+  {
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_with_apps(
+        {{0xE2u, icc_chunk(1, 2, "x")}, {0xE2u, icc_chunk(2, 3, "y")}}, jpeg));
+    EXPECT_EQ(load_result(jpeg), GIMG_ERR_FORMAT)
+        << "chunks disagreeing on the total describe two different profiles";
+  }
+  // The same chunk index twice.
+  {
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_with_apps(
+        {{0xE2u, icc_chunk(1, 2, "x")}, {0xE2u, icc_chunk(1, 2, "y")}}, jpeg));
+    EXPECT_EQ(load_result(jpeg), GIMG_ERR_FORMAT)
+        << "a repeated chunk index means one of them would be lost";
+  }
+}
+
+/**
+ * A profile whose chunks never all arrive produces no profile, not a partial
+ * one.
+ *
+ * Announcing two chunks and sending one is not a malformed header - every
+ * field in it is consistent - so the file loads, and the question is what the
+ * document then says about its colour. The answer has to be nothing: half a
+ * profile is not a profile, and a caller that got one would be colour-managing
+ * against whatever the other half was going to be.
+ *
+ * This is the case a chunk limit is really for, and it is worth stating
+ * separately from the impossible headers above because it is the one that
+ * arrives in real files - a truncated download, a rewriting tool that dropped
+ * a segment.
+ */
+TEST(JpegLoad, AnIncompleteIccProfileIsNotAttachedAtAll) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_with_apps({{0xE2u, icc_chunk(1, 2, "only half")}}, jpeg));
+  EXPECT_EQ(load_result(jpeg), GIMG_OK)
+      << "a missing chunk is not a malformed file";
+  EXPECT_TRUE(raw_block_of(jpeg, kJpegRawApp2Icc).empty())
+      << "half a profile must not be handed to a caller as a profile";
+}
+
+/** A second single-chunk ICC profile replaces the first rather than leaking. */
+TEST(JpegLoad, ADuplicateSingleChunkIccKeepsTheLast) {
+  const std::string first(20u, 'P');
+  const std::string second(24u, 'Q');
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_with_apps({{0xE2u, icc_chunk(1, 1, first)},
+                                 {0xE2u, icc_chunk(1, 1, second)}},
+      jpeg));
+
+  // The single-chunk form keeps the whole payload, header included.
+  const std::vector<uint8_t> got = raw_block_of(jpeg, kJpegRawApp2Icc);
+  const std::vector<uint8_t> want = icc_chunk(1, 1, second);
+  EXPECT_EQ(got, want)
+      << "the later profile is the one kept; the earlier one must be freed, "
+         "which only make test-asan can see";
+}

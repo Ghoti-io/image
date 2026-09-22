@@ -1467,6 +1467,13 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           memcmp(payload_buf, "ICC_PROFILE\0", 12) == 0) {
         unsigned chunk_index = (unsigned)payload_buf[12];
         unsigned total_chunks = (unsigned)payload_buf[13];
+        // The chunk count and index are single bytes, so the comparison
+        // against GIMG_JPEG_MAX_ICC_CHUNKS - which is 255 - cannot fail as
+        // this stands, and a coverage report is right to call that clause
+        // unreached.  It stays because it is what ties this check to the size
+        // of app2_icc_chunk_payload: widen either the field or the array and
+        // the other has to move with it, and the clause is where that is
+        // written down.  The other three do fire.
         if (total_chunks == 0 || total_chunks > GIMG_JPEG_MAX_ICC_CHUNKS ||
             chunk_index < 1 || chunk_index > total_chunks) {
           jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
