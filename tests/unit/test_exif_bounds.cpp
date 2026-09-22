@@ -835,27 +835,45 @@ TEST(ExifThumbnailWriters, OrientationAndThumbnailSurviveARoundTrip) {
   }
 
   // --- Compression = 1: raw pixels in a strip. ---
-  {
-    // 4x2 grayscale, every pixel distinct, so a reordered strip shows.
-    std::vector<uint8_t> pixels(8);
-    for (size_t i = 0; i < pixels.size(); i++) { pixels[i] = (uint8_t)(i * 17); }
+  //
+  // One sample per pixel and three take different branches in the writer and
+  // in the reader alike, because BitsPerSample is one value for grayscale and
+  // three for RGB - and three SHORTs do not fit in a tag's value field, so it
+  // goes out of line and the reader has to follow a pointer to find it. The
+  // RGB half of that had never run at either end.
+  struct PixelCase {
+    const char * what;
+    uint16_t samples;
+    uint16_t photometric;  ///< 1 = BlackIsZero, 2 = RGB.
+  } pixel_cases[] = {
+      {"grayscale", 1u, 1u},
+      {"RGB", 3u, 2u},
+  };
+
+  for (const PixelCase & pc : pixel_cases) {
+    const uint32_t w_in = 4u, h_in = 2u;
+    std::vector<uint8_t> pixels((size_t)w_in * h_in * pc.samples);
+    // Every byte distinct, so a reordered or truncated strip shows up.
+    for (size_t i = 0; i < pixels.size(); i++) { pixels[i] = (uint8_t)(i * 11 + 3); }
 
     void * built = nullptr;
     size_t built_n = 0;
     ASSERT_EQ(gimg_exif_build_with_thumbnail_uncompressed(nullptr, base.data(),
-                  base.size(), pixels.data(), pixels.size(), 4u, 2u, 1u, 8u,
-                  &built, &built_n),
-        GIMG_OK);
-    ASSERT_NE(built, nullptr);
+                  base.size(), pixels.data(), pixels.size(), w_in, h_in,
+                  pc.samples, 8u, &built, &built_n),
+        GIMG_OK)
+        << pc.what;
+    ASSERT_NE(built, nullptr) << pc.what;
     const std::vector<uint8_t> blob(
         (uint8_t *)built, (uint8_t *)built + built_n);
     free(built);
 
     GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
     EXPECT_EQ(gimg_exif_parse_orientation(blob.data(), blob.size(), &o),
-        GIMG_OK);
+        GIMG_OK)
+        << pc.what;
     EXPECT_EQ(o, GIMG_ORIENTATION_ROTATE_90_CW)
-        << "the uncompressed writer dropped the base orientation";
+        << pc.what << ": the uncompressed writer dropped the base orientation";
 
     uint32_t w = 0, h = 0;
     uint8_t bits = 0;
@@ -864,15 +882,68 @@ TEST(ExifThumbnailWriters, OrientationAndThumbnailSurviveARoundTrip) {
     size_t thumb_n = 0;
     ASSERT_EQ(gimg_exif_embedded_thumbnail_uncompressed(nullptr, blob.data(),
                   blob.size(), &w, &h, &bits, &photometric, &thumb, &thumb_n),
-        GIMG_OK);
-    ASSERT_NE(thumb, nullptr);
+        GIMG_OK)
+        << pc.what;
+    ASSERT_NE(thumb, nullptr) << pc.what;
     const std::vector<uint8_t> got((uint8_t *)thumb, (uint8_t *)thumb + thumb_n);
     free(thumb);
-    EXPECT_EQ(w, 4u);
-    EXPECT_EQ(h, 2u);
-    EXPECT_EQ(bits, 8u);
-    EXPECT_TRUE(got == pixels) << "the strip did not survive the round trip";
+    EXPECT_EQ(w, w_in) << pc.what;
+    EXPECT_EQ(h, h_in) << pc.what;
+    EXPECT_EQ(bits, 8u) << pc.what
+                        << ": BitsPerSample did not read back, which for RGB "
+                           "means the out-of-line value was not followed";
+    EXPECT_EQ(photometric, pc.photometric)
+        << pc.what << ": the colour interpretation did not survive";
+    EXPECT_TRUE(got == pixels)
+        << pc.what << ": the strip did not survive the round trip";
   }
+}
+
+/**
+ * The uncompressed writer refuses what it cannot represent, and says which.
+ *
+ * It supports one or three samples at eight bits, which covers the grayscale
+ * and RGB thumbnails Exif defines, and it distinguishes "this is a format I do
+ * not write" from "you passed me arguments that do not describe anything".
+ * Both matter to a caller: the first is a reason to convert, the second is a
+ * bug. None of these arms had run, so nothing held the distinction in place.
+ */
+TEST(ExifThumbnailWriters, TheUncompressedWriterRejectsWhatItCannotStore) {
+  const std::vector<uint8_t> pixels(8, 0x40);
+  void * out_p = nullptr;
+  size_t out_n = 0;
+
+  // Two samples per pixel is not a thing Exif stores this way.
+  EXPECT_EQ(gimg_exif_build_with_thumbnail_uncompressed(nullptr, nullptr, 0,
+                pixels.data(), pixels.size(), 4u, 1u, 2u, 8u, &out_p, &out_n),
+      GIMG_ERR_UNSUPPORTED)
+      << "two samples per pixel is unsupported, not invalid";
+
+  // Sixteen bits per sample likewise: a real format, not one written here.
+  EXPECT_EQ(gimg_exif_build_with_thumbnail_uncompressed(nullptr, nullptr, 0,
+                pixels.data(), pixels.size(), 4u, 1u, 1u, 16u, &out_p, &out_n),
+      GIMG_ERR_UNSUPPORTED)
+      << "16 bits per sample is unsupported, not invalid";
+
+  // A strip that is not width*height*samples describes no image at all.
+  EXPECT_EQ(gimg_exif_build_with_thumbnail_uncompressed(nullptr, nullptr, 0,
+                pixels.data(), pixels.size(), 4u, 4u, 1u, 8u, &out_p, &out_n),
+      GIMG_ERR_INTERNAL)
+      << "a strip that does not match the dimensions is the caller's bug";
+
+  // And the null-argument guards, which every one of these shares.
+  EXPECT_EQ(gimg_exif_build_with_thumbnail_uncompressed(nullptr, nullptr, 0,
+                nullptr, 8u, 4u, 2u, 1u, 8u, &out_p, &out_n),
+      GIMG_ERR_INTERNAL);
+  EXPECT_EQ(gimg_exif_build_with_thumbnail_jpeg(
+                nullptr, nullptr, 0, nullptr, 8u, &out_p, &out_n),
+      GIMG_ERR_INTERNAL);
+  EXPECT_EQ(gimg_exif_build_with_thumbnail_tiff_jpeg(
+                nullptr, nullptr, 0, nullptr, 8u, &out_p, &out_n),
+      GIMG_ERR_INTERNAL);
+  EXPECT_EQ(gimg_exif_embedded_thumbnail_tiff_jpeg(
+                nullptr, nullptr, 8u, &out_p, &out_n),
+      GIMG_ERR_INTERNAL);
 }
 
 /**
