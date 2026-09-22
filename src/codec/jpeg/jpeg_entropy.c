@@ -1291,7 +1291,6 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
     // T.81 B.2.2: segment ends at next marker; padding bit value unspecified.
     // We track expected block count and treat underflow in the last block as EOB/0
     // so we do not assume 0 or 1 for padding (spec compliance, third-party files).
-    // Do not set pad_at_eob — use last-block underflow handling instead.
     // T.81 A.2: what an MCU *is* depends on how many components the scan has.
     //
     // With one component (A.2.2) the scan is non-interleaved and an MCU is a

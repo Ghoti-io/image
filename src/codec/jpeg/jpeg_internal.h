@@ -809,7 +809,6 @@ typedef struct {
   int pushback;                   ///< Pushback state for bit reads.
   unsigned char pushback_buf[16]; ///< Pushback buffer.
   unsigned int pushback_n;        ///< Number of bits in pushback buffer.
-  int pad_at_eob;         ///< If set, treat truncated AC as EOB (recovery).
   int recover_stuff_zero; ///< If set, treat 0xFF 0x00 in wrong place (opt-in).
   int stuffed_any;        ///< Internal: saw byte stuffing.
   int expect_rst;         ///< Next 0xFF 0xDx is RST marker (restart).
@@ -1291,7 +1290,7 @@ void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits);
  * used by jpeg_block.c and jpeg_entropy.c) */
 /** @{ */
 /** Initialize bitstream over scan data; caller sets
- * pad_at_eob/recover_stuff_zero if needed. */
+ * recover_stuff_zero if needed. */
 void jpeg_bitstream_init(
     gimg_jpeg_bitstream_t * bs, const unsigned char * data, size_t size);
 /** Build decode table from DHT payload. @return 0 on success, -1 on invalid. */

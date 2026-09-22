@@ -45,7 +45,6 @@ void jpeg_bitstream_init(
   bs->bit_off = 0;
   bs->pushback = -1;
   bs->pushback_n = 0;
-  bs->pad_at_eob = 0;
   bs->recover_stuff_zero = 0;
   bs->stuffed_any = 0;
   bs->expect_rst = 0;
@@ -222,9 +221,6 @@ int jpeg_bitstream_read_bit(gimg_jpeg_bitstream_t * bs) {
       }
       return 0;
     }
-    if (bs->pad_at_eob) {
-      return 0;
-    }
     return -1;
   }
   unsigned char b = bs->data[bs->byte_off];
@@ -370,11 +366,6 @@ int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
   for (int len = 1; len <= 16; len++) {
     int b = jpeg_bitstream_read_bit(bs);
     if (b < 0) {
-      if (bs->pad_at_eob) {
-        while (bs->byte_off < bs->size) {
-          (void)jpeg_bitstream_read_bit(bs);
-        }
-      }
       return -1;
     }
     code = (code << 1) | (uint16_t)b;
@@ -470,11 +461,6 @@ int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
       }
       return sym;
       }
-    }
-  }
-  if (bs->pad_at_eob) {
-    while (bs->byte_off < bs->size) {
-      (void)jpeg_bitstream_read_bit(bs);
     }
   }
   if (bs->recover_stuff_zero) {

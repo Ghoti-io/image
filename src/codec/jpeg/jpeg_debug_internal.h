@@ -25,7 +25,7 @@
  * enable for debug builds via -DGIMG_JPEG_DEBUG_LOAD=1 (or equivalent) or by
  * defining a set of them in a debug build.
  *
- * Behavior-altering options recover_stuff_zero and pad_at_eob remain
+ * The behavior-altering option recover_stuff_zero remains
  * runtime (getenv) for field debugging; see comments below.
  */
 
@@ -90,8 +90,8 @@
 #define GIMG_JPEG_TRACE_ENTROPY 0
 #endif
 
-// recover_stuff_zero and pad_at_eob: kept as runtime (getenv) for field
-// debugging of truncated or non-byte-aligned streams. Not from T.81; opt-in
-// only. See gimg_jpeg_bitstream_t in jpeg_entropy.c.
+// recover_stuff_zero: kept as a runtime switch (GIMG_JPEG_RECOVER_STUFF_ZERO)
+// for field debugging of truncated streams. Not from T.81; opt-in only. See
+// gimg_jpeg_bitstream_t in jpeg_internal.h.
 
 #endif // GHOTI_IO_GIMG_SRC_CODEC_JPEG_JPEG_DEBUG_INTERNAL_H
