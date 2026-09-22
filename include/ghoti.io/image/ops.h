@@ -47,6 +47,124 @@ GIMG_API GIMG_Result gimg_ops_apply_orientation(
     GIMG_Raster * raster, GIMG_Orientation orientation);
 
 /**
+ * @brief How the samples between two pixels are combined when resizing.
+ *
+ * These are kernels in one separable resampler rather than five different
+ * algorithms, and the choice between them is **semantic, not aesthetic**.
+ * GIMG_FILTER_NEAREST returns a sample that was in the source; every other
+ * entry returns a weighted average, which is a value that was not. For a mask,
+ * an index map, or anything whose samples are labels, the average of two of
+ * them is not a label, and only NEAREST is correct.
+ *
+ * When an axis is reduced, every filter but NEAREST is stretched by the
+ * reduction ratio so that it averages over the whole source region feeding one
+ * destination pixel. Without that a downscale is a decimation.
+ */
+typedef enum {
+  /**
+   * The library's general-purpose choice: currently GIMG_FILTER_CATMULL_ROM.
+   *
+   * It is the zero value, so `GIMG_Resize_Options opts = {0};` means "pick
+   * well for me" rather than selecting a filter by accident.
+   *
+   * **This is a pinned alias, not a judgement free to drift.** An AUTO that
+   * changed kernel between releases would change the bytes a caller gets for
+   * unchanged input, where only a comparison against an old output would find
+   * it. Changing what it maps to is a behaviour change and is treated as one.
+   *
+   * **AUTO never selects NEAREST.** Nothing about a raster distinguishes
+   * samples that are colours from samples that are labels, and deciding it
+   * from the picture's contents is the judgement that keeps
+   * gimg_ops_quantize() outside the codecs. A caller whose samples are labels
+   * names the filter.
+   */
+  GIMG_FILTER_AUTO = 0,
+  /** Take the nearest source sample. Never averages, never invents a value. */
+  GIMG_FILTER_NEAREST,
+  /**
+   * Unweighted mean of the source region. At an integer reduction this is the
+   * exact area average, which is what a thumbnail usually wants. Note that at
+   * ratios near 1:1 its support covers a single sample, so it behaves as
+   * NEAREST does - it is a filter for reducing by a real factor, not for
+   * trimming a few pixels.
+   */
+  GIMG_FILTER_BOX,
+  /** Linear interpolation; a tent kernel of radius 1. */
+  GIMG_FILTER_TRIANGLE,
+  /** The a = -0.5 cubic: sharper than TRIANGLE, and interpolating. */
+  GIMG_FILTER_CATMULL_ROM,
+  /** Windowed sinc of radius 3. The sharpest here, and the one that rings. */
+  GIMG_FILTER_LANCZOS3,
+  GIMG_FILTER_COUNT
+} GIMG_Resample_Filter;
+
+/**
+ * @brief Which values the resampler averages.
+ */
+typedef enum {
+  /**
+   * Average the stored values as they are. This is what Pillow, ImageMagick's
+   * default, GdkPixbuf and browsers do, and it is the only setting under
+   * which this library's output can be compared with theirs.
+   */
+  GIMG_RESAMPLE_SPACE_ENCODED = 0,
+  /**
+   * Linearize, average, re-encode. More nearly correct - averaging non-linear
+   * values darkens - and **opt-in precisely because the library cannot know
+   * the transfer function**. Passing this is the caller asserting an sRGB
+   * transfer; GIMG_Color_Info is not consulted to infer one, for the same
+   * reason the CMYK conversion refuses to guess a polarity.
+   */
+  GIMG_RESAMPLE_SPACE_LINEAR
+} GIMG_Resample_Space;
+
+/** @brief Options for gimg_ops_resize(). */
+typedef struct {
+  GIMG_Resample_Filter filter; ///< Default GIMG_FILTER_AUTO.
+  GIMG_Resample_Space space;   ///< Default GIMG_RESAMPLE_SPACE_ENCODED.
+  uint8_t _reserved[8];
+} GIMG_Resize_Options;
+
+/**
+ * @brief Fill @p options with the defaults.
+ * @param options Struct to initialise; zeroed first, so a field added later
+ *   is defaulted rather than left holding the caller's stack.
+ */
+GIMG_API void gimg_resize_options_default(GIMG_Resize_Options * options);
+
+/**
+ * @brief Resample a raster to a new size.
+ *
+ * Supported: GIMG_CHANNEL_GRAY, GIMG_CHANNEL_RGBA, GIMG_CHANNEL_CMYK and
+ * GIMG_CHANNEL_UNKNOWN, interleaved, at 8, 12 or 16 bits per channel with
+ * every channel the same width - the same matrix gimg_ops_convert_bit_depth()
+ * declares. Anything else returns GIMG_ERR_UNSUPPORTED, GIMG_CHANNEL_INDEXED
+ * included: the average of two palette indices is not a palette index, so a
+ * caller resizes the colour form and calls gimg_ops_quantize() afterwards.
+ *
+ * **RGBA is filtered premultiplied.** Averaging straight alpha lets a
+ * transparent pixel contribute its colour to opaque neighbours, so edges
+ * against transparency pick up a halo of whatever was hiding underneath.
+ * The source is not modified; the premultiplication happens on the way into
+ * the filter and is undone on the way out.
+ *
+ * The result carries the source's GIMG_Color_Info, embedded profile included.
+ *
+ * @param src Source raster.
+ * @param dst_width Target width; must be above zero.
+ * @param dst_height Target height; must be above zero.
+ * @param options Filter and colour space; NULL means the defaults.
+ * @param out_raster On success, a new raster; the caller owns it. Set to NULL
+ *   on every failure.
+ * @return GIMG_OK; GIMG_ERR_INTERNAL for a null argument or a zero
+ *   dimension; GIMG_ERR_UNSUPPORTED for a format or option outside the above;
+ *   GIMG_ERR_LIMIT if the coefficient table overflows; GIMG_ERR_OOM.
+ */
+GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
+    uint32_t dst_width, uint32_t dst_height,
+    const GIMG_Resize_Options * options, GIMG_Raster ** out_raster);
+
+/**
  * @brief Cut a rectangle out of a raster.
  *
  * The rectangle is given in pixels from the top-left corner and must lie

@@ -601,6 +601,18 @@ $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_bmp_raster.o $
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_bmp_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
 
+$(OBJ_DIR)/tests/resample_tool.o: tests/tools/resample/resample_tool.cpp
+	@printf "\n### Compiling resample_tool ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
+$(APP_DIR)/resample_tool$(EXE_EXTENSION): $(OBJ_DIR)/tests/resample_tool.o $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
+	@printf "\n### Linking resample_tool ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/resample_tool.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+
+resample-tool: $(APP_DIR)/resample_tool$(EXE_EXTENSION) ## Build resample_tool; used by tests/data/verify_resample.py
+
 bmp-dump-raster: $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION) ## Build dump_bmp_raster; used by tests/data/bmp/bmpsuite_sweep.py
 
 bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep (needs BMPSUITE=<unpacked bmpsuite dir>)
@@ -719,7 +731,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 # General commands
 .PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build coverage check-symbols
 .PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif fuzz-gif-encode
-.PHONY: bmp-dump-raster bmpsuite bmp-oracle-tools jpeg-oracle-tools gif-oracle-tools
+.PHONY: bmp-dump-raster bmpsuite bmp-oracle-tools resample-tool jpeg-oracle-tools gif-oracle-tools
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-verify-gif test-verify-structure test-watch uninstall watch
 # Debug build commands
@@ -869,7 +881,7 @@ else
 endif
 
 test: ## Make and run the Unit tests, then verify PNG, JPEG and BMP output with outside decoders
-test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
+test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
@@ -894,7 +906,10 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 	printf "\033[0;32mGIF output verification passed.\033[0m\n"; \
 	printf "\033[0;30;43m\n############################\n### Verifying output structure ###\n############################\033[0m\n\n"; \
 	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
-	printf "\033[0;32mOutput structure verification passed.\033[0m\n"
+	printf "\033[0;32mOutput structure verification passed.\033[0m\n"; \
+	printf "\033[0;30;43m\n############################\n### Verifying the resampler (PIL) ###\n############################\033[0m\n\n"; \
+	python3 $(CURDIR)/tests/data/verify_resample.py $(APP_DIR)/resample_tool$(EXE_EXTENSION) && \
+	printf "\033[0;32mResampler verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
 test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
@@ -944,6 +959,12 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 		printf "$$failed_suites\n"; \
 		exit 1; \
 	fi
+
+test-verify-resample: ## Run only the resampler comparison against Pillow
+test-verify-resample: $(APP_DIR)/resample_tool$(EXE_EXTENSION)
+	@printf "\033[0;30;43m\n############################\n### Verifying the resampler (PIL) ###\n############################\033[0m\n\n"
+	@python3 $(CURDIR)/tests/data/verify_resample.py $(APP_DIR)/resample_tool$(EXE_EXTENSION) && \
+	printf "\033[0;32mResampler verification passed.\033[0m\n"
 
 test-verify-structure: ## Run only the structural check of written output
 	@python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
