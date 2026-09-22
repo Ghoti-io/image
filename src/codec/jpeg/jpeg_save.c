@@ -4084,22 +4084,63 @@ have_scan:
                 size_t to_write_size = exif_size;
                 void * modified = NULL;
                 size_t modified_size = 0;
-                if (policy == GIMG_META_STRIP_GPS) {
-                  if (gimg_exif_strip_gps(alloc, exif_buf, exif_size, &modified,
-                          &modified_size) == GIMG_OK) {
-                    to_write = modified;
-                    to_write_size = modified_size;
+                // An Exif policy we cannot apply fails the save: writing
+                // the original through would hand back exactly what the
+                // caller asked to remove, and dropping the segment would
+                // destroy metadata whose only fault is being unparseable.
+                //
+                // The stored APP1 payload is "Exif\0\0" followed by the TIFF
+                // structure, and the policies parse TIFF - so the identifier
+                // comes off before the call and goes back on after. Handing
+                // over the whole payload made every policy read buf[2] as 'i'
+                // rather than 42 and answer CORRUPT, which the `if (... ==
+                // GIMG_OK)` this replaced then discarded. STRIP_GPS has never
+                // actually run on a JPEG.
+                static const unsigned char exif_prefix[] = {
+                    'E', 'x', 'i', 'f', 0, 0};
+                unsigned char * prefixed = NULL;
+                if (policy == GIMG_META_STRIP_GPS ||
+                    policy == GIMG_META_NORMALIZE_EXIF) {
+                  if (exif_size <= sizeof(exif_prefix) ||
+                      memcmp(exif_buf, exif_prefix, sizeof(exif_prefix)) != 0) {
+                    // The loader only files a payload here when it begins
+                    // with the identifier, so this is unreachable from a
+                    // loaded file; if it ever is reached, the payload is not
+                    // what this code believes and it must not be edited.
+                    r = GIMG_ERR_CORRUPT;
+                  }
+                  else if (policy == GIMG_META_STRIP_GPS) {
+                    r = gimg_exif_strip_gps(alloc, exif_buf + sizeof(exif_prefix),
+                        exif_size - sizeof(exif_prefix), &modified,
+                        &modified_size);
+                  }
+                  else {
+                    r = gimg_exif_normalize(alloc, exif_buf + sizeof(exif_prefix),
+                        exif_size - sizeof(exif_prefix), &modified,
+                        &modified_size);
+                  }
+                  if (r == GIMG_OK && modified) {
+                    const size_t n = sizeof(exif_prefix) + modified_size;
+                    prefixed = (unsigned char *)gimg_malloc(alloc, n);
+                    if (!prefixed) {
+                      r = GIMG_ERR_OOM;
+                    }
+                    else {
+                      memcpy(prefixed, exif_prefix, sizeof(exif_prefix));
+                      memcpy(prefixed + sizeof(exif_prefix), modified,
+                          modified_size);
+                      to_write = prefixed;
+                      to_write_size = n;
+                    }
                   }
                 }
-                else if (policy == GIMG_META_NORMALIZE_EXIF) {
-                  if (gimg_exif_normalize(alloc, exif_buf, exif_size, &modified,
-                          &modified_size) == GIMG_OK) {
-                    to_write = modified;
-                    to_write_size = modified_size;
-                  }
+                if (r == GIMG_OK) {
+                  r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP1,
+                      to_write, to_write_size, &report->bytes_written);
                 }
-                r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP1,
-                    to_write, to_write_size, &report->bytes_written);
+                if (prefixed) {
+                  gimg_free(alloc, prefixed);
+                }
                 if (modified) {
                   gimg_free(alloc, modified);
                 }

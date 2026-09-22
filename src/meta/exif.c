@@ -259,11 +259,18 @@ static size_t exif_entry_payload(const unsigned char * buf, size_t size,
 
 GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
     const void * exif, size_t size, void ** out, size_t * out_size) {
-  if (!exif || size < GIMG_EXIF_MIN_SIZE || !out || !out_size) {
-    return GIMG_ERR_INTERNAL;
+  if (!exif || !out || !out_size) {
+    return GIMG_ERR_INTERNAL; // A null argument is the caller's bug.
   }
   *out = NULL;
   *out_size = 0;
+  if (size < GIMG_EXIF_MIN_SIZE) {
+    // Too short to hold even a TIFF header, so there is nothing here that can
+    // be parsed and nothing that can be asserted about it.  Corrupt rather
+    // than internal: this is a statement about the data, and it is what this
+    // function's documented contract already said it would return.
+    return GIMG_ERR_CORRUPT;
+  }
   const unsigned char * buf = (const unsigned char *)exif;
   if (buf[2] != 42 || buf[3] != 0) {
     return GIMG_ERR_CORRUPT;
@@ -438,8 +445,13 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
 
 GIMG_Result gimg_exif_normalize(const GIMG_Allocator * allocator,
     const void * exif, size_t size, void ** out, size_t * out_size) {
-  if (!exif || size < GIMG_EXIF_MIN_SIZE || !out || !out_size) {
-    return GIMG_ERR_INTERNAL;
+  if (!exif || !out || !out_size) {
+    return GIMG_ERR_INTERNAL; // A null argument is the caller's bug.
+  }
+  *out = NULL;
+  *out_size = 0;
+  if (size < GIMG_EXIF_MIN_SIZE) {
+    return GIMG_ERR_CORRUPT; // See gimg_exif_strip_gps().
   }
   const unsigned char * buf = (const unsigned char *)exif;
   if (buf[2] != 42 || buf[3] != 0) {

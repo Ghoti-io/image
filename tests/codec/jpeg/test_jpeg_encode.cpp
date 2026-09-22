@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "jpeg_test_utils.h"
+#include "../../exif_test_utils.h"
 
 extern "C" {
 #include "jpeg_huffman_tables_internal.h"
@@ -7330,4 +7331,111 @@ TEST(JpegEncode, TheCmykPolarityFlipWorksAtTwelveBitsToo) {
   EXPECT_EQ(as_ink, as_reflection)
       << "complemented against 4095, the two describe the same picture";
   EXPECT_FALSE(as_ink.empty());
+}
+
+
+namespace {
+
+/** Load a JPEG fixture, swap its APP1 Exif, save it back under `policy`. */
+GIMG_Result jpeg_save_with_exif(const std::vector<uint8_t> & exif,
+    GIMG_Meta_Policy policy, std::vector<uint8_t> * out_saved) {
+  std::vector<uint8_t> file;
+  if (!jpeg_test::load_jpeg_file("plain_gray.jpg", file)) {
+    return GIMG_ERR_IO;
+  }
+  if (!exif_test::replace_jpeg_exif(file, exif)) {
+    return GIMG_ERR_IO;
+  }
+  GIMG_Stream * in = nullptr;
+  if (gimg_stream_create_memory(file.data(), file.size(), &in) != GIMG_OK) {
+    return GIMG_ERR_IO;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(in, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  GIMG_Stream * out = nullptr;
+  if (gimg_stream_create_memory_output(&out) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return GIMG_ERR_IO;
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = policy;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out, "jpeg", &opts, &report);
+  if (r == GIMG_OK && out_saved) {
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out, &p, &n);
+    out_saved->assign((const uint8_t *)p, (const uint8_t *)p + n);
+  }
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  return r;
+}
+
+/** The Exif bytes of a saved JPEG's APP1 segment. Empty when there is none. */
+std::vector<uint8_t> jpeg_exif_of(const std::vector<uint8_t> & jpg) {
+  size_t i = 2;
+  while (i + 4 < jpg.size()) {
+    if (jpg[i] != 0xFF) { i++; continue; }
+    const uint8_t m = jpg[i + 1];
+    if (m == 0xDA || m == 0xD9) { break; }
+    const size_t len = ((size_t)jpg[i + 2] << 8) | jpg[i + 3];
+    if (m == 0xE1 && i + 10 <= jpg.size() &&
+        std::memcmp(&jpg[i + 4], "Exif\0\0", 6) == 0) {
+      return std::vector<uint8_t>(
+          jpg.begin() + (long)(i + 10), jpg.begin() + (long)(i + 2 + len));
+    }
+    i += 2 + len;
+  }
+  return std::vector<uint8_t>();
+}
+
+} // namespace
+
+/**
+ * The JPEG writer applies STRIP_GPS, and reports when it cannot.
+ *
+ * The JPEG and PNG writers run separate copies of the metadata-policy code -
+ * one writes an APP1 segment and the other an eXIf chunk - so the behaviour
+ * has to be asserted on both. This is the APP1 half.
+ */
+TEST(JpegEncode, StripGpsRemovesTheGpsIfdFromApp1) {
+  const std::vector<uint8_t> exif = exif_test::make_exif_with_gps();
+  ASSERT_TRUE(exif_test::exif_has_gps_tag(exif));
+
+  std::vector<uint8_t> saved;
+  ASSERT_EQ(jpeg_save_with_exif(exif, GIMG_META_PRESERVE_ALL, &saved), GIMG_OK);
+  const std::vector<uint8_t> kept = jpeg_exif_of(saved);
+  ASSERT_FALSE(kept.empty()) << "the control needs the Exif to survive";
+  EXPECT_TRUE(exif_test::exif_has_gps_tag(kept))
+      << "PRESERVE_ALL must keep the GPS pointer";
+
+  saved.clear();
+  ASSERT_EQ(jpeg_save_with_exif(exif, GIMG_META_STRIP_GPS, &saved), GIMG_OK);
+  const std::vector<uint8_t> stripped = jpeg_exif_of(saved);
+  ASSERT_FALSE(stripped.empty()) << "STRIP_GPS removes GPS, not all Exif";
+  EXPECT_FALSE(exif_test::exif_has_gps_tag(stripped));
+  EXPECT_EQ(exif_test::exif_ifd0_entry_count(stripped), 2);
+  EXPECT_LT(stripped.size(), kept.size());
+}
+
+/** Exif the library cannot parse fails a JPEG save that asks to edit it. */
+TEST(JpegEncode, AnExifPolicyFailsOnApp1ItCannotParse) {
+  // Valid magic, but IFD0 is past the end: parseable enough to be Exif and
+  // not enough to act on. Writing it through would publish whatever it holds.
+  std::vector<uint8_t> bad = {'I', 'I', 42, 0, 0xF0, 0xFF, 0, 0, 1, 2, 3, 4,
+      5, 6, 7, 8};
+  EXPECT_EQ(jpeg_save_with_exif(bad, GIMG_META_STRIP_GPS, nullptr),
+      GIMG_ERR_CORRUPT);
+  EXPECT_EQ(jpeg_save_with_exif(bad, GIMG_META_NORMALIZE_EXIF, nullptr),
+      GIMG_ERR_CORRUPT);
+  // The control: it saves fine when nothing is asked of the Exif.
+  std::vector<uint8_t> saved;
+  EXPECT_EQ(jpeg_save_with_exif(bad, GIMG_META_PRESERVE_ALL, &saved), GIMG_OK);
+  EXPECT_EQ(jpeg_exif_of(saved), bad)
+      << "PRESERVE_ALL must hand back the bytes it could not read";
 }

@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "png_test_utils.h"
+#include "../../exif_test_utils.h"
 
 // Reaches gimg_png_retarget_ancillary(), which is internal: the rules it
 // encodes are per-color-type and there are more of them than an end-to-end
@@ -976,119 +977,10 @@ TEST(PngEncode, SaveWithDropAllStripsMetadata) {
 
 namespace {
 
-/**
- * A real little-endian Exif blob: IFD0 carries Orientation, ResolutionUnit
- * and a GPS IFD pointer (0x8825); the GPS IFD carries GPSLatitudeRef and a
- * GPSLatitude rational triple.
- *
- * This is built here rather than taken from a fixture because the fixture
- * that the metadata-policy tests were using, png_exif.png, holds a six-byte
- * eXIf payload of 00 01 02 03 04 05. That is below GIMG_EXIF_MIN_SIZE, so
- * gimg_exif_strip_gps() rejected it on entry and png_save.c - which uses the
- * stripped blob only `if (... == GIMG_OK)` - wrote the original through. The
- * policy tests passed because nothing happened.
- */
-std::vector<uint8_t> make_exif_with_gps() {
-  std::vector<uint8_t> e;
-  auto u16 = [&e](uint16_t v) {
-    e.push_back((uint8_t)(v & 0xFF));
-    e.push_back((uint8_t)(v >> 8));
-  };
-  auto u32 = [&e](uint32_t v) {
-    for (int i = 0; i < 4; i++) { e.push_back((uint8_t)((v >> (8 * i)) & 0xFF)); }
-  };
-  auto entry = [&](uint16_t tag, uint16_t type, uint32_t count, uint32_t val) {
-    u16(tag); u16(type); u32(count); u32(val);
-  };
-  // TIFF header: little-endian, magic 42, IFD0 at offset 8.
-  e.push_back('I'); e.push_back('I');
-  u16(42);
-  u32(8);
-  // IFD0: three entries.  Tags must ascend.
-  const uint32_t gps_ifd_off = 8u + 2u + 3u * 12u + 4u; // = 50
-  u16(3);
-  entry(0x0112u, 3u, 1u, 1u);            // Orientation = 1 (SHORT, inline)
-  entry(0x0128u, 3u, 1u, 2u);            // ResolutionUnit = inch
-  entry(0x8825u, 4u, 1u, gps_ifd_off);   // GPS IFD pointer (LONG)
-  u32(0);                                 // no IFD1
-  // GPS IFD: two entries, then the rational payload it points at.
-  const uint32_t rational_off = gps_ifd_off + 2u + 2u * 12u + 4u; // = 80
-  u16(2);
-  entry(0x0001u, 2u, 2u, (uint32_t)('N')); // GPSLatitudeRef "N\0" inline
-  entry(0x0002u, 5u, 3u, rational_off);    // GPSLatitude, 3 rationals
-  u32(0);
-  const uint32_t lat[6] = {51u, 1u, 30u, 1u, 26u, 1u}; // 51 deg 30' 26"
-  for (int i = 0; i < 6; i++) { u32(lat[i]); }
-  return e;
-}
-
-uint32_t png_crc(const uint8_t * p, size_t n) {
-  static uint32_t table[256];
-  static bool built = false;
-  if (!built) {
-    for (uint32_t i = 0; i < 256; i++) {
-      uint32_t c = i;
-      for (int k = 0; k < 8; k++) { c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1); }
-      table[i] = c;
-    }
-    built = true;
-  }
-  uint32_t c = 0xFFFFFFFFu;
-  for (size_t i = 0; i < n; i++) { c = table[(c ^ p[i]) & 0xFF] ^ (c >> 8); }
-  return c ^ 0xFFFFFFFFu;
-}
-
-/** Replace the eXIf chunk payload of a PNG, fixing length and CRC. */
-bool replace_exif_chunk(std::vector<uint8_t> & png,
-    const std::vector<uint8_t> & exif) {
-  size_t i = 8;
-  while (i + 12 <= png.size()) {
-    uint32_t len = ((uint32_t)png[i] << 24) | ((uint32_t)png[i + 1] << 16) |
-        ((uint32_t)png[i + 2] << 8) | (uint32_t)png[i + 3];
-    const bool is_exif = std::memcmp(&png[i + 4], "eXIf", 4) == 0;
-    if (is_exif) {
-      std::vector<uint8_t> out(png.begin(), png.begin() + (long)i);
-      const uint32_t n = (uint32_t)exif.size();
-      out.push_back((uint8_t)(n >> 24)); out.push_back((uint8_t)(n >> 16));
-      out.push_back((uint8_t)(n >> 8));  out.push_back((uint8_t)n);
-      const size_t crc_start = out.size();
-      out.insert(out.end(), {'e', 'X', 'I', 'f'});
-      out.insert(out.end(), exif.begin(), exif.end());
-      const uint32_t crc = png_crc(&out[crc_start], 4 + exif.size());
-      out.push_back((uint8_t)(crc >> 24)); out.push_back((uint8_t)(crc >> 16));
-      out.push_back((uint8_t)(crc >> 8));  out.push_back((uint8_t)crc);
-      out.insert(out.end(), png.begin() + (long)(i + 12 + len), png.end());
-      png.swap(out);
-      return true;
-    }
-    i += 12 + len;
-  }
-  return false;
-}
-
-/** Does this Exif blob's IFD0 carry a GPS IFD pointer? */
-bool exif_has_gps_tag(const std::vector<uint8_t> & e) {
-  if (e.size() < 14) { return false; }
-  const uint32_t ifd0 = (uint32_t)e[4] | ((uint32_t)e[5] << 8) |
-      ((uint32_t)e[6] << 16) | ((uint32_t)e[7] << 24);
-  if (ifd0 + 2u > e.size()) { return false; }
-  const uint16_t n = (uint16_t)(e[ifd0] | (e[ifd0 + 1] << 8));
-  for (uint16_t k = 0; k < n; k++) {
-    const size_t off = ifd0 + 2u + (size_t)k * 12u;
-    if (off + 12u > e.size()) { return false; }
-    if ((uint16_t)(e[off] | (e[off + 1] << 8)) == 0x8825u) { return true; }
-  }
-  return false;
-}
-
-/** Count IFD0 entries, so "GPS gone" can be told from "everything gone". */
-int exif_ifd0_entry_count(const std::vector<uint8_t> & e) {
-  if (e.size() < 14) { return -1; }
-  const uint32_t ifd0 = (uint32_t)e[4] | ((uint32_t)e[5] << 8) |
-      ((uint32_t)e[6] << 16) | ((uint32_t)e[7] << 24);
-  if (ifd0 + 2u > e.size()) { return -1; }
-  return (int)(uint16_t)(e[ifd0] | (e[ifd0 + 1] << 8));
-}
+using exif_test::exif_has_gps_tag;
+using exif_test::exif_ifd0_entry_count;
+using exif_test::make_exif_with_gps;
+using exif_test::replace_exif_chunk;
 
 /** Load png_exif.png, swap in `exif`, save under `policy`, return the eXIf. */
 bool round_trip_exif(const std::vector<uint8_t> & exif,
@@ -1183,111 +1075,102 @@ TEST(PngEncode, StripGpsRemovesTheGpsIfdAndKeepsTheRest) {
 }
 
 /**
- * A payload too short to be Exif survives STRIP_GPS unchanged.
+ * Exif this library cannot parse makes an Exif policy fail the save.
  *
- * Named for what it checks.  It was called SaveWithStripGpsStripsOnlyGps and
- * asserted only that the eXIf chunk was still present and at least six bytes
- * long - which it is, because png_exif.png's payload is six bytes of
- * 00 01 02 03 04 05, below GIMG_EXIF_MIN_SIZE.  gimg_exif_strip_gps() refused
- * it on entry and the writer passed the original through, so the test could
- * not have failed had the stripping been wrong.  The real behaviour is now in
- * StripGpsRemovesTheGpsIfdAndKeepsTheRest.
+ * png_exif.png carries a six-byte eXIf payload of 00 01 02 03 04 05, which is
+ * below GIMG_EXIF_MIN_SIZE.  The policy asks for GPS to be removed and there
+ * is no way to honour that on bytes we cannot read, so the save reports
+ * GIMG_ERR_CORRUPT.  The two alternatives were both worse: writing the
+ * payload through hands back exactly what the caller asked to have removed,
+ * and dropping the chunk destroys metadata whose only fault is that we did
+ * not understand it.  Neither is something the caller can detect.
+ *
+ * This test previously asserted the opposite - that the save succeeded and
+ * the payload survived - under the name SaveWithStripGpsStripsOnlyGps, and it
+ * passed because gimg_exif_strip_gps() refused the payload on entry and the
+ * writer silently kept the original.
  */
-TEST(PngEncode, StripGpsLeavesAnUnparseablePayloadAlone) {
+TEST(PngEncode, AnExifPolicyFailsOnExifItCannotParse) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf))
       << "Run tests/data/png/generate.py";
   GIMG_Stream * s = nullptr;
-  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
-  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
   GIMG_Doc * doc = nullptr;
-  r = gimg_doc_load(s, nullptr, nullptr, &doc);
-  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
   ASSERT_NE(doc, nullptr);
   gimg_stream_destroy(s);
-  s = nullptr;
 
-  GIMG_Stream * out_s = nullptr;
-  r = gimg_stream_create_memory_output(&out_s);
-  ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {.metadata_policy = GIMG_META_STRIP_GPS};
+  for (const GIMG_Meta_Policy policy :
+      {GIMG_META_STRIP_GPS, GIMG_META_NORMALIZE_EXIF}) {
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.metadata_policy = policy;
+    GIMG_Save_Report report = {};
+    EXPECT_EQ(gimg_doc_save(doc, out, "png", &opts, &report), GIMG_ERR_CORRUPT)
+        << "policy " << (int)policy
+        << " must report that it could not be applied";
+    gimg_stream_destroy(out);
+  }
+
+  // The control: the same document saves cleanly when nothing is asked of the
+  // Exif, and the payload it could not parse is still there afterwards.  The
+  // refusal above is a refusal to act, not a refusal to save.
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options keep = {};
+  keep.metadata_policy = GIMG_META_PRESERVE_ALL;
   GIMG_Save_Report report = {};
-  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
-  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_EQ(gimg_doc_save(doc, out, "png", &keep, &report), GIMG_OK);
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out, &p, &n);
+  std::vector<uint8_t> saved((const uint8_t *)p, (const uint8_t *)p + n);
+  gimg_stream_destroy(out);
   gimg_doc_destroy(doc);
 
-  const void * out_ptr = nullptr;
-  size_t saved_size = 0;
-  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
-  std::vector<uint8_t> saved_data(static_cast<const uint8_t *>(out_ptr),
-      static_cast<const uint8_t *>(out_ptr) + saved_size);
-  gimg_stream_destroy(out_s);
-
   GIMG_Stream * s2 = nullptr;
-  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
-  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &s2), GIMG_OK);
   GIMG_Doc * doc2 = nullptr;
-  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
-  ASSERT_EQ(r, GIMG_OK);
-  ASSERT_NE(doc2, nullptr);
+  ASSERT_EQ(gimg_doc_load(s2, nullptr, nullptr, &doc2), GIMG_OK);
   gimg_stream_destroy(s2);
-
   GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc2);
   ASSERT_NE(raw, nullptr);
   size_t exif_size = 0;
-  r = gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &exif_size);
-  EXPECT_EQ(r, GIMG_OK)
-      << "eXIf must be present after STRIP_GPS (only GPS removed)";
-  EXPECT_GE(exif_size, 6u) << "eXIf preserved after save with STRIP_GPS";
+  EXPECT_EQ(gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &exif_size),
+      GIMG_OK)
+      << "PRESERVE_ALL must keep the payload it cannot parse";
+  EXPECT_EQ(exif_size, 6u);
   gimg_doc_destroy(doc2);
 }
 
-TEST(PngEncode, SaveWithNormalizeExifPreservesExif) {
-  std::vector<uint8_t> buf;
-  ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf))
-      << "Run tests/data/png/generate.py";
-  GIMG_Stream * s = nullptr;
-  GIMG_Result r = gimg_stream_create_memory(buf.data(), buf.size(), &s);
-  ASSERT_EQ(r, GIMG_OK);
-  GIMG_Doc * doc = nullptr;
-  r = gimg_doc_load(s, nullptr, nullptr, &doc);
-  ASSERT_EQ(r, GIMG_OK);
-  ASSERT_NE(doc, nullptr);
-  gimg_stream_destroy(s);
-  s = nullptr;
+/**
+ * NORMALIZE_EXIF keeps the Exif and resets Orientation to 1.
+ *
+ * This replaces a test of the same name that ran against png_exif.png's
+ * six-byte payload and asserted only that six bytes came back.  It could not
+ * see what normalizing does, because gimg_exif_normalize() refused the input
+ * before doing any of it.  The blob here carries Orientation 6 (rotate 90),
+ * which is the value the policy exists to rewrite.
+ */
+TEST(PngEncode, NormalizeExifResetsOrientationAndKeepsTheRest) {
+  std::vector<uint8_t> exif = make_exif_with_gps();
+  // Orientation is IFD0's first entry; set its inline value to 6.
+  const size_t orientation_value = 8u + 2u + 8u;
+  ASSERT_EQ(exif[8u + 2u], 0x12);      // tag 0x0112, little-endian low byte
+  ASSERT_EQ(exif[orientation_value], 1);
+  exif[orientation_value] = 6;
 
-  GIMG_Stream * out_s = nullptr;
-  r = gimg_stream_create_memory_output(&out_s);
-  ASSERT_EQ(r, GIMG_OK);
-  GIMG_Save_Options opts = {.metadata_policy = GIMG_META_NORMALIZE_EXIF};
-  GIMG_Save_Report report = {};
-  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
-  ASSERT_EQ(r, GIMG_OK);
-  gimg_doc_destroy(doc);
-
-  const void * out_ptr = nullptr;
-  size_t saved_size = 0;
-  gimg_stream_output_buffer(out_s, &out_ptr, &saved_size);
-  std::vector<uint8_t> saved_data(static_cast<const uint8_t *>(out_ptr),
-      static_cast<const uint8_t *>(out_ptr) + saved_size);
-  gimg_stream_destroy(out_s);
-
-  GIMG_Stream * s2 = nullptr;
-  r = gimg_stream_create_memory(saved_data.data(), saved_data.size(), &s2);
-  ASSERT_EQ(r, GIMG_OK);
-  GIMG_Doc * doc2 = nullptr;
-  r = gimg_doc_load(s2, nullptr, nullptr, &doc2);
-  ASSERT_EQ(r, GIMG_OK);
-  ASSERT_NE(doc2, nullptr);
-  gimg_stream_destroy(s2);
-
-  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc2);
-  ASSERT_NE(raw, nullptr);
-  size_t exif_size = 0;
-  r = gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &exif_size);
-  EXPECT_EQ(r, GIMG_OK);
-  EXPECT_EQ(exif_size, 6u) << "eXIf preserved after save with NORMALIZE_EXIF";
-  gimg_doc_destroy(doc2);
+  std::vector<uint8_t> got;
+  ASSERT_TRUE(round_trip_exif(exif, GIMG_META_NORMALIZE_EXIF, got));
+  ASSERT_EQ(got.size(), exif.size())
+      << "NORMALIZE_EXIF edits in place; it must not resize the blob";
+  EXPECT_EQ(got[orientation_value], 1)
+      << "Orientation must be normalized to 1";
+  EXPECT_TRUE(exif_has_gps_tag(got))
+      << "NORMALIZE_EXIF is not STRIP_GPS; the GPS pointer stays";
+  EXPECT_EQ(exif_ifd0_entry_count(got), 3);
 }
 
 TEST(PngEncode, SaveWithKeepRawOnlyOmitsKnownSemantic) {

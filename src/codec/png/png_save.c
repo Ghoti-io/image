@@ -2179,19 +2179,27 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
         void * modified = NULL;
         size_t modified_size = 0;
         if (t == GIMG_PNG_eXIf && chunk_payload && chunk_size > 0) {
+          // A policy that edits Exif can only be honoured on Exif this
+          // library can parse.  When it cannot, the save fails: writing the
+          // original through would hand back the very data the caller asked
+          // to have removed, and dropping the chunk would destroy metadata
+          // whose only fault is that we did not understand it.
+          GIMG_Result mr = GIMG_OK;
           if (policy == GIMG_META_STRIP_GPS) {
-            if (gimg_exif_strip_gps(codec->allocator, chunk_payload,
-                    chunk_size, &modified, &modified_size) == GIMG_OK) {
-              chunk_payload = modified;
-              chunk_size = modified_size;
-            }
+            mr = gimg_exif_strip_gps(codec->allocator, chunk_payload,
+                chunk_size, &modified, &modified_size);
           }
           else if (policy == GIMG_META_NORMALIZE_EXIF) {
-            if (gimg_exif_normalize(codec->allocator, chunk_payload,
-                    chunk_size, &modified, &modified_size) == GIMG_OK) {
-              chunk_payload = modified;
-              chunk_size = modified_size;
-            }
+            mr = gimg_exif_normalize(codec->allocator, chunk_payload,
+                chunk_size, &modified, &modified_size);
+          }
+          if (mr != GIMG_OK) {
+            gimg_free(alloc, zlib_buf);
+            return mr;
+          }
+          if (modified) {
+            chunk_payload = modified;
+            chunk_size = modified_size;
           }
         }
         if ((t == GIMG_PNG_bKGD || t == GIMG_PNG_hIST) &&
@@ -2332,23 +2340,25 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
               size_t to_write_size = exif_size;
               void * modified = NULL;
               size_t modified_size = 0;
+              // See the ancillary loop above: an Exif policy we cannot
+              // apply fails the save rather than silently not applying it.
               if (policy == GIMG_META_STRIP_GPS) {
-                if (gimg_exif_strip_gps(codec->allocator, exif_buf, exif_size,
-                        &modified, &modified_size) == GIMG_OK) {
-                  to_write = modified;
-                  to_write_size = modified_size;
-                }
+                r = gimg_exif_strip_gps(codec->allocator, exif_buf, exif_size,
+                    &modified, &modified_size);
               }
               else if (policy == GIMG_META_NORMALIZE_EXIF) {
-                if (gimg_exif_normalize(codec->allocator, exif_buf, exif_size,
-                        &modified, &modified_size) == GIMG_OK) {
+                r = gimg_exif_normalize(codec->allocator, exif_buf, exif_size,
+                    &modified, &modified_size);
+              }
+              if (r == GIMG_OK) {
+                if (modified) {
                   to_write = modified;
                   to_write_size = modified_size;
                 }
+                r = gimg_png_write_chunk(
+                    stream, GIMG_PNG_eXIf, to_write, to_write_size);
+                report->bytes_written += 8 + to_write_size + 4;
               }
-              r = gimg_png_write_chunk(
-                  stream, GIMG_PNG_eXIf, to_write, to_write_size);
-              report->bytes_written += 8 + to_write_size + 4;
               if (modified) {
                 gimg_free(alloc, modified);
               }

@@ -656,6 +656,10 @@ typedef struct {
  * @param report Required. On success its bytes_written is the file size.
  * @return GIMG_OK; GIMG_ERR_UNSUPPORTED when the raster's pixel format is one
  *   the named codec cannot write, or when no codec has that name;
+ *   GIMG_ERR_CORRUPT when @p options asks for a metadata policy that edits
+ *   Exif (GIMG_META_STRIP_GPS, GIMG_META_NORMALIZE_EXIF) and the document's
+ *   Exif cannot be parsed - the save reports rather than silently leaving the
+ *   policy unapplied;
  *   GIMG_ERR_INTERNAL for a null argument, @p report included - it is
  *   required, unlike @p options.
  */

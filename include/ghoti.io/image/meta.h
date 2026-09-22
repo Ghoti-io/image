@@ -166,7 +166,20 @@ GIMG_API GIMG_Result gimg_meta_raw_copy_with_allocator(
 typedef enum {
   GIMG_META_PRESERVE_ALL = 0,
   GIMG_META_DROP_ALL,
+  /**
+   * Remove the GPS IFD, its pointer tag (0x8825) and everything it points at.
+   *
+   * **Fails the save with GIMG_ERR_CORRUPT when the Exif cannot be parsed.**
+   * The alternatives are both silent and both wrong: writing the blob through
+   * hands back the location data the caller asked to have removed, and
+   * dropping it destroys metadata whose only fault is being unreadable. A
+   * caller who would rather keep bytes this library does not understand can
+   * ask for GIMG_META_PRESERVE_ALL, which never inspects them.
+   */
   GIMG_META_STRIP_GPS,
+  /** Reset Orientation to 1, preserving the rest. Fails with
+   * GIMG_ERR_CORRUPT on Exif that cannot be parsed, for the reason given on
+   * GIMG_META_STRIP_GPS. */
   GIMG_META_NORMALIZE_EXIF,
   GIMG_META_KEEP_RAW_ONLY,
   GIMG_META_KEEP_COMMON_ONLY,
