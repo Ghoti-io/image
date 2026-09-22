@@ -62,7 +62,8 @@ typedef struct GIMG_Codec GIMG_Codec;
  * long-term; copy the string if you need to keep it.
  */
 typedef struct {
-  const char * format_name; ///< e.g. "png", "jpeg"; NULL if no match.
+  const char * format_name; ///< "png", "jpeg", "bmp" or "gif"; NULL if no
+                            ///< codec recognised the bytes.
   unsigned int confidence;  ///< 0–100; 0 = no match.
   uint8_t _reserved[4];
 } GIMG_Probe_Result;
@@ -649,11 +650,14 @@ typedef struct {
  *   attached to it when there is one, otherwise the writer decodes the item
  *   itself, whichever codec loaded the document.
  * @param stream Destination, opened for output.
- * @param format_name "png", "jpeg" or "bmp".
+ * @param format_name "png", "jpeg", "bmp" or "gif" - the name of a
+ *   registered codec, as gimg_codec_name() reports it.
  * @param options May be NULL for the defaults; see @ref api_options.
  * @param report Required. On success its bytes_written is the file size.
- * @return GIMG_OK, or GIMG_ERR_UNSUPPORTED when the raster's pixel format is
- *   one the named codec cannot write.
+ * @return GIMG_OK; GIMG_ERR_UNSUPPORTED when the raster's pixel format is one
+ *   the named codec cannot write, or when no codec has that name;
+ *   GIMG_ERR_INTERNAL for a null argument, @p report included - it is
+ *   required, unlike @p options.
  */
 GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     const char * format_name, const GIMG_Save_Options * options,
