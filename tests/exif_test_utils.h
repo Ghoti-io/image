@@ -20,9 +20,14 @@
 namespace exif_test {
 
 /**
- * A real little-endian Exif blob: IFD0 carries Orientation, ResolutionUnit
- * and a GPS IFD pointer (0x8825); the GPS IFD carries GPSLatitudeRef and a
- * GPSLatitude rational triple.
+ * A real Exif blob: IFD0 carries Orientation, ResolutionUnit and a GPS IFD
+ * pointer (0x8825); the GPS IFD carries GPSLatitudeRef and a GPSLatitude
+ * rational triple.
+ *
+ * @p little_endian picks the TIFF byte order - "II" or "MM". Both are legal
+ * (TIFF 6.0 section 2) and both are written by cameras in the field, and the
+ * two blobs describe the same image, so anything that reads one must agree
+ * with what it reads from the other.
  *
  * This is built here rather than taken from a fixture because the fixture
  * that the metadata-policy tests were using, png_exif.png, holds a six-byte
@@ -31,33 +36,61 @@ namespace exif_test {
  * stripped blob only `if (... == GIMG_OK)` - wrote the original through. The
  * policy tests passed because nothing happened.
  */
-inline std::vector<uint8_t> make_exif_with_gps() {
+inline std::vector<uint8_t> make_exif_with_gps(bool little_endian = true) {
   std::vector<uint8_t> e;
-  auto u16 = [&e](uint16_t v) {
-    e.push_back((uint8_t)(v & 0xFF));
-    e.push_back((uint8_t)(v >> 8));
+  auto u16 = [&e, little_endian](uint16_t v) {
+    if (little_endian) {
+      e.push_back((uint8_t)(v & 0xFF));
+      e.push_back((uint8_t)(v >> 8));
+    }
+    else {
+      e.push_back((uint8_t)(v >> 8));
+      e.push_back((uint8_t)(v & 0xFF));
+    }
   };
-  auto u32 = [&e](uint32_t v) {
-    for (int i = 0; i < 4; i++) { e.push_back((uint8_t)((v >> (8 * i)) & 0xFF)); }
+  auto u32 = [&e, little_endian](uint32_t v) {
+    for (int i = 0; i < 4; i++) {
+      const int shift = little_endian ? (8 * i) : (24 - 8 * i);
+      e.push_back((uint8_t)((v >> shift) & 0xFF));
+    }
   };
+  // An entry whose value field holds an OFFSET, or a LONG that fills all four
+  // bytes: the value is a 32-bit number and is written as one.
   auto entry = [&](uint16_t tag, uint16_t type, uint32_t count, uint32_t val) {
     u16(tag); u16(type); u32(count); u32(val);
   };
-  // TIFF header: little-endian, magic 42, IFD0 at offset 8.
-  e.push_back('I'); e.push_back('I');
+  // An entry whose value is small enough to sit INSIDE the value field.
+  //
+  // TIFF 6.0: a payload of four bytes or fewer is stored in the value field
+  // itself, left-justified - so a SHORT occupies the first two bytes and the
+  // last two are padding, in BOTH byte orders. Writing it through the 32-bit
+  // writer instead puts it in the high half of a big-endian word, where the
+  // reader looks at the first two bytes and finds zero. That is a fixture bug
+  // that looks exactly like a library bug, and it was one here first.
+  auto entry_short = [&](uint16_t tag, uint16_t val) {
+    u16(tag); u16(3u); u32(1u); u16(val);
+    e.push_back(0); e.push_back(0);
+  };
+  // TIFF header: the byte-order mark, magic 42, IFD0 at offset 8.
+  e.push_back(little_endian ? 'I' : 'M');
+  e.push_back(little_endian ? 'I' : 'M');
   u16(42);
   u32(8);
   // IFD0: three entries.  Tags must ascend.
   const uint32_t gps_ifd_off = 8u + 2u + 3u * 12u + 4u; // = 50
   u16(3);
-  entry(0x0112u, 3u, 1u, 1u);            // Orientation = 1 (SHORT, inline)
-  entry(0x0128u, 3u, 1u, 2u);            // ResolutionUnit = inch
+  entry_short(0x0112u, 1u);              // Orientation = 1 (SHORT, inline)
+  entry_short(0x0128u, 2u);              // ResolutionUnit = inch
   entry(0x8825u, 4u, 1u, gps_ifd_off);   // GPS IFD pointer (LONG)
   u32(0);                                 // no IFD1
   // GPS IFD: two entries, then the rational payload it points at.
   const uint32_t rational_off = gps_ifd_off + 2u + 2u * 12u + 4u; // = 80
   u16(2);
-  entry(0x0001u, 2u, 2u, (uint32_t)('N')); // GPSLatitudeRef "N\0" inline
+  // GPSLatitudeRef "N\0": an ASCII payload of 2 bytes is inline, and an inline
+  // payload is left-justified in the value field in both byte orders - so it
+  // is written as bytes, not as a number that u32 would reorder.
+  u16(0x0001u); u16(2u); u32(2u);
+  e.push_back('N'); e.push_back(0); e.push_back(0); e.push_back(0);
   entry(0x0002u, 5u, 3u, rational_off);    // GPSLatitude, 3 rationals
   u32(0);
   const uint32_t lat[6] = {51u, 1u, 30u, 1u, 26u, 1u}; // 51 deg 30' 26"
@@ -109,17 +142,35 @@ inline bool replace_exif_chunk(std::vector<uint8_t> & png,
   return false;
 }
 
+/** Read this blob's own byte-order mark, so an inspector cannot assume one. */
+inline bool exif_is_le(const std::vector<uint8_t> & e) {
+  return e.size() >= 2 && e[0] == 'I' && e[1] == 'I';
+}
+
+inline uint16_t exif_u16(const std::vector<uint8_t> & e, size_t off) {
+  return exif_is_le(e) ? (uint16_t)(e[off] | (e[off + 1] << 8))
+                       : (uint16_t)((e[off] << 8) | e[off + 1]);
+}
+
+inline uint32_t exif_u32(const std::vector<uint8_t> & e, size_t off) {
+  if (exif_is_le(e)) {
+    return (uint32_t)e[off] | ((uint32_t)e[off + 1] << 8) |
+        ((uint32_t)e[off + 2] << 16) | ((uint32_t)e[off + 3] << 24);
+  }
+  return ((uint32_t)e[off] << 24) | ((uint32_t)e[off + 1] << 16) |
+      ((uint32_t)e[off + 2] << 8) | (uint32_t)e[off + 3];
+}
+
 /** Does this Exif blob's IFD0 carry a GPS IFD pointer? */
 inline bool exif_has_gps_tag(const std::vector<uint8_t> & e) {
   if (e.size() < 14) { return false; }
-  const uint32_t ifd0 = (uint32_t)e[4] | ((uint32_t)e[5] << 8) |
-      ((uint32_t)e[6] << 16) | ((uint32_t)e[7] << 24);
+  const uint32_t ifd0 = exif_u32(e, 4);
   if (ifd0 + 2u > e.size()) { return false; }
-  const uint16_t n = (uint16_t)(e[ifd0] | (e[ifd0 + 1] << 8));
+  const uint16_t n = exif_u16(e, ifd0);
   for (uint16_t k = 0; k < n; k++) {
     const size_t off = ifd0 + 2u + (size_t)k * 12u;
     if (off + 12u > e.size()) { return false; }
-    if ((uint16_t)(e[off] | (e[off + 1] << 8)) == 0x8825u) { return true; }
+    if (exif_u16(e, off) == 0x8825u) { return true; }
   }
   return false;
 }
@@ -127,10 +178,9 @@ inline bool exif_has_gps_tag(const std::vector<uint8_t> & e) {
 /** Count IFD0 entries, so "GPS gone" can be told from "everything gone". */
 inline int exif_ifd0_entry_count(const std::vector<uint8_t> & e) {
   if (e.size() < 14) { return -1; }
-  const uint32_t ifd0 = (uint32_t)e[4] | ((uint32_t)e[5] << 8) |
-      ((uint32_t)e[6] << 16) | ((uint32_t)e[7] << 24);
+  const uint32_t ifd0 = exif_u32(e, 4);
   if (ifd0 + 2u > e.size()) { return -1; }
-  return (int)(uint16_t)(e[ifd0] | (e[ifd0 + 1] << 8));
+  return (int)exif_u16(e, ifd0);
 }
 
 

@@ -41,10 +41,6 @@
 // Minimum size: TIFF header (8) + IFD at least 2 + 0 entries + 4 = 14.
 #define GIMG_EXIF_MIN_SIZE 14u
 
-static bool is_little_endian(const unsigned char * h) {
-  return h[0] == 0x49u && h[1] == 0x49u; // "II"
-}
-
 /**
  * Does a run of @a length bytes at @a offset lie inside a buffer of @a size?
  *
@@ -83,6 +79,44 @@ static uint32_t read_u32(const unsigned char * p, int little) {
       ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
+/**
+ * Read a TIFF header's byte-order mark and magic number, together.
+ *
+ * TIFF 6.0 section 2 gives the first two bytes exactly two legal values, "II"
+ * for little-endian and "MM" for big-endian, and the 16-bit 42 that follows is
+ * written in *that* order - 2A 00 one way round, 00 2A the other.
+ *
+ * Every entry point here used to test the magic before establishing the order,
+ * and test it only in its little-endian spelling, which rejected every
+ * big-endian file at the door however carefully the code below carried the
+ * flag around. The two questions are one question and are answered here once.
+ *
+ * A mark that is neither "II" nor "MM" is refused rather than assumed. The
+ * old code treated anything that was not "II" as big-endian, so a garbage mark
+ * followed by the little-endian spelling of 42 was accepted and then had every
+ * one of its fields read backwards.
+ *
+ * @return false if this is not a TIFF header; otherwise true, with @p out_le
+ *   set to 1 for little-endian and 0 for big-endian.
+ */
+static bool exif_read_header(const unsigned char * h, int * out_le) {
+  int le;
+  if (h[0] == 0x49u && h[1] == 0x49u) {
+    le = 1; // "II"
+  }
+  else if (h[0] == 0x4Du && h[1] == 0x4Du) {
+    le = 0; // "MM"
+  }
+  else {
+    return false;
+  }
+  if (read_u16(h + 2, le) != 42u) {
+    return false;
+  }
+  *out_le = le;
+  return true;
+}
+
 static void write_u16(unsigned char * p, uint16_t v, int little) {
   if (little) {
     p[0] = (unsigned char)(v);
@@ -116,10 +150,10 @@ GIMG_Result gimg_exif_parse_orientation(
   }
   *out = GIMG_ORIENTATION_UNKNOWN;
   const unsigned char * buf = (const unsigned char *)exif;
-  if (buf[2] != 42 || buf[3] != 0) {
+  int le = 0;
+  if (!exif_read_header(buf, &le)) {
     return GIMG_ERR_CORRUPT;
   }
-  int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
   if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;
@@ -272,10 +306,10 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
     return GIMG_ERR_CORRUPT;
   }
   const unsigned char * buf = (const unsigned char *)exif;
-  if (buf[2] != 42 || buf[3] != 0) {
+  int le = 0;
+  if (!exif_read_header(buf, &le)) {
     return GIMG_ERR_CORRUPT;
   }
-  const int le = is_little_endian(buf);
   const uint32_t ifd0_off = read_u32(buf + 4, le);
 
   exif_ifd_plan_t ifd[EXIF_IFD_COUNT];
@@ -454,10 +488,10 @@ GIMG_Result gimg_exif_normalize(const GIMG_Allocator * allocator,
     return GIMG_ERR_CORRUPT; // See gimg_exif_strip_gps().
   }
   const unsigned char * buf = (const unsigned char *)exif;
-  if (buf[2] != 42 || buf[3] != 0) {
+  int le = 0;
+  if (!exif_read_header(buf, &le)) {
     return GIMG_ERR_CORRUPT;
   }
-  int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
   if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;
@@ -507,10 +541,10 @@ GIMG_Result gimg_exif_embedded_thumbnail_jpeg(
     return GIMG_OK;
   }
   const unsigned char * buf = (const unsigned char *)tiff;
-  if (buf[2] != 42 || buf[3] != 0) {
+  int le = 0;
+  if (!exif_read_header(buf, &le)) {
     return GIMG_ERR_CORRUPT;
   }
-  int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
   if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;
@@ -620,10 +654,10 @@ GIMG_Result gimg_exif_embedded_thumbnail_uncompressed(
   *out_data = NULL;
   *out_size = 0;
   const unsigned char * buf = (const unsigned char *)tiff;
-  if (buf[2] != 42 || buf[3] != 0) {
+  int le = 0;
+  if (!exif_read_header(buf, &le)) {
     return GIMG_ERR_CORRUPT;
   }
-  int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
   if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;
@@ -798,10 +832,10 @@ GIMG_Result gimg_exif_embedded_thumbnail_tiff_jpeg(
     return GIMG_OK;
   }
   const unsigned char * buf = (const unsigned char *)tiff;
-  if (buf[2] != 42 || buf[3] != 0) {
+  int le = 0;
+  if (!exif_read_header(buf, &le)) {
     return GIMG_ERR_CORRUPT;
   }
-  int le = is_little_endian(buf);
   uint32_t ifd0 = read_u32(buf + 4, le);
   if (!exif_region_fits(ifd0, 2u, size)) {
     return GIMG_ERR_CORRUPT;

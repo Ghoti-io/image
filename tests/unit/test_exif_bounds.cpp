@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "../../src/meta/exif_internal.h"
+#include "../exif_test_utils.h"
 
 namespace {
 
@@ -273,4 +274,142 @@ TEST(ExifStripGps, ABlobWithNoGpsComesBackIdentical) {
   const bool same = out_n == in.size() && std::memcmp(out_p, in.data(), out_n) == 0;
   free(out_p);
   EXPECT_TRUE(same) << "with no GPS present the contract is an exact copy";
+}
+
+namespace {
+
+/** The same picture's metadata, written both ways round. */
+struct ByteOrderCase {
+  const char * name;
+  bool little_endian;
+};
+
+const ByteOrderCase kByteOrders[] = {
+    {"little-endian (II)", true},
+    {"big-endian (MM)", false},
+};
+
+} // namespace
+
+/**
+ * Exif in either byte order is read, not just "II".
+ *
+ * TIFF 6.0 section 2 gives the header two legal spellings, "II" for
+ * little-endian and "MM" for big-endian, and cameras write both. Every read in
+ * exif.c already takes a byte-order flag and has both arms written out, so the
+ * support is there - but each entry point checked the magic number *before*
+ * working out the byte order, and checked it only in its little-endian
+ * spelling (`buf[2] != 42 || buf[3] != 0`). In a big-endian header those two
+ * bytes are 00 2A, so every "MM" blob was rejected as corrupt at the door and
+ * none of the big-endian arms below had ever run.
+ *
+ * This is written as a differential rather than as a big-endian assertion on
+ * its own: the two blobs describe the same picture, so the answer has to be
+ * the same, and comparing them catches a byte-order bug that a single-sided
+ * test would have to know the right answer in advance to notice.
+ */
+TEST(ExifByteOrder, OrientationReadsTheSameEitherWayRound) {
+  GIMG_Orientation seen[2];
+  for (int i = 0; i < 2; i++) {
+    const std::vector<uint8_t> e =
+        exif_test::make_exif_with_gps(kByteOrders[i].little_endian);
+    seen[i] = GIMG_ORIENTATION_UNKNOWN;
+    EXPECT_EQ(gimg_exif_parse_orientation(e.data(), e.size(), &seen[i]),
+        GIMG_OK)
+        << kByteOrders[i].name << " was refused";
+  }
+  EXPECT_EQ(seen[0], GIMG_ORIENTATION_NORMAL)
+      << "the fixture sets Orientation = 1";
+  EXPECT_EQ(seen[1], seen[0])
+      << "the same metadata in the other byte order read differently";
+}
+
+/**
+ * Stripping GPS works on a big-endian blob and keeps it big-endian.
+ *
+ * The rebuild has to carry the source's byte order through: an output whose
+ * header says "MM" but whose fields are little-endian is not readable by
+ * anything, and would pass a test that only asked whether the GPS tag was
+ * gone. So this walks the result with an inspector that reads the mark out of
+ * the blob rather than assuming one.
+ */
+TEST(ExifByteOrder, StrippingGpsKeepsTheSourceByteOrder) {
+  for (const ByteOrderCase & bo : kByteOrders) {
+    const std::vector<uint8_t> e = exif_test::make_exif_with_gps(bo.little_endian);
+    ASSERT_TRUE(exif_test::exif_has_gps_tag(e)) << bo.name << ": bad fixture";
+    ASSERT_EQ(exif_test::exif_ifd0_entry_count(e), 3) << bo.name;
+
+    void * out_p = nullptr;
+    size_t out_n = 0;
+    ASSERT_EQ(gimg_exif_strip_gps(nullptr, e.data(), e.size(), &out_p, &out_n),
+        GIMG_OK)
+        << bo.name << ": the policy could not be applied";
+    ASSERT_NE(out_p, nullptr);
+    const std::vector<uint8_t> out(
+        (uint8_t *)out_p, (uint8_t *)out_p + out_n);
+    free(out_p);
+
+    // The byte-order mark survives, and so does the magic, in its spelling.
+    EXPECT_EQ(out[0], bo.little_endian ? 'I' : 'M') << bo.name;
+    EXPECT_EQ(out[1], bo.little_endian ? 'I' : 'M') << bo.name;
+    EXPECT_EQ(out[2], bo.little_endian ? 42 : 0) << bo.name << ": magic";
+    EXPECT_EQ(out[3], bo.little_endian ? 0 : 42) << bo.name << ": magic";
+
+    // Read back through the blob's own mark: GPS gone, the rest still there.
+    EXPECT_FALSE(exif_test::exif_has_gps_tag(out)) << bo.name;
+    EXPECT_EQ(exif_test::exif_ifd0_entry_count(out), 2)
+        << bo.name << ": the other two IFD0 entries must survive";
+
+    // And the library still agrees it is a readable blob saying the same thing.
+    GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
+    EXPECT_EQ(gimg_exif_parse_orientation(out.data(), out.size(), &o), GIMG_OK)
+        << bo.name << ": the stripped blob no longer parses";
+    EXPECT_EQ(o, GIMG_ORIENTATION_NORMAL) << bo.name;
+  }
+}
+
+/**
+ * A header whose byte-order mark is neither "II" nor "MM" is refused.
+ *
+ * The blob this builds is the dangerous shape, not merely a malformed one: a
+ * big-endian body, the little-endian spelling of the magic number, and a mark
+ * of "XY". The old code tested the magic first and in that spelling only, then
+ * set the flag with `h[0] == 'I' && h[1] == 'I'` - false for anything that is
+ * not "II" - so this file passed the door, was read as big-endian throughout,
+ * and came back as perfectly good metadata. Nothing in the file said it was
+ * big-endian. The code inferred it from the absence of "II".
+ *
+ * So the assertion is that it is *refused*, and the case is built to fail
+ * against the old behaviour rather than to be refused by a bounds check on the
+ * way past: with the mark restored to "MM" the very same bytes parse, which is
+ * the control that says the refusal is about the mark and nothing else.
+ */
+TEST(ExifByteOrder, AHeaderWithNoRecognizedByteOrderMarkIsRefused) {
+  std::vector<uint8_t> e = exif_test::make_exif_with_gps(false); // big-endian
+  // The little-endian spelling of 42, which is what the old gate demanded.
+  e[2] = 42;
+  e[3] = 0;
+  e[0] = 'X';
+  e[1] = 'Y';
+
+  GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
+  EXPECT_EQ(gimg_exif_parse_orientation(e.data(), e.size(), &o),
+      GIMG_ERR_CORRUPT)
+      << "a mark of 'XY' is not a byte order; reading the file as big-endian "
+         "because it is not 'II' is a guess, and it produced metadata";
+
+  void * out_p = nullptr;
+  size_t out_n = 0;
+  EXPECT_EQ(gimg_exif_strip_gps(nullptr, e.data(), e.size(), &out_p, &out_n),
+      GIMG_ERR_CORRUPT)
+      << "the same header must be refused by every entry point, not just one";
+  if (out_p) { free(out_p); }
+
+  // The control: the only thing wrong with those bytes was the mark.
+  std::vector<uint8_t> good = exif_test::make_exif_with_gps(false);
+  GIMG_Orientation o2 = GIMG_ORIENTATION_UNKNOWN;
+  EXPECT_EQ(gimg_exif_parse_orientation(good.data(), good.size(), &o2), GIMG_OK)
+      << "same body, real mark: this must parse, or the test above is only "
+         "rejecting a blob that was broken for some other reason";
+  EXPECT_EQ(o2, GIMG_ORIENTATION_NORMAL);
 }
