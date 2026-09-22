@@ -5797,3 +5797,135 @@ TEST(JpegLoad, ALieInASegmentLengthIsRefusedCleanly) {
       << " length lies were refused, which is not enough to say this sweep "
          "distinguishes a loader that checks from one that does not";
 }
+
+namespace {
+
+static const uint32_t kJpegRawApp1Xmp = 0xE101u;
+
+/** One APPn segment: the marker's low byte and its payload. */
+struct AppSegment {
+  uint8_t marker;
+  std::vector<uint8_t> payload;
+};
+
+/** baseline_8x8_gray.jpg with @p segs inserted after SOI, in order. */
+bool jpeg_with_apps(const std::vector<AppSegment> & segs,
+    std::vector<uint8_t> & out) {
+  std::vector<uint8_t> base;
+  if (!jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", base)) { return false; }
+  if (base.size() < 4) { return false; }
+  out.clear();
+  out.push_back(0xFF);
+  out.push_back(0xD8);
+  for (const AppSegment & s : segs) {
+    if (s.payload.size() + 2u > 0xFFFFu) { return false; }
+    out.push_back(0xFF);
+    out.push_back(s.marker);
+    out.push_back((uint8_t)((s.payload.size() + 2u) >> 8));
+    out.push_back((uint8_t)((s.payload.size() + 2u) & 0xFFu));
+    out.insert(out.end(), s.payload.begin(), s.payload.end());
+  }
+  out.insert(out.end(), base.begin() + 2, base.end());
+  return true;
+}
+
+std::vector<uint8_t> with_prefix(const char * prefix, size_t prefix_len,
+    const std::string & rest) {
+  std::vector<uint8_t> v(prefix, prefix + prefix_len);
+  v.insert(v.end(), rest.begin(), rest.end());
+  return v;
+}
+
+/** The raw block @p id of a loaded JPEG, or empty if it has none. */
+std::vector<uint8_t> raw_block_of(const std::vector<uint8_t> & jpeg,
+    uint32_t id) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s) != GIMG_OK) {
+    return {};
+  }
+  GIMG_Doc * doc = nullptr;
+  const GIMG_Result lr = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (lr != GIMG_OK) { return {}; }
+  std::vector<uint8_t> out;
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  size_t n = 0;
+  if (raw && gimg_meta_raw_get(raw, "jpeg", id, nullptr, &n) == GIMG_OK &&
+      n > 0) {
+    out.resize(n);
+    if (gimg_meta_raw_get(raw, "jpeg", id, out.data(), &n) != GIMG_OK) {
+      out.clear();
+    }
+  }
+  gimg_doc_destroy(doc);
+  return out;
+}
+
+} // namespace
+
+/**
+ * JFXX and XMP survive a load, and neither had ever been in a fixture.
+ *
+ * APP0 carries JFIF, and a second APP0 beginning "JFXX\0" carries the JFIF
+ * extension; APP1 carries Exif, and a second APP1 beginning with Adobe's XMP
+ * namespace URI carries XMP. The loader recognises all four and keeps each
+ * under its own raw-metadata id, but no fixture in the suite had ever held a
+ * JFXX or an XMP segment - the code that attaches them to the document was
+ * unreached, and the test file even declared a constant for the JFXX id that
+ * nothing used.
+ *
+ * Both are asserted byte for byte rather than by presence: a loader that kept
+ * the segment under the wrong id, or that stored the marker header along with
+ * the payload, would satisfy "there is something there".
+ */
+TEST(JpegLoad, JfxxAndXmpAreKeptUnderTheirOwnIds) {
+  const std::vector<uint8_t> jfxx =
+      with_prefix("JFXX\0", 5, std::string("\x10", 1)); // extension code 0x10
+  const std::vector<uint8_t> xmp = with_prefix(
+      "http://ns.adobe.com/xap/1.0/\0", 29, "<x:xmpmeta/>");
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_with_apps({{0xE0u, jfxx}, {0xE1u, xmp}}, jpeg));
+
+  EXPECT_EQ(raw_block_of(jpeg, kJpegRawApp0Jfxx), jfxx)
+      << "the JFIF extension segment did not arrive under the JFXX id";
+  EXPECT_EQ(raw_block_of(jpeg, kJpegRawApp1Xmp), xmp)
+      << "the XMP packet did not arrive under the XMP id";
+}
+
+/**
+ * A second JFXX or XMP segment replaces the first rather than leaking it.
+ *
+ * A file may carry the same segment twice - rewriting tools produce these -
+ * and the loader keeps the later one, freeing what it already had. That free
+ * is the only thing standing between a duplicated segment and a leak, and it
+ * had never executed.
+ *
+ * Where the leak shows up is worth knowing before you go looking for it.
+ * Removing the free and running this under `make test-asan` leaves the gtest
+ * line reading [ OK ] - the assertions below are about which segment was
+ * kept, and that stays right - while the binary exits 1 with "20 byte(s)
+ * leaked in 2 allocation(s)" from LeakSanitizer at teardown. A harness that
+ * decides pass or fail by grepping for FAILED would call that a pass. Read
+ * the exit status.
+ *
+ * Which segment wins is asserted too, because "the first" and "the last" are
+ * both defensible and only one of them is what this code does.
+ */
+TEST(JpegLoad, ADuplicateJfxxOrXmpKeepsTheLastAndFreesTheFirst) {
+  const std::vector<uint8_t> jfxx1 = with_prefix("JFXX\0", 5, "first");
+  const std::vector<uint8_t> jfxx2 = with_prefix("JFXX\0", 5, "second");
+  const std::vector<uint8_t> xmp1 =
+      with_prefix("http://ns.adobe.com/xap/1.0/\0", 29, "<one/>");
+  const std::vector<uint8_t> xmp2 =
+      with_prefix("http://ns.adobe.com/xap/1.0/\0", 29, "<two/>");
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_with_apps(
+      {{0xE0u, jfxx1}, {0xE0u, jfxx2}, {0xE1u, xmp1}, {0xE1u, xmp2}}, jpeg));
+
+  EXPECT_EQ(raw_block_of(jpeg, kJpegRawApp0Jfxx), jfxx2)
+      << "the later JFXX segment is the one kept";
+  EXPECT_EQ(raw_block_of(jpeg, kJpegRawApp1Xmp), xmp2)
+      << "the later XMP segment is the one kept";
+}
