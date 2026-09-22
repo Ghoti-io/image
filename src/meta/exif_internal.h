@@ -45,6 +45,10 @@ extern "C" {
 /** GPS IFD pointer tag (IFD0). Type LONG (4), count 1; value = offset to GPS
  * IFD. */
 #define GIMG_EXIF_TAG_GPS_IFD UINT16_C(0x8825)
+/** Exif sub-IFD pointer (IFD0). Type LONG, count 1. */
+#define GIMG_EXIF_TAG_EXIF_IFD UINT16_C(0x8769)
+/** Interoperability IFD pointer (Exif sub-IFD). Type LONG, count 1. */
+#define GIMG_EXIF_TAG_INTEROP_IFD UINT16_C(0xA005)
 
 /** Compression (IFD1 thumbnail). Type SHORT; 1 = none, 6 = JPEG, 7 = TIFF
  * TechNote 2 JPEG. */

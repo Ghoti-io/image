@@ -974,9 +974,226 @@ TEST(PngEncode, SaveWithDropAllStripsMetadata) {
   gimg_doc_destroy(doc2);
 }
 
-TEST(PngEncode, SaveWithStripGpsStripsOnlyGps) {
-  // STRIP_GPS strips only GPS from eXIf; eXIf chunk is preserved (re-written
-  // without GPS IFD).
+namespace {
+
+/**
+ * A real little-endian Exif blob: IFD0 carries Orientation, ResolutionUnit
+ * and a GPS IFD pointer (0x8825); the GPS IFD carries GPSLatitudeRef and a
+ * GPSLatitude rational triple.
+ *
+ * This is built here rather than taken from a fixture because the fixture
+ * that the metadata-policy tests were using, png_exif.png, holds a six-byte
+ * eXIf payload of 00 01 02 03 04 05. That is below GIMG_EXIF_MIN_SIZE, so
+ * gimg_exif_strip_gps() rejected it on entry and png_save.c - which uses the
+ * stripped blob only `if (... == GIMG_OK)` - wrote the original through. The
+ * policy tests passed because nothing happened.
+ */
+std::vector<uint8_t> make_exif_with_gps() {
+  std::vector<uint8_t> e;
+  auto u16 = [&e](uint16_t v) {
+    e.push_back((uint8_t)(v & 0xFF));
+    e.push_back((uint8_t)(v >> 8));
+  };
+  auto u32 = [&e](uint32_t v) {
+    for (int i = 0; i < 4; i++) { e.push_back((uint8_t)((v >> (8 * i)) & 0xFF)); }
+  };
+  auto entry = [&](uint16_t tag, uint16_t type, uint32_t count, uint32_t val) {
+    u16(tag); u16(type); u32(count); u32(val);
+  };
+  // TIFF header: little-endian, magic 42, IFD0 at offset 8.
+  e.push_back('I'); e.push_back('I');
+  u16(42);
+  u32(8);
+  // IFD0: three entries.  Tags must ascend.
+  const uint32_t gps_ifd_off = 8u + 2u + 3u * 12u + 4u; // = 50
+  u16(3);
+  entry(0x0112u, 3u, 1u, 1u);            // Orientation = 1 (SHORT, inline)
+  entry(0x0128u, 3u, 1u, 2u);            // ResolutionUnit = inch
+  entry(0x8825u, 4u, 1u, gps_ifd_off);   // GPS IFD pointer (LONG)
+  u32(0);                                 // no IFD1
+  // GPS IFD: two entries, then the rational payload it points at.
+  const uint32_t rational_off = gps_ifd_off + 2u + 2u * 12u + 4u; // = 80
+  u16(2);
+  entry(0x0001u, 2u, 2u, (uint32_t)('N')); // GPSLatitudeRef "N\0" inline
+  entry(0x0002u, 5u, 3u, rational_off);    // GPSLatitude, 3 rationals
+  u32(0);
+  const uint32_t lat[6] = {51u, 1u, 30u, 1u, 26u, 1u}; // 51 deg 30' 26"
+  for (int i = 0; i < 6; i++) { u32(lat[i]); }
+  return e;
+}
+
+uint32_t png_crc(const uint8_t * p, size_t n) {
+  static uint32_t table[256];
+  static bool built = false;
+  if (!built) {
+    for (uint32_t i = 0; i < 256; i++) {
+      uint32_t c = i;
+      for (int k = 0; k < 8; k++) { c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1); }
+      table[i] = c;
+    }
+    built = true;
+  }
+  uint32_t c = 0xFFFFFFFFu;
+  for (size_t i = 0; i < n; i++) { c = table[(c ^ p[i]) & 0xFF] ^ (c >> 8); }
+  return c ^ 0xFFFFFFFFu;
+}
+
+/** Replace the eXIf chunk payload of a PNG, fixing length and CRC. */
+bool replace_exif_chunk(std::vector<uint8_t> & png,
+    const std::vector<uint8_t> & exif) {
+  size_t i = 8;
+  while (i + 12 <= png.size()) {
+    uint32_t len = ((uint32_t)png[i] << 24) | ((uint32_t)png[i + 1] << 16) |
+        ((uint32_t)png[i + 2] << 8) | (uint32_t)png[i + 3];
+    const bool is_exif = std::memcmp(&png[i + 4], "eXIf", 4) == 0;
+    if (is_exif) {
+      std::vector<uint8_t> out(png.begin(), png.begin() + (long)i);
+      const uint32_t n = (uint32_t)exif.size();
+      out.push_back((uint8_t)(n >> 24)); out.push_back((uint8_t)(n >> 16));
+      out.push_back((uint8_t)(n >> 8));  out.push_back((uint8_t)n);
+      const size_t crc_start = out.size();
+      out.insert(out.end(), {'e', 'X', 'I', 'f'});
+      out.insert(out.end(), exif.begin(), exif.end());
+      const uint32_t crc = png_crc(&out[crc_start], 4 + exif.size());
+      out.push_back((uint8_t)(crc >> 24)); out.push_back((uint8_t)(crc >> 16));
+      out.push_back((uint8_t)(crc >> 8));  out.push_back((uint8_t)crc);
+      out.insert(out.end(), png.begin() + (long)(i + 12 + len), png.end());
+      png.swap(out);
+      return true;
+    }
+    i += 12 + len;
+  }
+  return false;
+}
+
+/** Does this Exif blob's IFD0 carry a GPS IFD pointer? */
+bool exif_has_gps_tag(const std::vector<uint8_t> & e) {
+  if (e.size() < 14) { return false; }
+  const uint32_t ifd0 = (uint32_t)e[4] | ((uint32_t)e[5] << 8) |
+      ((uint32_t)e[6] << 16) | ((uint32_t)e[7] << 24);
+  if (ifd0 + 2u > e.size()) { return false; }
+  const uint16_t n = (uint16_t)(e[ifd0] | (e[ifd0 + 1] << 8));
+  for (uint16_t k = 0; k < n; k++) {
+    const size_t off = ifd0 + 2u + (size_t)k * 12u;
+    if (off + 12u > e.size()) { return false; }
+    if ((uint16_t)(e[off] | (e[off + 1] << 8)) == 0x8825u) { return true; }
+  }
+  return false;
+}
+
+/** Count IFD0 entries, so "GPS gone" can be told from "everything gone". */
+int exif_ifd0_entry_count(const std::vector<uint8_t> & e) {
+  if (e.size() < 14) { return -1; }
+  const uint32_t ifd0 = (uint32_t)e[4] | ((uint32_t)e[5] << 8) |
+      ((uint32_t)e[6] << 16) | ((uint32_t)e[7] << 24);
+  if (ifd0 + 2u > e.size()) { return -1; }
+  return (int)(uint16_t)(e[ifd0] | (e[ifd0 + 1] << 8));
+}
+
+/** Load png_exif.png, swap in `exif`, save under `policy`, return the eXIf. */
+bool round_trip_exif(const std::vector<uint8_t> & exif,
+    GIMG_Meta_Policy policy, std::vector<uint8_t> & out_exif) {
+  std::vector<uint8_t> file;
+  if (!png_test::load_png_file("png_exif.png", file)) { return false; }
+  if (!replace_exif_chunk(file, exif)) { return false; }
+
+  GIMG_Stream * in = nullptr;
+  if (gimg_stream_create_memory(file.data(), file.size(), &in) != GIMG_OK) {
+    return false;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(in, nullptr, nullptr, &doc);
+  gimg_stream_destroy(in);
+  if (r != GIMG_OK || !doc) { return false; }
+
+  GIMG_Stream * out = nullptr;
+  if (gimg_stream_create_memory_output(&out) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return false;
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = policy;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out, "png", &opts, &report);
+  gimg_doc_destroy(doc);
+  if (r != GIMG_OK) { gimg_stream_destroy(out); return false; }
+
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out, &p, &n);
+  std::vector<uint8_t> saved((const uint8_t *)p, (const uint8_t *)p + n);
+  gimg_stream_destroy(out);
+
+  GIMG_Stream * in2 = nullptr;
+  if (gimg_stream_create_memory(saved.data(), saved.size(), &in2) != GIMG_OK) {
+    return false;
+  }
+  GIMG_Doc * doc2 = nullptr;
+  r = gimg_doc_load(in2, nullptr, nullptr, &doc2);
+  gimg_stream_destroy(in2);
+  if (r != GIMG_OK || !doc2) { return false; }
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc2);
+  size_t sz = 0;
+  if (!raw || gimg_meta_raw_get(raw, "png", 0x65584966u, nullptr, &sz) !=
+          GIMG_OK) {
+    gimg_doc_destroy(doc2);
+    return false;
+  }
+  out_exif.assign(sz, 0);
+  r = gimg_meta_raw_get(raw, "png", 0x65584966u, out_exif.data(), &sz);
+  out_exif.resize(sz);
+  gimg_doc_destroy(doc2);
+  return r == GIMG_OK;
+}
+
+} // namespace
+
+/**
+ * The control: without the policy, the GPS pointer survives a save.
+ *
+ * Without this, "no GPS after STRIP_GPS" is satisfied by a writer that drops
+ * Exif altogether, or by one that never had it - which is exactly how the
+ * previous test passed against a six-byte payload.
+ */
+TEST(PngEncode, PreserveAllKeepsTheGpsPointer) {
+  const std::vector<uint8_t> exif = make_exif_with_gps();
+  ASSERT_TRUE(exif_has_gps_tag(exif)) << "the fixture must start with GPS";
+  ASSERT_EQ(exif_ifd0_entry_count(exif), 3);
+
+  std::vector<uint8_t> got;
+  ASSERT_TRUE(round_trip_exif(exif, GIMG_META_PRESERVE_ALL, got));
+  EXPECT_TRUE(exif_has_gps_tag(got))
+      << "PRESERVE_ALL must not remove the GPS IFD pointer";
+  EXPECT_EQ(exif_ifd0_entry_count(got), 3);
+}
+
+/** STRIP_GPS removes the GPS pointer and leaves the other two tags. */
+TEST(PngEncode, StripGpsRemovesTheGpsIfdAndKeepsTheRest) {
+  const std::vector<uint8_t> exif = make_exif_with_gps();
+  std::vector<uint8_t> got;
+  ASSERT_TRUE(round_trip_exif(exif, GIMG_META_STRIP_GPS, got));
+
+  EXPECT_FALSE(exif_has_gps_tag(got))
+      << "STRIP_GPS left tag 0x8825 in IFD0";
+  EXPECT_EQ(exif_ifd0_entry_count(got), 2)
+      << "STRIP_GPS must remove exactly the GPS entry, leaving Orientation "
+         "and ResolutionUnit";
+  EXPECT_LT(got.size(), exif.size())
+      << "the GPS IFD and its rational payload should be gone too";
+}
+
+/**
+ * A payload too short to be Exif survives STRIP_GPS unchanged.
+ *
+ * Named for what it checks.  It was called SaveWithStripGpsStripsOnlyGps and
+ * asserted only that the eXIf chunk was still present and at least six bytes
+ * long - which it is, because png_exif.png's payload is six bytes of
+ * 00 01 02 03 04 05, below GIMG_EXIF_MIN_SIZE.  gimg_exif_strip_gps() refused
+ * it on entry and the writer passed the original through, so the test could
+ * not have failed had the stripping been wrong.  The real behaviour is now in
+ * StripGpsRemovesTheGpsIfdAndKeepsTheRest.
+ */
+TEST(PngEncode, StripGpsLeavesAnUnparseablePayloadAlone) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(png_test::load_png_file("png_exif.png", buf))
       << "Run tests/data/png/generate.py";

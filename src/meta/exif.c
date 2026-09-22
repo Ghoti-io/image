@@ -148,18 +148,113 @@ GIMG_Result gimg_exif_parse_orientation(
   return GIMG_OK;
 }
 
-// Compute size of IFD at given offset (2 + 12*num_entries + 4). Return 0 if
-// invalid.
-static size_t exif_ifd_size(
-    const unsigned char * buf, size_t size, uint32_t ifd_off, int le) {
-  if (!exif_region_fits(ifd_off, 2u, size)) {
-    return 0;
+
+/** TIFF field type sizes in bytes; 0 for a type this code does not know. */
+static size_t exif_type_size(uint16_t type) {
+  switch (type) {
+    case 1: /* BYTE */
+    case 2: /* ASCII */
+    case 6: /* SBYTE */
+    case 7: /* UNDEFINED */
+      return 1u;
+    case 3: /* SHORT */
+    case 8: /* SSHORT */
+      return 2u;
+    case 4: /* LONG */
+    case 9: /* SLONG */
+    case 11: /* FLOAT */
+      return 4u;
+    case 5: /* RATIONAL */
+    case 10: /* SRATIONAL */
+    case 12: /* DOUBLE */
+      return 8u;
+    default:
+      return 0u;
   }
-  uint16_t n = read_u16(buf + ifd_off, le);
-  if (!exif_region_fits(ifd_off, 2u + (uint64_t)n * 12u + 4u, size)) {
-    return 0;
+}
+
+/** The IFDs a strip walks, in the order they are written. */
+enum {
+  EXIF_IFD_0 = 0,
+  EXIF_IFD_EXIF,
+  EXIF_IFD_INTEROP,
+  EXIF_IFD_1,
+  EXIF_IFD_COUNT
+};
+
+typedef struct {
+  uint32_t src; /**< Offset of this IFD in the source blob. */
+  uint32_t dst; /**< Offset it is being written to. */
+  uint16_t n_src;
+  uint16_t n_dst;
+  bool present;
+} exif_ifd_plan_t;
+
+/** Read an IFD header, checking the whole directory lies inside the blob. */
+static bool exif_plan_ifd(const unsigned char * buf, size_t size, int le,
+    uint32_t off, exif_ifd_plan_t * plan) {
+  if (off == 0u || !exif_region_fits(off, 2u, size)) {
+    return false;
   }
-  return 2 + (size_t)n * 12 + 4;
+  const uint16_t n = read_u16(buf + off, le);
+  if (!exif_region_fits(off, 2u + (uint64_t)n * 12u + 4u, size)) {
+    return false;
+  }
+  plan->src = off;
+  plan->dst = 0u;
+  plan->n_src = n;
+  plan->n_dst = n;
+  plan->present = true;
+  return true;
+}
+
+/** Value of a SHORT or LONG tag with count 1, or `def` when absent. */
+static uint32_t exif_find_uint(const unsigned char * buf, int le,
+    const exif_ifd_plan_t * ifd, uint16_t tag, uint32_t def) {
+  for (uint16_t i = 0; i < ifd->n_src; i++) {
+    const size_t off = ifd->src + 2u + (size_t)i * 12u;
+    if (read_u16(buf + off, le) != tag) {
+      continue;
+    }
+    const uint16_t type = read_u16(buf + off + 2, le);
+    if (read_u32(buf + off + 4, le) != 1u) {
+      continue;
+    }
+    if (type == GIMG_EXIF_TYPE_LONG) {
+      return read_u32(buf + off + 8, le);
+    }
+    if (type == GIMG_EXIF_TYPE_SHORT) {
+      return read_u16(buf + off + 8, le);
+    }
+  }
+  return def;
+}
+
+/**
+ * Bytes this entry keeps outside the 4-byte value field, and where they are.
+ *
+ * Returns 0 for an entry whose value is inline. The thumbnail pointer is the
+ * one entry whose payload size is not derivable from its own type and count -
+ * it is a LONG, so it looks inline - and the caller passes its length in.
+ */
+static size_t exif_entry_payload(const unsigned char * buf, size_t size,
+    int le, size_t ent, uint32_t * out_src) {
+  const uint16_t type = read_u16(buf + ent + 2, le);
+  const uint32_t count = read_u32(buf + ent + 4, le);
+  const size_t ts = exif_type_size(type);
+  if (ts == 0u) {
+    return 0u; // Unknown type: keep the four value bytes as they stand.
+  }
+  const uint64_t bytes = (uint64_t)ts * count;
+  if (bytes <= 4u) {
+    return 0u;
+  }
+  const uint32_t src = read_u32(buf + ent + 8, le);
+  if (!exif_region_fits(src, bytes, size)) {
+    return 0u; // Out of bounds: treated as inline rather than trusted.
+  }
+  *out_src = src;
+  return (size_t)bytes;
 }
 
 GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
@@ -173,29 +268,20 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
   if (buf[2] != 42 || buf[3] != 0) {
     return GIMG_ERR_CORRUPT;
   }
-  int le = is_little_endian(buf);
-  uint32_t ifd0 = read_u32(buf + 4, le);
-  size_t ifd0_size = exif_ifd_size(buf, size, ifd0, le);
-  if (ifd0_size == 0) {
+  const int le = is_little_endian(buf);
+  const uint32_t ifd0_off = read_u32(buf + 4, le);
+
+  exif_ifd_plan_t ifd[EXIF_IFD_COUNT];
+  memset(ifd, 0, sizeof(ifd));
+  if (!exif_plan_ifd(buf, size, le, ifd0_off, &ifd[EXIF_IFD_0])) {
     return GIMG_ERR_CORRUPT;
   }
-  uint16_t num_entries = read_u16(buf + ifd0, le);
-  size_t gps_entry_index = (size_t)(-1);
-  uint32_t gps_ifd_offset = 0;
-  for (uint16_t i = 0; i < num_entries; i++) {
-    size_t off = ifd0 + 2 + (size_t)i * 12;
-    if (read_u16(buf + off, le) == GIMG_EXIF_TAG_GPS_IFD) {
-      if (read_u16(buf + off + 2, le) != GIMG_EXIF_TYPE_LONG ||
-          read_u32(buf + off + 4, le) != 1) {
-        continue;
-      }
-      gps_entry_index = i;
-      gps_ifd_offset = read_u32(buf + off + 8, le);
-      break;
-    }
-  }
-  if (gps_entry_index == (size_t)(-1)) {
-    // No GPS IFD: return a copy.
+
+  // Is there a GPS pointer to remove at all?
+  const uint32_t gps_off = exif_find_uint(
+      buf, le, &ifd[EXIF_IFD_0], GIMG_EXIF_TAG_GPS_IFD, 0u);
+  if (gps_off == 0u) {
+    // Nothing to strip: hand back a copy, as the contract promises.
     allocator = gimg_alloc_or_default(allocator);
     unsigned char * copy = (unsigned char *)gimg_malloc(allocator, size);
     if (!copy) {
@@ -206,55 +292,147 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
     *out_size = size;
     return GIMG_OK;
   }
-  size_t gps_ifd_size = exif_ifd_size(buf, size, gps_ifd_offset, le);
-  if (gps_ifd_size == 0 ||
-      !exif_region_fits(gps_ifd_offset, gps_ifd_size, size)) {
-    return GIMG_ERR_CORRUPT;
+  ifd[EXIF_IFD_0].n_dst = (uint16_t)(ifd[EXIF_IFD_0].n_src - 1u);
+
+  // The rest of the standard tree. Each is optional; a pointer that does not
+  // resolve is dropped rather than followed, which loses the sub-IFD but
+  // cannot produce a blob pointing outside itself.
+  const uint32_t exif_sub =
+      exif_find_uint(buf, le, &ifd[EXIF_IFD_0], GIMG_EXIF_TAG_EXIF_IFD, 0u);
+  if (exif_sub != 0u) {
+    (void)exif_plan_ifd(buf, size, le, exif_sub, &ifd[EXIF_IFD_EXIF]);
   }
-  size_t delta = 12 + gps_ifd_size;
-  size_t new_size = size - delta;
+  if (ifd[EXIF_IFD_EXIF].present) {
+    const uint32_t interop = exif_find_uint(
+        buf, le, &ifd[EXIF_IFD_EXIF], GIMG_EXIF_TAG_INTEROP_IFD, 0u);
+    if (interop != 0u) {
+      (void)exif_plan_ifd(buf, size, le, interop, &ifd[EXIF_IFD_INTEROP]);
+    }
+  }
+  const uint32_t ifd1_off = read_u32(
+      buf + ifd[EXIF_IFD_0].src + 2u + (size_t)ifd[EXIF_IFD_0].n_src * 12u, le);
+  if (ifd1_off != 0u) {
+    (void)exif_plan_ifd(buf, size, le, ifd1_off, &ifd[EXIF_IFD_1]);
+  }
+
+  // Thumbnail bytes are found through a length in a second tag, so they are
+  // measured here and carried to the emit pass.
+  uint32_t thumb_src = 0u;
+  uint32_t thumb_len = 0u;
+  if (ifd[EXIF_IFD_1].present) {
+    thumb_src = exif_find_uint(
+        buf, le, &ifd[EXIF_IFD_1], GIMG_EXIF_TAG_JPEG_INTERCHANGE_FORMAT, 0u);
+    thumb_len = exif_find_uint(
+        buf, le, &ifd[EXIF_IFD_1], GIMG_EXIF_TAG_JPEG_INTERCHANGE_FORMAT_LENGTH, 0u);
+    if (thumb_src == 0u || thumb_len == 0u ||
+        !exif_region_fits(thumb_src, thumb_len, size)) {
+      thumb_src = 0u;
+      thumb_len = 0u;
+    }
+  }
+
+  // Lay the directories out first: every payload offset is relative to the
+  // end of the last one, so the sizes have to be known before anything can
+  // be written.
+  uint64_t cursor = 8u;
+  for (int k = 0; k < EXIF_IFD_COUNT; k++) {
+    if (!ifd[k].present) {
+      continue;
+    }
+    ifd[k].dst = (uint32_t)cursor;
+    cursor += 2u + (uint64_t)ifd[k].n_dst * 12u + 4u;
+  }
+  const uint64_t payload_base = cursor;
+
+  // Measure the payloads that survive.
+  uint64_t payload_bytes = 0u;
+  for (int k = 0; k < EXIF_IFD_COUNT; k++) {
+    if (!ifd[k].present) {
+      continue;
+    }
+    for (uint16_t i = 0; i < ifd[k].n_src; i++) {
+      const size_t ent = ifd[k].src + 2u + (size_t)i * 12u;
+      const uint16_t tag = read_u16(buf + ent, le);
+      if (k == EXIF_IFD_0 && tag == GIMG_EXIF_TAG_GPS_IFD) {
+        continue;
+      }
+      if (k == EXIF_IFD_1 && tag == GIMG_EXIF_TAG_JPEG_INTERCHANGE_FORMAT) {
+        payload_bytes += thumb_len;
+        continue;
+      }
+      uint32_t psrc = 0u;
+      payload_bytes += exif_entry_payload(buf, size, le, ent, &psrc);
+    }
+  }
+  const uint64_t total = payload_base + payload_bytes;
+  if (total > (uint64_t)UINT32_MAX) {
+    return GIMG_ERR_LIMIT;
+  }
+
   allocator = gimg_alloc_or_default(allocator);
-  unsigned char * dst = (unsigned char *)gimg_malloc(allocator, new_size);
+  unsigned char * dst = (unsigned char *)gimg_malloc(allocator, (size_t)total);
   if (!dst) {
     return GIMG_ERR_OOM;
   }
-  // Copy [0, ifd0+2] (header + num_entries).
-  memcpy(dst, buf, ifd0 + 2);
-  dst[ifd0] = (unsigned char)((num_entries - 1) & 0xff);
-  dst[ifd0 + 1] = (unsigned char)((num_entries - 1) >> 8);
-  // Copy IFD entries skipping the GPS entry.
-  size_t dst_ent = ifd0 + 2;
-  for (uint16_t i = 0; i < num_entries; i++) {
-    if (i == gps_entry_index) {
+  memset(dst, 0, (size_t)total);
+
+  // Header: same byte order as the source, IFD0 wherever it landed.
+  dst[0] = buf[0];
+  dst[1] = buf[1];
+  write_u16(dst + 2, 42u, le);
+  write_u32(dst + 4, ifd[EXIF_IFD_0].dst, le);
+
+  uint64_t pay = payload_base;
+  for (int k = 0; k < EXIF_IFD_COUNT; k++) {
+    if (!ifd[k].present) {
       continue;
     }
-    memcpy(dst + dst_ent, buf + ifd0 + 2 + (size_t)i * 12, 12);
-    dst_ent += 12;
-  }
-  // Copy next IFD pointer (4 bytes).
-  memcpy(dst + dst_ent, buf + ifd0 + 2 + (size_t)num_entries * 12, 4);
-  size_t ifd0_end_old = ifd0 + ifd0_size;
-  size_t dst_after_ifd = dst_ent + 4;
-  // Copy [ifd0_end, gps_ifd_offset].
-  memcpy(
-      dst + dst_after_ifd, buf + ifd0_end_old, gps_ifd_offset - ifd0_end_old);
-  // Copy [gps_ifd_offset + gps_ifd_size, size].
-  size_t gps_end = gps_ifd_offset + gps_ifd_size;
-  memcpy(dst + dst_after_ifd + (gps_ifd_offset - ifd0_end_old), buf + gps_end,
-      size - gps_end);
-  // Fix 4-byte offsets in the new buffer: >= gps_end -> subtract delta; in
-  // [gps_ifd_offset, gps_end) -> 0.
-  for (size_t i = 0; i + 4 <= new_size; i += 4) {
-    uint32_t v = read_u32(dst + i, le);
-    if (v >= gps_ifd_offset && v < gps_end) {
-      write_u32(dst + i, 0, le);
+    unsigned char * d = dst + ifd[k].dst;
+    write_u16(d, ifd[k].n_dst, le);
+    size_t w = 2u;
+    for (uint16_t i = 0; i < ifd[k].n_src; i++) {
+      const size_t ent = ifd[k].src + 2u + (size_t)i * 12u;
+      const uint16_t tag = read_u16(buf + ent, le);
+      if (k == EXIF_IFD_0 && tag == GIMG_EXIF_TAG_GPS_IFD) {
+        continue; // The entry this function exists to remove.
+      }
+      memcpy(d + w, buf + ent, 12u);
+      if (tag == GIMG_EXIF_TAG_EXIF_IFD && ifd[EXIF_IFD_EXIF].present) {
+        write_u32(d + w + 8, ifd[EXIF_IFD_EXIF].dst, le);
+      }
+      else if (tag == GIMG_EXIF_TAG_INTEROP_IFD &&
+          ifd[EXIF_IFD_INTEROP].present) {
+        write_u32(d + w + 8, ifd[EXIF_IFD_INTEROP].dst, le);
+      }
+      else if (k == EXIF_IFD_1 && tag == GIMG_EXIF_TAG_JPEG_INTERCHANGE_FORMAT) {
+        if (thumb_len != 0u) {
+          memcpy(dst + pay, buf + thumb_src, thumb_len);
+          write_u32(d + w + 8, (uint32_t)pay, le);
+          pay += thumb_len;
+        }
+        else {
+          write_u32(d + w + 8, 0u, le);
+        }
+      }
+      else {
+        uint32_t psrc = 0u;
+        const size_t n = exif_entry_payload(buf, size, le, ent, &psrc);
+        if (n != 0u) {
+          memcpy(dst + pay, buf + psrc, n);
+          write_u32(d + w + 8, (uint32_t)pay, le);
+          pay += n;
+        }
+      }
+      w += 12u;
     }
-    else if (v >= gps_end) {
-      write_u32(dst + i, (uint32_t)(v - delta), le);
-    }
+    // Only IFD0 chains onward, and only to IFD1.
+    const uint32_t next =
+        (k == EXIF_IFD_0 && ifd[EXIF_IFD_1].present) ? ifd[EXIF_IFD_1].dst : 0u;
+    write_u32(d + w, next, le);
   }
+
   *out = dst;
-  *out_size = new_size;
+  *out_size = (size_t)total;
   return GIMG_OK;
 }
 
