@@ -38,6 +38,7 @@
  */
 
 #include <ghoti.io/image/macros.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <string.h>
@@ -300,4 +301,35 @@ GIMG_API GIMG_Result gimg_ops_composite(GIMG_Raster * dst,
     }
   }
   return GIMG_OK;
+}
+
+//
+// The mirrors and quarter turns, under the names a caller reaches for.
+//
+// Every one of these is a CIPA DC-008 Table 6 orientation, and
+// gimg_ops_apply_orientation already implements all eight. These exist because
+// GIMG_ORIENTATION_TRANSVERSE is not what anybody searches for when they want
+// to turn a picture, and a caller who cannot find the operation writes their
+// own loop. They forward rather than reimplement: two copies of one index
+// remap are two things to keep in step.
+//
+
+GIMG_API GIMG_Result gimg_ops_flip_horizontal(GIMG_Raster * raster) {
+  return gimg_ops_apply_orientation(raster, GIMG_ORIENTATION_FLIP_H);
+}
+
+GIMG_API GIMG_Result gimg_ops_flip_vertical(GIMG_Raster * raster) {
+  return gimg_ops_apply_orientation(raster, GIMG_ORIENTATION_FLIP_V);
+}
+
+GIMG_API GIMG_Result gimg_ops_rotate_90_cw(GIMG_Raster * raster) {
+  return gimg_ops_apply_orientation(raster, GIMG_ORIENTATION_ROTATE_90_CW);
+}
+
+GIMG_API GIMG_Result gimg_ops_rotate_90_ccw(GIMG_Raster * raster) {
+  return gimg_ops_apply_orientation(raster, GIMG_ORIENTATION_ROTATE_90_CCW);
+}
+
+GIMG_API GIMG_Result gimg_ops_rotate_180(GIMG_Raster * raster) {
+  return gimg_ops_apply_orientation(raster, GIMG_ORIENTATION_ROTATE_180);
 }

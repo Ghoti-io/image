@@ -7,6 +7,7 @@
  */
 
 #include <ghoti.io/image/color.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <cstring>
@@ -531,6 +532,74 @@ TEST(Composite, WhatIsRefused) {
   gimg_raster_destroy(gray2);
   gimg_raster_destroy(gray);
   gimg_raster_destroy(rgba);
+}
+
+/**
+ * Each named turn is the orientation it claims to be.
+ *
+ * These forward rather than reimplement, so what is worth checking is that
+ * the forwarding is not crossed - a clockwise turn wired to the
+ * anticlockwise constant is invisible on a square image of uniform colour and
+ * obvious on a rectangle whose pixels say where they are.
+ */
+TEST(NamedTurns, EachIsTheOrientationItNames) {
+  struct Case {
+    GIMG_Result (*fn)(GIMG_Raster *);
+    GIMG_Orientation equivalent;
+    const char * name;
+  };
+  const Case cases[] = {
+      {gimg_ops_flip_horizontal, GIMG_ORIENTATION_FLIP_H, "flip_horizontal"},
+      {gimg_ops_flip_vertical, GIMG_ORIENTATION_FLIP_V, "flip_vertical"},
+      {gimg_ops_rotate_90_cw, GIMG_ORIENTATION_ROTATE_90_CW, "rotate_90_cw"},
+      {gimg_ops_rotate_90_ccw, GIMG_ORIENTATION_ROTATE_90_CCW,
+          "rotate_90_ccw"},
+      {gimg_ops_rotate_180, GIMG_ORIENTATION_ROTATE_180, "rotate_180"},
+  };
+  for (const auto & c : cases) {
+    // Deliberately not square: four of the six exchange the axes, and a
+    // square image hides a turn wired to the wrong constant.
+    GIMG_Raster * a = make_positional_rgba8(7, 4);
+    GIMG_Raster * b = make_positional_rgba8(7, 4);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_EQ(c.fn(a), GIMG_OK) << c.name;
+    ASSERT_EQ(gimg_ops_apply_orientation(b, c.equivalent), GIMG_OK) << c.name;
+    EXPECT_EQ(gimg_raster_width(a), gimg_raster_width(b)) << c.name;
+    EXPECT_EQ(gimg_raster_height(a), gimg_raster_height(b)) << c.name;
+    EXPECT_TRUE(gimg_ops_raster_equal(a, b)) << c.name;
+    gimg_raster_destroy(b);
+    gimg_raster_destroy(a);
+  }
+}
+
+/** Each turn, done four times (or twice), comes back where it started. */
+TEST(NamedTurns, TheyComeBackRoundAgain) {
+  GIMG_Raster * original = make_positional_rgba8(7, 4);
+  ASSERT_NE(original, nullptr);
+
+  GIMG_Raster * r = make_positional_rgba8(7, 4);
+  for (int i = 0; i < 4; i++) {
+    ASSERT_EQ(gimg_ops_rotate_90_cw(r), GIMG_OK);
+  }
+  EXPECT_TRUE(gimg_ops_raster_equal(r, original)) << "four quarter turns";
+  gimg_raster_destroy(r);
+
+  r = make_positional_rgba8(7, 4);
+  ASSERT_EQ(gimg_ops_rotate_90_cw(r), GIMG_OK);
+  ASSERT_EQ(gimg_ops_rotate_90_ccw(r), GIMG_OK);
+  EXPECT_TRUE(gimg_ops_raster_equal(r, original)) << "one turn each way";
+  gimg_raster_destroy(r);
+
+  for (auto fn : {gimg_ops_flip_horizontal, gimg_ops_flip_vertical,
+           gimg_ops_rotate_180}) {
+    r = make_positional_rgba8(7, 4);
+    ASSERT_EQ(fn(r), GIMG_OK);
+    ASSERT_EQ(fn(r), GIMG_OK);
+    EXPECT_TRUE(gimg_ops_raster_equal(r, original)) << "twice is the identity";
+    gimg_raster_destroy(r);
+  }
+  gimg_raster_destroy(original);
 }
 
 int main(int argc, char ** argv) {

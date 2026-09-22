@@ -13,7 +13,7 @@ This section will contain detailed documentation for each module in the Ghoti.io
 - **Raster** — Raster image type and pixel formats (`raster.h`).
 - **Color** — Color info and conversion stubs (`color.h`).
 - **Meta** — Metadata common and raw (`meta.h`).
-- **Ops** — Transformations and image operations (`ops.h`): orientation, pixel format and bit depth conversion, alpha premultiplication, and colour reduction. Getting an image down to a colour table small enough for GIF, palette PNG or palette BMP is \ref module_palette "Palettes and colour reduction", which also explains why it is an operation rather than something a codec does for you.
+- **Ops** — Transformations and image operations (`ops.h`): orientation, pixel format and bit depth conversion, alpha premultiplication, colour reduction, and geometry. Cropping, resizing and compositing - and what the resize filters mean, which of them to ask for, and why the default does not change with the scale - are \ref module_geometry "Geometry: cropping, resizing and compositing". Getting an image down to a colour table small enough for GIF, palette PNG or palette BMP is \ref module_palette "Palettes and colour reduction", which also explains why it is an operation rather than something a codec does for you.
 - **Codec** — Codec registry and probing (`codec.h`).
 
 ## API options and types

@@ -75,6 +75,8 @@
 /** pi to more places than a double holds; M_PI is not ISO C. */
 #define GIMG_RESAMPLE_PI 3.14159265358979323846
 
+/** The coefficient table for one axis: who feeds each output pixel, and how
+ *  much of each. */
 typedef struct {
   /** weights[out * support_max + tap], fixed point. */
   int32_t * weights;
@@ -82,7 +84,9 @@ typedef struct {
   int32_t * first;
   /** How many taps each output pixel actually uses. */
   int32_t * count;
+  /** Row stride of @c weights: the most taps any output pixel can use. */
   int32_t support_max;
+  /** How many output pixels this axis has. */
   uint32_t out_count;
 } gimg_resample_axis;
 
@@ -448,6 +452,7 @@ typedef struct {
   uint16_t * reverse; /**< 65536 entries. */
 } gimg_transfer_tables;
 
+/** The linear working range: sixteen bits, whatever the source width. */
 #define GIMG_LINEAR_MAX 65535u
 
 static void gimg_transfer_free(

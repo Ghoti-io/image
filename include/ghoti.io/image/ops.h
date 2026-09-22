@@ -46,6 +46,31 @@ extern "C" {
 GIMG_API GIMG_Result gimg_ops_apply_orientation(
     GIMG_Raster * raster, GIMG_Orientation orientation);
 
+/** @name Mirrors and quarter turns
+ *
+ * These are the six transforms of CIPA DC-008 Table 6 that actually move
+ * pixels, under the names a caller reaches for. Each forwards to
+ * gimg_ops_apply_orientation(); there is one implementation, not two, because
+ * two copies of one index remap drift apart.
+ *
+ * All six work in place on any format whose pixel is a whole number of bytes.
+ * The four that exchange the axes rebuild the buffer, so the raster's
+ * dimensions and stride change while the pointer stays valid.
+ * @{
+ */
+
+/** @brief Mirror left to right. */
+GIMG_API GIMG_Result gimg_ops_flip_horizontal(GIMG_Raster * raster);
+/** @brief Mirror top to bottom. */
+GIMG_API GIMG_Result gimg_ops_flip_vertical(GIMG_Raster * raster);
+/** @brief Turn a quarter clockwise; width and height exchange. */
+GIMG_API GIMG_Result gimg_ops_rotate_90_cw(GIMG_Raster * raster);
+/** @brief Turn a quarter anticlockwise; width and height exchange. */
+GIMG_API GIMG_Result gimg_ops_rotate_90_ccw(GIMG_Raster * raster);
+/** @brief Turn a half. */
+GIMG_API GIMG_Result gimg_ops_rotate_180(GIMG_Raster * raster);
+/** @} */
+
 /** @brief How a source raster is combined with what is already there. */
 typedef enum {
   /** Replace. The destination under the source is discarded. */

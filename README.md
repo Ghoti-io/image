@@ -11,7 +11,7 @@ The `image` library provides:
 - Multi-image container model (documents, items, frames/pages)
 - Pixel formats, color representation, and metadata (common + raw preservation)
 - Codec framework and format support: PNG (including APNG), JPEG, BMP and GIF today; TIFF and others per the spec roadmap
-- Transformations and image operations
+- Transformations and image operations — orientation, pixel format and bit depth conversion, colour reduction, and geometry: cropping, resizing with a choice of resampling filter, and compositing
 
 ## Dependencies
 

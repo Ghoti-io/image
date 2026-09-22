@@ -719,9 +719,11 @@ which is a different kind of thing and does not belong behind a decode flag.
 - It needs a resampling filter, and choosing one is an image-processing
   decision. This library puts those in `ops` and says so: the CMYK conversion
   and the colour quantization are both there for the same reason.
-- There is no resampler here to call. A general `gimg_ops_resize()` would be
-  the right home, and writing one is a feature rather than a flag - it is
-  listed under "Not implemented" rather than pretended at.
+- The caller has somewhere to do it. `gimg_ops_resize()` exists now, and
+  takes the filter as a parameter, so applying the ratio is one call made with
+  the filter the caller's situation wants rather than one this codec guessed
+  at. See \ref module_geometry "Geometry: cropping, resizing and
+  compositing".
 
 Reporting the ratio is what lets a caller do it themselves, at the moment they
 know what they want: a viewer scales its window, a converter scales the raster,
@@ -964,11 +966,14 @@ and refused correctly.
   that, which was the point of putting it there.
 - **Plain Text rendering** (89a 25). The block is walked past. No decoder in
   use renders it, and doing so would mean shipping a bitmap font.
-- **Resampling to square pixels.** The Pixel Aspect Ratio is read, reported and
-  written, and never applied - applying it means resizing, and there is no
-  resampler in this library to do it with. A general `gimg_ops_resize()` is
-  where it would go, and every other decoder measured leaves it alone too. See
-  "The pixel aspect ratio".
+- **Resampling to square pixels.** The Pixel Aspect Ratio is read, reported
+  and written, and never applied *by this codec*. Applying it means resizing,
+  and `gimg_ops_resize()` now exists to do it with - but which filter to use
+  is a decision about the picture, and it would also change the raster's
+  dimensions out from under everything that assumes `gimg_item_decode()`
+  returns the logical screen the file describes. Every other decoder measured
+  leaves it alone too. See "The pixel aspect ratio" for the whole argument, and
+  \ref module_geometry "Geometry" for the call.
 - **The background colour is not painted by default**, and disposal 2 restores
   to transparent rather than to it. Both are deliberate and both are available:
   `GIMG_Decode_Options.gif_background` = `GIMG_GIF_BACKGROUND_PAINT` gives the

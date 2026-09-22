@@ -4,6 +4,12 @@
 
 This page documents the main option structures and enumerations used by the codec load, save, and decode APIs. Header-level documentation is generated from the source; here we summarize behavior and cross-references.
 
+Options belonging to an *operation* rather than to a codec are documented with
+that operation. `GIMG_Resize_Options`, `GIMG_Resample_Filter` and
+`GIMG_Resample_Space` are in \ref module_geometry "Geometry: cropping,
+resizing and compositing", which also says which filter answers which
+question and why the default does not change with the scale.
+
 ## Probe and codec dispatch
 
 - **GIMG_Probe_Result** — Filled by `gimg_probe()`. Contains `format_name` (e.g. `"png"`) and `confidence` (0–100). Used to select the codec for `gimg_doc_load()` or to report format detection. **Lifetime:** `format_name` is valid only until the next call that mutates the codec registry (e.g. `gimg_codec_register()`). Do not store the pointer long-term; copy the string if you need to keep it.
