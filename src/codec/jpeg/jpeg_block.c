@@ -261,8 +261,6 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(gimg_jpeg_bitstream_t * bs,
             }
             eobrun += (unsigned int)rbits;
           }
-          else {
-          }
           // T.81 G.1.2.2: EOBRUN counts the blocks the run covers *including*
           // this one, which is zeroed just below.  What carries to the blocks
           // that follow is therefore one less.  Storing the full count zeroed
@@ -276,6 +274,13 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(gimg_jpeg_bitstream_t * bs,
           }
           break;
         }
+        // Unreachable as the decoder is called today, and kept anyway.  The
+        // branch above needs out_eobrun, 1 <= run <= 14; the only caller
+        // (jpeg_entropy.c) always passes &eobrun, run == 0 with size == 0 is
+        // EOB and was handled at the top of the loop, and run == 15 is the ZRL
+        // case just below - so run is always in range and this is dead.  It
+        // stops being dead the moment a second caller passes NULL, which is
+        // what it is here to catch.
         return GIMG_ERR_CORRUPT; // (r,0) r!=15 without EOBRUN support.
       }
       // ZRL: 16 zero coefficients (T.81 Annex G).
@@ -343,6 +348,15 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
     int al, unsigned int * out_eobrun, int is_last_block) {
   // T.81: AC band is [Ss, Se] with 1 <= Ss <= Se <= 63. Clamp to prevent
   // overrun.
+  //
+  // Neither clamp fires today, and both are deliberate.  The scan header is
+  // validated before any of this runs: jpeg_load.c rejects Se > 63 outright,
+  // and rejects Ss == 0 with Se != 0, so a scan that reaches an AC decoder at
+  // all has 1 <= Ss <= Se <= 63.  That invariant lives in another file, and
+  // what it protects here is the index into a 64-entry block; keeping the
+  // clamp means a change to that validation cannot turn into an out-of-bounds
+  // write in this one.  They are uncovered because they are unreachable, not
+  // because nothing tests the band.
   if (se > 63) {
     se = 63;
   }
@@ -480,6 +494,12 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
       }
       // Newly nonzero: refinement bit is the sign (1 = +, 0 = −); magnitude at
       // Al is 1.
+      //
+      // Unreachable behind the clamp directly above, which has just pulled k
+      // down to se, and k only ever counts up from ss.  Kept because it is the
+      // last thing between a crafted run length and block[k]: the clamp is an
+      // arithmetic argument, and this is the check that does not depend on it
+      // being right.
       if (k > se || k < ss) {
         return GIMG_ERR_CORRUPT;
       }
