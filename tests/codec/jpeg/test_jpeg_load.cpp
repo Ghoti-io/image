@@ -6396,3 +6396,207 @@ TEST(JpegLoad, EachJfxxThumbnailFormIsReadAtItsOwnSize) {
     gimg_doc_destroy(doc);
   }
 }
+
+namespace {
+
+/** One component of a frame header: id, H<<4|V sampling, quant table. */
+struct FrameComp {
+  uint8_t id, hv, tq;
+};
+/** One component of a scan header: which frame component, DC and AC tables. */
+struct ScanComp {
+  uint8_t cs, td, ta;
+};
+
+/**
+ * A JPEG whose frame and scan headers say exactly what the caller asks.
+ *
+ * The existing make_progressive_with_sos() fixes the frame at three 1x1
+ * components and the scan at table zero, which is the right shape for the
+ * spectral-selection checks it was written for and cannot express the rest:
+ * a Huffman table index out of range lives in the scan's component list, the
+ * MCU-size limit is a property of the frame's sampling factors, and the
+ * lossless rules need a lossless frame.
+ */
+std::vector<uint8_t> make_jpeg_with_headers(uint8_t sof_marker, uint8_t precision,
+    const std::vector<FrameComp> & frame, const std::vector<ScanComp> & scan,
+    uint8_t ss, uint8_t se, uint8_t ah, uint8_t al) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+
+  const uint16_t lf = (uint16_t)(8u + 3u * frame.size());
+  buf.push_back(0xFF);
+  buf.push_back(sof_marker);
+  buf.push_back((uint8_t)(lf >> 8));
+  buf.push_back((uint8_t)(lf & 0xFFu));
+  buf.push_back(precision);
+  buf.push_back(0x00); buf.push_back(0x08);  // height 8
+  buf.push_back(0x00); buf.push_back(0x08);  // width 8
+  buf.push_back((uint8_t)frame.size());
+  for (const FrameComp & c : frame) {
+    buf.push_back(c.id);
+    buf.push_back(c.hv);
+    buf.push_back(c.tq);
+  }
+
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) { buf.push_back(1); }
+  append(buf, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
+  for (int i = 0; i < 16; i++) { buf.push_back(0); }
+
+  const uint16_t ls = (uint16_t)(6u + 2u * scan.size());
+  buf.push_back(0xFF);
+  buf.push_back(0xDA);
+  buf.push_back((uint8_t)(ls >> 8));
+  buf.push_back((uint8_t)(ls & 0xFFu));
+  buf.push_back((uint8_t)scan.size());
+  for (const ScanComp & c : scan) {
+    buf.push_back(c.cs);
+    buf.push_back((uint8_t)((c.td << 4) | (c.ta & 0x0Fu)));
+  }
+  buf.push_back(ss);
+  buf.push_back(se);
+  buf.push_back((uint8_t)((ah << 4) | (al & 0x0Fu)));
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+/**
+ * The reason the loader gave for refusing @p bytes, or "" if it accepted them.
+ *
+ * A result code says a file was rejected; it does not say by which check, and
+ * several checks in this loader return GIMG_ERR_FORMAT within a few lines of
+ * one another. A test that asserts only the code passes when the file is
+ * refused for a reason it was not written to exercise - which is the usual way
+ * a header test ends up covering a different branch than its name claims.
+ */
+std::string refusal_reason(const std::vector<uint8_t> & bytes) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    return std::string();
+  }
+  GIMG_Diagnostics diag = {};
+  gimg_diagnostics_init(&diag, nullptr);
+  GIMG_Doc * doc = nullptr;
+  const GIMG_Result r = gimg_doc_load(s, nullptr, &diag, &doc);
+  gimg_stream_destroy(s);
+  if (doc) { gimg_doc_destroy(doc); }
+  std::string out;
+  if (r != GIMG_OK && diag.count > 0 && diag.items[0].recommended_action) {
+    out = diag.items[0].recommended_action;
+  }
+  gimg_diagnostics_clear(&diag);
+  return out;
+}
+
+/** Does the loader's reason for refusing @p bytes contain @p needle? */
+::testing::AssertionResult RefusedBecause(const std::vector<uint8_t> & bytes,
+    const char * needle) {
+  const std::string why = refusal_reason(bytes);
+  if (why.empty()) {
+    return ::testing::AssertionFailure()
+        << "the file was accepted, or refused with no diagnostic";
+  }
+  if (why.find(needle) == std::string::npos) {
+    return ::testing::AssertionFailure()
+        << "refused, but for another reason: \"" << why << "\"";
+  }
+  return ::testing::AssertionSuccess();
+}
+
+} // namespace
+
+/**
+ * A scan header naming a Huffman table above three is refused.
+ *
+ * T.81 B.2.3 gives Td and Ta two bits each; the loader keeps four tables of
+ * each kind, so an index of four is not a table it has. Believing one would
+ * index past the array, which is why the check is there and why it is worth a
+ * test rather than a comment.
+ *
+ * Both halves of the byte are swept, because Td and Ta are read from the same
+ * byte and a check that only looked at one nibble would pass half of this.
+ */
+TEST(JpegLoad, AScanNamingAHuffmanTableAboveThreeIsRefused) {
+  const std::vector<FrameComp> frame = {{1u, 0x11u, 0u}};
+  EXPECT_TRUE(RefusedBecause(make_jpeg_with_headers(0xC0u, 8u, frame,
+                                 {{1u, 4u, 0u}}, 0u, 63u, 0u, 0u),
+      "Huffman table above 3"))
+      << "DC table 4 does not exist";
+  EXPECT_TRUE(RefusedBecause(make_jpeg_with_headers(0xC0u, 8u, frame,
+                                 {{1u, 0u, 4u}}, 0u, 63u, 0u, 0u),
+      "Huffman table above 3"))
+      << "AC table 4 does not exist";
+  // The control: the same file with table 3 is accepted, so the bound is
+  // being tested rather than the fixture being rejected for another reason.
+  EXPECT_EQ(load_result(make_jpeg_with_headers(
+                0xC0u, 8u, frame, {{1u, 3u, 3u}}, 0u, 63u, 0u, 0u)),
+      GIMG_OK)
+      << "table 3 is the highest that exists and must be allowed";
+}
+
+/**
+ * An interleaved MCU of more than ten data units is refused.
+ *
+ * T.81 A.2.2 caps an MCU at ten data units, which bounds how much the decoder
+ * has to hold for one MCU. The sum is over the scan's components' sampling
+ * factors, so it is a property of the frame header read through the scan's
+ * component list - and no fixture had ever exceeded it.
+ */
+TEST(JpegLoad, AnInterleavedMcuOverTenDataUnitsIsRefused) {
+  // Two components at 3x3: nine data units each, eighteen in the MCU.
+  const std::vector<FrameComp> big = {{1u, 0x33u, 0u}, {2u, 0x33u, 0u}};
+  EXPECT_TRUE(RefusedBecause(
+      make_jpeg_with_headers(
+          0xC0u, 8u, big, {{1u, 0u, 0u}, {2u, 0u, 0u}}, 0u, 63u, 0u, 0u),
+      "more than ten data units"))
+      << "eighteen data units in one MCU is over T.81 A.2.2's limit of ten";
+
+  // Two components at 2x2 is eight, which is under it.
+  const std::vector<FrameComp> ok = {{1u, 0x22u, 0u}, {2u, 0x22u, 0u}};
+  EXPECT_EQ(load_result(make_jpeg_with_headers(
+                0xC0u, 8u, ok, {{1u, 0u, 0u}, {2u, 0u, 0u}}, 0u, 63u, 0u, 0u)),
+      GIMG_OK)
+      << "eight data units is within the limit; without this the test above "
+         "would pass for a loader that rejected every interleaved scan";
+}
+
+/**
+ * A lossless scan header that breaks T.81 H.1 is refused.
+ *
+ * A lossless frame reads the three spectral-selection bytes quite differently
+ * - Ss is the predictor, Se must be zero, Ah must be zero, and Al is a point
+ * transform that cannot discard the whole sample. Each is a separate check
+ * and none had run, because every lossless fixture in the suite is valid.
+ */
+TEST(JpegLoad, ALosslessScanHeaderOutsideT81IsRefused) {
+  const std::vector<FrameComp> frame = {{1u, 0x11u, 0u}};
+  const std::vector<ScanComp> scan = {{1u, 0u, 0u}};
+
+  struct Case {
+    const char * what;
+    uint8_t ss, se, ah, al;
+    const char * reason;  ///< Which check must be the one that fired.
+  } cases[] = {
+      {"predictor 0 is not one of the seven", 0u, 0u, 0u, 0u,
+          "predictor selection out of range"},
+      {"predictor 8 is not one of the seven", 8u, 0u, 0u, 0u,
+          "predictor selection out of range"},
+      {"Se must be zero", 1u, 1u, 0u, 0u, "must have Se=0"},
+      {"Ah must be zero", 1u, 0u, 1u, 0u, "must have Ah=0"},
+      {"a point transform of 8 discards all eight bits", 1u, 0u, 0u, 8u,
+          "discards the whole sample"},
+  };
+  for (const Case & c : cases) {
+    EXPECT_TRUE(RefusedBecause(make_jpeg_with_headers(0xC3u, 8u, frame, scan,
+                                   c.ss, c.se, c.ah, c.al),
+        c.reason))
+        << c.what;
+  }
+  // The control: predictor 1, everything else zero, is a valid lossless scan.
+  EXPECT_EQ(load_result(make_jpeg_with_headers(
+                0xC3u, 8u, frame, scan, 1u, 0u, 0u, 0u)),
+      GIMG_OK)
+      << "a valid lossless scan header must be accepted, or the five above "
+         "are being refused for some reason other than the one named";
+}
