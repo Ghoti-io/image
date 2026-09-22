@@ -193,6 +193,7 @@
 #define gimg_ops_palette_build GHOTIIO_IMAGE(gimg_ops_palette_build)
 #define gimg_ops_palette_from_raster GHOTIIO_IMAGE(gimg_ops_palette_from_raster)
 #define gimg_ops_quantize GHOTIIO_IMAGE(gimg_ops_quantize)
+#define gimg_ops_crop GHOTIIO_IMAGE(gimg_ops_crop)
 #define gimg_ops_convert_pixel_format GHOTIIO_IMAGE(gimg_ops_convert_pixel_format)
 #define gimg_ops_raster_equal GHOTIIO_IMAGE(gimg_ops_raster_equal)
 #define gimg_probe GHOTIIO_IMAGE(gimg_probe)

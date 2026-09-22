@@ -34,6 +34,7 @@
 #include "../core/alloc_internal.h"
 #include "../core/safe_math_internal.h"
 #include "../raster/raster_internal.h"
+#include "ops_internal.h"
 
 //
 // Orientation (CIPA DC-008 Table 6, the eight EXIF values). A half turn is
@@ -360,20 +361,21 @@ static GIMG_Result ops_cmyk_to_rgba(const GIMG_Raster * src,
 /** @} */
 
 /**
- * Carry the source raster's color description onto a converted one.
+ * Carry the source raster's color description onto a derived one.
  *
- * Neither conversion here changes what a sample means - one copies the
- * samples and the other restates them at a different precision - so the color
- * space, the rendering intent and any embedded ICC profile still describe the
- * result.  Dropping them made a 16-bit PNG carrying an iCCP come out of a
- * save as JPEG untagged, because that writer converts to 12 bits on the way
- * and the profile did not survive the conversion.  gimg_raster_copy has
- * carried color across all along; these two had not.
+ * None of the operations that call this changes what a sample means - they
+ * copy samples, restate them at a different precision, or move them about the
+ * picture - so the color space, the rendering intent and any embedded ICC
+ * profile still describe the result.  Dropping them made a 16-bit PNG
+ * carrying an iCCP come out of a save as JPEG untagged, because that writer
+ * converts to 12 bits on the way and the profile did not survive the
+ * conversion.  gimg_raster_copy has carried color across all along; the
+ * conversions here had not.
  *
  * The profile is deep-copied by gimg_raster_set_color_info, so the result
  * does not point into the source.
  */
-static GIMG_Result ops_carry_color(
+GIMG_Result gimg_ops_carry_color(
     const GIMG_Raster * src, GIMG_Raster * dst) {
   const GIMG_Color_Info * ci = gimg_raster_color_info_const(src);
   if (!ci) {
@@ -432,7 +434,7 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
     sp += src_stride;
     dp += dst_stride;
   }
-  r = ops_carry_color(src, *out_raster);
+  r = gimg_ops_carry_color(src, *out_raster);
   if (r != GIMG_OK) {
     gimg_raster_destroy(*out_raster);
     *out_raster = NULL;
@@ -530,7 +532,7 @@ GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
       sp += src_stride;
       dp += dst_stride;
     }
-    r = ops_carry_color(src, *out_raster);
+    r = gimg_ops_carry_color(src, *out_raster);
     if (r != GIMG_OK) {
       gimg_raster_destroy(*out_raster);
       *out_raster = NULL;
@@ -576,7 +578,7 @@ GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
     sp += src_stride;
     dp += dst_stride;
   }
-  r = ops_carry_color(src, *out_raster);
+  r = gimg_ops_carry_color(src, *out_raster);
   if (r != GIMG_OK) {
     gimg_raster_destroy(*out_raster);
     *out_raster = NULL;

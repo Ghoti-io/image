@@ -47,6 +47,42 @@ GIMG_API GIMG_Result gimg_ops_apply_orientation(
     GIMG_Raster * raster, GIMG_Orientation orientation);
 
 /**
+ * @brief Cut a rectangle out of a raster.
+ *
+ * The rectangle is given in pixels from the top-left corner and must lie
+ * wholly inside the source; a rectangle that leaves it, or one of zero width
+ * or height, returns GIMG_ERR_INTERNAL rather than being clamped to fit.
+ * Silently returning a smaller image than was asked for is the kind of
+ * accommodation that hides an off-by-one in the caller's arithmetic for as
+ * long as nobody checks the dimensions.
+ *
+ * No sample is interpreted, only moved, so this works for **any** format
+ * whose pixel occupies a whole number of bytes - every channel model, every
+ * depth, planar or interleaved. That is wider than gimg_ops_resize() reaches,
+ * which has to know what a sample means in order to average two of them.
+ *
+ * The result carries the source's GIMG_Color_Info, embedded profile included:
+ * showing less of a picture does not change what its samples mean.
+ *
+ * To mirror or rotate instead, use gimg_ops_apply_orientation(), which
+ * implements all eight of the CIPA DC-008 Table 6 transforms.
+ *
+ * @param src Source raster.
+ * @param x Left edge of the rectangle, in pixels.
+ * @param y Top edge of the rectangle, in pixels.
+ * @param width Width of the rectangle; must be above zero.
+ * @param height Height of the rectangle; must be above zero.
+ * @param out_raster On success, a new raster holding the rectangle; the
+ *   caller owns it. Set to NULL on every failure.
+ * @return GIMG_OK; GIMG_ERR_INTERNAL for a null argument or a rectangle that
+ *   is empty or does not lie inside the source; GIMG_ERR_UNSUPPORTED for a
+ *   format with no whole-byte pixel size; GIMG_ERR_LIMIT if the row length
+ *   overflows; GIMG_ERR_OOM.
+ */
+GIMG_API GIMG_Result gimg_ops_crop(const GIMG_Raster * src, uint32_t x,
+    uint32_t y, uint32_t width, uint32_t height, GIMG_Raster ** out_raster);
+
+/**
  * @brief Convert pixel format: a same-format copy, or CMYK to RGBA.
  *
  * A **same-format** conversion copies the samples, and the result carries the
