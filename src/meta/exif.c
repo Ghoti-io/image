@@ -639,6 +639,63 @@ static const unsigned char * tag_data_ptr(const unsigned char * buf,
   return buf + off;
 }
 
+/** Where IFD1's strip offsets and lengths live, and how wide they are. */
+typedef struct {
+  uint32_t offsets_val;     ///< Inline value with one strip, else an offset.
+  uint32_t counts_val;      ///< Likewise for the byte counts.
+  uint16_t count;           ///< Number of strips.
+  int offsets_long;         ///< The offsets array is LONG rather than SHORT.
+  int counts_long;          ///< Likewise for the counts array.
+} exif_strip_table_t;
+
+/**
+ * Resolve strip @p s to an offset and a length, bounds-checked.
+ *
+ * Reading a multi-strip raster takes two passes - one to total the lengths so
+ * the buffer can be sized, one to copy - and this used to be written out
+ * twice, once in each. Only the first copy checked anything: the second
+ * recomputed the same expressions and handed the result straight to memcpy.
+ * That is safe for exactly as long as the two stay character-for-character
+ * identical, and nothing made them. A divergence in either turns the copy into
+ * an out-of-bounds read, which is not a class of bug worth leaving to the
+ * diligence of whoever edits one of them next.
+ *
+ * So it is one expression, and the check travels with it. The second pass can
+ * no longer reach a byte the first pass did not agree was there.
+ *
+ * @return false if this strip does not lie inside the buffer.
+ */
+static bool exif_strip_at(const unsigned char * buf, size_t size, int le,
+    const exif_strip_table_t * t, uint16_t s, uint32_t * out_off,
+    uint32_t * out_len) {
+  uint32_t so, sc;
+  if (t->count == 1) {
+    // One strip: the value fits in the tag, so there is no array to index.
+    so = t->offsets_val;
+    sc = t->counts_val;
+  }
+  else {
+    const uint32_t ow = t->offsets_long ? 4u : 2u;
+    const uint32_t cw = t->counts_long ? 4u : 2u;
+    if (t->offsets_val + ow * ((uint32_t)s + 1u) > size ||
+        t->counts_val + cw * ((uint32_t)s + 1u) > size) {
+      return false;
+    }
+    so = t->offsets_long
+        ? read_u32(buf + t->offsets_val + (size_t)s * 4, le)
+        : (uint32_t)read_u16(buf + t->offsets_val + (size_t)s * 2, le);
+    sc = t->counts_long
+        ? read_u32(buf + t->counts_val + (size_t)s * 4, le)
+        : (uint32_t)read_u16(buf + t->counts_val + (size_t)s * 2, le);
+  }
+  if (so > size || sc > size || so + sc > size) {
+    return false;
+  }
+  *out_off = so;
+  *out_len = sc;
+  return true;
+}
+
 GIMG_Result gimg_exif_embedded_thumbnail_uncompressed(
     const GIMG_Allocator * allocator, const void * tiff, size_t size,
     uint32_t * out_width, uint32_t * out_height, uint8_t * out_bits_per_sample,
@@ -746,41 +803,12 @@ GIMG_Result gimg_exif_embedded_thumbnail_uncompressed(
   if (photometric > 2) {
     return GIMG_OK;
   }
+  const exif_strip_table_t strips = {strip_offsets_val, strip_byte_counts_val,
+      strip_count, strip_offsets_long, strip_counts_long};
   size_t total_bytes = 0;
   for (uint16_t s = 0; s < strip_count; s++) {
     uint32_t so, sc;
-    if (strip_count == 1) {
-      so = strip_offsets_val;
-      sc = strip_byte_counts_val;
-    }
-    else {
-      if (strip_offsets_long) {
-        if (strip_offsets_val + 4u * (s + 1) > size) {
-          return GIMG_ERR_CORRUPT;
-        }
-        so = read_u32(buf + strip_offsets_val + (size_t)s * 4, le);
-      }
-      else {
-        if (strip_offsets_val + 2u * (s + 1) > size) {
-          return GIMG_ERR_CORRUPT;
-        }
-        so = (uint32_t)read_u16(buf + strip_offsets_val + (size_t)s * 2, le);
-      }
-      if (strip_counts_long) {
-        if (strip_byte_counts_val + 4u * (s + 1) > size) {
-          return GIMG_ERR_CORRUPT;
-        }
-        sc = read_u32(buf + strip_byte_counts_val + (size_t)s * 4, le);
-      }
-      else {
-        if (strip_byte_counts_val + 2u * (s + 1) > size) {
-          return GIMG_ERR_CORRUPT;
-        }
-        sc =
-            (uint32_t)read_u16(buf + strip_byte_counts_val + (size_t)s * 2, le);
-      }
-    }
-    if (so > size || sc > size || so + sc > size) {
+    if (!exif_strip_at(buf, size, le, &strips, s, &so, &sc)) {
       return GIMG_ERR_CORRUPT;
     }
     total_bytes += sc;
@@ -793,20 +821,9 @@ GIMG_Result gimg_exif_embedded_thumbnail_uncompressed(
   size_t written = 0;
   for (uint16_t s = 0; s < strip_count; s++) {
     uint32_t so, sc;
-    if (strip_count == 1) {
-      so = strip_offsets_val;
-      sc = strip_byte_counts_val;
-    }
-    else {
-      if (strip_offsets_long) {
-        so = read_u32(buf + strip_offsets_val + (size_t)s * 4, le);
-        sc = read_u32(buf + strip_byte_counts_val + (size_t)s * 4, le);
-      }
-      else {
-        so = (uint32_t)read_u16(buf + strip_offsets_val + (size_t)s * 2, le);
-        sc =
-            (uint32_t)read_u16(buf + strip_byte_counts_val + (size_t)s * 2, le);
-      }
+    if (!exif_strip_at(buf, size, le, &strips, s, &so, &sc)) {
+      gimg_free(allocator, out); // Cannot happen: same inputs, same answer.
+      return GIMG_ERR_CORRUPT;
     }
     memcpy(out + written, buf + so, sc);
     written += sc;

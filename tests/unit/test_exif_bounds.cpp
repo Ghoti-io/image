@@ -579,3 +579,152 @@ TEST(ExifTiffJpegThumbnail, WithNoJpegTablesTheStripIsReturnedUnchanged) {
   free(out_p);
   EXPECT_TRUE(got == jpg) << "the strip should come back as it went in";
 }
+
+namespace {
+
+/**
+ * An Exif blob whose IFD1 holds an UNCOMPRESSED thumbnail, in @p strips.
+ *
+ * TIFF stores raster data in strips, and a thumbnail may be split across
+ * several of them: StripOffsets and StripByteCounts then carry one value per
+ * strip, out of line, and the reader concatenates. A single strip is the
+ * degenerate case - one value, small enough to sit inside the tag's own value
+ * field - and takes a different branch on every read. Both are built here.
+ *
+ * @p long_offsets picks LONG or SHORT for the two arrays, which is a third
+ * branch again: TIFF allows either, and a reader that assumes LONG reads a
+ * SHORT array at double stride and concatenates whatever it lands on.
+ */
+std::vector<uint8_t> make_exif_uncompressed_thumbnail(uint32_t w, uint32_t h,
+    uint16_t bits, uint16_t photometric,
+    const std::vector<std::vector<uint8_t>> & strips, bool long_offsets) {
+  std::vector<uint8_t> e;
+  auto u16 = [&e](uint16_t v) {
+    e.push_back((uint8_t)(v & 0xFF)); e.push_back((uint8_t)(v >> 8));
+  };
+  auto u32 = [&e](uint32_t v) {
+    for (int i = 0; i < 4; i++) { e.push_back((uint8_t)((v >> (8 * i)) & 0xFF)); }
+  };
+  auto entry_long = [&](uint16_t tag, uint32_t count, uint32_t val) {
+    u16(tag); u16(GIMG_EXIF_TYPE_LONG); u32(count); u32(val);
+  };
+  auto entry_short = [&](uint16_t tag, uint16_t val) {
+    u16(tag); u16(GIMG_EXIF_TYPE_SHORT); u32(1u); u16(val);
+    e.push_back(0); e.push_back(0);
+  };
+
+  const uint16_t n = (uint16_t)strips.size();
+  const uint32_t stride = long_offsets ? 4u : 2u;
+  const uint32_t ifd0_off = 8u;
+  const uint32_t ifd1_off = ifd0_off + 2u + 4u;
+  const uint32_t after_ifd1 = ifd1_off + 2u + 7u * 12u + 4u;
+  // With one strip the value fits in the tag; with more it is an array.
+  const uint32_t offs_array = after_ifd1;
+  const uint32_t counts_array = offs_array + (n > 1 ? n * stride : 0u);
+  const uint32_t data_start = counts_array + (n > 1 ? n * stride : 0u);
+
+  std::vector<uint32_t> offsets, counts;
+  uint32_t at = data_start;
+  for (const std::vector<uint8_t> & s : strips) {
+    offsets.push_back(at);
+    counts.push_back((uint32_t)s.size());
+    at += (uint32_t)s.size();
+  }
+
+  e.push_back('I'); e.push_back('I');
+  u16(42);
+  u32(ifd0_off);
+  u16(0);
+  u32(ifd1_off);
+  u16(7);  // IFD1: seven entries, tags ascending.
+  entry_long(GIMG_EXIF_TAG_IMAGE_WIDTH, 1u, w);
+  entry_long(GIMG_EXIF_TAG_IMAGE_LENGTH, 1u, h);
+  entry_short(GIMG_EXIF_TAG_BITS_PER_SAMPLE, bits);
+  entry_short(GIMG_EXIF_TAG_COMPRESSION, 1u);  // 1 = uncompressed
+  entry_short(GIMG_EXIF_TAG_PHOTOMETRIC_INTERPRETATION, photometric);
+  const uint16_t arr_type =
+      long_offsets ? (uint16_t)GIMG_EXIF_TYPE_LONG : (uint16_t)GIMG_EXIF_TYPE_SHORT;
+  if (n > 1) {
+    u16(GIMG_EXIF_TAG_STRIP_OFFSETS); u16(arr_type); u32(n); u32(offs_array);
+    u16(GIMG_EXIF_TAG_STRIP_BYTE_COUNTS); u16(arr_type); u32(n);
+    u32(counts_array);
+  }
+  else if (long_offsets) {
+    entry_long(GIMG_EXIF_TAG_STRIP_OFFSETS, 1u, offsets[0]);
+    entry_long(GIMG_EXIF_TAG_STRIP_BYTE_COUNTS, 1u, counts[0]);
+  }
+  else {
+    entry_short(GIMG_EXIF_TAG_STRIP_OFFSETS, (uint16_t)offsets[0]);
+    entry_short(GIMG_EXIF_TAG_STRIP_BYTE_COUNTS, (uint16_t)counts[0]);
+  }
+  u32(0);  // no IFD2
+
+  if (n > 1) {
+    for (uint32_t v : offsets) { if (long_offsets) { u32(v); } else { u16((uint16_t)v); } }
+    for (uint32_t v : counts) { if (long_offsets) { u32(v); } else { u16((uint16_t)v); } }
+  }
+  for (const std::vector<uint8_t> & s : strips) {
+    e.insert(e.end(), s.begin(), s.end());
+  }
+  return e;
+}
+
+} // namespace
+
+/**
+ * An uncompressed thumbnail is read whether it is in one strip or several.
+ *
+ * TIFF may split raster data across strips, and Exif thumbnails in the wild
+ * are written both ways. The multi-strip arms had never run: every read of the
+ * offset and count arrays, in both LONG and SHORT widths, and the loop that
+ * concatenates. A reader that mishandles any of those still returns *a*
+ * thumbnail, of the right length in some cases, so the assertion is on the
+ * bytes - each strip carries a distinct fill, and the expected result is their
+ * concatenation in order.
+ */
+TEST(ExifUncompressedThumbnail, StripsAreConcatenatedInOrder) {
+  struct Case {
+    const char * what;
+    int strips;
+    bool long_offsets;
+  } cases[] = {
+      {"one strip, LONG", 1, true},
+      {"one strip, SHORT", 1, false},
+      {"three strips, LONG", 3, true},
+      {"three strips, SHORT", 3, false},
+  };
+
+  for (const Case & c : cases) {
+    std::vector<std::vector<uint8_t>> strips;
+    std::vector<uint8_t> expected;
+    for (int i = 0; i < c.strips; i++) {
+      // A distinct fill per strip, so an out-of-order or repeated copy shows.
+      const std::vector<uint8_t> s(6u, (uint8_t)(0xA0 + i));
+      strips.push_back(s);
+      expected.insert(expected.end(), s.begin(), s.end());
+    }
+    const std::vector<uint8_t> e = make_exif_uncompressed_thumbnail(
+        6u, (uint32_t)c.strips, 8u, 1u, strips, c.long_offsets);
+
+    uint32_t w = 0, h = 0;
+    uint8_t bits = 0;
+    uint16_t photometric = 0xFFFF;
+    void * out_p = nullptr;
+    size_t out_n = 0;
+    ASSERT_EQ(gimg_exif_embedded_thumbnail_uncompressed(nullptr, e.data(),
+                  e.size(), &w, &h, &bits, &photometric, &out_p, &out_n),
+        GIMG_OK)
+        << c.what;
+    ASSERT_NE(out_p, nullptr) << c.what << ": no thumbnail came back";
+    const std::vector<uint8_t> got((uint8_t *)out_p, (uint8_t *)out_p + out_n);
+    free(out_p);
+
+    EXPECT_EQ(w, 6u) << c.what;
+    EXPECT_EQ(h, (uint32_t)c.strips) << c.what;
+    EXPECT_EQ(bits, 8u) << c.what;
+    EXPECT_EQ(photometric, 1u) << c.what;
+    ASSERT_EQ(got.size(), expected.size()) << c.what;
+    EXPECT_TRUE(got == expected)
+        << c.what << ": the strips did not come back in order, or at all";
+  }
+}
