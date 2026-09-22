@@ -118,6 +118,24 @@ trusted:
   catches every one, because a structural checker that quietly stops parsing
   reports zero problems on everything, which looks exactly like success.
 
+`tests/codec/test_roundtrip.cpp` also holds the invariant those two gates grew
+out of: **what a writer produces is a function of the document and the options
+and of nothing else.** It was not. Every writer takes a raster already attached
+to an item and decodes one when there is none; the JPEG writer additionally
+took item 1 as an EXIF thumbnail *whenever that item happened to carry a
+decoded raster*, so walking an animation's frames before saving changed the
+file - and on eight large animations made the save fail outright. The test
+saves each multi-item fixture under five decode orders and requires the bytes
+to match.
+
+Only multi-item documents are swept, because the mechanism needs one item to be
+in a different state while another is read; a one-off sweep over all 256
+fixtures in four output formats and six decode orders, 5142 comparisons, found
+the same nothing at five seconds a run rather than one. The exhaustive check
+that backs this up is not the sweep but a reading of all nine places a writer
+calls `gimg_item_raster()`: eight take the attached raster or decode
+unconditionally, which cannot differ, and the ninth was the bug.
+
 Both gates need an input big enough to reach the paths they guard, and no
 fixture in the tree is: the writers split their output at 32 KiB, and a 4x4
 test image never gets near it. The round-trip test therefore synthesizes a

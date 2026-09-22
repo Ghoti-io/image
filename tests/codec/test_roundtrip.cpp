@@ -184,6 +184,129 @@ std::vector<uint8_t> save_as_jpeg(GIMG_Doc * doc) {
   return bytes;
 }
 
+/** Decode `doc`'s items in one of the orders a caller might plausibly use. */
+void decode_in_order(GIMG_Doc * doc, int order) {
+  const size_t n = gimg_doc_item_count(doc);
+  switch (order) {
+  case 0:
+    break; // nothing decoded; the writer decodes what it needs
+  case 1:
+    if (n) {
+      gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr);
+    }
+    break;
+  case 2:
+    for (size_t i = 0; i < n; i++) {
+      gimg_item_ensure_decoded(gimg_doc_item(doc, i), nullptr);
+    }
+    break;
+  case 3:
+    for (size_t i = n; i-- > 0;) {
+      gimg_item_ensure_decoded(gimg_doc_item(doc, i), nullptr);
+    }
+    break;
+  default: // everything, then the first again: the canvas cache is monotone
+    for (size_t i = 0; i < n; i++) {
+      gimg_item_ensure_decoded(gimg_doc_item(doc, i), nullptr);
+    }
+    if (n) {
+      gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr);
+    }
+    break;
+  }
+}
+
+TEST(CrossCodec, WhatTheCallerDecodedFirstDoesNotChangeTheFile) {
+  // What a writer produces should be a function of the document and the
+  // options, and of nothing else. It was not: the JPEG writer took item 1 as
+  // an EXIF thumbnail whenever that item happened to carry a decoded raster,
+  // so walking an animation's frames before saving it changed the file.
+  //
+  // The general form is worth holding still, because the specific one was
+  // found by accident. Every writer takes an attached raster when there is
+  // one and decodes when there is not; any of them branching on *which*
+  // happened is this bug again.
+  //
+  // Only multi-item documents are swept here. The mechanism needs an item to
+  // be in one state or the other while another item is read, and a single
+  // image has nothing to disagree with - a one-off sweep over all 256
+  // fixtures in four output formats and six decode orders (5142 comparisons)
+  // found the same nothing, at five seconds a run.
+  static const char * const formats[] = {"png", "jpeg", "bmp", "gif"};
+  size_t compared = 0;
+  for (const std::string & path : fixtures()) {
+    const std::vector<uint8_t> src = slurp(path);
+    if (src.size() < 16) {
+      continue;
+    }
+    {
+      GIMG_Stream * probe = nullptr;
+      if (gimg_stream_create_memory(src.data(), src.size(), &probe) !=
+          GIMG_OK) {
+        continue;
+      }
+      GIMG_Doc * d = nullptr;
+      const bool ok = gimg_doc_load(probe, nullptr, nullptr, &d) == GIMG_OK;
+      const size_t items = ok ? gimg_doc_item_count(d) : 0;
+      if (d) {
+        gimg_doc_destroy(d);
+      }
+      gimg_stream_destroy(probe);
+      if (items < 2) {
+        continue;
+      }
+    }
+    for (const char * fmt : formats) {
+      std::vector<uint8_t> reference;
+      int reference_order = -1;
+      for (int order = 0; order < 5; order++) {
+        GIMG_Stream * s = nullptr;
+        ASSERT_EQ(gimg_stream_create_memory(src.data(), src.size(), &s),
+            GIMG_OK);
+        GIMG_Doc * doc = nullptr;
+        if (gimg_doc_load(s, nullptr, nullptr, &doc) != GIMG_OK) {
+          gimg_stream_destroy(s);
+          continue;
+        }
+        decode_in_order(doc, order);
+        GIMG_Stream * out = nullptr;
+        ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+        GIMG_Save_Options opts;
+        memset(&opts, 0, sizeof(opts));
+        opts.gif_alpha_threshold = 128;
+        GIMG_Save_Report report;
+        memset(&report, 0, sizeof(report));
+        std::vector<uint8_t> bytes;
+        if (gimg_doc_save(doc, out, fmt, &opts, &report) == GIMG_OK) {
+          const void * p = nullptr;
+          size_t n = 0;
+          gimg_stream_output_buffer(out, &p, &n);
+          bytes.assign(static_cast<const uint8_t *>(p),
+              static_cast<const uint8_t *>(p) + n);
+        }
+        gimg_stream_destroy(out);
+        gimg_doc_destroy(doc);
+        gimg_stream_destroy(s);
+        if (bytes.empty()) {
+          continue; // refused, and refused the same way every time
+        }
+        if (reference_order < 0) {
+          reference = bytes;
+          reference_order = order;
+          continue;
+        }
+        compared++;
+        EXPECT_EQ(bytes, reference)
+            << fmt << " from " << path << ": decode order " << order
+            << " produced " << bytes.size() << " bytes where order "
+            << reference_order << " produced " << reference.size();
+      }
+    }
+  }
+  EXPECT_GT(compared, 50u)
+      << "too few multi-item fixtures compared to mean anything";
+}
+
 TEST(CrossCodec, AnAnimationFrameIsNotEmbeddedAsAnExifThumbnail) {
   // A JPEG carries its thumbnail as item 1, so the writer encodes item 1 into
   // IFD1. In an animation item 1 is frame two, and saying it is a thumbnail is
