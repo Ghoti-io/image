@@ -98,6 +98,60 @@ inline std::vector<uint8_t> make_exif_with_gps(bool little_endian = true) {
   return e;
 }
 
+/**
+ * An Exif blob whose IFD1 holds a thumbnail in TIFF/EP "new-style" JPEG form.
+ *
+ * Exif 2.3 / TIFF TechNote 2 allow a thumbnail to be stored the way a TIFF
+ * strip is - Compression = 7, the quantization and Huffman tables hoisted out
+ * into a JPEGTables field (0x015B), and the entropy-coded remainder in the
+ * strip that StripOffsets and StripByteCounts point at. Rebuilding a decodable
+ * JPEG means putting them back together, which is a different code path from
+ * the ordinary case where IFD1 simply points at a whole JPEG file.
+ *
+ * The two halves here are cut from a real JPEG at its SOS marker, so a correct
+ * reassembly reproduces that file byte for byte - which is a far stronger
+ * check than "the output starts with FFD8".
+ */
+inline std::vector<uint8_t> make_exif_with_tiff_jpeg_thumbnail(
+    const std::vector<uint8_t> & tables, const std::vector<uint8_t> & strip) {
+  std::vector<uint8_t> e;
+  auto u16 = [&e](uint16_t v) {
+    e.push_back((uint8_t)(v & 0xFF)); e.push_back((uint8_t)(v >> 8));
+  };
+  auto u32 = [&e](uint32_t v) {
+    for (int i = 0; i < 4; i++) { e.push_back((uint8_t)((v >> (8 * i)) & 0xFF)); }
+  };
+  auto entry = [&](uint16_t tag, uint16_t type, uint32_t count, uint32_t val) {
+    u16(tag); u16(type); u32(count); u32(val);
+  };
+
+  // Layout: header(8) IFD0(2 + 0*12 + 4) IFD1(2 + 4*12 + 4) tables strip
+  const uint32_t ifd0_off = 8u;
+  const uint32_t ifd1_off = ifd0_off + 2u + 4u;
+  const uint32_t tables_off = ifd1_off + 2u + 4u * 12u + 4u;
+  const uint32_t strip_off = tables_off + (uint32_t)tables.size();
+
+  e.push_back('I'); e.push_back('I');
+  u16(42);
+  u32(ifd0_off);
+  u16(0);                 // IFD0: no entries...
+  u32(ifd1_off);          // ...and IFD1 follows.
+  u16(4);                 // IFD1: four entries, tags ascending.
+  // Compression = 7 is inline and left-justified, so it is two bytes and two
+  // of padding - not a 32-bit 7.
+  u16(0x0103u); u16(3u); u32(1u);
+  u16(7u); e.push_back(0); e.push_back(0);
+  entry(0x0111u, 4u, 1u, strip_off);
+  entry(0x0117u, 4u, 1u,
+      (uint32_t)strip.size());
+  entry(0x015Bu, 7u,
+      (uint32_t)tables.size(), tables_off);
+  u32(0);                 // no IFD2
+  e.insert(e.end(), tables.begin(), tables.end());
+  e.insert(e.end(), strip.begin(), strip.end());
+  return e;
+}
+
 inline uint32_t png_crc(const uint8_t * p, size_t n) {
   static uint32_t table[256];
   static bool built = false;
