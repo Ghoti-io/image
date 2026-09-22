@@ -5422,3 +5422,184 @@ TEST(JpegLoad, AnAcRunPastTheEndOfTheBlockIsRefused) {
   EXPECT_EQ(decode_size(bytes, nullptr, nullptr), GIMG_ERR_CORRUPT)
       << "a run reaching coefficient 64 must be refused, not written";
 }
+
+namespace {
+
+/** One IPTC IIM dataset: 0x1C, record, number, 2-byte length, value. */
+void append_iptc(std::vector<uint8_t> & out, uint8_t record, uint8_t dataset,
+    const std::string & value) {
+  out.push_back(0x1C);
+  out.push_back(record);
+  out.push_back(dataset);
+  out.push_back((uint8_t)(value.size() >> 8));
+  out.push_back((uint8_t)(value.size() & 0xFFu));
+  out.insert(out.end(), value.begin(), value.end());
+}
+
+/**
+ * A Photoshop APP13 payload carrying @p datasets as resource 0x0404.
+ *
+ * Built from Adobe's image-resource-block layout rather than from what the
+ * parser happens to expect: '8BIM', a two-byte id, a Pascal name **padded so
+ * that the length byte plus the name is an even number of bytes - a null name
+ * being two zero bytes** - then a four-byte size and the data, itself padded
+ * to an even length. An empty name is what every writer in practice emits, so
+ * it is the case that matters most and the one used here.
+ */
+std::vector<uint8_t> make_photoshop_app13(const std::vector<uint8_t> & iptc,
+    const std::string & resource_name = std::string(),
+    size_t filler_before = 0u) {
+  std::vector<uint8_t> p;
+  const char sig[] = "Photoshop 3.0";
+  p.insert(p.end(), sig, sig + 13);
+  p.push_back(0x00);                       // the signature's terminating NUL
+
+  auto block = [&p](uint16_t id, const std::string & name,
+                   const std::vector<uint8_t> & data) {
+    p.insert(p.end(), {'8', 'B', 'I', 'M'});
+    p.push_back((uint8_t)(id >> 8));
+    p.push_back((uint8_t)(id & 0xFFu));
+    p.push_back((uint8_t)name.size());
+    p.insert(p.end(), name.begin(), name.end());
+    if (((1u + name.size()) & 1u) != 0u) {
+      p.push_back(0x00);                   // pad the Pascal string to even
+    }
+    const uint32_t n = (uint32_t)data.size();
+    p.push_back((uint8_t)(n >> 24));
+    p.push_back((uint8_t)(n >> 16));
+    p.push_back((uint8_t)(n >> 8));
+    p.push_back((uint8_t)n);
+    p.insert(p.end(), data.begin(), data.end());
+    if ((data.size() & 1u) != 0u) {
+      p.push_back(0x00);                   // resource data is padded too
+    }
+  };
+
+  // An unrelated block in front, so that reaching the IPTC one depends on
+  // advancing past this one by the right number of bytes. 0x03ED is the
+  // resolution-info resource; its contents do not matter here, only its
+  // length, and an odd length is the case that needs the data padding.
+  if (filler_before > 0u) {
+    block(0x03EDu, std::string(), std::vector<uint8_t>(filler_before, 0x11));
+  }
+  block(0x0404u, resource_name, iptc);
+  return p;
+}
+
+/** baseline_8x8_gray.jpg with an APP13 segment inserted after SOI. */
+bool jpeg_with_app13(const std::vector<uint8_t> & payload,
+    std::vector<uint8_t> & out) {
+  std::vector<uint8_t> base;
+  if (!jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", base)) { return false; }
+  if (base.size() < 4 || payload.size() + 2u > 0xFFFFu) { return false; }
+  out.clear();
+  out.push_back(0xFF);
+  out.push_back(0xD8);
+  out.push_back(0xFF);
+  out.push_back(0xED);
+  out.push_back((uint8_t)((payload.size() + 2u) >> 8));
+  out.push_back((uint8_t)((payload.size() + 2u) & 0xFFu));
+  out.insert(out.end(), payload.begin(), payload.end());
+  out.insert(out.end(), base.begin() + 2, base.end());
+  return true;
+}
+
+/** The description a loaded JPEG reports, or "" if it has none. */
+std::string description_of(const std::vector<uint8_t> & bytes) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    return std::string();
+  }
+  GIMG_Doc * doc = nullptr;
+  const GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (r != GIMG_OK) { return std::string(); }
+  const GIMG_Meta_Common * m = gimg_doc_meta_common(doc);
+  const char * d = m ? gimg_meta_common_description(m) : nullptr;
+  std::string out = d ? d : "";
+  gimg_doc_destroy(doc);
+  return out;
+}
+
+} // namespace
+
+/**
+ * An IPTC caption becomes the description; a by-line does not.
+ *
+ * gimg_meta_common's description is documented as the image's
+ * description/comment - what JPEG spells as COM, GIF as a Comment Extension,
+ * PNG as tEXt "Description". IPTC's field for that is **Caption/Abstract,
+ * 2:120**, which is what IPTC's own mapping sends to dc:description.
+ *
+ * 2:80 is By-line: the name of the person who made the picture. It maps to
+ * dc:creator, and putting it in a description field means a photographer's
+ * name is handed to a caller that asked what the image is of.
+ *
+ * Both are present in the fixture, so the test distinguishes the two rather
+ * than merely confirming that something arrives.
+ */
+TEST(JpegLoad, AnIptcCaptionBecomesTheDescriptionAndAByLineDoesNot) {
+  std::vector<uint8_t> iptc;
+  append_iptc(iptc, 2, 80, "Ansel Adams");          // By-line: a person
+  append_iptc(iptc, 2, 120, "Moonrise over Hernandez"); // Caption/Abstract
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_with_app13(make_photoshop_app13(iptc), jpeg));
+
+  const std::string got = description_of(jpeg);
+  EXPECT_EQ(got, "Moonrise over Hernandez")
+      << "the description must come from IPTC 2:120 Caption/Abstract";
+  EXPECT_NE(got, "Ansel Adams")
+      << "2:80 is By-line, the photographer - not a description of the image";
+}
+
+/**
+ * An IPTC block behind another block is still found, at either data parity.
+ *
+ * Adobe pads resource *data* to an even length too, so the next '8BIM' does
+ * not begin at data_off + data_size when that size is odd. A reader that
+ * forgets lands one byte short, fails to match '8BIM', and stops - silently
+ * returning no caption for a file that has one. Only a block placed *before*
+ * the IPTC one exercises that advance at all: with IPTC first, the walk
+ * returns before it ever has to step over anything.
+ */
+TEST(JpegLoad, AnIptcBlockAfterAnotherResourceIsStillFound) {
+  for (size_t filler : {1u, 2u, 3u, 8u}) {
+    std::vector<uint8_t> iptc;
+    append_iptc(iptc, 2, 120, "behind a filler");
+
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_with_app13(
+        make_photoshop_app13(iptc, std::string(), filler), jpeg));
+    EXPECT_EQ(description_of(jpeg), "behind a filler")
+        << "a " << filler
+        << "-byte resource before the IPTC one was not stepped over correctly";
+  }
+}
+
+/**
+ * A resource block with a name is walked correctly, not just an unnamed one.
+ *
+ * Adobe pads the Pascal name so that the length byte plus the name is an even
+ * number of bytes, which means the padding depends on the *parity of the name
+ * length* and a reader that gets that backwards is misaligned by one byte for
+ * every block - reading the four-byte resource size from the wrong place and
+ * then walking into the middle of the data. An empty name, which is what
+ * writers actually emit, is exactly the case where being backwards costs a
+ * byte.
+ *
+ * Three name lengths, so neither parity can pass by accident.
+ */
+TEST(JpegLoad, IptcResourceNamesOfEitherParityAreWalked) {
+  const char * names[] = {"", "a", "ab"};
+  for (const char * name : names) {
+    std::vector<uint8_t> iptc;
+    append_iptc(iptc, 2, 120, "the caption");
+
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_with_app13(make_photoshop_app13(iptc, name), jpeg));
+    EXPECT_EQ(description_of(jpeg), "the caption")
+        << "resource name \"" << name << "\" (" << strlen(name)
+        << " chars) was not walked past correctly";
+  }
+}

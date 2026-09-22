@@ -118,7 +118,15 @@ static bool jpeg_app13_iptc_caption(const unsigned char * app13,
   while (off + 10 <= app13_len && memcmp(app13 + off, "8BIM", 4) == 0) {
     uint16_t id = (uint16_t)((app13[off + 4] << 8) | app13[off + 5]);
     size_t name_len = (size_t)app13[off + 6];
-    size_t name_total = 1 + name_len + (name_len & 1u ? 1u : 0u);
+    // Adobe pads the Pascal name so that the length byte *plus the name* comes
+    // to an even number of bytes - "a null name consists of two bytes of 0".
+    // So the pad depends on the parity of 1 + name_len, which is the opposite
+    // of name_len's own: this used to add a byte when name_len was odd, which
+    // is backwards for every length and left the reader one byte out on the
+    // empty name that every writer in practice emits.  It then read the
+    // four-byte resource size from the wrong offset and walked into the data,
+    // so no real Photoshop APP13 was ever parsed at all.
+    size_t name_total = 1 + name_len + (((1u + name_len) & 1u) ? 1u : 0u);
     if (off + 6 + name_total + 4 > app13_len) {
       break;
     }
@@ -135,12 +143,18 @@ static bool jpeg_app13_iptc_caption(const unsigned char * app13,
       break;
     }
     if (id == 0x0404 && data_size > 0) {
+      // 0x0404 is IPTC-NAA; inside it, datasets are 0x1C, record, number.
       const unsigned char * iptc = app13 + data_off;
       size_t iptc_len = data_size;
       size_t i = 0;
       while (i + 5 <= iptc_len) {
         uint16_t tag_len = (uint16_t)((iptc[i + 3] << 8) | iptc[i + 4]);
-        if (iptc[i] == 0x1C && iptc[i + 1] == 0x02 && iptc[i + 2] == 0x50 &&
+        // 2:120 (0x78) is Caption/Abstract, which is what IPTC's own mapping
+        // sends to dc:description and what this field is documented to hold.
+        // This read 0x50 - that is 2:80, By-line, the name of the person who
+        // took the photograph.  A caller asking what the image is of was
+        // being handed a photographer's name.
+        if (iptc[i] == 0x1C && iptc[i + 1] == 0x02 && iptc[i + 2] == 0x78 &&
             i + 5 + tag_len <= iptc_len && tag_len > 0) {
           *out_ptr = iptc + i + 5;
           *out_len = (size_t)tag_len;
@@ -150,7 +164,9 @@ static bool jpeg_app13_iptc_caption(const unsigned char * app13,
       }
       break;
     }
-    off = data_off + data_size;
+    // Resource data is padded to an even length as well, so the next '8BIM'
+    // does not begin at data_off + data_size when that is odd.
+    off = data_off + data_size + (data_size & 1u);
   }
   return false;
 }
@@ -1902,8 +1918,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
     }
   }
-  // Populate meta_common description from APP13 IPTC Caption (2:80) when not
-  // set.
+  // Populate meta_common description from APP13 IPTC Caption/Abstract
+  // (2:120) when not already set.
   if (state->app13 && state->app13_len >= 14) {
     if (!meta_common &&
         gimg_doc_ensure_meta_common(doc, &meta_common) != GIMG_OK) {
