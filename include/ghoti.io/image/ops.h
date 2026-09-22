@@ -46,6 +46,53 @@ extern "C" {
 GIMG_API GIMG_Result gimg_ops_apply_orientation(
     GIMG_Raster * raster, GIMG_Orientation orientation);
 
+/** @brief How a source raster is combined with what is already there. */
+typedef enum {
+  /** Replace. The destination under the source is discarded. */
+  GIMG_COMPOSITE_SOURCE = 0,
+  /**
+   * Porter-Duff "over": the source covers the destination in proportion to
+   * its own alpha. Requires an RGBA format at 8 or 16 bits - a format with no
+   * alpha has not said what covers what, and nothing would distinguish the
+   * result from a plain copy.
+   */
+  GIMG_COMPOSITE_OVER
+} GIMG_Composite_Op;
+
+/**
+ * @brief Draw @p src onto @p dst at an offset, in place.
+ *
+ * The offsets are **signed**, and the source is clipped to the destination, so
+ * a source may hang off any edge. One lying entirely outside is not an error:
+ * it draws nothing and returns GIMG_OK, because a frame scrolled off the
+ * canvas is an ordinary thing for an animation to do.
+ *
+ * The two rasters must have **the same pixel format**. Converting on the
+ * caller's behalf would change an image's colour without being asked, which
+ * nothing else here does either; convert first with
+ * gimg_ops_convert_pixel_format() or gimg_ops_convert_bit_depth().
+ *
+ * GIMG_COMPOSITE_SOURCE works for any format whose pixel is a whole number of
+ * bytes. GIMG_COMPOSITE_OVER needs RGBA at 8 or 16 bits.
+ *
+ * Alpha is straight, not premultiplied, on the way in and on the way out.
+ * Where the result is wholly transparent the colour channels are set to zero
+ * rather than left holding the destination's, so that compositing the same
+ * source over two different destinations gives the same bytes wherever
+ * nothing is visible.
+ *
+ * @param dst Destination raster, modified in place.
+ * @param src Source raster.
+ * @param x Horizontal offset of the source's left edge within @p dst.
+ * @param y Vertical offset of the source's top edge within @p dst.
+ * @param op Which combination to perform.
+ * @return GIMG_OK (including when the source lies entirely outside);
+ *   GIMG_ERR_INTERNAL for a null argument; GIMG_ERR_UNSUPPORTED for
+ *   mismatched formats, an unknown operator, or OVER without alpha.
+ */
+GIMG_API GIMG_Result gimg_ops_composite(GIMG_Raster * dst,
+    const GIMG_Raster * src, int32_t x, int32_t y, GIMG_Composite_Op op);
+
 /**
  * @brief How the samples between two pixels are combined when resizing.
  *

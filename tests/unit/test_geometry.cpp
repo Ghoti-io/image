@@ -253,6 +253,286 @@ TEST(Crop, WorksForFormatsTheResamplerWillNotTake) {
   }
 }
 
+namespace {
+
+GIMG_Raster * make_rgba8(uint32_t w, uint32_t h, unsigned char r,
+    unsigned char g, unsigned char b, unsigned char a) {
+  GIMG_Raster * ras = nullptr;
+  if (gimg_raster_create(w, h, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr,
+          0, &ras) != GIMG_OK) {
+    return nullptr;
+  }
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      unsigned char * p = (unsigned char *)gimg_raster_pixels(ras) +
+          (size_t)y * gimg_raster_stride_bytes(ras) + (size_t)x * 4u;
+      p[0] = r;
+      p[1] = g;
+      p[2] = b;
+      p[3] = a;
+    }
+  }
+  return ras;
+}
+
+const unsigned char * at(const GIMG_Raster * r, uint32_t x, uint32_t y) {
+  return (const unsigned char *)gimg_raster_pixels_const(r) +
+      (size_t)y * gimg_raster_stride_bytes(r) + (size_t)x * 4u;
+}
+
+} // namespace
+
+TEST(Composite, SourceReplacesExactlyTheRectangleItCovers) {
+  GIMG_Raster * dst = make_rgba8(10, 8, 10u, 20u, 30u, 255u);
+  GIMG_Raster * src = make_rgba8(3, 2, 200u, 100u, 50u, 128u);
+  ASSERT_NE(dst, nullptr);
+  ASSERT_NE(src, nullptr);
+  ASSERT_EQ(gimg_ops_composite(dst, src, 4, 3, GIMG_COMPOSITE_SOURCE),
+      GIMG_OK);
+  for (uint32_t y = 0; y < 8; y++) {
+    for (uint32_t x = 0; x < 10; x++) {
+      const unsigned char * p = at(dst, x, y);
+      const bool inside = (x >= 4 && x < 7 && y >= 3 && y < 5);
+      if (inside) {
+        EXPECT_EQ(p[0], 200u) << x << "," << y;
+        EXPECT_EQ(p[3], 128u) << x << "," << y;
+      }
+      else {
+        EXPECT_EQ(p[0], 10u) << x << "," << y;
+        EXPECT_EQ(p[3], 255u) << x << "," << y;
+      }
+    }
+  }
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+/**
+ * A source hanging off each edge is clipped, and one entirely outside draws
+ * nothing and says so with GIMG_OK. Negative offsets are the case a plain
+ * unsigned interface cannot express at all.
+ */
+TEST(Composite, ASourceIsClippedToTheDestination) {
+  const int32_t offsets[][2] = {{-2, -2}, {8, 6}, {-2, 3}, {4, -1}, {0, 0},
+      {6, 4}};
+  for (const auto & off : offsets) {
+    GIMG_Raster * dst = make_rgba8(10, 8, 0u, 0u, 0u, 255u);
+    // Each source pixel says where in the source it came from. A uniform
+    // source cannot tell a correct clip from one that reads the source from
+    // its corner regardless of the offset, which is exactly what a negative
+    // offset gets wrong.
+    GIMG_Raster * src = make_rgba8(4, 4, 0u, 0u, 0u, 255u);
+    ASSERT_NE(src, nullptr);
+    for (uint32_t sy = 0; sy < 4; sy++) {
+      for (uint32_t sx = 0; sx < 4; sx++) {
+        unsigned char * p = (unsigned char *)gimg_raster_pixels(src) +
+            (size_t)sy * gimg_raster_stride_bytes(src) + (size_t)sx * 4u;
+        p[0] = (unsigned char)(0x10u + sx);
+        p[1] = (unsigned char)(0x20u + sy);
+        p[2] = 0xEEu;
+      }
+    }
+    ASSERT_EQ(gimg_ops_composite(dst, src, off[0], off[1],
+                  GIMG_COMPOSITE_SOURCE),
+        GIMG_OK);
+    for (uint32_t y = 0; y < 8; y++) {
+      for (uint32_t x = 0; x < 10; x++) {
+        const bool inside = ((int64_t)x >= off[0] && (int64_t)x < off[0] + 4 &&
+            (int64_t)y >= off[1] && (int64_t)y < off[1] + 4);
+        const unsigned char * p = at(dst, x, y);
+        if (inside) {
+          const uint32_t sx = (uint32_t)((int64_t)x - off[0]);
+          const uint32_t sy = (uint32_t)((int64_t)y - off[1]);
+          EXPECT_EQ(p[0], (unsigned char)(0x10u + sx))
+              << "offset " << off[0] << "," << off[1] << ": wrong source "
+              << "column landed at " << x << "," << y;
+          EXPECT_EQ(p[1], (unsigned char)(0x20u + sy))
+              << "offset " << off[0] << "," << off[1] << ": wrong source row "
+              << "landed at " << x << "," << y;
+        }
+        else {
+          EXPECT_EQ(p[2], 0u)
+              << "offset " << off[0] << "," << off[1] << " drew outside at "
+              << x << "," << y;
+        }
+      }
+    }
+    gimg_raster_destroy(src);
+    gimg_raster_destroy(dst);
+  }
+
+  // Entirely outside, including offsets far enough out that a 32-bit sum of
+  // the offset and the width would wrap back into the destination.
+  const int32_t outside[][2] = {{-4, 0}, {10, 0}, {0, -4}, {0, 8},
+      {INT32_MAX - 1, 0}, {INT32_MIN, 0}, {0, INT32_MIN}};
+  for (const auto & off : outside) {
+    GIMG_Raster * dst = make_rgba8(10, 8, 77u, 77u, 77u, 255u);
+    GIMG_Raster * src = make_rgba8(4, 4, 1u, 2u, 3u, 255u);
+    EXPECT_EQ(gimg_ops_composite(dst, src, off[0], off[1],
+                  GIMG_COMPOSITE_SOURCE),
+        GIMG_OK)
+        << off[0] << "," << off[1];
+    for (uint32_t y = 0; y < 8; y++) {
+      for (uint32_t x = 0; x < 10; x++) {
+        ASSERT_EQ(at(dst, x, y)[0], 77u)
+            << "offset " << off[0] << "," << off[1] << " drew at " << x << ","
+            << y;
+      }
+    }
+    gimg_raster_destroy(src);
+    gimg_raster_destroy(dst);
+  }
+}
+
+/** A wholly transparent source over anything leaves it untouched. */
+TEST(Composite, OverWithNothingVisibleChangesNothing) {
+  GIMG_Raster * dst = make_rgba8(6, 6, 33u, 66u, 99u, 200u);
+  GIMG_Raster * src = make_rgba8(6, 6, 255u, 0u, 0u, 0u);
+  ASSERT_EQ(gimg_ops_composite(dst, src, 0, 0, GIMG_COMPOSITE_OVER), GIMG_OK);
+  for (uint32_t y = 0; y < 6; y++) {
+    for (uint32_t x = 0; x < 6; x++) {
+      const unsigned char * p = at(dst, x, y);
+      EXPECT_EQ(p[0], 33u);
+      EXPECT_EQ(p[1], 66u);
+      EXPECT_EQ(p[2], 99u);
+      EXPECT_EQ(p[3], 200u);
+    }
+  }
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+/** A wholly opaque source over anything replaces it exactly. */
+TEST(Composite, OverWithAnOpaqueSourceIsAReplacement) {
+  GIMG_Raster * dst = make_rgba8(6, 6, 33u, 66u, 99u, 40u);
+  GIMG_Raster * src = make_rgba8(6, 6, 7u, 8u, 9u, 255u);
+  ASSERT_EQ(gimg_ops_composite(dst, src, 0, 0, GIMG_COMPOSITE_OVER), GIMG_OK);
+  for (uint32_t y = 0; y < 6; y++) {
+    for (uint32_t x = 0; x < 6; x++) {
+      const unsigned char * p = at(dst, x, y);
+      EXPECT_EQ(p[0], 7u);
+      EXPECT_EQ(p[1], 8u);
+      EXPECT_EQ(p[2], 9u);
+      EXPECT_EQ(p[3], 255u);
+    }
+  }
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+/**
+ * Half-covering opaque white over opaque black gives the halfway grey, and the
+ * result stays opaque.
+ *
+ * Checked against the arithmetic written out rather than against the
+ * implementation: out_a = 255, and out_c = (255*128 + 0*255*127/255) / 255.
+ */
+TEST(Composite, OverHalfwayIsTheHalfwayColour) {
+  GIMG_Raster * dst = make_rgba8(4, 4, 0u, 0u, 0u, 255u);
+  GIMG_Raster * src = make_rgba8(4, 4, 255u, 255u, 255u, 128u);
+  ASSERT_EQ(gimg_ops_composite(dst, src, 0, 0, GIMG_COMPOSITE_OVER), GIMG_OK);
+  for (uint32_t y = 0; y < 4; y++) {
+    for (uint32_t x = 0; x < 4; x++) {
+      const unsigned char * p = at(dst, x, y);
+      EXPECT_EQ(p[3], 255u) << "opaque under anything stays opaque";
+      for (uint8_t c = 0; c < 3u; c++) {
+        EXPECT_NEAR(p[c], 128, 1) << "channel " << (int)c;
+      }
+    }
+  }
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+/**
+ * Where the result is wholly transparent the colour is zero, whatever was
+ * underneath.
+ *
+ * Otherwise compositing the same source over two different destinations gives
+ * different bytes in the pixels where nothing at all is visible, and a
+ * byte-comparison of two runs disagrees about pixels nobody can see.
+ */
+TEST(Composite, AnInvisibleResultCarriesNoColour) {
+  GIMG_Raster * a = make_rgba8(4, 4, 200u, 100u, 50u, 0u);
+  GIMG_Raster * b = make_rgba8(4, 4, 9u, 9u, 9u, 0u);
+  GIMG_Raster * src = make_rgba8(4, 4, 250u, 250u, 250u, 0u);
+  ASSERT_EQ(gimg_ops_composite(a, src, 0, 0, GIMG_COMPOSITE_OVER), GIMG_OK);
+  ASSERT_EQ(gimg_ops_composite(b, src, 0, 0, GIMG_COMPOSITE_OVER), GIMG_OK);
+  EXPECT_TRUE(gimg_ops_raster_equal(a, b))
+      << "two transparent destinations composited with the same source "
+         "disagree where nothing is visible";
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(b);
+  gimg_raster_destroy(a);
+}
+
+/**
+ * Half-covering white over half-covering black, where neither the source nor
+ * the destination is opaque and the composite alpha is therefore neither.
+ *
+ * Worked out by hand from the Porter-Duff definition rather than from the
+ * code: coverage is 0.5 + 0.5 * 0.5 = 0.75, which is 191.25 and rounds to
+ * 192; the colour is (1 * 0.5 + 0 * 0.5 * 0.5) / 0.75 = 2/3, which is 170.
+ *
+ * The opaque-destination case cannot check the division at all, because there
+ * the composite alpha comes to 255 and dividing by it changes nothing - an
+ * implementation that skipped the division entirely passes that test and
+ * fails this one.
+ */
+TEST(Composite, OverTwoTranslucentLayersFollowsPorterDuff) {
+  GIMG_Raster * dst = make_rgba8(4, 4, 0u, 0u, 0u, 128u);
+  GIMG_Raster * src = make_rgba8(4, 4, 255u, 255u, 255u, 128u);
+  ASSERT_NE(dst, nullptr);
+  ASSERT_NE(src, nullptr);
+  ASSERT_EQ(gimg_ops_composite(dst, src, 0, 0, GIMG_COMPOSITE_OVER), GIMG_OK);
+  for (uint32_t y = 0; y < 4; y++) {
+    for (uint32_t x = 0; x < 4; x++) {
+      const unsigned char * p = at(dst, x, y);
+      EXPECT_EQ(p[3], 192u) << "coverage at " << x << "," << y;
+      for (uint8_t c = 0; c < 3u; c++) {
+        EXPECT_NEAR(p[c], 170, 1)
+            << "channel " << (int)c << " at " << x << "," << y;
+      }
+    }
+  }
+  gimg_raster_destroy(src);
+  gimg_raster_destroy(dst);
+}
+
+TEST(Composite, WhatIsRefused) {
+  GIMG_Raster * rgba = make_rgba8(4, 4, 0u, 0u, 0u, 255u);
+  ASSERT_NE(rgba, nullptr);
+  EXPECT_EQ(gimg_ops_composite(nullptr, rgba, 0, 0, GIMG_COMPOSITE_SOURCE),
+      GIMG_ERR_INTERNAL);
+  EXPECT_EQ(gimg_ops_composite(rgba, nullptr, 0, 0, GIMG_COMPOSITE_SOURCE),
+      GIMG_ERR_INTERNAL);
+  EXPECT_EQ(gimg_ops_composite(rgba, rgba, 0, 0, (GIMG_Composite_Op)42),
+      GIMG_ERR_UNSUPPORTED);
+
+  // Mismatched formats: converting unasked would change the picture's colour.
+  GIMG_Raster * gray = nullptr;
+  ASSERT_EQ(gimg_raster_create(4, 4, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
+                nullptr, 0, &gray),
+      GIMG_OK);
+  EXPECT_EQ(gimg_ops_composite(rgba, gray, 0, 0, GIMG_COMPOSITE_SOURCE),
+      GIMG_ERR_UNSUPPORTED);
+
+  // "Over" needs an alpha channel to mean anything.
+  GIMG_Raster * gray2 = nullptr;
+  ASSERT_EQ(gimg_raster_create(4, 4, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
+                nullptr, 0, &gray2),
+      GIMG_OK);
+  EXPECT_EQ(gimg_ops_composite(gray, gray2, 0, 0, GIMG_COMPOSITE_OVER),
+      GIMG_ERR_UNSUPPORTED);
+  // ...but replacing works for a format with no alpha.
+  EXPECT_EQ(gimg_ops_composite(gray, gray2, 0, 0, GIMG_COMPOSITE_SOURCE),
+      GIMG_OK);
+
+  gimg_raster_destroy(gray2);
+  gimg_raster_destroy(gray);
+  gimg_raster_destroy(rgba);
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
