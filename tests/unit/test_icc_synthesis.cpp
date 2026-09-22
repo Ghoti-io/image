@@ -515,16 +515,30 @@ int main(int argc, char ** argv) {
 // LeakSanitizer reported that one and went on suppressing the two glibc ones,
 // so the template narrows to what it names.
 //
-// Getting that check to mean anything took three tries, which is worth
-// recording for whoever repeats it. LSan reports only blocks it cannot reach,
-// and it reaches more than you expect: a pointer left in a dead stack slot is
-// still found by its conservative stack scan, and so is one inside a heap
-// block that has already been freed, because ASan's quarantine keeps that
-// block's contents around. Both of those planted leaks went unreported and
-// looked exactly like an over-wide suppression. The control that told them
-// apart was turning the suppression off - the planted leak stayed invisible,
-// so the suppression was not what was hiding it. A plant that works has to
-// drop the reference before the thing holding it goes away.
+// That direction is the whole proof, and the other direction is worth nothing.
+// A plant that IS reported while the suppression is on shows the suppression
+// did not hide it. A plant that is NOT reported shows only that LSan could
+// reach it, which says nothing about the suppression at all - and that is the
+// easy mistake, because an unreported plant looks exactly like an over-wide
+// template.
+//
+// It took three tries to get a plant LSan would report, because it reaches
+// more than you expect: a pointer left in a dead stack slot is found by its
+// conservative stack scan, and one inside a heap block that has already been
+// freed is found too, because ASan's quarantine keeps that block's contents
+// around. Only dropping the reference before the thing holding it goes away
+// produces a block LSan calls unreachable:
+//
+//     volatile void * p = malloc(1234);                      invisible
+//     h = malloc(8); h[0] = malloc(1234); free(h);           invisible
+//     h = malloc(8); h[0] = malloc(1234); h[0] = 0; free(h); reported
+//
+// When re-running this, test for the planted allocation's own size. Do NOT
+// grep for "detected memory leaks": with the suppression off, the glibc leak
+// raises that banner by itself, so the banner cannot tell you which leak was
+// seen. model's test_locale.cpp carries the same three shapes and the same
+// warning - that detector trap was found there, on this control, and it had
+// the suppression looking guilty for several minutes.
 extern "C" const char * __lsan_default_suppressions(void) {
   return "leak:__argz_add_sep\n";
 }
