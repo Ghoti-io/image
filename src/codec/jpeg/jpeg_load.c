@@ -2237,11 +2237,19 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
     }
     else if ((ext_code == 0x11 || ext_code == 0x13) && state->app0_jfif &&
-        state->app0_jfif_len >= 16 && jfxx_data_len > 0) {
-      uint16_t tx = (uint16_t)((state->app0_jfif[12] << 8) |
-          (unsigned char)state->app0_jfif[13]);
-      uint16_t ty = (uint16_t)((state->app0_jfif[14] << 8) |
-          (unsigned char)state->app0_jfif[15]);
+        jfxx_data_len >= 2u) {
+      // JFIF 1.02: for extension codes 0x11 and 0x13 the extension data opens
+      // with its own Xthumbnail and Ythumbnail, a byte each, and the palette
+      // or the RGB follows them.  This took the dimensions from the *JFIF*
+      // APP0 instead - a different thumbnail entirely, and read there with the
+      // same wrong offsets as the JFIF path above.  A file that declares no
+      // JFIF thumbnail, which is every file that uses JFXX for one, therefore
+      // gave 0 by 0 and this whole branch quietly did nothing.  A JFIF APP0 is
+      // still required to be present, because 1.02 says JFXX follows one.
+      const uint16_t tx = (uint16_t)jfxx_data[0];
+      const uint16_t ty = (uint16_t)jfxx_data[1];
+      const unsigned char * ext_payload = jfxx_data + 2;
+      const size_t ext_payload_len = jfxx_data_len - 2u;
       if (tx > 0 && ty > 0) {
         size_t thumb_pixels = 0;
         if (gimg_safe_pixel_count((uint32_t)tx, (uint32_t)ty, &thumb_pixels) ==
@@ -2252,7 +2260,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             size_t palette_size = 768u;
             size_t indices_size = 0;
             if (gcu_safe_add_size(palette_size, thumb_pixels, &indices_size) &&
-                jfxx_data_len >= indices_size) {
+                ext_payload_len >= indices_size) {
               GIMG_Raster * thumb_raster = NULL;
               r = gimg_raster_create_with_allocator(alloc, (uint32_t)tx,
                   (uint32_t)ty, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0,
@@ -2260,8 +2268,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               if (r == GIMG_OK && thumb_raster) {
                 void * pixels = gimg_raster_pixels(thumb_raster);
                 size_t stride = gimg_raster_stride_bytes(thumb_raster);
-                const unsigned char * pal = jfxx_data;
-                const unsigned char * idx = jfxx_data + 768;
+                const unsigned char * pal = ext_payload;
+                const unsigned char * idx = ext_payload + 768;
                 for (uint32_t y = 0; y < (uint32_t)ty; y++) {
                   for (uint32_t x = 0; x < (uint32_t)tx; x++) {
                     unsigned char i = idx[(size_t)y * (uint32_t)tx + x];
@@ -2288,7 +2296,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             // 0x13: 3 BPP RGB.
             size_t need = 0;
             if (gcu_safe_mul_size(thumb_pixels, 3u, &need) &&
-                jfxx_data_len >= need) {
+                ext_payload_len >= need) {
               GIMG_Raster * thumb_raster = NULL;
               r = gimg_raster_create_with_allocator(alloc, (uint32_t)tx,
                   (uint32_t)ty, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0,
@@ -2296,7 +2304,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               if (r == GIMG_OK && thumb_raster) {
                 void * pixels = gimg_raster_pixels(thumb_raster);
                 size_t stride = gimg_raster_stride_bytes(thumb_raster);
-                const unsigned char * src = jfxx_data;
+                const unsigned char * src = ext_payload;
                 for (uint32_t y = 0; y < (uint32_t)ty; y++) {
                   for (uint32_t x = 0; x < (uint32_t)tx; x++) {
                     size_t src_off = (size_t)(y * (uint32_t)tx + x) * 3u;

@@ -6273,3 +6273,126 @@ TEST(JpegLoad, ADuplicateSingleChunkIccKeepsTheLast) {
       << "the later profile is the one kept; the earlier one must be freed, "
          "which only make test-asan can see";
 }
+
+namespace {
+
+/** A minimal JFIF APP0 declaring no thumbnail of its own. */
+std::vector<uint8_t> jfif_app0_no_thumbnail() {
+  return with_prefix("JFIF\0", 5,
+      std::string("\x01\x02\x01\x01\x2C\x01\x2C\x00\x00", 9));
+}
+
+} // namespace
+
+/**
+ * Each JFXX thumbnail form is read, and its size comes from the JFXX segment.
+ *
+ * JFIF 1.02's extension APP0 begins "JFXX\0" and an extension code: 0x10 for
+ * a thumbnail that is itself a JPEG stream, 0x11 for one byte per pixel into
+ * a 768-byte palette, 0x13 for three bytes per pixel. For 0x11 and 0x13 the
+ * extension data opens with **its own** Xthumbnail and Ythumbnail, a byte
+ * each, before the palette or the pixels.
+ *
+ * The loader was taking those two dimensions from the JFIF APP0 instead - a
+ * different thumbnail entirely - and reading them there at the same wrong
+ * offsets as the JFIF path. A file that declares no JFIF thumbnail, which is
+ * every file that uses JFXX to carry one, therefore came out 0 by 0 and the
+ * branch did nothing at all. None of the three forms had ever been loaded, so
+ * nothing said otherwise.
+ *
+ * Each case carries a JFIF APP0 that declares **no** thumbnail, which is what
+ * a real such file looks like and what makes the old behaviour visible: under
+ * it, every one of these produces no second item.
+ */
+TEST(JpegLoad, EachJfxxThumbnailFormIsReadAtItsOwnSize) {
+  const uint8_t tw = 2u, th = 2u;
+
+  // 0x11: Xthumbnail, Ythumbnail, a 768-byte palette, then one index each.
+  std::vector<uint8_t> pal_ext;
+  pal_ext.push_back(tw);
+  pal_ext.push_back(th);
+  for (int i = 0; i < 256; i++) {
+    pal_ext.push_back((uint8_t)i);          // R
+    pal_ext.push_back((uint8_t)(255 - i));  // G
+    pal_ext.push_back((uint8_t)(i / 2));    // B
+  }
+  const uint8_t indices[4] = {3u, 40u, 200u, 255u};
+  for (uint8_t i : indices) { pal_ext.push_back(i); }
+
+  // 0x13: Xthumbnail, Ythumbnail, then three bytes a pixel.
+  std::vector<uint8_t> rgb_ext;
+  rgb_ext.push_back(tw);
+  rgb_ext.push_back(th);
+  for (int i = 0; i < tw * th; i++) {
+    rgb_ext.push_back((uint8_t)(0x10 + i));
+    rgb_ext.push_back((uint8_t)(0x40 + i));
+    rgb_ext.push_back((uint8_t)(0x80 + i));
+  }
+
+  // 0x10: a whole JPEG.
+  std::vector<uint8_t> thumb_jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", thumb_jpeg));
+
+  struct Case {
+    const char * what;
+    uint8_t code;
+    std::vector<uint8_t> ext;
+    uint32_t w, h;
+  } cases[] = {
+      {"0x10 (JPEG)", 0x10u, thumb_jpeg, 8u, 8u},
+      {"0x11 (palette)", 0x11u, pal_ext, tw, th},
+      {"0x13 (RGB)", 0x13u, rgb_ext, tw, th},
+  };
+
+  for (const Case & c : cases) {
+    std::vector<uint8_t> jfxx = with_prefix("JFXX\0", 5, std::string());
+    jfxx.push_back(c.code);
+    jfxx.insert(jfxx.end(), c.ext.begin(), c.ext.end());
+
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_with_apps(
+        {{0xE0u, jfif_app0_no_thumbnail()}, {0xE0u, jfxx}}, jpeg))
+        << c.what;
+
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK) << c.what;
+    gimg_stream_destroy(s);
+
+    ASSERT_EQ(gimg_doc_item_count(doc), 2u)
+        << c.what << ": no second item, so this form was not read at all";
+    GIMG_Raster * thumb = gimg_item_raster(gimg_doc_item(doc, 1));
+    ASSERT_NE(thumb, nullptr) << c.what;
+    EXPECT_EQ(gimg_raster_width(thumb), c.w) << c.what;
+    EXPECT_EQ(gimg_raster_height(thumb), c.h) << c.what;
+
+    // For the two raw forms, check the pixels: the dimensions alone are
+    // satisfied by reading the right number of bytes from the wrong offset,
+    // which is exactly what the palette and the RGB were doing.
+    const unsigned char * px = (const unsigned char *)gimg_raster_pixels(thumb);
+    const size_t stride = gimg_raster_stride_bytes(thumb);
+    if (c.code == 0x11u) {
+      for (uint32_t i = 0; i < 4u; i++) {
+        const unsigned char * q =
+            px + (size_t)(i / 2u) * stride + (size_t)(i % 2u) * 4u;
+        const int idx = indices[i];
+        EXPECT_EQ(q[0], (unsigned char)idx) << c.what << " red " << i;
+        EXPECT_EQ(q[1], (unsigned char)(255 - idx)) << c.what << " green " << i;
+        EXPECT_EQ(q[2], (unsigned char)(idx / 2)) << c.what << " blue " << i;
+        EXPECT_EQ(q[3], 255u) << c.what << " alpha " << i;
+      }
+    }
+    else if (c.code == 0x13u) {
+      for (uint32_t i = 0; i < 4u; i++) {
+        const unsigned char * q =
+            px + (size_t)(i / 2u) * stride + (size_t)(i % 2u) * 4u;
+        EXPECT_EQ(q[0], (unsigned char)(0x10 + i)) << c.what << " red " << i;
+        EXPECT_EQ(q[1], (unsigned char)(0x40 + i)) << c.what << " green " << i;
+        EXPECT_EQ(q[2], (unsigned char)(0x80 + i)) << c.what << " blue " << i;
+        EXPECT_EQ(q[3], 255u) << c.what << " alpha " << i;
+      }
+    }
+    gimg_doc_destroy(doc);
+  }
+}
