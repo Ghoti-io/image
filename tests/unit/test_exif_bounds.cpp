@@ -930,3 +930,156 @@ TEST(ExifThumbnailWriters, WithNoReadableSofTheThumbnailSizeDefaults) {
   EXPECT_EQ(width, 160u) << "Exif 2.3's default thumbnail width";
   EXPECT_EQ(height, 120u) << "Exif 2.3's default thumbnail height";
 }
+
+namespace {
+
+/** Is @p r something an Exif entry point is allowed to return? */
+bool is_legal_result(GIMG_Result r) {
+  return r == GIMG_OK || r == GIMG_ERR_CORRUPT || r == GIMG_ERR_INTERNAL ||
+      r == GIMG_ERR_UNSUPPORTED || r == GIMG_ERR_LIMIT || r == GIMG_ERR_OOM;
+}
+
+/**
+ * Put @p blob through every Exif entry point that reads one.
+ *
+ * Counts how many calls refused it, so a sweep can tell "everything was
+ * accepted" from "the refusals happened".
+ */
+int call_every_reader(const std::vector<uint8_t> & blob, const char * where) {
+  int refused = 0;
+  auto note = [&](GIMG_Result r, const char * fn) {
+    EXPECT_TRUE(is_legal_result(r))
+        << where << ": " << fn << " returned " << (int)r;
+    if (r != GIMG_OK) { refused++; }
+  };
+
+  GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
+  note(gimg_exif_parse_orientation(blob.data(), blob.size(), &o),
+      "parse_orientation");
+
+  void * p = nullptr;
+  size_t n = 0;
+  note(gimg_exif_strip_gps(nullptr, blob.data(), blob.size(), &p, &n),
+      "strip_gps");
+  if (p) { free(p); p = nullptr; n = 0; }
+
+  note(gimg_exif_normalize(nullptr, blob.data(), blob.size(), &p, &n),
+      "normalize");
+  if (p) { free(p); p = nullptr; n = 0; }
+
+  // Returns a pointer into the blob, so there is nothing to free.
+  const void * inner = nullptr;
+  size_t inner_n = 0;
+  note(gimg_exif_embedded_thumbnail_jpeg(
+           blob.data(), blob.size(), &inner, &inner_n),
+      "embedded_thumbnail_jpeg");
+
+  note(gimg_exif_embedded_thumbnail_tiff_jpeg(
+           nullptr, blob.data(), blob.size(), &p, &n),
+      "embedded_thumbnail_tiff_jpeg");
+  if (p) { free(p); p = nullptr; n = 0; }
+
+  uint32_t w = 0, h = 0;
+  uint8_t bits = 0;
+  uint16_t pm = 0;
+  note(gimg_exif_embedded_thumbnail_uncompressed(nullptr, blob.data(),
+           blob.size(), &w, &h, &bits, &pm, &p, &n),
+      "embedded_thumbnail_uncompressed");
+  if (p) { free(p); }
+
+  return refused;
+}
+
+} // namespace
+
+/**
+ * No single-byte corruption of an Exif blob gets past the readers.
+ *
+ * Almost everything still unreached in exif.c is a refusal: an offset that
+ * points outside the buffer, a count that does not match its array, a type
+ * that is not the one the tag requires. Those cannot be reached from a good
+ * blob and there are too many of them to hand-write one file each, so this
+ * takes blobs that are known good and breaks one byte at a time.
+ *
+ * What it asserts is what a reader owes a caller given rubbish: a result code
+ * from the documented set - never a crash, never a read past the end, never a
+ * block kept. The first two are what makes this worth running under `make
+ * test-asan`, where an out-of-bounds read inside a refusal path stops being
+ * invisible; the sweep is deterministic so it runs on every build rather than
+ * only when somebody remembers to fuzz.
+ *
+ * The control matters as much as the sweep. A corruption sweep in which
+ * nothing is ever refused would pass against a reader that accepted anything
+ * at all, so the count of refusals is asserted to be substantial - and the
+ * good blobs are put through unbroken first, where they must be accepted, so
+ * that "refused everything" cannot pass either.
+ */
+TEST(ExifCorruption, NoSingleByteChangeCrashesOrIsSilentlyAccepted) {
+  std::vector<uint8_t> jpg;
+  ASSERT_TRUE(read_fixture("baseline_8x8_gray.jpg", jpg));
+  const size_t sos = find_sos(jpg);
+  ASSERT_GT(sos, 2u);
+  std::vector<uint8_t> tables(jpg.begin(), jpg.begin() + (long)sos);
+  tables.push_back(0xFF);
+  tables.push_back(0xD9);
+  const std::vector<uint8_t> strip(jpg.begin() + (long)sos, jpg.end());
+
+  const std::vector<uint8_t> pixels(4u * 2u, 0x5A);
+  std::vector<std::vector<uint8_t>> good;
+  good.push_back(exif_test::make_exif_with_gps(true));
+  good.push_back(exif_test::make_exif_with_gps(false));
+  good.push_back(exif_test::make_exif_with_tiff_jpeg_thumbnail(tables, strip));
+  {
+    std::vector<std::vector<uint8_t>> two{pixels, pixels};
+    good.push_back(make_exif_uncompressed_thumbnail(4u, 4u, 8u, 1u, two, true));
+  }
+
+  // The blobs are good, so each must parse: a sweep whose baseline is already
+  // refused proves nothing about corruption.
+  //
+  // Their refusal count is also the noise floor. Most of these readers
+  // legitimately decline a blob that is well-formed but not their format - an
+  // uncompressed-thumbnail reader has nothing to say about a TechNote-2 blob
+  // and says so - so a raw count of refusals across six readers means little
+  // on its own. What means something is that breaking a byte refuses *more
+  // often than that*, which needs no threshold anyone had to choose.
+  long base_refusals = 0;
+  for (size_t i = 0; i < good.size(); i++) {
+    GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
+    EXPECT_EQ(gimg_exif_parse_orientation(good[i].data(), good[i].size(), &o),
+        GIMG_OK)
+        << "baseline blob " << i << " is not actually well-formed";
+    base_refusals += call_every_reader(good[i], "uncorrupted baseline");
+  }
+  const double base_rate = (double)base_refusals / (double)good.size();
+
+  // Corrupt the header and IFD region, which is where every offset and count
+  // that a reader has to distrust actually lives.
+  const uint8_t hostile[] = {0x00u, 0xFFu, 0x7Fu};
+  long refusals = 0, calls = 0;
+  for (size_t bi = 0; bi < good.size(); bi++) {
+    const size_t reach = good[bi].size() < 160u ? good[bi].size() : 160u;
+    for (size_t off = 0; off < reach; off++) {
+      for (uint8_t v : hostile) {
+        if (good[bi][off] == v) { continue; }
+        std::vector<uint8_t> broken = good[bi];
+        broken[off] = v;
+        char where[64];
+        std::snprintf(where, sizeof where, "blob %zu byte %zu = 0x%02X",
+            bi, off, (unsigned)v);
+        refusals += call_every_reader(broken, where);
+        calls++;
+      }
+    }
+  }
+
+  ASSERT_GT(calls, 500L) << "the sweep shrank; check the blobs still build";
+  const double broken_rate = (double)refusals / (double)calls;
+  EXPECT_GT(broken_rate, base_rate)
+      << "breaking a byte refused no more often than leaving the blob alone ("
+      << broken_rate << " vs " << base_rate
+      << " refusals per pass over six readers), so this sweep is not "
+         "distinguishing a reader that checks from one that does not";
+  std::printf("  %ld corruptions, %.2f refusals each; baseline %.2f\n", calls,
+      broken_rate, base_rate);
+}
