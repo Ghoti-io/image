@@ -1234,6 +1234,139 @@ TEST(PngEncode, SaveInterlacedRoundTrip) {
       "interlaced_roundtrip.png", saved_data.data(), saved_data.size());
 }
 
+/** Every fcTL/fdAT sequence number in stream order, and the fdAT count per
+ * frame.  APNG numbers those two chunk types from one counter; IDAT carries no
+ * number, because frame 0's data is the default image. */
+struct ApngSequence {
+  std::vector<uint32_t> numbers;
+  size_t most_fdat_in_one_frame = 0;
+};
+
+ApngSequence ReadApngSequence(const std::vector<uint8_t> & png) {
+  ApngSequence out;
+  size_t i = 8, in_frame = 0;
+  while (i + 8 <= png.size()) {
+    const uint32_t len = (static_cast<uint32_t>(png[i]) << 24) |
+        (static_cast<uint32_t>(png[i + 1]) << 16) |
+        (static_cast<uint32_t>(png[i + 2]) << 8) |
+        static_cast<uint32_t>(png[i + 3]);
+    const std::string type(reinterpret_cast<const char *>(&png[i + 4]), 4);
+    if ((type == "fcTL" || type == "fdAT") && i + 12 <= png.size()) {
+      out.numbers.push_back((static_cast<uint32_t>(png[i + 8]) << 24) |
+          (static_cast<uint32_t>(png[i + 9]) << 16) |
+          (static_cast<uint32_t>(png[i + 10]) << 8) |
+          static_cast<uint32_t>(png[i + 11]));
+      if (type == "fcTL") {
+        in_frame = 0;
+      }
+      else {
+        in_frame++;
+        if (in_frame > out.most_fdat_in_one_frame) {
+          out.most_fdat_in_one_frame = in_frame;
+        }
+      }
+    }
+    if (type == "IEND") {
+      break;
+    }
+    i += 12u + static_cast<size_t>(len);
+  }
+  return out;
+}
+
+/** A raster of incompressible noise, so its zlib stream does not fit one
+ * chunk.  A gradient or a flat colour compresses to a few hundred bytes and
+ * would never reach the 32 KiB split this test is about. */
+GIMG_Raster * NoiseRaster(uint32_t w, uint32_t h, uint32_t seed) {
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(w, h, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0,
+          &raster) != GIMG_OK) {
+    return nullptr;
+  }
+  auto * base = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  const size_t stride = gimg_raster_stride_bytes(raster);
+  uint32_t x32 = seed * 2654435761u + 1u;
+  for (uint32_t y = 0; y < h; y++) {
+    uint8_t * row = base + y * stride;
+    for (uint32_t x = 0; x < w * 4u; x++) {
+      x32 ^= x32 << 13;
+      x32 ^= x32 >> 17;
+      x32 ^= x32 << 5;
+      row[x] = static_cast<uint8_t>(x32 & 0xFFu);
+    }
+  }
+  return raster;
+}
+
+TEST(PngEncode, ApngSequenceNumbersSurviveAFrameSplitAcrossChunks) {
+  // APNG numbers every fcTL and every fdAT from one counter, starting at 0.
+  // The writer used to compute those from the frame index - 2*i-1 for an fcTL
+  // and 2*i for its fdAT - which is only right when each frame's data fits in
+  // a single fdAT.  The writer splits at 32 KiB, so the first frame larger
+  // than that shifted every number after it: a 39-frame animation came out
+  // with frame 2's fcTL numbered 3 where it should have been 7.
+  //
+  // This codec's own loader refused such a file, which is how it was found.
+  // Pillow and ImageMagick both read it, because neither checks the numbering;
+  // that leniency is why a round trip through an outside decoder did not
+  // notice, and why the assertion here is on the numbers themselves rather
+  // than only on whether the file loads.
+  std::vector<GIMG_Raster *> frames;
+  for (uint32_t i = 0; i < 3; i++) {
+    GIMG_Raster * raster = NoiseRaster(128, 128, i + 1u);
+    ASSERT_NE(raster, nullptr);
+    frames.push_back(raster);
+  }
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, frames.size()), GIMG_OK);
+  for (size_t i = 0; i < frames.size(); i++) {
+    gimg_item_set_raster(gimg_doc_item(doc, i), frames[i]);
+    gimg_item_set_frame_delay(gimg_doc_item(doc, i), 5, 100);
+  }
+
+  GIMG_Stream * out_s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out_s), GIMG_OK);
+  GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out_s, "png", &opts, &report), GIMG_OK);
+  const void * out_ptr = nullptr;
+  size_t out_size = 0;
+  gimg_stream_output_buffer(out_s, &out_ptr, &out_size);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(out_ptr),
+      static_cast<const uint8_t *>(out_ptr) + out_size);
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+
+  const ApngSequence seq = ReadApngSequence(saved);
+
+  // Without this the test proves nothing: a frame that fits one fdAT is
+  // numbered correctly by the old arithmetic too, so a quieter fixture would
+  // pass against the bug.
+  ASSERT_GT(seq.most_fdat_in_one_frame, 1u)
+      << "the noise frames did not split across chunks, so this test is not "
+         "exercising the case it exists for";
+
+  ASSERT_FALSE(seq.numbers.empty());
+  for (size_t i = 0; i < seq.numbers.size(); i++) {
+    EXPECT_EQ(seq.numbers[i], static_cast<uint32_t>(i))
+        << "fcTL/fdAT number " << i << " out of sequence";
+  }
+
+  // And the file this codec wrote is one it can read.
+  GIMG_Stream * back = nullptr;
+  ASSERT_EQ(
+      gimg_stream_create_memory(saved.data(), saved.size(), &back), GIMG_OK);
+  GIMG_Doc * reloaded = nullptr;
+  EXPECT_EQ(gimg_doc_load(back, nullptr, nullptr, &reloaded), GIMG_OK);
+  if (reloaded) {
+    EXPECT_EQ(gimg_doc_item_count(reloaded), 3u);
+    gimg_doc_destroy(reloaded);
+  }
+  gimg_stream_destroy(back);
+}
+
 TEST(PngEncode, ApngRoundTrip) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(png_test::load_png_file("png_apng_2frame.png", buf))

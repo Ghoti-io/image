@@ -2580,6 +2580,19 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     report->bytes_written += 8 + GIMG_PNG_acTL_LEN + 4;
   }
 
+  // APNG's sequence numbers are one counter shared by every fcTL and every
+  // fdAT, starting at 0 and incrementing by one per chunk.  IDAT carries none:
+  // frame 0's data is the default image and is not numbered.
+  //
+  // It has to be a running counter rather than a formula.  This used to
+  // compute `2 * frame_index - 1` for an fcTL and `2 * frame_index` for its
+  // fdAT, which is only right when each frame's data fits in a single fdAT -
+  // and the writer splits at 32 KiB, so any frame bigger than that shifted
+  // every number after it.  A 39-frame animation came out with frame 2's fcTL
+  // numbered 3 where it should have been 7, and this codec's own loader
+  // refused the file.
+  uint32_t apng_sequence = 0u;
+
   // fcTL for frame 0 (APNG only).
   if (is_apng) {
     GIMG_Item * frame_item = gimg_doc_item((GIMG_Doc *)doc, 0);
@@ -2591,8 +2604,8 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     uint8_t dispose_op = (uint8_t)gimg_item_dispose_op(frame_item);
     uint8_t blend_op = (uint8_t)gimg_item_blend_op(frame_item);
     unsigned char fctl[GIMG_PNG_fcTL_LEN];
-    gimg_png_build_fctl(fctl, 0u, width, height, 0u, 0u, delay_num, delay_den,
-        dispose_op, blend_op);
+    gimg_png_build_fctl(fctl, apng_sequence++, width, height, 0u, 0u,
+        delay_num, delay_den, dispose_op, blend_op);
     r = gimg_png_write_chunk(stream, GIMG_PNG_fcTL, fctl, sizeof(fctl));
     if (r != GIMG_OK) {
       gimg_free(gimg_alloc_or_default(codec->allocator), zlib_buf);
@@ -2677,11 +2690,8 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
     uint8_t dispose_op = (uint8_t)gimg_item_dispose_op(frame_item);
     uint8_t blend_op = (uint8_t)gimg_item_blend_op(frame_item);
-    // APNG: one global sequence (no duplicates). fcTL(0), fcTL(1), fdAT(2),
-    // fcTL(3), fdAT(4), ... so fcTL for frame_index has seq 2*frame_index-1.
-    uint32_t fctl_sequence = (uint32_t)(2u * frame_index - 1u);
     unsigned char fctl[GIMG_PNG_fcTL_LEN];
-    gimg_png_build_fctl(fctl, fctl_sequence, width, height, 0u, 0u,
+    gimg_png_build_fctl(fctl, apng_sequence++, width, height, 0u, 0u,
         delay_num, delay_den, dispose_op, blend_op);
     r = gimg_png_write_chunk(stream, GIMG_PNG_fcTL, fctl, sizeof(fctl));
     if (r != GIMG_OK) {
@@ -2703,8 +2713,7 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (r != GIMG_OK) {
       return r;
     }
-    // fdAT: first chunk has sequence 2*frame_index, then increment (APNG).
-    uint32_t fdat_sequence = (uint32_t)(2u * frame_index);
+    // Every fdAT fragment takes the next number, however many a frame needs.
     size_t fdat_chunk_max = GIMG_PNG_IDAT_CHUNK_MAX;
     size_t fdat_offset = 0;
     while (fdat_offset < frame_zlib_len) {
@@ -2719,10 +2728,10 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
         gimg_free(gimg_alloc_or_default(codec->allocator), frame_zlib);
         return GIMG_ERR_OOM;
       }
-      fdat_payload[0] = (unsigned char)(fdat_sequence >> 24);
-      fdat_payload[1] = (unsigned char)(fdat_sequence >> 16);
-      fdat_payload[2] = (unsigned char)(fdat_sequence >> 8);
-      fdat_payload[3] = (unsigned char)(fdat_sequence & 0xFFu);
+      fdat_payload[0] = (unsigned char)(apng_sequence >> 24);
+      fdat_payload[1] = (unsigned char)(apng_sequence >> 16);
+      fdat_payload[2] = (unsigned char)(apng_sequence >> 8);
+      fdat_payload[3] = (unsigned char)(apng_sequence & 0xFFu);
       memcpy(fdat_payload + 4, frame_zlib + fdat_offset, frag_len);
       r = gimg_png_write_chunk(
           stream, GIMG_PNG_fdAT, fdat_payload, payload_len);
@@ -2733,7 +2742,7 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
       report->bytes_written += 8 + payload_len + 4;
       fdat_offset += frag_len;
-      fdat_sequence++;
+      apng_sequence++;
     }
     gimg_free(gimg_alloc_or_default(codec->allocator), frame_zlib);
   }
