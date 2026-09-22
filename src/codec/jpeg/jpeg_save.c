@@ -3889,19 +3889,34 @@ have_scan:
             (thumb_fmt == GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED ||
                 thumb_fmt == GIMG_EXIF_THUMB_FORMAT_JPEG ||
                 thumb_fmt == GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG)) {
-          GIMG_Item * thumb_item = gimg_doc_item((GIMG_Doc *)doc, 1);
+          // The second item is a thumbnail only in a document this codec
+          // loaded - where it came out of IFD1 - or one built by hand for
+          // that purpose, which has no loading codec at all.  In a GIF or an
+          // APNG it is frame two, and encoding an animation frame into an
+          // EXIF thumbnail is a claim the source never made.
+          //
+          // This used to gate only the *decode*, and take an already-attached
+          // raster from any document at all.  A caller who decoded the frames
+          // before saving - the ordinary way to walk an animation - therefore
+          // got frame two embedded as a full-resolution "thumbnail", and one
+          // who did not got a clean file from the same document and the same
+          // options.  On a 49-frame 1200x1200 GIF that was an 87 KB JPEG
+          // against a 35 KB one, the difference being a 51,905-byte APP1; on
+          // eight larger animations the segment passed the 65533 bytes APP1
+          // can hold and the whole save failed with GIMG_ERR_LIMIT.
+          //
+          // So the rule the comment always described now gates the use and
+          // not just the decode.
+          const bool second_item_is_a_thumbnail =
+              doc->loaded_by_codec == NULL ||
+              doc->loaded_by_codec == (struct GIMG_Codec *)codec;
+          GIMG_Item * thumb_item = second_item_is_a_thumbnail
+              ? gimg_doc_item((GIMG_Doc *)doc, 1)
+              : NULL;
           GIMG_Raster * thumb_raster =
               thumb_item ? gimg_item_raster(thumb_item) : NULL;
           bool thumb_raster_owned = false;
-          // The second item is a thumbnail only in a document this codec
-          // loaded or one built by hand for that purpose.  In an APNG it is
-          // frame two, and encoding an animation frame into an EXIF thumbnail
-          // would be a claim the source never made - so it is decoded only
-          // when this codec loaded the document, unlike the image raster
-          // above.
-          if (!thumb_raster &&
-              doc->loaded_by_codec == (struct GIMG_Codec *)codec &&
-              thumb_item) {
+          if (!thumb_raster && thumb_item) {
             r = gimg_item_decode(thumb_item, NULL, &thumb_raster);
             if (r == GIMG_OK && thumb_raster) {
               thumb_raster_owned = true;

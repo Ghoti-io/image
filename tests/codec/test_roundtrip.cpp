@@ -145,6 +145,93 @@ size_t longest_run_of(const std::vector<uint8_t> & png, const char * type) {
   return best;
 }
 
+/** True when the JPEG carries an APP1 segment beginning "Exif\0\0". */
+bool has_exif_app1(const std::vector<uint8_t> & jpg) {
+  size_t i = 2;
+  while (i + 4 <= jpg.size() && jpg[i] == 0xFF) {
+    const uint8_t m = jpg[i + 1];
+    if (m == 0xD9 || m == 0xDA) {
+      break;
+    }
+    const size_t ln = (static_cast<size_t>(jpg[i + 2]) << 8) | jpg[i + 3];
+    if (m == 0xE1 && i + 4 + 6 <= jpg.size() &&
+        std::memcmp(&jpg[i + 4], "Exif\0\0", 6) == 0) {
+      return true;
+    }
+    i += 2 + ln;
+  }
+  return false;
+}
+
+std::vector<uint8_t> save_as_jpeg(GIMG_Doc * doc) {
+  GIMG_Stream * out = nullptr;
+  if (gimg_stream_create_memory_output(&out) != GIMG_OK) {
+    return {};
+  }
+  GIMG_Save_Options opts;
+  memset(&opts, 0, sizeof(opts));
+  GIMG_Save_Report report;
+  memset(&report, 0, sizeof(report));
+  std::vector<uint8_t> bytes;
+  if (gimg_doc_save(doc, out, "jpeg", &opts, &report) == GIMG_OK) {
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out, &p, &n);
+    bytes.assign(static_cast<const uint8_t *>(p),
+        static_cast<const uint8_t *>(p) + n);
+  }
+  gimg_stream_destroy(out);
+  return bytes;
+}
+
+TEST(CrossCodec, AnAnimationFrameIsNotEmbeddedAsAnExifThumbnail) {
+  // A JPEG carries its thumbnail as item 1, so the writer encodes item 1 into
+  // IFD1. In an animation item 1 is frame two, and saying it is a thumbnail is
+  // a claim the source never made.
+  //
+  // The writer knew that and guarded it with the loading codec - but the guard
+  // only covered *decoding* item 1, and an already-decoded raster was taken
+  // from any document at all. So whether a caller had walked the frames before
+  // saving decided what came out: on a 49-frame 1200x1200 GIF, 87 KB with a
+  // 51,905-byte APP1 against 35 KB without, from one document and one set of
+  // options. On eight larger animations the segment passed the 65533 bytes an
+  // APP1 can hold and the save failed outright with GIMG_ERR_LIMIT.
+  //
+  // The second assertion is the one that matters most: what the caller
+  // happened to decode must not change the file.
+  const std::string fixture =
+      std::string(GIMG_TEST_DATA_GIF) + "/gif_12x8_background_index.gif";
+  const std::vector<uint8_t> src = slurp(fixture);
+  ASSERT_FALSE(src.empty()) << "Run tests/data/gif/generate.py";
+
+  std::vector<uint8_t> saved[2];
+  for (int decode_all = 0; decode_all < 2; decode_all++) {
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(src.data(), src.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    const size_t items = gimg_doc_item_count(doc);
+    ASSERT_GE(items, 2u) << "the fixture must have a second frame to misuse";
+    const size_t upto = decode_all ? items : 1u;
+    for (size_t i = 0; i < upto; i++) {
+      ASSERT_EQ(gimg_item_ensure_decoded(gimg_doc_item(doc, i), nullptr),
+          GIMG_OK);
+    }
+    saved[decode_all] = save_as_jpeg(doc);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    ASSERT_FALSE(saved[decode_all].empty())
+        << "saving an animation as JPEG was refused (decode_all="
+        << decode_all << ")";
+    EXPECT_FALSE(has_exif_app1(saved[decode_all]))
+        << "frame two was written into an EXIF thumbnail (decode_all="
+        << decode_all << ")";
+  }
+  EXPECT_EQ(saved[0], saved[1])
+      << "the same document and options produced different files depending on "
+         "which frames the caller had decoded first";
+}
+
 TEST(SelfRoundTrip, AnAnimationTooBigForOneChunkSurvivesToo) {
   // Three frames of noise, each far past the 32 KiB the writer splits at, so
   // the multi-chunk path is taken for every frame.
