@@ -7,6 +7,9 @@
  */
 
 #include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <string>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <vector>
@@ -412,4 +415,167 @@ TEST(ExifByteOrder, AHeaderWithNoRecognizedByteOrderMarkIsRefused) {
       << "same body, real mark: this must parse, or the test above is only "
          "rejecting a blob that was broken for some other reason";
   EXPECT_EQ(o2, GIMG_ORIENTATION_NORMAL);
+}
+
+namespace {
+
+/** Read a JPEG from the shared fixture directory. */
+bool read_fixture(const char * name, std::vector<uint8_t> & out) {
+  std::string path = std::string(GIMG_TEST_DATA_JPEG) + "/" + name;
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  if (!f) { return false; }
+  const std::streamsize n = f.tellg();
+  if (n <= 0) { return false; }
+  out.resize((size_t)n);
+  f.seekg(0);
+  return (bool)f.read((char *)out.data(), n);
+}
+
+/** Offset of the SOS marker (0xFF 0xDA), or 0 if there is none. */
+size_t find_sos(const std::vector<uint8_t> & jpg) {
+  for (size_t i = 2; i + 1 < jpg.size(); i++) {
+    if (jpg[i] == 0xFF && jpg[i + 1] == 0xDA) { return i; }
+  }
+  return 0;
+}
+
+/**
+ * An Exif blob whose IFD1 holds a thumbnail in TIFF/EP "new-style" JPEG form.
+ *
+ * Exif 2.3 / TIFF TechNote 2 allow a thumbnail to be stored the way a TIFF
+ * strip is - Compression = 7, the quantization and Huffman tables hoisted out
+ * into a JPEGTables field (0x015B), and the entropy-coded remainder in the
+ * strip that StripOffsets and StripByteCounts point at. Rebuilding a decodable
+ * JPEG means putting them back together, which is a different code path from
+ * the ordinary case where IFD1 simply points at a whole JPEG file.
+ *
+ * The two halves here are cut from a real JPEG at its SOS marker, so a correct
+ * reassembly reproduces that file byte for byte - which is a far stronger
+ * check than "the output starts with FFD8".
+ */
+std::vector<uint8_t> make_exif_with_tiff_jpeg_thumbnail(
+    const std::vector<uint8_t> & tables, const std::vector<uint8_t> & strip) {
+  std::vector<uint8_t> e;
+  auto u16 = [&e](uint16_t v) {
+    e.push_back((uint8_t)(v & 0xFF)); e.push_back((uint8_t)(v >> 8));
+  };
+  auto u32 = [&e](uint32_t v) {
+    for (int i = 0; i < 4; i++) { e.push_back((uint8_t)((v >> (8 * i)) & 0xFF)); }
+  };
+  auto entry = [&](uint16_t tag, uint16_t type, uint32_t count, uint32_t val) {
+    u16(tag); u16(type); u32(count); u32(val);
+  };
+
+  // Layout: header(8) IFD0(2 + 0*12 + 4) IFD1(2 + 4*12 + 4) tables strip
+  const uint32_t ifd0_off = 8u;
+  const uint32_t ifd1_off = ifd0_off + 2u + 4u;
+  const uint32_t tables_off = ifd1_off + 2u + 4u * 12u + 4u;
+  const uint32_t strip_off = tables_off + (uint32_t)tables.size();
+
+  e.push_back('I'); e.push_back('I');
+  u16(42);
+  u32(ifd0_off);
+  u16(0);                 // IFD0: no entries...
+  u32(ifd1_off);          // ...and IFD1 follows.
+  u16(4);                 // IFD1: four entries, tags ascending.
+  // Compression = 7 is inline and left-justified, so it is two bytes and two
+  // of padding - not a 32-bit 7.
+  u16(GIMG_EXIF_TAG_COMPRESSION); u16(GIMG_EXIF_TYPE_SHORT); u32(1u);
+  u16(7u); e.push_back(0); e.push_back(0);
+  entry(GIMG_EXIF_TAG_STRIP_OFFSETS, GIMG_EXIF_TYPE_LONG, 1u, strip_off);
+  entry(GIMG_EXIF_TAG_STRIP_BYTE_COUNTS, GIMG_EXIF_TYPE_LONG, 1u,
+      (uint32_t)strip.size());
+  entry(GIMG_EXIF_TAG_JPEG_TABLES, GIMG_EXIF_TYPE_UNDEFINED,
+      (uint32_t)tables.size(), tables_off);
+  u32(0);                 // no IFD2
+  e.insert(e.end(), tables.begin(), tables.end());
+  e.insert(e.end(), strip.begin(), strip.end());
+  return e;
+}
+
+} // namespace
+
+/**
+ * A thumbnail stored as JPEGTables plus a strip is put back together.
+ *
+ * This is the TIFF/EP form of an embedded thumbnail, and the whole reassembly
+ * - stripping the SOI and EOI that bracket the hoisted tables, skipping a
+ * leading SOI on the strip, and emitting one SOI in front of the join - had
+ * never executed. Neither had the tag parsing that finds JPEGTables at all.
+ *
+ * The assertion is byte equality with the JPEG the two halves were cut from.
+ * A weaker check - that the result is non-empty, or starts with FFD8 - would
+ * pass against a reassembly that dropped the tables, duplicated the SOI, or
+ * kept the EOI in the middle of the file, which are precisely the mistakes
+ * this code is arranged to avoid.
+ */
+TEST(ExifTiffJpegThumbnail, JpegTablesAndStripAreRejoinedIntoTheOriginal) {
+  std::vector<uint8_t> jpg;
+  ASSERT_TRUE(read_fixture("baseline_8x8_gray.jpg", jpg));
+  const size_t sos = find_sos(jpg);
+  ASSERT_GT(sos, 2u) << "fixture has no SOS to split at";
+
+  // Tables: SOI, everything up to the scan header, EOI.
+  std::vector<uint8_t> tables(jpg.begin(), jpg.begin() + (long)sos);
+  tables.push_back(0xFF);
+  tables.push_back(0xD9);
+
+  // Writers differ on whether the strip repeats the SOI. Both are met in the
+  // wild and they take different branches, so both are swept: one has to be
+  // skipped so the join does not end up with two, the other must not have two
+  // bytes taken off the front of its scan header.
+  const bool strip_leads_with_soi[] = {false, true};
+  for (bool with_soi : strip_leads_with_soi) {
+    std::vector<uint8_t> strip;
+    if (with_soi) { strip.push_back(0xFF); strip.push_back(0xD8); }
+    strip.insert(strip.end(), jpg.begin() + (long)sos, jpg.end());
+
+    const std::vector<uint8_t> e =
+        make_exif_with_tiff_jpeg_thumbnail(tables, strip);
+
+    void * out_p = nullptr;
+    size_t out_n = 0;
+    ASSERT_EQ(gimg_exif_embedded_thumbnail_tiff_jpeg(
+                  nullptr, e.data(), e.size(), &out_p, &out_n),
+        GIMG_OK)
+        << "strip with leading SOI: " << with_soi;
+    ASSERT_NE(out_p, nullptr) << "the tables/strip form produced no thumbnail";
+    const std::vector<uint8_t> got((uint8_t *)out_p, (uint8_t *)out_p + out_n);
+    free(out_p);
+
+    ASSERT_EQ(got.size(), jpg.size())
+        << "strip with leading SOI: " << with_soi
+        << ": reassembled length differs from the file it was cut from";
+    EXPECT_TRUE(got == jpg)
+        << "strip with leading SOI: " << with_soi
+        << ": the rejoined thumbnail is not the JPEG the halves came from";
+  }
+}
+
+/**
+ * Without a JPEGTables field the strip is handed back as it stands.
+ *
+ * The same tag is the switch between two quite different behaviours, so the
+ * other side is asserted too: with no tables to splice in there is nothing to
+ * reassemble, and the strip is already a whole JPEG. Testing only the join
+ * would leave the branch that decides between them untested in the direction
+ * that does nothing.
+ */
+TEST(ExifTiffJpegThumbnail, WithNoJpegTablesTheStripIsReturnedUnchanged) {
+  std::vector<uint8_t> jpg;
+  ASSERT_TRUE(read_fixture("baseline_8x8_gray.jpg", jpg));
+
+  // One-byte JPEGTables: below the two the reassembly needs, so it is ignored.
+  const std::vector<uint8_t> tables(1, 0x00);
+  const std::vector<uint8_t> e = make_exif_with_tiff_jpeg_thumbnail(tables, jpg);
+
+  void * out_p = nullptr;
+  size_t out_n = 0;
+  ASSERT_EQ(gimg_exif_embedded_thumbnail_tiff_jpeg(
+                nullptr, e.data(), e.size(), &out_p, &out_n),
+      GIMG_OK);
+  ASSERT_NE(out_p, nullptr);
+  const std::vector<uint8_t> got((uint8_t *)out_p, (uint8_t *)out_p + out_n);
+  free(out_p);
+  EXPECT_TRUE(got == jpg) << "the strip should come back as it went in";
 }
