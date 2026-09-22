@@ -728,3 +728,188 @@ TEST(ExifUncompressedThumbnail, StripsAreConcatenatedInOrder) {
         << c.what << ": the strips did not come back in order, or at all";
   }
 }
+
+namespace {
+
+/** A minimal Exif blob whose IFD0 says nothing but the orientation. */
+std::vector<uint8_t> make_exif_with_orientation(uint16_t orientation) {
+  std::vector<uint8_t> e;
+  auto u16 = [&e](uint16_t v) {
+    e.push_back((uint8_t)(v & 0xFF)); e.push_back((uint8_t)(v >> 8));
+  };
+  auto u32 = [&e](uint32_t v) {
+    for (int i = 0; i < 4; i++) { e.push_back((uint8_t)((v >> (8 * i)) & 0xFF)); }
+  };
+  e.push_back('I'); e.push_back('I');
+  u16(42);
+  u32(8);
+  u16(1);
+  u16(GIMG_EXIF_TAG_ORIENTATION); u16(GIMG_EXIF_TYPE_SHORT); u32(1u);
+  u16(orientation); e.push_back(0); e.push_back(0);
+  u32(0);
+  return e;
+}
+
+} // namespace
+
+/**
+ * Each thumbnail writer carries the orientation over from the base Exif.
+ *
+ * The three builders exist to put a thumbnail into a blob that a camera's
+ * metadata already described, and each documents that it copies the
+ * orientation across when it is given a base to copy from. In the suite as it
+ * stood, every one of them had been called exactly once and always with no
+ * usable base, so the branch that writes an IFD0 entry at all had never run -
+ * the built blobs all had an empty IFD0 and nothing noticed, because nothing
+ * asked.
+ *
+ * Each case is a round trip: build, then read back through the matching
+ * reader, and require the thumbnail to come out as the bytes that went in.
+ * A writer can be wrong in ways that leave the file superficially plausible -
+ * an IFD1 offset that points a few bytes off, a count that does not match the
+ * entries - and a reader that has been tested against hand-built blobs is a
+ * genuinely independent check of it.
+ */
+TEST(ExifThumbnailWriters, OrientationAndThumbnailSurviveARoundTrip) {
+  std::vector<uint8_t> jpg;
+  ASSERT_TRUE(read_fixture("baseline_8x8_gray.jpg", jpg));
+  const std::vector<uint8_t> base =
+      make_exif_with_orientation(GIMG_ORIENTATION_ROTATE_90_CW);
+
+  // --- Compression = 6: IFD1 points at a whole JPEG. ---
+  {
+    void * built = nullptr;
+    size_t built_n = 0;
+    ASSERT_EQ(gimg_exif_build_with_thumbnail_jpeg(nullptr, base.data(),
+                  base.size(), jpg.data(), jpg.size(), &built, &built_n),
+        GIMG_OK);
+    ASSERT_NE(built, nullptr);
+    const std::vector<uint8_t> blob(
+        (uint8_t *)built, (uint8_t *)built + built_n);
+
+    GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
+    EXPECT_EQ(gimg_exif_parse_orientation(blob.data(), blob.size(), &o),
+        GIMG_OK);
+    EXPECT_EQ(o, GIMG_ORIENTATION_ROTATE_90_CW)
+        << "the JPEG thumbnail writer dropped the base orientation";
+
+    const void * thumb = nullptr;
+    size_t thumb_n = 0;
+    ASSERT_EQ(gimg_exif_embedded_thumbnail_jpeg(
+                  blob.data(), blob.size(), &thumb, &thumb_n),
+        GIMG_OK);
+    ASSERT_EQ(thumb_n, jpg.size());
+    EXPECT_EQ(memcmp(thumb, jpg.data(), jpg.size()), 0)
+        << "the thumbnail did not survive the round trip";
+    free(built);
+  }
+
+  // --- Compression = 7: tables hoisted out, entropy data in the strip. ---
+  {
+    void * built = nullptr;
+    size_t built_n = 0;
+    ASSERT_EQ(gimg_exif_build_with_thumbnail_tiff_jpeg(nullptr, base.data(),
+                  base.size(), jpg.data(), jpg.size(), &built, &built_n),
+        GIMG_OK);
+    ASSERT_NE(built, nullptr);
+    const std::vector<uint8_t> blob(
+        (uint8_t *)built, (uint8_t *)built + built_n);
+    free(built);
+
+    GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
+    EXPECT_EQ(gimg_exif_parse_orientation(blob.data(), blob.size(), &o),
+        GIMG_OK);
+    EXPECT_EQ(o, GIMG_ORIENTATION_ROTATE_90_CW)
+        << "the TechNote-2 writer dropped the base orientation";
+
+    void * thumb = nullptr;
+    size_t thumb_n = 0;
+    ASSERT_EQ(gimg_exif_embedded_thumbnail_tiff_jpeg(
+                  nullptr, blob.data(), blob.size(), &thumb, &thumb_n),
+        GIMG_OK);
+    ASSERT_NE(thumb, nullptr);
+    const std::vector<uint8_t> got((uint8_t *)thumb, (uint8_t *)thumb + thumb_n);
+    free(thumb);
+    EXPECT_TRUE(got == jpg)
+        << "what this writer stored did not read back as the JPEG it was given";
+  }
+
+  // --- Compression = 1: raw pixels in a strip. ---
+  {
+    // 4x2 grayscale, every pixel distinct, so a reordered strip shows.
+    std::vector<uint8_t> pixels(8);
+    for (size_t i = 0; i < pixels.size(); i++) { pixels[i] = (uint8_t)(i * 17); }
+
+    void * built = nullptr;
+    size_t built_n = 0;
+    ASSERT_EQ(gimg_exif_build_with_thumbnail_uncompressed(nullptr, base.data(),
+                  base.size(), pixels.data(), pixels.size(), 4u, 2u, 1u, 8u,
+                  &built, &built_n),
+        GIMG_OK);
+    ASSERT_NE(built, nullptr);
+    const std::vector<uint8_t> blob(
+        (uint8_t *)built, (uint8_t *)built + built_n);
+    free(built);
+
+    GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
+    EXPECT_EQ(gimg_exif_parse_orientation(blob.data(), blob.size(), &o),
+        GIMG_OK);
+    EXPECT_EQ(o, GIMG_ORIENTATION_ROTATE_90_CW)
+        << "the uncompressed writer dropped the base orientation";
+
+    uint32_t w = 0, h = 0;
+    uint8_t bits = 0;
+    uint16_t photometric = 0xFFFF;
+    void * thumb = nullptr;
+    size_t thumb_n = 0;
+    ASSERT_EQ(gimg_exif_embedded_thumbnail_uncompressed(nullptr, blob.data(),
+                  blob.size(), &w, &h, &bits, &photometric, &thumb, &thumb_n),
+        GIMG_OK);
+    ASSERT_NE(thumb, nullptr);
+    const std::vector<uint8_t> got((uint8_t *)thumb, (uint8_t *)thumb + thumb_n);
+    free(thumb);
+    EXPECT_EQ(w, 4u);
+    EXPECT_EQ(h, 2u);
+    EXPECT_EQ(bits, 8u);
+    EXPECT_TRUE(got == pixels) << "the strip did not survive the round trip";
+  }
+}
+
+/**
+ * A thumbnail whose dimensions cannot be read falls back to 160x120.
+ *
+ * The JPEG writers take the thumbnail's size from its SOF marker, and write
+ * a default when there is no marker to read. Exif 2.3 names 160x120 as the
+ * usual thumbnail size, so that is what goes in - but a wrong default is
+ * recorded in the file as though it were measured, and until now no test had
+ * made the writer use it.
+ */
+TEST(ExifThumbnailWriters, WithNoReadableSofTheThumbnailSizeDefaults) {
+  // A JPEG that is not one: enough bytes to store, no SOF to measure.
+  const std::vector<uint8_t> not_a_jpeg(32, 0x00);
+
+  void * built = nullptr;
+  size_t built_n = 0;
+  ASSERT_EQ(gimg_exif_build_with_thumbnail_jpeg(nullptr, nullptr, 0,
+                not_a_jpeg.data(), not_a_jpeg.size(), &built, &built_n),
+      GIMG_OK);
+  ASSERT_NE(built, nullptr);
+  const std::vector<uint8_t> blob((uint8_t *)built, (uint8_t *)built + built_n);
+  free(built);
+
+  // IFD1 carries the dimensions; find them by walking rather than by offset.
+  const uint32_t ifd0 = exif_test::exif_u32(blob, 4);
+  const uint16_t n0 = exif_test::exif_u16(blob, ifd0);
+  const uint32_t ifd1 = exif_test::exif_u32(blob, ifd0 + 2u + n0 * 12u);
+  ASSERT_GT(ifd1, 0u) << "the writer produced no IFD1";
+  const uint16_t n1 = exif_test::exif_u16(blob, ifd1);
+  uint32_t width = 0, height = 0;
+  for (uint16_t i = 0; i < n1; i++) {
+    const size_t off = ifd1 + 2u + (size_t)i * 12u;
+    const uint16_t tag = exif_test::exif_u16(blob, off);
+    if (tag == GIMG_EXIF_TAG_IMAGE_WIDTH) { width = exif_test::exif_u32(blob, off + 8); }
+    if (tag == GIMG_EXIF_TAG_IMAGE_LENGTH) { height = exif_test::exif_u32(blob, off + 8); }
+  }
+  EXPECT_EQ(width, 160u) << "Exif 2.3's default thumbnail width";
+  EXPECT_EQ(height, 120u) << "Exif 2.3's default thumbnail height";
+}
