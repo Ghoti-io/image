@@ -5291,3 +5291,134 @@ TEST(JpegLoad, TheStuffZeroRecoveryOptionDecodesATruncatedScan) {
   }
   EXPECT_GT(recovered_cases, 0) << "no progressive fixture was swept";
 }
+
+namespace {
+
+/** One Huffman table for a DHT segment: a class, an index, and the symbol
+ * each 1-bit code decodes to. One code of length one is enough for every case
+ * below and keeps the scan data down to a handful of bits. */
+struct OneBitTable {
+  uint8_t table_class;  ///< 0 = DC, 1 = AC (T.81 B.2.4.2 Tc).
+  uint8_t table_index;  ///< Th.
+  uint8_t symbol;       ///< What the single code decodes to.
+};
+
+void append_dht(std::vector<uint8_t> & buf, const OneBitTable & t) {
+  append(buf, (const unsigned char *)"\xFF\xC4", 2);
+  buf.push_back(0x00);
+  buf.push_back(20);  // L = 2 + 1 + 16 + 1
+  buf.push_back((uint8_t)((t.table_class << 4) | t.table_index));
+  buf.push_back(1);  // one code of length 1
+  for (int i = 1; i < 16; i++) { buf.push_back(0); }
+  buf.push_back(t.symbol);
+}
+
+/**
+ * An 8x8 grayscale JPEG whose Huffman tables say whatever @p dc and @p ac say.
+ *
+ * The symbol a code decodes to is a byte straight out of the DHT segment, so
+ * a crafted file can put any value there - including ones that are not a DC
+ * category at all, or a run that walks the coefficient index off the end of
+ * the block. Those are the arms being reached here, and no real encoder emits
+ * them, which is exactly why a fixture cannot.
+ *
+ * @param sof  0xC0 for baseline, 0xC2 for progressive.
+ */
+std::vector<uint8_t> make_crafted_table_jpeg(uint8_t sof, const OneBitTable & dc,
+    const OneBitTable & ac, uint8_t ss, uint8_t se, uint8_t ah_al,
+    const std::vector<uint8_t> & scan_bytes) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF: L=11, P=8, Y=8, X=8, Nf=1, C1=0 H=1 V=1 Tq=0
+  buf.push_back(0xFF);
+  buf.push_back(sof);
+  append(buf,
+      (const unsigned char *)"\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11\x00", 11);
+  // DQT: L=67, Pq=0 Tq=0, then 64 bytes.
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) { buf.push_back(1); }
+  append_dht(buf, dc);
+  append_dht(buf, ac);
+  // SOS: L=8, Ns=1, Cs=0, Td=0 Ta=0, then Ss, Se, Ah/Al.
+  append(buf, (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00", 7);
+  buf.push_back(ss);
+  buf.push_back(se);
+  buf.push_back(ah_al);
+  buf.insert(buf.end(), scan_bytes.begin(), scan_bytes.end());
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+} // namespace
+
+/**
+ * A DHT that decodes to a DC category above 15 is refused, not believed.
+ *
+ * The category coming out of the Huffman table is used as a bit count, and the
+ * table's symbol values are whatever bytes the file supplied: T.81 F.1.2.1
+ * Table F.1 allows 0..11 at 8-bit precision and 0..15 at 12-bit, so a byte of
+ * 32 is not a category at all. No encoder emits a table like this, which is
+ * why a fixture cannot reach the check and a crafted file has to.
+ *
+ * The two cases are not equally load-bearing, and saying so is the point of
+ * this note. Weakening the progressive decoder's bound makes this test fail:
+ * read_bits refuses a 32-bit width, the progressive decoder treats a refused
+ * read in the last block as padding and substitutes zero, and the file then
+ * decodes as a picture instead of being rejected. The category check is the
+ * only thing standing between a crafted DHT and that outcome.
+ *
+ * Weakening the baseline decoder's bound does *not* make this test fail,
+ * because jpeg_bitstream_read_bits() rejects any width above 16 on its own -
+ * a check that exists because fuzzing once reached a 255-bit read. The
+ * baseline half is therefore a second line of defence and is kept as one; it
+ * would catch a future change that made read_bits tolerate wider fields, but
+ * it does not distinguish anything today.
+ */
+TEST(JpegLoad, ADcCategoryAboveFifteenIsRefused) {
+  const OneBitTable bad_dc{0, 0, 32};  // 32 is not a DC category.
+  const OneBitTable ac{1, 0, 0x00};    // EOB; never reached.
+  // A single zero byte: the one bit the DC code needs, then padding.
+  const std::vector<uint8_t> scan(1, 0x00);
+
+  struct Case {
+    const char * what;
+    uint8_t sof, ss, se, ah_al;
+  } cases[] = {
+      {"baseline", 0xC0, 0x00, 0x3F, 0x00},
+      {"progressive DC", 0xC2, 0x00, 0x00, 0x00},
+  };
+
+  for (const Case & c : cases) {
+    const std::vector<uint8_t> bytes =
+        make_crafted_table_jpeg(c.sof, bad_dc, ac, c.ss, c.se, c.ah_al, scan);
+    EXPECT_EQ(decode_size(bytes, nullptr, nullptr), GIMG_ERR_CORRUPT)
+        << c.what
+        << ": a DC category of 32 would be used as a bit count if believed";
+  }
+}
+
+/**
+ * A DHT whose runs walk past the end of the block is refused.
+ *
+ * Baseline AC decoding adds the symbol's run to the coefficient index and
+ * writes there. A table made only of ZRL (15, 0) advances sixteen at a time,
+ * so the fourth one asks for index 64 of a 64-entry block. The decoder has to
+ * reject that rather than write it, and the check had never run.
+ *
+ * Watched to fail: relaxing the bound from 64 to 65 - one element, the
+ * smallest overrun there is - makes this file decode successfully instead of
+ * being refused, so the assertion is on the bound itself and not on some
+ * later symptom of it.
+ */
+TEST(JpegLoad, AnAcRunPastTheEndOfTheBlockIsRefused) {
+  const OneBitTable dc{0, 0, 0x00};   // category 0: no extra bits, diff 0.
+  const OneBitTable ac{1, 0, 0xF0};   // ZRL: run 15, size 0.
+  // One bit for the DC code, then four for the four ZRLs; zero bits after
+  // that decode as more of the same, but the fourth already overruns.
+  const std::vector<uint8_t> scan(1, 0x00);
+
+  const std::vector<uint8_t> bytes =
+      make_crafted_table_jpeg(0xC0, dc, ac, 0x00, 0x3F, 0x00, scan);
+  EXPECT_EQ(decode_size(bytes, nullptr, nullptr), GIMG_ERR_CORRUPT)
+      << "a run reaching coefficient 64 must be refused, not written";
+}
