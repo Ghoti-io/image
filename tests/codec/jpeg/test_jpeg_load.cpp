@@ -27,6 +27,8 @@
 #endif
 
 #include "jpeg_test_utils.h"
+#include "../../exif_test_utils.h"
+#include "../../../src/meta/exif_internal.h"
 
 namespace {
 
@@ -5602,4 +5604,95 @@ TEST(JpegLoad, IptcResourceNamesOfEitherParityAreWalked) {
         << "resource name \"" << name << "\" (" << strlen(name)
         << " chars) was not walked past correctly";
   }
+}
+
+namespace {
+
+/** baseline_8x8_gray.jpg with an APP1 "Exif\0\0" segment inserted after SOI. */
+bool jpeg_with_exif(const std::vector<uint8_t> & tiff,
+    std::vector<uint8_t> & out) {
+  std::vector<uint8_t> base;
+  if (!jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", base)) { return false; }
+  const size_t payload = 6u + tiff.size();
+  if (base.size() < 4 || payload + 2u > 0xFFFFu) { return false; }
+  out.clear();
+  out.push_back(0xFF);
+  out.push_back(0xD8);
+  out.push_back(0xFF);
+  out.push_back(0xE1);
+  out.push_back((uint8_t)((payload + 2u) >> 8));
+  out.push_back((uint8_t)((payload + 2u) & 0xFFu));
+  const char tag[] = "Exif\0\0";
+  out.insert(out.end(), tag, tag + 6);
+  out.insert(out.end(), tiff.begin(), tiff.end());
+  out.insert(out.end(), base.begin() + 2, base.end());
+  return true;
+}
+
+} // namespace
+
+/**
+ * An RGB uncompressed thumbnail is expanded to RGBA with an opaque alpha.
+ *
+ * A Compression=1 thumbnail may be grayscale or RGB, and the two take
+ * different branches: grayscale is copied a row at a time, RGB is expanded
+ * pixel by pixel from three bytes to four with 255 written into the alpha.
+ * The suite covered the grayscale side only, so the expansion loop - the one
+ * place in this path that rearranges bytes rather than moving them - had
+ * never run.
+ *
+ * The assertion is on the pixels, not the format: a loop that wrote the
+ * channels in the wrong order, or left alpha at zero, produces a raster of
+ * exactly the right size and type. Every pixel is given distinct channel
+ * values so that a transposition shows up as a value rather than as a
+ * coincidence.
+ */
+TEST(JpegLoad, AnRgbUncompressedThumbnailIsExpandedToRgba) {
+  const uint32_t tw = 3u, th = 2u;
+  std::vector<uint8_t> pixels;
+  for (uint32_t i = 0; i < tw * th; i++) {
+    pixels.push_back((uint8_t)(10u + i));        // R
+    pixels.push_back((uint8_t)(100u + i));       // G
+    pixels.push_back((uint8_t)(200u + i));       // B
+  }
+
+  void * p = nullptr;
+  size_t n = 0;
+  ASSERT_EQ(gimg_exif_build_with_thumbnail_uncompressed(nullptr, nullptr, 0,
+                pixels.data(), pixels.size(), tw, th, 3u, 8u, &p, &n),
+      GIMG_OK);
+  ASSERT_NE(p, nullptr);
+  const std::vector<uint8_t> tiff((uint8_t *)p, (uint8_t *)p + n);
+  free(p);
+
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_with_exif(tiff, jpeg));
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+
+  ASSERT_EQ(gimg_doc_item_count(doc), 2u)
+      << "an RGB thumbnail must arrive as a second item like a gray one";
+  GIMG_Raster * thumb = gimg_item_raster(gimg_doc_item(doc, 1));
+  ASSERT_NE(thumb, nullptr);
+  EXPECT_EQ(gimg_raster_width(thumb), tw);
+  EXPECT_EQ(gimg_raster_height(thumb), th);
+
+  const unsigned char * px = (const unsigned char *)gimg_raster_pixels(thumb);
+  const size_t stride = gimg_raster_stride_bytes(thumb);
+  ASSERT_NE(px, nullptr);
+  for (uint32_t y = 0; y < th; y++) {
+    for (uint32_t x = 0; x < tw; x++) {
+      const size_t i = (size_t)(y * tw + x);
+      const unsigned char * q = px + (size_t)y * stride + (size_t)x * 4u;
+      EXPECT_EQ(q[0], pixels[i * 3u + 0]) << "red at (" << x << "," << y << ")";
+      EXPECT_EQ(q[1], pixels[i * 3u + 1]) << "green at (" << x << "," << y << ")";
+      EXPECT_EQ(q[2], pixels[i * 3u + 2]) << "blue at (" << x << "," << y << ")";
+      EXPECT_EQ(q[3], 255u) << "alpha at (" << x << "," << y << ")";
+    }
+  }
+  gimg_doc_destroy(doc);
 }
