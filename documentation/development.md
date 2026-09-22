@@ -241,9 +241,20 @@ JPEG debug and trace output are controlled by **compile-time** defines in
 `src/codec/jpeg/jpeg_debug_internal.h`. All default to 0. To enable a category
 for a debug build, define it when compiling (e.g. `-DGIMG_JPEG_DEBUG_LOAD=1`).
 See that header for the full list (e.g. `GIMG_JPEG_DEBUG_LOAD`,
-`GIMG_JPEG_TRACE_DC_BLOCK`, `GIMG_JPEG_DUMP_FIRST_MCU_COEF`). Dump options that
+`GIMG_JPEG_DEBUG_RST_DEC`, `GIMG_JPEG_DUMP_FIRST_MCU_COEF`). Dump options that
 write files may still read the output path from the same-named environment
 variable when the category is enabled at compile time.
+
+The progressive decoder's own step tracing is **not** among them any more. It
+was nineteen categories driving 785 lines across `jpeg_block.c`,
+`jpeg_entropy.c`, `jpeg_bitstream.c` and `jpeg_encode.c`, and every one of
+them was unreachable: the four block decoders took their trace settings as
+parameters, and the single call site of each passed `0` and `-1` as literals.
+No build could turn them on and no environment variable was ever read, which
+is why the comparison scripts under `tests/data/jpeg/` cannot drive our side
+(see the README there). They were written to bring the progressive decoder up
+against libjpeg, that work is done, and they were deleted rather than left
+looking like a debugging facility that works.
 
 **Behavior-altering options** `recover_stuff_zero` and `pad_at_eob` remain
 **runtime** (environment variable) for field debugging of truncated or

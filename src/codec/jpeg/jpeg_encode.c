@@ -1643,17 +1643,6 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
             const int16_t * block = coef_buffer + block_idx * 64;
             int dc_val = (int)block[0];
             int diff = dc_val - last_dc[c];
-            if (block_idx < 6 && GIMG_JPEG_TRACE_PROG_FIRST_DC) {
-              (void)fprintf(stderr,
-                  "PROG_ENC_DC block=%zu c=%d dc_val=%d diff=%d\n", block_idx, c,
-                  dc_val, diff);
-              (void)fflush(stderr);
-            }
-            if (block_idx == 4 && GIMG_JPEG_TRACE_FIRST_CB) {
-              (void)fprintf(
-                  stderr, "PROG_ENC first Cb block_idx=4 dc_val=%d\n", dc_val);
-              (void)fflush(stderr);
-            }
             last_dc[c] = dc_val;
             int nbits = jpeg_nbits(diff);
             if (nbits > 11)
@@ -1857,10 +1846,6 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
               k++;
             }
             if (k > k_end) {
-              if (block_idx == 0 && GIMG_JPEG_TRACE_PROG_FIRST_AC) {
-                (void)fprintf(stderr, "PROG_ENC_AC block=0 EOB\n");
-                (void)fflush(stderr);
-              }
               if (ac_tbl->len[0] > 0)
                 bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
               break;
@@ -1877,12 +1862,6 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
               size = 10;
             int symbol = (run << 4) | size;
             if (symbol >= 0 && symbol <= 255 && ac_tbl->len[symbol] > 0) {
-              if (block_idx == 0 && GIMG_JPEG_TRACE_PROG_FIRST_AC) {
-                (void)fprintf(stderr,
-                    "PROG_ENC_AC block=0 run=%d size=%d val=%d k=%u\n", run,
-                    size, coeff, k);
-                (void)fflush(stderr);
-              }
               bit_writer_put_bits(
                   &w, alloc, ac_tbl->code[symbol], ac_tbl->len[symbol]);
               if (size > 0) {

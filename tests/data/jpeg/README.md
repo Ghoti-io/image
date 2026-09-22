@@ -55,6 +55,18 @@ because the lookup was wrong in its own right, does not make them runnable.
 Reviving one means restoring the decoder instrumentation it was written
 against.
 
+**As of 2026-09-22 that instrumentation is not merely unreachable - it is
+gone.** The compile-time macros behind it (`GIMG_JPEG_TRACE_ALL`,
+`GIMG_JPEG_DUMP_AC_INITIAL_FULL`, `GIMG_JPEG_DUMP_AC_REFINE_FULL` and sixteen
+others) and the 785 lines they guarded were deleted from `jpeg_block.c`,
+`jpeg_entropy.c`, `jpeg_bitstream.c` and `jpeg_encode.c`. Nothing could turn
+them on in any case: the four progressive block decoders took their trace
+settings as parameters and the single call site of each passed `0` and `-1` as
+literals, so no `-D` and no environment variable reached them. Reviving one of
+these scripts now means writing the decoder side again, against a decoder that
+is bit-identical to libjpeg on every progressive fixture here - which is the
+reason the instrumentation had stopped being worth its weight.
+
 ### What does still run: compare_progressive_pixels.py
 
 It compares pixels rather than internals, so it needs no decoder
@@ -177,7 +189,7 @@ Reference or third-party source trees used for debugging (e.g. a copy of libjpeg
 
 **Comparing AC refinement decode step-by-step (bits/bytes/blocks):** The only reliable way to fix progressive decoder bugs is to dump bits, bytes, and block state at every step and compare with libjpeg. Use full-dump mode on both decoders, then diff the traces.
 
-- **Our decoder:** `GIMG_JPEG_DUMP_AC_REFINE_FULL=1` dumps for every AC refinement block: `OUR_AC_REFINE_BLOCK_START` (scan, block, byte_off, bit_off, scan_size, nz_in_band, nz_at=...), then `OUR_AC_REFINE_HUFF`, `OUR_AC_REFINE_EOB_RUN` (for (r,0) path), `OUR_AC_REFINE_REFINEMENT_BIT`, `OUR_AC_REFINE_CORRECTION` (each with byte_off/bit_off), and `OUR_AC_REFINE_BLOCK_END`. Add `DUMP_JPEG_COEF_BLOCKS_AFTER_SCAN=1` to get coefficient blocks after each scan (OUR_SCANn_COMPc_BLOCKb) so you can compare state before each refinement scan.
+- **Our decoder (removed 2026-09-22 - see above; kept as a record of what the trace emitted):** `GIMG_JPEG_DUMP_AC_REFINE_FULL=1` dumped for every AC refinement block: `OUR_AC_REFINE_BLOCK_START` (scan, block, byte_off, bit_off, scan_size, nz_in_band, nz_at=...), then `OUR_AC_REFINE_HUFF`, `OUR_AC_REFINE_EOB_RUN` (for (r,0) path), `OUR_AC_REFINE_REFINEMENT_BIT`, `OUR_AC_REFINE_CORRECTION` (each with byte_off/bit_off), and `OUR_AC_REFINE_BLOCK_END`. Add `DUMP_JPEG_COEF_BLOCKS_AFTER_SCAN=1` to get coefficient blocks after each scan (OUR_SCANn_COMPc_BLOCKb) so you can compare state before each refinement scan.
 - **Ref (instrumented libjpeg):** `LIBJPEG_DUMP_AC_REFINE_FULL=1` and `LIBJPEG_TRACE_HUFF_BITS=1` so ref emits `REF_AC_REFINE_BLOCK_START` (block, byte_off, bit_off, nz_in_band, nz_at=...), `REF_HUFF_MATCH`, `REF_AC_REFINE_REFINEMENT_BIT`, `REF_AC_REFINE_CORRECTION_BIT`, and `REF_AC_REFINE_BLOCK_END` with byte_off/bit_off relative to scan start. Add `DUMP_JPEG_COEF_AFTER_SCAN=1` and `DUMP_JPEG_COEF_BLOCKS_AFTER_SCAN=1` for REF_SCANn_COMPc_BLOCKb after each scan.
 
 **Procedure:** From `image/`, build ref with `make jpeg-oracle-tools-debug-build`. Create the cjpeg progressive file: `python3 tests/data/jpeg/sanity_check_libjpeg_baseline_progressive.py --work-dir /tmp/jpeg_sanity`. Then:
@@ -200,7 +212,7 @@ When the entropy segment has only 2 bytes (e.g. scan 3 in the 16×16 cjpeg file:
 
 **Comparing AC initial decode step-by-step (spec harmonization):** To find where our decoder diverges from libjpeg in scan 1 or 2 (e.g. block 1 ending up with 7 nonzero instead of 3), both decoders can emit a canonical step log so you can diff them line-by-line.
 
-- **Our decoder:** `GIMG_JPEG_DUMP_AC_INITIAL_FULL=1` dumps `OUR_AC_INITIAL_STEP` for each logical step: `op=HUFF sym=0xNN`, `op=EOB`, `op=EOBRUN r=N eobrun=M`, `op=EOBRUN_SKIP eobrun=M`, `op=COEFF run=N size=N k=N val=N`, `op=ZRL`. Each line includes `scan=` (scan index), `block=` (global decode ordinal: 0,1,2,… across all AC-initial blocks), `byte=` and `bit=` (position after that step). T.81 Annex G is the authority; the trace is for comparison only.
+- **Our decoder (removed 2026-09-22 - see above; kept as a record of what the trace emitted):** `GIMG_JPEG_DUMP_AC_INITIAL_FULL=1` dumped `OUR_AC_INITIAL_STEP` for each logical step: `op=HUFF sym=0xNN`, `op=EOB`, `op=EOBRUN r=N eobrun=M`, `op=EOBRUN_SKIP eobrun=M`, `op=COEFF run=N size=N k=N val=N`, `op=ZRL`. Each line includes `scan=` (scan index), `block=` (global decode ordinal: 0,1,2,… across all AC-initial blocks), `byte=` and `bit=` (position after that step). T.81 Annex G is the authority; the trace is for comparison only.
 - **Ref (instrumented libjpeg):** `LIBJPEG_DUMP_AC_INITIAL_FULL=1` dumps `REF_AC_INITIAL_STEP` with the same op values and the same `scan=` / `block=` / `byte=` / `bit=` semantics (byte/bit relative to start of that scan’s entropy data).
 
 **Procedure (AC initial):** From `image/`, build ref with `make jpeg-oracle-tools-debug-build`. Create the cjpeg progressive file: `python3 tests/data/jpeg/sanity_check_libjpeg_baseline_progressive.py --work-dir /tmp/jpeg_sanity`. Then:

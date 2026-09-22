@@ -367,13 +367,7 @@ int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * tbl, int ac_prefer_eob, int is_ac,
     int first_match_only) {
   uint16_t code = 0;
-  const size_t start_byte_off = bs->byte_off;
-  const int start_bit_off = bs->bit_off;
-  const int trace_bits =
-      (GIMG_JPEG_TRACE_HUFF_BITS) || (GIMG_JPEG_TRACE_ALL);
   for (int len = 1; len <= 16; len++) {
-    size_t pre_byte = bs->byte_off;
-    int pre_bit = bs->bit_off;
     int b = jpeg_bitstream_read_bit(bs);
     if (b < 0) {
       if (bs->pad_at_eob) {
@@ -384,31 +378,6 @@ int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
       return -1;
     }
     code = (code << 1) | (uint16_t)b;
-    if (GIMG_JPEG_TRACE_AC_FAIL) {
-      (void)fprintf(stderr,
-          "AC_FAIL_BIT len=%d bit=%d code=0x%04x (binary: ", len, b,
-          (unsigned)code);
-      for (int i = len - 1; i >= 0; i--) {
-        (void)fprintf(stderr, "%d", (code >> i) & 1);
-      }
-      (void)fprintf(stderr, ") byte_off=%zu bit_off=%u\n", (size_t)bs->byte_off,
-          (unsigned)bs->bit_off);
-      (void)fflush(stderr);
-    }
-    if (trace_bits) {
-      (void)fprintf(stderr,
-          "HUFF_BIT len=%d bit=%d code=0x%x byte_off=%zu bit_off=%u\n", len, b,
-          (unsigned)code, (size_t)bs->byte_off, (unsigned)bs->bit_off);
-      (void)fflush(stderr);
-    }
-    if (GIMG_JPEG_TRACE_DC && !ac_prefer_eob) {
-      (void)fprintf(stderr,
-          "TRACE_DC len=%d bit=%d code=0x%x pre=(byte=%zu,bit=%d) "
-          "post=(byte=%zu,bit=%d)\n",
-          len, b, (unsigned)code, (size_t)pre_byte, pre_bit,
-          (size_t)bs->byte_off, bs->bit_off);
-      (void)fflush(stderr);
-    }
     int match = 0;
     uint16_t idx_off = 0;
     if (code >= tbl->min_code[len] && code <= tbl->max_code[len]) {
@@ -429,31 +398,6 @@ int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
       }
       else {
       int sym = (int)tbl->values[idx];
-      if (is_ac && GIMG_JPEG_AC_INITIAL_SYM_LOG) {
-        (void)fprintf(stderr,
-            "AC_INITIAL_HUFF_MATCH len=%d code=%u sym=0x%02x (run=%d size=%d) "
-            "%s\n",
-            len, (unsigned)code, (unsigned)sym, sym >> 4, sym & 15,
-            sym == 0 ? "(EOB)" : "");
-        (void)fflush(stderr);
-      }
-      if (!is_ac && GIMG_JPEG_TRACE_DC_MATCH) {
-        size_t pos_after = (size_t)bs->byte_off * 8u + (unsigned)bs->bit_off;
-        if (pos_after >= 966u && pos_after <= 976u) {
-          (void)fprintf(stderr,
-              "DC_HUFF_MATCH pos_after_code=%zu len=%d code=0x%x sym=%d "
-              "idx=%u\n",
-              pos_after, len, (unsigned)code, sym, (unsigned)idx);
-          (void)fflush(stderr);
-        }
-      }
-      if (trace_bits) {
-        (void)fprintf(stderr,
-            "HUFF_MATCH len=%d code=0x%x sym=0x%02x byte_off=%zu bit_off=%u\n",
-            len, (unsigned)code, (unsigned)sym, (size_t)bs->byte_off,
-            (unsigned)bs->bit_off);
-        (void)fflush(stderr);
-      }
       if (first_match_only) {
         return sym;
       }
@@ -535,51 +479,6 @@ int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
   }
   if (bs->recover_stuff_zero) {
     return 0;
-  }
-  if (GIMG_JPEG_TRACE_AC_FAIL) {
-    (void)fprintf(stderr,
-        "AC_HUFF_FAIL no match after 16 bits: code=0x%04u (%u)\n",
-        (unsigned)code, (unsigned)code);
-    (void)fprintf(stderr,
-        "  stream start: byte_off=%zu bit_off=%d (pos_bits=%zu)\n",
-        (size_t)start_byte_off, start_bit_off,
-        (size_t)start_byte_off * 8u + (size_t)start_bit_off);
-    (void)fprintf(stderr, "  stream end:   byte_off=%zu bit_off=%u\n",
-        (size_t)bs->byte_off, (unsigned)bs->bit_off);
-    (void)fprintf(stderr, "  table len=4: min=0x%x max=0x%x\n",
-        (unsigned)tbl->min_code[4], (unsigned)tbl->max_code[4]);
-    if (tbl->max_code[4] != 0 && 4u >= (unsigned)tbl->min_code[4] &&
-        4u <= (unsigned)tbl->max_code[4]) {
-      uint16_t idx4 = tbl->base_index[4] + (uint16_t)(4 - tbl->min_code[4]);
-      (void)fprintf(stderr,
-          "  table sym at code 4: 0x%02x (expect 0 for EOB)\n",
-          (unsigned)tbl->values[idx4]);
-    }
-    (void)fprintf(stderr, "  code binary (MSB first): ");
-    for (int i = 15; i >= 0; i--) {
-      (void)fprintf(stderr, "%d", (int)((code >> i) & 1));
-    }
-    (void)fprintf(stderr, "\n  table bounds:\n");
-    for (int len = 1; len <= 16; len++) {
-      int in_range = (code >= tbl->min_code[len] && code <= tbl->max_code[len]);
-      (void)fprintf(stderr, "    len=%2d min=0x%04x max=0x%04x %s\n", len,
-          (unsigned)tbl->min_code[len], (unsigned)tbl->max_code[len],
-          in_range ? " <-- WOULD MATCH" : "");
-    }
-    if (bs->byte_off <= bs->size && bs->size >= 2) {
-      size_t lo = (start_byte_off >= 2) ? start_byte_off - 2 : 0;
-      size_t hi = bs->byte_off + 2;
-      if (hi > bs->size) {
-        hi = bs->size;
-      }
-      (void)fprintf(
-          stderr, "  raw bytes [%zu..%zu]:", (size_t)lo, (size_t)(hi - 1));
-      for (size_t i = lo; i < hi; i++) {
-        (void)fprintf(stderr, " %02x", (unsigned)bs->data[i]);
-      }
-      (void)fprintf(stderr, "\n");
-    }
-    (void)fflush(stderr);
   }
   return -1;
 }

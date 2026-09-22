@@ -47,28 +47,6 @@
 #include <ghoti.io/image/bitdepth.h>
 #include "jpeg_internal.h"
 
-/** When GIMG_JPEG_TRACE_ALL=1, dump block[0..63] (zigzag order) to stderr as
- * 64 space-separated values in natural order. Prefix with label (e.g.
- * "BLOCK_BEFORE"). */
-static void jpeg_trace_all_dump_block(const char * label, unsigned int scan_idx,
-    uint32_t mcu_x, uint32_t mcu_y, unsigned int comp_idx, size_t block_in_mcu,
-    size_t byte_off, unsigned int bit_off, const int16_t * block) {
-  (void)fprintf(stderr,
-      "%s scan%u mcu=(%u,%u) comp=%u block=%zu byte_off=%zu bit_off=%u coeffs:",
-      label, scan_idx, (unsigned)mcu_x, (unsigned)mcu_y, comp_idx, block_in_mcu,
-      (size_t)byte_off, (unsigned)bit_off);
-  for (int nat = 0; nat < 64; nat++) {
-    (void)fprintf(stderr, " %d", (int)block[gimg_jpeg_inv_zigzag[nat]]);
-  }
-  (void)fprintf(stderr, "\n");
-  (void)fflush(stderr);
-}
-
-/** When GIMG_JPEG_DEBUG_PROG_SYNC=1, log every encoder/decoder step with
- * PROG_SYNC_ENC / PROG_SYNC_DEC scan=N block=B byte=X bit=Y op=... so you can
- * diff enc vs dec and find first divergence. */
-#define PROG_SYNC_DEBUG() (GIMG_JPEG_DEBUG_PROG_SYNC)
-
 static GIMG_Result jpeg_decode_progressive_extended(
     const gimg_jpeg_doc_state_t * state, const GIMG_Decode_Options * options,
     GIMG_Raster ** out_raster);
@@ -767,38 +745,6 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
             &ac_tables[ac_id]) != 0) {
       return GIMG_ERR_CORRUPT;
     }
-    if (GIMG_JPEG_DEBUG_DHT_AC && state->huff_ac[ac_id] &&
-        state->huff_ac_len[ac_id] >= 18) {
-      const unsigned char * bits = state->huff_ac[ac_id] + 1;
-      size_t n_sym = 0;
-      for (int i = 0; i < 16; i++) {
-        n_sym += bits[i];
-      }
-      (void)fprintf(stderr,
-          "BASELINE_DHT_AC ac_id=%u len=%zu num_syms=%zu bits[15]=%u "
-          "min_code[16]=0x%04x\n",
-          (unsigned)ac_id, (size_t)state->huff_ac_len[ac_id], (size_t)n_sym,
-          (unsigned)bits[15], (unsigned)ac_tables[ac_id].min_code[16]);
-      (void)fflush(stderr);
-    }
-  }
-  if (GIMG_JPEG_DEBUG_BASELINE_FAIL) {
-    // Sanity: AC Th=1 first 3-bit symbol should be EOB (0x00) per T.81 Table K.6.
-    if (state->huff_ac[1] && state->huff_ac_len[1] >= 17 + 2) {
-      const unsigned char * bits = state->huff_ac[1] + 1;
-      if (bits[2] >= 1) {
-        (void)fprintf(stderr,
-            "BASELINE_DEBUG AC1 first 3-bit symbol=0x%02x (expect 0x00 EOB)\n",
-            (unsigned)state->huff_ac[1][17]);
-      }
-    }
-    (void)fprintf(stderr, "BASELINE_DEBUG scan_data_size=%zu first 16 bytes:",
-        (size_t)scan0->data_size);
-    for (size_t i = 0; i < 16 && i < scan0->data_size; i++) {
-      (void)fprintf(stderr, " %02x", (unsigned)scan0->data[i]);
-    }
-    (void)fprintf(stderr, "\n");
-    (void)fflush(stderr);
   }
 
   // MCU dimensions: Hmax, Vmax; blocks per MCU.
@@ -988,20 +934,6 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
         for (uint8_t by = 0; by < v_samp; by++) {
           for (uint8_t bx = 0; bx < h_samp; bx++) {
             (void)block_idx;
-            if (GIMG_JPEG_TRACE_DEC_BLOCK_POS) {
-              size_t linear_block =
-                  (size_t)mcu_y * (size_t)mcu_per_row + (size_t)mcu_x;
-              if (linear_block <= 40u ||
-                  (linear_block >= 1195u && linear_block <= 1225u)) {
-                size_t pos = (size_t)bs.byte_off * 8u + (unsigned)bs.bit_off;
-                (void)fprintf(stderr,
-                    "DEC_BLOCK_POS block=%zu pos_bits=%zu byte_off=%zu "
-                    "bit_off=%u\n",
-                    linear_block, pos, (size_t)bs.byte_off,
-                    (unsigned)bs.bit_off);
-                (void)fflush(stderr);
-              }
-            }
             int is_last_8 =
                 (total_blocks > 0 && block_counter_8 == total_blocks - 1) ? 1
                                                                           : 0;
@@ -1044,76 +976,14 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
                   block_counter_8, (size_t)bs.byte_off, (unsigned)bs.bit_off);
               (void)fflush(stderr);
             }
-            if (block_counter_8 == 0 && GIMG_JPEG_TRACE_FIRST_BLOCK) {
-              (void)fprintf(stderr, "DEC_FIRST_BLOCK comp=%u DC=%d",
-                  (unsigned)comp_idx, (int)block_zig[0]);
-              for (int ki = 1; ki < 64; ki++) {
-                if (block_zig[ki] != 0) {
-                  (void)fprintf(stderr, " k=%d val=%d", ki, (int)block_zig[ki]);
-                }
-              }
-              (void)fprintf(stderr, "\n");
-              (void)fflush(stderr);
-            }
             block_counter_8++;
-            if (GIMG_JPEG_DEBUG_BIT_POS && mcu_x == 0 && mcu_y == 0 &&
-                s == 0 && by == 0 && bx == 0) {
-              (void)fprintf(stderr,
-                  "DEC after block0: byte_off=%zu bit_off=%u (next byte(s):",
-                  (size_t)bs.byte_off, (unsigned)bs.bit_off);
-              for (size_t i = 0; i < 6u && bs.byte_off + i < scan0->data_size;
-                   i++)
-                (void)fprintf(
-                    stderr, " %02x", (unsigned)scan0->data[bs.byte_off + i]);
-              (void)fprintf(stderr, ")\n");
-              (void)fflush(stderr);
-            }
             jpeg_dezigzag(block_zig, block_rz);
             jpeg_dequantize_32(block_rz, quant, block_q);
             // pass1_bits 2: the 8-bit setting (libjpeg jidctint.c).
             jpeg_idct_8x8_islow(block_q, block_idct, 2);
 
-            if (comp_idx == 1 && by == 0 && bx == 0 &&
-                GIMG_JPEG_TRACE_FIRST_CB) {
-              (void)fprintf(stderr,
-                  "BASELINE first Cb: quant[0]=%u dequant[0]=%d idct[0]=%d "
-                  "stored=%d\n",
-                  (unsigned)quant[0], (int)block_q[0], (int)block_idct[0],
-                  (int)block_idct[0] + 128);
-              (void)fflush(stderr);
-            }
 
             // Bit-by-bit debug: first MCU coefficients and pipeline (compare to encoder dump).
-            if (mcu_x == 0 && mcu_y == 0 &&
-                GIMG_JPEG_TRACE_BASELINE_FIRST_MCU) {
-              unsigned linear = (unsigned)block_counter_8 -
-                  1u; // 0-based to match encoder block_0.bin
-              (void)fprintf(stderr,
-                  "BLOCK_DEC linear=%u comp=%u by=%u bx=%u ZIG:", linear,
-                  (unsigned)comp_idx, (unsigned)by, (unsigned)bx);
-              for (int i = 0; i < 64; i++)
-                (void)fprintf(stderr, " %d", (int)block_zig[i]);
-              (void)fprintf(stderr, "\n");
-              (void)fprintf(stderr, "BLOCK_DEC linear=%u DEQUANT:", linear);
-              for (int i = 0; i < 64; i++)
-                (void)fprintf(stderr, " %d", (int)block_q[i]);
-              (void)fprintf(stderr, "\n");
-              (void)fprintf(stderr, "BLOCK_DEC linear=%u IDCT:", linear);
-              for (int i = 0; i < 64; i++)
-                (void)fprintf(stderr, " %d", (int)block_idct[i]);
-              (void)fprintf(stderr, "\n");
-              (void)fprintf(stderr, "BLOCK_DEC linear=%u STORED:", linear);
-              for (int i = 0; i < 64; i++) {
-                int v = block_idct[i] + 128;
-                if (v < 0)
-                  v = 0;
-                if (v > 255)
-                  v = 255;
-                (void)fprintf(stderr, " %d", v);
-              }
-              (void)fprintf(stderr, "\n");
-              (void)fflush(stderr);
-            }
 
             if (mcu_x == 0 && mcu_y == 0) {
 #if GIMG_JPEG_DUMP_JPEG_COMPONENTS
@@ -1617,22 +1487,14 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
                 else if (ah == 0) {
                   r = jpeg_decode_block_progressive_dc(&bs,
                       &dc_tables[scan->dc_tbl[s]], block, &dc_pred[comp_idx],
-                      al, NULL, NULL, 0, is_last_prog);
+                      al, is_last_prog);
                 }
                 else {
                   r = jpeg_decode_block_progressive_dc_refine(&bs, block,
-                      &dc_pred[comp_idx], (unsigned int)al, NULL, 0,
-                      is_last_prog);
+                      &dc_pred[comp_idx], (unsigned int)al, is_last_prog);
                 }
                 if (r != GIMG_OK) {
                   return GIMG_ERR_CORRUPT;
-                }
-                if (block_counter_prog < 6 &&
-                    GIMG_JPEG_TRACE_PROG_FIRST_DC) {
-                  (void)fprintf(stderr,
-                      "PROG_DEC_DC block=%zu comp=%u block[0]=%d\n",
-                      block_counter_prog, (unsigned)comp_idx, (int)block[0]);
-                  (void)fflush(stderr);
                 }
               }
               else if (is_arithmetic) {
@@ -1648,12 +1510,9 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
               }
               else {
                 if (ah == 0) {
-                  int trace_blk = GIMG_JPEG_TRACE_PROG_FIRST_AC
-                      ? (int)block_counter_prog
-                      : -1;
                   GIMG_Result r = jpeg_decode_block_progressive_ac_initial(&bs,
-                      &ac_tables[scan->ac_tbl[s]], block, ss, se, al, 0,
-                      trace_blk, 0u, &eobrun, 0, is_last_prog);
+                      &ac_tables[scan->ac_tbl[s]], block, ss, se, al, &eobrun,
+                      is_last_prog);
                   if (r != GIMG_OK) {
                     return GIMG_ERR_CORRUPT;
                   }
@@ -1671,8 +1530,7 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
                   }
                   GIMG_Result r =
                       jpeg_decode_block_progressive_ac_refine(&bs, ac_ref_tbl,
-                          block, ss, se, al, 0, -1, 0, 0, -1, &eobrun,
-                          is_last_prog);
+                          block, ss, se, al, &eobrun, is_last_prog);
                   if (r != GIMG_OK) {
                     return GIMG_ERR_CORRUPT;
                   }
@@ -1879,15 +1737,6 @@ static GIMG_Result jpeg_decode_progressive_extended(
           jpeg_dequantize_32(block_rz, quant, block_q);
           // pass1_bits 2: the 8-bit setting (libjpeg jidctint.c).
           jpeg_idct_8x8_islow(block_q, block_idct, 2);
-          if (comp_idx == 1 && by == 0 && bx == 0 &&
-              GIMG_JPEG_TRACE_FIRST_CB) {
-            (void)fprintf(stderr,
-                "PROGRESSIVE first Cb: quant[0]=%u dequant[0]=%d idct[0]=%d "
-                "stored=%d\n",
-                (unsigned)quant[0], (int)block_q[0], (int)block_idct[0],
-                (int)block_idct[0] + 128);
-            (void)fflush(stderr);
-          }
           for (int dy = 0; dy < 8; dy++) {
             uint32_t y = dst_y + (uint32_t)dy;
             if (y >= comp_h[comp_idx])

@@ -1327,22 +1327,19 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
 /** Progressive DC initial: decode single DC coefficient (Al bits). */
 GIMG_Result jpeg_decode_block_progressive_dc(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * dc_tbl, int16_t * block,
-    int16_t * dc_predictor, int al, int * out_sym, int * out_diff,
-    int trace_all, int is_last_block);
+    int16_t * dc_predictor, int al, int is_last_block);
 /** Progressive DC refinement: decode one bit, refine block[0]. */
 GIMG_Result jpeg_decode_block_progressive_dc_refine(gimg_jpeg_bitstream_t * bs,
-    int16_t * block, int16_t * dc_predictor, unsigned int al, int * out_bit,
-    int trace_all, int is_last_block);
+    int16_t * block, int16_t * dc_predictor, unsigned int al,
+    int is_last_block);
 /** Progressive AC initial: decode coefficients in band [ss..se] with Al. */
 GIMG_Result jpeg_decode_block_progressive_ac_initial(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * ac_tbl, int16_t * block, int ss, int se,
-    int al, int do_trace, int trace_block_id, unsigned int trace_scan_idx,
-    unsigned int * out_eobrun, int trace_all, int is_last_block);
+    int al, unsigned int * out_eobrun, int is_last_block);
 /** Progressive AC refinement: decode one bit per coefficient in band. */
 GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * ac_tbl, int16_t * block, int ss, int se,
-    int al, int do_trace, int trace_block_id, int log_sanity, int trace_all,
-    int trace_scan_idx, unsigned int * out_eobrun, int is_last_block);
+    int al, unsigned int * out_eobrun, int is_last_block);
 /** @} */
 
 /**
