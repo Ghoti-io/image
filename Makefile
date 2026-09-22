@@ -215,15 +215,19 @@ endif
 # request for this build, where the install location may be only a default.
 PKG_CONFIG_LOOKUP_PATH := $(if $(PKG_CONFIG_PATH_ENV),$(PKG_CONFIG_PATH_ENV):)$(PKG_CONFIG_PATH)
 
-# ghoti.io-compress (required for PNG codec). Prefer pkg-config; fallback to sibling.
+# ghoti.io-compress (required for PNG codec), found by pkg-config and by
+# nothing else.
+#
 # The name must carry $(BRANCH): compress installs its .pc as
-# ghoti.io-compress-dev.pc, so asking for "ghoti.io-compress" never matched and
-# the sibling fallback below was taken even when compress was properly
-# installed.
+# ghoti.io-compress-dev.pc on a dev branch, so asking for "ghoti.io-compress"
+# matches nothing there.  A wrong name is indistinguishable from a missing
+# dependency - both produce the error below - so it is worth getting right
+# even though the message names a different fix.
 COMPRESS_PC ?= ghoti.io-compress$(BRANCH)
 COMPRESS_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cflags $(COMPRESS_PC) 2>/dev/null)
 COMPRESS_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs $(COMPRESS_PC) 2>/dev/null)
-# Use sibling path when pkg-config failed (empty) or returned unsubstituted placeholder.
+# Empty means pkg-config found nothing.  There is nowhere else to look, so
+# this is the end of the search rather than the start of a second one.
 ifeq ($(strip $(COMPRESS_CFLAGS)),)
 ifndef SKIP_DEP_CHECK
 $(error ghoti.io-compress was not found by pkg-config. Run ./bootstrap.sh in the parent folder to build and install the suite into a local prefix, then pass the same PREFIX here - or point PKG_CONFIG_PATH at the directory holding its .pc file. There is deliberately no sibling-checkout fallback: a second resolution path that only in-tree builds exercise is one that silently rots.)
@@ -232,9 +236,14 @@ endif
 INCLUDE += $(COMPRESS_CFLAGS)
 
 # ghoti.io-cutil, for the allocator vtable and the overflow-checked size math
-# that image's public headers now use. It arrives transitively through
-# compress's .pc when that is installed; the fallback branch has to name it
-# itself, including cutil's generated include directory (float.h).
+# that image's public headers now use.
+#
+# Compress's .pc already pulls it in, so the include flags below duplicate an
+# -I that is there anyway.  It is asked for by name regardless, for two
+# reasons: $(CUTIL_LIBS) is needed on every link line - image's .so has a
+# NEEDED entry for cutil and the linker has to resolve it - and image uses
+# cutil's headers directly, so it should name its own dependency rather than
+# rely on compress's .pc continuing to list it.
 CUTIL_PC ?= ghoti.io-cutil$(BRANCH)
 CUTIL_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cflags $(CUTIL_PC) 2>/dev/null)
 CUTIL_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs $(CUTIL_PC) 2>/dev/null)
