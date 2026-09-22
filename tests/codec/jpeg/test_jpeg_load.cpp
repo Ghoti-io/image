@@ -5696,3 +5696,104 @@ TEST(JpegLoad, AnRgbUncompressedThumbnailIsExpandedToRgba) {
   }
   gimg_doc_destroy(doc);
 }
+
+namespace {
+
+/** Offset of each marker segment's two-byte length field, in file order. */
+std::vector<size_t> segment_length_fields(const std::vector<uint8_t> & jpg) {
+  std::vector<size_t> out;
+  size_t i = 0;
+  while (i + 3 < jpg.size()) {
+    if (jpg[i] != 0xFF) { i++; continue; }
+    const uint8_t m = jpg[i + 1];
+    if (m == 0xFF) { i++; continue; }
+    if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+    if (m == 0xD9) { break; }
+    if (m == 0x00) { i += 2; continue; }
+    out.push_back(i + 2);
+    const size_t len = ((size_t)jpg[i + 2] << 8) | jpg[i + 3];
+    if (len < 2) { break; }
+    if (m == 0xDA) { break; } // entropy data follows; stop walking headers
+    i += 2 + len;
+  }
+  return out;
+}
+
+bool is_legal_load_result(GIMG_Result r) {
+  return r == GIMG_OK || r == GIMG_ERR_CORRUPT || r == GIMG_ERR_FORMAT ||
+      r == GIMG_ERR_UNSUPPORTED || r == GIMG_ERR_LIMIT || r == GIMG_ERR_OOM ||
+      r == GIMG_ERR_INTERNAL;
+}
+
+
+} // namespace
+
+/**
+ * A lie in any segment's length field is refused, never acted on.
+ *
+ * Most of what is still unreached in this loader is rejection: forty-odd
+ * sites that free the payload, record a diagnostic, tear the state down and
+ * return. None is reachable from a well-formed file, and writing one hand-made
+ * JPEG per site would be forty fixtures that each test one branch.
+ *
+ * A segment's declared length is the single field every one of those checks
+ * ultimately depends on - it decides whether the payload is long enough to
+ * hold what the marker promises, and whether the next marker is where the file
+ * says it is. So the sweep rewrites that field, in every segment of every
+ * fixture, to each of the values that break it in a different way: shorter
+ * than the two bytes it occupies, exactly two (an empty payload), one byte
+ * short of the truth, and the largest value it can hold.
+ *
+ * What is asserted is what a loader owes a caller given a file that lies: a
+ * documented result code, and no crash or out-of-bounds read - which is what
+ * makes this worth more under `make test-asan` than it looks here. The control
+ * is the same differential the Exif sweep uses: the unmodified fixtures must
+ * load, and the modified ones must be refused far more often, so neither "it
+ * accepts everything" nor "it refuses everything" can pass.
+ */
+TEST(JpegLoad, ALieInASegmentLengthIsRefusedCleanly) {
+  const char * fixtures[] = {
+      "baseline_8x8_gray.jpg",
+      "baseline_640x480_ycbcr.jpg",
+      "progressive_sample.jpg",
+      "arith_gray_64x64.jpg",
+  };
+
+  long cases = 0, refused = 0, good = 0;
+  for (const char * name : fixtures) {
+    std::vector<uint8_t> base;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name, base)) << name;
+    ASSERT_EQ(load_result(base), GIMG_OK)
+        << name << " does not load unmodified, so nothing below means anything";
+    good++;
+
+    const std::vector<size_t> fields = segment_length_fields(base);
+    ASSERT_GE(fields.size(), 3u) << name << ": too few segments to sweep";
+
+    for (size_t at : fields) {
+      const size_t real = ((size_t)base[at] << 8) | base[at + 1];
+      const uint16_t hostile[] = {0u, 1u, 2u, (uint16_t)(real - 1u), 0xFFFFu};
+      for (uint16_t v : hostile) {
+        if (v == real) { continue; }
+        std::vector<uint8_t> broken = base;
+        broken[at] = (uint8_t)(v >> 8);
+        broken[at + 1] = (uint8_t)(v & 0xFFu);
+        const GIMG_Result r = load_result(broken);
+        EXPECT_TRUE(is_legal_load_result(r))
+            << name << ": length at " << at << " set to " << v
+            << " gave " << (int)r;
+        if (r != GIMG_OK) { refused++; }
+        cases++;
+      }
+    }
+  }
+
+  ASSERT_GT(cases, 100L) << "the sweep shrank; check the fixtures still parse";
+  EXPECT_EQ(good, 4L) << "every fixture must load before it is broken";
+  // A loader that accepted everything would score 0 here; one that refused
+  // everything would have failed the unmodified loads above.
+  EXPECT_GT(refused * 2, cases)
+      << "only " << refused << " of " << cases
+      << " length lies were refused, which is not enough to say this sweep "
+         "distinguishes a loader that checks from one that does not";
+}
