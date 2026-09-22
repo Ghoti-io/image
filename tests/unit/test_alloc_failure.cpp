@@ -29,62 +29,15 @@
 #include <string>
 #include <vector>
 
+#include "../failing_allocator.h"
 #include "../../src/codec/codec_internal.h"
 #include "../../src/meta/exif_internal.h"
 #include "../exif_test_utils.h"
 
 namespace {
 
-/** An allocator that fails one chosen call and counts what it hands out. */
-struct Failing {
-  GIMG_Allocator a{};
-  long attempts = 0;    ///< Allocation calls seen.
-  long fail_at = -1;    ///< 1-based call to fail; -1 never fails.
-  long outstanding = 0; ///< Blocks handed out and not yet returned.
-
-  bool should_fail() {
-    attempts++;
-    return fail_at >= 0 && attempts == fail_at;
-  }
-};
-
-void * f_malloc(void * ctx, size_t size) {
-  Failing * f = (Failing *)ctx;
-  if (f->should_fail()) { return nullptr; }
-  void * p = malloc(size ? size : 1u);
-  if (p) { f->outstanding++; }
-  return p;
-}
-void * f_calloc(void * ctx, size_t n, size_t size) {
-  Failing * f = (Failing *)ctx;
-  if (f->should_fail()) { return nullptr; }
-  if (n != 0 && size > (size_t)-1 / n) { return nullptr; } // overflow is failure
-  void * p = calloc(n ? n : 1u, size ? size : 1u);
-  if (p) { f->outstanding++; }
-  return p;
-}
-void * f_realloc(void * ctx, void * ptr, size_t size) {
-  Failing * f = (Failing *)ctx;
-  if (f->should_fail()) { return nullptr; }
-  void * p = realloc(ptr, size ? size : 1u);
-  if (p && !ptr) { f->outstanding++; }
-  return p;
-}
-void f_free(void * ctx, void * ptr) {
-  Failing * f = (Failing *)ctx;
-  if (ptr) {
-    f->outstanding--;
-    free(ptr);
-  }
-}
-
-void init(Failing & f) {
-  f.a.ctx = &f;
-  f.a.malloc_fn = f_malloc;
-  f.a.calloc_fn = f_calloc;
-  f.a.realloc_fn = f_realloc;
-  f.a.free_fn = f_free;
-}
+using gimg_test::Failing;
+using gimg_test::init;
 
 bool read_file(const char * dir, const char * name, std::vector<uint8_t> & out) {
   std::string path = std::string(dir) + "/" + name;

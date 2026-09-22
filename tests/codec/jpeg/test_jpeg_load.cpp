@@ -7,6 +7,7 @@
  */
 
 #include <cstdint>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +29,8 @@
 
 #include "jpeg_test_utils.h"
 #include "../../exif_test_utils.h"
+#include "../../failing_allocator.h"
+#include "../../../src/codec/codec_internal.h"
 #include "../../../src/meta/exif_internal.h"
 
 namespace {
@@ -5928,4 +5931,132 @@ TEST(JpegLoad, ADuplicateJfxxOrXmpKeepsTheLastAndFreesTheFirst) {
       << "the later JFXX segment is the one kept";
   EXPECT_EQ(raw_block_of(jpeg, kJpegRawApp1Xmp), xmp2)
       << "the later XMP segment is the one kept";
+}
+
+namespace {
+
+/**
+ * A JPEG carrying every metadata segment this loader knows how to keep.
+ *
+ * Each of these is attached to the document separately, and each attach has
+ * its own failure arm; a fixture with only one of them sweeps only one. The
+ * Exif block carries a thumbnail as well, so the thumbnail decode - which
+ * loads a whole nested document - is inside the sweep too.
+ */
+bool make_metadata_rich_jpeg(std::vector<uint8_t> & out) {
+  std::vector<uint8_t> thumb;
+  if (!jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", thumb)) { return false; }
+
+  void * p = nullptr;
+  size_t n = 0;
+  if (gimg_exif_build_with_thumbnail_jpeg(
+          nullptr, nullptr, 0, thumb.data(), thumb.size(), &p, &n) != GIMG_OK) {
+    return false;
+  }
+  std::vector<uint8_t> exif_payload;
+  const char tag[] = "Exif\0\0";
+  exif_payload.insert(exif_payload.end(), tag, tag + 6);
+  exif_payload.insert(exif_payload.end(), (uint8_t *)p, (uint8_t *)p + n);
+  free(p);
+
+  std::vector<uint8_t> iptc;
+  append_iptc(iptc, 2, 120, "a caption for the sweep");
+
+  std::vector<uint8_t> icc(140u, 0x00);
+  const char icc_tag[] = "ICC_PROFILE\0";
+  std::copy(icc_tag, icc_tag + 12, icc.begin());
+  icc[12] = 1;  // chunk 1
+  icc[13] = 1;  // of 1
+
+  const std::vector<AppSegment> segs = {
+      {0xE0u, with_prefix("JFIF\0", 5,
+           std::string("\x01\x02\x00\x00\x01\x00\x01\x00\x00", 9))},
+      {0xE0u, with_prefix("JFXX\0", 5, std::string("\x10", 1))},
+      {0xE1u, exif_payload},
+      {0xE1u, with_prefix("http://ns.adobe.com/xap/1.0/\0", 29, "<x:xmpmeta/>")},
+      {0xE2u, icc},
+      {0xEDu, make_photoshop_app13(iptc)},
+      {0xEEu, with_prefix("Adobe\0", 6, std::string("\x64\x00\x00\x00\x00\x01", 6))},
+  };
+  return jpeg_with_apps(segs, out);
+}
+
+} // namespace
+
+/**
+ * Every allocation failure while loading a metadata-heavy JPEG frees what it
+ * took.
+ *
+ * The suite's existing sweep runs over plain fixtures, so it reaches the
+ * decoder's allocations and almost none of the loader's metadata ones: each
+ * segment is attached to the document by its own call with its own failure
+ * arm, and a fixture that carries no XMP never reaches the arm that fails to
+ * attach one. This fixture carries all of them, and an Exif thumbnail on top,
+ * so the nested document load is inside the sweep too.
+ *
+ * The assertion is that nothing is kept, whichever allocation failed. A leak
+ * on this path is one per image on a machine already short of memory.
+ */
+TEST(JpegLoad, EveryFailedLoadOfAMetadataRichJpegFreesEverything) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(make_metadata_rich_jpeg(jpeg));
+
+  // The sweep is only as wide as the metadata the loader actually recognised,
+  // and a segment it quietly skips costs coverage without costing a test. So
+  // check each one arrived before sweeping anything: a malformed fixture would
+  // otherwise produce a shorter, greener sweep than a correct one.
+  const uint32_t expected_ids[] = {kJpegRawApp0, kJpegRawApp0Jfxx,
+      kJpegRawApp1Exif, kJpegRawApp1Xmp, kJpegRawApp2Icc, kJpegRawApp13,
+      kJpegRawApp14};
+  for (uint32_t id : expected_ids) {
+    EXPECT_FALSE(raw_block_of(jpeg, id).empty())
+        << "raw block 0x" << std::hex << id << std::dec
+        << " is missing, so the sweep below does not reach its attach path";
+  }
+  EXPECT_EQ(description_of(jpeg), "a caption for the sweep")
+      << "the IPTC caption did not arrive, so that path is not being swept";
+
+  GIMG_Codec * codec = gimg_codec_by_name("jpeg");
+  ASSERT_NE(codec, nullptr);
+
+  auto run = [&](gimg_test::Failing & f) {
+    const GIMG_Allocator * saved = codec->allocator;
+    codec->allocator = &f.a;
+    GIMG_Stream * s = nullptr;
+    GIMG_Result r = gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s);
+    if (r == GIMG_OK) {
+      GIMG_Doc * doc = nullptr;
+      r = gimg_doc_load(s, nullptr, nullptr, &doc);
+      if (doc) { gimg_doc_destroy(doc); }
+      gimg_stream_destroy(s);
+    }
+    codec->allocator = saved;
+    return r;
+  };
+
+  gimg_test::Failing probe;
+  gimg_test::init(probe);
+  ASSERT_EQ(run(probe), GIMG_OK) << "the fixture must load when nothing fails";
+  ASSERT_EQ(probe.outstanding, 0) << "it leaks even on the success path";
+  const long total = probe.attempts;
+  std::printf("  metadata-rich JPEG: %ld allocations through the codec\n", total);
+  ASSERT_GT(total, 30L)
+      << "only " << total
+      << " allocations, which is fewer than the plain fixtures make - the "
+         "metadata is probably not being recognised";
+
+  for (long i = 1; i <= total; i++) {
+    gimg_test::Failing f;
+    gimg_test::init(f);
+    f.fail_at = i;
+    const GIMG_Result r = run(f);
+    EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM || r == GIMG_ERR_CORRUPT ||
+        r == GIMG_ERR_FORMAT || r == GIMG_ERR_LIMIT || r == GIMG_ERR_UNSUPPORTED)
+        << "allocation " << i << " of " << total << " failed and the load "
+        << "returned " << (int)r;
+    EXPECT_EQ(f.outstanding, 0)
+        << f.outstanding << " block(s) leaked when allocation " << i << " of "
+        << total << " failed";
+    if (f.outstanding != 0) { break; }
+  }
 }
