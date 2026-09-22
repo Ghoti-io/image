@@ -4874,3 +4874,110 @@ TEST(JpegLoad, CmykConvertsToTheRgbLibjpegAndPillowProduce) {
   }
   EXPECT_EQ(checked, sizeof(fixtures) / sizeof(fixtures[0]));
 }
+
+namespace {
+
+/** progressive_sample.jpg with `cut` bytes removed from the end of its
+ * entropy data, EOI re-appended so the file still terminates properly. */
+bool truncated_progressive(size_t cut, std::vector<uint8_t> & out) {
+  std::vector<uint8_t> file;
+  if (!jpeg_test::load_jpeg_file("progressive_sample.jpg", file)) {
+    return false;
+  }
+  if (file.size() < cut + 4) { return false; }
+  size_t end = file.size();
+  if (end >= 2 && file[end - 2] == 0xFF && file[end - 1] == 0xD9) { end -= 2; }
+  if (end < cut) { return false; }
+  out.assign(file.begin(), file.begin() + (long)(end - cut));
+  out.push_back(0xFF);
+  out.push_back(0xD9);
+  return true;
+}
+
+/** Load and decode, reporting the result and the raster's size. */
+GIMG_Result decode_size(const std::vector<uint8_t> & bytes, uint32_t * w,
+    uint32_t * h) {
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(bytes.data(), bytes.size(), &s);
+  if (r != GIMG_OK) { return r; }
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (r != GIMG_OK) { return r; }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  GIMG_Raster * ras = nullptr;
+  r = item ? gimg_item_decode(item, nullptr, &ras) : GIMG_ERR_INTERNAL;
+  if (r == GIMG_OK && ras) {
+    if (w) { *w = gimg_raster_width(ras); }
+    if (h) { *h = gimg_raster_height(ras); }
+    gimg_raster_destroy(ras);
+  }
+  gimg_doc_destroy(doc);
+  return r;
+}
+
+} // namespace
+
+/**
+ * A progressive scan missing only its final padding byte still decodes.
+ *
+ * T.81 B.2.2 does not say what an encoder pads the last byte of a scan with,
+ * and third-party encoders differ, so the decoder treats underflow in the
+ * final block of a progressive scan as a zero DC size and zero refinement
+ * bits rather than calling the file corrupt. That is what the is_last_block
+ * argument threaded through jpeg_block.c's four progressive decoders is for,
+ * and nothing exercised it: every progressive fixture here is complete.
+ *
+ * The boundary is the point. The tolerance covers a final byte that is not
+ * there; it does not cover missing coefficients. So one byte off the end
+ * decodes and two do not, and both halves are asserted - a decoder that
+ * accepted any truncation would satisfy the first on its own, and this test
+ * would then be measuring nothing.
+ *
+ * Note that *loading* succeeds well past the point where decoding stops: the
+ * scan headers are still intact, and the data is only found to be short when
+ * the blocks are read. Asserting on the load alone would have called cuts of
+ * two, three and four bytes tolerated when they are not.
+ */
+TEST(JpegLoad, AProgressiveScanMissingItsPaddingByteStillDecodes) {
+  uint32_t w0 = 0, h0 = 0;
+  std::vector<uint8_t> whole;
+  ASSERT_TRUE(truncated_progressive(0, whole));
+  ASSERT_EQ(decode_size(whole, &w0, &h0), GIMG_OK);
+  ASSERT_GT(w0, 0u);
+  ASSERT_GT(h0, 0u);
+
+  // One byte: the padding. Tolerated, and the image keeps its shape.
+  std::vector<uint8_t> one;
+  ASSERT_TRUE(truncated_progressive(1, one));
+  uint32_t w = 0, h = 0;
+  EXPECT_EQ(decode_size(one, &w, &h), GIMG_OK)
+      << "a scan missing only its final padding byte must still decode";
+  EXPECT_EQ(w, w0);
+  EXPECT_EQ(h, h0);
+
+  // Beyond that, coefficients are missing and the file is corrupt. If this
+  // ever passes, the tolerance has stopped being bounded and the check above
+  // no longer distinguishes anything.
+  int refused = 0;
+  for (size_t cut = 2; cut <= 4; cut++) {
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(truncated_progressive(cut, bytes));
+    if (decode_size(bytes, nullptr, nullptr) != GIMG_OK) { refused++; }
+  }
+  EXPECT_EQ(refused, 3)
+      << "cuts past the padding byte remove real data and must be refused";
+
+  // The load half, stated separately because it differs: the scan headers
+  // survive a cut that the block reader then rejects.
+  std::vector<uint8_t> four;
+  ASSERT_TRUE(truncated_progressive(4, four));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(four.data(), four.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  const GIMG_Result lr = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  EXPECT_EQ(lr, GIMG_OK)
+      << "loading reads the headers; shortness is a decode-time finding";
+  if (lr == GIMG_OK) { gimg_doc_destroy(doc); }
+}
