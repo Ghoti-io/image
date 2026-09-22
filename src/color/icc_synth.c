@@ -182,6 +182,51 @@ static size_t gimg_icc_curv_size(unsigned int points) {
   return 12u + ((size_t)points * 2u);
 }
 
+/**
+ * Format a gamma value the way "%.4g" writes it in the C locale, whatever
+ * LC_NUMERIC the calling application happens to have set.
+ *
+ * printf takes its decimal separator from LC_NUMERIC, and this string becomes
+ * the profile's desc tag - which the writers embed as a PNG iCCP chunk and a
+ * JPEG APP2 segment. Left alone, a host that has called setlocale(LC_ALL, "")
+ * on a German system writes "gamma 2,2" into the file, and the bytes of a
+ * saved document stop being a function of the document and the options. That
+ * is the same rule the JPEG thumbnail bug broke, with an environment variable
+ * as the caller state instead of a decode order.
+ *
+ * The separator is identified by elimination rather than by asking
+ * localeconv(): everything %.4g can emit for a finite value is a digit, a
+ * sign or an exponent marker, so whatever else appears is the separator. That
+ * avoids reading the locale object at all, which matters because a caller is
+ * free to call setlocale() on another thread. A multi-byte separator collapses
+ * to the single '.' the C locale would have written.
+ *
+ * A non-finite value is left as printf wrote it: "inf" and "nan" carry no
+ * separator, and their letters would otherwise be mistaken for one.
+ */
+static void gimg_icc_format_gamma(char * buf, size_t size, double gamma) {
+  (void)snprintf(buf, size, "%.4g", gamma);
+  if (!isfinite(gamma)) {
+    return;
+  }
+  char * w = buf;
+  const char * r = buf;
+  while (*r) {
+    const int numeric = (*r >= '0' && *r <= '9') || *r == '-' || *r == '+' ||
+        *r == 'e' || *r == 'E';
+    if (numeric) {
+      *w++ = *r++;
+      continue;
+    }
+    *w++ = '.';
+    while (*r && !((*r >= '0' && *r <= '9') || *r == '-' || *r == '+' ||
+        *r == 'e' || *r == 'E')) {
+      r++;
+    }
+  }
+  *w = '\0';
+}
+
 /** Name the space in the way a human reading the profile would want it. */
 static void gimg_icc_describe(const gimg_icc_gamut_t * gamut,
     const GIMG_Color_Info * info, char * out, size_t out_size) {
@@ -191,8 +236,9 @@ static void gimg_icc_describe(const gimg_icc_gamut_t * gamut,
     return;
   }
   if (info->transfer == GIMG_TRANSFER_GAMMA) {
-    (void)snprintf(
-        out, out_size, "%s, gamma %.4g", gamut->name, info->gamma_value);
+    char gamma_text[32];
+    gimg_icc_format_gamma(gamma_text, sizeof(gamma_text), info->gamma_value);
+    (void)snprintf(out, out_size, "%s, gamma %s", gamut->name, gamma_text);
     return;
   }
   if (info->transfer == GIMG_TRANSFER_LINEAR) {

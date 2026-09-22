@@ -485,3 +485,175 @@ int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// ---------------------------------------------------------------------------
+// LC_NUMERIC and the profile description
+// ---------------------------------------------------------------------------
+
+#include "../../src/color/color_internal.h"
+
+#include <clocale>
+#include <cstdio>
+#include <cstdlib>
+#include <locale.h>
+
+namespace {
+
+/**
+ * A comma-decimal locale, generated on demand, or unusable if impossible.
+ *
+ * The pattern - and the LD_PRELOAD caveat - is model's
+ * tests/unit/test_locale.cpp. Debian here installs four locales and none of
+ * them uses a comma, so a test that merely asked for de_DE would call
+ * setlocale(), get NULL, and quietly assert nothing.
+ */
+class CommaLocale {
+public:
+  CommaLocale() {
+    for (const char * name : {"de_DE.UTF-8", "fr_FR.UTF-8", "de_DE.utf8"}) {
+      handle_ = newlocale(LC_NUMERIC_MASK, name, (locale_t)0);
+      if (handle_ && writes_a_comma()) { return; }
+      if (handle_) { freelocale(handle_); handle_ = (locale_t)0; }
+    }
+    const char * tmp = std::getenv("TMPDIR");
+    dir_ = std::string(tmp ? tmp : "/tmp") + "/gimg-locale-XXXXXX";
+    std::vector<char> t(dir_.begin(), dir_.end());
+    t.push_back('\0');
+    if (!mkdtemp(t.data())) { return; }
+    dir_ = t.data();
+    // LD_PRELOAD is stripped for the child: under the ASan suite the
+    // sanitizer runtime is preloaded, system() hands it to localedef, and
+    // LeakSanitizer then fails localedef for leaks of its own - which would
+    // read here as "no comma locale exists".
+    const std::string cmd = "env -u LD_PRELOAD -u LD_LIBRARY_PATH "
+                            "localedef -i de_DE -f UTF-8 '" + dir_ +
+        "/de_DE.UTF-8' >/dev/null 2>&1";
+    if (std::system(cmd.c_str()) != 0) { return; }
+    setenv("LOCPATH", dir_.c_str(), 1);
+    handle_ = newlocale(LC_NUMERIC_MASK, "de_DE.UTF-8", (locale_t)0);
+    if (handle_ && !writes_a_comma()) {
+      freelocale(handle_);
+      handle_ = (locale_t)0;
+    }
+  }
+  ~CommaLocale() { if (handle_) { freelocale(handle_); } }
+  bool usable() const { return handle_ != (locale_t)0; }
+  locale_t get() const { return handle_; }
+
+private:
+  bool writes_a_comma() const {
+    locale_t prev = uselocale(handle_);
+    char b[16];
+    std::snprintf(b, sizeof(b), "%.1f", 0.5);
+    uselocale(prev);
+    return std::strchr(b, ',') != nullptr;
+  }
+  locale_t handle_ = (locale_t)0;
+  std::string dir_;
+};
+
+/** The ASCII of the profile's desc tag, or empty if it has none. */
+std::string desc_of(const std::vector<uint8_t> & icc) {
+  if (icc.size() < 132) { return std::string(); }
+  const uint32_t tags = ((uint32_t)icc[128] << 24) | ((uint32_t)icc[129] << 16) |
+      ((uint32_t)icc[130] << 8) | (uint32_t)icc[131];
+  for (uint32_t i = 0; i < tags; i++) {
+    const size_t e = 132u + (size_t)i * 12u;
+    if (e + 12u > icc.size()) { break; }
+    if (std::memcmp(&icc[e], "desc", 4) != 0) { continue; }
+    auto be = [&](size_t at) {
+      return ((uint32_t)icc[at] << 24) | ((uint32_t)icc[at + 1] << 16) |
+          ((uint32_t)icc[at + 2] << 8) | (uint32_t)icc[at + 3];
+    };
+    const uint32_t off = be(e + 4);
+    const uint32_t len = be(e + 8);
+    if ((size_t)off + len > icc.size() || len < 12u) { break; }
+    const uint32_t ascii_len = be((size_t)off + 8);
+    if (ascii_len == 0u || (size_t)off + 12u + ascii_len > icc.size()) { break; }
+    return std::string((const char *)&icc[off + 12u], ascii_len - 1u);
+  }
+  return std::string();
+}
+
+std::vector<uint8_t> synth(const GIMG_Color_Info & info) {
+  void * bytes = nullptr;
+  size_t n = 0;
+  if (gimg_icc_synthesize(nullptr, &info, &bytes, &n) != GIMG_OK || !bytes) {
+    return std::vector<uint8_t>();
+  }
+  std::vector<uint8_t> out((uint8_t *)bytes, (uint8_t *)bytes + n);
+  free(bytes);
+  return out;
+}
+
+GIMG_Color_Info gamma_info(double g) {
+  GIMG_Color_Info info;
+  std::memset(&info, 0, sizeof(info));
+  info.primaries = GIMG_PRIMARIES_SRGB;
+  info.transfer = GIMG_TRANSFER_GAMMA;
+  info.gamma_value = g;
+  return info;
+}
+
+} // namespace
+
+/**
+ * A synthesized profile is the same bytes whatever LC_NUMERIC says.
+ *
+ * The description carries the gamma as text, and printf takes its decimal
+ * separator from the locale - so before the fix a host that had called
+ * setlocale(LC_ALL, "") on a German system embedded "gamma 2,2" in every PNG
+ * iCCP and JPEG APP2 it wrote. Nothing mis-parses, because desc is free-form
+ * ASCII; what breaks is that the bytes of a saved file depend on the
+ * environment rather than on the document and the options.
+ *
+ * This fails rather than skips when no comma locale can be had. A locale test
+ * that skips reports success on the one machine where it could have found
+ * something.
+ */
+TEST(IccSynthesis, TheProfileDoesNotDependOnLcNumeric) {
+  CommaLocale comma;
+  ASSERT_TRUE(comma.usable())
+      << "no comma-decimal locale could be found or generated, so this test "
+         "cannot see the defect it guards; install one or make localedef work";
+
+  for (const double g : {2.2, 1.8, 2.4, 1.0, 0.45455}) {
+    const GIMG_Color_Info info = gamma_info(g);
+
+    const std::vector<uint8_t> in_c = synth(info);
+    ASSERT_FALSE(in_c.empty()) << "synthesis failed for gamma " << g;
+
+    locale_t prev = uselocale(comma.get());
+    const std::vector<uint8_t> in_comma = synth(info);
+    uselocale(prev);
+    ASSERT_FALSE(in_comma.empty());
+
+    EXPECT_EQ(desc_of(in_c), desc_of(in_comma))
+        << "the description changed under a comma locale for gamma " << g;
+    EXPECT_TRUE(in_c == in_comma)
+        << "the profile bytes changed under a comma locale for gamma " << g;
+    // The description separates name from value with ", ", so only the
+    // number itself can say whether LC_NUMERIC leaked.
+    const std::string d = desc_of(in_c);
+    const size_t at = d.rfind("gamma ");
+    ASSERT_NE(at, std::string::npos) << "no gamma in the description: " << d;
+    EXPECT_EQ(d.find(',', at), std::string::npos)
+        << "a comma reached the gamma value: " << d;
+  }
+}
+
+/** The control: the generated locale really does change printf. */
+TEST(IccSynthesis, TheCommaLocaleActuallyChangesPrintf) {
+  CommaLocale comma;
+  ASSERT_TRUE(comma.usable());
+  char c_buf[16];
+  std::snprintf(c_buf, sizeof(c_buf), "%.4g", 2.2);
+  locale_t prev = uselocale(comma.get());
+  char comma_buf[16];
+  std::snprintf(comma_buf, sizeof(comma_buf), "%.4g", 2.2);
+  uselocale(prev);
+  EXPECT_STREQ(c_buf, "2.2");
+  EXPECT_STREQ(comma_buf, "2,2")
+      << "the locale under test does not change the separator, so the test "
+         "above would pass against unfixed code";
+}
