@@ -960,6 +960,46 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 		exit 1; \
 	fi
 
+# ThreadSanitizer. Scoped to the concurrency test rather than the whole suite:
+# TSan instruments every memory access, and the rest of the suite is
+# single-threaded, so a full instrumented run would cost minutes to re-prove
+# that code with one thread has no races.
+#
+# This is not redundant with testThreads under `make test`. That test compares
+# concurrent output against solitary output, so it finds a race that actually
+# corrupted something on that run; TSan finds the race whether it corrupted
+# anything or not. The JPEG encoder had both kinds at once - reciprocal
+# quantizer tables in statics, which produced wrong bytes, and derived Huffman
+# tables published without ordering, whose contents were identical either way
+# and which no output comparison could ever have seen.
+#
+# Sources are compiled directly rather than through the object tree: an
+# instrumented object dropped into build/ would be linked by a later plain
+# build with no diagnostic.
+TSAN_DIR := $(BUILD_DIR)/tsan
+TSAN_FLAGS := -fsanitize=thread -g -O1 -fPIC
+
+test-tsan: ## Build the concurrency test under ThreadSanitizer and run it (Linux only)
+ifeq ($(OS_NAME), Linux)
+test-tsan: $(LIBVER_GEN)
+	@printf "\033[0;30;43m\n############################\n### ThreadSanitizer ###\n############################\033[0m\n\n"
+	@rm -rf $(TSAN_DIR) && mkdir -p $(TSAN_DIR)
+	@for src in $(SOURCES); do \
+		obj=$(TSAN_DIR)/$$(echo $$src | tr '/' '_' | sed 's/\.c$$/.o/'); \
+		$(CC) $(TSAN_FLAGS) -std=c17 -DGIMG_BUILD $(INCLUDE) -c $$src -o $$obj \
+			|| exit 1; \
+	done
+	@$(CXX) $(TSAN_FLAGS) -std=c++20 $(INCLUDE) -c tests/unit/test_threads.cpp \
+		-o $(TSAN_DIR)/test_threads.o
+	@$(CXX) $(TSAN_FLAGS) -o $(TSAN_DIR)/testThreads $(TSAN_DIR)/*.o \
+		$(LDFLAGS) $(TESTFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS) -lpthread
+	@env -u LD_PRELOAD $(TSAN_DIR)/testThreads
+	@printf "\033[0;32mThreadSanitizer found no data races.\033[0m\n"
+else
+test-tsan:
+	@echo "test-tsan is Linux only."
+endif
+
 test-verify-resample: ## Run only the resampler comparison against Pillow
 test-verify-resample: $(APP_DIR)/resample_tool$(EXE_EXTENSION)
 	@printf "\033[0;30;43m\n############################\n### Verifying the resampler (PIL) ###\n############################\033[0m\n\n"

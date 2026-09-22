@@ -49,6 +49,41 @@
  * written out here as three zeros that no build step ever updated.
  */
 
+/** @name Threads
+ *
+ * **Two threads may use this library at once, on separate objects.** Nothing
+ * in a load, a decode, a save or an operation reaches shared mutable state:
+ * every allocation belongs to the GIMG_Doc, GIMG_Raster or GIMG_Stream it was
+ * made for, and a codec's working state lives on its stack for the duration
+ * of one call.
+ *
+ * What that leaves, in full:
+ *
+ * - **No object here is internally locked.** Two threads touching the *same*
+ *   GIMG_Doc, GIMG_Raster or GIMG_Stream must arrange that between
+ *   themselves, exactly as for a `struct` of their own. gimg_item_decode()
+ *   and gimg_item_ensure_decoded() mutate the item they are given, so they
+ *   count as writes and not as reads.
+ * - **The codec registry is global and unsynchronized.** gimg_codec_register()
+ *   writes it; gimg_probe(), gimg_doc_load(), gimg_doc_save(),
+ *   gimg_codec_by_name() and gimg_codec_count() read it. The four built-in
+ *   codecs register themselves before `main()` runs, so a program that adds
+ *   none of its own never touches this. A program that does should register
+ *   them before it starts threads.
+ * - **The allocator you supply must itself be safe to call from several
+ *   threads**, because it will be. The default is the system allocator, which
+ *   is.
+ *
+ * This is checked rather than asserted: `tests/unit/test_threads.cpp`
+ * requires a concurrent save to produce the same bytes as a solitary one, and
+ * `make test-tsan` runs it under ThreadSanitizer from a cold start. Both were
+ * watched failing against real defects - reciprocal quantizer tables the JPEG
+ * encoder kept in statics, and derived Huffman tables published without
+ * ordering - before being believed.
+ * @{
+ */
+/** @} */
+
 /**
  * @brief Get the major version number
  * @return The major version number

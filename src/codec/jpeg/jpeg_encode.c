@@ -363,9 +363,13 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
   }
   *out_total_blocks = total_blocks;
 
-  // Reciprocal quantizer tables (libjpeg 8-bit style) when quant_method is RECIP.
-  static int16_t recip_luma[64 * RECIP_STRIDE];
-  static int16_t recip_chroma[64 * RECIP_STRIDE];
+  // Reciprocal quantizer tables (libjpeg 8-bit style) when quant_method is
+  // RECIP.  Deliberately not static: they are derived from this call's
+  // quantization tables, which carry the caller's quality setting, so sharing
+  // them between calls is not a cache but a way for two encodes to quantize
+  // each other's coefficients.
+  int16_t recip_luma[64 * RECIP_STRIDE];
+  int16_t recip_chroma[64 * RECIP_STRIDE];
   if (quant_method == GIMG_JPEG_QUANT_RECIP) {
     for (int i = 0; i < 64; i++) {
       uint32_t div_l = (uint32_t)(quant_luma[i] << 3);
@@ -792,15 +796,16 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
     return GIMG_ERR_LIMIT;
   }
 
-  static jpeg_derived_tbl dc_lum_tbl, dc_chr_tbl, ac_lum_tbl, ac_chr_tbl;
-  static int tables_built = 0;
-  if (!tables_built) {
-    build_derived_tbl(gimg_jpeg_std_dc_lum_bits, gimg_jpeg_std_dc_lum_vals, 12, &dc_lum_tbl);
-    build_derived_tbl(gimg_jpeg_std_dc_chr_bits, gimg_jpeg_std_dc_chr_vals, 12, &dc_chr_tbl);
-    build_derived_tbl(gimg_jpeg_std_ac_lum_bits, gimg_jpeg_std_ac_lum_vals, 162, &ac_lum_tbl);
-    build_derived_tbl(gimg_jpeg_std_ac_chr_bits, gimg_jpeg_std_ac_chr_vals, 162, &ac_chr_tbl);
-    tables_built = 1;
-  }
+  // Built per call rather than cached in statics.  The contents are fixed, so
+  // the cache was sound in a single thread; across two it published
+  // `built = 1` with no ordering against the writes it guards, which lets a
+  // second encode read a half-built table.  Building costs four passes over
+  // at most 162 symbols, next to nothing beside entropy-coding an image.
+  jpeg_derived_tbl dc_lum_tbl, dc_chr_tbl, ac_lum_tbl, ac_chr_tbl;
+  build_derived_tbl(gimg_jpeg_std_dc_lum_bits, gimg_jpeg_std_dc_lum_vals, 12, &dc_lum_tbl);
+  build_derived_tbl(gimg_jpeg_std_dc_chr_bits, gimg_jpeg_std_dc_chr_vals, 12, &dc_chr_tbl);
+  build_derived_tbl(gimg_jpeg_std_ac_lum_bits, gimg_jpeg_std_ac_lum_vals, 162, &ac_lum_tbl);
+  build_derived_tbl(gimg_jpeg_std_ac_chr_bits, gimg_jpeg_std_ac_chr_vals, 162, &ac_chr_tbl);
 
   jpeg_bit_writer w = {0};
   int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
@@ -1202,20 +1207,21 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
           (size_t)mcu_per_col, (size_t)mcu_per_row, &mcu_count)) {
     return GIMG_ERR_LIMIT;
   }
-  static jpeg_derived_tbl ext_dc_lum_tbl, ext_dc_chr_tbl, ext_ac_lum_tbl,
+  // Built per call rather than cached in statics.  The contents are fixed, so
+  // the cache was sound in a single thread; across two it published
+  // `built = 1` with no ordering against the writes it guards, which lets a
+  // second encode read a half-built table.  Building costs four passes over
+  // at most 162 symbols, next to nothing beside entropy-coding an image.
+  jpeg_derived_tbl ext_dc_lum_tbl, ext_dc_chr_tbl, ext_ac_lum_tbl,
       ext_ac_chr_tbl;
-  static int ext_baseline_tables_built = 0;
-  if (!ext_baseline_tables_built) {
-    build_derived_tbl(gimg_jpeg_ext_dc_lum_bits, gimg_jpeg_ext_dc_lum_vals, GIMG_JPEG_EXT_DC_VALS,
-        &ext_dc_lum_tbl);
-    build_derived_tbl(gimg_jpeg_ext_dc_chr_bits, gimg_jpeg_ext_dc_chr_vals, GIMG_JPEG_EXT_DC_VALS,
-        &ext_dc_chr_tbl);
-    build_derived_tbl(gimg_jpeg_ext_ac_lum_bits, gimg_jpeg_ext_ac_lum_vals, GIMG_JPEG_EXT_AC_VALS,
-        &ext_ac_lum_tbl);
-    build_derived_tbl(gimg_jpeg_ext_ac_chr_bits, gimg_jpeg_ext_ac_chr_vals, GIMG_JPEG_EXT_AC_VALS,
-        &ext_ac_chr_tbl);
-    ext_baseline_tables_built = 1;
-  }
+  build_derived_tbl(gimg_jpeg_ext_dc_lum_bits, gimg_jpeg_ext_dc_lum_vals, GIMG_JPEG_EXT_DC_VALS,
+      &ext_dc_lum_tbl);
+  build_derived_tbl(gimg_jpeg_ext_dc_chr_bits, gimg_jpeg_ext_dc_chr_vals, GIMG_JPEG_EXT_DC_VALS,
+      &ext_dc_chr_tbl);
+  build_derived_tbl(gimg_jpeg_ext_ac_lum_bits, gimg_jpeg_ext_ac_lum_vals, GIMG_JPEG_EXT_AC_VALS,
+      &ext_ac_lum_tbl);
+  build_derived_tbl(gimg_jpeg_ext_ac_chr_bits, gimg_jpeg_ext_ac_chr_vals, GIMG_JPEG_EXT_AC_VALS,
+      &ext_ac_chr_tbl);
   jpeg_bit_writer w = {0};
   int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
   size_t block_off = 0;
@@ -1589,15 +1595,16 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     return GIMG_ERR_LIMIT;
   }
 
-  static jpeg_derived_tbl dc_lum_tbl, dc_chr_tbl, ac_lum_tbl, ac_chr_tbl;
-  static int tables_built = 0;
-  if (!tables_built) {
-    build_derived_tbl(gimg_jpeg_std_dc_lum_bits, gimg_jpeg_std_dc_lum_vals, 12, &dc_lum_tbl);
-    build_derived_tbl(gimg_jpeg_std_dc_chr_bits, gimg_jpeg_std_dc_chr_vals, 12, &dc_chr_tbl);
-    build_derived_tbl(gimg_jpeg_std_ac_lum_bits, gimg_jpeg_std_ac_lum_vals, 162, &ac_lum_tbl);
-    build_derived_tbl(gimg_jpeg_std_ac_chr_bits, gimg_jpeg_std_ac_chr_vals, 162, &ac_chr_tbl);
-    tables_built = 1;
-  }
+  // Built per call rather than cached in statics.  The contents are fixed, so
+  // the cache was sound in a single thread; across two it published
+  // `built = 1` with no ordering against the writes it guards, which lets a
+  // second encode read a half-built table.  Building costs four passes over
+  // at most 162 symbols, next to nothing beside entropy-coding an image.
+  jpeg_derived_tbl dc_lum_tbl, dc_chr_tbl, ac_lum_tbl, ac_chr_tbl;
+  build_derived_tbl(gimg_jpeg_std_dc_lum_bits, gimg_jpeg_std_dc_lum_vals, 12, &dc_lum_tbl);
+  build_derived_tbl(gimg_jpeg_std_dc_chr_bits, gimg_jpeg_std_dc_chr_vals, 12, &dc_chr_tbl);
+  build_derived_tbl(gimg_jpeg_std_ac_lum_bits, gimg_jpeg_std_ac_lum_vals, 162, &ac_lum_tbl);
+  build_derived_tbl(gimg_jpeg_std_ac_chr_bits, gimg_jpeg_std_ac_chr_vals, 162, &ac_chr_tbl);
 
   jpeg_bit_writer w = {0};
   int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
@@ -1716,13 +1723,10 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
       gimg_free(alloc, w.buf);
       return GIMG_ERR_UNSUPPORTED;
     }
-    static jpeg_derived_tbl ac_refine_tbl;
-    static int ac_refine_tbl_built = 0;
-    if (!ac_refine_tbl_built) {
-      build_derived_tbl(gimg_jpeg_std_ac_refine_bits, gimg_jpeg_std_ac_refine_vals,
+    // Per call, not cached; see the note on the other derived tables.
+    jpeg_derived_tbl ac_refine_tbl;
+    build_derived_tbl(gimg_jpeg_std_ac_refine_bits, gimg_jpeg_std_ac_refine_vals,
         GIMG_JPEG_AC_REFINE_VALS, &ac_refine_tbl);
-      ac_refine_tbl_built = 1;
-    }
     unsigned int k_start = (unsigned int)Ss;
     unsigned int k_end = (unsigned int)Se;
     if (k_end > 63)
@@ -1943,20 +1947,21 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
     return GIMG_ERR_LIMIT;
   }
 
-  static jpeg_derived_tbl ext_dc_lum_tbl, ext_dc_chr_tbl, ext_ac_lum_tbl,
+  // Built per call rather than cached in statics.  The contents are fixed, so
+  // the cache was sound in a single thread; across two it published
+  // `built = 1` with no ordering against the writes it guards, which lets a
+  // second encode read a half-built table.  Building costs four passes over
+  // at most 162 symbols, next to nothing beside entropy-coding an image.
+  jpeg_derived_tbl ext_dc_lum_tbl, ext_dc_chr_tbl, ext_ac_lum_tbl,
       ext_ac_chr_tbl;
-  static int ext_tables_built = 0;
-  if (!ext_tables_built) {
-    build_derived_tbl(gimg_jpeg_ext_dc_lum_bits, gimg_jpeg_ext_dc_lum_vals, GIMG_JPEG_EXT_DC_VALS,
-        &ext_dc_lum_tbl);
-    build_derived_tbl(gimg_jpeg_ext_dc_chr_bits, gimg_jpeg_ext_dc_chr_vals, GIMG_JPEG_EXT_DC_VALS,
-        &ext_dc_chr_tbl);
-    build_derived_tbl(gimg_jpeg_ext_ac_lum_bits, gimg_jpeg_ext_ac_lum_vals, GIMG_JPEG_EXT_AC_VALS,
-        &ext_ac_lum_tbl);
-    build_derived_tbl(gimg_jpeg_ext_ac_chr_bits, gimg_jpeg_ext_ac_chr_vals, GIMG_JPEG_EXT_AC_VALS,
-        &ext_ac_chr_tbl);
-    ext_tables_built = 1;
-  }
+  build_derived_tbl(gimg_jpeg_ext_dc_lum_bits, gimg_jpeg_ext_dc_lum_vals, GIMG_JPEG_EXT_DC_VALS,
+      &ext_dc_lum_tbl);
+  build_derived_tbl(gimg_jpeg_ext_dc_chr_bits, gimg_jpeg_ext_dc_chr_vals, GIMG_JPEG_EXT_DC_VALS,
+      &ext_dc_chr_tbl);
+  build_derived_tbl(gimg_jpeg_ext_ac_lum_bits, gimg_jpeg_ext_ac_lum_vals, GIMG_JPEG_EXT_AC_VALS,
+      &ext_ac_lum_tbl);
+  build_derived_tbl(gimg_jpeg_ext_ac_chr_bits, gimg_jpeg_ext_ac_chr_vals, GIMG_JPEG_EXT_AC_VALS,
+      &ext_ac_chr_tbl);
 
   jpeg_bit_writer w = {0};
   int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};

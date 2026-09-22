@@ -27,8 +27,6 @@
  * utilities used across the library modules.
  */
 
-#include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 #include <ghoti.io/image/macros.h>
@@ -46,15 +44,20 @@ GIMG_API uint32_t gimg_version_patch(void) {
   return GIMG_VERSION_PATCH;
 }
 
+/**
+ * Stringify after one round of macro expansion, so that GIMG_VERSION_MAJOR
+ * becomes its value rather than its own name.
+ */
+#define GIMG_STRINGIFY_(x) #x
+#define GIMG_STRINGIFY(x) GIMG_STRINGIFY_(x)
+
 GIMG_API const char * gimg_version_string(void) {
-  static char version_string[32];
-  static bool initialized = false;
-
-  if (!initialized) {
-    snprintf(version_string, sizeof(version_string), "%u.%u.%u",
-        GIMG_VERSION_MAJOR, GIMG_VERSION_MINOR, GIMG_VERSION_PATCH);
-    initialized = true;
-  }
-
-  return version_string;
+  // A string literal built by the preprocessor, not a buffer filled on first
+  // use.  The previous arrangement wrote into a static buffer behind an
+  // unsynchronized `initialized` flag: two threads asking for the version at
+  // once raced on both, and because the flag could be published before the
+  // snprintf it guarded, a caller could be handed a half-written string.  The
+  // value is known at compile time, so none of that machinery bought anything.
+  return GIMG_STRINGIFY(GIMG_VERSION_MAJOR) "." GIMG_STRINGIFY(
+      GIMG_VERSION_MINOR) "." GIMG_STRINGIFY(GIMG_VERSION_PATCH);
 }
