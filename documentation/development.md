@@ -89,6 +89,44 @@ Test layout:
 
 After `make test`, PNG output is verified with `tests/data/png/verify_png_output.py` (e.g. via PIL), and BMP output with `tests/data/bmp/verify_bmp_output.py`, which reads each written file back with Pillow and with GdkPixbuf and compares it against a sidecar the encode tests leave beside it (`make test-verify-bmp` runs that alone). JPEG decode correctness is validated against Pillow (Python) where applicable (`Decode*PillowOracle` tests run `tests/data/jpeg/pillow_decode_hash.py`); JPEG encode output is verified by `tests/data/jpeg/verify_jpeg_output.py` (PIL opens each file in `tests/out/jpeg/`). **Pillow is required** for these JPEG tests (see Prerequisites above).
 
+**What those verifications do not cover, and the two gates that do.** Every
+script above reads our output back with an *outside* decoder and compares
+pixels. That catches pixel bugs, and the decoders in question are lenient
+about everything else - measured, by breaking one thing in a known-good file
+and asking: a JPEG whose `RST2` is renumbered `RST5`, a GIF whose background
+index is not in its colour table, a GIF whose LZW minimum code size is 9, and
+a GIF with its trailer removed are all read without complaint by ImageMagick,
+and Pillow accepts the JPEG too. So a writer can emit a malformed file, every
+oracle can read it, the pixels can be right, and every gate stays green. That
+is how the APNG sequence numbering was wrong for a year of animations.
+
+Two gates close it, and each was watched failing against that bug before being
+trusted:
+
+- `tests/codec/test_roundtrip.cpp` saves every fixture as every format that
+  will take it and **reads the result back with this library's own decoder**,
+  which is the strictest reader available - it rejects a corrupted CRC, a
+  duplicate IHDR and a missing IEND, all three of which Pillow accepts. A save
+  the codec refuses is an answer; writing something and then refusing to read
+  it is not.
+- `tests/data/verify_structure.py` (`make test-verify-structure`) decodes
+  nothing. It reads the bytes of everything in `tests/out/` against the
+  specifications: PNG chunk order and CRCs, APNG sequence numbering and acTL
+  agreement, GIF sub-block termination and code sizes, JPEG restart-marker
+  order, BMP header self-consistency. **It self-tests first** - it builds
+  known-bad inputs of its own and refuses to certify anything unless it
+  catches every one, because a structural checker that quietly stops parsing
+  reports zero problems on everything, which looks exactly like success.
+
+Both gates need an input big enough to reach the paths they guard, and no
+fixture in the tree is: the writers split their output at 32 KiB, and a 4x4
+test image never gets near it. The round-trip test therefore synthesizes a
+multi-frame animation of incompressible noise, asserts that the frames really
+did split across chunks before asserting anything about them, and leaves the
+file in `tests/out/png/` so the structural check sees the hard case too. The
+first draft of that test omitted this and passed against the bug it was
+written for.
+
 **BMP conformance sweep:** `make bmpsuite BMPSUITE=<dir>` runs Jason Summers' bmpsuite through the codec, where `<dir>` is an unpacked copy fetched into a scratch directory rather than vendored - the same treatment PngSuite gets. It compares each decode against decoders written from the format description inside `tests/data/bmp/bmpsuite_sweep.py` and against whichever of Pillow, GdkPixbuf and netpbm's `bmptopnm` are installed, with each one's reach declared per file, because no two of them agree. A file nothing can check is reported as a failure. Without `BMPSUITE` the target skips and says how to get the suite.
 
 **JPEG test map:** Load and segment/limit behavior: `tests/codec/jpeg/test_jpeg_load.cpp` (e.g. SOF rejection, DNL, DHT/SOS negative tests, golden/oracle). Encode, round-trip, and save: `tests/codec/jpeg/test_jpeg_encode.cpp` (quality, chroma, progressive, 12-bit, DHT consistency, failure paths). Helpers: `jpeg_test_utils.cpp` / `jpeg_test_utils.h` (load_jpeg_file, raster hash, oracle helpers). Fuzz: `tests/fuzz/fuzz_jpeg_load` (load + decode; no crash on arbitrary input).

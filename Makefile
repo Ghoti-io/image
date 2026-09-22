@@ -461,6 +461,12 @@ $(OBJ_DIR)/tests/%.o: tests/unit/%.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
+# Tests in tests/codec/ itself: cross-codec, so every data directory.
+$(OBJ_DIR)/tests/%.o: tests/codec/%.cpp
+	@printf "\n### Compiling Test Object: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
 # Tests in tests/codec/bmp/ (object name from basename for link).
 $(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
 	@printf "\n### Compiling Test Object: $* ###\n"
@@ -715,7 +721,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 .PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif fuzz-gif-encode
 .PHONY: bmp-dump-raster bmpsuite bmp-oracle-tools jpeg-oracle-tools gif-oracle-tools
 # Release build commands
-.PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-verify-gif test-watch uninstall watch
+.PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-verify-gif test-verify-structure test-watch uninstall watch
 # Debug build commands
 .PHONY: all-debug install-debug test-debug test-valgrind-debug test-watch-debug uninstall-debug watch-debug
 
@@ -885,7 +891,10 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 	printf "\033[0;32mBMP output verification passed.\033[0m\n"; \
 	printf "\033[0;30;43m\n############################\n### Verifying GIF output ###\n############################\033[0m\n\n"; \
 	python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
-	printf "\033[0;32mGIF output verification passed.\033[0m\n"
+	printf "\033[0;32mGIF output verification passed.\033[0m\n"; \
+	printf "\033[0;30;43m\n############################\n### Verifying output structure ###\n############################\033[0m\n\n"; \
+	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
+	printf "\033[0;32mOutput structure verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
 test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
@@ -928,12 +937,17 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 		python3 $(CURDIR)/tests/data/jpeg/verify_jpeg_output.py $(TEST_OUT_JPEG) && \
 		python3 $(CURDIR)/tests/data/bmp/verify_bmp_output.py $(TEST_OUT_BMP) && \
 		python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
-		printf "\033[0;32mPNG, JPEG, BMP and GIF output verification passed.\033[0m\n"; \
+		python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
+		printf "\033[0;32mPNG, JPEG, BMP and GIF output verified, and structurally checked.\033[0m\n"; \
 	else \
 		printf "\033[0;31m%-30s %8d %6dms FAIL (%d failed)\033[0m\n" "TOTAL" "$$total_tests" "$$total_time" "$$total_failed"; \
 		printf "$$failed_suites\n"; \
 		exit 1; \
 	fi
+
+test-verify-structure: ## Run only the structural check of written output
+	@python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
+		printf "\033[0;32mOutput structure verification passed.\033[0m\n"
 
 test-verify-png: ## Run only PNG output verification (run 'make test' for full test + verify)
 	@mkdir -p $(TEST_OUT_PNG)
@@ -1088,6 +1102,11 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp
 
 # Tests in tests/codec/bmp/ (mirrors the non-ASan rule; without this the ASan
 # build has no way to make test_bmp_*.o and `make test-asan` does not build).
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/%.cpp
+	@printf "\n### Compiling Test Object (ASan): $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
 $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
