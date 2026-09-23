@@ -774,7 +774,9 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
       // against.
       if (!state->is_hierarchical) {
         if (seen_sof) {
-          jpeg_load_fmt_debug("duplicate SOF", seg_start, marker);
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_FORMAT,
+              "a second frame header; outside a hierarchical sequence a file "
+              "holds one frame (T.81 B.2.1)");
           gimg_free(alloc, payload_buf);
           gimg_jpeg_free_doc_state(codec, state);
           return GIMG_ERR_FORMAT;
@@ -1270,6 +1272,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           unsigned char len_buf[2];
           r = gimg_stream_read_exact(stream, len_buf, 2);
           if (r != GIMG_OK) {
+            jpeg_load_diag(diagnostics, seg_start, b, r,
+                "the file ends inside a marker segment's length field");
             gimg_jpeg_free_doc_state(codec, state);
             return r;
           }
@@ -1289,6 +1293,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             }
             r = gimg_stream_read_exact(stream, dht_buf, payload_size);
             if (r != GIMG_OK) {
+              jpeg_load_diag(diagnostics, seg_start, b, r,
+                  "the file ends inside a DHT segment");
               gimg_free(alloc, dht_buf);
               gimg_jpeg_free_doc_state(codec, state);
               return r;
@@ -1365,6 +1371,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               }
               r = gimg_stream_read_exact(stream, seg, payload_size);
               if (r != GIMG_OK) {
+                jpeg_load_diag(diagnostics, seg_start, b, r,
+                    "the file ends inside the segment it declared");
                 gimg_free(alloc, seg);
                 gimg_jpeg_free_doc_state(codec, state);
                 return r;
@@ -1387,6 +1395,10 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
               size_t nr = 0;
               r = gimg_stream_read(stream, &discard, 1, &nr);
               if (r != GIMG_OK || nr == 0) {
+                jpeg_load_diag(diagnostics, seg_start, b,
+                    (r != GIMG_OK) ? r : GIMG_ERR_FORMAT,
+                    "the file ends inside a segment it declared the length "
+                    "of");
                 gimg_jpeg_free_doc_state(codec, state);
                 return (r != GIMG_OK) ? r : GIMG_ERR_FORMAT;
               }

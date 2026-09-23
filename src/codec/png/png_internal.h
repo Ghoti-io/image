@@ -423,8 +423,8 @@ GIMG_Result gimg_png_parse_actl(
  * @brief Parse fcTL payload (26 bytes) into fctl (big-endian where applicable).
  * @return GIMG_OK or GIMG_ERR_FORMAT if invalid.
  */
-GIMG_Result gimg_png_parse_fctl(
-    const unsigned char * payload, gimg_png_fctl_t * fctl);
+GIMG_Result gimg_png_parse_fctl(const unsigned char * payload,
+    gimg_png_fctl_t * fctl, const char ** out_why);
 
 /**
  * @brief Append bytes to a frame's data buffer (realloc as needed).

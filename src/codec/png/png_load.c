@@ -195,6 +195,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   GIMG_Result r = gimg_png_verify_signature(stream);
   if (r != GIMG_OK) {
+    png_load_diag(diagnostics, 0u, GIMG_PNG_IHDR, r,
+        "the file does not begin with the PNG signature (PNG 5.2)");
     return r;
   }
 
@@ -301,8 +303,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
 
     if (type == GIMG_PNG_IHDR) {
+      png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+          "a second IHDR; a PNG has one, and it is the first chunk "
+          "(PNG 5.6)");
       gimg_png_free_doc_state(codec, state);
-      return GIMG_ERR_FORMAT; // Duplicate IHDR.
+      return GIMG_ERR_FORMAT;
     }
 
     if (type == GIMG_PNG_IEND) {
@@ -351,6 +356,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       uint32_t num_plays = 0;
       r = gimg_png_parse_actl(actl_buf, &num_frames, &num_plays);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            "acTL declares no frames (APNG 4.1)");
         gimg_png_free_doc_state(codec, state);
         return r;
       }
@@ -392,8 +399,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return r;
       }
       gimg_png_fctl_t fctl;
-      r = gimg_png_parse_fctl(fctl_buf, &fctl);
+      const char * fctl_why = NULL;
+      r = gimg_png_parse_fctl(fctl_buf, &fctl, &fctl_why);
       if (r != GIMG_OK) {
+        png_load_diag(diagnostics, chunk_start, type, r,
+            fctl_why ? fctl_why : "fcTL could not be read");
         gimg_png_free_doc_state(codec, state);
         return r;
       }

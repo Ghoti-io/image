@@ -327,7 +327,10 @@ GIMG_Result gimg_png_parse_actl(const unsigned char * payload,
 }
 
 GIMG_Result gimg_png_parse_fctl(const unsigned char * payload,
-    gimg_png_fctl_t * fctl) {
+    gimg_png_fctl_t * fctl, const char ** out_why) {
+  if (out_why) {
+    *out_why = NULL;
+  }
   if (!payload || !fctl) {
     return GIMG_ERR_INTERNAL;
   }
@@ -347,9 +350,15 @@ GIMG_Result gimg_png_parse_fctl(const unsigned char * payload,
   fctl->dispose_op = payload[24];
   fctl->blend_op = payload[25];
   if (fctl->dispose_op > 2) {
+    if (out_why) {
+      *out_why = "fcTL dispose_op must be 0, 1 or 2 (APNG 4.2)";
+    }
     return GIMG_ERR_FORMAT;
   }
   if (fctl->blend_op > 1) {
+    if (out_why) {
+      *out_why = "fcTL blend_op must be 0 or 1 (APNG 4.2)";
+    }
     return GIMG_ERR_FORMAT;
   }
   return GIMG_OK;
