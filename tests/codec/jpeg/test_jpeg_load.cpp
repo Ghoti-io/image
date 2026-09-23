@@ -7,6 +7,7 @@
  */
 
 #include <cstdint>
+#include <set>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -7638,4 +7639,161 @@ TEST(JpegLoad, ALosslessFrameIsCheckedAgainstAnnexHBeforeItIsDecoded) {
     EXPECT_EQ(got.load, GIMG_OK) << "the scan header itself is well formed";
     EXPECT_EQ(got.decode, GIMG_ERR_CORRUPT);
   }
+}
+
+namespace {
+
+/**
+ * Wrap a single-frame JPEG in a one-frame hierarchical sequence.
+ *
+ * T.81 B.3.1: a hierarchical sequence is a DHP segment followed by the frames.
+ * B.3.2: DHP "has the same parameters as a frame header" - the largest
+ * dimensions in the sequence - "except that Tq shall be zero".  J.1.3 leaves
+ * the first frame of a sequence coded normally, so a sequence of one
+ * non-differential frame draws exactly what that frame drew on its own.
+ *
+ * This is the transform `tests/data/jpeg/mk_hier_ni.py` applies to build the
+ * committed hierarchical non-interleaved fixtures; doing it here instead of
+ * committing more files lets every precision and component count already in
+ * the corpus be asked the same question.
+ */
+std::vector<uint8_t> wrap_in_hierarchical_sequence(
+    const std::vector<uint8_t> & src) {
+  static const std::set<uint8_t> kSof = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6,
+      0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF};
+  std::vector<uint8_t> out;
+  if (src.size() < 4) { return out; }
+  out.insert(out.end(), src.begin(), src.begin() + 2);
+  size_t i = 2;
+  while (i + 1 < src.size()) {
+    if (src[i] != 0xFF) { return std::vector<uint8_t>(); }
+    uint8_t m = src[i + 1];
+    if (kSof.count(m)) {
+      size_t ln = ((size_t)src[i + 2] << 8) | src[i + 3];
+      std::vector<uint8_t> dhp(src.begin() + (long)i + 4,
+          src.begin() + (long)(i + 2 + ln));
+      if (dhp.size() < 6) { return std::vector<uint8_t>(); }
+      uint8_t nf = dhp[5];
+      if (dhp.size() < (size_t)6 + (size_t)nf * 3) {
+        return std::vector<uint8_t>();
+      }
+      for (uint8_t c = 0; c < nf; c++) {
+        dhp[8 + (size_t)c * 3] = 0;  // Tq = 0 (B.3.2).
+      }
+      out.push_back(0xFF);
+      out.push_back(0xDE);
+      out.push_back((uint8_t)((dhp.size() + 2) >> 8));
+      out.push_back((uint8_t)((dhp.size() + 2) & 0xFF));
+      out.insert(out.end(), dhp.begin(), dhp.end());
+      out.insert(out.end(), src.begin() + (long)i, src.end());
+      return out;
+    }
+    if (m == 0xD9 || (m >= 0xD0 && m <= 0xD7) || m == 0x01) {
+      out.insert(out.end(), src.begin() + (long)i, src.begin() + (long)i + 2);
+      i += 2;
+      continue;
+    }
+    if (i + 3 >= src.size()) { return std::vector<uint8_t>(); }
+    size_t ln = ((size_t)src[i + 2] << 8) | src[i + 3];
+    if (ln < 2 || i + 2 + ln > src.size()) { return std::vector<uint8_t>(); }
+    out.insert(out.end(), src.begin() + (long)i, src.begin() + (long)(i + 2 + ln));
+    i += 2 + ln;
+  }
+  return std::vector<uint8_t>();
+}
+
+/** Decode, and report what the raster is as well as what it holds. */
+struct Decoded {
+  GIMG_Result result = GIMG_ERR_INTERNAL;
+  uint32_t w = 0, h = 0;
+  uint8_t channels = 0, bits = 0;
+  uint64_t hash = 0;
+};
+
+Decoded decode_described(const std::vector<uint8_t> & bytes) {
+  Decoded d;
+  GIMG_Stream * s = nullptr;
+  d.result = gimg_stream_create_memory(bytes.data(), bytes.size(), &s);
+  if (d.result != GIMG_OK) { return d; }
+  GIMG_Doc * doc = nullptr;
+  d.result = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (d.result != GIMG_OK) { return d; }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  GIMG_Raster * ras = nullptr;
+  d.result = item ? gimg_item_decode(item, nullptr, &ras) : GIMG_ERR_INTERNAL;
+  if (d.result == GIMG_OK && ras) {
+    d.w = gimg_raster_width(ras);
+    d.h = gimg_raster_height(ras);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(ras);
+    d.channels = fmt ? fmt->channel_count : 0;
+    d.bits = fmt ? gimg_pixel_format_channel_bits(fmt, 0) : 0;
+    d.hash = jpeg_test::raster_pixel_hash(ras);
+  }
+  if (ras) { gimg_raster_destroy(ras); }
+  gimg_doc_destroy(doc);
+  return d;
+}
+
+} // namespace
+
+// T.81 B.3, J.1.3: wrapping a frame in a one-frame hierarchical sequence must
+// not change the picture.
+//
+// The hierarchical decoder assembles its own raster rather than sharing the
+// single-frame emitter, so every precision, component count and color
+// transform is written out twice in this library, in two places that can
+// drift.  Above eight bits they had drifted all the way to nothing: no
+// hierarchical fixture was wider than eight bits, so the 16-bit arms of
+// hier_emit_raster - grayscale, YCbCr-to-RGB, and the N-component fallback -
+// had never run at all.
+//
+// A one-frame sequence is the cheapest way to ask, because the answer is
+// already committed: it is whatever the same bytes draw without the DHP.  That
+// makes the plain decode the oracle, and it is an oracle checked elsewhere in
+// this file against libjpeg's own output for these same fixtures.
+TEST(JpegLoad, AOneFrameHierarchicalSequenceDrawsWhatTheFrameDrewAlone) {
+  struct Case {
+    const char * jpg;
+    uint8_t bits;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"baseline_gray12.jpg", 16, "12-bit grayscale, Huffman"},
+      {"arith_gray12_64x64.jpg", 16, "12-bit grayscale, arithmetic"},
+      {"baseline_rgb12_444.jpg", 16, "12-bit YCbCr 4:4:4"},
+      {"baseline_rgb12_422_16x1.jpg", 16, "12-bit YCbCr 4:2:2, one row"},
+      {"cmyk12_ljt_seq.jpg", 16, "12-bit four-component, sequential"},
+      {"cmyk12_ljt_prog.jpg", 16, "12-bit four-component, progressive"},
+      {"baseline_8x8_gray.jpg", 8, "8-bit grayscale, for contrast"},
+      {"baseline_16x16_ycbcr.jpg", 8, "8-bit YCbCr, for contrast"},
+  };
+  int wide_seen = 0;
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    std::vector<uint8_t> plain;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, plain)) << "missing fixture";
+    std::vector<uint8_t> hier = wrap_in_hierarchical_sequence(plain);
+    ASSERT_FALSE(hier.empty()) << "the wrapper must find the frame header";
+    ASSERT_GT(hier.size(), plain.size()) << "DHP must have been inserted";
+
+    const Decoded a = decode_described(plain);
+    ASSERT_EQ(a.result, GIMG_OK) << "the plain frame is the oracle";
+    const Decoded b = decode_described(hier);
+    ASSERT_EQ(b.result, GIMG_OK)
+        << "a one-frame hierarchical sequence must decode";
+
+    EXPECT_EQ(b.bits, c.bits) << "the sequence must come out at the same "
+                                 "width the single-frame path chooses";
+    EXPECT_EQ(a.bits, c.bits) << "control: the plain decode chooses it too";
+    if (c.bits == 16) { wide_seen++; }
+    EXPECT_EQ(b.w, a.w);
+    EXPECT_EQ(b.h, a.h);
+    EXPECT_EQ(b.channels, a.channels);
+    EXPECT_EQ(b.hash, a.hash)
+        << "the hierarchical emitter must draw what the single-frame emitter "
+           "drew for the very same frame";
+  }
+  EXPECT_GE(wide_seen, 6) << "if no case is wider than eight bits this test "
+                             "no longer reaches the arms it was written for";
 }
