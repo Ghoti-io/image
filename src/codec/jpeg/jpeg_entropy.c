@@ -354,8 +354,21 @@ static GIMG_Result jpeg_decode_baseline_extended(
     // A twelve-bit CMYK or YCCK frame; see jpeg_emit_four_component.
     int use_fancy_4 = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    // Converted element by element rather than cast as an array.  Each
+    // individual uint16_t * or unsigned char * converts to const void *
+    // legally; the array itself does not, because C11 6.5p7 lets an
+    // object be read only through a compatible type, and void * is not
+    // compatible with a pointer to object.  Benign on every ABI this
+    // builds for, and undetectable at run time: no sanitizer in this
+    // toolchain reports a strict-aliasing violation at any optimization
+    // level, so -Wstrict-aliasing at compile time is the only thing that
+    // sees it.
+    const void * comp_bufs[GIMG_JPEG_MAX_COMPONENTS];
+    for (int ci = 0; ci < (int)num_comp; ci++) {
+      comp_bufs[ci] = comp_buf[ci];
+    }
     r = jpeg_emit_four_component(alloc, state->adobe_transform, (uint32_t)width,
-        (uint32_t)height, (int)precision, 1, (const void * const *)comp_buf,
+        (uint32_t)height, (int)precision, 1, comp_bufs,
         comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_4,
         out_raster);
     if (r != GIMG_OK) {
@@ -453,8 +466,21 @@ static GIMG_Result jpeg_decode_baseline_extended(
     // jpeg_emit_unknown_components.
     int use_fancy_n = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    // Converted element by element rather than cast as an array.  Each
+    // individual uint16_t * or unsigned char * converts to const void *
+    // legally; the array itself does not, because C11 6.5p7 lets an
+    // object be read only through a compatible type, and void * is not
+    // compatible with a pointer to object.  Benign on every ABI this
+    // builds for, and undetectable at run time: no sanitizer in this
+    // toolchain reports a strict-aliasing violation at any optimization
+    // level, so -Wstrict-aliasing at compile time is the only thing that
+    // sees it.
+    const void * comp_bufs[GIMG_JPEG_MAX_COMPONENTS];
+    for (int ci = 0; ci < (int)num_comp; ci++) {
+      comp_bufs[ci] = comp_buf[ci];
+    }
     r = jpeg_emit_unknown_components(alloc, (uint32_t)width, (uint32_t)height,
-        (int)num_comp, (int)precision, 1, (const void * const *)comp_buf,
+        (int)num_comp, (int)precision, 1, comp_bufs,
         comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_n,
         out_raster);
     if (r != GIMG_OK) {
@@ -1159,9 +1185,22 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     // options and zero-initialized options agree.
     int use_fancy_4 = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    // Converted element by element rather than cast as an array.  Each
+    // individual uint16_t * or unsigned char * converts to const void *
+    // legally; the array itself does not, because C11 6.5p7 lets an
+    // object be read only through a compatible type, and void * is not
+    // compatible with a pointer to object.  Benign on every ABI this
+    // builds for, and undetectable at run time: no sanitizer in this
+    // toolchain reports a strict-aliasing violation at any optimization
+    // level, so -Wstrict-aliasing at compile time is the only thing that
+    // sees it.
+    const void * comp_bufs[GIMG_JPEG_MAX_COMPONENTS];
+    for (int ci = 0; ci < (int)num_comp; ci++) {
+      comp_bufs[ci] = comp_buf[ci];
+    }
     r = jpeg_emit_four_component(alloc, state->adobe_transform,
         (uint32_t)width, (uint32_t)height, 8, 0,
-        (const void * const *)comp_buf, comp_stride, comp_w, comp_h,
+        comp_bufs, comp_stride, comp_w, comp_h,
         sof->h_samp, sof->v_samp, use_fancy_4, out_raster);
     if (r != GIMG_OK) {
       goto fail_decode;
@@ -1172,8 +1211,21 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     // meaning to them, so they go out as they came in.
     int use_fancy_n = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    // Converted element by element rather than cast as an array.  Each
+    // individual uint16_t * or unsigned char * converts to const void *
+    // legally; the array itself does not, because C11 6.5p7 lets an
+    // object be read only through a compatible type, and void * is not
+    // compatible with a pointer to object.  Benign on every ABI this
+    // builds for, and undetectable at run time: no sanitizer in this
+    // toolchain reports a strict-aliasing violation at any optimization
+    // level, so -Wstrict-aliasing at compile time is the only thing that
+    // sees it.
+    const void * comp_bufs[GIMG_JPEG_MAX_COMPONENTS];
+    for (int ci = 0; ci < (int)num_comp; ci++) {
+      comp_bufs[ci] = comp_buf[ci];
+    }
     r = jpeg_emit_unknown_components(alloc, (uint32_t)width, (uint32_t)height,
-        (int)num_comp, 8, 0, (const void * const *)comp_buf, comp_stride,
+        (int)num_comp, 8, 0, comp_bufs, comp_stride,
         comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_n, out_raster);
     if (r != GIMG_OK) {
       goto fail_decode;
@@ -1886,8 +1938,21 @@ static GIMG_Result jpeg_decode_progressive_extended(
     // that had nowhere to be decoded to until GIMG_PIXEL_CMYK16 existed.
     int use_fancy_4 = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    // Converted element by element rather than cast as an array.  Each
+    // individual uint16_t * or unsigned char * converts to const void *
+    // legally; the array itself does not, because C11 6.5p7 lets an
+    // object be read only through a compatible type, and void * is not
+    // compatible with a pointer to object.  Benign on every ABI this
+    // builds for, and undetectable at run time: no sanitizer in this
+    // toolchain reports a strict-aliasing violation at any optimization
+    // level, so -Wstrict-aliasing at compile time is the only thing that
+    // sees it.
+    const void * comp_bufs[GIMG_JPEG_MAX_COMPONENTS];
+    for (int ci = 0; ci < (int)num_comp; ci++) {
+      comp_bufs[ci] = comp_buf[ci];
+    }
     r = jpeg_emit_four_component(alloc, state->adobe_transform, (uint32_t)width,
-        (uint32_t)height, (int)precision, 1, (const void * const *)comp_buf,
+        (uint32_t)height, (int)precision, 1, comp_bufs,
         comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_4,
         out_raster);
     if (r != GIMG_OK) {
@@ -1981,8 +2046,21 @@ static GIMG_Result jpeg_decode_progressive_extended(
     // jpeg_emit_unknown_components.
     int use_fancy_n = (!options ||
         options->jpeg_chroma_upsampling != GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE);
+    // Converted element by element rather than cast as an array.  Each
+    // individual uint16_t * or unsigned char * converts to const void *
+    // legally; the array itself does not, because C11 6.5p7 lets an
+    // object be read only through a compatible type, and void * is not
+    // compatible with a pointer to object.  Benign on every ABI this
+    // builds for, and undetectable at run time: no sanitizer in this
+    // toolchain reports a strict-aliasing violation at any optimization
+    // level, so -Wstrict-aliasing at compile time is the only thing that
+    // sees it.
+    const void * comp_bufs[GIMG_JPEG_MAX_COMPONENTS];
+    for (int ci = 0; ci < (int)num_comp; ci++) {
+      comp_bufs[ci] = comp_buf[ci];
+    }
     r = jpeg_emit_unknown_components(alloc, (uint32_t)width, (uint32_t)height,
-        (int)num_comp, (int)precision, 1, (const void * const *)comp_buf,
+        (int)num_comp, (int)precision, 1, comp_bufs,
         comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_n,
         out_raster);
     if (r != GIMG_OK) {
