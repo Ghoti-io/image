@@ -1639,6 +1639,78 @@ TEST(BmpEncode, AnOverLargeProfileDoesNotSuppressTheRestOfTheColor) {
   EXPECT_EQ(back->icc_size, 0u);
 }
 
+// Every rendering intent, out and back.
+//
+// BMP V5 names the four intents with its own constants - LCS_GM_BUSINESS,
+// GRAPHICS, IMAGES, ABS_COLORIMETRIC - and this writer maps between them and
+// GIMG_Rendering_Intent in two switch statements, one each way.  Only
+// saturation had ever been written or read: it is the one that pushes a
+// header to V5 on its own, so it is the one the V5 tests reach for, and the
+// other three arms of both switches had never run.
+//
+// A map written twice in opposite directions is the kind that drifts, and a
+// round trip catches a pair that agree with each other but not with the file.
+// So this also reads the header field directly, which is where the four
+// constants actually live.
+TEST(BmpEncode, EveryRenderingIntentSurvivesTheRoundTrip) {
+  struct Case {
+    GIMG_Rendering_Intent intent;
+    uint32_t v5;
+    /** Whether stating this intent is enough to need a V5 header. */
+    bool needs_v5;
+    const char * name;
+  };
+  const Case cases[] = {
+      // The bV5Intent constants, which live in bmp_color.c: LCS_GM_BUSINESS
+      // 1, GRAPHICS 2, IMAGES 4, ABS_COLORIMETRIC 8.  Spelled out here so a
+      // change to either end of the map has to change this file too.
+      // Perceptual is GIMG_Rendering_Intent's zero and is also what an
+      // absent bV5Intent means, so stating it says nothing the file does not
+      // already say and the header stays at V4.  It still round-trips, and
+      // that is the whole reason nothing is lost by the two being the same
+      // value here.
+      {GIMG_INTENT_PERCEPTUAL, 4u, false, "perceptual"},
+      {GIMG_INTENT_RELATIVE_COLORIMETRIC, 2u, true, "relative colorimetric"},
+      {GIMG_INTENT_SATURATION, 1u, true, "saturation"},
+      {GIMG_INTENT_ABSOLUTE_COLORIMETRIC, 8u, true, "absolute colorimetric"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.name);
+    GIMG_Color_Info color;
+    gimg_color_info_default(&color);
+    // A stated color space as well, so the header is V5 for every case and
+    // not only for the one intent that forces it on its own.
+    color.transfer = GIMG_TRANSFER_SRGB;
+    color.primaries = GIMG_PRIMARIES_SRGB;
+    color.white_point = GIMG_PRIMARIES_SRGB;
+    color.intent = c.intent;
+    GIMG_Raster * raster = colored_raster(color);
+    ASSERT_NE(raster, nullptr);
+
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+    if (c.needs_v5) {
+      ASSERT_EQ(dib_size_of(bytes), 124u)
+          << "an intent other than the default needs a V5 header to state it";
+      EXPECT_EQ(dib_u32(bytes, 108), c.v5)
+          << "bV5Intent is at offset 108 of the DIB header";
+    }
+    else {
+      EXPECT_EQ(dib_size_of(bytes), 108u)
+          << "V4 holds the color space; only the intent would need V5, and "
+             "this one is the default";
+    }
+
+    Loaded img;
+    ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+    ASSERT_EQ(img.decode(), GIMG_OK);
+    const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+    ASSERT_NE(back, nullptr);
+    EXPECT_EQ(back->intent, c.intent)
+        << "the two maps must agree, and agree with the file";
+  }
+}
+
 TEST(BmpEncode, SavingFromADocumentWhoseRasterTheSaveOwnsWritesTheRightProfile) {
   // The PNG and JPEG writers both read a raster they had already destroyed
   // when the save had decoded it for itself, and wrote freed memory into the
