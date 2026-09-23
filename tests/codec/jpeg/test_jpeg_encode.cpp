@@ -1230,8 +1230,19 @@ TEST(JpegEncode, FourComponentFrameAlwaysCarriesItsAdobeMarker) {
 // interval is counted in MCUs, and an MCU is a different thing in an
 // interleaved scan, a non-interleaved one (A.2.3, where it is a single block)
 // and each band of a progressive one.
+//
+// Precision is on the list because it decides which entropy decoder reads the
+// file, and the twelve-bit one has a restart branch of its own - including
+// the DC predictor reset, which is the whole reason a restart marker is a
+// thing that can go wrong. This swept four axes at eight bits only, so that
+// branch had never run: every twelve-bit fixture was written without an
+// interval and every restart fixture at eight bits. Varying four things and
+// not the one that selects the code under test is how a sweep reports a
+// result about somewhere else.
 TEST(JpegEncode, SmallRestartIntervalsChangeNothingButWhereTheCoderResets) {
   const uint32_t w = 37, h = 21;
+  long combinations = 0;
+  for (int precision : {8, 12}) {
   for (int subsampling = 0; subsampling <= 2; subsampling++) {
     for (int progressive = 0; progressive <= 1; progressive++) {
       for (int arithmetic = 0; arithmetic <= 1; arithmetic++) {
@@ -1240,28 +1251,43 @@ TEST(JpegEncode, SmallRestartIntervalsChangeNothingButWhereTheCoderResets) {
           if (progressive && non_interleaved) {
             continue; // Annex G owns the scan script; the encoder refuses it
           }
-          SCOPED_TRACE("subsampling " + std::to_string(subsampling) +
+          SCOPED_TRACE("precision " + std::to_string(precision) +
+              ", subsampling " + std::to_string(subsampling) +
               ", progressive " + std::to_string(progressive) +
               ", arithmetic " + std::to_string(arithmetic) +
               ", non-interleaved " + std::to_string(non_interleaved));
           std::vector<uint8_t> decoded[4];
+          GIMG_Result save_result[4] = {
+              GIMG_OK, GIMG_OK, GIMG_OK, GIMG_OK};
           const uint16_t intervals[4] = {0, 1, 2, 3};
           for (int k = 0; k < 4; k++) {
             GIMG_Doc * doc = nullptr;
             ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
             GIMG_Raster * raster = nullptr;
-            ASSERT_EQ(gimg_raster_create(w, h, &GIMG_PIXEL_RGBA8,
-                          GIMG_RASTER_OWNED, NULL, 0, &raster),
+            const GIMG_Pixel_Format * fmt =
+                (precision == 12) ? &GIMG_PIXEL_RGBA12 : &GIMG_PIXEL_RGBA8;
+            ASSERT_EQ(gimg_raster_create(
+                          w, h, fmt, GIMG_RASTER_OWNED, NULL, 0, &raster),
                 GIMG_OK);
             unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
             size_t stride = gimg_raster_stride_bytes(raster);
             for (uint32_t y = 0; y < h; y++) {
               for (uint32_t x = 0; x < w; x++) {
-                unsigned char * p = px + y * stride + x * 4;
-                p[0] = (unsigned char)((x * 7 + y * 5) & 0xFF);
-                p[1] = (unsigned char)((x * 3 + y * 11) & 0xFF);
-                p[2] = (unsigned char)((x * 13 + y * 2) & 0xFF);
-                p[3] = 255;
+                if (precision == 12) {
+                  uint16_t * p =
+                      (uint16_t *)(void *)(px + y * stride + x * 8);
+                  p[0] = (uint16_t)((x * 111 + y * 79) & 0xFFF);
+                  p[1] = (uint16_t)((x * 47 + y * 173) & 0xFFF);
+                  p[2] = (uint16_t)((x * 209 + y * 31) & 0xFFF);
+                  p[3] = 4095;
+                }
+                else {
+                  unsigned char * p = px + y * stride + x * 4;
+                  p[0] = (unsigned char)((x * 7 + y * 5) & 0xFF);
+                  p[1] = (unsigned char)((x * 3 + y * 11) & 0xFF);
+                  p[2] = (unsigned char)((x * 13 + y * 2) & 0xFF);
+                  p[3] = 255;
+                }
               }
             }
             gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
@@ -1275,8 +1301,23 @@ TEST(JpegEncode, SmallRestartIntervalsChangeNothingButWhereTheCoderResets) {
             so.jpeg_progressive = (uint8_t)progressive;
             so.jpeg_arithmetic = (uint8_t)arithmetic;
             so.jpeg_non_interleaved = (uint8_t)non_interleaved;
+            so.jpeg_precision = (uint8_t)precision;
             GIMG_Save_Report rep = {};
-            ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_OK);
+            save_result[k] = gimg_doc_save(doc, os, "jpeg", &so, &rep);
+            if (save_result[k] != GIMG_OK) {
+              // A combination the writer does not offer is a refusal, not a
+              // failure - but it must not depend on the restart interval,
+              // which changes nothing about what the frame is.
+              EXPECT_EQ(save_result[k], save_result[0])
+                  << "the restart interval decided whether this could be "
+                     "written at all";
+              gimg_doc_destroy(doc);
+              gimg_stream_destroy(os);
+              continue;
+            }
+            ASSERT_EQ(save_result[0], GIMG_OK)
+                << "interval 0 was refused and interval " << intervals[k]
+                << " was not";
             const void * buf = nullptr;
             size_t bn = 0;
             gimg_stream_output_buffer(os, &buf, &bn);
@@ -1312,13 +1353,17 @@ TEST(JpegEncode, SmallRestartIntervalsChangeNothingButWhereTheCoderResets) {
             const unsigned char * gp =
                 (const unsigned char *)gimg_raster_pixels(got.r);
             size_t gs = gimg_raster_stride_bytes(got.r);
-            decoded[k].resize((size_t)w * h * 4);
+            const size_t row_bytes = (size_t)w *
+                gimg_raster_bytes_per_pixel(gimg_raster_format(got.r));
+            decoded[k].resize(row_bytes * h);
             for (uint32_t y = 0; y < h; y++) {
-              memcpy(decoded[k].data() + (size_t)y * w * 4, gp + y * gs,
-                  (size_t)w * 4);
+              memcpy(decoded[k].data() + (size_t)y * row_bytes, gp + y * gs,
+                  row_bytes);
             }
+            combinations++;
           }
           for (int k = 1; k < 4; k++) {
+            if (save_result[k] != GIMG_OK) { continue; }
             EXPECT_TRUE(decoded[k] == decoded[0])
                 << "restart interval " << intervals[k]
                 << " changed the picture, and it only changes where the "
@@ -1328,6 +1373,12 @@ TEST(JpegEncode, SmallRestartIntervalsChangeNothingButWhereTheCoderResets) {
       }
     }
   }
+  }
+  // The alarm on the sweep: if the writer starts refusing a whole precision
+  // this would otherwise pass by comparing nothing at all.
+  ASSERT_GT(combinations, 40)
+      << "only " << combinations << " combinations were written, so most of "
+         "this sweep refused rather than ran";
 }
 
 // A hierarchical sequence's components are counted by B.2.2 like any other
