@@ -360,6 +360,7 @@ def main() -> None:
     )
     write_png("png_apng_2frame_16bit_rgba.png", apng_16rgba)
     _write_subbyte_and_interlace_fixtures()
+    _write_grayalpha_fixtures()
     _write_zlib_integrity_fixtures()
     _write_suggested_palette_fixtures()
     _write_filter_fixtures()
@@ -553,6 +554,52 @@ def _gray_8x8_raw() -> bytes:
         out.append(0)
         out += bytes((x * 8 + y * 3) & 0xFF for x in range(8))
     return bytes(out)
+
+
+def _write_grayalpha_fixtures() -> None:
+    """Gray+alpha (color type 4) large enough for Adam7 to have seven passes.
+
+    The only color type 4 fixtures were 1x1, where six of Adam7's seven passes
+    are empty and the writer's per-pixel path for the type runs once. A
+    re-save keeps the color type it was given, so a type 4 fixture is the only
+    way to make the encoder write one at all - which left that path, and the
+    same one for color type 2 at 16 bits, never executed.
+
+    The pattern varies along both axes and in both channels, so a pass written
+    to the wrong place shows up as a pixel and not as a coincidence.
+    """
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+    w = h = 16
+
+    rows8 = bytearray()
+    for y in range(h):
+        rows8.append(0)  # filter type 0
+        for x in range(w):
+            rows8.append((x * 17 + y * 3) & 0xFF)          # gray
+            rows8.append((255 - (x * 5 + y * 11)) & 0xFF)  # alpha
+    png8 = (
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 4, 0, 0, 0))
+        + png_chunk(b"IDAT", idat_zlib(bytes(rows8)))
+        + iend
+    )
+    write_png("png_grayalpha8_16x16.png", png8)
+
+    rows16 = bytearray()
+    for y in range(h):
+        rows16.append(0)
+        for x in range(w):
+            g = (x * 4097 + y * 257) & 0xFFFF
+            a = (0xFFFF - (x * 1031 + y * 2063)) & 0xFFFF
+            rows16 += struct.pack(">HH", g, a)
+    png16 = (
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 16, 4, 0, 0, 0))
+        + png_chunk(b"IDAT", idat_zlib(bytes(rows16)))
+        + iend
+    )
+    write_png("png_grayalpha16_16x16.png", png16)
 
 
 def _write_zlib_integrity_fixtures() -> None:

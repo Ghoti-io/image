@@ -3379,3 +3379,185 @@ TEST(PngEncode, AGamutWithNoTransferIsStillWritten) {
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }
+
+namespace {
+
+/** A file loaded, re-saved with the given options, and decoded again. */
+struct ResavedPng {
+  std::vector<uint8_t> bytes;
+  std::vector<uint8_t> pixels; ///< Decoded, row-major, no stride padding.
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint8_t channels = 0;
+  uint8_t bits = 0;
+  uint8_t color_type = 0;
+  uint8_t bit_depth = 0;
+  uint8_t interlace = 0;
+};
+
+/** Flatten a raster's pixels, dropping the stride padding. */
+void flatten(const GIMG_Raster * r, ResavedPng & out) {
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(r);
+  out.width = gimg_raster_width(r);
+  out.height = gimg_raster_height(r);
+  out.channels = fmt->channel_count;
+  out.bits = fmt->bits_per_channel[0];
+  const size_t row = (size_t)out.width * gimg_raster_bytes_per_pixel(fmt);
+  const size_t stride = gimg_raster_stride_bytes(r);
+  const auto * p = (const unsigned char *)gimg_raster_pixels_const(r);
+  out.pixels.resize(row * out.height);
+  for (uint32_t y = 0; y < out.height; y++) {
+    memcpy(out.pixels.data() + (size_t)y * row, p + (size_t)y * stride, row);
+  }
+}
+
+/** Load a fixture, save it again with @p interlaced, and decode the result. */
+::testing::AssertionResult resave(
+    const char * fixture, int interlaced, ResavedPng & out) {
+  std::vector<uint8_t> file;
+  if (!png_test::load_png_file(fixture, file)) {
+    return ::testing::AssertionFailure() << "missing fixture " << fixture;
+  }
+  GIMG_Stream * in_s = nullptr;
+  if (gimg_stream_create_memory(file.data(), file.size(), &in_s) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "input stream";
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(in_s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(in_s);
+    return ::testing::AssertionFailure() << "load: " << (int)r;
+  }
+  GIMG_Stream * out_s = nullptr;
+  if (gimg_stream_create_memory_output(&out_s) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in_s);
+    return ::testing::AssertionFailure() << "output stream";
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  opts.interlaced = (unsigned int)interlaced;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_s);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(out_s);
+    return ::testing::AssertionFailure() << "save: " << (int)r;
+  }
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out_s, &p, &n);
+  out.bytes.assign((const uint8_t *)p, (const uint8_t *)p + n);
+  gimg_stream_destroy(out_s);
+  if (out.bytes.size() < 34u) {
+    return ::testing::AssertionFailure() << "output too short to hold an IHDR";
+  }
+  out.bit_depth = out.bytes[24];
+  out.color_type = out.bytes[25];
+  out.interlace = out.bytes[28];
+
+  GIMG_Stream * back_s = nullptr;
+  if (gimg_stream_create_memory(out.bytes.data(), out.bytes.size(), &back_s)
+      != GIMG_OK) {
+    return ::testing::AssertionFailure() << "reload stream";
+  }
+  GIMG_Doc * back = nullptr;
+  r = gimg_doc_load(back_s, nullptr, nullptr, &back);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(back_s);
+    return ::testing::AssertionFailure() << "reload: " << (int)r;
+  }
+  GIMG_Raster * raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item(back, 0), nullptr, &raster);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(back);
+    gimg_stream_destroy(back_s);
+    return ::testing::AssertionFailure() << "decode: " << (int)r;
+  }
+  flatten(raster, out);
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(back);
+  gimg_stream_destroy(back_s);
+  return ::testing::AssertionSuccess();
+}
+
+} // namespace
+
+/**
+ * Adam7 is a reordering: the interlaced save is the same picture.
+ *
+ * The property needs no reference decoder. PNG 8.2 splits the image into
+ * seven passes and writes each as its own little image; nothing about the
+ * samples changes, so a file saved interlaced and the same file saved
+ * progressively must decode to identical pixels, and to the same colour type
+ * and bit depth. Anything else is the writer scattering a pass to the wrong
+ * place.
+ *
+ * It is run over files rather than over rasters built in the test, and that
+ * is the point. A document assembled in memory has no PNG behind it, so the
+ * writer picks the colour type from the raster's format alone and picks 0 or
+ * 6 every time. Colour types 2 and 4 are only ever written when the document
+ * *came from* a PNG that used them - which meant the interlaced writer's
+ * per-pixel path for both, at 8 and at 16 bits, had never run: four branches,
+ * uncovered, in a function whose other half was exercised constantly.
+ *
+ * The interlace byte of each output is checked too. Without that a writer
+ * that ignored the option entirely would pass every other assertion here, by
+ * writing the same progressive file twice.
+ */
+TEST(PngEncode, AnInterlacedSaveIsTheSamePictureAsAProgressiveOne) {
+  const char * fixtures[] = {
+      // Colour type 2, at both depths and at a size with seven live passes.
+      "png_gradient_64x64_rgb.png",
+      "png_rgb_no_palette.png",
+      "png_rgb16_bkgd.png",
+      // Colour type 4, which nothing but a type 4 file can make the writer
+      // emit.
+      "png_grayalpha8_16x16.png",
+      "png_grayalpha16_16x16.png",
+      "png_1x1_grayalpha.png",
+      "png_16bit_grayalpha.png",
+      // And the types the synthetic round-trips already reach, so that a
+      // change breaking one of them says so here as well.
+      "png_gray1_33x9.png",
+      "png_gray4_32x8.png",
+      "png_pal4_33x9.png",
+      "png_16bit_gray.png",
+      "png_16bit_rgba.png",
+      "png_palette_trns_bkgd_hist.png",
+      "png_gray4_trns_bkgd_sbit.png",
+  };
+
+  for (const char * fixture : fixtures) {
+    SCOPED_TRACE(fixture);
+    ResavedPng plain, woven;
+    ASSERT_TRUE(resave(fixture, 0, plain));
+    ASSERT_TRUE(resave(fixture, 1, woven));
+
+    EXPECT_EQ(plain.interlace, 0u) << "asked for a progressive file";
+    EXPECT_EQ(woven.interlace, 1u)
+        << "asked for an interlaced file and got a progressive one, so "
+           "everything below is comparing a file with itself";
+    EXPECT_EQ(woven.color_type, plain.color_type)
+        << "interlacing changed the colour type";
+    EXPECT_EQ(woven.bit_depth, plain.bit_depth)
+        << "interlacing changed the bit depth";
+    ASSERT_EQ(woven.width, plain.width);
+    ASSERT_EQ(woven.height, plain.height);
+    ASSERT_EQ(woven.channels, plain.channels);
+    ASSERT_EQ(woven.bits, plain.bits);
+    ASSERT_EQ(woven.pixels.size(), plain.pixels.size());
+    for (size_t i = 0; i < plain.pixels.size(); i++) {
+      if (woven.pixels[i] != plain.pixels[i]) {
+        const size_t per_pixel =
+            (size_t)plain.channels * (plain.bits == 16 ? 2u : 1u);
+        const size_t pixel = i / per_pixel;
+        FAIL() << "pixel (" << pixel % plain.width << ","
+               << pixel / plain.width << ") byte " << i % per_pixel
+               << ": interlaced " << (int)woven.pixels[i] << ", progressive "
+               << (int)plain.pixels[i];
+      }
+    }
+  }
+}
