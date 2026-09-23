@@ -357,6 +357,7 @@ TEST(AllocFailure, EveryFailedSaveFreesEverythingItTook) {
     // counts what the *save* takes and nothing else.
     ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK) << c.name;
     gimg_raster_destroy(raster);
+    if (c.decorate) { c.decorate(doc); }
 
     Failing probe;
     init(probe);

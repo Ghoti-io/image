@@ -89,6 +89,7 @@ TEST(WriteFailure, EveryTruncationPointIsReported) {
     GIMG_Doc * doc = nullptr;
     ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK) << c.name;
     gimg_raster_destroy(raster);
+    if (c.decorate) { c.decorate(doc); }
 
     // How long a good file is, and so how far to sweep.  A budget of exactly
     // that must succeed: it is the control that says the harness is imposing

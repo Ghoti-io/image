@@ -22,6 +22,8 @@
 
 #include "jpeg_test_utils.h"
 #include "../../exif_test_utils.h"
+#include "../../failing_allocator.h"
+#include "../../../src/codec/codec_internal.h"
 
 extern "C" {
 #include "jpeg_huffman_tables_internal.h"
@@ -7438,4 +7440,160 @@ TEST(JpegEncode, AnExifPolicyFailsOnApp1ItCannotParse) {
   EXPECT_EQ(jpeg_save_with_exif(bad, GIMG_META_PRESERVE_ALL, &saved), GIMG_OK);
   EXPECT_EQ(jpeg_exif_of(saved), bad)
       << "PRESERVE_ALL must hand back the bytes it could not read";
+}
+
+namespace {
+
+/** One option set the writer must refuse, named so a failure says which. */
+struct Refusal {
+  const char * why;
+  GIMG_Save_Options options;
+};
+
+/**
+ * Load a fixture into a document and leave it undecoded.
+ *
+ * The point is what is *not* done: no gimg_item_ensure_decoded. An item with
+ * no raster on it makes the save decode one and own it for the duration, and
+ * that ownership is the thing under test below.
+ */
+GIMG_Doc * load_undecoded(const char * name, GIMG_Stream ** keep,
+    std::vector<uint8_t> & bytes) {
+  if (!jpeg_test::load_jpeg_file(name, bytes)) { return nullptr; }
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), keep) != GIMG_OK) {
+    return nullptr;
+  }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_load(*keep, nullptr, nullptr, &doc) != GIMG_OK) { return nullptr; }
+  return doc;
+}
+
+} // namespace
+
+/**
+ * A refused option set does not keep the raster the save decoded for itself.
+ *
+ * Every one of these refusals is checked after the raster exists, and the
+ * raster is the save's own whenever the document arrived undecoded - which is
+ * every document loaded and re-saved without being looked at, the commonest
+ * shape there is. Each refusal therefore has its own `if (raster_owned)
+ * gimg_raster_destroy(raster)`, eight of them, and not one was reached by any
+ * test: every fixture in this suite hands the writer a raster it does not own,
+ * so `raster_owned` was false in all of them and the arms were dead code that
+ * looked live.
+ *
+ * What is asserted is the refusal and the accounting: across the load, the
+ * save and the destroy, the allocator hands out and takes back the same
+ * number of blocks, so a decoded raster left behind shows up as a positive
+ * count. Checked rather than assumed - with the destroy removed from the
+ * 16-bit refusal, that row alone reported two outstanding blocks and the
+ * other eight stayed silent.
+ *
+ * The first attempt at it measured nothing, which is worth recording because
+ * the failure was invisible: the allocator was swapped in just before
+ * gimg_doc_save, and a JPEG document decodes through the allocator it was
+ * *loaded* with, kept in its codec_private state. Zero allocations went
+ * through the swapped one, so the count was trivially zero and the removed
+ * destroy passed. `EXPECT_GT(f.attempts, 0)` is there so that a count of zero
+ * can never again read as a clean result.
+ */
+TEST(JpegEncode, ARefusedOptionSetFreesTheRasterItDecoded) {
+  auto base = [](void) {
+    GIMG_Save_Options o = {};
+    o.quality = 80;
+    return o;
+  };
+  std::vector<Refusal> refusals;
+  {
+    GIMG_Save_Options o = base();
+    o.jpeg_hierarchical_levels = 1;
+    o.jpeg_precision = 12;
+    refusals.push_back({"a hierarchical sequence at a precision other than 8", o});
+  }
+  {
+    GIMG_Save_Options o = base();
+    o.jpeg_non_interleaved = 1;
+    o.jpeg_progressive = 1;
+    refusals.push_back({"non-interleaved scans in a progressive frame", o});
+  }
+  {
+    GIMG_Save_Options o = base();
+    o.jpeg_hierarchical_levels = 250;
+    refusals.push_back({"more hierarchical frames than the encoder holds", o});
+  }
+  {
+    GIMG_Save_Options o = base();
+    o.jpeg_precision = 16;
+    refusals.push_back({"16-bit samples in a DCT frame", o});
+  }
+  {
+    GIMG_Save_Options o = base();
+    o.jpeg_cmyk_transform = 1;
+    refusals.push_back({"an Adobe transform that is neither 0 nor 2", o});
+  }
+  {
+    GIMG_Save_Options o = base();
+    o.jpeg_abbreviated = 3;
+    refusals.push_back({"an abbreviated format T.81 B.4 does not define", o});
+  }
+  {
+    GIMG_Save_Options o = base();
+    o.jpeg_abbreviated = 1;
+    o.jpeg_lossless_predictor = 1;
+    refusals.push_back({"abbreviated tables for a lossless frame", o});
+  }
+  {
+    GIMG_Save_Options o = base();
+    o.jpeg_lossless_predictor = 8;
+    refusals.push_back({"a predictor outside T.81 Table H.1", o});
+  }
+  {
+    GIMG_Save_Options o = base();
+    o.jpeg_lossless_predictor = 1;
+    o.jpeg_progressive = 1;
+    refusals.push_back({"a progressive lossless frame, which T.81 has no "
+                        "process for", o});
+  }
+
+  GIMG_Codec * codec = gimg_codec_by_name("jpeg");
+  ASSERT_NE(codec, nullptr);
+
+  for (const Refusal & ref : refusals) {
+    // The swap has to be in place for the LOAD, not just the save.  A JPEG
+    // document keeps the allocator it was loaded with in its codec_private
+    // state, and the decode a save triggers allocates from that rather than
+    // from whatever codec->allocator says at the time - so swapping just
+    // before gimg_doc_save counts nothing at all.  Measured: attempts stayed
+    // at zero for every one of these, and a deliberately removed destroy went
+    // unnoticed.  Held across the load, the save and the destroy, the count
+    // is a closed book: everything taken must come back.
+    gimg_test::Failing f;
+    gimg_test::init(f);
+    const GIMG_Allocator * saved = codec->allocator;
+    codec->allocator = &f.a;
+
+    GIMG_Stream * keep = nullptr;
+    std::vector<uint8_t> bytes;
+    GIMG_Doc * doc = load_undecoded("baseline_16x16_ycbcr.jpg", &keep, bytes);
+    ASSERT_NE(doc, nullptr) << ref.why;
+    ASSERT_EQ(gimg_item_raster(gimg_doc_item(doc, 0)), nullptr)
+        << "the document must arrive undecoded, or this measures nothing";
+
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Report report = {};
+    const GIMG_Result r =
+        gimg_doc_save(doc, out, "jpeg", &ref.options, &report);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(keep);
+    codec->allocator = saved;
+
+    EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED) << "should have refused " << ref.why;
+    EXPECT_GT(f.attempts, 0)
+        << "nothing was allocated through the swapped allocator, so the count "
+           "below would hold however much leaked";
+    EXPECT_EQ(f.outstanding, 0)
+        << f.outstanding << " block(s) kept after refusing " << ref.why;
+  }
 }
