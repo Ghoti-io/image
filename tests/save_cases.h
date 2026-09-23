@@ -284,6 +284,40 @@ inline std::vector<SaveCase> save_cases(void) {
     o.jpeg_hierarchical_levels = 1;
     cases.push_back({"jpeg hierarchical gray", "jpeg", &GIMG_PIXEL_GRAY8, o, 0u, nullptr});
   }
+  // Each option above is set on its own, and the writer's header code is not
+  // organised that way: a lossless or hierarchical frame writes its own DAC,
+  // DRI and Adobe segments through separate code from the baseline frame's.
+  // Setting one option at a time left every one of those arms unwritten, so
+  // both sweeps walked past them.  These are the combinations, not more of
+  // the same.
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_hierarchical_levels = 1;
+    o.jpeg_arithmetic = 1;
+    cases.push_back({"jpeg hierarchical arithmetic rgb", "jpeg",
+        &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_hierarchical_levels = 1;
+    o.jpeg_restart_interval = 2;
+    cases.push_back({"jpeg hierarchical restarts rgb", "jpeg",
+        &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_lossless_predictor = 1;
+    o.jpeg_arithmetic = 1;
+    cases.push_back({"jpeg lossless arithmetic rgb", "jpeg", &GIMG_PIXEL_RGBA8,
+        o, 0u, nullptr});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_lossless_predictor = 1;
+    o.jpeg_restart_interval = 2;
+    cases.push_back({"jpeg lossless restarts rgb", "jpeg", &GIMG_PIXEL_RGBA8, o,
+        0u, nullptr});
+  }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_precision = 12;
