@@ -182,16 +182,30 @@ endif
 # see this variable either.
 #
 # `make asan` DOES use CFLAGS, and ASAN_UBSAN_FLAGS adds no -O of its own, so
-# the sanitizer build takes whichever level is set here.  Measured on compile
-# lines only:
+# the sanitizer build takes whichever level is set here:
 #
-#   make -n test-asan PREFIX=... | grep -- ' -c ' | grep -oE -- '-O[0-3s]'
 #     59 C translation units at -O3   (this variable, via CFLAGS)
-#     35 C++ test units    at -O1   (CXXFLAGS, which does not follow it)
+#     35 C++ test units      at -O1   (CXXFLAGS, which does not follow it)
+#     -- 94, which is the whole compile-line count.
 #
-# Filtering to ` -c ` matters: unfiltered the same command reports 69 -O1
-# rather than 35, because g++ is also the linker driver and carries CXXFLAGS
-# onto 34 link lines, where the -O does nothing without LTO.
+# To re-measure, take the LAST -O on each compile line, because that is the
+# one the compiler obeys; counting occurrences double-counts any file whose
+# own -O is appended after CFLAGS:
+#
+#   make -n -B test-asan PREFIX=... 2>&1 | grep -- ' -c ' \
+#     | awk '{last=""; n=split($0,f," "); \
+#             for(i=1;i<=n;i++) if(f[i]~/^-O[0-3s]$/) last=f[i]; \
+#             print ($1=="cc"?"C":"C++"), (last==""?"(none)":last)}' \
+#     | sort | uniq -c
+#
+# Check the counts sum to `... | grep -c -- ' -c '`.  Over that total means
+# occurrences were counted rather than decisions; zero means the pattern
+# matched nothing and the measurement did not happen, which reads exactly
+# like a clean result.
+#
+# The ` -c ` filter is not cosmetic: without it this reports 69 -O1 rather
+# than 35, because g++ is also the linker driver and carries CXXFLAGS onto 34
+# link lines, where the -O does nothing without LTO.
 #
 # So this library's ASan gate runs at what ships, not at the -O1 that is the
 # usual recommendation for it.  That is recorded rather than changed: whether
