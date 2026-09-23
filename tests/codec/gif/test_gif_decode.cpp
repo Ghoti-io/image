@@ -14,6 +14,7 @@
 
 #include "gif_test_utils.h"
 #include <atomic>
+#include <cstring>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
@@ -691,6 +692,92 @@ TEST(GifCanvasCache, ThreadsSharingOneDocumentAgreeWithAColdDecode) {
   }
   EXPECT_EQ(failures.load(), 0);
   EXPECT_EQ(mismatches.load(), 0);
+}
+
+// GIMG_Limits.max_frame_count, on the GIF loader.
+//
+// Every frame of an animation costs a descriptor and a decode, so a file
+// declaring thousands is a way to spend a caller's memory without spending
+// much of the attacker's.  The loader counts as it goes and refuses on the
+// image block past the limit.  The PNG loader's version of this is tested and
+// the GIF one was not, so neither the check nor the diagnostic had ever run.
+TEST(GifDecode, MoreFramesThanTheLimitAllowsIsRefused) {
+  std::vector<uint8_t> bytes;
+  ASSERT_TRUE(gif_test::load_file("gif_10x6_disposal_cycle.gif", bytes));
+
+  // Control: with no limit it loads, and it has more than one frame - so the
+  // refusal below is the limit and not the file.
+  {
+    Loaded img;
+    ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+    ASSERT_GT(gimg_doc_item_count(img.doc()), 1u)
+        << "the fixture must be an animation";
+  }
+
+  GIMG_Limits limits;
+  gimg_limits_default(&limits);
+  limits.max_frame_count = 1;
+  GIMG_Load_Options options;
+  memset(&options, 0, sizeof(options));
+  options.limits = &limits;
+
+  Loaded img;
+  EXPECT_EQ(img.load_bytes(bytes, &options), GIMG_ERR_LIMIT);
+
+  // And a limit the file fits inside does not refuse it, which is what says
+  // the check is counting rather than simply rejecting any limit at all.
+  GIMG_Limits generous;
+  gimg_limits_default(&generous);
+  generous.max_frame_count = 1000;
+  GIMG_Load_Options ok_options;
+  memset(&ok_options, 0, sizeof(ok_options));
+  ok_options.limits = &generous;
+  Loaded fits;
+  EXPECT_EQ(fits.load_bytes(bytes, &ok_options), GIMG_OK);
+}
+
+// A logical screen smaller than the frames inside it.
+//
+// GIF 89a 18 gives the file a logical screen, and 89a 20 gives each image its
+// own position and size; nothing requires the second to fit inside the first,
+// and writers exist that leave the screen at zero and let the frames define
+// it.  The loader grows the canvas to hold what it read.  That had never run:
+// every fixture declares a screen at least as large as its frames.
+//
+// The file is one of those fixtures with its logical screen shrunk to 1x1 -
+// two bytes each of width and height at offsets 6 and 8 - so what comes back
+// must be the size the frames need, and must draw what the unedited file
+// draws.
+TEST(GifDecode, ACanvasTooSmallForItsFramesIsGrownToHoldThem) {
+  std::vector<uint8_t> bytes;
+  ASSERT_TRUE(gif_test::load_file("gif_16x8_plain.gif", bytes));
+  ASSERT_GT(bytes.size(), 10u);
+
+  Loaded whole;
+  ASSERT_EQ(whole.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(whole.decode(), GIMG_OK);
+  const uint32_t w = whole.width();
+  const uint32_t h = whole.height();
+  ASSERT_EQ(w, 16u);
+  ASSERT_EQ(h, 8u);
+
+  std::vector<uint8_t> shrunk = bytes;
+  shrunk[6] = 1; shrunk[7] = 0;  // Logical Screen Width  = 1
+  shrunk[8] = 1; shrunk[9] = 0;  // Logical Screen Height = 1
+
+  Loaded grown;
+  ASSERT_EQ(grown.load_bytes(shrunk), GIMG_OK)
+      << "a screen smaller than the frames is not a reason to refuse the file";
+  ASSERT_EQ(grown.decode(), GIMG_OK);
+  EXPECT_EQ(grown.width(), w)
+      << "the canvas has to hold the image that was actually read";
+  EXPECT_EQ(grown.height(), h);
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      ASSERT_EQ(grown.at(x, y), whole.at(x, y))
+          << "at (" << x << "," << y << ")";
+    }
+  }
 }
 
 int main(int argc, char ** argv) {
