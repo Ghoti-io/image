@@ -234,8 +234,11 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   }
   memset(state, 0, sizeof(*state));
   state->allocator = alloc;
-  r = gimg_png_parse_ihdr(ihdr_buf, &state->ihdr);
+  const char * ihdr_why = NULL;
+  r = gimg_png_parse_ihdr(ihdr_buf, &state->ihdr, &ihdr_why);
   if (r != GIMG_OK) {
+    png_load_diag(diagnostics, 8u, GIMG_PNG_IHDR, r,
+        ihdr_why ? ihdr_why : "IHDR could not be read");
     gimg_free(alloc, state);
     return r;
   }
@@ -317,14 +320,20 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     if (type == GIMG_PNG_acTL) {
       if (seen_idat) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "acTL must come before the first IDAT (APNG 4.1)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;  // acTL must appear before first IDAT.
       }
       if (actl_seen) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "a second acTL; an APNG declares its animation once (APNG 4.1)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;  // Duplicate acTL.
       }
       if (length != GIMG_PNG_acTL_LEN) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "acTL is eight bytes (APNG 4.1)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
@@ -367,6 +376,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     if (type == GIMG_PNG_fcTL) {
       if (!state->is_apng || length != GIMG_PNG_fcTL_LEN) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "fcTL is twenty-six bytes and appears only in an APNG (APNG 4.2)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
@@ -387,6 +398,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return r;
       }
       if (fctl.sequence_number != next_sequence) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "fcTL sequence number out of order (APNG 4.2)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;  // Out-of-order sequence.
       }
@@ -407,6 +420,9 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
               (uint64_t)state->ihdr.width ||
           (uint64_t)fctl.y_offset + (uint64_t)fctl.height >
               (uint64_t)state->ihdr.height) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "the frame rectangle has no area or lies outside the canvas (APNG"
+            "4.2)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
@@ -415,12 +431,17 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         if (fctl.width != state->ihdr.width ||
             fctl.height != state->ihdr.height || fctl.x_offset != 0 ||
             fctl.y_offset != 0) {
+          png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+              "an fcTL before the first IDAT describes the default image, so it"
+              "must cover the whole canvas (APNG 4.2)");
           gimg_png_free_doc_state(codec, state);
           return GIMG_ERR_FORMAT;
         }
         fcTL_before_first_idat = 1;
       }
       if (num_fcTL_seen >= state->frame_count) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "more fcTL chunks than the acTL declared frames (APNG 4.1)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;  // More fcTL than acTL num_frames.
       }
@@ -431,14 +452,21 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     if (type == GIMG_PNG_fdAT) {
       if (!state->is_apng) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "fdAT appears only in an APNG (APNG 4.3)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;  // fdAT only in APNG.
       }
       if (num_fcTL_seen == 0) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "fdAT before any fcTL (APNG 4.3)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;  // fdAT must follow an fcTL.
       }
       if (length < GIMG_PNG_fdAT_SEQ_LEN) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "fdAT is shorter than the four-byte sequence number it must carry"
+            "(APNG 4.3)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
@@ -461,6 +489,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
           (uint32_t)fdat_buf[2] << 8 | (uint32_t)fdat_buf[3];
       if (seq != next_sequence) {
         gimg_free(alloc, fdat_buf);
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "fdAT sequence number out of order (APNG 4.3)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
@@ -482,6 +512,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       // truecolor ignores it; rejecting the file is not one of the choices the
       // spec offers.
       if (state->ihdr.color_type == 0 || state->ihdr.color_type == 4) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "PLTE shall not appear for a grayscale image (PNG 11.2.3)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT; // PLTE shall not appear for 0 or 4.
       }
@@ -489,11 +521,16 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         state->plte_is_suggested = 1;
       }
       if (seen_idat || have_plte) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "PLTE must appear once, before the first IDAT (PNG 5.6)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT; // PLTE before IDAT, single PLTE.
       }
       if (length % 3 != 0 || length == 0 ||
           length > (uint32_t)(GIMG_PNG_PLTE_MAX_ENTRIES * 3u)) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "PLTE length must be a non-zero multiple of three, at most 256"
+            "entries (PNG 11.2.3)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
@@ -518,10 +555,14 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     if (type == GIMG_PNG_tRNS) {
       if (seen_idat || have_trns) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "tRNS must appear once, before the first IDAT (PNG 5.6)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT; // tRNS before IDAT, single tRNS.
       }
       if (state->ihdr.color_type == 3 && !have_plte) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "tRNS for a palette image must follow its PLTE (PNG 11.3.2.1)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT; // For palette, PLTE before tRNS.
       }
@@ -533,12 +574,16 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       switch (state->ihdr.color_type) {
       case 0:
         if (length != 2u) {
+          png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+              "tRNS for a grayscale image is one 16-bit sample (PNG 11.3.2.1)");
           gimg_png_free_doc_state(codec, state);
           return GIMG_ERR_FORMAT; // one gray level
         }
         break;
       case 2:
         if (length != 6u) {
+          png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+              "tRNS for a truecolour image is three 16-bit samples (PNG 11.3.2.1)");
           gimg_png_free_doc_state(codec, state);
           return GIMG_ERR_FORMAT; // three 16-bit samples
         }
@@ -546,6 +591,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       case 3:
         // "shall not contain more values than there are palette entries"
         if (length == 0 || length > state->plte_size / 3u) {
+          png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+              "tRNS shall not name more entries than the palette has (PNG 11.3.2.1)");
           gimg_png_free_doc_state(codec, state);
           return GIMG_ERR_FORMAT;
         }
@@ -554,6 +601,9 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         // Color types 4 and 6 already have alpha; 11.3.2.1 says tRNS "shall
         // not appear" for them, and a decoder that kept it would have two
         // sources of transparency and no rule for which wins.
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "tRNS shall not appear for a colour type that already carries alpha"
+            "(PNG 11.3.2.1)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
@@ -578,6 +628,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     if (type == GIMG_PNG_IDAT) {
       if (state->ihdr.color_type == 3 && !have_plte) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "a palette image needs its PLTE before the first IDAT (PNG 11.2.3)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT; // Palette requires PLTE before IDAT.
       }
@@ -627,6 +679,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
     // Other critical chunk: invalid.
     if (gimg_png_chunk_is_critical(type)) {
+      png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+          "unknown critical chunk; a decoder may not skip one (PNG 5.4)");
       gimg_png_free_doc_state(codec, state);
       return GIMG_ERR_FORMAT;
     }
@@ -663,6 +717,8 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         break;
       }
       if (want != 0 && (size_t)length != want) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "chunk length is not the length this chunk type is defined to have");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
@@ -715,11 +771,17 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // APNG: validate we saw the right number of fcTL and each frame has data.
   if (state->is_apng) {
     if (num_fcTL_seen != state->frame_count) {
+      png_load_diag(diagnostics, gimg_stream_tell(stream), GIMG_PNG_acTL,
+          GIMG_ERR_FORMAT,
+          "fewer fcTL chunks than the acTL declared frames (APNG 4.1)");
       gimg_png_free_doc_state(codec, state);
       return GIMG_ERR_FORMAT;
     }
     for (size_t i = 0; i < state->frame_count; i++) {
       if (!state->frames[i].data || state->frames[i].data_size == 0) {
+        png_load_diag(diagnostics, gimg_stream_tell(stream), GIMG_PNG_fcTL,
+            GIMG_ERR_FORMAT,
+            "an APNG frame carries no data (APNG 4.3)");
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }

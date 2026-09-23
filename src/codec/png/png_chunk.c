@@ -216,7 +216,10 @@ GIMG_Result gimg_png_write_chunk(GIMG_Stream * stream,
 }
 
 GIMG_Result gimg_png_parse_ihdr(const unsigned char * payload,
-    gimg_png_ihdr_t * ihdr) {
+    gimg_png_ihdr_t * ihdr, const char ** out_why) {
+  if (out_why) {
+    *out_why = NULL;
+  }
   if (!payload || !ihdr) {
     return GIMG_ERR_INTERNAL;
   }
@@ -233,39 +236,66 @@ GIMG_Result gimg_png_parse_ihdr(const unsigned char * payload,
   uint8_t interlace = payload[12];
 
   if (width == 0 || height == 0) {
+    if (out_why) {
+      *out_why = "IHDR gives the image no area (PNG 11.2.2)";
+    }
     return GIMG_ERR_FORMAT;
   }
   if (compression != 0 || filter != 0) {
+    if (out_why) {
+      *out_why = "PNG defines one compression method and one filter method, both 0 (PNG 11.2.2)";
+    }
     return GIMG_ERR_FORMAT;
   }
   if (interlace > 1) {
+    if (out_why) {
+      *out_why = "interlace method must be 0 (none) or 1 (Adam7) (PNG 11.2.2)";
+    }
     return GIMG_ERR_FORMAT;
   }
   switch (color_type) {
   case 0: // Grayscale
     if (bit_depth != 1 && bit_depth != 2 && bit_depth != 4 &&
         bit_depth != 8 && bit_depth != 16) {
+      if (out_why) {
+        *out_why = "a grayscale image is 1, 2, 4, 8 or 16 bits deep "
+                   "(PNG Table 11.1)";
+      }
       return GIMG_ERR_FORMAT;
     }
     break;
   case 2: // RGB
     if (bit_depth != 8 && bit_depth != 16) {
+      if (out_why) {
+        *out_why = "a truecolour image is 8 or 16 bits deep (PNG Table 11.1)";
+      }
       return GIMG_ERR_FORMAT;
     }
     break;
   case 3: // Palette
     if (bit_depth != 1 && bit_depth != 2 && bit_depth != 4 &&
         bit_depth != 8) {
+      if (out_why) {
+        *out_why = "a palette image is 1, 2, 4 or 8 bits deep "
+                   "(PNG Table 11.1)";
+      }
       return GIMG_ERR_FORMAT;
     }
     break;
   case 4: // Grayscale + alpha
   case 6: // RGBA
     if (bit_depth != 8 && bit_depth != 16) {
+      if (out_why) {
+        *out_why = "a colour type carrying alpha is 8 or 16 bits deep "
+                   "(PNG Table 11.1)";
+      }
       return GIMG_ERR_FORMAT;
     }
     break;
   default:
+    if (out_why) {
+      *out_why = "colour type must be 0, 2, 3, 4 or 6 (PNG Table 11.1)";
+    }
     return GIMG_ERR_FORMAT;
   }
 

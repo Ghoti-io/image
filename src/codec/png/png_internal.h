@@ -358,8 +358,8 @@ bool gimg_png_adam7_raw_size(uint32_t width, uint32_t height,
 /**
  * @brief Validate IHDR and parse into ihdr. Returns GIMG_ERR_FORMAT if invalid.
  */
-GIMG_Result gimg_png_parse_ihdr(
-    const unsigned char * payload, gimg_png_ihdr_t * ihdr);
+GIMG_Result gimg_png_parse_ihdr(const unsigned char * payload,
+    gimg_png_ihdr_t * ihdr, const char ** out_why);
 
 /**
  * @brief Append one ancillary chunk (type + payload copy) to doc state.
