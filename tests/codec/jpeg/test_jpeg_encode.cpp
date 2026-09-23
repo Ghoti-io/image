@@ -1493,6 +1493,128 @@ TEST(JpegEncode, FourComponentHierarchicalSequences) {
 // wide sequence against - libjpeg has no hierarchical mode and the reference
 // codec does not take one this wide.  A round trip through this library alone
 // cannot tell a private misreading from a correct one.
+// The writer and the reader must agree on which component counts exist.  They
+// did not: gimg_jpeg_encode_hierarchical offers every count up to
+// GIMG_JPEG_MAX_SCAN_COMPONENTS, but hier_emit_raster admitted one, three and
+// four and refused everything else, so a two-component raster - which has no
+// color model and is written as plain Nf=2, legal under B.2.2 with nothing in
+// Annex J to forbid it - was saved successfully and then refused by this same
+// library at decode.
+//
+// The assertion is deliberately not "two components work".  It is that every
+// count the writer accepts, the reader reads back, which is the property that
+// was broken and which stays meaningful if either end's limit moves.  Counts
+// the writer refuses are skipped rather than demanded: what they are is
+// HierarchicalRefusesASequenceWiderThanAScan's question, not this one.
+TEST(JpegEncode, EveryHierarchicalWidthTheWriterAcceptsIsReadBack) {
+  const uint32_t w = 16, h = 9;
+  int wrote = 0, exact = 0;
+  for (int nc = 1; nc <= 6; nc++) {
+    for (int levels : {1, 2}) {
+      for (int lossless : {0, 1}) {
+        SCOPED_TRACE("components " + std::to_string(nc) + ", levels " +
+            std::to_string(levels) +
+            (lossless ? ", lossless" : ", DCT"));
+        GIMG_Pixel_Format fmt;
+        ASSERT_EQ(gimg_pixel_format_multichannel((uint8_t)nc, 8, &fmt), GIMG_OK);
+        GIMG_Doc * doc = nullptr;
+        ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+        GIMG_Raster * raster = nullptr;
+        ASSERT_EQ(gimg_raster_create(
+                      w, h, &fmt, GIMG_RASTER_OWNED, NULL, 0, &raster),
+            GIMG_OK);
+        const size_t bpp = gimg_raster_bytes_per_pixel(&fmt);
+        const size_t stride = gimg_raster_stride_bytes(raster);
+        auto * px = (unsigned char *)gimg_raster_pixels(raster);
+        // A separate gradient per component, so a component recovered from
+        // another one's plane is a different number and not a coincidence.
+        std::vector<int> want((size_t)w * h * (size_t)nc);
+        for (uint32_t y = 0; y < h; y++) {
+          for (uint32_t x = 0; x < w; x++) {
+            for (int c = 0; c < nc; c++) {
+              const int v = (int)((x * 23u + y * 47u + (unsigned)c * 91u) & 0xFFu);
+              want[((size_t)y * w + x) * (size_t)nc + (size_t)c] = v;
+              px[y * stride + x * bpp + (size_t)c] = (unsigned char)v;
+            }
+          }
+        }
+        gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+        GIMG_Stream * os = nullptr;
+        ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+        GIMG_Save_Options so = {};
+        so.metadata_policy = GIMG_META_DROP_ALL;
+        so.quality = 95;
+        so.jpeg_precision = 8;
+        so.jpeg_hierarchical_levels = (uint8_t)levels;
+        so.jpeg_lossless_predictor = (uint8_t)(lossless ? 1 : 0);
+        GIMG_Save_Report rep = {};
+        const GIMG_Result sr = gimg_doc_save(doc, os, "jpeg", &so, &rep);
+        const void * buf = nullptr;
+        size_t bn = 0;
+        gimg_stream_output_buffer(os, &buf, &bn);
+        const std::vector<uint8_t> file(
+            (const uint8_t *)buf, (const uint8_t *)buf + bn);
+        gimg_doc_destroy(doc);
+        gimg_stream_destroy(os);
+        if (sr != GIMG_OK) {
+          // Wider than a scan: refused on purpose, and not this test's subject.
+          ASSERT_EQ(sr, GIMG_ERR_UNSUPPORTED);
+          ASSERT_GT(nc, (int)GIMG_JPEG_MAX_SCAN_COMPONENTS)
+              << "the writer refused a width it is supposed to offer";
+          continue;
+        }
+        wrote++;
+
+        DocStreamGuard in;
+        ASSERT_EQ(gimg_stream_create_memory(file.data(), file.size(), &in.s),
+            GIMG_OK);
+        ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK)
+            << "the library would not load a file it had just written";
+        RasterGuard got;
+        ASSERT_EQ(gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r),
+            GIMG_OK)
+            << "the library would not decode a file it had just written";
+        ASSERT_NE(got.r, nullptr);
+        EXPECT_EQ(gimg_raster_width(got.r), w);
+        EXPECT_EQ(gimg_raster_height(got.r), h);
+
+        // Three components come back as RGBA and four as CMYK; the rest carry
+        // no convention and keep their count.  Either way the first nc
+        // channels are the ones that went in.
+        const GIMG_Pixel_Format * gf = gimg_raster_format(got.r);
+        ASSERT_GE((int)gf->channel_count, nc);
+        const auto * gp = (const unsigned char *)gimg_raster_pixels_const(got.r);
+        const size_t gs = gimg_raster_stride_bytes(got.r);
+        const size_t gbpp = gimg_raster_bytes_per_pixel(gf);
+        int worst = 0;
+        for (uint32_t y = 0; y < h; y++) {
+          for (uint32_t x = 0; x < w; x++) {
+            for (int c = 0; c < nc; c++) {
+              const int v = (int)gp[y * gs + x * gbpp + (size_t)c];
+              const int e =
+                  v - want[((size_t)y * w + x) * (size_t)nc + (size_t)c];
+              worst = std::max(worst, e < 0 ? -e : e);
+            }
+          }
+        }
+        if (lossless) {
+          // Annex H reconstructs exactly, and a hierarchical sequence of
+          // lossless frames sums differentials that are themselves exact.
+          EXPECT_EQ(worst, 0) << "a lossless sequence lost a sample";
+          exact++;
+        }
+        else {
+          EXPECT_LE(worst, 24) << "worst channel difference " << worst;
+        }
+      }
+    }
+  }
+  // 4 widths x 2 depths x 2 processes written; 5 and 6 refused at the writer.
+  EXPECT_EQ(wrote, 16);
+  EXPECT_EQ(exact, 8);
+}
+
 TEST(JpegEncode, HierarchicalRefusesASequenceWiderThanAScan) {
   for (int n : {5, 8}) {
     SCOPED_TRACE("channels " + std::to_string(n));

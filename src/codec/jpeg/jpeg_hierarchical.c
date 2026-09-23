@@ -935,11 +935,21 @@ static GIMG_Result hier_emit_raster(const gimg_jpeg_doc_state_t * state,
   // wide sequence nor a lossless four-component one is anything but ordinary.
   // Both used to be refused here, the second of them because the single-frame
   // lossless path refused it too.
-  // One, three and four are the counts a hierarchical sequence is written and
-  // checked at here; the assembly below handles any of them and the raster can
-  // hold more, but nothing available produces a wider sequence to test the
-  // reading of, so a wider one is refused rather than guessed at.
-  if (num_comp != 1u && num_comp != 3u && num_comp != 4u) {
+  //
+  // This used to admit one, three and four only, on the stated grounds that
+  // those were "the counts a hierarchical sequence is written and checked at
+  // here".  That was wrong about the writer: a two-component raster has no
+  // color model, so it is written as Nf=2 - B.2.2 allows it and Annex J adds
+  // no restriction - and the sequence came back out of this function refused.
+  // The library was writing a file it would not read.
+  //
+  // The bound that is real is the writer's: gimg_jpeg_encode_hierarchical
+  // refuses more than GIMG_JPEG_MAX_SCAN_COMPONENTS because B.2.3 caps Ns at
+  // 4, which forces a wide frame down a split-scan path with no second
+  // implementation to check it against.  Tracking that same constant keeps the
+  // two ends in step: everything this library writes, it reads back.  Zero is
+  // not a count and stays refused.
+  if (num_comp == 0u || num_comp > (uint8_t)GIMG_JPEG_MAX_SCAN_COMPONENTS) {
     return GIMG_ERR_UNSUPPORTED;
   }
   (void)lossless_sequence;
