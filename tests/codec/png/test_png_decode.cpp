@@ -527,6 +527,58 @@ TEST(PngDecode, ApngInvalidSignatureRejected) {
   gimg_stream_destroy(s);
 }
 
+/**
+ * A sixteen-bit grayscale APNG composites at two bytes per pixel.
+ *
+ * The compositor picks its copy by the canvas's bytes per pixel: one for
+ * grayscale, two for grayscale at sixteen bits, four for RGBA8, eight for
+ * RGBA16. Every animated fixture in the tree was 8-bit grayscale or 16-bit
+ * RGBA, so the two-byte arm had no input at all and its width arithmetic -
+ * `fw * bpp` bytes per row - had never been exercised against a bpp it could
+ * get wrong.
+ *
+ * Two pixels wide for exactly that reason: at one pixel a row copy that
+ * confused pixels with bytes would still land on the right answer.
+ *
+ * Frame 1 covers the whole canvas with BLEND_OP_OVER. Grayscale carries no
+ * alpha, so OVER replaces, and reading frame 1 back as frame 1's own values
+ * rather than frame 0's is what says the copy ran.
+ */
+TEST(PngDecode, ASixteenBitGrayscaleApngCompositesAtTwoBytesPerPixel) {
+  std::vector<uint8_t> buf;
+  ASSERT_TRUE(png_test::load_png_file("png_apng_2frame_gray16.png", buf));
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf.data(), buf.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(s);
+  ASSERT_NE(doc, nullptr);
+  ASSERT_EQ(gimg_doc_item_count(doc), 2u);
+
+  const uint16_t expected[2][2] = {{0x1234, 0x5678}, {0x9ABC, 0xDEF0}};
+  for (size_t i = 0; i < 2; i++) {
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, i), nullptr, &raster),
+        GIMG_OK)
+        << "frame " << i;
+    ASSERT_NE(raster, nullptr);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    EXPECT_EQ(fmt->channel_count, 1) << "frame " << i << " is grayscale";
+    EXPECT_EQ(fmt->bits_per_channel[0], 16) << "frame " << i << " is 16-bit";
+    EXPECT_EQ(gimg_raster_width(raster), 2u);
+    const uint16_t * px =
+        (const uint16_t *)gimg_raster_pixels_const(raster);
+    EXPECT_EQ(px[0], expected[i][0]) << "frame " << i << " pixel 0";
+    EXPECT_EQ(px[1], expected[i][1])
+        << "frame " << i
+        << " pixel 1 - a row copy measured in pixels rather than bytes leaves "
+           "this one untouched";
+    gimg_raster_destroy(raster);
+  }
+  gimg_doc_destroy(doc);
+}
+
 TEST(PngDecode, ApngMaxFrameCountLimitEnforced) {
   std::vector<uint8_t> buf;
   ASSERT_TRUE(png_test::load_png_file("png_apng_2frame.png", buf));

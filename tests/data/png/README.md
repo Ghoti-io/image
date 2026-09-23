@@ -25,6 +25,7 @@ Generated files:
 | `png_phys_aspect_4_3.png` | `pHYs` with unit specifier 0: a 4:3 pixel aspect ratio and no physical size, which is the case a DPI cannot represent and which the loader used to drop |
 | `png_apng_3plays.png` | The 2-frame APNG with `acTL` num_plays=3 instead of 0: the only fixture here whose play count differs from what a zeroed structure holds, so it is the one that can tell a count that was read from one that was never set |
 | `png_apng_3frame.png` | 3-frame APNG: gray 0, 0x80, 0xC0; frame 0 delay 50/100 dispose NONE blend SOURCE; frame 1 delay 25/100 dispose BACKGROUND blend OVER; frame 2 delay 10/100 dispose PREVIOUS blend OVER |
+| `png_apng_2frame_gray16.png` | 2-frame APNG, 2x1 grayscale 16-bit: frame 0 = 0x1234 0x5678, frame 1 = 0x9ABC 0xDEF0, dispose NONE, blend OVER. The only animated fixture whose canvas is GRAY16, so the only one that reaches the compositor's two-bytes-per-pixel copy; two pixels wide so a row copy that confuses pixels with bytes is visible |
 | `png_apng_2frame_16bit_rgba.png` | 2-frame APNG 16-bit RGBA: frame 0 black opaque, frame 1 red 50% alpha with blend OVER (dispose NONE). Used to test 16-bit alpha compositing. |
 | `png_apng_2frame_16bit_rgba_expected.bin` | Expected pixels (16 bytes) for the above; produced by `generate.py` from Pillow (8-bit scaled to 16-bit). Decode test allows ±257 per component for 8- vs 16-bit rounding. |
 

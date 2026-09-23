@@ -333,18 +333,11 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
   if (fh > canvas_h - fy) {
     fh = canvas_h - fy;
   }
-  if (bpp == 1) {
-    // Grayscale: no alpha; treat Over as replace.
-    for (uint32_t y = 0; y < fh; y++) {
-      unsigned char * dst =
-          canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * bpp;
-      const unsigned char * src = frame_pixels + (size_t)y * frame_stride;
-      memcpy(dst, src, (size_t)fw * bpp);
-    }
-    return;
-  }
-  if (bpp == 2) {
-    // Gray16: no alpha; replace.
+  if (bpp == 1 || bpp == 2) {
+    // Grayscale at 8 or 16 bits.  Neither carries alpha, so BLEND_OP_OVER has
+    // nothing to blend and both replace; the two were written out separately
+    // and were identical line for line, which only gave them somewhere to
+    // drift apart.  The `bpp` multiplier is what distinguishes them.
     for (uint32_t y = 0; y < fh; y++) {
       unsigned char * dst =
           canvas + (size_t)(fy + y) * canvas_stride + (size_t)fx * bpp;

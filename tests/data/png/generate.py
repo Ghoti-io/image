@@ -283,6 +283,31 @@ def main() -> None:
     )
     write_png("png_apng_2frame.png", apng_2frame)
 
+    # ---- 2-frame APNG, 2x1 grayscale 16-bit ----
+    # The only animated fixture whose canvas is GRAY16.  Every other grayscale
+    # APNG here is 8-bit and every 16-bit one is RGBA, so the compositor's
+    # two-bytes-per-pixel path had no input at all: a 16-bit grayscale frame
+    # reaches a different arm from both of them.  Two pixels wide rather than
+    # one so that a row copy has a width to get wrong.
+    ihdr_2x1_gray16 = struct.pack(">IIBBBBB", 2, 1, 16, 0, 0, 0, 0)
+    raw_g16_f0 = bytes([0x00, 0x12, 0x34, 0x56, 0x78])
+    raw_g16_f1 = bytes([0x00, 0x9A, 0xBC, 0xDE, 0xF0])
+    fctl_g16_0 = struct.pack(">IIIIIHHBB", 0, 2, 1, 0, 0, 50, 100, 0, 0)
+    # dispose NONE, blend OVER: grayscale carries no alpha, so OVER replaces,
+    # and frame 1 covering the whole canvas is what makes that observable.
+    fctl_g16_1 = struct.pack(">IIIIIHHBB", 1, 2, 1, 0, 0, 25, 100, 0, 1)
+    apng_gray16 = (
+        signature
+        + png_chunk(b"IHDR", ihdr_2x1_gray16)
+        + png_chunk(b"acTL", struct.pack(">II", 2, 0))
+        + png_chunk(b"fcTL", fctl_g16_0)
+        + png_chunk(b"IDAT", idat_zlib(raw_g16_f0))
+        + png_chunk(b"fcTL", fctl_g16_1)
+        + png_chunk(b"fdAT", struct.pack(">I", 2) + idat_zlib(raw_g16_f1))
+        + iend
+    )
+    write_png("png_apng_2frame_gray16.png", apng_gray16)
+
     # ---- The same 2-frame APNG, but asking to be played a finite 3 times ----
     # Every other APNG fixture here carries num_plays=0, which is also what a
     # zeroed structure holds, so none of them can tell "the count was read" from
