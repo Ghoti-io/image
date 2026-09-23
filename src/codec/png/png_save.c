@@ -759,6 +759,11 @@ static size_t gimg_png_lut_slot(uint32_t key) {
   return (size_t)((key * UINT32_C(2654435761)) >> 23) & (GIMG_PNG_LUT_SLOTS - 1u);
 }
 
+// Neither probe loop below can run to completion, and it is the two constants
+// that say so: a put refuses at GIMG_PNG_PLTE_MAX_ENTRIES (256), so at most
+// half of the GIMG_PNG_LUT_SLOTS (512) are ever occupied and every probe
+// sequence meets a free slot within 256 steps.  The returns after the loops
+// are what a linear-probing table owes its own shape; no input reaches them.
 static bool gimg_png_lut_get(
     const gimg_png_color_lut_t * lut, uint32_t key, uint8_t * out_value) {
   size_t i = gimg_png_lut_slot(key);
@@ -775,7 +780,18 @@ static bool gimg_png_lut_get(
   return false;
 }
 
-/** Insert, or leave an existing entry alone. False when the table is full. */
+/**
+ * Insert, or leave an existing entry alone. False when the table is full.
+ *
+ * Two of the arms here are unreachable rather than untested. The count check
+ * is shadowed by both callers: gimg_png_build_palette() tests `n >= 256` and
+ * returns before calling, and gimg_png_build_index_lut() clamps its loop to
+ * 256 entries. And the early return for a key already present cannot be
+ * reached by the first caller, which does a get() first, nor observed through
+ * the second: it happens for a PLTE with a duplicate colour, where the
+ * existing index and the one not inserted name the same RGBA, so the image
+ * written is identical either way.
+ */
 static bool gimg_png_lut_put(
     gimg_png_color_lut_t * lut, uint32_t key, uint8_t value) {
   size_t i = gimg_png_lut_slot(key);

@@ -152,6 +152,70 @@ struct Counts {
 
 } // namespace
 
+/**
+ * A refusal frees the raster the save path decoded for itself.
+ *
+ * gimg_doc_save() takes the item's attached raster when there is one and
+ * decodes its own when there is not, and only in the second case does it own
+ * what it is holding. Every refusal after that point has to free it. CMYK is
+ * the case that gets there: PNG has no colour type for four inks, and unlike
+ * a twelve-bit JPEG - which decodes to a sixteen-bit raster the writer can
+ * spell - a CMYK JPEG decodes to a CMYK raster it cannot.
+ *
+ * The sweep below never reaches this. It calls gimg_item_ensure_decoded()
+ * first, which attaches the raster, so the save path is always the borrowing
+ * one. The two cases here are that difference and nothing else, and they must
+ * agree: whether the caller decoded first cannot change the answer, only who
+ * owns the buffer.
+ *
+ * Neither assertion below is what catches a leak, and it is worth being clear
+ * about that. Dropping the free in png_save.c leaves both of them passing and
+ * makes the ASan build report 2600 bytes in 2 allocations at exit, failing
+ * `make test-asan` on the process status rather than on a check here. What
+ * this test contributes is the only input that walks the owning path at all;
+ * LeakSanitizer does the rest.
+ */
+TEST(ConversionMatrix, RefusingACmykFrameFreesTheRasterItDecoded) {
+  const std::string path =
+      std::string(GIMG_TEST_DATA_JPEG) + "/cmyk_ljt_sub.jpg";
+  std::ifstream f(path, std::ios::binary);
+  ASSERT_TRUE(f.good()) << "missing fixture: " << path;
+  const std::vector<uint8_t> bytes(
+      (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  ASSERT_FALSE(bytes.empty());
+
+  auto save_png = [&](bool decode_first) {
+    GIMG_Stream * in = nullptr;
+    EXPECT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &in),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    GIMG_Result r = gimg_doc_load(in, nullptr, nullptr, &doc);
+    EXPECT_EQ(r, GIMG_OK);
+    if (r != GIMG_OK) {
+      gimg_stream_destroy(in);
+      return r;
+    }
+    if (decode_first) {
+      gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr);
+    }
+    GIMG_Stream * sink = nullptr;
+    EXPECT_EQ(gimg_stream_create_memory_output(&sink), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    GIMG_Save_Report report = {};
+    r = gimg_doc_save(doc, sink, "png", &opts, &report);
+    gimg_stream_destroy(sink);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in);
+    return r;
+  };
+
+  EXPECT_EQ(save_png(true), GIMG_ERR_UNSUPPORTED)
+      << "control: with the raster already attached, PNG still has no CMYK";
+  EXPECT_EQ(save_png(false), GIMG_ERR_UNSUPPORTED)
+      << "the save path decoded this one itself, and must free it on the way "
+         "out";
+}
+
 TEST(ConversionMatrix, EveryFixtureSurvivesEveryFormatThatCanHoldIt) {
   const std::string root = std::string(GIMG_TEST_DATA_JPEG) + "/..";
   const std::string dirs[] = {

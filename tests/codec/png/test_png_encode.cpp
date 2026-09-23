@@ -68,6 +68,70 @@ TEST(PngEncode, SaveNullFormatReturnsInternal) {
   gimg_stream_destroy(out_s);
 }
 
+namespace {
+
+/** Save a raster of @p fmt as PNG and return what the writer said. */
+GIMG_Result save_raster_as_png(const GIMG_Pixel_Format * fmt) {
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_create(&doc) != GIMG_OK) { return GIMG_ERR_INTERNAL; }
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(4, 3, fmt, GIMG_RASTER_OWNED, nullptr, 0, &raster) !=
+      GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return GIMG_ERR_INTERNAL;
+  }
+  memset(gimg_raster_pixels(raster), 0,
+      gimg_raster_stride_bytes(raster) * 3u);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  GIMG_Stream * sink = nullptr;
+  if (gimg_stream_create_memory_output(&sink) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return GIMG_ERR_INTERNAL;
+  }
+  GIMG_Save_Options opts = {};
+  GIMG_Save_Report report = {};
+  GIMG_Result r = gimg_doc_save(doc, sink, "png", &opts, &report);
+  gimg_stream_destroy(sink);
+  gimg_doc_destroy(doc);
+  return r;
+}
+
+} // namespace
+
+/**
+ * A twelve-bit raster is refused rather than written at some other depth.
+ *
+ * PNG 11.2.2 has five depths and twelve is not one of them, so a GRAY12 or
+ * RGBA12 raster has nothing to be written as. The writer picks the output
+ * depth from the raster's own, and the arms that say "this one has no
+ * spelling" are these.
+ *
+ * No fixture reaches them, and the reason is worth recording: a twelve-bit
+ * JPEG decodes to a sixteen-bit raster, not a twelve-bit one, so the
+ * conversion sweep converts every twelve-bit file in the tree without ever
+ * handing the PNG writer a twelve-bit raster. Only a caller building one
+ * directly can.
+ *
+ * The controls are the eight- and sixteen-bit forms of the same two models,
+ * which must be written: without them this would pass equally well if the
+ * writer refused every raster it was given.
+ */
+TEST(PngEncode, ATwelveBitRasterHasNoPngDepthAndIsRefused) {
+  EXPECT_EQ(save_raster_as_png(&GIMG_PIXEL_GRAY8), GIMG_OK)
+      << "control: eight-bit gray is writable";
+  EXPECT_EQ(save_raster_as_png(&GIMG_PIXEL_GRAY16), GIMG_OK)
+      << "control: sixteen-bit gray is writable";
+  EXPECT_EQ(save_raster_as_png(&GIMG_PIXEL_RGBA8), GIMG_OK)
+      << "control: eight-bit RGBA is writable";
+  EXPECT_EQ(save_raster_as_png(&GIMG_PIXEL_RGBA16), GIMG_OK)
+      << "control: sixteen-bit RGBA is writable";
+
+  EXPECT_EQ(save_raster_as_png(&GIMG_PIXEL_GRAY12), GIMG_ERR_UNSUPPORTED)
+      << "PNG 11.2.2 has no twelve-bit grayscale";
+  EXPECT_EQ(save_raster_as_png(&GIMG_PIXEL_RGBA12), GIMG_ERR_UNSUPPORTED)
+      << "PNG 11.2.2 has no twelve-bit truecolor";
+}
+
 TEST(PngEncode, SaveUnsupportedFormatReturnsUnsupported) {
   GIMG_Doc * doc = nullptr;
   GIMG_Stream * out_s = nullptr;
