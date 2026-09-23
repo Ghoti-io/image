@@ -127,13 +127,15 @@ static GIMG_Result henc_downsample(
     const int32_t * src = in->s + (size_t)y * in->w;
     int32_t * dst = mid.s + (size_t)y * nw;
     for (uint32_t x = 0; x < nw; x++) {
+      // The three taps are clamped to the edges, but only two of them can
+      // reach one.  x runs below nw = (w + 1) / 2, so the centre tap 2x is at
+      // most w - 1 for every width: a clamp stood here and could not fire.
+      // Its neighbours can and do - the left tap at x = 0 and the right tap
+      // at the last column - which is why the pair is kept and this is not.
       int64_t c = (int64_t)(2u * x);
       int64_t l = c - 1, rr = c + 1;
       if (l < 0) {
         l = 0;
-      }
-      if (c > (int64_t)in->w - 1) {
-        c = (int64_t)in->w - 1;
       }
       if (rr > (int64_t)in->w - 1) {
         rr = (int64_t)in->w - 1;
@@ -142,13 +144,12 @@ static GIMG_Result henc_downsample(
     }
   }
   for (uint32_t y = 0; y < nh; y++) {
+    // Same three taps down the column, and the same one of them unreachable:
+    // y runs below nh = (h + 1) / 2, so the centre tap 2y is at most h - 1.
     int64_t c = (int64_t)(2u * y);
     int64_t t = c - 1, b = c + 1;
     if (t < 0) {
       t = 0;
-    }
-    if (c > (int64_t)mid.h - 1) {
-      c = (int64_t)mid.h - 1;
     }
     if (b > (int64_t)mid.h - 1) {
       b = (int64_t)mid.h - 1;
@@ -318,6 +319,17 @@ static void henc_set_whole_block_scan(
  * @param differential  Selects the differential entropy coder, whose DC
  *   coefficient is coded directly (J.1.3.1) and whose AC categories reach past
  *   Annex K's tables - which is why a differential scan generates its own.
+ */
+/*
+ * Nothing calls this today.  gimg_jpeg_encode_hierarchical() refuses a frame
+ * of more than GIMG_JPEG_MAX_SCAN_COMPONENTS components before it gets here,
+ * deliberately and for the reason given at that check: there is no second
+ * implementation to check a wide hierarchical sequence against.  This
+ * function, and every `num_components > GIMG_JPEG_MAX_SCAN_COMPONENTS` branch
+ * below it, is the code that would run if that gate were ever opened - about
+ * thirty-five lines of it, which is most of what coverage reports as untested
+ * in this file.  It is untested because it is unreachable, not the other way
+ * round.
  */
 static GIMG_Result henc_split_scans(const GIMG_Allocator * alloc,
     uint32_t width, uint32_t height, int num_components, const int16_t * coef,
