@@ -55,6 +55,12 @@ ENV_VARS :=
 # asked for first, so dependency lookup can still honour it further down.
 PKG_CONFIG_PATH_ENV := $(PKG_CONFIG_PATH)
 
+# `override` on each of those: BUILD may arrive on the command line, and a
+# command-line variable beats a plain makefile assignment, so without it
+# `make BUILD=debug` skips the rewrite and builds into ./build/debug --
+# outside the platform tree, and a different tree from the one plain `make`
+# uses. The platform segment exists to keep linux/mac/win builds apart.
+
 # Detect OS
 UNAME_S := $(shell uname -s)
 
@@ -71,7 +77,7 @@ ifeq ($(UNAME_S), Linux)
 	LIB_INSTALL_PATH := /usr/local/lib
 	PC_INCLUDE_DIR := $(INCLUDE_INSTALL_PATH)/$(SUITE)/$(PROJECT)$(BRANCH)
 	PC_LIB_DIR := $(LIB_INSTALL_PATH)/$(SUITE)
-	BUILD := linux/$(BUILD)
+	override BUILD := linux/$(BUILD)
 
 else ifeq ($(UNAME_S), Darwin)
 	OS_NAME := Mac
@@ -86,7 +92,7 @@ else ifeq ($(UNAME_S), Darwin)
 	LIB_INSTALL_PATH := /usr/local/lib
 	PC_INCLUDE_DIR := $(INCLUDE_INSTALL_PATH)/$(SUITE)/$(PROJECT)$(BRANCH)
 	PC_LIB_DIR := $(LIB_INSTALL_PATH)/$(SUITE)
-	BUILD := mac/$(BUILD)
+	override BUILD := mac/$(BUILD)
 
 else ifeq ($(findstring MINGW32_NT,$(UNAME_S)),MINGW32_NT)  # 32-bit Windows
 	OS_NAME := Windows
@@ -104,7 +110,7 @@ else ifeq ($(findstring MINGW32_NT,$(UNAME_S)),MINGW32_NT)  # 32-bit Windows
 	# Windows paths for .pc so gcc invoked by mingw can resolve -I/-L (cygpath for MSYS2)
 	PC_INCLUDE_DIR = $(shell cygpath -m $(INCLUDE_INSTALL_PATH)/$(SUITE)/$(PROJECT)$(BRANCH))
 	PC_LIB_DIR = $(shell cygpath -m $(LIB_INSTALL_PATH)/$(SUITE))
-	BUILD := win32/$(BUILD)
+	override BUILD := win32/$(BUILD)
 
 else ifeq ($(findstring MINGW64_NT,$(UNAME_S)),MINGW64_NT)  # 64-bit Windows
 	OS_NAME := Windows
@@ -122,7 +128,7 @@ else ifeq ($(findstring MINGW64_NT,$(UNAME_S)),MINGW64_NT)  # 64-bit Windows
 	# Windows paths for .pc so gcc invoked by mingw can resolve -I/-L (cygpath for MSYS2)
 	PC_INCLUDE_DIR = $(shell cygpath -m $(INCLUDE_INSTALL_PATH)/$(SUITE)/$(PROJECT)$(BRANCH))
 	PC_LIB_DIR = $(shell cygpath -m $(LIB_INSTALL_PATH)/$(SUITE))
-	BUILD := win64/$(BUILD)
+	override BUILD := win64/$(BUILD)
 
 else
     $(error Unsupported OS: $(UNAME_S))
