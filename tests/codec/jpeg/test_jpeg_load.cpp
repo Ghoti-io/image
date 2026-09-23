@@ -8265,3 +8265,53 @@ TEST(JpegLoad, EveryDecoderHonoursTheChromaUpsamplingOption) {
          "the option were being dropped on the floor this is exactly what it "
          "would look like";
 }
+
+// GIMG_Decode_Options::jpeg_precision does nothing.
+//
+// The header described it as naming the depth to decode to - 8, 12 or 16,
+// with the library converting when the file's precision differs - and no line
+// in the library reads the field.  Every value behaves as 0.  A caller who set
+// it to 8 on a twelve-bit file got GRAY16 back, with no error and nothing
+// said, which is the failure mode a documented-but-absent option always has.
+//
+// This pins the gap rather than closing it: implementing it changes what
+// existing callers are handed, and so does deleting the field, and neither is
+// a decision to take from inside a test.  What the test buys is that it cannot
+// be settled by accident - implementing the option, or removing it, fails here
+// and has to be done on purpose.
+TEST(JpegLoad, TheDecodePrecisionOptionIsNotImplemented) {
+  struct Case {
+    const char * jpg;
+    uint8_t file_bits;
+  };
+  const Case cases[] = {
+      {"baseline_8x8_gray.jpg", 8},
+      {"baseline_gray12.jpg", 16},
+      {"baseline_rgb12_444.jpg", 16},
+      {"baseline_16x16_ycbcr.jpg", 8},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.jpg);
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, bytes));
+    const Decoded base = decode_described_with(bytes, nullptr);
+    ASSERT_EQ(base.result, GIMG_OK);
+    EXPECT_EQ(base.bits, c.file_bits)
+        << "with no options the decode follows the file, which is the "
+           "behaviour every value of the option below also gets";
+
+    for (uint8_t want : {(uint8_t)0, (uint8_t)8, (uint8_t)12, (uint8_t)16}) {
+      GIMG_Decode_Options o = {};
+      o.jpeg_precision = want;
+      const Decoded d = decode_described_with(bytes, &o);
+      EXPECT_EQ(d.result, GIMG_OK)
+          << "asking for precision " << (int)want << " must not fail either";
+      EXPECT_EQ(d.bits, c.file_bits)
+          << "jpeg_precision = " << (int)want
+          << " changed the sample width, so it has been implemented; the "
+             "header says it is not, and one of the two needs updating";
+      EXPECT_EQ(d.hash, base.hash)
+          << "jpeg_precision = " << (int)want << " changed the picture";
+    }
+  }
+}

@@ -720,9 +720,19 @@ typedef struct {
    * live at zero: when it did, `GIMG_Decode_Options o = {};` quietly decoded
    * with a different filter than passing no options at all. */
   uint8_t jpeg_chroma_upsampling;
-  /** JPEG decode-to precision: 0 = use file precision (8→GRAY8/RGBA8;
-   * 12/16→GRAY16/RGB16 with 12-bit left-justified); 8, 12, or 16 = decode to
-   * that bit depth (conversion via library when different from file). */
+  /** JPEG decode-to precision.  **Not implemented: this field is read
+   * nowhere, and every value behaves as 0.**
+   *
+   * What a decode gives you is the file's own precision: 8 bits comes back
+   * as GRAY8 or RGBA8, and 12 or 16 as GRAY16 or RGBA16 with a 12-bit sample
+   * left-justified.  This field was meant to name a different depth - 8, 12
+   * or 16 - and have the library convert, and it does not: setting it to 8
+   * on a twelve-bit file still returns GRAY16, with no error and nothing
+   * said.  Measured at every value on both an eight-bit and a twelve-bit
+   * file; JpegLoad.TheDecodePrecisionOptionIsNotImplemented pins it, so
+   * whichever way this is settled the change will be a deliberate one.
+   *
+   * Convert the raster afterwards for now; see \ref api_options. */
   uint8_t jpeg_precision;
   /** GIF: what goes where no frame has drawn.
    *
