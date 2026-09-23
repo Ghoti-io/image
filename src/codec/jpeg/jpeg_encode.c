@@ -1931,22 +1931,34 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
   return GIMG_OK;
 }
 
-// 16-bit progressive: DC size 0..16, AC 242 symbols. No refinement (Ah!=0).
+/**
+ * One scan of a twelve-bit progressive frame, T.81 Annex G at P = 12.
+ *
+ * The same four scan kinds as the eight-bit writer, over the wider DC and AC
+ * tables of Annex K's extended alphabet: DC categories run to 16 rather than
+ * 11 and AC sizes to 15 rather than 10, because a twelve-bit coefficient is
+ * that much larger.  The refinement scan is the exception - its alphabet is
+ * EOB, ZRL and (run, 1) whatever the precision, since a refinement bit is one
+ * bit - so it shares the eight-bit path's table.
+ *
+ * This used to write `(void)Al` and refuse every refinement scan, which made
+ * successive approximation unavailable at twelve bits and silently wrong
+ * where it was available: an initial scan with Al set wrote the coefficients
+ * unshifted under a header that declared the shift.  The decoder has always
+ * handled both - `jpeg_decode_progressive_scans` is shared between the two
+ * precisions - so the gap was on this side only.
+ */
 GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
     uint32_t height, int num_components, const int16_t * coef_buffer,
     size_t total_blocks, const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     int differential, uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al,
     const GIMG_Allocator * alloc, uint16_t restart_interval,
     unsigned char ** out_scan_data, size_t * out_scan_size) {
-  (void)Al;
   if (!alloc || !out_scan_data || !out_scan_size) {
     return GIMG_ERR_INTERNAL;
   }
   *out_scan_data = NULL;
   *out_scan_size = 0;
-  if (Ah != 0) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
   uint8_t samp_ones[GIMG_JPEG_MAX_COMPONENTS];
   h_samp = gimg_jpeg_samp_or_ones(h_samp, samp_ones, num_components);
   v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
@@ -1970,7 +1982,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
   // the cache was sound in a single thread; across two it published
   // `built = 1` with no ordering against the writes it guards, which lets a
   // second encode read a half-built table.  Building costs four passes over
-  // at most 162 symbols, next to nothing beside entropy-coding an image.
+  // at most 242 symbols, next to nothing beside entropy-coding an image.
   jpeg_derived_tbl ext_dc_lum_tbl, ext_dc_chr_tbl, ext_ac_lum_tbl,
       ext_ac_chr_tbl;
   build_derived_tbl(gimg_jpeg_ext_dc_lum_bits, gimg_jpeg_ext_dc_lum_vals, GIMG_JPEG_EXT_DC_VALS,
@@ -1982,6 +1994,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
   build_derived_tbl(gimg_jpeg_ext_ac_chr_bits, gimg_jpeg_ext_ac_chr_vals, GIMG_JPEG_EXT_AC_VALS,
       &ext_ac_chr_tbl);
 
+  const int al = (Al <= 15u) ? (int)Al : 0;
   jpeg_bit_writer w = {0};
   int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
   size_t block_off = 0;
@@ -1989,6 +2002,108 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
   size_t mcu_index = 0;
 
   if (Ss == 0 && Se == 0) {
+    if (Ah == 0) {
+      for (;;) {
+        if (restart_interval > 0 && mcu_index > 0 &&
+            (mcu_index % (size_t)restart_interval) == 0) {
+          bit_writer_flush(&w, alloc);
+          if (!bit_writer_ensure(&w, alloc, 2)) {
+            gimg_free(alloc, w.buf);
+            return GIMG_ERR_OOM;
+          }
+          w.buf[w.len++] = 0xFF;
+          w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+          next_restart++;
+          w.bitbuf = 0;
+          w.nbits = 0;
+          for (int rc = 0; rc < num_components; rc++) {
+            last_dc[rc] = 0;
+          }
+        }
+        size_t mcu_block_off = 0;
+        for (int c = 0; c < num_components; c++) {
+          const jpeg_derived_tbl * dc_tbl =
+              (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? &ext_dc_lum_tbl
+                                                 : &ext_dc_chr_tbl;
+          size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+          for (size_t b = 0; b < nblocks; b++) {
+            size_t block_idx = block_off + mcu_block_off + b;
+            const int16_t * block = coef_buffer + block_idx * 64;
+            int dc_val = jpeg_dc_point_transform((int)block[0], al);
+            // T.81 J.1.3.1: a differential frame's DC coefficient "is coded
+            // directly - without prediction", so there is nothing to subtract.
+            // Predicting it here wrote a file that disagreed with every decoder
+            // that follows J.1.3.1, this library's own included, and the error
+            // accumulated down the pyramid.
+            int diff = differential ? dc_val : (dc_val - last_dc[c]);
+            last_dc[c] = dc_val;
+            int nbits = jpeg_nbits(diff);
+            if (nbits > 16)
+              nbits = 16;
+            if (dc_tbl->len[nbits] > 0) {
+              bit_writer_put_bits(
+                  &w, alloc, dc_tbl->code[nbits], dc_tbl->len[nbits]);
+            }
+            if (nbits > 0) {
+              int extra = diff;
+              if (extra < 0)
+                extra += (1 << nbits) - 1;
+              bit_writer_put_bits(&w, alloc, (unsigned int)extra, nbits);
+            }
+          }
+          mcu_block_off += nblocks;
+        }
+        block_off += blocks_per_mcu;
+        mcu_index++;
+        if (block_off >= total_blocks || mcu_index >= mcu_count)
+          break;
+      }
+    }
+    else {
+      // DC refinement (T.81 G.1.1.2.1): the Al-th bit of the coefficient.
+      for (;;) {
+        if (restart_interval > 0 && mcu_index > 0 &&
+            (mcu_index % (size_t)restart_interval) == 0) {
+          bit_writer_flush(&w, alloc);
+          if (!bit_writer_ensure(&w, alloc, 2)) {
+            gimg_free(alloc, w.buf);
+            return GIMG_ERR_OOM;
+          }
+          w.buf[w.len++] = 0xFF;
+          w.buf[w.len++] = (unsigned char)(0xD0 + (next_restart & 7));
+          next_restart++;
+          w.bitbuf = 0;
+          w.nbits = 0;
+        }
+        size_t mcu_block_off = 0;
+        for (int c = 0; c < num_components; c++) {
+          size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
+          for (size_t b = 0; b < nblocks; b++) {
+            size_t block_idx = block_off + mcu_block_off + b;
+            const int16_t * block = coef_buffer + block_idx * 64;
+            unsigned int bit = (unsigned int)(
+                jpeg_dc_point_transform((int)block[0], al) & 1);
+            bit_writer_put_bits(&w, alloc, bit, 1);
+          }
+          mcu_block_off += nblocks;
+        }
+        block_off += blocks_per_mcu;
+        mcu_index++;
+        if (block_off >= total_blocks || mcu_index >= mcu_count)
+          break;
+      }
+    }
+  }
+  else if (Ah != 0) {
+    // AC refinement (T.81 G.1.2.3), identical to the eight-bit path: the
+    // alphabet is EOB, ZRL and (run, 1) whatever the sample precision.
+    jpeg_derived_tbl ac_refine_tbl;
+    build_derived_tbl(gimg_jpeg_std_ac_refine_bits, gimg_jpeg_std_ac_refine_vals,
+        GIMG_JPEG_AC_REFINE_VALS, &ac_refine_tbl);
+    unsigned int k_start = (unsigned int)Ss;
+    unsigned int k_end = (unsigned int)Se;
+    if (k_end > 63)
+      k_end = 63;
     for (;;) {
       if (restart_interval > 0 && mcu_index > 0 &&
           (mcu_index % (size_t)restart_interval) == 0) {
@@ -2002,39 +2117,63 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
         next_restart++;
         w.bitbuf = 0;
         w.nbits = 0;
-        for (int rc = 0; rc < num_components; rc++) {
-          last_dc[rc] = 0;
-        }
       }
       size_t mcu_block_off = 0;
       for (int c = 0; c < num_components; c++) {
-        const jpeg_derived_tbl * dc_tbl =
-            (gimg_jpeg_tbl_of(tbl_sel, c) == 0) ? &ext_dc_lum_tbl
-                                               : &ext_dc_chr_tbl;
         size_t nblocks = (size_t)h_samp[c] * (size_t)v_samp[c];
         for (size_t b = 0; b < nblocks; b++) {
           size_t block_idx = block_off + mcu_block_off + b;
           const int16_t * block = coef_buffer + block_idx * 64;
-          int dc_val = (int)block[0];
-          // T.81 J.1.3.1: a differential frame's DC coefficient "is coded
-          // directly - without prediction", so there is nothing to subtract.
-          // Predicting it here wrote a file that disagreed with every decoder
-          // that follows J.1.3.1, this library's own included, and the error
-          // accumulated down the pyramid.
-          int diff = differential ? dc_val : (dc_val - last_dc[c]);
-          last_dc[c] = dc_val;
-          int nbits = jpeg_nbits(diff);
-          if (nbits > 16)
-            nbits = 16;
-          if (dc_tbl->len[nbits] > 0) {
-            bit_writer_put_bits(
-                &w, alloc, dc_tbl->code[nbits], dc_tbl->len[nbits]);
+          int absval[64];
+          unsigned int eob = 0;
+          for (unsigned int k = k_start; k <= k_end; k++) {
+            int mag = (int)block[k];
+            if (mag < 0)
+              mag = -mag;
+            absval[k] = mag >> al;
+            if (absval[k] == 1)
+              eob = k;
           }
-          if (nbits > 0) {
-            int extra = diff;
-            if (extra < 0)
-              extra += (1 << nbits) - 1;
-            bit_writer_put_bits(&w, alloc, (unsigned int)extra, nbits);
+          unsigned char corr[64];
+          unsigned int ncorr = 0;
+          unsigned int run = 0;
+          for (unsigned int k = k_start; k <= k_end; k++) {
+            const int t = absval[k];
+            if (t == 0) {
+              run++;
+              continue;
+            }
+            while (run > 15 && k <= eob) {
+              if (ac_refine_tbl.len[0xF0] > 0)
+                bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[0xF0],
+                    ac_refine_tbl.len[0xF0]);
+              run -= 16;
+              for (unsigned int i = 0; i < ncorr; i++)
+                bit_writer_put_bits(&w, alloc, corr[i], 1);
+              ncorr = 0;
+            }
+            if (t > 1) {
+              corr[ncorr++] = (unsigned char)(t & 1);
+              continue;
+            }
+            const int symbol = (int)((run << 4) | 1u);
+            if (symbol >= 0 && symbol <= 255 && ac_refine_tbl.len[symbol] > 0) {
+              bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[symbol],
+                  ac_refine_tbl.len[symbol]);
+            }
+            bit_writer_put_bits(&w, alloc, block[k] < 0 ? 0u : 1u, 1);
+            for (unsigned int i = 0; i < ncorr; i++)
+              bit_writer_put_bits(&w, alloc, corr[i], 1);
+            ncorr = 0;
+            run = 0;
+          }
+          if (run > 0 || ncorr > 0) {
+            if (ac_refine_tbl.len[0] > 0)
+              bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[0],
+                  ac_refine_tbl.len[0]);
+            for (unsigned int i = 0; i < ncorr; i++)
+              bit_writer_put_bits(&w, alloc, corr[i], 1);
+            ncorr = 0;
           }
         }
         mcu_block_off += nblocks;
@@ -2073,28 +2212,26 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
         for (size_t b = 0; b < nblocks; b++) {
           size_t block_idx = block_off + mcu_block_off + b;
           const int16_t * block = coef_buffer + block_idx * 64;
-          for (unsigned int k = k_start; k <= k_end;) {
-            int run = 0;
-            while (k <= k_end && block[k] == 0) {
+          unsigned int run = 0;
+          for (unsigned int k = k_start; k <= k_end; k++) {
+            int coeff = (int)block[k];
+            int mag = coeff < 0 ? -coeff : coeff;
+            mag >>= al;
+            if (mag == 0) {
               run++;
-              k++;
+              continue;
             }
-            if (k > k_end) {
-              if (ac_tbl->len[0] > 0)
-                bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
-              break;
-            }
+            coeff = (coeff < 0) ? -mag : mag;
             while (run >= 16) {
               if (ac_tbl->len[0xF0] > 0)
                 bit_writer_put_bits(
                     &w, alloc, ac_tbl->code[0xF0], ac_tbl->len[0xF0]);
               run -= 16;
             }
-            int coeff = (int)block[k];
             int size = jpeg_nbits(coeff);
             if (size > 15)
               size = 15;
-            int symbol = (run << 4) | size;
+            int symbol = (int)((run << 4) | (unsigned int)size);
             if (symbol >= 0 && symbol <= 255 && ac_tbl->len[symbol] > 0) {
               bit_writer_put_bits(
                   &w, alloc, ac_tbl->code[symbol], ac_tbl->len[symbol]);
@@ -2105,7 +2242,11 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
                 bit_writer_put_bits(&w, alloc, (unsigned int)extra, size);
               }
             }
-            k++;
+            run = 0;
+          }
+          if (run > 0) {
+            if (ac_tbl->len[0] > 0)
+              bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
           }
         }
         mcu_block_off += nblocks;

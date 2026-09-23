@@ -7919,3 +7919,129 @@ TEST(JpegEncode, AProgressionThatBreaksTheRefinementChainIsRefused) {
     gimg_doc_destroy(doc);
   }
 }
+
+/**
+ * Successive approximation at twelve bits is the same picture as one pass.
+ *
+ * The twelve-bit scan writer is a separate function from the eight-bit one -
+ * different DC and AC alphabets, because a twelve-bit coefficient needs
+ * categories up to 16 and sizes up to 15 - and it had the same defect plus
+ * one more. It wrote `(void)Al` and ignored the point transform, exactly as
+ * the eight-bit writer did, and it refused every refinement scan outright, so
+ * successive approximation was unavailable at twelve bits rather than merely
+ * wrong. The decoder has always handled both: the scan runner is shared
+ * between the two precisions, so the gap was on the writing side only.
+ *
+ * There is no outside decoder to check this against - libjpeg refuses a
+ * twelve-bit frame with "Unsupported JPEG data precision 12" - so the bar is
+ * the internal one, and it is exact rather than approximate: splitting the
+ * coefficients across six scans and refining them back must reproduce the
+ * one-pass file's pixels byte for byte. A point transform applied on the way
+ * out and not undone on the way back shows up immediately.
+ */
+TEST(JpegEncode, ASuccessiveApproximationAtTwelveBitsIsTheSameAsOnePass) {
+  static const GIMG_JPEG_Progressive_Scan one_pass[] = {
+      {0, 0, 0, 0},
+      {1, 63, 0, 0},
+  };
+  static const GIMG_JPEG_Progressive_Scan simple_progression[] = {
+      {0, 0, 0, 1},
+      {1, 5, 0, 2},
+      {6, 63, 0, 2},
+      {1, 63, 2, 1},
+      {0, 0, 1, 0},
+      {1, 63, 1, 0},
+  };
+
+  auto decode_of = [](const GIMG_JPEG_Progressive_Scan * scans,
+                       unsigned count, uint8_t arithmetic,
+                       uint16_t restart_interval,
+                       std::vector<uint8_t> & out_pixels) {
+    GIMG_Raster * raster = progression_source();
+    if (!raster) { return ::testing::AssertionFailure() << "raster"; }
+    GIMG_Doc * doc = nullptr;
+    if (gimg_doc_from_raster(raster, &doc) != GIMG_OK) {
+      gimg_raster_destroy(raster);
+      return ::testing::AssertionFailure() << "doc";
+    }
+    gimg_raster_destroy(raster);
+    const GIMG_JPEG_Progressive_Config cfg = {count, scans};
+    GIMG_Stream * out = nullptr;
+    if (gimg_stream_create_memory_output(&out) != GIMG_OK) {
+      gimg_doc_destroy(doc);
+      return ::testing::AssertionFailure() << "stream";
+    }
+    GIMG_Save_Options opts = {};
+    opts.quality = 90;
+    opts.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
+    opts.jpeg_progressive = 1;
+    opts.jpeg_progressive_config = &cfg;
+    opts.jpeg_precision = 12;
+    opts.jpeg_arithmetic = arithmetic;
+    opts.jpeg_restart_interval = restart_interval;
+    GIMG_Save_Report report = {};
+    const GIMG_Result sr = gimg_doc_save(doc, out, "jpeg", &opts, &report);
+    gimg_doc_destroy(doc);
+    if (sr != GIMG_OK) {
+      gimg_stream_destroy(out);
+      return ::testing::AssertionFailure() << "save: " << (int)sr;
+    }
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out, &p, &n);
+    const std::vector<uint8_t> bytes(
+        (const uint8_t *)p, (const uint8_t *)p + n);
+    gimg_stream_destroy(out);
+
+    DocStreamGuard in;
+    if (gimg_stream_create_memory(bytes.data(), bytes.size(), &in.s)
+        != GIMG_OK) {
+      return ::testing::AssertionFailure() << "reload stream";
+    }
+    if (gimg_doc_load(in.s, nullptr, nullptr, &in.d) != GIMG_OK) {
+      return ::testing::AssertionFailure() << "reload";
+    }
+    RasterGuard got;
+    const GIMG_Result dr =
+        gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r);
+    if (dr != GIMG_OK || !got.r) {
+      return ::testing::AssertionFailure() << "decode: " << (int)dr;
+    }
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(got.r);
+    const size_t row = (size_t)gimg_raster_width(got.r) *
+        gimg_raster_bytes_per_pixel(fmt);
+    const size_t stride = gimg_raster_stride_bytes(got.r);
+    const auto * px = (const unsigned char *)gimg_raster_pixels_const(got.r);
+    out_pixels.resize(row * gimg_raster_height(got.r));
+    for (uint32_t y = 0; y < gimg_raster_height(got.r); y++) {
+      memcpy(out_pixels.data() + (size_t)y * row, px + (size_t)y * stride, row);
+    }
+    return ::testing::AssertionSuccess();
+  };
+
+  struct Case {
+    const char * what;
+    uint8_t arithmetic;
+    uint16_t restart_interval;
+  };
+  const Case cases[] = {
+      {"Huffman", 0u, 0u},
+      {"Huffman with restart markers", 0u, 4u},
+      {"arithmetic (T.81 G.2)", 1u, 0u},
+  };
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    std::vector<uint8_t> flat, woven;
+    ASSERT_TRUE(decode_of(one_pass, 2u, c.arithmetic, c.restart_interval, flat));
+    ASSERT_TRUE(decode_of(
+        simple_progression, 6u, c.arithmetic, c.restart_interval, woven));
+    ASSERT_GT(flat.size(), 0u);
+    ASSERT_EQ(woven.size(), flat.size());
+    for (size_t i = 0; i < flat.size(); i++) {
+      ASSERT_EQ((int)woven[i], (int)flat[i])
+          << "byte " << i << " of the decoded image differs; successive "
+             "approximation reorders bits, it does not change them";
+    }
+  }
+}
