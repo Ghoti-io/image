@@ -47,6 +47,20 @@ def info_header(width, height, bit_count, compression=0, image_size=0,
                        compression, image_size, 2835, 2835, clr_used, 0) + extra
 
 
+def os2v2_header(size, width, height, bit_count, compression=0,
+                 clr_used=0) -> bytes:
+    """A BITMAPCOREHEADER2 truncated to `size` bytes.
+
+    Its first 40 bytes are byte-for-byte a BITMAPINFOHEADER; every field the
+    header stops short of reads as zero.
+    """
+    full = struct.pack("<IiiHHIIiiII", size, width, height, 1, bit_count,
+                       compression, 0, 0, 0, clr_used, 0)
+    full += struct.pack("<HHHHIIII", 0, 0, 0, 0, 0, 0, 0, 0)
+    assert len(full) == 64
+    return full[:size]
+
+
 def assemble(dib: bytes, palette: bytes, pixels: bytes) -> bytes:
     offset = 14 + len(dib) + len(palette)
     return (file_header(offset + len(pixels), offset) + dib + palette + pixels)
@@ -264,15 +278,6 @@ def os2_fixtures() -> None:
     ]
     rows = b"".join(pad_row(bytes(row)) for row in bottom_up(indices))
 
-    def os2v2_header(size, width, height, bit_count, compression=0,
-                     clr_used=0):
-        """A BITMAPCOREHEADER2 truncated to `size` bytes."""
-        full = struct.pack("<IiiHHIIiiII", size, width, height, 1, bit_count,
-                           compression, 0, 0, 0, clr_used, 0)
-        full += struct.pack("<HHHHIIII", 0, 0, 0, 0, 0, 0, 0, 0)
-        assert len(full) == 64
-        return full[:size]
-
     # The full 64-byte form, and the smallest one there is.  A 16-byte header
     # stops before biCompression and biClrUsed, so the palette is the depth's
     # full 256 entries.
@@ -319,6 +324,57 @@ def os2_fixtures() -> None:
              + bytes([0, 1]))                 # End of bitmap.
     write("bmp_8x2_rle24.bmp",
           assemble(os2v2_header(64, 8, 2, 24, compression=4), b"", rle24))
+
+    # ulCompression 1 and 2 mean RLE8 and RLE4 to OS/2 exactly as they do to
+    # Windows, and that shared half of the vocabulary had no fixture: every
+    # RLE8 and RLE4 file here carried a BITMAPINFOHEADER, so the arms that
+    # resolve those two numbers in an OS/2 header were never taken. The same
+    # picture in both headers must decode the same way, which is the property
+    # the rest of this function is built on.
+    rle8_indices = [
+        [0, 0, 0, 1, 1, 1, 2, 2],
+        [3, 3, 4, 4, 5, 5, 0, 0],
+    ]
+
+    def rle8_encode(index_rows):
+        out = bytearray()
+        for row in bottom_up(index_rows):
+            i = 0
+            while i < len(row):
+                j = i
+                while j < len(row) and row[j] == row[i]:
+                    j += 1
+                out += bytes([j - i, row[i]])
+                i = j
+            out += bytes([0, 0])       # End of line.
+        out += bytes([0, 1])           # End of bitmap.
+        return bytes(out)
+
+    def rle4_encode(index_rows):
+        out = bytearray()
+        for row in bottom_up(index_rows):
+            for i in range(0, len(row), 2):
+                pair = (row[i] << 4) | row[i + 1]
+                out += bytes([2, pair])
+            out += bytes([0, 0])
+        out += bytes([0, 1])
+        return bytes(out)
+
+    rle8_stream = rle8_encode(rle8_indices)
+    write("bmp_8x2_os2v2_rle8.bmp",
+          assemble(os2v2_header(64, 8, 2, 8, compression=1, clr_used=6),
+                   palette, rle8_stream))
+    write("bmp_8x2_win_rle8.bmp",
+          assemble(info_header(8, 2, 8, compression=1, clr_used=6),
+                   palette, rle8_stream))
+
+    rle4_stream = rle4_encode(rle8_indices)
+    write("bmp_8x2_os2v2_rle4.bmp",
+          assemble(os2v2_header(64, 8, 2, 4, compression=2, clr_used=6),
+                   palette, rle4_stream))
+    write("bmp_8x2_win_rle4.bmp",
+          assemble(info_header(8, 2, 4, compression=2, clr_used=6),
+                   palette, rle4_stream))
 
 
 def oversize_palette_fixture() -> None:
@@ -535,6 +591,22 @@ def embedded_fixtures() -> None:
     dib = info_header(4, 4, 24, compression=5, image_size=16)
     write("bmp_embedded_png_not_a_png.bmp", assemble(dib, b"", b"not a png!!!!!!!"))
 
+    # biBitCount says nothing about an embedded stream - the stream carries
+    # its own depth - so the same payload must decode the same way whatever
+    # the wrapper claims. A conformant BI_PNG file may leave the field at 0,
+    # which is not a pixel depth at all; 64 is no less meaningless, and used
+    # to be the one value that was refused, because the rule reserving 64 for
+    # BI_RGB was about channel masks and byte-indexed encodings and caught
+    # these in passing.
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    png_payload = buffer.getvalue()
+    for bit_count in (0, 32, 64):
+        write(f"bmp_4x4_embedded_png_bpp{bit_count}.bmp",
+              assemble(info_header(4, 4, bit_count, compression=5,
+                                   image_size=len(png_payload)),
+                       b"", png_payload))
+
 
 def rgba64_fixture() -> None:
     """A 64-bit image, whose samples are s2.13 fixed point in linear light.
@@ -682,6 +754,24 @@ def malformed_fixtures() -> None:
     data = bytearray(body)
     struct.pack_into("<I", data, 10, len(body) + 1000)
     write("bmp_offset_past_eof.bmp", bytes(data))
+
+    # Each compression method is defined for exactly one bit depth (or, for
+    # bitfields, two), and a header that disagrees with itself does not say
+    # which half to believe. Every one of these rules had a refusal written
+    # for it and no file that reached it.
+    write("bmp_rle8_at_4bpp.bmp",
+          assemble(info_header(4, 2, 4, compression=1, clr_used=2), palette,
+                   bytes([2, 0, 0, 0, 2, 1, 0, 1])))
+    write("bmp_huffman_at_8bpp.bmp",
+          assemble(os2v2_header(64, 4, 2, 8, compression=3), palette,
+                   b"\x00" * 8))
+    write("bmp_rle24_at_8bpp.bmp",
+          assemble(os2v2_header(64, 4, 2, 8, compression=4), palette,
+                   b"\x00" * 8))
+    write("bmp_bitfields_at_24bpp.bmp",
+          assemble(info_header(4, 2, 24, compression=3) +
+                   struct.pack("<III", 0xFF0000, 0x00FF00, 0x0000FF),
+                   b"", b"\x00" * 24))
 
     # RLE with a negative height.  The two cannot be combined: an RLE stream's
     # "end of line" walks one way only, so a top-down RLE bitmap does not say
