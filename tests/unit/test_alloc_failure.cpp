@@ -23,6 +23,7 @@
 #include <cstring>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
 #include <functional>
@@ -30,6 +31,7 @@
 #include <vector>
 
 #include "../failing_allocator.h"
+#include "../save_cases.h"
 #include "../../src/codec/codec_internal.h"
 #include "../../src/meta/exif_internal.h"
 #include "../exif_test_utils.h"
@@ -38,6 +40,8 @@ namespace {
 
 using gimg_test::Failing;
 using gimg_test::init;
+using gimg_test::make_raster;
+using gimg_test::SaveCase;
 
 bool read_file(const char * dir, const char * name, std::vector<uint8_t> & out) {
   std::string path = std::string(dir) + "/" + name;
@@ -299,6 +303,97 @@ TEST(AllocFailure, EveryFailedExifCallFreesEverythingItTook) {
       if (f.outstanding != 0) { break; }
     }
   }
+}
+
+namespace {
+
+/** Save @p doc through @p codec_name with that codec's allocator swapped. */
+GIMG_Result save_with(const char * codec_name, const GIMG_Doc * doc,
+    const GIMG_Save_Options * options, Failing & f, size_t * out_bytes) {
+  GIMG_Codec * codec = gimg_codec_by_name(codec_name);
+  if (!codec) { return GIMG_ERR_UNSUPPORTED; }
+  const GIMG_Allocator * saved = codec->allocator;
+  codec->allocator = &f.a;
+
+  GIMG_Stream * out = nullptr;
+  // The stream keeps the default allocator for the same reason the loader
+  // sweep gives the input stream one: what is under test is the codec's
+  // allocations, and a stream that failed to exist would not reach them.
+  GIMG_Result r = gimg_stream_create_memory_output(&out);
+  if (r == GIMG_OK) {
+    GIMG_Save_Report report = {};
+    r = gimg_doc_save(doc, out, codec_name, options, &report);
+    if (out_bytes) { *out_bytes = report.bytes_written; }
+    gimg_stream_destroy(out);
+  }
+  codec->allocator = saved;
+  return r;
+}
+
+} // namespace
+
+/**
+ * Every allocation failure during a save leaves nothing behind.
+ *
+ * The mirror of the load sweep above, and the reason it is worth having
+ * separately is that the writers allocate for different things: a scan buffer
+ * per component, a Huffman code table, a colour-converted copy of the raster,
+ * a synthesized ICC profile, an Exif blob with a thumbnail in it.  None of
+ * those arms is reachable from any document, however malformed, because a
+ * document is either saveable or it is not and neither makes malloc fail.
+ *
+ * The configurations come from tests/save_cases.h, shared with the
+ * write-failure sweep, so a writer option added there widens both.
+ */
+TEST(AllocFailure, EveryFailedSaveFreesEverythingItTook) {
+  const std::vector<SaveCase> cases = gimg_test::save_cases();
+
+  long injected = 0;
+  for (const SaveCase & c : cases) {
+    GIMG_Raster * raster = make_raster(*c.format, 32u, 32u, c.levels);
+    ASSERT_NE(raster, nullptr) << c.name << ": could not build a raster";
+    GIMG_Doc * doc = nullptr;
+    // The document is built with the default allocator so that the sweep
+    // counts what the *save* takes and nothing else.
+    ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK) << c.name;
+    gimg_raster_destroy(raster);
+
+    Failing probe;
+    init(probe);
+    size_t bytes = 0;
+    const GIMG_Result clean = save_with(c.codec, doc, &c.options, probe, &bytes);
+    ASSERT_EQ(clean, GIMG_OK)
+        << c.name << " must save when nothing fails (returned " << (int)clean
+        << ")";
+    ASSERT_GT(bytes, 0u) << c.name << " wrote nothing";
+    ASSERT_EQ(probe.outstanding, 0)
+        << c.name << " leaks on the success path: " << probe.outstanding
+        << " blocks";
+    const long total = probe.attempts;
+    std::printf("  %-26s %4ld allocations, %6zu bytes\n", c.name, total, bytes);
+    ASSERT_GT(total, 0)
+        << c.name << " made no allocations through the codec allocator, so "
+                     "this sweep would test nothing";
+
+    for (long n = 1; n <= total; n++) {
+      Failing f;
+      init(f);
+      f.fail_at = n;
+      const GIMG_Result r = save_with(c.codec, doc, &c.options, f, nullptr);
+      injected++;
+      EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM)
+          << c.name << ": allocation " << n << " of " << total
+          << " failed and the save returned " << (int)r
+          << "; an allocation failure is an OOM, not a claim about the image";
+      EXPECT_EQ(f.outstanding, 0)
+          << c.name << ": " << f.outstanding
+          << " block(s) leaked when allocation " << n << " of " << total
+          << " failed";
+      if (f.outstanding != 0) { break; }
+    }
+    gimg_doc_destroy(doc);
+  }
+  std::printf("  %ld injected save failures\n", injected);
 }
 
 int main(int argc, char ** argv) {

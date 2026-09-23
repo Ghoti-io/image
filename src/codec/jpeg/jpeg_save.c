@@ -544,10 +544,14 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     comp_cb = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
     comp_cr = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
     if (!comp_cb || !comp_cr) {
+      // Both pointers, not just the one that is obviously live: either
+      // allocation can be the one that failed, and the arm used to hand back
+      // comp_cb only - so a failure of comp_cb with comp_cr succeeding leaked
+      // a whole component plane.  gimg_free ignores NULL, which is what the
+      // loop below this already relies on.
       gimg_free(alloc, comp_y);
-      if (comp_cb) {
-        gimg_free(alloc, comp_cb);
-      }
+      gimg_free(alloc, comp_cb);
+      gimg_free(alloc, comp_cr);
       return GIMG_ERR_OOM;
     }
   }
@@ -660,12 +664,15 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
       use_cb = (uint16_t *)gimg_malloc(alloc, chroma_size);
       use_cr = (uint16_t *)gimg_malloc(alloc, chroma_size);
       if (!use_cb || !use_cr) {
+        // Both, for the reason given where comp_cb and comp_cr are taken: the
+        // arm runs when either allocation failed, and handing back only the
+        // first leaked a whole subsampled plane whenever it was the one that
+        // failed.
         gimg_free(alloc, comp_y);
         gimg_free(alloc, comp_cb);
         gimg_free(alloc, comp_cr);
-        if (use_cb) {
-          gimg_free(alloc, use_cb);
-        }
+        gimg_free(alloc, use_cb);
+        gimg_free(alloc, use_cr);
         return GIMG_ERR_OOM;
       }
       uint32_t real_cw = (width + 1u) / 2u;
@@ -738,12 +745,15 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
       use_cb = (uint16_t *)gimg_malloc(alloc, chroma_size);
       use_cr = (uint16_t *)gimg_malloc(alloc, chroma_size);
       if (!use_cb || !use_cr) {
+        // Both, for the reason given where comp_cb and comp_cr are taken: the
+        // arm runs when either allocation failed, and handing back only the
+        // first leaked a whole subsampled plane whenever it was the one that
+        // failed.
         gimg_free(alloc, comp_y);
         gimg_free(alloc, comp_cb);
         gimg_free(alloc, comp_cr);
-        if (use_cb) {
-          gimg_free(alloc, use_cb);
-        }
+        gimg_free(alloc, use_cb);
+        gimg_free(alloc, use_cr);
         return GIMG_ERR_OOM;
       }
       for (uint32_t cb_y = 0; cb_y < ch; cb_y++) {
@@ -3686,8 +3696,7 @@ have_scan:
   r = gimg_stream_write(
       stream, gimg_jpeg_signature, GIMG_JPEG_SIGNATURE_LEN, &written);
   if (r != GIMG_OK) {
-    gimg_free(alloc, to_free);
-    return r;
+    goto done;
   }
   report->bytes_written += written;
 
@@ -3729,8 +3738,7 @@ have_scan:
                   com_buf + offset, plen, &report->bytes_written);
               if (r != GIMG_OK) {
                 gimg_free(alloc, com_buf);
-                gimg_free(alloc, to_free);
-                return r;
+                goto done;
               }
               offset += plen;
             }
@@ -3738,8 +3746,7 @@ have_scan:
           gimg_free(alloc, com_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, to_free);
-          return r;
+          goto done;
         }
       }
       else if (meta_common) {
@@ -3750,8 +3757,7 @@ have_scan:
             r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_COM,
                 (const unsigned char *)desc, dlen, &report->bytes_written);
             if (r != GIMG_OK) {
-              gimg_free(alloc, to_free);
-              return r;
+              goto done;
             }
           }
         }
@@ -3806,8 +3812,7 @@ have_scan:
         gimg_free(alloc, app0_buf);
       }
       if (r != GIMG_OK) {
-        gimg_free(alloc, to_free);
-        return r;
+        goto done;
       }
     }
     else if (!suppress_jfif) {
@@ -3817,8 +3822,7 @@ have_scan:
       r = jpeg_write_app_segment(
           stream, GIMG_JPEG_MARKER_APP0, app0, 14, &report->bytes_written);
       if (r != GIMG_OK) {
-        gimg_free(alloc, to_free);
-        return r;
+        goto done;
       }
     }
 
@@ -3841,8 +3845,7 @@ have_scan:
           gimg_free(alloc, jfxx_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, to_free);
-          return r;
+          goto done;
         }
       }
     }
@@ -4150,8 +4153,7 @@ have_scan:
           }
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, to_free);
-          return r;
+          goto done;
         }
       }
 
@@ -4172,8 +4174,7 @@ have_scan:
           gimg_free(alloc, xmp_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, to_free);
-          return r;
+          goto done;
         }
       }
 
@@ -4211,8 +4212,7 @@ have_scan:
           gimg_free(alloc, chunks_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, to_free);
-          return r;
+          goto done;
         }
         wrote_icc_from_raw = true;
       }
@@ -4233,8 +4233,7 @@ have_scan:
             gimg_free(alloc, icc_buf);
           }
           if (r != GIMG_OK) {
-            gimg_free(alloc, to_free);
-            return r;
+            goto done;
           }
           wrote_icc_from_raw = true;
         }
@@ -4248,8 +4247,7 @@ have_scan:
         r = jpeg_write_icc_from_info(
             stream, out_color, num_components, alloc, report);
         if (r != GIMG_OK) {
-          gimg_free(alloc, to_free);
-          return r;
+          goto done;
         }
       }
 
@@ -4271,8 +4269,7 @@ have_scan:
           gimg_free(alloc, app13_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, to_free);
-          return r;
+          goto done;
         }
       }
       // APP14: preserved from the source, but its transform byte describes the
@@ -4318,8 +4315,7 @@ have_scan:
           gimg_free(alloc, app14_buf);
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, to_free);
-          return r;
+          goto done;
         }
       }
 
@@ -4350,8 +4346,7 @@ have_scan:
                     unknown_buf + off, plen, &report->bytes_written);
                 if (r != GIMG_OK) {
                   gimg_free(alloc, unknown_buf);
-                  gimg_free(alloc, to_free);
-                  return r;
+                  goto done;
                 }
                 off += plen;
               }
@@ -4360,8 +4355,7 @@ have_scan:
           }
         }
         if (r != GIMG_OK) {
-          gimg_free(alloc, to_free);
-          return r;
+          goto done;
         }
       }
     }
@@ -4373,8 +4367,7 @@ have_scan:
       r = jpeg_write_icc_from_info(
           stream, out_color, num_components, alloc, report);
       if (r != GIMG_OK) {
-        gimg_free(alloc, to_free);
-        return r;
+        goto done;
       }
     }
   }
@@ -4400,8 +4393,7 @@ have_scan:
     r = jpeg_write_app_segment(stream, GIMG_JPEG_MARKER_APP14, app14_new,
         sizeof(app14_new), &report->bytes_written);
     if (r != GIMG_OK) {
-      gimg_free(alloc, to_free);
-      return r;
+      goto done;
     }
   }
 
@@ -4420,24 +4412,17 @@ have_scan:
         coef_buffer, total_blocks, scans, scan_count, precision, arithmetic,
         alloc,
         restart_interval, abbreviated, &report->bytes_written);
-    gimg_free(alloc, coef_buffer);
   }
   else if (hier_levels != 0) {
     r = jpeg_write_image_body_hierarchical(stream, width, height,
         num_components, tbl_sel, quant_luma, quant_chroma, hier_frames,
         hier_num_frames, restart_interval, arithmetic, precision,
         hier_is_color, &report->bytes_written);
-    gimg_jpeg_free_enc_frames(alloc, hier_frames, hier_num_frames);
   }
   else if (lossless_psv != 0) {
     r = jpeg_write_image_body_lossless(stream, width, height, num_components,
         precision, lossless_psv, arithmetic, lossless_scans,
         lossless_num_scans, restart_interval, &report->bytes_written);
-    for (unsigned si = 0; si < lossless_num_scans; si++) {
-      gimg_free(alloc, lossless_scans[si].data);
-      gimg_free(alloc, lossless_scans[si].dht);
-    }
-    gimg_free(alloc, to_free);
   }
   else {
     r = jpeg_write_image_body(stream, width, height, num_components,
@@ -4446,12 +4431,26 @@ have_scan:
         scan_data, scan_size, precision, restart_interval, arithmetic,
         non_interleaved ? coef_buffer : NULL, alloc, abbreviated,
         &report->bytes_written);
-    gimg_free(alloc, to_free);
   }
-  if (r != GIMG_OK) {
-    return r;
+
+done:
+  // One exit, holding everything the encode step produced.
+  //
+  // This used to be a `gimg_free(alloc, to_free)` repeated at each of the
+  // eighteen points where writing a segment could fail, and each of the four
+  // writer branches freeing its own state at the end.  Between them they
+  // covered the DCT paths and nothing else: `to_free` is NULL for a lossless
+  // frame and for a hierarchical sequence, whose scans and per-frame buffers
+  // were freed only by the branch that wrote them - so a sink that failed
+  // anywhere in the header, a marker before the frame, leaked the entire
+  // encoded image.  A budget-limited stream finds it at the first byte.
+  gimg_free(alloc, to_free);
+  gimg_jpeg_free_enc_frames(alloc, hier_frames, hier_num_frames);
+  for (unsigned si = 0; si < lossless_num_scans; si++) {
+    gimg_free(alloc, lossless_scans[si].data);
+    gimg_free(alloc, lossless_scans[si].dht);
   }
-  return GIMG_OK;
+  return r;
 }
 
 /**
