@@ -5842,6 +5842,34 @@ TEST(JpegLoad, AProgressiveScanWithNoAcTableUsesTheBuiltInOne) {
 }
 
 /**
+ * A scan that ends where its restart marker should be is refused.
+ *
+ * With a restart interval set, the decoder pads to a byte boundary at the end
+ * of each interval and expects the marker there. When the scan data simply
+ * stops at that point there is no marker and no next interval, and the search
+ * has to notice it has run out of buffer rather than read past it.
+ *
+ * The control is the same frame with the marker and the following interval
+ * present, which decodes. Both files are otherwise identical, so a refusal
+ * here is about the missing tail and not about the frame being malformed.
+ */
+TEST(JpegLoad, AScanEndingAtItsRestartBoundaryIsRefused) {
+  // MCU0 takes seventeen bits, so the scan ends one bit into byte 2 and
+  // alignment looks at byte 3 - which is not there.
+  const std::vector<uint8_t> truncated{0, 0, 0};
+  const std::vector<uint8_t> complete{0, 0, 0, 0xFF, 0xD0, 0, 0, 0};
+
+  EXPECT_EQ(decode_size(make_restart_resync_jpeg(true, complete), nullptr,
+                nullptr),
+      GIMG_OK)
+      << "control: the same frame with its marker and second interval";
+  EXPECT_EQ(decode_size(make_restart_resync_jpeg(true, truncated), nullptr,
+                nullptr),
+      GIMG_ERR_CORRUPT)
+      << "the restart marker is off the end of the scan data";
+}
+
+/**
  * A restart marker that byte alignment misses is still found, and not read as
  * picture data.
  *
@@ -5888,15 +5916,19 @@ TEST(JpegLoad, ARestartMarkerPastTheAlignedPositionIsStillConsumed) {
 }
 
 /**
- * A scan whose last byte is 0xFF is refused, not read past.
+ * A scan that is nothing but a marker prefix is refused.
  *
- * 0xFF is the marker prefix, so the bit reader looks at the byte after it
- * before deciding what it is. When the 0xFF is the last byte there is no such
- * byte, and two separate places have to notice: the marker check before the
- * bits are read, and the byte-stuffing step after them. Both are reached by
- * this one file, and neither is reachable from a well-formed one - B.1.1.5
- * stuffs a 0x00 after every 0xFF the entropy coder emits, so a conformant
- * scan never ends on one.
+ * What this pins is a parse-time refusal, and saying so is the correction
+ * worth keeping. It was written to reach the two end-of-buffer arms in the
+ * bit reader - the marker check before the bits are read and the byte-stuffing
+ * step after them - and it reaches neither. Instrumenting both showed why:
+ * the entropy-coded segment ends at the next marker, so the extractor never
+ * hands the reader a buffer ending on a 0xFF, and this file is refused before
+ * a bitstream is built at all. The test passed the whole time, for a reason
+ * that had nothing to do with its name.
+ *
+ * It is kept because the refusal is worth pinning on its own, and because
+ * `GIMG_ERR_CORRUPT` here should not quietly become "decodes as a picture".
  *
  * The control is a single zero byte, which decodes: the one code in each table
  * is codeword 0, so a zero bit is DC category 0 and the next is EOB. Without

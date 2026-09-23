@@ -77,6 +77,15 @@ static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
   // those two stood here and could not fire.  What is still needed is the
   // byte after the 0xFF, which the caller has not looked at: at the end of the
   // buffer there is none, and then this is not a marker.
+  //
+  // No file reaches this either, and the reason is upstream: the scan
+  // extractor ends the entropy-coded segment at the next marker, so a
+  // trailing 0xFF is either part of that marker or a B.1.1.2 fill byte, and
+  // is not passed on.  Measured over a scan of {FF}, {00 FF} and {00 00 FF},
+  // with and without an EOI: the segment handed here never ends on a 0xFF,
+  // and the versions with no following marker are refused before a bitstream
+  // is built at all.  Kept because this function's contract is about the
+  // buffer it is given, not about who fills it.
   if (bs->byte_off + 1 >= bs->size) {
     return 0;
   }
@@ -110,6 +119,10 @@ static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
  * reader may not move over.
  */
 static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
+  // Unreachable for the same upstream reason as the end-of-buffer test in
+  // jpeg_bitstream_skip_marker_at_ff(): getting here needs the last byte of
+  // the segment to have been a 0xFF, and the scan extractor does not hand one
+  // over.
   if (bs->byte_off >= bs->size) {
     return;
   }
@@ -361,6 +374,11 @@ int jpeg_huff_decode(
 }
 
 int16_t jpeg_extend(int val, int n) {
+  // Neither arm is reachable from the four call sites in jpeg_block.c: each
+  // sits inside an `if (n > 0)` and each width is already bounded to 15 - a DC
+  // category the decoder refused above 15, or an AC size taken as `sym & 0x0F`.
+  // They are the function's own contract rather than a check on the input, and
+  // are kept so that it is total for the type it accepts.
   if (n <= 0) {
     return 0;
   }
