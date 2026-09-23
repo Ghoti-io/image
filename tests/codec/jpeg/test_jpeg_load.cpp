@@ -6848,3 +6848,183 @@ TEST(JpegLoad, AFrameContradictingItsDhpIsRefused) {
          "the loader said: "
       << why;
 }
+
+namespace {
+
+/** Where a lossless frame keeps the fields T.81 H.1 puts rules on. */
+struct LosslessFields {
+  size_t precision = 0;  ///< SOF3 sample precision, P.
+  size_t nf = 0;         ///< SOF3 component count.
+  size_t ns = 0;         ///< SOS component count.
+  size_t psv = 0;        ///< SOS Ss, the predictor selection value.
+  size_t ah_al = 0;      ///< SOS Ah/Al byte; Al is the point transform.
+  size_t first_table = 0; ///< SOS first component's Td/Ta byte.
+  bool found = false;
+};
+
+/**
+ * Walk the markers rather than hard-coding offsets, so regenerating the
+ * fixture cannot silently move a mutation onto a byte that means something
+ * else - which would leave the case passing for the wrong reason.
+ */
+LosslessFields find_lossless_fields(const std::vector<uint8_t> & d) {
+  LosslessFields f;
+  size_t sof = 0, sos = 0;
+  size_t i = 2;
+  while (i + 3 < d.size()) {
+    if (d[i] != 0xFF) { i++; continue; }
+    const uint8_t m = d[i + 1];
+    if (m == 0xD8 || m == 0xD9 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+    const size_t len = ((size_t)d[i + 2] << 8) | d[i + 3];
+    if (m == 0xC3) { sof = i; }
+    if (m == 0xDA) { sos = i; break; }
+    i += 2 + len;
+  }
+  if (sof == 0 || sos == 0) { return f; }
+  const size_t comps = d[sos + 4];
+  f.precision = sof + 4;
+  f.nf = sof + 9;
+  f.ns = sos + 4;
+  f.first_table = sos + 6;
+  f.psv = sos + 5 + 2 * comps;
+  f.ah_al = sos + 7 + 2 * comps;
+  f.found = f.ah_al < d.size();
+  return f;
+}
+
+/** Load @p bytes, reporting the first error reason and where it was refused. */
+struct Refusal {
+  GIMG_Result load = GIMG_OK;
+  GIMG_Result decode = GIMG_OK;
+  std::string why;
+  long errors = 0;
+};
+
+Refusal try_load(const std::vector<uint8_t> & bytes) {
+  Refusal out;
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    out.load = GIMG_ERR_INTERNAL;
+    return out;
+  }
+  GIMG_Diagnostics diag = {};
+  GIMG_Doc * doc = nullptr;
+  out.load = gimg_doc_load(s, nullptr, &diag, &doc);
+  GIMG_Raster * raster = nullptr;
+  if (out.load == GIMG_OK) {
+    out.decode = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  }
+  for (size_t k = 0; k < diag.count; k++) {
+    if (diag.items[k].severity == GIMG_DIAG_ERROR) {
+      out.errors++;
+      if (out.why.empty() && diag.items[k].recommended_action) {
+        out.why = diag.items[k].recommended_action;
+      }
+    }
+  }
+  if (raster) { gimg_raster_destroy(raster); }
+  if (doc) { gimg_doc_destroy(doc); }
+  gimg_diagnostics_destroy(&diag);
+  gimg_stream_destroy(s);
+  return out;
+}
+
+} // namespace
+
+/**
+ * T.81 H.1 puts rules on a lossless frame's parameters, and the loader
+ * enforces them before the decoder ever sees the frame.
+ *
+ * That ordering is the point of this test, and it is what classifies the
+ * uncovered lines in jpeg_lossless.c. The decoder re-checks the predictor
+ * selection value, the point transform, the component count and the sample
+ * precision - and none of those arms can be reached through the public API,
+ * because a file that breaks any of those rules is refused at load with a
+ * reason. They are a second copy of validation that already happened, not
+ * tests nobody wrote; leaving them uncovered is the right answer, and this is
+ * the thing that keeps it the right answer.
+ *
+ * So each case takes a valid lossless fixture, changes exactly one byte, and
+ * requires the refusal to name the rule that byte broke - not merely to
+ * return an error, because almost everything in this loader returns
+ * GIMG_ERR_FORMAT and a case that is refused three rules earlier for an
+ * unrelated reason looks identical.
+ *
+ * The field offsets are found by walking the markers. Hard-coding them would
+ * mean a regenerated fixture could move a mutation onto a byte that means
+ * something else, and the case would still pass.
+ */
+TEST(JpegLoad, ALosslessFrameIsCheckedAgainstAnnexHBeforeItIsDecoded) {
+  std::vector<uint8_t> base;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("lossless_rgb_psv7_pt1.jpg", base));
+  const LosslessFields f = find_lossless_fields(base);
+  ASSERT_TRUE(f.found) << "the fixture is not a plain lossless frame any more";
+
+  // The control: unmutated, it loads and decodes and reports nothing. Without
+  // this the cases below would pass against a loader that refused everything.
+  {
+    const Refusal ok = try_load(base);
+    EXPECT_EQ(ok.load, GIMG_OK);
+    EXPECT_EQ(ok.decode, GIMG_OK);
+    EXPECT_EQ(ok.errors, 0) << "a good file reported: " << ok.why;
+  }
+
+  const uint8_t precision = base[f.precision];
+  const struct {
+    const char * what;
+    size_t offset;
+    uint8_t value;
+    GIMG_Result want;
+    const char * reason;
+  } cases[] = {
+      // Table H.1 and J.1.3.2: selection value 0 means "no prediction" and is
+      // only legal in a differential frame; 1 to 7 are the predictors.
+      {"predictor selection 0", f.psv, 0, GIMG_ERR_FORMAT,
+          "lossless predictor selection out of range (T.81 H.1)"},
+      {"predictor selection 8", f.psv, 8, GIMG_ERR_FORMAT,
+          "lossless predictor selection out of range (T.81 H.1)"},
+      // H.1: the point transform shifts the sample right, so a shift of the
+      // whole precision leaves nothing of it.
+      {"point transform equal to the precision", f.ah_al, precision,
+          GIMG_ERR_FORMAT,
+          "lossless point transform discards the whole sample (T.81 H.1)"},
+      // B.2.2: Nf is 1 to 255.
+      {"no components in the frame", f.nf, 0, GIMG_ERR_FORMAT, "invalid SOF"},
+      // B.2.2 Table B.2 and H.1: P is 2 to 16 for a lossless frame.
+      {"sample precision 1", f.precision, 1, GIMG_ERR_UNSUPPORTED,
+          "invalid SOF"},
+      {"sample precision 17", f.precision, 17, GIMG_ERR_UNSUPPORTED,
+          "invalid SOF"},
+      // B.2.3: Ns is 1 to 4, and every component must be in the frame.
+      {"no components in the scan", f.ns, 0, GIMG_ERR_FORMAT,
+          "invalid SOS Ns or payload length"},
+      {"more scan components than the frame has", f.ns, 9, GIMG_ERR_FORMAT,
+          "invalid SOS Ns or payload length"},
+  };
+
+  for (const auto & c : cases) {
+    SCOPED_TRACE(c.what);
+    std::vector<uint8_t> broken = base;
+    ASSERT_LT(c.offset, broken.size());
+    ASSERT_NE(broken[c.offset], c.value)
+        << "this case changes nothing, so it tests nothing";
+    broken[c.offset] = c.value;
+    const Refusal got = try_load(broken);
+    EXPECT_EQ(got.load, c.want);
+    EXPECT_EQ(got.why, c.reason)
+        << "refused, but for a different rule than the byte that changed";
+  }
+
+  // A Huffman table the scan names and no DHT defined is the one thing here
+  // the loader cannot catch: whether a table exists is a question about the
+  // whole file, and the scan header is syntactically fine. So it is refused
+  // at decode - which has no diagnostics parameter, by design - and the code
+  // is all the caller gets.
+  {
+    std::vector<uint8_t> broken = base;
+    broken[f.first_table] = 0x30; // Td = 3, a table this file never defines
+    const Refusal got = try_load(broken);
+    EXPECT_EQ(got.load, GIMG_OK) << "the scan header itself is well formed";
+    EXPECT_EQ(got.decode, GIMG_ERR_CORRUPT);
+  }
+}
