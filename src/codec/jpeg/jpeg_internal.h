@@ -926,6 +926,14 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
  * Build a Huffman table from symbol frequencies (T.81 Annex K.2).  Defined in
  * jpeg_encode.c; see the comment there for why the fixed tables of Annex K are
  * not enough for a lossless or a differential frame.
+ *
+ * @param freq  Frequencies, and **it must hold num_symbols + 1 entries**: the
+ *   generator writes a reserved symbol of frequency one at freq[num_symbols],
+ *   so that the longest codeword is spent on something that never occurs and
+ *   the all-ones codeword T.81 C.2 reserves stays free.  Every caller sizes
+ *   for this today (dc_freq[17] for 16, ac_freq[257] for 256), and the array
+ *   is consumed: the merge writes back into it, so pass a copy if the counts
+ *   are still wanted afterwards.
  */
 void jpeg_gen_huff_table(uint32_t * freq, int num_symbols,
     unsigned char bits[17], unsigned char * vals, int * out_n);

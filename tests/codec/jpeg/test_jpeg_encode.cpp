@@ -6,6 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <cstdio>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -8649,4 +8650,173 @@ TEST(JpegEncode, AFrameCarriesAsManyComponentsAsItSays) {
     }
   }
   ASSERT_EQ(written, 12L);
+}
+
+namespace {
+
+/**
+ * The longest codeword an unrestricted Huffman code would give these
+ * frequencies.
+ *
+ * The test needs this to say for itself that an input requires the length
+ * limiter at all. Without it, "the table came back with nothing longer than
+ * sixteen bits" is true of every input, including the ones that never needed
+ * limiting - which is the same as asserting nothing.
+ */
+int longest_unlimited_codeword(const std::vector<uint32_t> & freq) {
+  struct Node {
+    uint64_t w;
+    int left = -1, right = -1;
+  };
+  std::vector<Node> nodes;
+  std::vector<int> live;
+  for (size_t i = 0; i < freq.size(); i++) {
+    if (freq[i] != 0) {
+      nodes.push_back({freq[i], -1, -1});
+      live.push_back((int)nodes.size() - 1);
+    }
+  }
+  if (live.size() < 2) { return (int)live.size(); }
+  while (live.size() > 1) {
+    // Two smallest, by weight.
+    size_t a = 0;
+    for (size_t k = 1; k < live.size(); k++) {
+      if (nodes[live[k]].w < nodes[live[a]].w) { a = k; }
+    }
+    const int na = live[a];
+    live.erase(live.begin() + (long)a);
+    size_t b = 0;
+    for (size_t k = 1; k < live.size(); k++) {
+      if (nodes[live[k]].w < nodes[live[b]].w) { b = k; }
+    }
+    const int nb = live[b];
+    live.erase(live.begin() + (long)b);
+    nodes.push_back({nodes[na].w + nodes[nb].w, na, nb});
+    live.push_back((int)nodes.size() - 1);
+  }
+  // Depth of the deepest leaf.
+  int best = 0;
+  std::vector<std::pair<int, int>> stack{{live[0], 0}};
+  while (!stack.empty()) {
+    const auto [id, depth] = stack.back();
+    stack.pop_back();
+    if (nodes[id].left < 0) {
+      if (depth > best) { best = depth; }
+      continue;
+    }
+    stack.push_back({nodes[id].left, depth + 1});
+    stack.push_back({nodes[id].right, depth + 1});
+  }
+  return best;
+}
+
+/** A DHT payload built from what jpeg_gen_huff_table() produced. */
+std::vector<unsigned char> dht_payload_from(
+    const unsigned char bits[17], const unsigned char * vals, int n) {
+  std::vector<unsigned char> out;
+  out.push_back(0x00);  // Tc=0 Th=0
+  for (int L = 1; L <= 16; L++) { out.push_back(bits[L]); }
+  for (int i = 0; i < n; i++) { out.push_back(vals[i]); }
+  return out;
+}
+
+} // namespace
+
+/**
+ * A frequency distribution that wants codewords longer than sixteen bits gets
+ * a table the decoder will take.
+ *
+ * T.81 allows no codeword longer than sixteen bits, and an optimal Huffman
+ * code over skewed enough statistics wants them. Figure K.3's loop trades
+ * depth away until none is left - seven lines that no image in the suite had
+ * ever reached, because it takes frequencies spanning a factor of thousands
+ * before the optimal code runs that deep.
+ *
+ * Fibonacci weights are the classic shape that does it: each is the sum of the
+ * two before, which is exactly the merge the algorithm performs, so every step
+ * deepens the same branch. The first assertion establishes that - the input is
+ * one an unrestricted code answers with more than sixteen bits - because
+ * otherwise the rest holds trivially for any input at all.
+ *
+ * The last assertion is the one that ties this to the decoder: the table is
+ * assembled into a DHT payload and handed to jpeg_build_huff_table(), which
+ * refuses an over-subscribed table and, since the reserved-codeword fix, one
+ * that uses the all-ones codeword as well. That the limiter's output survives
+ * that check is a property of the two halves together, and neither test alone
+ * would notice it breaking.
+ */
+/**
+ * A frequency distribution that wants codewords longer than sixteen bits gets
+ * a table the decoder will take.
+ *
+ * T.81 allows no codeword longer than sixteen bits, and an optimal Huffman
+ * code over skewed enough statistics wants them. Figure K.3's loop trades
+ * depth away until none is left - seven lines that no image in the suite had
+ * ever reached, because it takes frequencies spanning a factor of millions
+ * before the optimal code runs that deep.
+ *
+ * The weights are each at least the sum of all before them, which forces a
+ * fully degenerate tree: 26 symbols, so an unrestricted code would reach 25
+ * bits. Measured inside the generator, this input takes 37 trades to bring
+ * down from a longest codeword of 26.
+ *
+ * Fibonacci weights were the first attempt and are the more famous worst case,
+ * and they do not work here: this generator answers them with a longest
+ * codeword of 13 where an optimal Huffman code uses 23, at a cost of twelve
+ * bits out of 317,783. So an independent Huffman is not a predictor of what
+ * this generator will do, and a test that asserted "the optimal code needs
+ * more than sixteen bits" as its premise passed while the limiter never ran.
+ * The premise here is the output instead: symbols piled at exactly sixteen
+ * bits are what limiting leaves behind, and the flat control has none.
+ *
+ * The last assertion is the one that ties this to the decoder: the table is
+ * assembled into a DHT payload and handed to jpeg_build_huff_table(), which
+ * refuses an over-subscribed table and, since the reserved-codeword fix, one
+ * that uses the all-ones codeword as well. That the limiter's output survives
+ * that check is a property of the two halves together, and neither test alone
+ * would notice it breaking.
+ */
+TEST(JpegEncode, ATableWantingLongCodewordsIsBroughtInsideSixteenBits) {
+  std::vector<uint32_t> skewed(257, 0);
+  skewed[0] = 1;
+  for (int i = 1; i < 26; i++) { skewed[(size_t)i] = 1u << (i - 1); }
+
+  unsigned char bits[17] = {0};
+  unsigned char vals[256] = {0};
+  int n = 0;
+  std::vector<uint32_t> scratch = skewed;  // the generator consumes it
+  jpeg_gen_huff_table(scratch.data(), 256, bits, vals, &n);
+
+  EXPECT_EQ(n, 26) << "every symbol with a frequency keeps a codeword";
+  int total = 0;
+  for (int L = 1; L <= 16; L++) { total += bits[L]; }
+  EXPECT_EQ(total, n)
+      << "the counts and the value list must agree, or the table names "
+         "symbols it gave no codeword to";
+  EXPECT_GT(bits[16], 1)
+      << "limiting leaves symbols piled at the longest length it allows; one "
+         "or none here would mean the loop never ran";
+
+  const std::vector<unsigned char> payload = dht_payload_from(bits, vals, n);
+  gimg_jpeg_huff_table_t tbl;
+  memset(&tbl, 0, sizeof tbl);
+  EXPECT_EQ(jpeg_build_huff_table(payload.data(), payload.size(), &tbl), 0)
+      << "the decoder refuses the table this encoder just generated";
+
+  // Control: weights that need no limiting. Same generator, same checks, and
+  // nothing piled at sixteen - which is what makes the assertion above about
+  // limiting rather than about tables in general.
+  std::vector<uint32_t> flat(257, 0);
+  for (int i = 0; i < 16; i++) { flat[(size_t)i] = 100; }
+  ASSERT_LE(longest_unlimited_codeword(flat), 16);
+  unsigned char fbits[17] = {0};
+  unsigned char fvals[256] = {0};
+  int fn = 0;
+  scratch = flat;
+  jpeg_gen_huff_table(scratch.data(), 256, fbits, fvals, &fn);
+  EXPECT_EQ(fbits[16], 0) << "control: this distribution needs no limiting";
+  const std::vector<unsigned char> fpayload = dht_payload_from(fbits, fvals, fn);
+  memset(&tbl, 0, sizeof tbl);
+  EXPECT_EQ(jpeg_build_huff_table(fpayload.data(), fpayload.size(), &tbl), 0)
+      << "control: an ordinary distribution builds a table the decoder takes";
 }
