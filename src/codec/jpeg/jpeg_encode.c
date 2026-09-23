@@ -790,10 +790,6 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
-  size_t blocks_per_mcu = 0;
-  for (int c = 0; c < num_components; c++) {
-    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
-  }
   uint32_t mcu_per_row =
       (width + (uint32_t)(8 * h_max) - 1) / (uint32_t)(8 * h_max);
   uint32_t mcu_per_col =
@@ -1210,10 +1206,6 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
   v_samp = gimg_jpeg_samp_or_ones(v_samp, samp_ones, num_components);
   uint8_t h_max, v_max;
   gimg_jpeg_sampling_max(num_components, h_samp, v_samp, &h_max, &v_max);
-  size_t blocks_per_mcu = 0;
-  for (int c = 0; c < num_components; c++) {
-    blocks_per_mcu += (size_t)h_samp[c] * (size_t)v_samp[c];
-  }
   uint32_t mcu_per_row =
       (width + (uint32_t)(8 * h_max) - 1) / (uint32_t)(8 * h_max);
   uint32_t mcu_per_col =
