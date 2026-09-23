@@ -8896,3 +8896,114 @@ TEST(JpegEncode, AGeneratorAskedForNoTableReturnsNone) {
   for (int L = 1; L <= 16; L++) { total += bits[L]; }
   EXPECT_EQ(total, n);
 }
+
+namespace {
+
+/** Save a small gradient as JPEG under @p options and hand back the bytes. */
+::testing::AssertionResult save_gradient_jpeg(
+    const GIMG_Save_Options & options, std::vector<uint8_t> & out) {
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_create(&doc) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "doc";
+  }
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(64, 64, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr,
+          0, &raster) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return ::testing::AssertionFailure() << "raster";
+  }
+  auto * px = (unsigned char *)gimg_raster_pixels(raster);
+  const size_t stride = gimg_raster_stride_bytes(raster);
+  for (uint32_t y = 0; y < 64; y++) {
+    for (uint32_t x = 0; x < 64; x++) {
+      unsigned char * p = px + y * stride + x * 4u;
+      p[0] = (unsigned char)(x * 4u);
+      p[1] = (unsigned char)(y * 4u);
+      p[2] = (unsigned char)((x * 3u + y * 5u) & 0xFFu);
+      p[3] = 255;
+    }
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  GIMG_Stream * os = nullptr;
+  if (gimg_stream_create_memory_output(&os) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return ::testing::AssertionFailure() << "stream";
+  }
+  GIMG_Save_Report report = {};
+  const GIMG_Result r = gimg_doc_save(doc, os, "jpeg", &options, &report);
+  if (r == GIMG_OK) {
+    const void * buf = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(os, &buf, &n);
+    out.assign((const uint8_t *)buf, (const uint8_t *)buf + n);
+  }
+  gimg_stream_destroy(os);
+  gimg_doc_destroy(doc);
+  return r == GIMG_OK ? ::testing::AssertionSuccess()
+                      : ::testing::AssertionFailure() << "save: " << (int)r;
+}
+
+} // namespace
+
+// jpeg_fdct_method and jpeg_quant_method change nothing about the output.
+//
+// The header used to describe both as choices between implementations to
+// compare against each other, which is true of neither:
+//
+//   - GIMG_JPEG_FDCT_REF names a reference float transform that does not
+//     exist.  The value is accepted, carried through gimg_jpeg_save() into
+//     the block encoder, and discarded there with a cast to void.
+//   - GIMG_JPEG_QUANT_DIV does run - both arms of that branch are taken -
+//     but the reciprocal form is an exact division by multiplication rather
+//     than an approximation, so the two quantize every coefficient alike.
+//
+// So the four combinations write byte-identical files, and this pins that
+// over the settings that change what the encoder does around them: every
+// quality, baseline and progressive, and all three subsampling modes.  It is
+// not an endorsement - either option could be made to mean something - but
+// until then a caller reaching for one should find out here rather than by
+// measuring their own output and finding no difference.
+TEST(JpegEncode, TheFdctAndQuantizationMethodOptionsChangeNoOutput) {
+  long compared = 0;
+  for (int quality = 1; quality <= 100; quality += 9) {
+    for (int progressive = 0; progressive < 2; progressive++) {
+      for (uint8_t sub : {(uint8_t)GIMG_JPEG_CHROMA_420,
+               (uint8_t)GIMG_JPEG_CHROMA_422, (uint8_t)GIMG_JPEG_CHROMA_444}) {
+        std::vector<uint8_t> baseline_bytes;
+        for (uint8_t fdct : {(uint8_t)GIMG_JPEG_FDCT_LOEFFLER,
+                 (uint8_t)GIMG_JPEG_FDCT_REF}) {
+          for (uint8_t quant : {(uint8_t)GIMG_JPEG_QUANT_RECIP,
+                   (uint8_t)GIMG_JPEG_QUANT_DIV}) {
+            SCOPED_TRACE("quality " + std::to_string(quality) +
+                (progressive ? ", progressive" : ", baseline") +
+                ", subsampling " + std::to_string((int)sub) + ", fdct " +
+                std::to_string((int)fdct) + ", quant " +
+                std::to_string((int)quant));
+            GIMG_Save_Options o = {};
+            o.metadata_policy = GIMG_META_DROP_ALL;
+            o.quality = (uint8_t)quality;
+            o.jpeg_progressive = (uint8_t)progressive;
+            o.jpeg_chroma_subsampling = sub;
+            o.jpeg_fdct_method = fdct;
+            o.jpeg_quant_method = quant;
+            std::vector<uint8_t> bytes;
+            ASSERT_TRUE(save_gradient_jpeg(o, bytes));
+            ASSERT_FALSE(bytes.empty());
+            if (baseline_bytes.empty()) {
+              baseline_bytes = bytes;
+              continue;
+            }
+            EXPECT_EQ(bytes, baseline_bytes)
+                << "this combination wrote a different file, so one of these "
+                   "options has started to mean something and the header "
+                   "saying it does not is now wrong";
+            compared++;
+          }
+        }
+      }
+    }
+  }
+  EXPECT_EQ(compared, 12L * 2L * 3L * 3L)
+      << "every combination must have been compared, or the sweep is not as "
+         "wide as it says";
+}
