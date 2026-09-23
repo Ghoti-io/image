@@ -211,14 +211,23 @@ are covered by the same fallback.
 > **Not honoured.** No codec reads `strictness`. The table above describes what
 > the levels are *for*, not what setting one does today - which is nothing.
 > Every codec behaves as GIMG_NORMAL describes whatever is set. Do not rely on
-> GIMG_STRICT to reject a file: use the result code and **GIMG_Diagnostics**,
-> which load and decode do fill. Note that the enum's zero value is
+> GIMG_STRICT to reject a file: use the result code and, on a load,
+> **GIMG_Diagnostics**. Note that the enum's zero value is
 > GIMG_STRICT, so zero-initialized options already ask for the strictest
 > setting and would change behaviour the day this is implemented.
 
 > **GIMG_Save_Report.diagnostics is never set** either. No save path writes to
 > it, so it holds whatever the caller left there. Saving reports through its
 > result code alone; `bytes_written` is always filled.
+
+> **Only a load fills diagnostics.** `gimg_doc_load()` takes a
+> `GIMG_Diagnostics *` and every refusal in every codec appends at least one
+> item saying which rule was broken - checked over the fuzz corpus by
+> `tests/unit/test_refusal_reasons.cpp`, which asserts it for every refused
+> file rather than for a sample. `gimg_item_decode()` has **no diagnostics
+> parameter at all**, so a decode reports through its result code alone; this
+> page used to say load *and decode* filled them, which was never true of a
+> decode and could not have been, there being nowhere to put them.
 
 ## Save report
 
@@ -227,7 +236,7 @@ are covered by the same fallback.
 ## Result and diagnostics
 
 - **GIMG_Result** — Result codes (e.g. `GIMG_OK`, `GIMG_ERR_FORMAT`, `GIMG_ERR_LIMIT`, `GIMG_ERR_CORRUPT`). See `ghoti.io/image/core.h`.
-- **GIMG_Diagnostics** — List of **GIMG_Diagnostic** items (codec name, offset, chunk/tag id, severity, recommended action). Filled when provided to load/save/decode. **Lifecycle:** Call `gimg_diagnostics_init(d, allocator)` to set an optional allocator (NULL = default). Append uses this allocator for realloc. When done, call `gimg_diagnostics_clear(d)` to free the list and reset count/capacity, or `gimg_diagnostics_destroy(d)` to free and zero the whole struct. Callers must call clear or destroy to avoid leaks; the same allocator is used for growth and for release.
+- **GIMG_Diagnostics** — List of **GIMG_Diagnostic** items (codec name, offset, chunk/tag id, severity, recommended action). Filled by `gimg_doc_load()`, which is the only entry point that takes one: a decode has no diagnostics parameter, and a save's report field is never written. See the note under Strictness. **Lifecycle:** Call `gimg_diagnostics_init(d, allocator)` to set an optional allocator (NULL = default). Append uses this allocator for realloc. When done, call `gimg_diagnostics_clear(d)` to free the list and reset count/capacity, or `gimg_diagnostics_destroy(d)` to free and zero the whole struct. Callers must call clear or destroy to avoid leaks; the same allocator is used for growth and for release.
 
 @section api_options_diagnostics_functions Diagnostics API (lifecycle)
 

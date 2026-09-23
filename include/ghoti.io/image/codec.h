@@ -208,7 +208,7 @@ typedef struct {
    * the shape of the struct is settled, and every codec currently behaves as
    * GIMG_NORMAL describes whatever is set here. Setting GIMG_STRICT does not
    * make anything stricter, so do not rely on it to reject a file - use the
-   * result code and GIMG_Diagnostics, which are filled.
+   * result code and, on a load, GIMG_Diagnostics, which every refusal fills.
    *
    * Its zero value is GIMG_STRICT, so the usual zero-initialized options ask
    * for the strictest setting today and would change behaviour the day this
@@ -635,9 +635,13 @@ typedef struct {
   size_t bytes_written; ///< Bytes the save actually wrote; always filled.
   /**
    * @warning **Never set.** No codec's save path writes to this pointer, so
-   * it holds whatever the caller left in it. The load and decode paths do
-   * take a GIMG_Diagnostics and fill it; saving reports through its result
-   * code alone.
+   * it holds whatever the caller left in it. Saving reports through its
+   * result code alone.
+   *
+   * Of the three, only gimg_doc_load() fills diagnostics: it takes a
+   * GIMG_Diagnostics and every refusal in every codec appends an item saying
+   * which rule was broken. gimg_item_decode() has no diagnostics parameter,
+   * so a decode reports through its result code alone as well.
    */
   GIMG_Diagnostics * diagnostics;
   uint8_t _reserved[8];
@@ -737,7 +741,13 @@ typedef struct {
 } GIMG_Decode_Options;
 
 /**
- * @brief Decode item to raster (stub: returns UNSUPPORTED or minimal raster).
+ * @brief Decode an item to a raster.
+ *
+ * Reports through its result code alone: there is no GIMG_Diagnostics
+ * parameter here, so nothing a decode refuses can say which rule it broke.
+ * A load can and does - see GIMG_Save_Report.diagnostics for the three-way
+ * summary - so where a file is going to be rejected for its structure, it is
+ * rejected at load time with a reason attached.
  */
 GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
