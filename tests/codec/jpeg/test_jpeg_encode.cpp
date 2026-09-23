@@ -8266,3 +8266,81 @@ TEST(JpegEncode, AHierarchicalSequenceIsTheSamePictureHoweverItIsWritten) {
     }
   }
 }
+
+/**
+ * The colour transform's clamps never fire, and this is what says so.
+ *
+ * jpeg_rgb_to_ycbcr_at() clamps its three inputs into 0..max_val and its
+ * three outputs the same way - twelve lines that no test could reach, which
+ * is a thing to explain rather than leave on a list. The explanation is
+ * arithmetic: the luma coefficients sum to exactly 65536, so Y spans the
+ * range and no more; and the chroma bias is (center << 16) + 32767 rather
+ * than + 32768, which is what stops Cb reaching max_val + 1 when the pixel is
+ * pure blue. One unit either way in that constant and the clamp becomes
+ * load-bearing.
+ *
+ * So the clamps stay - a numeric guard removed on the strength of today's
+ * constants is a bug waiting on the next person to change them - and this
+ * sweeps every 8-bit triple there is, asserting both that the transform's
+ * answer is already in range and that it is exactly what the formula below
+ * produces.
+ *
+ * The formula is written out here a second time on purpose. It means a
+ * change to the encoder's constants fails this test at the equality check
+ * rather than passing silently, and whoever updates this copy to match has
+ * to re-run the range assertions with the new numbers - which is the
+ * question that actually matters, because a clamp that starts firing does
+ * not announce itself. It flattens a colour and returns success.
+ *
+ * Twelve bits is not swept: each output is a linear form in R, G and B with
+ * fixed-sign coefficients, so its extremes over the cube are at a vertex, and
+ * the eight vertices are checked here exactly.
+ */
+TEST(JpegEncode, TheColorTransformNeverNeedsItsClamps) {
+  auto unclamped = [](int32_t r, int32_t g, int32_t b, int32_t center,
+                       int32_t * y, int32_t * cb, int32_t * cr) {
+    const int32_t one_half = 1 << 15;
+    const int32_t bias = (center << 16) + one_half - 1;
+    *y = (19595 * r + 38470 * g + 7471 * b + one_half) >> 16;
+    *cb = (-11059 * r - 21709 * g + 32768 * b + bias) >> 16;
+    *cr = (32768 * r - 27439 * g - 5331 * b + bias) >> 16;
+  };
+
+  long checked = 0;
+  for (int32_t r = 0; r < 256; r++) {
+    for (int32_t g = 0; g < 256; g++) {
+      for (int32_t b = 0; b < 256; b++) {
+        int32_t wy = 0, wcb = 0, wcr = 0;
+        unclamped(r, g, b, 128, &wy, &wcb, &wcr);
+        // The claim: already in range, so clamping cannot have changed it.
+        ASSERT_GE(wy, 0);
+        ASSERT_LE(wy, 255);
+        ASSERT_GE(wcb, 0);
+        ASSERT_LE(wcb, 255);
+        ASSERT_GE(wcr, 0);
+        ASSERT_LE(wcr, 255);
+        uint8_t y = 0, cb = 0, cr = 0;
+        jpeg_rgb_to_ycbcr((uint8_t)r, (uint8_t)g, (uint8_t)b, &y, &cb, &cr);
+        ASSERT_EQ((int32_t)y, wy) << "at rgb " << r << "," << g << "," << b;
+        ASSERT_EQ((int32_t)cb, wcb);
+        ASSERT_EQ((int32_t)cr, wcr);
+        checked++;
+      }
+    }
+  }
+  ASSERT_EQ(checked, 256L * 256L * 256L);
+
+  // Twelve bits, at the eight vertices of the cube.
+  for (int32_t r : {0, 4095}) {
+    for (int32_t g : {0, 4095}) {
+      for (int32_t b : {0, 4095}) {
+        int32_t y = 0, cb = 0, cr = 0;
+        unclamped(r, g, b, 2048, &y, &cb, &cr);
+        for (int32_t v : {y, cb, cr}) {
+          EXPECT_GE(v, 0) << "at rgb " << r << "," << g << "," << b;
+          EXPECT_LE(v, 4095) << "at rgb " << r << "," << g << "," << b;
+        }
+      }
+    }
+  }
+}
