@@ -165,8 +165,39 @@ endif
 # that cannot be read in a debugger is a release build nobody can diagnose,
 # and the symbols cost only file size.
 #
-# This library keeps -O3 rather than the suite's -O2 floor; moving it further
-# would need a benchmark figure recorded beside the flag.
+# This library keeps -O3 rather than the suite's -O2 floor, and the figure the
+# policy asks for is below.  Measured with tools/image-opt-bench.cpp in the
+# workspace: a 1024x768 photographic raster, each codec path timed separately,
+# best of three rounds of three repetitions, the four builds run interleaved
+# so drift cannot land on one of them.  Milliseconds per operation:
+#
+#                   -O0     -Os     -O2     -O3    O3 vs O2
+#   jpeg_encode   35.39   17.70   14.31   13.59     -5.0%  (overlapping)
+#   jpeg_decode   56.93   29.98   22.46   20.97     -6.6%  separated
+#   gif_encode    24.13   14.66   11.73   10.92     -6.9%  separated
+#   gif_decode     8.50    6.57    6.46    6.54     +1.3%  (noise)
+#   bmp_encode     3.72    5.42    1.23    1.23     +0.1%  (noise)
+#   bmp_decode     2.38    0.68    0.63    0.63      0.0%  (noise)
+#   resample     113.59   28.66   23.39   19.28    -17.6%  separated
+#   ---------------------------------------------------------------
+#   sum          244.63  103.67   80.22   73.16     -8.8%
+#
+# "separated" means every -O3 run beat every -O2 run; "(overlapping)" means
+# the distributions touch, so the sign is right but the size is not settled.
+# So -O3 is worth 8.8% over -O2 here, carried by the resampler and the two
+# entropy coders, and nothing measured is slower at -O3.  -Os costs 29% and
+# -O0 costs 3.05x, which is the number worth quoting at anyone who thinks the
+# suite's -O0 libraries are only giving up a little.
+#
+# PNG encode is excluded from that sum on purpose: at 356-420ms it dwarfs
+# everything else and almost all of it is deflate inside ghoti.io-compress, so
+# it measures that library's optimization level rather than this one's.  It
+# moved -2.6%, which is consistent with the filtering step being this
+# library's only real share of it.
+#
+# Caveats worth keeping with the number: one machine, one afternoon, one
+# synthetic image, and -O3's archive is 4.2MB against -O2's 3.6MB.  Re-measure
+# before treating any of this as still true.
 #
 # Until now the BUILD=debug block below renamed the artifact and nothing else,
 # so `make BUILD=debug` compiled at -O3 under a -debug filename: a debug build
