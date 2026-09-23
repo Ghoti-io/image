@@ -43,8 +43,6 @@ void jpeg_bitstream_init(
   bs->size = size;
   bs->byte_off = 0;
   bs->bit_off = 0;
-  bs->pushback = -1;
-  bs->pushback_n = 0;
   bs->recover_stuff_zero = 0;
   bs->stuffed_any = 0;
   bs->expect_rst = 0;
@@ -65,26 +63,6 @@ static int jpeg_marker_no_length(unsigned char m) {
 /** Skip marker at current position; current byte must be 0xFF. Skips 0xFF and
  * the marker byte; for markers with length, skips length bytes too. Return 1
  * if we skipped, 0 if next byte is 0x00 or 0xFF (entropy data, do not skip). */
-/**
- * Forget every bit buffered ahead of the current position.
- *
- * A restart marker is a hard resynchronization point (T.81 B.2.1): the encoder
- * pads to a byte boundary, emits the marker, and starts the next interval with
- * a clean slate.  Anything the decoder had read ahead of the marker belongs to
- * the interval that just ended and must not be handed to the next one.
- *
- * The longest-match Huffman decode reads past the end of a codeword and pushes
- * the surplus bits back for the next call, so those bits were being replayed
- * after the marker - the first symbol of every interval after the first was
- * decoded from bits that preceded the marker, and the scan fell apart from
- * there.  Fixed-length reads leave nothing pushed back, which is why the DC
- * scans of a progressive file survived this and the AC scans did not.
- */
-static void jpeg_bitstream_drop_lookahead(gimg_jpeg_bitstream_t * bs) {
-  bs->pushback = -1;
-  bs->pushback_n = 0;
-}
-
 static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
   if (bs->byte_off >= bs->size || bs->data[bs->byte_off] != 0xFF) {
     return 0;
@@ -112,7 +90,6 @@ static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
 #endif
     bs->byte_off += 2; // skip 0xFF and marker byte (RST is on byte boundary)
     bs->bit_off = 0;
-    jpeg_bitstream_drop_lookahead(bs);
     bs->rst_just_skipped = 1;
     return 1;
   }
@@ -165,7 +142,6 @@ static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
 #endif
         bs->byte_off += 2;
         bs->bit_off = 0;
-        jpeg_bitstream_drop_lookahead(bs);
         bs->rst_just_skipped = 1;
       }
       break;
@@ -190,20 +166,6 @@ static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
 }
 
 int jpeg_bitstream_read_bit(gimg_jpeg_bitstream_t * bs) {
-  if (bs->pushback_n > 0) {
-    int bit = (int)bs->pushback_buf[--bs->pushback_n];
-    bs->bit_off++;
-    if (bs->bit_off == 8) {
-      bs->bit_off = 0;
-      bs->byte_off++;
-    }
-    return bit;
-  }
-  if (bs->pushback >= 0) {
-    int b = bs->pushback;
-    bs->pushback = -1;
-    return b;
-  }
   while (bs->byte_off < bs->size && bs->data[bs->byte_off] == 0xFF) {
     if (jpeg_bitstream_skip_marker_at_ff(bs)) {
       continue;
@@ -342,26 +304,40 @@ const unsigned char * jpeg_default_ac_dht_payload(size_t * out_len) {
   return gimg_jpeg_default_ac_lum_dht_payload;
 }
 
-void jpeg_build_pillow_compat_ac_scan1_table(
-    gimg_jpeg_huff_table_t * tbl) {
-  memset(tbl, 0, sizeof(*tbl));
-  tbl->num_values = 3;
-  for (int len = 1; len <= 16; len++) {
-    tbl->min_code[len] = 1;
-    tbl->max_code[len] = 0;
-    tbl->base_index[len] = 0;
-  }
-  tbl->min_code[2] = 0;
-  tbl->max_code[2] = 2;
-  tbl->base_index[2] = 0;
-  tbl->values[0] = 4;
-  tbl->values[1] = 0;
-  tbl->values[2] = 0;
-}
-
-int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
-    const gimg_jpeg_huff_table_t * tbl, int ac_prefer_eob, int is_ac,
-    int first_match_only) {
+/**
+ * Decode the next Huffman symbol. @return the symbol, or -1 on error.
+ *
+ * A prefix code is decoded by reading bits until one of them completes a
+ * codeword, and the first codeword that matches is the answer - there is no
+ * choice to make. This used to make two, both left over from an era when the
+ * progressive decoder was being fitted to Pillow's output rather than to
+ * T.81, and both removed here because neither could ever change the answer:
+ *
+ *   - *prefer EOB*: on a three-bit match of symbol 1 or 2 it peeked a fourth
+ *     bit and, if the four-bit code named EOB, returned EOB instead. In a
+ *     canonical table `min_code[4] = (max_code[3] + 1) * 2`, so a code that
+ *     matched at three bits shifted left by one is strictly below
+ *     `min_code[4]`: the four-bit lookup could not match. Never taken, over
+ *     every fixture in the suite.
+ *   - *longest match*: on a two-bit match it read up to fourteen more bits
+ *     looking for a longer codeword with the same prefix, then rewound. A
+ *     prefix code has no such codeword, by the same argument at every length.
+ *     Also never taken - and not free. It had already cost one bug: bits read
+ *     past a codeword were pushed back for the next call, and a restart marker
+ *     is a hard resynchronization point (T.81 B.2.1), so the first symbol of
+ *     every interval after the first was decoded from bits that preceded the
+ *     marker. That was fixed by dropping the buffered bits at each marker,
+ *     which is a function this deletion also removes. The other half was never
+ *     fixed: the rewind restored `byte_off` and `bit_off` arithmetically,
+ *     which does not undo a stuffed `0xFF 0x00` or a marker segment that
+ *     `jpeg_bitstream_read_bit` skipped on the way out - so a lookahead that
+ *     crossed one left the stream pointing somewhere else.
+ *
+ * With them went the `pushback` scalar, which nothing ever set to a bit, and
+ * the sixteen-bit pushback buffer the two of them wrote into.
+ */
+int jpeg_huff_decode(
+    gimg_jpeg_bitstream_t * bs, const gimg_jpeg_huff_table_t * tbl) {
   uint16_t code = 0;
   for (int len = 1; len <= 16; len++) {
     int b = jpeg_bitstream_read_bit(bs);
@@ -384,82 +360,8 @@ int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
     }
     if (match) {
       uint16_t idx = tbl->base_index[len] + idx_off;
-      if (idx >= (uint16_t)tbl->num_values) {
-        match = 0;
-      }
-      else {
-      int sym = (int)tbl->values[idx];
-      if (first_match_only) {
-        return sym;
-      }
-      if (ac_prefer_eob && len == 3 && (sym == 0x01 || sym == 0x02) &&
-          tbl->max_code[4] != 0) {
-        int next_b = jpeg_bitstream_read_bit(bs);
-        if (next_b == 0) {
-          code = (code << 1) | 0;
-          if (code >= tbl->min_code[4] && code <= tbl->max_code[4]) {
-            uint16_t idx4 =
-                tbl->base_index[4] + (uint16_t)(code - tbl->min_code[4]);
-            if (tbl->values[idx4] == 0) {
-              return 0;
-            }
-          }
-        }
-        if (next_b >= 0 && bs->pushback_n < 16) {
-          bs->pushback_buf[bs->pushback_n++] = (unsigned char)next_b;
-        }
-      }
-      {
-        const int ac_longest = GIMG_JPEG_AC_LONGEST_MATCH;
-        int do_longest = is_ac && !first_match_only && ac_longest &&
-            !ac_prefer_eob &&
-            len == 2;
-        if (do_longest && len < 16) {
-          int peek_bits[16];
-          int n_read = 0;
-          int best_len = len;
-          int best_sym = sym;
-          uint16_t code2 = code;
-          while (len + n_read < 16) {
-            int b = jpeg_bitstream_read_bit(bs);
-            if (b < 0) {
-              break;
-            }
-            peek_bits[n_read++] = b;
-            code2 = code;
-            for (int i = 0; i < n_read; i++) {
-              code2 = (code2 << 1) | (uint16_t)peek_bits[i];
-            }
-            {
-              int len2 = len + n_read;
-              if (code2 >= tbl->min_code[len2] &&
-                  code2 <= tbl->max_code[len2]) {
-                best_len = len2;
-                best_sym = (int)tbl->values[tbl->base_index[len2] +
-                    (code2 - tbl->min_code[len2])];
-              }
-            }
-          }
-          {
-            int used = best_len - len;
-            for (int i = n_read - 1; i >= used && bs->pushback_n < 16; i--) {
-              bs->pushback_buf[bs->pushback_n++] = (unsigned char)peek_bits[i];
-            }
-            if (n_read > used) {
-              int rewind_bits = n_read - used;
-              size_t pos_bits =
-                  (size_t)bs->byte_off * 8u + (unsigned)bs->bit_off;
-              if (pos_bits >= (size_t)rewind_bits) {
-                pos_bits -= (size_t)rewind_bits;
-                bs->byte_off = pos_bits / 8u;
-                bs->bit_off = (int)(pos_bits % 8u);
-              }
-            }
-          }
-          return best_sym;
-        }
-      }
-      return sym;
+      if (idx < (uint16_t)tbl->num_values) {
+        return (int)tbl->values[idx];
       }
     }
   }
@@ -522,7 +424,6 @@ void jpeg_bitstream_align_skip_rst(gimg_jpeg_bitstream_t * bs) {
   bs->expect_rst = 0;
   bs->byte_off = pos + 2;
   bs->bit_off = 0;
-  jpeg_bitstream_drop_lookahead(bs);
   bs->rst_just_skipped = 1;
 #if GIMG_JPEG_DEBUG_RST_DEC
   (void)fprintf(stderr, "RST_DEC align_skip_rst at byte_off=%zu\n", pos);

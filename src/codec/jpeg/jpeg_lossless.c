@@ -106,7 +106,7 @@ int32_t jpeg_lossless_predict(
  */
 GIMG_Result jpeg_lossless_decode_diff(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * tbl, int32_t * out_diff) {
-  int s = jpeg_huff_decode(bs, tbl, 0, 1, 0);
+  int s = jpeg_huff_decode(bs, tbl);
   if (s < 0 || s > 16) {
     return GIMG_ERR_CORRUPT;
   }

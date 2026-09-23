@@ -817,9 +817,6 @@ typedef struct {
   size_t size;                    ///< Length of data in bytes.
   size_t byte_off;                ///< Current byte offset.
   int bit_off;                    ///< Current bit offset within byte (0..7).
-  int pushback;                   ///< Pushback state for bit reads.
-  unsigned char pushback_buf[16]; ///< Pushback buffer.
-  unsigned int pushback_n;        ///< Number of bits in pushback buffer.
   int recover_stuff_zero; ///< If set, treat 0xFF 0x00 in wrong place (opt-in).
   int stuffed_any;        ///< Internal: saw byte stuffing.
   int expect_rst;         ///< Next 0xFF 0xDx is RST marker (restart).
@@ -1308,13 +1305,9 @@ int jpeg_build_huff_table(
     const unsigned char * dht, size_t dht_len, gimg_jpeg_huff_table_t * tbl);
 /** Default AC luminance DHT payload when no DHT precedes first SOS. */
 const unsigned char * jpeg_default_ac_dht_payload(size_t * out_len);
-/** Build AC table matching Pillow’s first AC-initial scan (no DHT in stream).
- */
-void jpeg_build_pillow_compat_ac_scan1_table(gimg_jpeg_huff_table_t * tbl);
 /** Decode next Huffman symbol. @return symbol or -1 on error. */
-int jpeg_huff_decode(gimg_jpeg_bitstream_t * bs,
-    const gimg_jpeg_huff_table_t * tbl, int ac_prefer_eob, int is_ac,
-    int first_match_only);
+int jpeg_huff_decode(
+    gimg_jpeg_bitstream_t * bs, const gimg_jpeg_huff_table_t * tbl);
 /** Read one bit (0 or 1). @return -1 on underflow. */
 int jpeg_bitstream_read_bit(gimg_jpeg_bitstream_t * bs);
 /** Read n bits (0..16). @return value or -1 on underflow. */

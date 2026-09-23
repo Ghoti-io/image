@@ -42,7 +42,7 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
     int16_t * dc_predictor, int is_last_block) {
   jpeg_bitstream_align_skip_rst(bs);
   memset(block, 0, 64 * sizeof(int16_t));
-  int sym = jpeg_huff_decode(bs, dc_tbl, 0, 0, 0);
+  int sym = jpeg_huff_decode(bs, dc_tbl);
   if (sym < 0) {
     return GIMG_ERR_CORRUPT;
   }
@@ -75,7 +75,7 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
   for (int k = 1; k < 64; k++) {
     // T.81 Annex F Figure F.16: baseline AC uses first-match only (no
     // longest-match).
-    sym = jpeg_huff_decode(bs, ac_tbl, 0, 1, 1);
+    sym = jpeg_huff_decode(bs, ac_tbl);
     if (sym < 0) {
       if (is_last_block) {
         // Segment ended before byte boundary (e.g. 0-bit padding); treat as
@@ -133,7 +133,7 @@ GIMG_Result jpeg_decode_block(gimg_jpeg_bitstream_t * bs,
 GIMG_Result jpeg_decode_block_progressive_dc(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * dc_tbl, int16_t * block,
     int16_t * dc_predictor, int al, int is_last_block) {
-  int sym = jpeg_huff_decode(bs, dc_tbl, 0, 0, 0);
+  int sym = jpeg_huff_decode(bs, dc_tbl);
   if (sym < 0) {
     if (is_last_block) {
       sym = 0; // Segment ended before byte boundary; treat as DC size 0 (no
@@ -224,7 +224,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(gimg_jpeg_bitstream_t * bs,
     // Use first_match_only=0 (longest-match) for progressive AC initial: the
     // standard table can have EOB as a prefix of a longer codeword;
     // longest-match reads the full codeword (T.81 Annex G).
-    int sym = jpeg_huff_decode(bs, ac_tbl, 0, 1, 0);
+    int sym = jpeg_huff_decode(bs, ac_tbl);
     if (sym < 0) {
       if (is_last_block) {
         sym =
@@ -402,7 +402,7 @@ GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
     // Break-the-circle: log start of first two blocks (position + nz count).
     // T.81 Annex F / Table K.6: AC refinement uses 17-symbol table; decode
     // first matching codeword only (no longest-match, no EOB peeking).
-    int sym = jpeg_huff_decode(bs, ac_tbl, 1, 1, 1);
+    int sym = jpeg_huff_decode(bs, ac_tbl);
     if (sym < 0) {
       if (is_last_block) {
         break; // Segment ended; treat as EOB (T.81 B.2.2 padding unspecified).
