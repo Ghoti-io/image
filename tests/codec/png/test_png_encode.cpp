@@ -4828,3 +4828,91 @@ TEST(PngEncode, ABackgroundIsRewrittenOrDroppedWhenTheColourTypeChanges) {
     }
   }
 }
+
+// What happens when a palette image's raster is replaced by one whose colors
+// are not in the palette.
+//
+// gimg_png_save keeps the source's PLTE whenever the document came from a
+// palette file and the raster is RGBA8 - which is exactly what decoding a
+// palette PNG hands back, so the ordinary edit-a-pixel-and-save round trip
+// lands here.  Every pixel must then name a palette entry, and one that does
+// not makes the save fail with GIMG_ERR_UNSUPPORTED.
+//
+// That is a deliberate refusal rather than a wrong picture, and this pins it
+// so it cannot become one silently.  It is not obviously the right refusal:
+// the writer could re-derive a palette, or fall back to truecolor, and either
+// would change what existing callers get, so the choice is not one to make
+// from inside a test.  What the test does say is that the refusal is total -
+// a single pixel off the palette is enough - and that it is the only thing
+// standing between a caller and a picture drawn from the wrong colors.
+TEST(PngEncode, APaletteImageRepaintedOffItsPaletteIsRefusedRatherThanGuessed) {
+  std::vector<uint8_t> base;
+  ASSERT_TRUE(png_test::load_png_file("png_palette_trns_bkgd_hist.png", base))
+      << "Run tests/data/png/generate.py";
+
+  // Control: untouched, the file saves.
+  std::vector<uint8_t> out;
+  ASSERT_TRUE(resave_recolored_to(base, nullptr, GIMG_META_PRESERVE_ALL, out));
+  ASSERT_TRUE(has_chunk(out, "PLTE"));
+
+  // Decode it, and put the same pixels back unchanged: still a palette image,
+  // still every pixel in the palette, so this must save too.  Without this
+  // the refusal below could be about the raster having been replaced at all.
+  {
+    GIMG_Stream * in_s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(base.data(), base.size(), &in_s),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(in_s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Item * item = gimg_doc_item(doc, 0);
+    GIMG_Raster * ras = nullptr;
+    ASSERT_EQ(gimg_item_decode(item, nullptr, &ras), GIMG_OK);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(ras);
+    ASSERT_EQ(fmt->channel_count, 4) << "a palette PNG decodes to RGBA8, "
+                                        "which is the format the saver reuses "
+                                        "the palette for";
+    gimg_item_set_raster(item, ras);
+
+    GIMG_Stream * os = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+    GIMG_Save_Options so = {};
+    so.metadata_policy = GIMG_META_PRESERVE_ALL;
+    GIMG_Save_Report rep = {};
+    EXPECT_EQ(gimg_doc_save(doc, os, "png", &so, &rep), GIMG_OK)
+        << "the very pixels that came out must go back in";
+    gimg_stream_destroy(os);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in_s);
+  }
+
+  // Now one pixel changed to a color the palette does not hold.
+  for (bool interlaced : {false, true}) {
+    SCOPED_TRACE(interlaced ? "interlaced" : "not interlaced");
+    GIMG_Stream * in_s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(base.data(), base.size(), &in_s),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(in_s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Item * item = gimg_doc_item(doc, 0);
+    GIMG_Raster * ras = nullptr;
+    ASSERT_EQ(gimg_item_decode(item, nullptr, &ras), GIMG_OK);
+    auto * px = (unsigned char *)gimg_raster_pixels(ras);
+    px[0] = 0x11;  // no entry of this palette is 0x11,0x22,0x33
+    px[1] = 0x22;
+    px[2] = 0x33;
+    gimg_item_set_raster(item, ras);
+
+    GIMG_Stream * os = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+    GIMG_Save_Options so = {};
+    so.metadata_policy = GIMG_META_PRESERVE_ALL;
+    so.interlaced = interlaced ? 1 : 0;
+    GIMG_Save_Report rep = {};
+    EXPECT_EQ(gimg_doc_save(doc, os, "png", &so, &rep), GIMG_ERR_UNSUPPORTED)
+        << "one pixel off the palette is enough; the alternative to refusing "
+           "is writing some other color's index and calling it the picture";
+    gimg_stream_destroy(os);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in_s);
+  }
+}
