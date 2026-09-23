@@ -330,6 +330,13 @@ static void henc_set_whole_block_scan(
  * thirty-five lines of it, which is most of what coverage reports as untested
  * in this file.  It is untested because it is unreachable, not the other way
  * round.
+ *
+ * Kept deliberately rather than deleted (Corey, 2026-09-23).  The gate is
+ * about the absence of an oracle, not about the code being wrong, and an
+ * oracle is the sort of thing that arrives later; throwing the implementation
+ * away would mean writing it again from the spec when one does.  So it stays,
+ * and this note is here so that a coverage sweep does not read it as work
+ * outstanding.
  */
 static GIMG_Result henc_split_scans(const GIMG_Allocator * alloc,
     uint32_t width, uint32_t height, int num_components, const int16_t * coef,
