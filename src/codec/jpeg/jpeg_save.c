@@ -3010,10 +3010,6 @@ after_prog_tables:
     }
     return GIMG_OK;
   }
-  r = GIMG_OK;
-  if (r != GIMG_OK) {
-    return r;
-  }
   {
     uint8_t prec_byte = (uint8_t)(precision > 8 ? precision : 8);
     uint16_t sof_len = (uint16_t)(8 + 3 * (uint16_t)num_components);
