@@ -7,6 +7,9 @@
  */
 
 #include <cstdint>
+#include <set>
+#include <cmath>
+#include <dirent.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -7637,5 +7640,935 @@ TEST(JpegLoad, ALosslessFrameIsCheckedAgainstAnnexHBeforeItIsDecoded) {
     const Refusal got = try_load(broken);
     EXPECT_EQ(got.load, GIMG_OK) << "the scan header itself is well formed";
     EXPECT_EQ(got.decode, GIMG_ERR_CORRUPT);
+  }
+}
+
+namespace {
+
+/**
+ * Wrap a single-frame JPEG in a one-frame hierarchical sequence.
+ *
+ * T.81 B.3.1: a hierarchical sequence is a DHP segment followed by the frames.
+ * B.3.2: DHP "has the same parameters as a frame header" - the largest
+ * dimensions in the sequence - "except that Tq shall be zero".  J.1.3 leaves
+ * the first frame of a sequence coded normally, so a sequence of one
+ * non-differential frame draws exactly what that frame drew on its own.
+ *
+ * This is the transform `tests/data/jpeg/mk_hier_ni.py` applies to build the
+ * committed hierarchical non-interleaved fixtures; doing it here instead of
+ * committing more files lets every precision and component count already in
+ * the corpus be asked the same question.
+ */
+std::vector<uint8_t> wrap_in_hierarchical_sequence(
+    const std::vector<uint8_t> & src) {
+  static const std::set<uint8_t> kSof = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6,
+      0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF};
+  std::vector<uint8_t> out;
+  if (src.size() < 4) { return out; }
+  out.insert(out.end(), src.begin(), src.begin() + 2);
+  size_t i = 2;
+  while (i + 1 < src.size()) {
+    if (src[i] != 0xFF) { return std::vector<uint8_t>(); }
+    uint8_t m = src[i + 1];
+    if (kSof.count(m)) {
+      size_t ln = ((size_t)src[i + 2] << 8) | src[i + 3];
+      std::vector<uint8_t> dhp(src.begin() + (long)i + 4,
+          src.begin() + (long)(i + 2 + ln));
+      if (dhp.size() < 6) { return std::vector<uint8_t>(); }
+      uint8_t nf = dhp[5];
+      if (dhp.size() < (size_t)6 + (size_t)nf * 3) {
+        return std::vector<uint8_t>();
+      }
+      for (uint8_t c = 0; c < nf; c++) {
+        dhp[8 + (size_t)c * 3] = 0;  // Tq = 0 (B.3.2).
+      }
+      out.push_back(0xFF);
+      out.push_back(0xDE);
+      out.push_back((uint8_t)((dhp.size() + 2) >> 8));
+      out.push_back((uint8_t)((dhp.size() + 2) & 0xFF));
+      out.insert(out.end(), dhp.begin(), dhp.end());
+      out.insert(out.end(), src.begin() + (long)i, src.end());
+      return out;
+    }
+    if (m == 0xD9 || (m >= 0xD0 && m <= 0xD7) || m == 0x01) {
+      out.insert(out.end(), src.begin() + (long)i, src.begin() + (long)i + 2);
+      i += 2;
+      continue;
+    }
+    if (i + 3 >= src.size()) { return std::vector<uint8_t>(); }
+    size_t ln = ((size_t)src[i + 2] << 8) | src[i + 3];
+    if (ln < 2 || i + 2 + ln > src.size()) { return std::vector<uint8_t>(); }
+    out.insert(out.end(), src.begin() + (long)i, src.begin() + (long)(i + 2 + ln));
+    i += 2 + ln;
+  }
+  return std::vector<uint8_t>();
+}
+
+/** Decode, and report what the raster is as well as what it holds. */
+struct Decoded {
+  GIMG_Result result = GIMG_ERR_INTERNAL;
+  uint32_t w = 0, h = 0;
+  uint8_t channels = 0, bits = 0;
+  uint64_t hash = 0;
+};
+
+Decoded decode_described(const std::vector<uint8_t> & bytes) {
+  Decoded d;
+  GIMG_Stream * s = nullptr;
+  d.result = gimg_stream_create_memory(bytes.data(), bytes.size(), &s);
+  if (d.result != GIMG_OK) { return d; }
+  GIMG_Doc * doc = nullptr;
+  d.result = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (d.result != GIMG_OK) { return d; }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  GIMG_Raster * ras = nullptr;
+  d.result = item ? gimg_item_decode(item, nullptr, &ras) : GIMG_ERR_INTERNAL;
+  if (d.result == GIMG_OK && ras) {
+    d.w = gimg_raster_width(ras);
+    d.h = gimg_raster_height(ras);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(ras);
+    d.channels = fmt ? fmt->channel_count : 0;
+    d.bits = fmt ? gimg_pixel_format_channel_bits(fmt, 0) : 0;
+    d.hash = jpeg_test::raster_pixel_hash(ras);
+  }
+  if (ras) { gimg_raster_destroy(ras); }
+  gimg_doc_destroy(doc);
+  return d;
+}
+
+} // namespace
+
+// T.81 B.3, J.1.3: wrapping a frame in a one-frame hierarchical sequence must
+// not change the picture.
+//
+// The hierarchical decoder assembles its own raster rather than sharing the
+// single-frame emitter, so every precision, component count and color
+// transform is written out twice in this library, in two places that can
+// drift.  Above eight bits they had drifted all the way to nothing: no
+// hierarchical fixture was wider than eight bits, so the 16-bit arms of
+// hier_emit_raster - grayscale, YCbCr-to-RGB, and the N-component fallback -
+// had never run at all.
+//
+// A one-frame sequence is the cheapest way to ask, because the answer is
+// already committed: it is whatever the same bytes draw without the DHP.  That
+// makes the plain decode the oracle, and it is an oracle checked elsewhere in
+// this file against libjpeg's own output for these same fixtures.
+TEST(JpegLoad, AOneFrameHierarchicalSequenceDrawsWhatTheFrameDrewAlone) {
+  struct Case {
+    const char * jpg;
+    uint8_t bits;
+    const char * what;
+  };
+  const Case cases[] = {
+      {"baseline_gray12.jpg", 16, "12-bit grayscale, Huffman"},
+      {"arith_gray12_64x64.jpg", 16, "12-bit grayscale, arithmetic"},
+      {"baseline_rgb12_444.jpg", 16, "12-bit YCbCr 4:4:4"},
+      {"baseline_rgb12_422_16x1.jpg", 16, "12-bit YCbCr 4:2:2, one row"},
+      {"cmyk12_ljt_seq.jpg", 16, "12-bit four-component, sequential"},
+      {"cmyk12_ljt_prog.jpg", 16, "12-bit four-component, progressive"},
+      {"baseline_8x8_gray.jpg", 8, "8-bit grayscale, for contrast"},
+      {"baseline_16x16_ycbcr.jpg", 8, "8-bit YCbCr, for contrast"},
+  };
+  int wide_seen = 0;
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.jpg) + ": " + c.what);
+    std::vector<uint8_t> plain;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, plain)) << "missing fixture";
+    std::vector<uint8_t> hier = wrap_in_hierarchical_sequence(plain);
+    ASSERT_FALSE(hier.empty()) << "the wrapper must find the frame header";
+    ASSERT_GT(hier.size(), plain.size()) << "DHP must have been inserted";
+
+    const Decoded a = decode_described(plain);
+    ASSERT_EQ(a.result, GIMG_OK) << "the plain frame is the oracle";
+    const Decoded b = decode_described(hier);
+    ASSERT_EQ(b.result, GIMG_OK)
+        << "a one-frame hierarchical sequence must decode";
+
+    EXPECT_EQ(b.bits, c.bits) << "the sequence must come out at the same "
+                                 "width the single-frame path chooses";
+    EXPECT_EQ(a.bits, c.bits) << "control: the plain decode chooses it too";
+    if (c.bits == 16) { wide_seen++; }
+    EXPECT_EQ(b.w, a.w);
+    EXPECT_EQ(b.h, a.h);
+    EXPECT_EQ(b.channels, a.channels);
+    EXPECT_EQ(b.hash, a.hash)
+        << "the hierarchical emitter must draw what the single-frame emitter "
+           "drew for the very same frame";
+  }
+  EXPECT_GE(wide_seen, 6) << "if no case is wider than eight bits this test "
+                             "no longer reaches the arms it was written for";
+}
+
+namespace {
+
+/** One marker segment of a JPEG, as a byte offset and a payload extent. */
+struct FoundSegment {
+  uint8_t marker = 0;
+  size_t at = 0;        ///< Offset of the 0xFF byte.
+  size_t payload = 0;   ///< Offset of the first payload byte after the length.
+  size_t payload_len = 0;
+  size_t entropy = 0;   ///< For SOS: first entropy byte.
+  size_t entropy_end = 0;
+};
+
+/** Walk the marker segments, stepping over entropy-coded data after each SOS. */
+std::vector<FoundSegment> segments_of(const std::vector<uint8_t> & d) {
+  std::vector<FoundSegment> segs;
+  size_t i = 2;
+  while (i + 1 < d.size()) {
+    if (d[i] != 0xFF) { break; }
+    uint8_t m = d[i + 1];
+    if (m == 0xD9) { break; }
+    if ((m >= 0xD0 && m <= 0xD7) || m == 0x01) { i += 2; continue; }
+    if (i + 3 >= d.size()) { break; }
+    size_t ln = ((size_t)d[i + 2] << 8) | d[i + 3];
+    if (ln < 2 || i + 2 + ln > d.size()) { break; }
+    FoundSegment s;
+    s.marker = m;
+    s.at = i;
+    s.payload = i + 4;
+    s.payload_len = ln - 2;
+    i += 2 + ln;
+    if (m == 0xDA) {
+      s.entropy = i;
+      while (i + 1 < d.size()) {
+        if (d[i] == 0xFF && d[i + 1] != 0x00 && !(d[i + 1] >= 0xD0 && d[i + 1] <= 0xD7)) {
+          break;
+        }
+        i++;
+      }
+      s.entropy_end = i;
+    }
+    segs.push_back(s);
+  }
+  return segs;
+}
+
+bool is_sof_marker(uint8_t m) {
+  return (m >= 0xC0 && m <= 0xCF) && m != 0xC4 && m != 0xC8 && m != 0xCC;
+}
+
+} // namespace
+
+// T.81 B.2.4.1 and A.2: what a frame of a hierarchical sequence does when the
+// tables it names are not there, or when its entropy-coded data runs out.
+//
+// hier_decode_dct_frame allocates a plane per component before it decodes a
+// single block, so every way out of the decode loop has to give those planes
+// back.  That cleanup had never run: coverage showed the whole `fail:` block
+// at zero hits, because no fixture asks a hierarchical frame a question it
+// cannot answer.  The truncation sweep does not reach it either - cutting the
+// tail of a hierarchical file removes the EOI, and the file is then refused
+// while it is still being parsed, before any plane is allocated.
+//
+// Two of the four ways out are live, and the other two were measured to be
+// shadowed by the parser and are named here so the next reader does not go
+// looking for a fixture that cannot exist:
+//
+//   - a scan component selector naming a component the frame does not have is
+//     refused as GIMG_ERR_FORMAT while the scan header is read;
+//   - a quantization table index of 4 or more is refused the same way while
+//     the frame header is read.  An index inside the range that no DQT ever
+//     defined is not, and that is the case below.
+TEST(JpegLoad, AHierarchicalFrameThatCannotFinishGivesItsPlanesBack) {
+  std::vector<uint8_t> src;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("hierarchical_2level.jpg", src));
+  const std::vector<FoundSegment> segs = segments_of(src);
+
+  const FoundSegment * dhp = nullptr;
+  const FoundSegment * sof = nullptr;
+  const FoundSegment * sos = nullptr;
+  for (const FoundSegment & s : segs) {
+    if (s.marker == 0xDE) { dhp = &s; continue; }
+    if (dhp && !sof && is_sof_marker(s.marker)) { sof = &s; continue; }
+    if (sof && !sos && s.marker == 0xDA) { sos = &s; }
+  }
+  ASSERT_NE(dhp, nullptr) << "the fixture must be a hierarchical sequence";
+  ASSERT_NE(sof, nullptr) << "it must have a frame after the DHP";
+  ASSERT_NE(sos, nullptr) << "that frame must have a scan";
+  ASSERT_GT(sos->entropy_end, sos->entropy + 8u)
+      << "the scan must have entropy data to cut";
+
+  // Control: untouched, this is a picture.
+  const Decoded whole = decode_described(src);
+  ASSERT_EQ(whole.result, GIMG_OK) << "the fixture itself must decode";
+
+  // A component whose quantization table index is in range but was never
+  // defined.  GIMG_JPEG_MAX_QUANT_TABLES is 4, so 3 is a legal index; no DQT
+  // in this file defines it.
+  {
+    std::vector<uint8_t> b = src;
+    ASSERT_GE(sof->payload_len, 6u + 3u);
+    uint8_t nf = b[sof->payload + 5];
+    ASSERT_GT(nf, 0u);
+    size_t tq = sof->payload + 6 + (size_t)(nf - 1) * 3 + 2;
+    ASSERT_LT(tq, b.size());
+    ASSERT_NE(b[tq], 3) << "the fixture must not already use table 3";
+    b[tq] = 3;
+    const Decoded d = decode_described(b);
+    EXPECT_EQ(d.result, GIMG_ERR_CORRUPT)
+        << "a frame naming a quantization table nothing defined must be "
+           "refused, not decoded with whatever is in the slot";
+  }
+
+  // The entropy-coded data cut short in the middle of the frame, with
+  // everything after it - the second frame and the EOI - left in place, so
+  // the file still parses and the failure happens inside the decode loop.
+  int refused = 0;
+  for (size_t keep = 1; keep < sos->entropy_end - sos->entropy; keep += 3) {
+    std::vector<uint8_t> b(src.begin(), src.begin() + (long)(sos->entropy + keep));
+    b.insert(b.end(), src.begin() + (long)sos->entropy_end, src.end());
+    const Decoded d = decode_described(b);
+    EXPECT_NE(d.result, GIMG_OK)
+        << "a frame whose entropy data ends early cannot have decoded, at "
+           "keep=" << keep;
+    if (d.result == GIMG_ERR_CORRUPT) { refused++; }
+  }
+  EXPECT_GT(refused, 5) << "if nothing was refused as corrupt the cut is not "
+                           "landing inside the decode loop";
+}
+
+namespace {
+
+/** Decode @p bytes with @p options and hash the pixels. */
+uint64_t decode_hash_with(const std::vector<uint8_t> & bytes,
+    const GIMG_Decode_Options * options, GIMG_Result * out_r) {
+  uint64_t h = 0;
+  GIMG_Stream * s = nullptr;
+  *out_r = gimg_stream_create_memory(bytes.data(), bytes.size(), &s);
+  if (*out_r != GIMG_OK) { return 0; }
+  GIMG_Doc * doc = nullptr;
+  *out_r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (*out_r != GIMG_OK) { return 0; }
+  GIMG_Raster * ras = nullptr;
+  *out_r = gimg_item_decode(gimg_doc_item(doc, 0), options, &ras);
+  if (*out_r == GIMG_OK && ras) { h = jpeg_test::raster_pixel_hash(ras); }
+  if (ras) { gimg_raster_destroy(ras); }
+  gimg_doc_destroy(doc);
+  return h;
+}
+
+} // namespace
+
+// The chroma upsampling option, asked of a hierarchical sequence.
+//
+// hier_emit_raster reads GIMG_Decode_Options the same way the single-frame
+// emitter does, and the two are meant to answer alike - but nothing had ever
+// handed a hierarchical decode any options at all.  The line that reads the
+// field was at zero hits, which means the whole option was dead for this
+// format: a caller asking for the box filter would have been given the
+// triangle one, silently, and no test would have noticed.
+TEST(JpegLoad, AHierarchicalSequenceHonoursTheChromaUpsamplingOption) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("hier_rgb_420.jpg", jpeg))
+      << "the fixture must be subsampled, or the filters cannot differ";
+
+  GIMG_Result r = GIMG_ERR_INTERNAL;
+  const uint64_t null_hash = decode_hash_with(jpeg, nullptr, &r);
+  ASSERT_EQ(r, GIMG_OK);
+
+  GIMG_Decode_Options zeroed = {};
+  const uint64_t zeroed_hash = decode_hash_with(jpeg, &zeroed, &r);
+  ASSERT_EQ(r, GIMG_OK);
+
+  GIMG_Decode_Options fancy = {};
+  fancy.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
+  const uint64_t fancy_hash = decode_hash_with(jpeg, &fancy, &r);
+  ASSERT_EQ(r, GIMG_OK);
+
+  GIMG_Decode_Options simple = {};
+  simple.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE;
+  const uint64_t simple_hash = decode_hash_with(jpeg, &simple, &r);
+  ASSERT_EQ(r, GIMG_OK);
+
+  EXPECT_EQ(zeroed_hash, null_hash)
+      << "a zero-initialized options struct must decode as NULL does";
+  EXPECT_EQ(fancy_hash, null_hash)
+      << "the triangle filter is the default, so asking for it by name must "
+         "not change the answer";
+  EXPECT_NE(simple_hash, null_hash)
+      << "the box filter must reach the hierarchical emitter; if this passes "
+         "only because the fixture is not subsampled, the two above prove "
+         "nothing either";
+}
+
+namespace {
+
+/** The Compression=7 (TIFF/JPEG) Exif thumbnail case, as a whole JPEG. */
+std::vector<uint8_t> make_jpeg_with_tiff_jpeg_thumbnail(
+    const std::vector<uint8_t> & strip_bytes) {
+  const std::vector<uint8_t> exif =
+      make_exif_with_tiff_jpeg_thumbnail(strip_bytes);
+  std::vector<uint8_t> jpeg;
+  append(jpeg, (const unsigned char *)"\xFF\xD8", 2);
+  const size_t app1_payload = 6 + exif.size();
+  if (2u + app1_payload >= 65536u) { return std::vector<uint8_t>(); }
+  const uint16_t app1_len = (uint16_t)(2 + app1_payload);
+  append(jpeg, (const unsigned char *)"\xFF\xE1", 2);
+  jpeg.push_back((uint8_t)(app1_len >> 8));
+  jpeg.push_back((uint8_t)(app1_len & 0xFF));
+  append(jpeg, (const unsigned char *)"Exif\0\0", 6);
+  jpeg.insert(jpeg.end(), exif.begin(), exif.end());
+  append(jpeg,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(jpeg, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) { jpeg.push_back(1); }
+  append(jpeg, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
+  for (int i = 0; i < 16; i++) { jpeg.push_back(0); }
+  append(jpeg,
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00", 10);
+  append(jpeg, (const unsigned char *)"\xFF\xD9", 2);
+  return jpeg;
+}
+
+/** A JPEG carrying one JFXX thumbnail of extension code @p code. */
+std::vector<uint8_t> make_jpeg_with_jfxx_thumbnail(uint8_t code,
+    const std::vector<uint8_t> & ext) {
+  std::vector<uint8_t> jfxx = with_prefix("JFXX\0", 5, std::string());
+  jfxx.push_back(code);
+  jfxx.insert(jfxx.end(), ext.begin(), ext.end());
+  std::vector<uint8_t> jpeg;
+  if (!jpeg_with_apps({{0xE0u, jfif_app0_no_thumbnail()}, {0xE0u, jfxx}},
+          jpeg)) {
+    return std::vector<uint8_t>();
+  }
+  return jpeg;
+}
+
+} // namespace
+
+// Every way a thumbnail can be attached, with an allocation failing.
+//
+// The loader attaches a second item from six different places - an Exif IFD1
+// thumbnail that is a JPEG, one that is uncompressed strips, one in TIFF/JPEG
+// form, a JFIF APP0 thumbnail, and JFXX extension codes 0x11 and 0x13 - and
+// each one ends in the same shape: grow the document to two items, and if that
+// cannot be done, give the raster back.  Five of those six `else` arms had
+// never run.  The document's own allocation is what fails there, and the
+// sweeps that fail allocations were running over files from the fixture
+// directory, none of which carries a thumbnail at all; the six fixtures here
+// are built in the test, the same way the tests that read each thumbnail form
+// build theirs.
+//
+// A leak here is one thumbnail-sized raster per image, on a machine that has
+// just told the loader it is out of memory.
+TEST(JpegLoad, EveryThumbnailPathGivesTheRasterBackWhenTheDocumentCannotGrow) {
+  std::vector<uint8_t> strip_bytes;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", strip_bytes));
+
+  std::vector<uint8_t> pal_ext;
+  pal_ext.push_back(2u);
+  pal_ext.push_back(2u);
+  for (int i = 0; i < 256; i++) {
+    pal_ext.push_back((uint8_t)i);
+    pal_ext.push_back((uint8_t)(255 - i));
+    pal_ext.push_back((uint8_t)(i / 2));
+  }
+  for (uint8_t i : {3u, 40u, 200u, 255u}) { pal_ext.push_back(i); }
+
+  std::vector<uint8_t> rgb_ext;
+  rgb_ext.push_back(2u);
+  rgb_ext.push_back(2u);
+  for (int i = 0; i < 4; i++) {
+    rgb_ext.push_back((uint8_t)(0x10 + i));
+    rgb_ext.push_back((uint8_t)(0x40 + i));
+    rgb_ext.push_back((uint8_t)(0x80 + i));
+  }
+
+  struct Case {
+    const char * what;
+    std::vector<uint8_t> jpeg;
+  };
+  std::vector<Case> cases;
+  cases.push_back({"Exif IFD1, uncompressed strips",
+      make_jpeg_with_exif_uncompressed_thumbnail()});
+  cases.push_back({"Exif IFD1, TIFF/JPEG (Compression=7)",
+      make_jpeg_with_tiff_jpeg_thumbnail(strip_bytes)});
+  cases.push_back({"JFIF APP0 thumbnail, RGB",
+      make_jpeg_with_jfif_thumbnail(true)});
+  cases.push_back({"JFIF APP0 thumbnail, one byte per pixel",
+      make_jpeg_with_jfif_thumbnail(false)});
+  cases.push_back({"JFXX 0x11 (palette)",
+      make_jpeg_with_jfxx_thumbnail(0x11u, pal_ext)});
+  cases.push_back({"JFXX 0x13 (RGB)",
+      make_jpeg_with_jfxx_thumbnail(0x13u, rgb_ext)});
+  cases.push_back({"JFXX 0x10 (a whole JPEG)",
+      make_jpeg_with_jfxx_thumbnail(0x10u, strip_bytes)});
+
+  GIMG_Codec * codec = gimg_codec_by_name("jpeg");
+  ASSERT_NE(codec, nullptr);
+
+  long total_injections = 0;
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    ASSERT_FALSE(c.jpeg.empty()) << "the fixture must have been built";
+
+    auto run = [&](gimg_test::Failing & f, size_t * out_items) {
+      const GIMG_Allocator * saved = codec->allocator;
+      codec->allocator = &f.a;
+      GIMG_Stream * s = nullptr;
+      GIMG_Result r = gimg_stream_create_memory(c.jpeg.data(), c.jpeg.size(), &s);
+      if (r == GIMG_OK) {
+        GIMG_Doc * doc = nullptr;
+        r = gimg_doc_load(s, nullptr, nullptr, &doc);
+        if (out_items) {
+          *out_items = (r == GIMG_OK && doc) ? gimg_doc_item_count(doc) : 0;
+        }
+        if (doc) { gimg_doc_destroy(doc); }
+        gimg_stream_destroy(s);
+      }
+      codec->allocator = saved;
+      return r;
+    };
+
+    // The control the whole case rests on: without it a fixture whose
+    // thumbnail the loader quietly ignored would sweep just as green, and
+    // reach none of the arms this test is named for.
+    gimg_test::Failing probe;
+    gimg_test::init(probe);
+    size_t items = 0;
+    ASSERT_EQ(run(probe, &items), GIMG_OK) << "the fixture must load";
+    ASSERT_EQ(items, 2u)
+        << "the thumbnail must have become a second item, or the attach path "
+           "this case is for was never taken";
+    ASSERT_EQ(probe.outstanding, 0) << "it leaks on the success path";
+
+    const long total = probe.attempts;
+    ASSERT_GT(total, 0L);
+    for (long i = 1; i <= total; i++) {
+      gimg_test::Failing f;
+      gimg_test::init(f);
+      f.fail_at = i;
+      const GIMG_Result r = run(f, nullptr);
+      total_injections++;
+      EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM || r == GIMG_ERR_CORRUPT ||
+          r == GIMG_ERR_FORMAT || r == GIMG_ERR_LIMIT ||
+          r == GIMG_ERR_UNSUPPORTED)
+          << "allocation " << i << " of " << total << " failed and the load "
+          << "returned " << (int)r;
+      EXPECT_EQ(f.outstanding, 0)
+          << f.outstanding << " block(s) leaked when allocation " << i
+          << " of " << total << " failed";
+      if (f.outstanding != 0) { break; }
+    }
+  }
+  std::printf("  thumbnail attach paths: %ld injected loads over %zu forms\n",
+      total_injections, cases.size());
+}
+
+namespace {
+
+/** Decode with @p options and report the raster's shape as well as its hash. */
+Decoded decode_described_with(const std::vector<uint8_t> & bytes,
+    const GIMG_Decode_Options * options) {
+  Decoded d;
+  GIMG_Stream * s = nullptr;
+  d.result = gimg_stream_create_memory(bytes.data(), bytes.size(), &s);
+  if (d.result != GIMG_OK) { return d; }
+  GIMG_Doc * doc = nullptr;
+  d.result = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (d.result != GIMG_OK) { return d; }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  GIMG_Raster * ras = nullptr;
+  d.result = item ? gimg_item_decode(item, options, &ras) : GIMG_ERR_INTERNAL;
+  if (d.result == GIMG_OK && ras) {
+    d.w = gimg_raster_width(ras);
+    d.h = gimg_raster_height(ras);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(ras);
+    d.channels = fmt ? fmt->channel_count : 0;
+    d.bits = fmt ? gimg_pixel_format_channel_bits(fmt, 0) : 0;
+    d.hash = jpeg_test::raster_pixel_hash(ras);
+  }
+  if (ras) { gimg_raster_destroy(ras); }
+  gimg_doc_destroy(doc);
+  return d;
+}
+
+} // namespace
+
+// The chroma upsampling option, asked of every decoder in the file.
+//
+// GIMG_Decode_Options::jpeg_chroma_upsampling is read in eight places: once
+// per emitter, and the decoder has one emitter per shape of frame - baseline
+// YCbCr, four components, an unknown component count, twelve-bit forms of
+// each, RGB frames, and the progressive extended path.  Only the first of
+// them had ever been given options.  The other seven read the field for the
+// first time here, which means a caller asking any of those decoders for the
+// box filter had been given the triangle one, silently.
+//
+// Enumerating is the point.  Which emitter a file reaches is decided by the
+// file - component count, precision, entropy coder, progressive or not - so a
+// list of names samples an axis whose members each answer separately, and the
+// names anyone would have picked are the ones already covered.
+//
+// Two things are asserted of every fixture: that naming the default filter
+// changes nothing, and that asking for the box filter still produces a raster
+// of the same shape.  The third is counted rather than asserted per file,
+// because a fixture with no subsampling has nothing to upsample and must come
+// out identical: across the tree, a good many must differ, or the option is
+// not reaching the emitters at all.
+TEST(JpegLoad, EveryDecoderHonoursTheChromaUpsamplingOption) {
+  DIR * dp = opendir(GIMG_TEST_DATA_JPEG);
+  ASSERT_NE(dp, nullptr) << "cannot read " << GIMG_TEST_DATA_JPEG;
+  std::vector<std::string> names;
+  while (struct dirent * e = readdir(dp)) {
+    const std::string n = e->d_name;
+    if (n.size() > 4 && n.compare(n.size() - 4, 4, ".jpg") == 0) {
+      names.push_back(n);
+    }
+  }
+  closedir(dp);
+  std::sort(names.begin(), names.end());
+
+  GIMG_Decode_Options fancy = {};
+  fancy.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
+  GIMG_Decode_Options simple = {};
+  simple.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE;
+
+  long decoded = 0, differed = 0;
+  for (const std::string & name : names) {
+    std::vector<uint8_t> bytes;
+    if (!jpeg_test::load_jpeg_file(name.c_str(), bytes)) { continue; }
+    const Decoded base = decode_described_with(bytes, nullptr);
+    if (base.result != GIMG_OK) { continue; }  // Many here are malformed.
+    decoded++;
+    SCOPED_TRACE(name);
+
+    const Decoded f = decode_described_with(bytes, &fancy);
+    EXPECT_EQ(f.result, GIMG_OK);
+    EXPECT_EQ(f.hash, base.hash)
+        << "the triangle filter is the default, so naming it must not change "
+           "the picture";
+
+    const Decoded s = decode_described_with(bytes, &simple);
+    EXPECT_EQ(s.result, GIMG_OK)
+        << "the box filter must not make a decodable file undecodable";
+    EXPECT_EQ(s.w, base.w);
+    EXPECT_EQ(s.h, base.h);
+    EXPECT_EQ(s.channels, base.channels);
+    EXPECT_EQ(s.bits, base.bits)
+        << "the filter chooses how chroma is read, not how wide a sample is";
+    if (s.hash != base.hash) { differed++; }
+  }
+
+  std::printf("  %ld fixtures decoded, %ld drew differently under the box "
+              "filter\n", decoded, differed);
+  ASSERT_GT(decoded, 120)
+      << "only " << decoded << " fixtures decoded - a sweep this narrow is "
+                               "not reaching the emitters it claims to";
+  EXPECT_GT(differed, 30)
+      << "only " << differed << " fixtures changed under the box filter; if "
+         "the option were being dropped on the floor this is exactly what it "
+         "would look like";
+}
+
+// GIMG_Decode_Options::jpeg_precision does nothing.
+//
+// The header described it as naming the depth to decode to - 8, 12 or 16,
+// with the library converting when the file's precision differs - and no line
+// in the library reads the field.  Every value behaves as 0.  A caller who set
+// it to 8 on a twelve-bit file got GRAY16 back, with no error and nothing
+// said, which is the failure mode a documented-but-absent option always has.
+//
+// This pins the gap rather than closing it: implementing it changes what
+// existing callers are handed, and so does deleting the field, and neither is
+// a decision to take from inside a test.  What the test buys is that it cannot
+// be settled by accident - implementing the option, or removing it, fails here
+// and has to be done on purpose.
+TEST(JpegLoad, TheDecodePrecisionOptionIsNotImplemented) {
+  struct Case {
+    const char * jpg;
+    uint8_t file_bits;
+  };
+  const Case cases[] = {
+      {"baseline_8x8_gray.jpg", 8},
+      {"baseline_gray12.jpg", 16},
+      {"baseline_rgb12_444.jpg", 16},
+      {"baseline_16x16_ycbcr.jpg", 8},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.jpg);
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, bytes));
+    const Decoded base = decode_described_with(bytes, nullptr);
+    ASSERT_EQ(base.result, GIMG_OK);
+    EXPECT_EQ(base.bits, c.file_bits)
+        << "with no options the decode follows the file, which is the "
+           "behaviour every value of the option below also gets";
+
+    for (uint8_t want : {(uint8_t)0, (uint8_t)8, (uint8_t)12, (uint8_t)16}) {
+      GIMG_Decode_Options o = {};
+      o.jpeg_precision = want;
+      const Decoded d = decode_described_with(bytes, &o);
+      EXPECT_EQ(d.result, GIMG_OK)
+          << "asking for precision " << (int)want << " must not fail either";
+      EXPECT_EQ(d.bits, c.file_bits)
+          << "jpeg_precision = " << (int)want
+          << " changed the sample width, so it has been implemented; the "
+             "header says it is not, and one of the two needs updating";
+      EXPECT_EQ(d.hash, base.hash)
+          << "jpeg_precision = " << (int)want << " changed the picture";
+    }
+  }
+}
+
+namespace {
+
+/** Set GIMG_JPEG_RECOVER_STUFF_ZERO for as long as this lives. */
+class RecoverStuffZero {
+public:
+  explicit RecoverStuffZero(bool on) {
+    if (on) { setenv("GIMG_JPEG_RECOVER_STUFF_ZERO", "1", 1); }
+    else { unsetenv("GIMG_JPEG_RECOVER_STUFF_ZERO"); }
+  }
+  ~RecoverStuffZero() { unsetenv("GIMG_JPEG_RECOVER_STUFF_ZERO"); }
+  RecoverStuffZero(const RecoverStuffZero &) = delete;
+  RecoverStuffZero & operator=(const RecoverStuffZero &) = delete;
+};
+
+/** Every way to shorten one scan's entropy data, keeping the rest of the
+ * file - so the result still parses and the shortage is the decoder's to
+ * find.  Cutting the tail off instead removes the EOI and the file is
+ * refused while it is still being read. */
+std::vector<std::vector<uint8_t>> scans_cut_short(
+    const std::vector<uint8_t> & src, size_t stride) {
+  std::vector<std::vector<uint8_t>> out;
+  for (const FoundSegment & s : segments_of(src)) {
+    if (s.marker != 0xDA || s.entropy_end <= s.entropy + 1) { continue; }
+    const size_t n = s.entropy_end - s.entropy;
+    std::vector<size_t> keeps;
+    for (size_t keep = 1; keep < n; keep += stride) { keeps.push_back(keep); }
+    // The last few bytes as well, whatever the stride lands on.  A cut one
+    // byte from the end is the one that runs out of bits inside the scan's
+    // *last* block, which is the only way to reach the arms that answer
+    // is_last_block without the recovery flag being set at all.
+    for (size_t back = 1; back <= 8 && back < n; back++) {
+      keeps.push_back(n - back);
+    }
+    std::sort(keeps.begin(), keeps.end());
+    keeps.erase(std::unique(keeps.begin(), keeps.end()), keeps.end());
+    for (size_t keep : keeps) {
+      std::vector<uint8_t> b(src.begin(), src.begin() + (long)(s.entropy + keep));
+      b.insert(b.end(), src.begin() + (long)s.entropy_end, src.end());
+      out.push_back(std::move(b));
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+// GIMG_JPEG_RECOVER_STUFF_ZERO, the opt-in recovery mode.
+//
+// T.81 B.2.2 leaves the value of the bits that pad a scan to a byte boundary
+// unspecified, and a progressive refinement scan that ends mid-block gives
+// this decoder nothing to read.  It refuses, which is right: the bits are
+// missing, not padding.  Setting GIMG_JPEG_RECOVER_STUFF_ZERO=1 says to
+// treat them as zero anyway and hand back whatever picture that makes -
+// which is what a tool recovering a damaged file wants and what a library
+// checking one does not, hence the opt-in.
+//
+// Nine arms across the progressive decoders read that flag, and the whole
+// mode was untested: the suite never set the variable, and the truncation
+// sweep cannot reach it, because cutting the tail off a JPEG takes the EOI
+// with it and the file is refused while it is still being parsed.  Cutting
+// inside a scan and leaving the rest is what gets past the parser.
+//
+// The assertion is the difference, both ways round.  Off, most of these are
+// refused; on, they all decode.  If the flag did nothing, the two counts
+// would be equal - which is the only shape of failure this can have that is
+// not a crash.
+TEST(JpegLoad, TheStuffZeroRecoveryModeIsOptInAndSalvagesAShortScan) {
+  const char * fixtures[] = {"progressive_sample.jpg", "cmyk_progressive.jpg",
+      "cmyk12_ljt_prog.jpg"};
+  // A stride over the cut points rather than every byte: the arms are reached
+  // in the first handful of cuts and the whole run is paid for in every ASan
+  // build.  The counts below are what says the sweep is still wide enough.
+  const size_t kStride = 7;
+
+  long refused_off = 0, decoded_off = 0;
+  long refused_on = 0, decoded_on = 0;
+  long cuts = 0;
+  for (const char * name : fixtures) {
+    SCOPED_TRACE(name);
+    std::vector<uint8_t> src;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name, src));
+    const Decoded whole = decode_described(src);
+    ASSERT_EQ(whole.result, GIMG_OK) << "the fixture itself must decode";
+
+    const std::vector<std::vector<uint8_t>> cut = scans_cut_short(src, kStride);
+    ASSERT_GT(cut.size(), 5u) << "no scan was long enough to cut";
+    cuts += (long)cut.size();
+
+    {
+      RecoverStuffZero off(false);
+      for (const std::vector<uint8_t> & b : cut) {
+        const Decoded d = decode_described(b);
+        if (d.result == GIMG_OK) { decoded_off++; }
+        else {
+          refused_off++;
+          EXPECT_EQ(d.result, GIMG_ERR_CORRUPT)
+              << "a scan that ran out of bits is corrupt data, not a limit or "
+                 "an unsupported feature";
+        }
+      }
+    }
+    {
+      RecoverStuffZero on(true);
+      for (const std::vector<uint8_t> & b : cut) {
+        const Decoded d = decode_described(b);
+        if (d.result == GIMG_OK) {
+          decoded_on++;
+          EXPECT_EQ(d.w, whole.w) << "a salvaged picture is the whole size";
+          EXPECT_EQ(d.h, whole.h);
+          EXPECT_EQ(d.bits, whole.bits);
+        }
+        else {
+          refused_on++;
+        }
+      }
+    }
+  }
+
+  std::printf("  %ld cuts: off %ld decoded / %ld refused, on %ld decoded / "
+              "%ld refused\n",
+      cuts, decoded_off, refused_off, decoded_on, refused_on);
+
+  EXPECT_GT(refused_off, 20)
+      << "with the recovery off a short scan is refused; if almost nothing "
+         "is refused the cuts are not landing inside the entropy data";
+  EXPECT_GT(decoded_on, refused_off)
+      << "turning the recovery on must salvage the ones that were refused; "
+         "equal counts is what a flag that does nothing looks like";
+  EXPECT_EQ(refused_on, 0)
+      << "the recovery mode answers every short scan - it is a broad hammer, "
+         "and this says so rather than leaving it to be discovered";
+
+  // And it is off again afterwards, which is what makes it opt-in rather than
+  // something a decode in this process inherits from an earlier one.
+  std::vector<uint8_t> src;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file(fixtures[0], src));
+  const std::vector<std::vector<uint8_t>> cut = scans_cut_short(src, kStride);
+  long after = 0;
+  for (const std::vector<uint8_t> & b : cut) {
+    if (decode_described(b).result != GIMG_OK) { after++; }
+  }
+  EXPECT_GT(after, 0)
+      << "the variable must not still be set once the guard is gone";
+}
+
+namespace {
+
+/** Set the transform byte of the first Adobe APP14 segment. */
+bool set_adobe_transform(std::vector<uint8_t> & jpeg, uint8_t transform) {
+  for (const FoundSegment & s : segments_of(jpeg)) {
+    if (s.marker != 0xEE || s.payload_len < 12) { continue; }
+    if (memcmp(&jpeg[s.payload], "Adobe", 5) != 0) { continue; }
+    jpeg[s.payload + 11] = transform;  // Adobe, version, flags0, flags1, Tf.
+    return true;
+  }
+  return false;
+}
+
+/** Decode and hand back the RGBA bytes. */
+bool decode_rgba(const std::vector<uint8_t> & bytes, uint32_t * out_w,
+    uint32_t * out_h, std::vector<uint8_t> & out) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    return false;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (r != GIMG_OK) { return false; }
+  GIMG_Raster * ras = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &ras);
+  bool ok = false;
+  if (r == GIMG_OK && ras) {
+    *out_w = gimg_raster_width(ras);
+    *out_h = gimg_raster_height(ras);
+    const size_t stride = gimg_raster_stride_bytes(ras);
+    const auto * px = (const unsigned char *)gimg_raster_pixels_const(ras);
+    out.assign((size_t)*out_w * *out_h * 4u, 0);
+    for (uint32_t y = 0; y < *out_h; y++) {
+      memcpy(out.data() + (size_t)y * *out_w * 4u, px + (size_t)y * stride,
+          (size_t)*out_w * 4u);
+    }
+    ok = true;
+  }
+  if (ras) { gimg_raster_destroy(ras); }
+  gimg_doc_destroy(doc);
+  return ok;
+}
+
+} // namespace
+
+// A lossless frame whose three components are YCbCr rather than RGB.
+//
+// T.81 Annex H says nothing about colour: a lossless frame carries three
+// components and the file says elsewhere what they mean.  An Adobe APP14 with
+// a transform of 0 says RGB and one with a transform of 1 says YCbCr, and
+// this decoder honours both - but every three-component lossless fixture in
+// the tree carries transform 0, so the conversion arm and the chroma sampling
+// beside it had never run.
+//
+// The APP14 transform is one byte, so the two readings of the same file are
+// the same bytes with that byte changed.  That makes the property exact
+// rather than approximate: whatever the RGB reading gives, the YCbCr reading
+// must give the JFIF conversion of, because the samples underneath are
+// identical.  A tolerance of one is for the rounding, not for the colour.
+TEST(JpegLoad, ALosslessFrameSaidToBeYCbCrIsConverted) {
+  const char * fixtures[] = {"lossless_rgb_psv4.jpg", "lossless_noninterleaved.jpg",
+      "lossless_rgb_psv7_pt1.jpg"};
+  for (const char * name : fixtures) {
+    SCOPED_TRACE(name);
+    std::vector<uint8_t> src;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name, src));
+
+    std::vector<uint8_t> as_rgb = src;
+    ASSERT_TRUE(set_adobe_transform(as_rgb, 0))
+        << "the fixture must carry an Adobe APP14 to rewrite";
+    std::vector<uint8_t> as_ycc = src;
+    ASSERT_TRUE(set_adobe_transform(as_ycc, 1));
+    ASSERT_NE(as_rgb, as_ycc) << "the two must differ by that one byte";
+
+    uint32_t w = 0, h = 0, w2 = 0, h2 = 0;
+    std::vector<uint8_t> rgb, ycc;
+    ASSERT_TRUE(decode_rgba(as_rgb, &w, &h, rgb));
+    ASSERT_TRUE(decode_rgba(as_ycc, &w2, &h2, ycc));
+    ASSERT_EQ(w, w2);
+    ASSERT_EQ(h, h2);
+    ASSERT_GT(w * h, 0u);
+
+    // JFIF's conversion, written out here rather than borrowed, so this is a
+    // second opinion on the arm under test and not a copy of it.
+    long differing = 0, checked = 0;
+    for (size_t i = 0; i + 3 < rgb.size(); i += 4) {
+      const double yy = rgb[i];
+      const double cb = (double)rgb[i + 1] - 128.0;
+      const double cr = (double)rgb[i + 2] - 128.0;
+      const int want[3] = {(int)lround(yy + 1.402 * cr),
+          (int)lround(yy - 0.344136 * cb - 0.714136 * cr),
+          (int)lround(yy + 1.772 * cb)};
+      for (int c = 0; c < 3; c++) {
+        const int clamped = want[c] < 0 ? 0 : (want[c] > 255 ? 255 : want[c]);
+        ASSERT_LE(std::abs((int)ycc[i + c] - clamped), 1)
+            << "pixel " << (i / 4) << " channel " << c
+            << ": the samples are the same bytes, so the two readings differ "
+               "only by the colour transform";
+        checked++;
+      }
+      if (memcmp(&rgb[i], &ycc[i], 3) != 0) { differing++; }
+    }
+    EXPECT_GT(checked, 0);
+    EXPECT_GT(differing, (long)(w * h) / 4)
+        << "control: if the two readings draw the same picture the fixture "
+           "is grey and the conversion arm proves nothing";
+    EXPECT_EQ(ycc[3], rgb[3]) << "alpha is not part of the transform";
   }
 }

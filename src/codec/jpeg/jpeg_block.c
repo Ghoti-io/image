@@ -346,6 +346,26 @@ GIMG_Result jpeg_decode_block_progressive_ac_initial(gimg_jpeg_bitstream_t * bs,
 GIMG_Result jpeg_decode_block_progressive_ac_refine(gimg_jpeg_bitstream_t * bs,
     const gimg_jpeg_huff_table_t * ac_tbl, int16_t * block, int ss, int se,
     int al, unsigned int * out_eobrun, int is_last_block) {
+  // A note on the `|| bs->recover_stuff_zero` in the guards below, which
+  // appears seven times in this function and its neighbours and can never be
+  // the reason one of them is taken.
+  //
+  // The flag is already honoured one level down: with it set,
+  // jpeg_bitstream_read_bit() returns 0 rather than -1 at the end of the
+  // data, and jpeg_decode_huffman() does the same for a code it cannot
+  // match.  So when the flag is on, `rbit < 0` and `sym < 0` are false and
+  // these guards are not reached at all; when it is off, the disjunct is
+  // false.  Every one of these arms is entered for is_last_block and nothing
+  // else - measured with a counter on each, over a sweep that cuts every
+  // scan of three progressive fixtures short at 823 points with the flag both
+  // ways.
+  //
+  // They stay because the two ends are a pair: the day the bitstream reader
+  // stops answering for the flag, these are what keeps the recovery mode
+  // working, and a reader who finds one of them should not have to discover
+  // the other by experiment.  See
+  // JpegLoad.TheStuffZeroRecoveryModeIsOptInAndSalvagesAShortScan.
+  //
   // T.81: AC band is [Ss, Se] with 1 <= Ss <= Se <= 63. Clamp to prevent
   // overrun.
   //

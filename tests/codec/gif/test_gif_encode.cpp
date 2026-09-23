@@ -374,6 +374,36 @@ Rgba patch_changed(uint32_t x, uint32_t y) {
   return patch_base(x, y);
 }
 
+/** Two changes at opposite corners, so the rectangle between them is
+ * unchanged and has to be masked rather than repainted. */
+Rgba patch_two_corners(uint32_t x, uint32_t y) {
+  if ((x == 1u && y == 1u) || (x == 22u && y == 14u)) {
+    return Rgba{250u, 12u, 200u, 255};
+  }
+  return patch_base(x, y);
+}
+
+/** A colour that is unique per index n, for building large palettes. */
+Rgba indexed_colour(uint32_t n) {
+  return Rgba{static_cast<uint8_t>(n & 0xFFu),
+      static_cast<uint8_t>((n >> 8) & 0xFFu), 77u, 255};
+}
+
+/** Frame 0 of the local-palette pair: two hundred colours. */
+Rgba many_colours_first(uint32_t x, uint32_t y) {
+  return indexed_colour((y * 32u + x) % 200u);
+}
+
+/** Frame 1: one pixel in five takes a colour the first frame never used, so
+ * the two frames together need more than a global table holds - and four in
+ * five are unchanged and have to be masked. */
+Rgba many_colours_second(uint32_t x, uint32_t y) {
+  if ((x + y) % 5u == 0u) {
+    return indexed_colour(200u + ((y * 32u + x) % 102u));
+  }
+  return many_colours_first(x, y);
+}
+
 /** Every image block in a GIF, as position and size, plus its control block. */
 struct Block {
   uint32_t x, y, w, h;
@@ -1263,6 +1293,148 @@ TEST(GifComments, ALongCommentIsChainedAcrossSubBlocks) {
   ASSERT_EQ(found.size(), 1u);
   EXPECT_EQ(found[0].size(), 700u);
   EXPECT_EQ(found[0], various);
+}
+
+TEST(GifComments, KeepRawOnlyWritesNoDescription) {
+  // The description is the document's, not the file's, so the policy that
+  // keeps only what the file arrived with must not write it - the same rule
+  // the PNG and BMP writers follow.  That arm had never run: every comment
+  // test here used the default policy or DROP_ALL.
+  //
+  // The control is the same document under PRESERVE_ALL, which must carry it.
+  // Without that, a policy that dropped everything for some other reason
+  // would look identical.
+  const char * kText = "kept by the document, not by the file";
+  auto with_description = [kText](GIMG_Doc * doc) {
+    GIMG_Meta_Common * common = nullptr;
+    ASSERT_EQ(gimg_doc_ensure_meta_common(doc, &common), GIMG_OK);
+    ASSERT_EQ(gimg_meta_common_set_description(common, kText), GIMG_OK);
+  };
+
+  GIMG_Save_Options preserve;
+  memset(&preserve, 0, sizeof(preserve));
+  preserve.metadata_policy = GIMG_META_PRESERVE_ALL;
+  std::vector<uint8_t> kept;
+  ASSERT_EQ(save_with(&preserve, kept, with_description), GIMG_OK);
+  const std::vector<std::string> in_kept = comments_in(kept);
+  ASSERT_EQ(in_kept.size(), 1u) << "control: PRESERVE_ALL writes it";
+  EXPECT_EQ(in_kept[0], kText);
+
+  GIMG_Save_Options raw_only;
+  memset(&raw_only, 0, sizeof(raw_only));
+  raw_only.metadata_policy = GIMG_META_KEEP_RAW_ONLY;
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_with(&raw_only, bytes, with_description), GIMG_OK);
+  EXPECT_TRUE(comments_in(bytes).empty())
+      << "the description came from the document; KEEP_RAW_ONLY writes only "
+         "what the file arrived with";
+}
+
+// A changed rectangle with unchanged pixels inside it.
+//
+// The writer crops each frame to the rectangle that changed, so in the usual
+// case every pixel it writes is a pixel that moved.  Two changes at opposite
+// corners leave a rectangle that spans almost the whole canvas with almost
+// nothing in it changed, and those pixels have to be written as the
+// transparent index - masked, so the frame below shows through - rather than
+// repainted with the colour they already have.
+//
+// That masking had never run.  Every animation in the suite changes one
+// contiguous block or nothing at all, and both of those crop to a rectangle
+// with no unchanged pixel in it.
+TEST(GifEncode, UnchangedPixelsInsideAChangedRectangleAreMasked) {
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(24, 16, patch_base));
+  frames.push_back(make_raster(24, 16, patch_two_corners));
+  for (GIMG_Raster * f : frames) { ASSERT_NE(f, nullptr); }
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes), GIMG_OK);
+
+  const std::vector<Block> blocks = image_blocks(bytes);
+  ASSERT_EQ(blocks.size(), 2u);
+  EXPECT_EQ(blocks[1].x, 1u);
+  EXPECT_EQ(blocks[1].y, 1u);
+  EXPECT_EQ(blocks[1].w, 22u) << "the rectangle spans both corners";
+  EXPECT_EQ(blocks[1].h, 14u);
+  EXPECT_TRUE(blocks[1].transparent())
+      << "the pixels inside it that did not change have to be masked, which "
+         "takes a transparent index";
+
+  // What it draws is the test.  Masking that painted the wrong pixels, or
+  // that masked one that had changed, gives a different second frame.
+  publish("masked_interior_24x16.gif", bytes,
+      {expectation(24, 16, patch_base), expectation(24, 16, patch_two_corners)});
+}
+
+// The same masking, on the path that builds a palette per frame.
+//
+// The writer has two frame planners: one for when a single global table holds
+// every colour in the animation, and one for when it does not and each frame
+// carries its own.  They do the same masking, written twice, and only the
+// global one had ever run it - every multi-frame fixture here fits a global
+// table.
+//
+// Two frames needing 302 colours between them do not, which sends both down
+// the local-palette planner; one pixel in five changes, so four in five are
+// unchanged and inside the rectangle that has to be written.
+TEST(GifEncode, MaskingAlsoHappensWhenEachFrameCarriesItsOwnPalette) {
+  std::vector<GIMG_Raster *> frames;
+  frames.push_back(make_raster(32, 16, many_colours_first));
+  frames.push_back(make_raster(32, 16, many_colours_second));
+  for (GIMG_Raster * f : frames) { ASSERT_NE(f, nullptr); }
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_frames(frames, nullptr, bytes), GIMG_OK);
+
+  EXPECT_EQ(global_table_entries(bytes), 0u)
+      << "302 colours do not fit one table, which is what puts these frames "
+         "on the per-frame path this test is for";
+  const std::vector<Block> blocks = image_blocks(bytes);
+  ASSERT_EQ(blocks.size(), 2u);
+  EXPECT_TRUE(blocks[1].local_table) << "so each frame carries its own";
+  EXPECT_TRUE(blocks[1].transparent())
+      << "the unchanged pixels inside the rectangle are masked";
+
+  publish("masked_local_palette_32x16.gif", bytes,
+      {expectation(32, 16, many_colours_first),
+          expectation(32, 16, many_colours_second)});
+}
+
+namespace {
+
+/** Every pixel transparent. */
+Rgba all_transparent(uint32_t x, uint32_t y) {
+  (void)x;
+  (void)y;
+  return Rgba{0, 0, 0, 0};
+}
+
+} // namespace
+
+// A frame with no colours in it at all.
+//
+// GIF 89a 18: a colour table holds at least two entries, and its size is
+// written as a power of two, so a frame whose every pixel is transparent
+// still needs a table - there is an index to point the Graphic Control
+// Extension's transparent colour at.  The writer counts the colours it saw,
+// which is none, and then makes the count one.  That had never run: nothing
+// in the suite saved a frame with nothing opaque in it.
+TEST(GifEncode, AFrameWithNothingOpaqueStillGetsAColourTable) {
+  GIMG_Raster * raster = make_raster(8, 4, all_transparent);
+  ASSERT_NE(raster, nullptr);
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster(raster, nullptr, bytes), GIMG_OK)
+      << "a frame of nothing is a frame, not a refusal";
+
+  Loaded img;
+  ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  for (uint32_t y = 0; y < 4u; y++) {
+    for (uint32_t x = 0; x < 8u; x++) {
+      EXPECT_EQ(img.at(x, y).a, 0u) << "at (" << x << "," << y << ")";
+    }
+  }
+  publish("all_transparent_8x4.gif", bytes,
+      {expectation(8, 4, all_transparent)});
 }
 
 int main(int argc, char ** argv) {

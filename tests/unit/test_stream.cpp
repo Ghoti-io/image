@@ -86,6 +86,111 @@ TEST(StreamMemory, LimitsDefault) {
   EXPECT_EQ(lim.max_frame_count, 0u);
 }
 
+// A stream that has failed stays failed, and every call says so.
+//
+// GIMG_Stream keeps the first error it hit and each entry point checks it
+// before doing anything - which is what stops a caller that ignores one
+// return value from going on to read whatever happens to be in the buffer.
+// Five of those checks had never run: nothing in the suite ever called a
+// stream again after a failure, so every one of them was untested.
+//
+// A seek past the end is the cheapest way in, and it is also the only thing
+// that sets the error without an allocator having to fail.
+TEST(StreamMemory, AFailedStreamStaysFailedAndReportsNothingRead) {
+  const unsigned char data[] = {1, 2, 3, 4, 5};
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(data, sizeof(data), &s), GIMG_OK);
+
+  // Control: before the failure every one of these works.
+  unsigned char buf[3] = {0, 0, 0};
+  size_t n = 99;
+  ASSERT_EQ(gimg_stream_read(s, buf, 3, &n), GIMG_OK);
+  ASSERT_EQ(n, 3u);
+  ASSERT_EQ(gimg_stream_seek(s, 0), GIMG_OK);
+  ASSERT_EQ(gimg_stream_peek(s, buf, 3, &n), GIMG_OK);
+  ASSERT_EQ(n, 3u);
+  ASSERT_EQ(gimg_stream_skip(s, 1, &n), GIMG_OK);
+  ASSERT_EQ(n, 1u);
+  ASSERT_EQ(gimg_stream_error(s), GIMG_OK);
+
+  // Seeking past the end is an I/O error, and it sticks.
+  ASSERT_EQ(gimg_stream_seek(s, sizeof(data) + 1u), GIMG_ERR_IO);
+  ASSERT_EQ(gimg_stream_error(s), GIMG_ERR_IO)
+      << "the error must be remembered, not just returned once";
+
+  // Now every entry point reports it, and reports nothing transferred.
+  n = 99;
+  EXPECT_EQ(gimg_stream_read(s, buf, 3, &n), GIMG_ERR_IO);
+  EXPECT_EQ(n, 0u) << "a failed read must not claim to have read anything";
+  EXPECT_EQ(gimg_stream_read_exact(s, buf, 3), GIMG_ERR_IO);
+  n = 99;
+  EXPECT_EQ(gimg_stream_peek(s, buf, 3, &n), GIMG_ERR_IO);
+  EXPECT_EQ(n, 0u);
+  n = 99;
+  EXPECT_EQ(gimg_stream_skip(s, 1, &n), GIMG_ERR_IO);
+  EXPECT_EQ(n, 0u);
+  EXPECT_EQ(gimg_stream_error(s), GIMG_ERR_IO) << "and it is still set";
+
+  // Seeking somewhere legal does not clear it: there is no way to un-fail a
+  // stream, which is the point of keeping the error at all.
+  EXPECT_EQ(gimg_stream_seek(s, 0), GIMG_OK);
+  EXPECT_EQ(gimg_stream_error(s), GIMG_ERR_IO);
+  n = 99;
+  EXPECT_EQ(gimg_stream_read(s, buf, 3, &n), GIMG_ERR_IO);
+  EXPECT_EQ(n, 0u);
+
+  gimg_stream_destroy(s);
+}
+
+// The same for an output stream, where writing is what a caller does next.
+TEST(StreamMemory, AFailedOutputStreamRefusesToWrite) {
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&s), GIMG_OK);
+
+  size_t n = 99;
+  const unsigned char payload[] = {7, 8, 9};
+  ASSERT_EQ(gimg_stream_write(s, payload, sizeof(payload), &n), GIMG_OK);
+  ASSERT_EQ(n, 3u);
+
+  // Writing nothing is not an error and writes nothing.  It is answered
+  // before the buffer is even looked at, so a NULL buffer with a size of zero
+  // is fine as well - which is what a caller passing an empty vector's data()
+  // hands over.
+  n = 99;
+  EXPECT_EQ(gimg_stream_write(s, payload, 0, &n), GIMG_OK);
+  EXPECT_EQ(n, 0u);
+  n = 99;
+  EXPECT_EQ(gimg_stream_write(s, nullptr, 0, &n), GIMG_OK);
+  EXPECT_EQ(n, 0u);
+  // What an output stream has written is what gimg_stream_output_buffer
+  // reports.  gimg_stream_size() is the capacity of the buffer behind it -
+  // 4096 after three bytes - so it is not the thing to ask here.
+  const void * written = nullptr;
+  size_t written_size = 99;
+  gimg_stream_output_buffer(s, &written, &written_size);
+  EXPECT_EQ(written_size, 3u) << "none of that changed the contents";
+
+  // Reading an output stream is not an error either; there is simply nothing
+  // to read, and a caller that asks gets told so rather than refused.
+  unsigned char buf[3] = {0, 0, 0};
+  n = 99;
+  EXPECT_EQ(gimg_stream_read(s, buf, 3, &n), GIMG_OK);
+  EXPECT_EQ(n, 0u);
+
+  ASSERT_EQ(gimg_stream_seek(s, gimg_stream_size(s) + 1u), GIMG_ERR_IO);
+  // Past the buffer's capacity, which is what seek measures against.
+  ASSERT_EQ(gimg_stream_error(s), GIMG_ERR_IO);
+
+  n = 99;
+  EXPECT_EQ(gimg_stream_write(s, payload, sizeof(payload), &n), GIMG_ERR_IO);
+  EXPECT_EQ(n, 0u) << "a failed write must not claim to have written anything";
+  gimg_stream_output_buffer(s, &written, &written_size);
+  EXPECT_EQ(written_size, 3u)
+      << "and it must not have written anything either";
+
+  gimg_stream_destroy(s);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

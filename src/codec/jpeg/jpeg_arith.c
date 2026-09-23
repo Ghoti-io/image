@@ -305,6 +305,27 @@ int jpeg_arith_decode(jpeg_arith_decoder_t * d, uint8_t * st) {
   return sv >> 7;
 }
 
+/**
+ * The conditioning bounds this library never writes.
+ *
+ * T.81 F.1.4.4.1.2 classifies a DC difference as small or large by comparing
+ * its magnitude against `(1 << L) >> 1`, where L comes from the DAC segment
+ * (B.2.4.3).  The default L is 0, which makes that bound 0 - and a magnitude
+ * is never negative, so with the default conditioning the "small" arm cannot
+ * be taken at all.  It appears three times: twice in the decoder and once in
+ * the encoder, and none of the three has ever run.
+ *
+ * That is not an accident of the fixtures.  jpeg_save.c writes B.2.4.3's
+ * defaults on every arithmetic frame and offers no way to ask for anything
+ * else, so no file this library produces can reach those arms, and no
+ * round trip can test them.  Reaching them needs a file from an encoder that
+ * states a non-zero L, and the corpus has none - every DAC in it is the
+ * default pair.  jpeg_load.c does read L and store it, so the arms are live
+ * for such a file; they are simply not reachable from here.
+ *
+ * Recorded so the next reader does not spend an afternoon looking for a
+ * fixture that cannot be built with what is in this repository.
+ */
 void jpeg_arith_cond_defaults(jpeg_arith_cond_t * cond) {
   // T.81 B.2.4.3: absent a DAC segment, the conditioning is L = 0, U = 1 for
   // the DC tables and Kx = 5 for the AC tables.

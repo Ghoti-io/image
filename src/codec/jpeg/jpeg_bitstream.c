@@ -212,6 +212,18 @@ int jpeg_bitstream_read_bits(gimg_jpeg_bitstream_t * bs, int n) {
 
 int jpeg_build_huff_table(
     const unsigned char * dht, size_t dht_len, gimg_jpeg_huff_table_t * tbl) {
+  // Neither of the two length tests below can fail today, and the reason is
+  // in another file: every caller passes bytes that jpeg_parse_dht() stored,
+  // and that function walks the segment with these same two conditions - it
+  // reads a table only while GIMG_JPEG_DHT_HEADER_LEN bytes remain, and
+  // refuses one whose symbol count runs past what is left.  Checked, not
+  // assumed: the five call sites in jpeg_entropy.c, jpeg_lossless.c and
+  // jpeg_hierarchical.c all read state->huff_dc / huff_ac, which nothing but
+  // jpeg_parse_dht() fills.
+  //
+  // They stay because that is a guarantee made somewhere else about a length
+  // this function is about to index with, and the two ends are in different
+  // translation units.
   if (dht_len < GIMG_JPEG_DHT_HEADER_LEN) {
     return -1;
   }

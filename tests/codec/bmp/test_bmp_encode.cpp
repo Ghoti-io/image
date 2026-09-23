@@ -211,6 +211,24 @@ Rgba two_colors_in_runs(uint32_t x, uint32_t y) {
                                 : Rgba{16, 32, 48, 255};
 }
 
+/**
+ * Two colours in runs long enough to need makeup codes.
+ *
+ * CCITT G3's terminating codes cover runs of 0 to 63; anything longer is a
+ * makeup code for a multiple of 64 followed by a terminating code for the
+ * remainder.  Runs of 32 never reach that.  Here a row is a 100-pixel run, a
+ * 156-pixel run, or - on every fourth row - one run of the full 256, which is
+ * the makeup code with a terminating run of zero after it.
+ */
+Rgba two_colors_in_long_runs(uint32_t x, uint32_t y) {
+  const Rgba black{16, 32, 48, 255};
+  const Rgba white{255, 255, 255, 255};
+  if (y % 4u == 3u) {
+    return (y % 8u == 3u) ? white : black;
+  }
+  return (x < 100u) == ((y % 2u) == 0u) ? white : black;
+}
+
 /** Four colors, which is what 2 bits per pixel holds and nothing fewer. */
 Rgba four_colors(uint32_t x, uint32_t y) {
   static const Rgba kPalette[4] = {{200, 30, 40, 255}, {30, 200, 40, 255},
@@ -235,6 +253,72 @@ Rgba true_color_in_runs(uint32_t x, uint32_t y) {
   uint32_t n = ((x / 8u) * 8u) + y;
   return Rgba{(uint8_t)(n & 0xFFu), (uint8_t)((n >> 8) + 1u),
       (uint8_t)((n * 13u) & 0xFFu), 255};
+}
+
+/**
+ * Long runs punctuated by one or two lone pixels.
+ *
+ * Every RLE encoder here gathers a stretch with no run worth encoding and
+ * then asks how long it is.  Three or more go out as an absolute run; one or
+ * two cannot, because counts 0, 1 and 2 are escapes, so they go out as
+ * encoded runs of one instead.  That last arm needs a picture that actually
+ * produces a stretch of one or two, which is a shape no natural image and
+ * none of the fixtures here happened to have.
+ *
+ * Period 32: twenty-seven of one colour, then two lone pixels, then a run of
+ * three.  The run of three is what ends the literal gather at two.  More than
+ * sixteen colours overall, so the writer chooses eight bits a pixel and RLE8.
+ */
+Rgba runs_with_two_lone_pixels(uint32_t x, uint32_t y) {
+  (void)y;
+  const uint32_t block = x / 32u;
+  const uint32_t at = x % 32u;
+  uint32_t n;
+  if (at < 27u) { n = block % 20u; }
+  else if (at == 27u) { n = 20u; }
+  else if (at == 28u) { n = 21u; }
+  else { n = 22u; }
+  return Rgba{(uint8_t)(n * 11u), (uint8_t)(255u - n * 7u), (uint8_t)(n * 3u),
+      255};
+}
+
+/**
+ * The same shape with five lone pixels, and at most sixteen colours.
+ *
+ * Five is what makes the absolute run an odd number of bytes in RLE4 - two
+ * indices to the byte, so five indices is three bytes - and BMP pads an
+ * absolute run to a 16-bit boundary.  That padding had never been written.
+ */
+Rgba rle4_runs_with_five_lone_pixels(uint32_t x, uint32_t y) {
+  (void)y;
+  const uint32_t block = x / 32u;
+  const uint32_t at = x % 32u;
+  uint32_t n;
+  if (at < 24u) { n = block % 8u; }
+  else if (at < 29u) { n = 8u + (at - 24u); }
+  else { n = 13u; }
+  return Rgba{(uint8_t)(n * 17u), (uint8_t)(255u - n * 13u), (uint8_t)(n * 5u),
+      255};
+}
+
+/**
+ * True color, runs of four, then two lone pixels, then a pair.
+ *
+ * RLE24 pays from a run of two upwards - an encoded run is four bytes and an
+ * absolute triple is three - so the pair is what ends the literal gather.
+ * Every block gets its own colours, which is past what a palette holds, so
+ * this stays true color.
+ */
+Rgba true_color_runs_with_two_lone_pixels(uint32_t x, uint32_t y) {
+  const uint32_t block = x / 8u;
+  const uint32_t at = x % 8u;
+  uint32_t n = block * 4u + y * 2048u;
+  if (at < 4u) { n += 0u; }
+  else if (at == 4u) { n += 1u; }
+  else if (at == 5u) { n += 2u; }
+  else { n += 3u; }
+  return Rgba{(uint8_t)(n & 0xFFu), (uint8_t)((n >> 8) + 1u),
+      (uint8_t)(((n * 13u) >> 2) & 0xFFu), 255};
 }
 
 /** Thirty-two colors in runs of eight: 8 bits per pixel, and compressible. */
@@ -736,6 +820,38 @@ TEST(BmpEncode, TwoColorImageIsWrittenAsHuffman1DWhenAllowed) {
   expect_round_trip(bytes, 256, 16, two_colors_in_runs);
   publish_for_verification("huffman1d_os2_256x16.bmp", bytes, 256, 16,
       two_colors_in_runs);
+}
+
+// Runs too long for a terminating code alone.
+//
+// CCITT G3's terminating codes name runs of 0 to 63.  A longer run is a
+// makeup code for a multiple of 64 and then a terminating code for what is
+// left, which means the reader has to add two codes together and keep going
+// after the first - the one place its inner loop does not return on a match.
+// That had never run: the only Huffman fixture and the only Huffman round
+// trip use runs of 32.
+//
+// A run of exactly 256 is the case worth having on top of the others, because
+// its remainder is zero: a makeup code followed by a terminating code for no
+// pixels at all, which is easy to write as "no code follows" by mistake.
+TEST(BmpEncode, AHuffmanRunPastSixtyThreeTakesAMakeupCode) {
+  GIMG_Raster * raster = make_raster(256, 16, two_colors_in_long_runs);
+  ASSERT_NE(raster, nullptr);
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+  options.bmp_allow_huffman = 1;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+  ASSERT_EQ(read_u32(bytes, 30), 3u)
+      << "OS/2 Huffman 1D, or the decoder under test never ran";
+
+  // The round trip is the assertion: a makeup code read as its own run, or
+  // added to the wrong thing, puts every pixel after it in the wrong place.
+  expect_round_trip(bytes, 256, 16, two_colors_in_long_runs);
+  publish_for_verification("huffman1d_makeup_256x16.bmp", bytes, 256, 16,
+      two_colors_in_long_runs);
 }
 
 TEST(BmpEncode, Huffman1DNeedsItsOwnOption) {
@@ -1573,6 +1689,78 @@ TEST(BmpEncode, AnOverLargeProfileDoesNotSuppressTheRestOfTheColor) {
   EXPECT_EQ(back->icc_size, 0u);
 }
 
+// Every rendering intent, out and back.
+//
+// BMP V5 names the four intents with its own constants - LCS_GM_BUSINESS,
+// GRAPHICS, IMAGES, ABS_COLORIMETRIC - and this writer maps between them and
+// GIMG_Rendering_Intent in two switch statements, one each way.  Only
+// saturation had ever been written or read: it is the one that pushes a
+// header to V5 on its own, so it is the one the V5 tests reach for, and the
+// other three arms of both switches had never run.
+//
+// A map written twice in opposite directions is the kind that drifts, and a
+// round trip catches a pair that agree with each other but not with the file.
+// So this also reads the header field directly, which is where the four
+// constants actually live.
+TEST(BmpEncode, EveryRenderingIntentSurvivesTheRoundTrip) {
+  struct Case {
+    GIMG_Rendering_Intent intent;
+    uint32_t v5;
+    /** Whether stating this intent is enough to need a V5 header. */
+    bool needs_v5;
+    const char * name;
+  };
+  const Case cases[] = {
+      // The bV5Intent constants, which live in bmp_color.c: LCS_GM_BUSINESS
+      // 1, GRAPHICS 2, IMAGES 4, ABS_COLORIMETRIC 8.  Spelled out here so a
+      // change to either end of the map has to change this file too.
+      // Perceptual is GIMG_Rendering_Intent's zero and is also what an
+      // absent bV5Intent means, so stating it says nothing the file does not
+      // already say and the header stays at V4.  It still round-trips, and
+      // that is the whole reason nothing is lost by the two being the same
+      // value here.
+      {GIMG_INTENT_PERCEPTUAL, 4u, false, "perceptual"},
+      {GIMG_INTENT_RELATIVE_COLORIMETRIC, 2u, true, "relative colorimetric"},
+      {GIMG_INTENT_SATURATION, 1u, true, "saturation"},
+      {GIMG_INTENT_ABSOLUTE_COLORIMETRIC, 8u, true, "absolute colorimetric"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.name);
+    GIMG_Color_Info color;
+    gimg_color_info_default(&color);
+    // A stated color space as well, so the header is V5 for every case and
+    // not only for the one intent that forces it on its own.
+    color.transfer = GIMG_TRANSFER_SRGB;
+    color.primaries = GIMG_PRIMARIES_SRGB;
+    color.white_point = GIMG_PRIMARIES_SRGB;
+    color.intent = c.intent;
+    GIMG_Raster * raster = colored_raster(color);
+    ASSERT_NE(raster, nullptr);
+
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster(raster, bytes), GIMG_OK);
+    if (c.needs_v5) {
+      ASSERT_EQ(dib_size_of(bytes), 124u)
+          << "an intent other than the default needs a V5 header to state it";
+      EXPECT_EQ(dib_u32(bytes, 108), c.v5)
+          << "bV5Intent is at offset 108 of the DIB header";
+    }
+    else {
+      EXPECT_EQ(dib_size_of(bytes), 108u)
+          << "V4 holds the color space; only the intent would need V5, and "
+             "this one is the default";
+    }
+
+    Loaded img;
+    ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
+    ASSERT_EQ(img.decode(), GIMG_OK);
+    const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+    ASSERT_NE(back, nullptr);
+    EXPECT_EQ(back->intent, c.intent)
+        << "the two maps must agree, and agree with the file";
+  }
+}
+
 TEST(BmpEncode, SavingFromADocumentWhoseRasterTheSaveOwnsWritesTheRightProfile) {
   // The PNG and JPEG writers both read a raster they had already destroyed
   // when the save had decoded it for itself, and wrote freed memory into the
@@ -1776,4 +1964,67 @@ TEST(BmpEncode, Rle24WritesLiteralRunsAndReadsThemBack) {
   ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
   publish_for_verification(
       "rle24_os2_mixed_96x5.bmp", bytes, 96, 5, true_color_mixed);
+}
+
+// A stretch of one or two pixels with no run in it.
+//
+// Each of the three RLE encoders gathers a stretch that has no run worth
+// encoding and then asks how long it is.  Three or more become an absolute
+// run; one or two cannot, because the counts 0, 1 and 2 are escapes in BMP's
+// RLE, so they go out as encoded runs of one instead.  Nothing had ever
+// produced a stretch that short: the fixtures are built from long runs and
+// from pixels that never repeat, and neither shape leaves one or two behind.
+//
+// The same gather also pads an absolute run to a 16-bit boundary, and in RLE4
+// that padding depends on the *byte* count rather than the index count - five
+// indices are three bytes - so it needs a stretch of five, which is likewise
+// a shape nothing had.
+//
+// Each case asserts the compression actually chosen as well as the round
+// trip.  The writer only uses RLE where it wins, so a picture that stopped
+// compressing would fall back to plain rows and reach none of this while
+// still round-tripping perfectly.
+TEST(BmpEncode, AStretchTooShortToBeAnAbsoluteRunIsEncodedAsRunsOfOne) {
+  {
+    GIMG_Raster * raster = make_raster(768, 8, runs_with_two_lone_pixels);
+    ASSERT_NE(raster, nullptr);
+    GIMG_Save_Options options;
+    memset(&options, 0, sizeof(options));
+    options.bmp_rle = GIMG_BMP_RLE_AUTO;
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+    EXPECT_EQ(read_u16(bytes, 28), 8u) << "biBitCount: more than 16 colors";
+    ASSERT_EQ(read_u32(bytes, 30), 1u)
+        << "BI_RLE8, or the encoder under test never ran";
+    expect_round_trip(bytes, 768, 8, runs_with_two_lone_pixels);
+  }
+  {
+    GIMG_Raster * raster =
+        make_raster(256, 8, rle4_runs_with_five_lone_pixels);
+    ASSERT_NE(raster, nullptr);
+    GIMG_Save_Options options;
+    memset(&options, 0, sizeof(options));
+    options.bmp_rle = GIMG_BMP_RLE_AUTO;
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+    EXPECT_EQ(read_u16(bytes, 28), 4u) << "biBitCount: at most 16 colors";
+    ASSERT_EQ(read_u32(bytes, 30), 2u)
+        << "BI_RLE4, or the encoder under test never ran";
+    expect_round_trip(bytes, 256, 8, rle4_runs_with_five_lone_pixels);
+  }
+  {
+    GIMG_Raster * raster =
+        make_raster(512, 8, true_color_runs_with_two_lone_pixels);
+    ASSERT_NE(raster, nullptr);
+    GIMG_Save_Options options;
+    memset(&options, 0, sizeof(options));
+    options.bmp_rle = GIMG_BMP_RLE_AUTO;
+    options.bmp_allow_rle24 = 1;
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+    EXPECT_EQ(read_u16(bytes, 28), 24u) << "biBitCount: true color";
+    ASSERT_EQ(read_u32(bytes, 30), 4u)
+        << "OS/2 RLE24, or the encoder under test never ran";
+    expect_round_trip(bytes, 512, 8, true_color_runs_with_two_lone_pixels);
+  }
 }

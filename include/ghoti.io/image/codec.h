@@ -283,11 +283,12 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
 #define GIMG_JPEG_CHROMA_420 0
 #define GIMG_JPEG_CHROMA_422 1
 #define GIMG_JPEG_CHROMA_444 2
-/** FDCT method: Loeffler (libjpeg-compatible, default) or reference. */
+/** FDCT method: Loeffler (libjpeg-compatible, default) or reference.
+ * The reference transform is not implemented; see GIMG_Save_Options. */
 #define GIMG_JPEG_FDCT_LOEFFLER 0
 #define GIMG_JPEG_FDCT_REF     1
 /** Quantization method: reciprocal-based (libjpeg-compatible, default) or
- * integer division (for speed/quality comparison). */
+ * integer division.  The two write the same file; see GIMG_Save_Options. */
 #define GIMG_JPEG_QUANT_RECIP  0
 #define GIMG_JPEG_QUANT_DIV    1
 
@@ -327,12 +328,23 @@ typedef struct {
   uint8_t exif_thumbnail_quality; ///< Thumbnail JPEG quality 1–100 when
                                   ///< format 6 or 7; 0 = default (85).
   uint8_t jpeg_chroma_subsampling; ///< GIMG_JPEG_CHROMA_420 (default), 422, 444.
-  /** FDCT method: GIMG_JPEG_FDCT_LOEFFLER (0, default) = libjpeg-compatible
-   * Loeffler integer DCT for exact match; GIMG_JPEG_FDCT_REF (1) = reference
-   * implementation (float-based) for speed/quality comparison. */
+  /** FDCT method.  **Not implemented: only the Loeffler transform exists.**
+   *
+   * GIMG_JPEG_FDCT_REF was meant to select a reference float DCT to compare
+   * against.  There is no such transform in this library; the value is
+   * accepted, carried all the way to the block encoder, and discarded there.
+   * Every value of this field writes exactly the same file. */
   uint8_t jpeg_fdct_method;
-  /** Quantization: GIMG_JPEG_QUANT_RECIP (0, default) = reciprocal-based
-   * (libjpeg match); GIMG_JPEG_QUANT_DIV (1) = integer division. */
+  /** Quantization: GIMG_JPEG_QUANT_RECIP (0, default) or
+   * GIMG_JPEG_QUANT_DIV (1).
+   *
+   * **This chooses how the division is done, not what it produces.**  The
+   * reciprocal form is an exact division by multiplication rather than an
+   * approximation of one, so both settings quantize every coefficient to the
+   * same value and write byte-identical files.  Measured over 204
+   * combinations of quality, progression and subsampling; see
+   * JpegEncode.TheFdctAndQuantizationMethodOptionsChangeNoOutput.  Pick it
+   * for speed if a measurement says to, not for quality. */
   uint8_t jpeg_quant_method;
   uint8_t jpeg_progressive;        ///< 0 = baseline (default), 1 = progressive.
   /** When jpeg_progressive==1: NULL or scan_count 0 = default progression;
@@ -720,9 +732,19 @@ typedef struct {
    * live at zero: when it did, `GIMG_Decode_Options o = {};` quietly decoded
    * with a different filter than passing no options at all. */
   uint8_t jpeg_chroma_upsampling;
-  /** JPEG decode-to precision: 0 = use file precision (8→GRAY8/RGBA8;
-   * 12/16→GRAY16/RGB16 with 12-bit left-justified); 8, 12, or 16 = decode to
-   * that bit depth (conversion via library when different from file). */
+  /** JPEG decode-to precision.  **Not implemented: this field is read
+   * nowhere, and every value behaves as 0.**
+   *
+   * What a decode gives you is the file's own precision: 8 bits comes back
+   * as GRAY8 or RGBA8, and 12 or 16 as GRAY16 or RGBA16 with a 12-bit sample
+   * left-justified.  This field was meant to name a different depth - 8, 12
+   * or 16 - and have the library convert, and it does not: setting it to 8
+   * on a twelve-bit file still returns GRAY16, with no error and nothing
+   * said.  Measured at every value on both an eight-bit and a twelve-bit
+   * file; JpegLoad.TheDecodePrecisionOptionIsNotImplemented pins it, so
+   * whichever way this is settled the change will be a deliberate one.
+   *
+   * Convert the raster afterwards for now; see \ref api_options. */
   uint8_t jpeg_precision;
   /** GIF: what goes where no frame has drawn.
    *

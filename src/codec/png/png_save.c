@@ -2218,6 +2218,17 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
             chunk_size = modified_size;
           }
         }
+        // Only hIST reaches this in this loop: bKGD was continued above,
+        // because here the document owns the background and the chunk is
+        // re-made after PLTE from what the document says.  That makes two of
+        // the arms below unreachable from this loop and measured to be so -
+        // hIST's retarget answers KEEP or DROP and never REPLACE, so
+        // chunk_payload is never the rewritten buffer; and `modified` is set
+        // only for eXIf, which is not a chunk that defers.  They are kept
+        // because this block is the same code as the one in the
+        // KEEP_RAW_ONLY loop, where bKGD does arrive and both arms do run,
+        // and two copies that have quietly diverged are worse than one arm
+        // that costs nothing.
         if ((t == GIMG_PNG_bKGD || t == GIMG_PNG_hIST) &&
             deferred_count < sizeof(deferred) / sizeof(deferred[0])) {
           gimg_png_deferred_t * d = &deferred[deferred_count++];
