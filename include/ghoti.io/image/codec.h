@@ -372,9 +372,18 @@ typedef struct {
    * differential frames, and so on.
    *
    * A hierarchical file decodes to a picture of the same size and much the
-   * same quality as an ordinary one, and is larger: what it buys is that a
-   * decoder can stop early and still have a smaller complete image, which is
-   * what multi-resolution environments want.  Sampling is 4:4:4 throughout -
+   * same quality as an ordinary one: what it buys is that a decoder can stop
+   * early and still have a smaller complete image, which is what
+   * multi-resolution environments want.
+   *
+   * A DCT sequence pays for that in size - the pyramid's lower levels are
+   * extra data - and on a 64x48 test image a one-level sequence came out
+   * about 11% larger than the same image written flat, a two-level one 26%.
+   * A **lossless** sequence can go either way, because there the pyramid
+   * replaces the flat predictor rather than adding to it: on a smooth image
+   * the differential frames coded 18% smaller than a flat lossless file, and
+   * on noise 5% larger.  This comment used to say "and is larger" without
+   * qualification, which was never true of the lossless case.  Sampling is 4:4:4 throughout -
    * the pyramid is already doing the scaling - so `jpeg_chroma_subsampling` is
    * ignored, and the raster must be 8-bit.  Combines with `jpeg_arithmetic`,
    * which selects SOF9 and SOF13 in place of SOF1 and SOF5.  Ignored for

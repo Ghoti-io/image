@@ -8045,3 +8045,224 @@ TEST(JpegEncode, ASuccessiveApproximationAtTwelveBitsIsTheSameAsOnePass) {
     }
   }
 }
+
+namespace {
+
+/** A deterministic gradient, gray or colour, for the hierarchical matrix. */
+GIMG_Raster * pyramid_source(bool colour) {
+  GIMG_Raster * r = nullptr;
+  if (gimg_raster_create(64u, 48u,
+          colour ? &GIMG_PIXEL_RGBA8 : &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
+          nullptr, 0, &r) != GIMG_OK) {
+    return nullptr;
+  }
+  unsigned char * px = (unsigned char *)gimg_raster_pixels(r);
+  const size_t stride = gimg_raster_stride_bytes(r);
+  const unsigned ch = colour ? 4u : 1u;
+  for (uint32_t y = 0; y < 48u; y++) {
+    for (uint32_t x = 0; x < 64u; x++) {
+      for (unsigned c = 0; c < ch; c++) {
+        px[y * stride + x * ch + c] = (colour && c == 3u)
+            ? 255u
+            : (unsigned char)(((x * 5u) + (y * 3u) + (c * 41u)) & 0xFFu);
+      }
+    }
+  }
+  return r;
+}
+
+/** Save `pyramid_source(colour)` with these options and decode it back. */
+::testing::AssertionResult pyramid_round_trip(bool colour,
+    const GIMG_Save_Options & opts, std::vector<uint8_t> & out_pixels,
+    size_t * out_bytes) {
+  GIMG_Raster * raster = pyramid_source(colour);
+  if (!raster) { return ::testing::AssertionFailure() << "raster"; }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_from_raster(raster, &doc) != GIMG_OK) {
+    gimg_raster_destroy(raster);
+    return ::testing::AssertionFailure() << "doc";
+  }
+  gimg_raster_destroy(raster);
+  GIMG_Stream * out = nullptr;
+  if (gimg_stream_create_memory_output(&out) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return ::testing::AssertionFailure() << "stream";
+  }
+  GIMG_Save_Report report = {};
+  const GIMG_Result sr = gimg_doc_save(doc, out, "jpeg", &opts, &report);
+  gimg_doc_destroy(doc);
+  if (sr != GIMG_OK) {
+    gimg_stream_destroy(out);
+    return ::testing::AssertionFailure() << "save: " << (int)sr;
+  }
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out, &p, &n);
+  const std::vector<uint8_t> bytes(
+      (const uint8_t *)p, (const uint8_t *)p + n);
+  gimg_stream_destroy(out);
+  if (out_bytes) { *out_bytes = n; }
+
+  DocStreamGuard in;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &in.s) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "reload stream";
+  }
+  if (gimg_doc_load(in.s, nullptr, nullptr, &in.d) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "reload";
+  }
+  RasterGuard got;
+  const GIMG_Result dr =
+      gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r);
+  if (dr != GIMG_OK || !got.r) {
+    return ::testing::AssertionFailure() << "decode: " << (int)dr;
+  }
+  if (gimg_raster_width(got.r) != 64u || gimg_raster_height(got.r) != 48u) {
+    return ::testing::AssertionFailure()
+        << "decoded " << gimg_raster_width(got.r) << "x"
+        << gimg_raster_height(got.r);
+  }
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(got.r);
+  const size_t stride = gimg_raster_stride_bytes(got.r);
+  const auto * px = (const unsigned char *)gimg_raster_pixels_const(got.r);
+  const unsigned keep = colour ? 3u : 1u;
+  out_pixels.clear();
+  for (uint32_t y = 0; y < 48u; y++) {
+    for (uint32_t x = 0; x < 64u; x++) {
+      for (unsigned c = 0; c < keep; c++) {
+        out_pixels.push_back(
+            px[y * stride + x * fmt->channel_count + (colour ? c : 0u)]);
+      }
+    }
+  }
+  return ::testing::AssertionSuccess();
+}
+
+/** The source's own samples, in the order pyramid_round_trip returns them. */
+std::vector<uint8_t> pyramid_source_pixels(bool colour) {
+  GIMG_Raster * r = pyramid_source(colour);
+  std::vector<uint8_t> out;
+  if (!r) { return out; }
+  const size_t stride = gimg_raster_stride_bytes(r);
+  const auto * px = (const unsigned char *)gimg_raster_pixels_const(r);
+  const unsigned ch = colour ? 4u : 1u;
+  const unsigned keep = colour ? 3u : 1u;
+  for (uint32_t y = 0; y < 48u; y++) {
+    for (uint32_t x = 0; x < 64u; x++) {
+      for (unsigned c = 0; c < keep; c++) {
+        out.push_back(px[y * stride + x * ch + c]);
+      }
+    }
+  }
+  gimg_raster_destroy(r);
+  return out;
+}
+
+long worst_difference(
+    const std::vector<uint8_t> & a, const std::vector<uint8_t> & b) {
+  long worst = 0;
+  const size_t n = a.size() < b.size() ? a.size() : b.size();
+  for (size_t i = 0; i < n; i++) {
+    long d = (long)a[i] - (long)b[i];
+    if (d < 0) { d = -d; }
+    if (d > worst) { worst = d; }
+  }
+  return worst;
+}
+
+} // namespace
+
+/**
+ * A hierarchical sequence is the same picture as the flat file, every way it
+ * can be written.
+ *
+ * T.81 Annex J builds the image as a pyramid: a small frame, then
+ * differential frames that each double the resolution. B.3.1 requires every
+ * frame of a sequence to use the same process, and this encoder writes three
+ * of them - sequential, progressive and lossless - each with the Huffman or
+ * the arithmetic coder, at one or two levels, in gray or in colour. Eighteen
+ * combinations, and the two fixtures in the suite cover two of them: a
+ * two-level gray sequential file and a gray lossless one.
+ *
+ * What is asserted is what the option's own documentation promises. The
+ * picture comes back the same size; a lossless sequence reproduces the source
+ * **exactly**, because a lossless pyramid that lost anything would not be
+ * lossless; and a DCT sequence is no further from the source than the same
+ * image written flat, within one step - the pyramid adds a reconstruction,
+ * and on this image it costs at most one level out of 255.
+ *
+ * The size claim is asserted too, and it is the one that turned out to be
+ * written down wrong. A DCT sequence is larger than the flat file, as the
+ * header said. A *lossless* sequence is not reliably either: on this gradient
+ * the differential frames code 18% smaller than a flat lossless file, and on
+ * noise 5% larger, because there the pyramid replaces the flat predictor
+ * instead of adding to it. The header used to say "and is larger" without
+ * qualification.
+ */
+TEST(JpegEncode, AHierarchicalSequenceIsTheSamePictureHoweverItIsWritten) {
+  struct Case {
+    const char * what;
+    bool colour;
+    uint8_t levels;
+    uint8_t progressive;
+    uint8_t arithmetic;
+    uint8_t lossless;
+  };
+  const Case cases[] = {
+      {"gray, one level, sequential", false, 1, 0, 0, 0},
+      {"gray, two levels, sequential", false, 2, 0, 0, 0},
+      {"gray, one level, progressive", false, 1, 1, 0, 0},
+      {"gray, one level, arithmetic", false, 1, 0, 1, 0},
+      {"gray, two levels, progressive + arithmetic", false, 2, 1, 1, 0},
+      {"gray, one level, lossless", false, 1, 0, 0, 1},
+      {"gray, two levels, lossless", false, 2, 0, 0, 1},
+      {"gray, one level, lossless + arithmetic", false, 1, 0, 1, 1},
+      {"colour, one level, sequential", true, 1, 0, 0, 0},
+      {"colour, two levels, sequential", true, 2, 0, 0, 0},
+      {"colour, one level, progressive", true, 1, 1, 0, 0},
+      {"colour, one level, arithmetic", true, 1, 0, 1, 0},
+      {"colour, one level, progressive + arithmetic", true, 1, 1, 1, 0},
+      {"colour, one level, lossless", true, 1, 0, 0, 1},
+      {"colour, two levels, lossless", true, 2, 0, 0, 1},
+  };
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    GIMG_Save_Options flat = {};
+    flat.quality = 95;
+    flat.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
+    flat.jpeg_progressive = c.progressive;
+    flat.jpeg_arithmetic = c.arithmetic;
+    flat.jpeg_lossless_predictor = c.lossless ? 1u : 0u;
+    GIMG_Save_Options pyramid = flat;
+    pyramid.jpeg_hierarchical_levels = c.levels;
+
+    std::vector<uint8_t> flat_pixels, pyramid_pixels;
+    size_t flat_bytes = 0, pyramid_bytes = 0;
+    ASSERT_TRUE(pyramid_round_trip(c.colour, flat, flat_pixels, &flat_bytes));
+    ASSERT_TRUE(
+        pyramid_round_trip(c.colour, pyramid, pyramid_pixels, &pyramid_bytes));
+    const std::vector<uint8_t> source = pyramid_source_pixels(c.colour);
+    ASSERT_EQ(pyramid_pixels.size(), source.size());
+    ASSERT_EQ(flat_pixels.size(), source.size());
+
+    if (c.lossless) {
+      EXPECT_EQ(worst_difference(pyramid_pixels, source), 0)
+          << "a lossless pyramid that lost something is not lossless";
+      EXPECT_EQ(worst_difference(flat_pixels, source), 0)
+          << "the control: a flat lossless file is exact too";
+    }
+    else {
+      const long flat_worst = worst_difference(flat_pixels, source);
+      const long pyramid_worst = worst_difference(pyramid_pixels, source);
+      EXPECT_LE(pyramid_worst, flat_worst + 2)
+          << "the pyramid is " << pyramid_worst << " from the source where "
+             "the flat file is " << flat_worst
+          << "; a sequence should cost one reconstruction step, not a visible "
+             "amount";
+      // The pyramid's lower levels are extra data in a DCT sequence.
+      EXPECT_GT(pyramid_bytes, flat_bytes)
+          << "a DCT sequence carries the smaller frames as well as the full "
+             "one, so it cannot be smaller than the flat file";
+    }
+  }
+}
