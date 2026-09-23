@@ -377,7 +377,7 @@ TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cfla
 # $(APP_DIR)/$(TARGET), which the ASan targets do not build; making it a
 # dependency there would link a release library as a side effect of asking for
 # an instrumented run, to re-check exactly what `make test` already checked.
-TEST_GATES ?= check-symbols
+TEST_GATES ?= check-symbols check-aliasing
 
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
@@ -893,6 +893,72 @@ TEST_LD_PATH := $(APP_DIR):$(LIB_INSTALL_PATH)/$(SUITE)
 ####################################################################
 # Symbol namespace check
 ####################################################################
+
+# The only instrument that sees a strict-aliasing violation.
+#
+# Measured on gcc 14.2 with this library's own sanitizer flags, one defect per
+# program: heap-use-after-free, stack-buffer-overflow, signed integer overflow
+# and float-to-int overflow are caught at every -O, and a strict-aliasing
+# violation at none of them - an instrumented build of one the optimizer
+# actually exploits still prints the wrong answer and reports nothing.  So
+# there is no runtime gate for this class and there is not going to be one.
+#
+# It found six real violations in jpeg_entropy.c, all one idiom: an array of
+# typed pointers cast wholesale to const void * const *, where the element
+# conversion is legal and the array conversion is not.  Nothing stops a
+# seventh, which is what this exists for.
+#
+# -fstrict-aliasing IS LOAD-BEARING, and the -O level is not.  Measured, all
+# on the planted violation below:
+#
+#                      explicit -fstrict-aliasing   gcc default
+#   -O0 / -O1                    warns                 silent
+#   -O2 / -O3 / -Os              warns                 warns
+#   no -O at all                 warns                 silent
+#
+# -Wstrict-aliasing reports nothing while -fno-strict-aliasing is in effect,
+# and that is what gcc defaults to below -O2.  So the level appears to matter
+# and does not: what matters is that the flag is on, and this passes it
+# explicitly, which is why -fsyntax-only with no optimization still sees
+# everything.  Dropping -fstrict-aliasing would make this gate silent at any
+# level, and silent reads as clean - which is what the planted control below
+# is for.  It is checked on every run rather than trusted.
+ALIAS_FLAGS := -std=c17 -O2 -fstrict-aliasing -fsyntax-only -Wstrict-aliasing=1
+
+check-aliasing: ## Fail on a strict-aliasing violation; no sanitizer sees these
+	@printf "\n### Checking strict aliasing ###\n"
+	@files='$(SOURCES)'; \
+	if [ -z "$$files" ]; then \
+		printf "\033[0;31m### check-aliasing swept no files at all ###\033[0m\n" >&2; \
+		printf "SOURCES is empty, so this gate proved nothing.\n" >&2; \
+		exit 1; \
+	fi; \
+	tmp=$$(mktemp -d) || exit 1; \
+	trap 'rm -rf "$$tmp"' EXIT INT TERM; \
+	printf '#include <stdint.h>\nint32_t probe(float *f){int32_t *p=(int32_t *)f; *f=1.0f; return *p;}\n' > $$tmp/plant.c; \
+	if ! $(CC) $(ALIAS_FLAGS) $$tmp/plant.c 2>&1 | grep -q 'strict-aliasing'; then \
+		printf "\033[0;31m### check-aliasing is blind ###\033[0m\n" >&2; \
+		printf "A planted type-punning violation produced no warning, so a clean\n" >&2; \
+		printf "sweep below would mean nothing. ALIAS_FLAGS must keep\n" >&2; \
+		printf "%s\n" "-fstrict-aliasing; the -O level is not what this depends on." >&2; \
+		exit 1; \
+	fi; \
+	if ! $(CC) $(ALIAS_FLAGS) $(INCLUDE) $$files > $$tmp/out 2>&1; then \
+		printf "\033[0;31m### check-aliasing could not look ###\033[0m\n" >&2; \
+		printf "The sweep failed to compile, so it found nothing for the wrong\n" >&2; \
+		printf "reason. This is not the same as finding nothing:\n\n" >&2; \
+		head -20 $$tmp/out >&2; \
+		exit 1; \
+	fi; \
+	found=$$(grep -E 'warning:.*strict-aliasing' $$tmp/out || true); \
+	if [ -n "$$found" ]; then \
+		printf "\033[0;31m### Strict-aliasing violations ###\033[0m\n" >&2; \
+		printf "%s\n" "$$found" >&2; \
+		printf "\nNo sanitizer detects these at any -O. Convert element by element\n" >&2; \
+		printf "rather than casting an array of T * to an array of void *.\n" >&2; \
+		exit 1; \
+	fi; \
+	printf "  %s sources, no strict-aliasing violations\n" "$$(printf '%s\n' $$files | wc -l)"
 
 check-symbols: ## Fail if any exported symbol lacks the version namespace
 check-symbols: $(APP_DIR)/$(TARGET)
