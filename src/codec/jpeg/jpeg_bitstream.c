@@ -49,20 +49,28 @@ void jpeg_bitstream_init(
   bs->rst_just_skipped = 0;
 }
 
-/** Return 1 if marker m has no length/payload (SOI, EOI, RST0..RST7). */
-static int jpeg_marker_no_length(unsigned char m) {
-  if (m == GIMG_JPEG_MARKER_SOI || m == GIMG_JPEG_MARKER_EOI) {
-    return 1;
-  }
-  if (m >= 0xD0 && m <= 0xD7) {
-    return 1; // RST0..RST7
-  }
-  return 0;
-}
-
-/** Skip marker at current position; current byte must be 0xFF. Skips 0xFF and
- * the marker byte; for markers with length, skips length bytes too. Return 1
- * if we skipped, 0 if next byte is 0x00 or 0xFF (entropy data, do not skip). */
+/**
+ * Consume a restart marker at the current position, whose byte must be 0xFF.
+ *
+ * **What can be in this buffer is decided elsewhere, and it is not much.** A
+ * scan's entropy data is gathered by jpeg_load.c, which reads the file a byte
+ * at a time and puts into the buffer only: entropy bytes, the `0xFF 0x00` of
+ * B.2.2 byte stuffing, the `0xFF 0xDn` of a restart marker, and - where the
+ * file ends mid-marker - a trailing lone `0xFF`.  Every other marker is
+ * recognised there and either applied or used to end the scan.  Six call
+ * sites build a bitstream and all six pass such a buffer.
+ *
+ * So this used to carry a marker-segment parser - read the two length bytes,
+ * skip the payload, continue - that no input could reach.  It was also the
+ * wrong thing to do if one ever had: B.2.4.1 ends the entropy-coded segment
+ * at the next marker, so leaping over a marker segment and carrying on
+ * decodes bytes that belong to something else.  What is left refuses to skip
+ * anything it does not recognise, which leaves the 0xFF to be read as data
+ * and the scan to end where it runs out - the same thing that already
+ * happened to a restart marker arriving where none was expected.
+ *
+ * @return 1 if a restart marker was consumed, 0 otherwise.
+ */
 static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
   if (bs->byte_off >= bs->size || bs->data[bs->byte_off] != 0xFF) {
     return 0;
@@ -70,98 +78,61 @@ static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
   if (bs->byte_off + 1 >= bs->size) {
     return 0;
   }
-  unsigned char m = bs->data[bs->byte_off + 1];
-  if (m == 0x00 || m == 0xFF) {
-    // Byte stuffing or entropy data; do not skip.
+  const unsigned char m = bs->data[bs->byte_off + 1];
+  // T.81 3.1.110: a restart is consumed only where the decoder expects one,
+  // at the start of a restart interval, matching libjpeg's
+  // read_restart_marker.  Anywhere else the two bytes are entropy data as far
+  // as this reader is concerned, and the stream is invalid.
+  if (m < 0xD0 || m > 0xD7 || !bs->expect_rst) {
     return 0;
   }
-  if (m >= 0xD0 && m <= 0xD7) {
-    // RST (T.81 3.1.110): only skip when decoder expects RST at this position
-    // (start of restart interval), matching libjpeg read_restart_marker.
-    if (!bs->expect_rst) {
-      return 0; // treat 0xFF 0xDx as entropy data (invalid stream if RST misaligned)
-    }
-    bs->expect_rst = 0;
+  bs->expect_rst = 0;
 #if GIMG_JPEG_DEBUG_RST_DEC
-    (void)fprintf(stderr,
-        "RST_DEC skip_marker_at_ff at byte_off=%zu marker=0x%02x\n",
-        bs->byte_off, (unsigned)m);
-    (void)fflush(stderr);
+  (void)fprintf(stderr,
+      "RST_DEC skip_marker_at_ff at byte_off=%zu marker=0x%02x\n",
+      bs->byte_off, (unsigned)m);
+  (void)fflush(stderr);
 #endif
-    bs->byte_off += 2; // skip 0xFF and marker byte (RST is on byte boundary)
-    bs->bit_off = 0;
-    bs->rst_just_skipped = 1;
-    return 1;
-  }
-  bs->byte_off += 2; // skip 0xFF and marker byte
-  if (jpeg_marker_no_length(m)) {
-    return 1;
-  }
-  // Marker with 2-byte length (DHT, DQT, SOS, etc.). Skip only if the full
-  // segment is in the buffer; otherwise leave position unchanged and do not
-  // skip (caller will treat 0xFF as data — buffer should not be truncated).
-  if (bs->byte_off + 2 > bs->size) {
-    bs->byte_off -= 2; // undo skip
-    return 0;
-  }
-  uint16_t seg_len =
-      (uint16_t)((bs->data[bs->byte_off] << 8) | bs->data[bs->byte_off + 1]);
-  if (seg_len < 2 || bs->byte_off + (size_t)seg_len > bs->size) {
-    bs->byte_off -= 2;
-    return 0;
-  }
-  bs->byte_off += (size_t)seg_len; // skip length bytes and payload
+  bs->byte_off += 2; // RST is on a byte boundary
+  bs->bit_off = 0;
+  bs->rst_just_skipped = 1;
   return 1;
 }
 
-/** Skip marker segments and stuffing after 0xFF (T.81 B.2.2). Call only when
- * byte_off was just advanced past a 0xFF byte (data[byte_off - 1] == 0xFF).
- * Skip 0x00 (stuffing) or RST/marker bytes; do not skip entropy data. */
+/**
+ * Step over what follows a 0xFF the reader has just consumed the bits of.
+ *
+ * Call only when byte_off was advanced past a 0xFF byte.  By the invariant
+ * described above, what follows is the 0x00 of byte stuffing, or a restart
+ * marker, or nothing this reader may move over.
+ */
 static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
-  while (bs->byte_off < bs->size) {
-    unsigned char m = bs->data[bs->byte_off];
-    if (m == 0x00) {
+  if (bs->byte_off >= bs->size) {
+    return;
+  }
+  const unsigned char m = bs->data[bs->byte_off];
+  if (m == 0x00) {
 #if GIMG_JPEG_DEBUG_SKIP_FF
-      (void)fprintf(stderr,
-          "SKIP_FF skipping stuffing 0x00 at byte_off=%zu -> %zu\n",
-          (size_t)bs->byte_off, (size_t)(bs->byte_off + 1));
-      (void)fflush(stderr);
+    (void)fprintf(stderr,
+        "SKIP_FF skipping stuffing 0x00 at byte_off=%zu -> %zu\n",
+        (size_t)bs->byte_off, (size_t)(bs->byte_off + 1));
+    (void)fflush(stderr);
 #endif
-      bs->byte_off++;
-      break;
-    }
-    if (m == 0xFF) {
-      if (bs->byte_off + 1 < bs->size && bs->data[bs->byte_off + 1] >= 0xD0 &&
-          bs->data[bs->byte_off + 1] <= 0xD7 && bs->expect_rst) {
-        bs->expect_rst = 0;
+    bs->byte_off++; // T.81 B.2.2
+    return;
+  }
+  if (m == 0xFF && bs->byte_off + 1 < bs->size &&
+      bs->data[bs->byte_off + 1] >= 0xD0 &&
+      bs->data[bs->byte_off + 1] <= 0xD7 && bs->expect_rst) {
+    bs->expect_rst = 0;
 #if GIMG_JPEG_DEBUG_RST_DEC
-        (void)fprintf(stderr,
-            "RST_DEC skip_after_ff (0xFF 0xDx) at byte_off=%zu\n",
-            bs->byte_off - 1);
-        (void)fflush(stderr);
+    (void)fprintf(stderr, "RST_DEC skip_after_ff (0xFF 0xDx) at byte_off=%zu\n",
+        bs->byte_off - 1);
+    (void)fflush(stderr);
 #endif
-        bs->byte_off += 2;
-        bs->bit_off = 0;
-        bs->rst_just_skipped = 1;
-      }
-      break;
-    }
-    if (m >= 0xD0 && m <= 0xD7) {
-      break;
-    }
-    if (bs->byte_off + 3 > bs->size) {
-      break;
-    }
-    bs->byte_off++;
-    uint16_t seg_len =
-        (uint16_t)((bs->data[bs->byte_off] << 8) | bs->data[bs->byte_off + 1]);
     bs->byte_off += 2;
-    if (seg_len >= 2 && bs->byte_off + (size_t)(seg_len - 2) <= bs->size) {
-      bs->byte_off += (size_t)(seg_len - 2);
-    }
-    else {
-      break;
-    }
+    bs->bit_off = 0;
+    bs->rst_just_skipped = 1;
   }
 }
 
