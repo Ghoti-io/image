@@ -2706,6 +2706,139 @@ TEST(JpegLoad, LoadJpegWithRstInScanSucceeds) {
 // case handles a DNL that turns up as a standalone segment, which is the
 // illegal before-scan shape.  Mutating the segment loop leaves this test
 // green, so it is the in-scan path that has to be broken to see it fail.
+// T.81 B.1.1.2: "any marker may optionally be preceded by any number of fill
+// bytes, which are bytes assigned code X'FF'".  So a restart marker may be
+// written FF FF D0, or FF FF FF D0, and a decoder has to step over the fill
+// and find the marker underneath.
+//
+// This library's writer never emits fill bytes, so no round trip reaches the
+// case and nothing here covered it: every restart fixture has its markers
+// flush against the entropy data.  A reader is not entitled to assume its own
+// writer's habits, and a JPEG from something that pads is a legal JPEG.
+//
+// The image is encoded once, then the same bytes are re-emitted with N fill
+// bytes in front of every restart marker found after SOS.  All of them must
+// decode to the picture the unpadded one decodes to - not merely load, which
+// a decoder that silently dropped a restart interval would also do.
+//
+// That the markers matter here was checked rather than assumed: deleting them
+// outright instead of padding them makes the decode fail with GIMG_ERR_CORRUPT,
+// so this decoder really does consume them and the test is not passing because
+// restarts are ignored.
+//
+// What this does NOT cover, measured with GIMG_JPEG_DEBUG_RST_DEC and a counter
+// in the loop itself: the B.1.1.2 fill-byte loop in
+// jpeg_bitstream_align_skip_rst() runs zero times for every case here.  The
+// fill bytes are absorbed by the entropy reader as data bits before alignment
+// happens, so alignment already lands on the marker.  That loop, and the
+// 0xFF-0xFF-0xDn arm of jpeg_bitstream_skip_after_ff(), can both be deleted
+// with the whole suite still green.  They are left alone because the decoder
+// is correct with them and no input found so far distinguishes the two states
+// - but they should be read as unexercised defence, not as what makes this
+// test pass.
+TEST(JpegLoad, FillBytesBeforeARestartMarkerAreSteppedOver) {
+  const uint32_t w = 64, h = 64;
+  GIMG_Pixel_Format fmt = GIMG_PIXEL_RGBA8;
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(
+      gimg_raster_create(w, h, &fmt, GIMG_RASTER_OWNED, NULL, 0, &raster),
+      GIMG_OK);
+  {
+    const size_t stride = gimg_raster_stride_bytes(raster);
+    auto * px = (unsigned char *)gimg_raster_pixels(raster);
+    unsigned seed = 7u;
+    for (uint32_t y = 0; y < h; y++) {
+      for (uint32_t x = 0; x < w; x++) {
+        seed = seed * 1664525u + 1013904223u;
+        unsigned char * p = px + (size_t)y * stride + (size_t)x * 4u;
+        p[0] = (unsigned char)(x * 7u + (seed >> 26));
+        p[1] = (unsigned char)(y * 5u);
+        p[2] = (unsigned char)(x ^ y);
+        p[3] = 255;
+      }
+    }
+  }
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Stream * os = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+  GIMG_Save_Options so = {};
+  so.metadata_policy = GIMG_META_DROP_ALL;
+  so.quality = 90;
+  so.jpeg_restart_interval = 2; // several markers in a small image
+  GIMG_Save_Report rep = {};
+  ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_OK);
+  const void * bp = nullptr;
+  size_t bn = 0;
+  gimg_stream_output_buffer(os, &bp, &bn);
+  const std::vector<uint8_t> base((const uint8_t *)bp, (const uint8_t *)bp + bn);
+  gimg_stream_destroy(os);
+  gimg_doc_destroy(doc);
+
+  auto decode = [](const std::vector<uint8_t> & bytes,
+                    std::vector<uint8_t> & out) -> bool {
+    GIMG_Stream * is = nullptr;
+    if (gimg_stream_create_memory(bytes.data(), bytes.size(), &is) != GIMG_OK) {
+      return false;
+    }
+    GIMG_Doc * d = nullptr;
+    if (gimg_doc_load(is, nullptr, nullptr, &d) != GIMG_OK) {
+      gimg_stream_destroy(is);
+      return false;
+    }
+    GIMG_Raster * r = nullptr;
+    const bool ok =
+        gimg_item_decode(gimg_doc_item(d, 0), nullptr, &r) == GIMG_OK && r;
+    if (ok) {
+      const auto * q = (const unsigned char *)gimg_raster_pixels_const(r);
+      out.assign(q,
+          q + gimg_raster_stride_bytes(r) * (size_t)gimg_raster_height(r));
+      gimg_raster_destroy(r);
+    }
+    gimg_doc_destroy(d);
+    gimg_stream_destroy(is);
+    return ok;
+  };
+
+  std::vector<uint8_t> want;
+  ASSERT_TRUE(decode(base, want)) << "the unpadded encode must decode";
+
+  size_t sos = 0;
+  for (size_t i = 2; i + 1 < base.size(); i++) {
+    if (base[i] == 0xFF && base[i + 1] == 0xDA) {
+      sos = i;
+      break;
+    }
+  }
+  ASSERT_GT(sos, 0u) << "no SOS found in our own output";
+
+  for (int fills = 1; fills <= 4; fills++) {
+    SCOPED_TRACE(std::to_string(fills) + " fill byte(s) per marker");
+    std::vector<uint8_t> padded;
+    int markers = 0;
+    for (size_t i = 0; i < base.size(); i++) {
+      if (i > sos && i + 1 < base.size() && base[i] == 0xFF &&
+          base[i + 1] >= 0xD0 && base[i + 1] <= 0xD7) {
+        for (int k = 0; k < fills; k++) { padded.push_back(0xFF); }
+        markers++;
+      }
+      padded.push_back(base[i]);
+    }
+    ASSERT_GT(markers, 0) << "the encode carried no restart markers to pad, so "
+                             "this case would test nothing";
+    ASSERT_EQ(padded.size(), base.size() + (size_t)(markers * fills));
+    std::vector<uint8_t> got;
+    ASSERT_TRUE(decode(padded, got))
+        << "fill bytes before a restart marker are legal and must not stop "
+           "the decode";
+    EXPECT_TRUE(got == want)
+        << "the padded stream decoded to a different picture, so a restart "
+           "interval was mishandled rather than merely survived";
+  }
+}
+
 TEST(JpegLoad, ADnlThatAgreesWithTheStatedHeightIsAccepted) {
   std::vector<uint8_t> jpeg = make_minimal_jpeg_with_dnl_after_scan();
   GIMG_Stream * s = nullptr;
