@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include <vector>
 
+#include "../../exif_test_utils.h"
 #include "png_test_utils.h"
 
 // For gimg_png_write_chunk(), so these tests build their streams with the
@@ -3039,4 +3040,196 @@ TEST(PngDecode, AnApngsColorTypeDoesNotChangeThePictureItComposites) {
     EXPECT_EQ(frames[0][1], frames[1][1])
         << "the frames expand the same way but composite differently";
   }
+}
+
+namespace {
+
+/** Rewrite the payload of the first @p type chunk, same length, CRC fixed. */
+bool replace_chunk_payload(std::vector<uint8_t> & png, const char * type,
+    const std::vector<uint8_t> & payload) {
+  size_t i = 8;
+  while (i + 12 <= png.size()) {
+    const uint32_t n = ((uint32_t)png[i] << 24) | ((uint32_t)png[i + 1] << 16) |
+        ((uint32_t)png[i + 2] << 8) | (uint32_t)png[i + 3];
+    if (memcmp(&png[i + 4], type, 4) == 0) {
+      if (n != payload.size() || i + 12 + n > png.size()) { return false; }
+      std::copy(payload.begin(), payload.end(), png.begin() + (long)(i + 8));
+      const uint32_t crc = exif_test::png_crc(&png[i + 4], 4 + n);
+      png[i + 8 + n] = (uint8_t)(crc >> 24);
+      png[i + 9 + n] = (uint8_t)(crc >> 16);
+      png[i + 10 + n] = (uint8_t)(crc >> 8);
+      png[i + 11 + n] = (uint8_t)crc;
+      return true;
+    }
+    if (memcmp(&png[i + 4], "IEND", 4) == 0) { break; }
+    i += 12u + (size_t)n;
+  }
+  return false;
+}
+
+/** Load and decode @p bytes, handing back the color info or nothing. */
+::testing::AssertionResult ColorInfoOf(
+    const std::vector<uint8_t> & bytes, GIMG_Color_Info * out) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "stream";
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(s);
+    return ::testing::AssertionFailure() << "load: " << (int)r;
+  }
+  GIMG_Raster * raster = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  if (r == GIMG_OK && raster) {
+    const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+    if (info) { *out = *info; }
+  }
+  if (raster) { gimg_raster_destroy(raster); }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  return r == GIMG_OK ? ::testing::AssertionSuccess()
+                      : ::testing::AssertionFailure() << "decode: " << (int)r;
+}
+
+} // namespace
+
+// Every cICP code-point combination this color model can hold, and one it
+// cannot.
+//
+// The reader distinguishes exactly two: H.273 primaries 1 with transfer 13 is
+// the sRGB pair, and primaries 1 with transfer 8 is the same gamut read
+// linearly.  Anything else is left unknown on purpose - rounding BT.2020 with
+// PQ to sRGB would be a claim about the pixels the file never made.
+//
+// The linear arm had never run.  The two committed fixtures cover the sRGB
+// pair and one unrepresentable combination, and a cICP payload is four bytes,
+// so the rest are made by rewriting those four in the fixture that already
+// has the chunk - which keeps the question to the code points and nothing
+// else, since every other byte of the file is identical.
+TEST(PngDecode, EachCicpCombinationThisModelCanHoldIsTranslated) {
+  std::vector<uint8_t> base;
+  ASSERT_TRUE(png_test::load_png_file("png_cicp_srgb.png", base))
+      << "Run tests/data/png/generate.py";
+
+  struct Case {
+    const char * what;
+    uint8_t primaries, transfer, matrix, full_range;
+    GIMG_Primaries want_primaries;
+    GIMG_Transfer want_transfer;
+  };
+  const Case cases[] = {
+      {"sRGB primaries, sRGB transfer", 1, 13, 0, 1, GIMG_PRIMARIES_SRGB,
+          GIMG_TRANSFER_SRGB},
+      {"sRGB primaries, linear transfer", 1, 8, 0, 1, GIMG_PRIMARIES_SRGB,
+          GIMG_TRANSFER_LINEAR},
+      // Each of these changes exactly one code point away from a pair the
+      // model holds, so between them they say the reader is reading all four
+      // bytes rather than matching on one of them.
+      {"BT.2020 primaries, sRGB transfer", 9, 13, 0, 1,
+          GIMG_PRIMARIES_UNKNOWN, GIMG_TRANSFER_UNKNOWN},
+      {"sRGB pair, PQ transfer", 1, 16, 0, 1, GIMG_PRIMARIES_UNKNOWN,
+          GIMG_TRANSFER_UNKNOWN},
+      {"sRGB pair, a matrix other than identity", 1, 13, 1, 1,
+          GIMG_PRIMARIES_UNKNOWN, GIMG_TRANSFER_UNKNOWN},
+      {"sRGB pair, limited range", 1, 13, 0, 0, GIMG_PRIMARIES_UNKNOWN,
+          GIMG_TRANSFER_UNKNOWN},
+      {"linear pair, limited range", 1, 8, 0, 0, GIMG_PRIMARIES_UNKNOWN,
+          GIMG_TRANSFER_UNKNOWN},
+  };
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    std::vector<uint8_t> png = base;
+    ASSERT_TRUE(replace_chunk_payload(png, "cICP",
+        {c.primaries, c.transfer, c.matrix, c.full_range}))
+        << "the fixture must carry a four-byte cICP to rewrite";
+    GIMG_Color_Info info = {};
+    ASSERT_TRUE(ColorInfoOf(png, &info));
+    EXPECT_EQ(info.primaries, c.want_primaries);
+    EXPECT_EQ(info.transfer, c.want_transfer);
+    if (c.want_primaries == GIMG_PRIMARIES_SRGB) {
+      EXPECT_EQ(info.white_point, GIMG_PRIMARIES_SRGB);
+    }
+  }
+
+  // The fixture also carries a gAMA of 1.0, and the point of cICP outranking
+  // it is that it wins even when it says nothing this model can hold.  So an
+  // unrepresentable cICP must not fall through to the gAMA either.
+  {
+    std::vector<uint8_t> png = base;
+    ASSERT_TRUE(replace_chunk_payload(png, "cICP", {9, 16, 0, 1}));
+    GIMG_Color_Info info = {};
+    ASSERT_TRUE(ColorInfoOf(png, &info));
+    EXPECT_EQ(info.transfer, GIMG_TRANSFER_UNKNOWN)
+        << "cICP outranks gAMA whether or not it could be translated; falling "
+           "back would report a gamma the file did not mean";
+  }
+}
+
+// An iCCP whose zlib stream does not decompress.
+//
+// PNG 11.3.2.3 makes the profile a zlib stream like any other, so it carries
+// an Adler-32 and can be wrong.  The reader allocates the output buffer first
+// and then asks zlib, so the arm that gives that buffer back when zlib refuses
+// is the only thing between a corrupt profile and a leak of
+// GIMG_PNG_ICC_MAX_DECODED bytes per image - and it had never run.
+//
+// The file must still decode.  An unreadable color profile says nothing about
+// the pixels, and PNG 13.2 makes an ancillary chunk something a decoder may
+// ignore; refusing the image over it would lose a picture that is intact.
+TEST(PngDecode, AnUnreadableIccProfileLosesTheProfileAndNotThePicture) {
+  std::vector<uint8_t> base;
+  ASSERT_TRUE(png_test::load_png_file("png_iccp.png", base))
+      << "Run tests/data/png/generate.py";
+
+  // Control: intact, the profile arrives.
+  GIMG_Color_Info good = {};
+  ASSERT_TRUE(ColorInfoOf(base, &good));
+  ASSERT_GT(good.icc_size, 0u)
+      << "the fixture must carry a profile the reader accepts, or the "
+         "comparison below is between two empties";
+
+  // The payload is a null-terminated name, a compression byte, then the zlib
+  // stream.  Corrupt the stream and leave everything else - including the
+  // chunk's own CRC, which is recomputed - exactly as it was.
+  size_t i = 8;
+  bool found = false;
+  std::vector<uint8_t> broken = base;
+  while (i + 12 <= broken.size()) {
+    const uint32_t n = ((uint32_t)broken[i] << 24) |
+        ((uint32_t)broken[i + 1] << 16) | ((uint32_t)broken[i + 2] << 8) |
+        (uint32_t)broken[i + 3];
+    if (memcmp(&broken[i + 4], "iCCP", 4) == 0) {
+      size_t off = i + 8;
+      const size_t end = off + n;
+      while (off < end && broken[off] != 0) { off++; }
+      ASSERT_LT(off + 8, end) << "name, compression byte, then a zlib stream";
+      // Past the name's NUL and the compression byte: flip the deflate data,
+      // keeping the two-byte zlib header so it is the stream that fails and
+      // not the wrapper check before it.
+      for (size_t k = off + 4; k < end; k++) { broken[k] ^= 0xFFu; }
+      const uint32_t crc = exif_test::png_crc(&broken[i + 4], 4 + n);
+      broken[i + 8 + n] = (uint8_t)(crc >> 24);
+      broken[i + 9 + n] = (uint8_t)(crc >> 16);
+      broken[i + 10 + n] = (uint8_t)(crc >> 8);
+      broken[i + 11 + n] = (uint8_t)crc;
+      found = true;
+      break;
+    }
+    if (memcmp(&broken[i + 4], "IEND", 4) == 0) { break; }
+    i += 12u + (size_t)n;
+  }
+  ASSERT_TRUE(found) << "no iCCP chunk in the fixture";
+  ASSERT_NE(broken, base) << "nothing was actually changed";
+
+  GIMG_Color_Info bad = {};
+  ASSERT_TRUE(ColorInfoOf(broken, &bad))
+      << "the picture is intact; an ancillary chunk the decoder cannot read "
+         "is one PNG 13.2 lets it ignore";
+  EXPECT_EQ(bad.icc_size, 0u)
+      << "a profile that did not decompress must not be handed on as if it "
+         "had";
+  EXPECT_EQ(bad.icc_bytes, nullptr);
 }
