@@ -272,6 +272,52 @@ TEST(JpegSynthesizedIcc, AStatedGammaReachesTheToneCurve) {
 }
 
 /**
+ * A linear transfer is the identity curve, and the profile says so twice.
+ *
+ * ICC's curveType with zero sample points *is* the identity - there is
+ * nothing to tabulate and nothing to exponentiate - so linear is the one
+ * transfer whose tone curve has no data at all.  That arm had never run, and
+ * neither had the one that puts "linear" in the profile's description: every
+ * raster the suite synthesized a profile for stated sRGB or a plain gamma.
+ *
+ * Both halves are asserted, because a curve of zero points is also what an
+ * empty or truncated tag looks like.  The description is what says the
+ * profile meant it.
+ */
+TEST(JpegSynthesizedIcc, ALinearTransferIsWrittenAsTheIdentityCurve) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(save_as(
+      stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_LINEAR, 0.0), "jpeg", jpeg));
+  const std::vector<uint8_t> profile = profile_in(jpeg);
+
+  auto [off, size] = tag_in(profile, "rTRC");
+  ASSERT_GE(size, 12u);
+  EXPECT_EQ(std::memcmp(profile.data() + off, "curv", 4), 0);
+  EXPECT_EQ(be32(profile.data() + off + 8), 0u)
+      << "zero sample points is the identity, which is what linear means";
+  EXPECT_EQ(size, 12u) << "and there is nothing after the count";
+
+  // The description names it, which is what tells this apart from a tag that
+  // simply did not get written.
+  auto [doff, dsize] = tag_in(profile, "desc");
+  ASSERT_GT(dsize, 0u);
+  const std::string desc(
+      (const char *)profile.data() + doff, (size_t)dsize);
+  EXPECT_NE(desc.find("linear"), std::string::npos)
+      << "the description should say the transfer is linear; got: " << desc;
+
+  // Control: a gamma of 1.0 is linear in effect but is not the same
+  // statement, and comes out as a one-point curve rather than none.
+  std::vector<uint8_t> gamma_jpeg;
+  ASSERT_TRUE(save_as(stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 1.0),
+      "jpeg", gamma_jpeg));
+  auto [goff, gsize] = tag_in(profile_in(gamma_jpeg), "rTRC");
+  (void)goff;
+  EXPECT_GT(gsize, 12u)
+      << "a stated gamma carries its exponent even when the exponent is one";
+}
+
+/**
  * All three tone curves must describe the same curve.
  *
  * They share one block of tag data, which the spec allows and which keeps a
@@ -390,6 +436,22 @@ TEST(JpegSynthesizedIcc, TheStatedRenderingIntentReachesTheHeader) {
     ASSERT_GE(profile.size(), 128u);
     EXPECT_EQ(be32(profile.data() + 64), (uint32_t)intent)
         << "ICC.1:2001-04 section 6.1.11 puts the intent at byte 64";
+  }
+
+  // An intent outside the four ICC defines.  GIMG_Rendering_Intent is an enum
+  // and a caller can hold any integer in one, so the writer folds an unknown
+  // value to perceptual rather than writing it through - a header field ICC
+  // gives four legal values must not carry a fifth.  That fold had never run.
+  for (uint32_t bad : {(uint32_t)GIMG_INTENT_COUNT, 7u, 0xFFFFFFFFu}) {
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(save_as(stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 2.2,
+                            &GIMG_PIXEL_RGBA8, (GIMG_Rendering_Intent)bad),
+        "jpeg", jpeg));
+    std::vector<uint8_t> profile = profile_in(jpeg);
+    ASSERT_GE(profile.size(), 128u);
+    EXPECT_EQ(be32(profile.data() + 64), (uint32_t)GIMG_INTENT_PERCEPTUAL)
+        << "intent " << bad << " is not one ICC defines, so the header must "
+           "say perceptual rather than repeat it";
   }
 }
 
