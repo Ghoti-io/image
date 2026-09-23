@@ -212,6 +212,26 @@ struct SaveCase {
   Decorate decorate; ///< Metadata to hang on the document, or nullptr.
 };
 
+/**
+ * libjpeg's jpeg_simple_progression: the DC sent a bit short and refined, and
+ * each AC band sent two bits short and refined twice.  The encoder's own
+ * default holds no bits back at all, so without this the successive
+ * approximation writers - four of them, plus an arithmetic set - are not on
+ * the path the sweeps walk.
+ */
+inline const GIMG_JPEG_Progressive_Config * simple_progression(void) {
+  static const GIMG_JPEG_Progressive_Scan scans[] = {
+      {0, 0, 0, 1},
+      {1, 5, 0, 2},
+      {6, 63, 0, 2},
+      {1, 63, 2, 1},
+      {0, 0, 1, 0},
+      {1, 63, 1, 0},
+  };
+  static const GIMG_JPEG_Progressive_Config config = {6u, scans};
+  return &config;
+}
+
 /** Every writer configuration the sweeps walk. */
 inline std::vector<SaveCase> save_cases(void) {
   auto opt = [](void) {
@@ -303,6 +323,29 @@ inline std::vector<SaveCase> save_cases(void) {
     cases.push_back({"gif rgba 216 colours", "gif", &GIMG_PIXEL_RGBA8, o, 6u, nullptr});
   }
 
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_progressive = 1;
+    o.jpeg_progressive_config = simple_progression();
+    cases.push_back({"jpeg successive approx", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u,
+        nullptr});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_progressive = 1;
+    o.jpeg_progressive_config = simple_progression();
+    o.jpeg_restart_interval = 4;
+    cases.push_back({"jpeg successive + restarts", "jpeg", &GIMG_PIXEL_RGBA8, o,
+        0u, nullptr});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_progressive = 1;
+    o.jpeg_progressive_config = simple_progression();
+    o.jpeg_arithmetic = 1;
+    cases.push_back({"jpeg successive arithmetic", "jpeg", &GIMG_PIXEL_RGBA8, o,
+        0u, nullptr});
+  }
   {
     GIMG_Save_Options o = opt();
     cases.push_back({"jpeg every app segment", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u,
