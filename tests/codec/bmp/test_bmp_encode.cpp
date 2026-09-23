@@ -237,6 +237,72 @@ Rgba true_color_in_runs(uint32_t x, uint32_t y) {
       (uint8_t)((n * 13u) & 0xFFu), 255};
 }
 
+/**
+ * Long runs punctuated by one or two lone pixels.
+ *
+ * Every RLE encoder here gathers a stretch with no run worth encoding and
+ * then asks how long it is.  Three or more go out as an absolute run; one or
+ * two cannot, because counts 0, 1 and 2 are escapes, so they go out as
+ * encoded runs of one instead.  That last arm needs a picture that actually
+ * produces a stretch of one or two, which is a shape no natural image and
+ * none of the fixtures here happened to have.
+ *
+ * Period 32: twenty-seven of one colour, then two lone pixels, then a run of
+ * three.  The run of three is what ends the literal gather at two.  More than
+ * sixteen colours overall, so the writer chooses eight bits a pixel and RLE8.
+ */
+Rgba runs_with_two_lone_pixels(uint32_t x, uint32_t y) {
+  (void)y;
+  const uint32_t block = x / 32u;
+  const uint32_t at = x % 32u;
+  uint32_t n;
+  if (at < 27u) { n = block % 20u; }
+  else if (at == 27u) { n = 20u; }
+  else if (at == 28u) { n = 21u; }
+  else { n = 22u; }
+  return Rgba{(uint8_t)(n * 11u), (uint8_t)(255u - n * 7u), (uint8_t)(n * 3u),
+      255};
+}
+
+/**
+ * The same shape with five lone pixels, and at most sixteen colours.
+ *
+ * Five is what makes the absolute run an odd number of bytes in RLE4 - two
+ * indices to the byte, so five indices is three bytes - and BMP pads an
+ * absolute run to a 16-bit boundary.  That padding had never been written.
+ */
+Rgba rle4_runs_with_five_lone_pixels(uint32_t x, uint32_t y) {
+  (void)y;
+  const uint32_t block = x / 32u;
+  const uint32_t at = x % 32u;
+  uint32_t n;
+  if (at < 24u) { n = block % 8u; }
+  else if (at < 29u) { n = 8u + (at - 24u); }
+  else { n = 13u; }
+  return Rgba{(uint8_t)(n * 17u), (uint8_t)(255u - n * 13u), (uint8_t)(n * 5u),
+      255};
+}
+
+/**
+ * True color, runs of four, then two lone pixels, then a pair.
+ *
+ * RLE24 pays from a run of two upwards - an encoded run is four bytes and an
+ * absolute triple is three - so the pair is what ends the literal gather.
+ * Every block gets its own colours, which is past what a palette holds, so
+ * this stays true color.
+ */
+Rgba true_color_runs_with_two_lone_pixels(uint32_t x, uint32_t y) {
+  const uint32_t block = x / 8u;
+  const uint32_t at = x % 8u;
+  uint32_t n = block * 4u + y * 2048u;
+  if (at < 4u) { n += 0u; }
+  else if (at == 4u) { n += 1u; }
+  else if (at == 5u) { n += 2u; }
+  else { n += 3u; }
+  return Rgba{(uint8_t)(n & 0xFFu), (uint8_t)((n >> 8) + 1u),
+      (uint8_t)(((n * 13u) >> 2) & 0xFFu), 255};
+}
+
 /** Thirty-two colors in runs of eight: 8 bits per pixel, and compressible. */
 Rgba thirty_two_colors_in_runs(uint32_t x, uint32_t y) {
   (void)y;
@@ -1776,4 +1842,67 @@ TEST(BmpEncode, Rle24WritesLiteralRunsAndReadsThemBack) {
   ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
   publish_for_verification(
       "rle24_os2_mixed_96x5.bmp", bytes, 96, 5, true_color_mixed);
+}
+
+// A stretch of one or two pixels with no run in it.
+//
+// Each of the three RLE encoders gathers a stretch that has no run worth
+// encoding and then asks how long it is.  Three or more become an absolute
+// run; one or two cannot, because the counts 0, 1 and 2 are escapes in BMP's
+// RLE, so they go out as encoded runs of one instead.  Nothing had ever
+// produced a stretch that short: the fixtures are built from long runs and
+// from pixels that never repeat, and neither shape leaves one or two behind.
+//
+// The same gather also pads an absolute run to a 16-bit boundary, and in RLE4
+// that padding depends on the *byte* count rather than the index count - five
+// indices are three bytes - so it needs a stretch of five, which is likewise
+// a shape nothing had.
+//
+// Each case asserts the compression actually chosen as well as the round
+// trip.  The writer only uses RLE where it wins, so a picture that stopped
+// compressing would fall back to plain rows and reach none of this while
+// still round-tripping perfectly.
+TEST(BmpEncode, AStretchTooShortToBeAnAbsoluteRunIsEncodedAsRunsOfOne) {
+  {
+    GIMG_Raster * raster = make_raster(768, 8, runs_with_two_lone_pixels);
+    ASSERT_NE(raster, nullptr);
+    GIMG_Save_Options options;
+    memset(&options, 0, sizeof(options));
+    options.bmp_rle = GIMG_BMP_RLE_AUTO;
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+    EXPECT_EQ(read_u16(bytes, 28), 8u) << "biBitCount: more than 16 colors";
+    ASSERT_EQ(read_u32(bytes, 30), 1u)
+        << "BI_RLE8, or the encoder under test never ran";
+    expect_round_trip(bytes, 768, 8, runs_with_two_lone_pixels);
+  }
+  {
+    GIMG_Raster * raster =
+        make_raster(256, 8, rle4_runs_with_five_lone_pixels);
+    ASSERT_NE(raster, nullptr);
+    GIMG_Save_Options options;
+    memset(&options, 0, sizeof(options));
+    options.bmp_rle = GIMG_BMP_RLE_AUTO;
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+    EXPECT_EQ(read_u16(bytes, 28), 4u) << "biBitCount: at most 16 colors";
+    ASSERT_EQ(read_u32(bytes, 30), 2u)
+        << "BI_RLE4, or the encoder under test never ran";
+    expect_round_trip(bytes, 256, 8, rle4_runs_with_five_lone_pixels);
+  }
+  {
+    GIMG_Raster * raster =
+        make_raster(512, 8, true_color_runs_with_two_lone_pixels);
+    ASSERT_NE(raster, nullptr);
+    GIMG_Save_Options options;
+    memset(&options, 0, sizeof(options));
+    options.bmp_rle = GIMG_BMP_RLE_AUTO;
+    options.bmp_allow_rle24 = 1;
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+    EXPECT_EQ(read_u16(bytes, 28), 24u) << "biBitCount: true color";
+    ASSERT_EQ(read_u32(bytes, 30), 4u)
+        << "OS/2 RLE24, or the encoder under test never ran";
+    expect_round_trip(bytes, 512, 8, true_color_runs_with_two_lone_pixels);
+  }
 }
