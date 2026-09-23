@@ -211,6 +211,24 @@ Rgba two_colors_in_runs(uint32_t x, uint32_t y) {
                                 : Rgba{16, 32, 48, 255};
 }
 
+/**
+ * Two colours in runs long enough to need makeup codes.
+ *
+ * CCITT G3's terminating codes cover runs of 0 to 63; anything longer is a
+ * makeup code for a multiple of 64 followed by a terminating code for the
+ * remainder.  Runs of 32 never reach that.  Here a row is a 100-pixel run, a
+ * 156-pixel run, or - on every fourth row - one run of the full 256, which is
+ * the makeup code with a terminating run of zero after it.
+ */
+Rgba two_colors_in_long_runs(uint32_t x, uint32_t y) {
+  const Rgba black{16, 32, 48, 255};
+  const Rgba white{255, 255, 255, 255};
+  if (y % 4u == 3u) {
+    return (y % 8u == 3u) ? white : black;
+  }
+  return (x < 100u) == ((y % 2u) == 0u) ? white : black;
+}
+
 /** Four colors, which is what 2 bits per pixel holds and nothing fewer. */
 Rgba four_colors(uint32_t x, uint32_t y) {
   static const Rgba kPalette[4] = {{200, 30, 40, 255}, {30, 200, 40, 255},
@@ -802,6 +820,38 @@ TEST(BmpEncode, TwoColorImageIsWrittenAsHuffman1DWhenAllowed) {
   expect_round_trip(bytes, 256, 16, two_colors_in_runs);
   publish_for_verification("huffman1d_os2_256x16.bmp", bytes, 256, 16,
       two_colors_in_runs);
+}
+
+// Runs too long for a terminating code alone.
+//
+// CCITT G3's terminating codes name runs of 0 to 63.  A longer run is a
+// makeup code for a multiple of 64 and then a terminating code for what is
+// left, which means the reader has to add two codes together and keep going
+// after the first - the one place its inner loop does not return on a match.
+// That had never run: the only Huffman fixture and the only Huffman round
+// trip use runs of 32.
+//
+// A run of exactly 256 is the case worth having on top of the others, because
+// its remainder is zero: a makeup code followed by a terminating code for no
+// pixels at all, which is easy to write as "no code follows" by mistake.
+TEST(BmpEncode, AHuffmanRunPastSixtyThreeTakesAMakeupCode) {
+  GIMG_Raster * raster = make_raster(256, 16, two_colors_in_long_runs);
+  ASSERT_NE(raster, nullptr);
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+  options.bmp_allow_huffman = 1;
+
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+  ASSERT_EQ(read_u32(bytes, 30), 3u)
+      << "OS/2 Huffman 1D, or the decoder under test never ran";
+
+  // The round trip is the assertion: a makeup code read as its own run, or
+  // added to the wrong thing, puts every pixel after it in the wrong place.
+  expect_round_trip(bytes, 256, 16, two_colors_in_long_runs);
+  publish_for_verification("huffman1d_makeup_256x16.bmp", bytes, 256, 16,
+      two_colors_in_long_runs);
 }
 
 TEST(BmpEncode, Huffman1DNeedsItsOwnOption) {
