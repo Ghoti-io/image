@@ -3859,6 +3859,35 @@ void append_chunk(std::vector<uint8_t> & out, const char * type,
   out.push_back((uint8_t)crc);
 }
 
+/** A copy of @p base with @p type carrying @p payload inserted after IHDR. */
+std::vector<uint8_t> with_chunk_after_ihdr(const std::vector<uint8_t> & base,
+    const char * type, const std::vector<uint8_t> & payload) {
+  const size_t after_ihdr = 8u + 4u + 4u + 13u + 4u;
+  std::vector<uint8_t> chunk;
+  append_chunk(chunk, type, payload);
+  std::vector<uint8_t> out(base.begin(), base.begin() + (long)after_ihdr);
+  out.insert(out.end(), chunk.begin(), chunk.end());
+  out.insert(out.end(), base.begin() + (long)after_ihdr, base.end());
+  return out;
+}
+
+/** The payload of the first chunk of @p type in @p png, empty if absent. */
+std::vector<uint8_t> chunk_payload(
+    const std::vector<uint8_t> & png, const char * type) {
+  size_t i = 8;
+  while (i + 12 <= png.size()) {
+    const uint32_t n = ((uint32_t)png[i] << 24) | ((uint32_t)png[i + 1] << 16) |
+        ((uint32_t)png[i + 2] << 8) | (uint32_t)png[i + 3];
+    if (memcmp(&png[i + 4], type, 4) == 0 && i + 12 + n <= png.size()) {
+      return std::vector<uint8_t>(
+          png.begin() + (long)(i + 8), png.begin() + (long)(i + 8 + n));
+    }
+    if (memcmp(&png[i + 4], "IEND", 4) == 0) { break; }
+    i += 12u + (size_t)n;
+  }
+  return {};
+}
+
 /** A copy of @p base with one tEXt chunk inserted straight after the IHDR. */
 std::vector<uint8_t> with_text_chunk(const std::vector<uint8_t> & base,
     const std::string & keyword, const std::string & text) {
@@ -3937,6 +3966,170 @@ std::vector<std::string> text_keywords(const std::vector<uint8_t> & png) {
 }
 
 } // namespace
+
+namespace {
+
+/**
+ * Save @p png again, optionally replacing its raster with an opaque colour
+ * one of the same size and depth. Returns the bytes written.
+ */
+::testing::AssertionResult resave_maybe_recolored(
+    const std::vector<uint8_t> & png, bool recolor,
+    std::vector<uint8_t> & out) {
+  GIMG_Stream * in_s = nullptr;
+  if (gimg_stream_create_memory(png.data(), png.size(), &in_s) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "input stream";
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(in_s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(in_s);
+    return ::testing::AssertionFailure() << "load: " << (int)r;
+  }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  if (recolor) {
+    GIMG_Raster * gray = nullptr;
+    r = gimg_item_decode(item, nullptr, &gray);
+    if (r != GIMG_OK) {
+      gimg_doc_destroy(doc);
+      gimg_stream_destroy(in_s);
+      return ::testing::AssertionFailure() << "decode: " << (int)r;
+    }
+    GIMG_Raster * rgba = nullptr;
+    r = gimg_raster_create(gimg_raster_width(gray), gimg_raster_height(gray),
+        &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &rgba);
+    if (r == GIMG_OK) {
+      memset(gimg_raster_pixels(rgba), 0x40,
+          gimg_raster_stride_bytes(rgba) * gimg_raster_height(rgba));
+      gimg_item_set_raster(item, rgba);
+    }
+    gimg_raster_destroy(gray);
+    if (r != GIMG_OK) {
+      gimg_doc_destroy(doc);
+      gimg_stream_destroy(in_s);
+      return ::testing::AssertionFailure() << "raster: " << (int)r;
+    }
+  }
+  GIMG_Stream * out_s = nullptr;
+  if (gimg_stream_create_memory_output(&out_s) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in_s);
+    return ::testing::AssertionFailure() << "output stream";
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  if (r == GIMG_OK) {
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(out_s, &p, &n);
+    out.assign((const uint8_t *)p, (const uint8_t *)p + n);
+  }
+  gimg_stream_destroy(out_s);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_s);
+  return r == GIMG_OK ? ::testing::AssertionSuccess()
+                      : ::testing::AssertionFailure() << "save: " << (int)r;
+}
+
+} // namespace
+
+/**
+ * A policy that edits Exif rewrites the chunk and frees what it built.
+ *
+ * STRIP_GPS and NORMALIZE_EXIF both hand the eXIf payload to the Exif code and
+ * write back whatever comes out, which means a buffer allocated per chunk and
+ * released after it is written. PRESERVE_ALL edits nothing and writes the
+ * original bytes straight through, so it allocates nothing - and that is the
+ * control: it tells the two editing policies apart from a save that simply
+ * copies everything.
+ *
+ * The distinguishing assertion is on the bytes. A normalized payload differs
+ * from the one the file arrived with; a preserved one does not. Whether the
+ * temporary is freed is the ASan build's question, and this is the input that
+ * puts it on that path.
+ */
+TEST(PngEncode, AnEditingPolicyRewritesTheExifChunkItWasGiven) {
+  std::vector<uint8_t> file;
+  ASSERT_TRUE(png_test::load_png_file("png_exif_orientation.png", file));
+  const std::vector<uint8_t> original = chunk_payload(file, "eXIf");
+  ASSERT_FALSE(original.empty()) << "fixture must carry an eXIf chunk";
+
+  std::vector<uint8_t> preserved;
+  ASSERT_TRUE(resave_with_policy(file, GIMG_META_PRESERVE_ALL, preserved));
+  EXPECT_EQ(chunk_payload(preserved, "eXIf"), original)
+      << "control: PRESERVE_ALL writes the payload it was given";
+
+  std::vector<uint8_t> normalized;
+  ASSERT_TRUE(
+      resave_with_policy(file, GIMG_META_NORMALIZE_EXIF, normalized));
+  const std::vector<uint8_t> after = chunk_payload(normalized, "eXIf");
+  EXPECT_FALSE(after.empty())
+      << "normalizing must rewrite the chunk, not drop it";
+  EXPECT_NE(after, original)
+      << "a normalized payload is not the one the file arrived with";
+}
+
+/**
+ * An sBIT is rewritten, not copied, when the frame changes channel count.
+ *
+ * sBIT says how many bits of each stored sample carry real data, and it is
+ * laid out by colour type: one count for grayscale, three for truecolour.
+ * A frame that arrives grayscale and is written as truecolour therefore needs
+ * a different chunk, not the one it came with - PNG 11.3.2.4 fixes the length
+ * by colour type, so copying it through would produce a chunk a decoder must
+ * reject.
+ *
+ * No fixture reaches this. Every PNG in the tree round-trips at the colour
+ * type and depth it arrived as: splicing an sBIT into all 79 of them and
+ * saving produced 87 keeps, 2 drops and no rewrites. The rewrite needs the
+ * raster to change between load and save, which is the documented
+ * load-modify-set_raster-save path, and only a caller can do that.
+ *
+ * The depth is deliberately unchanged. sBIT does not survive a change of
+ * depth at all - a count taken before 13.12 rescaling would tell a decoder to
+ * shift data that has already been scaled - so narrowing to 8 bits drops the
+ * chunk instead of rewriting it, which was the first thing this test tried.
+ */
+TEST(PngEncode, AnSBitIsRewrittenWhenTheFrameChangesChannelCount) {
+  std::vector<uint8_t> base;
+  ASSERT_TRUE(png_test::load_png_file("png_2x2_gray.png", base));
+  // Four significant bits of the eight stored: small enough to still be legal
+  // once the channel count changes, which a count of 8 would also be - the
+  // point is only that it is a value we can recognise on the way out.
+  const std::vector<uint8_t> sbit_gray{4};
+  const std::vector<uint8_t> with_sbit =
+      with_chunk_after_ihdr(base, "sBIT", sbit_gray);
+
+  std::vector<uint8_t> kept;
+  ASSERT_TRUE(resave_maybe_recolored(with_sbit, false, kept));
+  EXPECT_EQ(chunk_payload(kept, "sBIT"), sbit_gray)
+      << "control: written as grayscale again, the chunk is carried through "
+         "unchanged - if this already differed, the comparison below would "
+         "not be about the channel count";
+
+  std::vector<uint8_t> rewritten;
+  ASSERT_TRUE(resave_maybe_recolored(with_sbit, true, rewritten));
+  const std::vector<uint8_t> out_sbit = chunk_payload(rewritten, "sBIT");
+  ASSERT_FALSE(out_sbit.empty()) << "the chunk must be rewritten, not dropped";
+  ASSERT_GE(out_sbit.size(), 3u)
+      << "truecolour states a count per colour channel (PNG 11.3.2.4)";
+  for (size_t i = 0; i < 3; i++) {
+    EXPECT_EQ(out_sbit[i], 4u)
+        << "channel " << i
+        << ": a gray level repeated into R, G and B is significant in each to "
+           "exactly the same degree";
+  }
+  if (out_sbit.size() == 4u) {
+    // The writer added this channel; every bit of it is its own. Asserting 4
+    // here was the first version of this test, and the code was right: an
+    // alpha the source never had cannot inherit the source's count.
+    EXPECT_EQ(out_sbit[3], 8u)
+        << "a synthesized alpha channel is significant in all of its bits";
+  }
+}
+
 
 /**
  * STRIP_GPS drops the text chunks that carry a location and keeps the rest.
