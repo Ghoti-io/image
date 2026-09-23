@@ -324,6 +324,14 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
   // canvas + (fy + y) * stride + fx * bpp, so a frame rectangle that reaches
   // past the edge is a heap write past the end of the canvas - which is what
   // this used to do, for any file that declared one.
+  //
+  // The first sentence is a claim about another function, so it was checked
+  // rather than assumed: png_apng_frame_outside_canvas.png and
+  // png_apng_frame_zero_size.png both come back GIMG_ERR_FORMAT from the
+  // load, while png_apng_frame_inside_canvas.png loads and decodes both its
+  // frames. That is why these three tests never fire, and it is also why they
+  // stay - they are what stands between a future loosening there and a heap
+  // overflow here.
   if (fx >= canvas_w || fy >= canvas_h) {
     return;
   }
