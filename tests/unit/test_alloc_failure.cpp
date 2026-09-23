@@ -84,6 +84,43 @@ GIMG_Result load_with(const char * codec_name, const std::vector<uint8_t> & byte
   return r;
 }
 
+/**
+ * Load `bytes` and decode its first item, with the codec's allocator swapped
+ * for `f` across both.
+ *
+ * One allocator for the whole thing rather than one swapped in for the decode:
+ * the doc and its codec_private are built during the load, and freeing them
+ * through a different allocator than built them is a bug in the test rather
+ * than a test of the library. @p out_after_load receives the allocation count
+ * at the moment the load finished, which is what lets the sweep inject into
+ * the decode alone.
+ */
+GIMG_Result load_and_decode_with(const char * codec_name,
+    const std::vector<uint8_t> & bytes, Failing & f, long * out_after_load) {
+  GIMG_Codec * codec = gimg_codec_by_name(codec_name);
+  if (!codec) { return GIMG_ERR_UNSUPPORTED; }
+  const GIMG_Allocator * saved = codec->allocator;
+  codec->allocator = &f.a;
+
+  GIMG_Stream * in = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(bytes.data(), bytes.size(), &in);
+  if (r == GIMG_OK) {
+    GIMG_Doc * doc = nullptr;
+    r = gimg_doc_load(in, nullptr, nullptr, &doc);
+    if (out_after_load) { *out_after_load = f.attempts; }
+    if (r == GIMG_OK && doc) {
+      GIMG_Item * item = gimg_doc_item(doc, 0);
+      GIMG_Raster * raster = nullptr;
+      r = item ? gimg_item_decode(item, nullptr, &raster) : GIMG_ERR_INTERNAL;
+      if (raster) { gimg_raster_destroy(raster); }
+    }
+    if (doc) { gimg_doc_destroy(doc); }
+    gimg_stream_destroy(in);
+  }
+  codec->allocator = saved;
+  return r;
+}
+
 struct Case {
   const char * codec;
   const char * dir;
@@ -191,6 +228,81 @@ struct ExifOp {
  * one and freed only on success, the count went from one to two on its own and
  * the sweep reported "1 block(s) leaked when allocation 2 of 2 failed".
  */
+/**
+ * What the codecs do when an allocation fails partway through a **decode**.
+ *
+ * The sweep above stops at gimg_doc_load(), which parses the file and keeps
+ * its segments. Most of what a codec allocates comes later: the coefficient
+ * buffers, the per-component planes, the reference frame a hierarchical
+ * sequence builds up. None of the arms that free those was on any sweep, so
+ * the three `fail:` blocks in the hierarchical decoder - fifteen lines of
+ * cleanup between them - had never run.
+ *
+ * Injection starts after the load has finished, so a failure lands in the
+ * decode rather than re-testing what the load sweep already covers. The
+ * assertion is the same one and it is the point: whichever allocation failed,
+ * every block is handed back.
+ */
+TEST(AllocFailure, EveryFailedDecodeFreesEverythingItTook) {
+  const Case cases[] = {
+      // Each walks a decoder the others do not. The two hierarchical ones are
+      // here for the per-frame planes and the reference frame they carry
+      // between frames, which is the deepest partial state in the library.
+      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_gray_2level.jpg"},
+      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_gray_lossless.jpg"},
+      // A hierarchical sequence whose frames are progressive reaches a third
+      // per-frame decoder, with its own partial state to unwind.
+      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_rgb_progressive.jpg"},
+      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_noninterleaved_444.jpg"},
+      {"jpeg", GIMG_TEST_DATA_JPEG, "progressive_sample.jpg"},
+      {"jpeg", GIMG_TEST_DATA_JPEG, "arith_rgb_64x64_420.jpg"},
+      {"jpeg", GIMG_TEST_DATA_JPEG, "baseline_gray12.jpg"},
+      {"png", GIMG_TEST_DATA_PNG, "png_exif.png"},
+  };
+  for (const Case & c : cases) {
+    std::vector<uint8_t> bytes;
+    if (!read_file(c.dir, c.file, bytes)) {
+      ADD_FAILURE() << "missing fixture " << c.file;
+      continue;
+    }
+
+    // A clean run first: it must decode, and it says how far to sweep.
+    Failing probe;
+    init(probe);
+    long after_load = 0;
+    ASSERT_EQ(load_and_decode_with(c.codec, bytes, probe, &after_load), GIMG_OK)
+        << c.file << " must decode when nothing fails";
+    ASSERT_EQ(probe.outstanding, 0)
+        << c.file << " leaks on the success path: " << probe.outstanding
+        << " blocks";
+    const long total = probe.attempts;
+    std::printf("  %-24s %ld allocations, %ld of them after the load\n",
+        c.file, total, total - after_load);
+    std::fflush(stdout);
+    ASSERT_GT(total, after_load)
+        << c.file << " allocated nothing while decoding, so this sweep would "
+                     "test nothing beyond the load sweep";
+
+    for (long n = after_load + 1; n <= total; n++) {
+      Failing f;
+      init(f);
+      f.fail_at = n;
+      long ignored = 0;
+      const GIMG_Result r =
+          load_and_decode_with(c.codec, bytes, f, &ignored);
+      EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM || r == GIMG_ERR_CORRUPT ||
+          r == GIMG_ERR_FORMAT || r == GIMG_ERR_LIMIT ||
+          r == GIMG_ERR_UNSUPPORTED)
+          << c.file << ": allocation " << n << " of " << total
+          << " failed and the decode returned " << (int)r;
+      EXPECT_EQ(f.outstanding, 0)
+          << c.file << ": " << f.outstanding
+          << " block(s) leaked when allocation " << n << " of " << total
+          << " failed";
+    }
+  }
+}
+
 TEST(AllocFailure, EveryFailedExifCallFreesEverythingItTook) {
   const std::vector<uint8_t> gps = exif_test::make_exif_with_gps();
   std::vector<uint8_t> jpg;

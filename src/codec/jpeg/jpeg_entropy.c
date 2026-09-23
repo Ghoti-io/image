@@ -1834,8 +1834,14 @@ static GIMG_Result jpeg_decode_progressive_extended(
     }
   }
 
+  // Cleared as well as freed.  Everything from here to the end of the function
+  // can still fail, and the seven `goto prog_ext_fail_buf` sites below fall
+  // through to prog_ext_fail, which frees these again - a double free on every
+  // one of those paths.  gimg_free() ignores NULL, so clearing them is what
+  // makes the shared exit safe to reach twice.
   for (uint8_t i = 0; i < num_comp; i++) {
     gimg_free(alloc, coef_blocks[i]);
+    coef_blocks[i] = NULL;
   }
 
   // For 8-bit precision we used islow IDCT and stored 0..255 in comp_buf;
