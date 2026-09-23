@@ -535,7 +535,17 @@ static GIMG_Result gif_plan_frame_once(const uint8_t * pixels, size_t stride,
 
   plan->palette_count = next_index;
   if (plan->palette_count == 0u) {
-    // Every pixel was transparent: the table still needs its one entry.
+    // GIF 89a 18: a table has at least one entry, so a frame that named no
+    // colour still needs one.
+    //
+    // This cannot happen, and the reason is worth writing down because the
+    // obvious reading of it is wrong.  "Every pixel was transparent" does not
+    // reach here: a transparent pixel is exactly what sets needs_transparent
+    // in the pass above, which starts next_index at 1.  Reaching zero would
+    // take a frame that named no colour *and* had no transparent pixel, which
+    // is a frame with no pixels at all - and width and height are checked
+    // before any of this runs.  Measured: a frame whose every pixel is
+    // transparent arrives here with a count of one, not zero.
     plan->palette_count = 1u;
   }
   return GIMG_OK;
