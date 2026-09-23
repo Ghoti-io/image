@@ -276,6 +276,7 @@ endif
 
 BUILD_DIR := ./build/$(BUILD)
 OBJ_DIR := $(BUILD_DIR)/objects
+FLAGS_STAMP := $(OBJ_DIR)/.flags
 GEN_DIR := $(BUILD_DIR)/generated
 APP_DIR := $(BUILD_DIR)/apps
 
@@ -500,13 +501,13 @@ $(LIBVER_GEN): force-libver
 		'#endif // GHOTI_IO_GIMG_LIBVER_GEN_H' > $@.tmp
 	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
 
-$(OBJ_DIR)/%.o: src/%.c Makefile | $(LIBVER_GEN)
+$(OBJ_DIR)/%.o: src/%.c $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling $@ ###\n"
 	@mkdir -p $(@D)
 	$(CC) $(LIB_CFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Pattern rule for C++ source files (if any):
-$(OBJ_DIR)/%.o: src/%.cpp Makefile | $(LIBVER_GEN)
+$(OBJ_DIR)/%.o: src/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling $@ ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -549,30 +550,30 @@ $(TEST_HELPER_OBJ): $(TEST_HELPER_SRC)
 
 # Pattern rule for compiling test source files to object files
 # This allows tests to be compiled separately from linking
-$(OBJ_DIR)/tests/%.o: tests/%.cpp Makefile
+$(OBJ_DIR)/tests/%.o: tests/%.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 # Tests in tests/unit/ (object still under tests/ so executable name matches)
-$(OBJ_DIR)/tests/%.o: tests/unit/%.cpp Makefile
+$(OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/ itself: cross-codec, so every data directory.
-$(OBJ_DIR)/tests/%.o: tests/codec/%.cpp Makefile
+$(OBJ_DIR)/tests/%.o: tests/codec/%.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/bmp/ (object name from basename for link).
-$(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp Makefile
+$(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/bmp -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/gif/ (object name from basename for link).
-$(OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp Makefile
+$(OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_GIF=\"$(TEST_OUT_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -1308,6 +1309,7 @@ UBSAN_CHECKS := undefined,float-cast-overflow
 ASAN_UBSAN_FLAGS := -fsanitize=address,$(UBSAN_CHECKS) -fno-sanitize-recover=$(UBSAN_CHECKS) -fno-omit-frame-pointer -g -O1
 ASAN_BUILD_DIR := ./build/$(BUILD)-asan
 ASAN_OBJ_DIR := $(ASAN_BUILD_DIR)/objects
+ASAN_FLAGS_STAMP := $(ASAN_OBJ_DIR)/.flags
 ASAN_APP_DIR := $(ASAN_BUILD_DIR)/apps
 
 ASAN_LIBOBJECTS := $(patsubst src/%.c,$(ASAN_OBJ_DIR)/%.o,$(SOURCES))
@@ -1327,7 +1329,7 @@ ifeq ($(UNAME_S), Linux)
 	ASAN_CFLAGS += -fPIC
 endif
 
-$(ASAN_OBJ_DIR)/%.o: src/%.c Makefile | $(LIBVER_GEN)
+$(ASAN_OBJ_DIR)/%.o: src/%.c $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling (ASan+UBSan): $< ###\n"
 	@mkdir -p $(@D)
 	$(CC) $(ASAN_CFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -1346,29 +1348,29 @@ $(ASAN_TEST_HELPER_OBJ): $(TEST_HELPER_SRC)
 endif
 
 # ASan test objects: generic and PNG-specific
-$(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp Makefile
+$(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp Makefile
+$(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/bmp/ (mirrors the non-ASan rule; without this the ASan
 # build has no way to make test_bmp_*.o and `make test-asan` does not build).
-$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/%.cpp Makefile
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling Test Object (ASan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp Makefile
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/bmp -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp Makefile
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_GIF=\"$(TEST_OUT_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -1631,9 +1633,10 @@ FUZZ_CXX_OK := $(shell which $(FUZZ_CXX) 2>/dev/null)
 # the same sanitizers, and link the harnesses against that.
 FUZZ_CC := $(shell command -v clang 2>/dev/null)
 FUZZ_OBJ_DIR := ./build/$(BUILD)-fuzz/objects
+FUZZ_FLAGS_STAMP := $(FUZZ_OBJ_DIR)/.flags
 FUZZ_LIBOBJECTS := $(patsubst src/%.c,$(FUZZ_OBJ_DIR)/%.o,$(SOURCES))
 
-$(FUZZ_OBJ_DIR)/%.o: src/%.c Makefile | $(LIBVER_GEN)
+$(FUZZ_OBJ_DIR)/%.o: src/%.c $(FUZZ_FLAGS_STAMP) | $(LIBVER_GEN)
 	@mkdir -p $(@D)
 	$(FUZZ_CC) -std=c17 $(FUZZ_LIB_FLAGS) $(INCLUDE) -DGIMG_BUILD -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
@@ -1747,3 +1750,39 @@ coverage: ## Build instrumented, run the tests, and report line coverage
 
 help: ## Display this help
 	@grep -E '^[ a-zA-Z_-]+:.*?## .*$$' Makefile | sort | sed 's/\\([^:]*\\):.*## \\(.*\\)/\\1:\\2/' | awk -F: '{printf "%-15s %s\n", $$1, $$2}' | sed "s/(SUITE)/$(SUITE)/g; s/(PROJECT)/$(PROJECT)/g; s/(BRANCH)/$(BRANCH)/g"
+
+
+####################################################################
+# Flag stamps
+####################################################################
+# Each build tree carries the flag string it was built with. The stamp is
+# rewritten only when that string differs -- written to a scratch file,
+# compared, moved into place only on a difference -- so its mtime moves on a
+# flag change and on nothing else. The object rules above depend on it.
+#
+# This replaces listing `Makefile` as a prerequisite, which was too broad (a
+# comment-only edit recompiled everything) and too narrow (a command-line
+# override such as `make EXTRA_CFLAGS=-O2` changes no file's mtime and so was
+# invisible).
+#
+# These rules sit at the end of the file for two reasons. A rule's target
+# expands when make reads the line, so a stamp rule above its own OBJ_DIR
+# definition has an empty target: not an error, just a rule that silently does
+# not exist. And the first target in a makefile is the default goal, so a stamp
+# rule above `all:` makes a bare `make` build the stamp and nothing else.
+.PHONY: force-flags
+
+$(FLAGS_STAMP): force-flags
+	@mkdir -p $(@D)
+	@printf '%s\n' '$(CFLAGS) $(CXXFLAGS) $(LDFLAGS) $(INCLUDE)' > $@.new
+	@cmp -s $@.new $@ 2>/dev/null && rm -f $@.new || mv -f $@.new $@
+
+$(ASAN_FLAGS_STAMP): force-flags
+	@mkdir -p $(@D)
+	@printf '%s\n' '$(ASAN_CFLAGS) $(ASAN_CXXFLAGS) $(ASAN_LDFLAGS) $(INCLUDE)' > $@.new
+	@cmp -s $@.new $@ 2>/dev/null && rm -f $@.new || mv -f $@.new $@
+
+$(FUZZ_FLAGS_STAMP): force-flags
+	@mkdir -p $(@D)
+	@printf '%s\n' '$(FUZZ_FLAGS) $(FUZZ_LIB_FLAGS) $(INCLUDE)' > $@.new
+	@cmp -s $@.new $@ 2>/dev/null && rm -f $@.new || mv -f $@.new $@
