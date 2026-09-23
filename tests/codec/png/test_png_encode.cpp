@@ -3561,3 +3561,175 @@ TEST(PngEncode, AnInterlacedSaveIsTheSamePictureAsAProgressiveOne) {
     }
   }
 }
+
+namespace {
+
+/** Append a chunk of @p type carrying @p payload, with its CRC. */
+void append_chunk(std::vector<uint8_t> & out, const char * type,
+    const std::vector<uint8_t> & payload) {
+  const uint32_t n = (uint32_t)payload.size();
+  out.push_back((uint8_t)(n >> 24));
+  out.push_back((uint8_t)(n >> 16));
+  out.push_back((uint8_t)(n >> 8));
+  out.push_back((uint8_t)n);
+  std::vector<uint8_t> body(type, type + 4);
+  body.insert(body.end(), payload.begin(), payload.end());
+  out.insert(out.end(), body.begin(), body.end());
+  const uint32_t crc = exif_test::png_crc(body.data(), body.size());
+  out.push_back((uint8_t)(crc >> 24));
+  out.push_back((uint8_t)(crc >> 16));
+  out.push_back((uint8_t)(crc >> 8));
+  out.push_back((uint8_t)crc);
+}
+
+/** A copy of @p base with one tEXt chunk inserted straight after the IHDR. */
+std::vector<uint8_t> with_text_chunk(const std::vector<uint8_t> & base,
+    const std::string & keyword, const std::string & text) {
+  // signature (8) + length (4) + type (4) + IHDR payload (13) + CRC (4).
+  const size_t after_ihdr = 8u + 4u + 4u + 13u + 4u;
+  std::vector<uint8_t> payload(keyword.begin(), keyword.end());
+  payload.push_back(0);
+  payload.insert(payload.end(), text.begin(), text.end());
+  std::vector<uint8_t> chunk;
+  append_chunk(chunk, "tEXt", payload);
+  std::vector<uint8_t> out(base.begin(), base.begin() + (long)after_ihdr);
+  out.insert(out.end(), chunk.begin(), chunk.end());
+  out.insert(out.end(), base.begin() + (long)after_ihdr, base.end());
+  return out;
+}
+
+/** The keywords of every tEXt chunk in @p png, in file order. */
+std::vector<std::string> text_keywords(const std::vector<uint8_t> & png) {
+  std::vector<std::string> out;
+  size_t i = 8;
+  while (i + 8 <= png.size()) {
+    const uint32_t n = ((uint32_t)png[i] << 24) | ((uint32_t)png[i + 1] << 16) |
+        ((uint32_t)png[i + 2] << 8) | (uint32_t)png[i + 3];
+    const std::string type((const char *)&png[i + 4], 4);
+    if (type == "tEXt" && i + 8 + n <= png.size()) {
+      const uint8_t * p = &png[i + 8];
+      size_t kw = 0;
+      while (kw < n && p[kw] != 0) {
+        kw++;
+      }
+      out.push_back(std::string((const char *)p, kw));
+    }
+    if (type == "IEND") {
+      break;
+    }
+    i += 12u + (size_t)n;
+  }
+  return out;
+}
+
+/** Save @p png's document again under @p policy and hand back the bytes. */
+::testing::AssertionResult resave_with_policy(const std::vector<uint8_t> & png,
+    GIMG_Meta_Policy policy, std::vector<uint8_t> & out) {
+  GIMG_Stream * in_s = nullptr;
+  if (gimg_stream_create_memory(png.data(), png.size(), &in_s) != GIMG_OK) {
+    return ::testing::AssertionFailure() << "input stream";
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(in_s, nullptr, nullptr, &doc);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(in_s);
+    return ::testing::AssertionFailure() << "load: " << (int)r;
+  }
+  GIMG_Stream * out_s = nullptr;
+  if (gimg_stream_create_memory_output(&out_s) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in_s);
+    return ::testing::AssertionFailure() << "output stream";
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = policy;
+  GIMG_Save_Report report = {};
+  r = gimg_doc_save(doc, out_s, "png", &opts, &report);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in_s);
+  if (r != GIMG_OK) {
+    gimg_stream_destroy(out_s);
+    return ::testing::AssertionFailure() << "save: " << (int)r;
+  }
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out_s, &p, &n);
+  out.assign((const uint8_t *)p, (const uint8_t *)p + n);
+  gimg_stream_destroy(out_s);
+  return ::testing::AssertionSuccess();
+}
+
+} // namespace
+
+/**
+ * STRIP_GPS drops the text chunks that carry a location and keeps the rest.
+ *
+ * PNG has no GPS chunk. What a location looks like in a PNG is a tEXt, zTXt or
+ * iTXt keyword - "GPS Latitude", ImageMagick's "exif:GPSLatitude" - and
+ * deciding which keywords mean that is a rule written out in the saver. The
+ * rule was never exercised: the policy tests all work on eXIf blobs, and no
+ * fixture in the suite carries a text chunk at all, so the whole predicate was
+ * dead code that looked live.
+ *
+ * Each keyword is asserted both ways. Under STRIP_GPS a location keyword must
+ * go and every other keyword must stay - a policy that dropped all text would
+ * pass a one-sided test - and under PRESERVE_ALL every one of them, location
+ * or not, must survive, because that policy is a promise not to touch
+ * anything.
+ *
+ * The keywords either side of the boundary are the point: "GPS" and
+ * "GPS Latitude" are locations, "GPSish" is a word that starts with the same
+ * three letters, and "exif:GPSLatitude" is a location only because of the
+ * prefix rule that "exif:Orientation" is not caught by.
+ */
+TEST(PngEncode, StrippingGpsDropsTheTextChunksThatCarryALocation) {
+  std::vector<uint8_t> base;
+  ASSERT_TRUE(png_test::load_png_file("png_2x2_gray.png", base));
+
+  struct Case {
+    const char * keyword;
+    bool is_location;
+  };
+  const Case cases[] = {
+      {"GPS", true},
+      {"GPS Latitude", true},
+      {"gps longitude", true},
+      {"EXIF:GPSLatitude", true},
+      {"exif:gpsaltitude", true},
+      // Not locations, and each is next to one that is.
+      {"GPSish", false},
+      {"GP", false},
+      {"exif:Orientation", false},
+      {"Comment", false},
+      {"Description", false},
+      {"Author", false},
+  };
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.keyword);
+    const std::vector<uint8_t> png =
+        with_text_chunk(base, c.keyword, "a value that does not matter");
+    ASSERT_EQ(text_keywords(png).size(), 1u)
+        << "the fixture must carry exactly the one chunk under test";
+
+    std::vector<uint8_t> stripped, preserved;
+    ASSERT_TRUE(resave_with_policy(png, GIMG_META_STRIP_GPS, stripped));
+    ASSERT_TRUE(resave_with_policy(png, GIMG_META_PRESERVE_ALL, preserved));
+
+    const std::vector<std::string> after_strip = text_keywords(stripped);
+    const std::vector<std::string> after_preserve = text_keywords(preserved);
+
+    if (c.is_location) {
+      EXPECT_TRUE(after_strip.empty())
+          << "STRIP_GPS kept a location keyword: " << after_strip[0];
+    }
+    else {
+      ASSERT_EQ(after_strip.size(), 1u)
+          << "STRIP_GPS dropped a keyword that names no location";
+      EXPECT_EQ(after_strip[0], c.keyword);
+    }
+    ASSERT_EQ(after_preserve.size(), 1u)
+        << "PRESERVE_ALL is a promise not to touch anything";
+    EXPECT_EQ(after_preserve[0], c.keyword);
+  }
+}
