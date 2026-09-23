@@ -332,6 +332,141 @@ GIMG_Result save_with(const char * codec_name, const GIMG_Doc * doc,
 
 } // namespace
 
+namespace {
+/** Save through @p codec_name with its allocator swapped, keeping the bytes. */
+GIMG_Result save_bytes(const char * codec_name, const GIMG_Doc * doc,
+    const GIMG_Save_Options * options, Failing & f,
+    std::vector<uint8_t> * out) {
+  GIMG_Codec * codec = gimg_codec_by_name(codec_name);
+  if (!codec) { return GIMG_ERR_UNSUPPORTED; }
+  const GIMG_Allocator * saved = codec->allocator;
+  codec->allocator = &f.a;
+  GIMG_Stream * os = nullptr;
+  GIMG_Result r = gimg_stream_create_memory_output(&os);
+  if (r == GIMG_OK) {
+    GIMG_Save_Report report = {};
+    r = gimg_doc_save(doc, os, codec_name, options, &report);
+    if (r == GIMG_OK && out) {
+      const void * p = nullptr;
+      size_t n = 0;
+      gimg_stream_output_buffer(os, &p, &n);
+      out->assign((const uint8_t *)p, (const uint8_t *)p + n);
+    }
+    gimg_stream_destroy(os);
+  }
+  codec->allocator = saved;
+  return r;
+}
+
+/** Decode @p bytes; false if it will not load or will not decode. */
+bool decode_pixels(const std::vector<uint8_t> & bytes,
+    std::vector<uint8_t> & px, uint32_t * w, uint32_t * h) {
+  GIMG_Stream * is = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &is) != GIMG_OK) {
+    return false;
+  }
+  GIMG_Doc * d = nullptr;
+  if (gimg_doc_load(is, nullptr, nullptr, &d) != GIMG_OK) {
+    gimg_stream_destroy(is);
+    return false;
+  }
+  GIMG_Raster * r = nullptr;
+  const bool ok =
+      gimg_item_decode(gimg_doc_item(d, 0), nullptr, &r) == GIMG_OK && r;
+  if (ok) {
+    *w = gimg_raster_width(r);
+    *h = gimg_raster_height(r);
+    const auto * q = (const unsigned char *)gimg_raster_pixels_const(r);
+    px.assign(q, q + gimg_raster_stride_bytes(r) * (*h));
+    gimg_raster_destroy(r);
+  }
+  gimg_doc_destroy(d);
+  gimg_stream_destroy(is);
+  return ok;
+}
+} // namespace
+
+/**
+ * A save that returns GIMG_OK wrote a file that is the same picture.
+ *
+ * The sweep below allows a save to return GIMG_OK even though an allocation
+ * failed, and checks only that nothing leaked.  That left the interesting
+ * half unasked: whether the file it did write is any good.  It was not.
+ * jpeg_bit_writer grew its buffer through bit_writer_put_byte, which returned
+ * silently when the growth failed, and bit_writer_put_bits has no return value
+ * at all, so the bytes simply went missing from the entropy-coded segment and
+ * every caller finished with an unconditional GIMG_OK.  Seventeen of the JPEG
+ * configurations here could be made to write a corrupt scan and call it
+ * success; libjpeg reads the smaller ones as "extraneous bytes before marker
+ * 0xd9" and the progressive ones as "premature end of data segment".
+ *
+ * The arithmetic coder never had the bug, because its sink carries an oom flag
+ * that its callers check - which is why the arithmetic rows were the clean
+ * ones while every Huffman row failed.
+ *
+ * What is asserted is the picture, not the bytes.  A writer is allowed to
+ * react to a failed allocation by writing a different file: PNG drops back to
+ * a cheaper compression strategy and emits a much larger one, and a codec may
+ * leave out metadata it could not build a buffer for.  What it may not do is
+ * claim success and hand back something that decodes differently, or at all.
+ */
+TEST(AllocFailure, ASaveThatSucceedsWroteThePictureItWasGiven) {
+  const std::vector<SaveCase> cases = gimg_test::save_cases();
+  long checked = 0, tolerated = 0;
+  for (const SaveCase & c : cases) {
+    SCOPED_TRACE(c.name);
+    GIMG_Raster * raster = make_raster(*c.format, 32u, 32u, c.levels);
+    ASSERT_NE(raster, nullptr) << c.name << ": could not build a raster";
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK) << c.name;
+    gimg_raster_destroy(raster);
+    if (c.decorate) { c.decorate(doc); }
+
+    Failing probe;
+    init(probe);
+    std::vector<uint8_t> clean;
+    ASSERT_EQ(save_bytes(c.codec, doc, &c.options, probe, &clean), GIMG_OK)
+        << c.name << " must save when nothing fails";
+    const long total = probe.attempts;
+    ASSERT_GT(total, 0) << c.name << " allocated nothing; nothing to sweep";
+    std::vector<uint8_t> want;
+    uint32_t ww = 0, wh = 0;
+    ASSERT_TRUE(decode_pixels(clean, want, &ww, &wh))
+        << c.name << ": the clean save does not decode, so this sweep would "
+                     "compare nothing";
+
+    for (long n = 1; n <= total; n++) {
+      Failing f;
+      init(f);
+      f.fail_at = n;
+      std::vector<uint8_t> got;
+      if (save_bytes(c.codec, doc, &c.options, f, &got) != GIMG_OK) {
+        continue; // Refusing is always allowed.
+      }
+      checked++;
+      if (got != clean) { tolerated++; }
+      std::vector<uint8_t> px;
+      uint32_t gw = 0, gh = 0;
+      ASSERT_TRUE(decode_pixels(got, px, &gw, &gh))
+          << c.name << ": allocation " << n << " of " << total
+          << " failed, the save returned OK, and the file it wrote does not "
+             "decode";
+      EXPECT_EQ(gw, ww) << c.name << ": allocation " << n << " changed width";
+      EXPECT_EQ(gh, wh) << c.name << ": allocation " << n << " changed height";
+      EXPECT_TRUE(px == want)
+          << c.name << ": allocation " << n << " of " << total
+          << " failed, the save returned OK, and the picture came back "
+             "different";
+      if (px != want) { break; }
+    }
+    gimg_doc_destroy(doc);
+  }
+  std::printf("  %ld successful saves checked, %ld wrote different bytes for "
+              "the same picture\n",
+      checked, tolerated);
+  ASSERT_GT(checked, 0);
+}
+
 /**
  * Every allocation failure during a save leaves nothing behind.
  *

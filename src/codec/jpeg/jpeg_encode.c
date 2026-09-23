@@ -697,6 +697,12 @@ typedef struct {
   size_t len;
   uint64_t bitbuf;
   int nbits;
+  /** Set once a growth failed.  bit_writer_put_bits has no return value and
+   * the walkers that drive it have no way to stop, so a failure is recorded
+   * here and every function that hands the buffer out must check it: the
+   * bytes that could not be stored are simply missing from the entropy-coded
+   * segment, which is a corrupt scan, not a shorter one. */
+  int failed;
 } jpeg_bit_writer;
 
 static int bit_writer_ensure(
@@ -707,8 +713,10 @@ static int bit_writer_ensure(
   if (new_cap < w->len + extra)
     new_cap = w->len + extra;
   unsigned char * p = (unsigned char *)gimg_realloc(alloc, w->buf, new_cap);
-  if (!p)
+  if (!p) {
+    w->failed = 1;
     return 0;
+  }
   w->buf = p;
   w->cap = new_cap;
   return 1;
@@ -1045,6 +1053,10 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   }
 
   bit_writer_flush(&w, alloc);
+  if (w.failed) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
   *out_scan_data = w.buf;
   *out_scan_size = w.len;
   return GIMG_OK;
@@ -1167,6 +1179,10 @@ GIMG_Result gimg_jpeg_encode_arith_scan_from_coef_buffer(uint32_t width,
 
   jpeg_arith_encoder_flush(&e);
   if (sink.oom) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
+  if (w.failed) {
     gimg_free(alloc, w.buf);
     return GIMG_ERR_OOM;
   }
@@ -1340,6 +1356,10 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
       break;
   }
   bit_writer_flush(&w, alloc);
+  if (w.failed) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
   *out_scan_data = w.buf;
   *out_scan_size = w.len;
   return GIMG_OK;
@@ -1554,6 +1574,10 @@ GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
 
   jpeg_arith_encoder_flush(&e);
   if (sink.oom) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
+  if (w.failed) {
     gimg_free(alloc, w.buf);
     return GIMG_ERR_OOM;
   }
@@ -1926,6 +1950,10 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
   }
 
   bit_writer_flush(&w, alloc);
+  if (w.failed) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
   *out_scan_data = w.buf;
   *out_scan_size = w.len;
   return GIMG_OK;
@@ -2259,6 +2287,10 @@ GIMG_Result gimg_jpeg_encode_progressive_scan_extended(uint32_t width,
   }
 
   bit_writer_flush(&w, alloc);
+  if (w.failed) {
+    gimg_free(alloc, w.buf);
+    return GIMG_ERR_OOM;
+  }
   *out_scan_data = w.buf;
   *out_scan_size = w.len;
   return GIMG_OK;
@@ -2487,6 +2519,11 @@ GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
   size_t n = jpeg_append_dht_table(dht, 0, 0, dc_bits, dc_vals, dc_nvals);
   n += jpeg_append_dht_table(dht + n, 1, 0, ac_bits, ac_vals, ac_nvals);
 
+  if (w.failed) {
+    gimg_free(alloc, w.buf);
+    gimg_free(alloc, dht);
+    return GIMG_ERR_OOM;
+  }
   *out_scan_data = w.buf;
   *out_scan_size = w.len;
   *out_dht = dht;
