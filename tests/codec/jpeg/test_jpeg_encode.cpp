@@ -7691,12 +7691,20 @@ TEST(JpegEncode, ASuccessiveApproximationProgressionSaysWhatLibjpegReads) {
     const GIMG_JPEG_Progressive_Scan * scans;
     unsigned scan_count;
     uint16_t restart_interval;
+    uint8_t arithmetic;
   };
   const Case cases[] = {
-      {"progressive_successive_approximation.jpg", simple_progression, 6u, 0u},
+      {"progressive_successive_approximation.jpg", simple_progression, 6u, 0u,
+          0u},
       // Every scan of a progression may carry restart markers, and each of the
       // four scan writers emits them from a place of its own.
-      {"progressive_successive_restarts.jpg", simple_progression, 6u, 4u},
+      {"progressive_successive_restarts.jpg", simple_progression, 6u, 4u, 0u},
+      // T.81 G.2 codes the same progression arithmetically, through an
+      // entirely separate encoder, and it had a point transform bug of its
+      // own: the DC first scan truncated toward zero where the clause says to
+      // shift.  Worth a maximum error of 3 - small enough to read as
+      // quantization noise, which is how it survived.
+      {"progressive_successive_arith.jpg", simple_progression, 6u, 0u, 1u},
   };
 
   // The same image in one pass, as the thing every case must equal.
@@ -7761,6 +7769,7 @@ TEST(JpegEncode, ASuccessiveApproximationProgressionSaysWhatLibjpegReads) {
     opts.jpeg_progressive = 1;
     opts.jpeg_progressive_config = &cfg;
     opts.jpeg_restart_interval = c.restart_interval;
+    opts.jpeg_arithmetic = c.arithmetic;
     GIMG_Save_Report report = {};
     ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK)
         << "libjpeg's own progression must be writable";

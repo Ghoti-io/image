@@ -1175,18 +1175,20 @@ void jpeg_arith_encode_block_sequential(jpeg_arith_encoder_t * e,
 /**
  * Progressive arithmetic encoding (T.81 G.2).
  *
- * Worth noting against the Huffman progressive encoder: these need no record of
- * what the previous scan sent.  The point transform of G.1.1.1.2 is an
- * arithmetic shift of the coefficient, so "what this scan has to say about
- * coefficient k" is a function of the coefficient and of Ah and Al alone.  The
- * Huffman encoder carries a buffer of the state after the previous scan because
- * its refinement symbols encode runs of newly-non-zero coefficients; the
- * arithmetic coder asks a question per coefficient instead, and each question
- * can be answered from the coefficient itself.
+ * These need no record of what the previous scan sent: the point transform of
+ * G.1.1.1.2 is a function of the coefficient and of Ah and Al alone, so "what
+ * this scan has to say about coefficient k" can be answered from the
+ * coefficient itself.  The Huffman progressive encoder used to carry a buffer
+ * of the state after the previous scan, on the grounds that its refinement
+ * symbols encode runs of newly-non-zero coefficients; that was never
+ * necessary for the same reason, and the buffer is gone.
  */
 
-/** Apply the point transform of T.81 G.1.1.1.2: an arithmetic shift towards
- * zero, which for a negative value is not the same as a shift of the value. */
+/**
+ * The AC point transform of T.81 G.1.1.1.2: divide the magnitude, keep the
+ * sign, which truncates toward zero and for a negative value is not the same
+ * as a shift of the value.
+ */
 static int32_t jpeg_arith_point_transform(int32_t coef, int al) {
   if (coef >= 0) {
     return coef >> al;
@@ -1194,19 +1196,42 @@ static int32_t jpeg_arith_point_transform(int32_t coef, int al) {
   return -((-coef) >> al);
 }
 
+/**
+ * The DC point transform of the same clause, which is a different operation:
+ * an arithmetic shift, so it floors.
+ *
+ * The two used to be one function, and the DC first scan used the AC rule.
+ * For a negative DC that sends one more than it should, and the decoder has
+ * no way to take it back: it reconstructs by placing the value at bit Al and
+ * OR-ing the refinement bits in above it (see
+ * jpeg_arith_decode_block_prog_dc_first), which only lands on the original
+ * coefficient if the low Al bits were discarded downward. Measured on a
+ * 32x32 image at quality 90: a maximum error of 3 and a mean of 0.34 against
+ * the same image written in one pass, where an exact match is the only right
+ * answer - successive approximation reorders bits, it does not change them.
+ * Small enough to read as quantization noise, which is why it survived.
+ *
+ * Written out rather than left as `coef >> al` because a right shift of a
+ * negative int is implementation-defined in C.
+ */
+static int32_t jpeg_arith_dc_point_transform(int32_t coef, int al) {
+  return (coef < 0) ? ~((~coef) >> al) : (coef >> al);
+}
+
 /** DC coefficient, first scan of a component (T.81 G.2, Figure G.4). */
 void jpeg_arith_encode_block_prog_dc_first(jpeg_arith_encoder_t * e,
     jpeg_arith_stats_t * stats, const jpeg_arith_cond_t * cond, uint8_t comp,
     uint8_t dc_tbl, int al, const int16_t * block) {
   jpeg_arith_encode_dc(e, stats, cond, comp, dc_tbl,
-      (int)jpeg_arith_point_transform((int32_t)block[0], al));
+      (int)jpeg_arith_dc_point_transform((int32_t)block[0], al));
 }
 
 /** DC coefficient, refinement scan (T.81 G.2, Figure G.5): one bit, at fixed
  * odds. */
 void jpeg_arith_encode_block_prog_dc_refine(jpeg_arith_encoder_t * e,
     jpeg_arith_stats_t * stats, int al, const int16_t * block) {
-  jpeg_arith_encode(e, &stats->fixed, (int)((block[0] >> al) & 1));
+  jpeg_arith_encode(e, &stats->fixed,
+      (int)(jpeg_arith_dc_point_transform((int32_t)block[0], al) & 1));
 }
 
 /** AC coefficients, first scan of a band (T.81 G.2, Figure G.6). */
