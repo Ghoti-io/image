@@ -361,6 +361,7 @@ def main() -> None:
     write_png("png_apng_2frame_16bit_rgba.png", apng_16rgba)
     _write_subbyte_and_interlace_fixtures()
     _write_grayalpha_fixtures()
+    _write_16bit_trns_fixtures()
     _write_zlib_integrity_fixtures()
     _write_suggested_palette_fixtures()
     _write_filter_fixtures()
@@ -554,6 +555,63 @@ def _gray_8x8_raw() -> bytes:
         out.append(0)
         out += bytes((x * 8 + y * 3) & 0xFF for x in range(8))
     return bytes(out)
+
+
+def _write_16bit_trns_fixtures() -> None:
+    """Sixteen-bit gray and truecolour with a tRNS key.
+
+    A tRNS chunk beside color type 0 or 2 names one fully transparent sample
+    value (PNG 11.3.2.1), and the writer will put the frame back that way
+    when the decoded raster still obeys the rule. Its check reads the raster
+    two bytes at a time for a 16-bit frame and one byte at a time otherwise,
+    and there was no 16-bit fixture carrying a tRNS chunk at all, so the
+    wide half of that check had never run - on the file, or on any edit that
+    should stop the narrowing.
+
+    Four by two so that the key appears more than once, and away from the
+    first pixel so that a check which only ever looks at pixel zero fails.
+    """
+    signature = b"\x89PNG\r\n\x1a\n"
+    iend = png_chunk(b"IEND", b"")
+    w, h = 4, 2
+
+    key_gray = 0x1234
+    gray = [
+        [0x0000, key_gray, 0x8000, 0xFFFF],
+        [key_gray, 0x4444, key_gray, 0x0001],
+    ]
+    rows = bytearray()
+    for row in gray:
+        rows.append(0)
+        for v in row:
+            rows += struct.pack(">H", v)
+    write_png(
+        "png_gray16_trns_4x2.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 16, 0, 0, 0, 0))
+        + png_chunk(b"tRNS", struct.pack(">H", key_gray))
+        + png_chunk(b"IDAT", idat_zlib(bytes(rows)))
+        + iend,
+    )
+
+    key_rgb = (0x1111, 0x2222, 0x3333)
+    colour = [
+        [(0, 0, 0), key_rgb, (0xFFFF, 0, 0), (0, 0xFFFF, 0)],
+        [key_rgb, (1, 2, 3), (4, 5, 6), (0xFFFF, 0xFFFF, 0xFFFF)],
+    ]
+    rows = bytearray()
+    for row in colour:
+        rows.append(0)
+        for px in row:
+            rows += struct.pack(">HHH", *px)
+    write_png(
+        "png_rgb16_trns_4x2.png",
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 16, 2, 0, 0, 0))
+        + png_chunk(b"tRNS", struct.pack(">HHH", *key_rgb))
+        + png_chunk(b"IDAT", idat_zlib(bytes(rows)))
+        + iend,
+    )
 
 
 def _write_grayalpha_fixtures() -> None:

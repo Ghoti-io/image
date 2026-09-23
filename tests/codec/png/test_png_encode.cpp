@@ -3733,3 +3733,305 @@ TEST(PngEncode, StrippingGpsDropsTheTextChunksThatCarryALocation) {
     EXPECT_EQ(after_preserve[0], c.keyword);
   }
 }
+
+namespace {
+
+/** One pixel of an RGBA raster, whatever its depth, widened to 16 bits. */
+void narrow_get(
+    const GIMG_Raster * r, uint32_t x, uint32_t y, uint16_t out[4]) {
+  const GIMG_Pixel_Format * f = gimg_raster_format(r);
+  const auto * p = (const unsigned char *)gimg_raster_pixels_const(r);
+  const unsigned char * q = p + (size_t)y * gimg_raster_stride_bytes(r) +
+      (size_t)x * gimg_raster_bytes_per_pixel(f);
+  if (f->bits_per_channel[0] == 16) {
+    const auto * u = (const uint16_t *)(const void *)q;
+    for (int k = 0; k < 4; k++) { out[k] = u[k]; }
+  }
+  else {
+    for (int k = 0; k < 4; k++) { out[k] = q[k]; }
+  }
+}
+
+void narrow_put(GIMG_Raster * r, uint32_t x, uint32_t y, const uint16_t v[4]) {
+  const GIMG_Pixel_Format * f = gimg_raster_format(r);
+  auto * p = (unsigned char *)gimg_raster_pixels(r);
+  unsigned char * q = p + (size_t)y * gimg_raster_stride_bytes(r) +
+      (size_t)x * gimg_raster_bytes_per_pixel(f);
+  if (f->bits_per_channel[0] == 16) {
+    auto * u = (uint16_t *)(void *)q;
+    for (int k = 0; k < 4; k++) { u[k] = v[k]; }
+  }
+  else {
+    for (int k = 0; k < 4; k++) { q[k] = (unsigned char)v[k]; }
+  }
+}
+
+/** Every pixel of a decoded raster, stride padding removed. */
+std::vector<uint8_t> narrow_pixels(const GIMG_Raster * r) {
+  const GIMG_Pixel_Format * f = gimg_raster_format(r);
+  const size_t row =
+      (size_t)gimg_raster_width(r) * gimg_raster_bytes_per_pixel(f);
+  const size_t stride = gimg_raster_stride_bytes(r);
+  const auto * p = (const unsigned char *)gimg_raster_pixels_const(r);
+  std::vector<uint8_t> out(row * gimg_raster_height(r));
+  for (uint32_t y = 0; y < gimg_raster_height(r); y++) {
+    memcpy(out.data() + (size_t)y * row, p + (size_t)y * stride, row);
+  }
+  return out;
+}
+
+/** The colour type and bit depth of a PNG's IHDR, and its tRNS length. */
+struct PngHead {
+  int color_type = -1;
+  int bit_depth = -1;
+  int trns_size = -1; ///< -1 when the file carries no tRNS chunk.
+};
+
+PngHead png_head(const std::vector<uint8_t> & b) {
+  PngHead h;
+  for (size_t i = 8; i + 8 < b.size();) {
+    const unsigned len = ((unsigned)b[i] << 24) | ((unsigned)b[i + 1] << 16) |
+        ((unsigned)b[i + 2] << 8) | (unsigned)b[i + 3];
+    const std::string type((const char *)&b[i + 4], 4);
+    if (type == "IHDR") {
+      h.bit_depth = b[i + 16];
+      h.color_type = b[i + 17];
+    }
+    else if (type == "tRNS") {
+      h.trns_size = (int)len;
+    }
+    i += 12u + len;
+    if (type == "IEND") { break; }
+  }
+  return h;
+}
+
+/**
+ * Load @p file, run @p edit over the decoded raster, save as PNG, and report
+ * what the writer chose and whether the edit came back.
+ */
+struct NarrowResult {
+  PngHead head;
+  bool survived = false;
+  std::vector<uint8_t> wrote, read_back;
+};
+
+NarrowResult save_after_editing(
+    const char * file, const std::function<void(GIMG_Raster *)> & edit) {
+  NarrowResult nr;
+  std::vector<uint8_t> bytes;
+  if (!png_test::load_png_file(file, bytes)) { return nr; }
+  GIMG_Stream * in = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &in) != GIMG_OK) {
+    return nr;
+  }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_load(in, nullptr, nullptr, &doc) != GIMG_OK) {
+    gimg_stream_destroy(in);
+    return nr;
+  }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  gimg_item_ensure_decoded(item, nullptr);
+  GIMG_Raster * raster = gimg_item_raster(item);
+  if (raster) {
+    edit(raster);
+    nr.wrote = narrow_pixels(raster);
+  }
+  GIMG_Stream * sink = nullptr;
+  std::vector<uint8_t> out;
+  if (gimg_stream_create_memory_output(&sink) == GIMG_OK) {
+    GIMG_Save_Options opts = {};
+    opts.quality = 95;
+    GIMG_Save_Report report = {};
+    if (gimg_doc_save(doc, sink, "png", &opts, &report) == GIMG_OK) {
+      const void * p = nullptr;
+      size_t n = 0;
+      gimg_stream_output_buffer(sink, &p, &n);
+      out.assign((const uint8_t *)p, (const uint8_t *)p + n);
+    }
+    gimg_stream_destroy(sink);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in);
+  if (out.empty()) { return nr; }
+  nr.head = png_head(out);
+
+  GIMG_Stream * back = nullptr;
+  if (gimg_stream_create_memory(out.data(), out.size(), &back) != GIMG_OK) {
+    return nr;
+  }
+  GIMG_Doc * doc2 = nullptr;
+  if (gimg_doc_load(back, nullptr, nullptr, &doc2) == GIMG_OK) {
+    GIMG_Raster * r2 = nullptr;
+    if (gimg_item_decode(gimg_doc_item(doc2, 0), nullptr, &r2) == GIMG_OK &&
+        r2) {
+      nr.read_back = narrow_pixels(r2);
+      gimg_raster_destroy(r2);
+    }
+    gimg_doc_destroy(doc2);
+  }
+  gimg_stream_destroy(back);
+  nr.survived = !nr.read_back.empty() && nr.read_back == nr.wrote;
+  return nr;
+}
+
+const uint16_t OPAQUE16 = 0xFFFFu;
+
+} // namespace
+
+/**
+ * A grayscale or truecolour PNG with a tRNS key decodes to RGBA, and the
+ * writer puts it back the narrow way when the decoded raster still obeys
+ * PNG 11.3.2.1: one fully transparent key colour, nothing partial, and no
+ * opaque pixel wearing that colour.
+ *
+ * The rule matters because a caller's edit can break it, and the failure is
+ * silent: if the writer narrowed anyway, an opaque pixel painted the key
+ * colour would come back transparent - a valid PNG of the wrong picture.
+ *
+ * So each case edits one pixel, saves, and asks two questions: which colour
+ * type the writer chose, and whether the pixels survived. The control is the
+ * case that keeps the rule - without it, a writer that simply never narrowed
+ * would pass every other case here.
+ *
+ * These run at 16 bits because the check reads the raster two bytes at a time
+ * for a 16-bit frame and one byte at a time otherwise, and no fixture carried
+ * a tRNS chunk at 16 bits, so the wide half had never executed.
+ */
+TEST(PngEncode, AnEditThatBreaksTheTrnsRuleStopsTheNarrowing) {
+  struct Case {
+    const char * file;
+    const char * what;
+    std::function<void(GIMG_Raster *)> edit;
+    int want_color_type; ///< What the writer must choose after the edit.
+  };
+
+  // The key colour is read out of the fixture rather than written in here, so
+  // a change to the fixture cannot quietly make a case stop testing anything.
+  auto key_of = [](GIMG_Raster * r, uint16_t key[4]) -> bool {
+    for (uint32_t y = 0; y < gimg_raster_height(r); y++) {
+      for (uint32_t x = 0; x < gimg_raster_width(r); x++) {
+        uint16_t v[4];
+        narrow_get(r, x, y, v);
+        if (v[3] == 0) {
+          memcpy(key, v, sizeof(uint16_t) * 4);
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const std::vector<Case> cases = {
+      {"png_gray16_trns_4x2.png", "one pixel half transparent",
+          [](GIMG_Raster * r) {
+            uint16_t v[4];
+            narrow_get(r, 0, 0, v);
+            v[3] = 0x8000u;
+            narrow_put(r, 0, 0, v);
+          },
+          6},
+      {"png_rgb16_trns_4x2.png", "one pixel half transparent",
+          [](GIMG_Raster * r) {
+            uint16_t v[4];
+            narrow_get(r, 0, 0, v);
+            v[3] = 0x8000u;
+            narrow_put(r, 0, 0, v);
+          },
+          6},
+      // Half-transparency on a pixel that ALREADY wears the key colour. The
+      // obvious "make some pixel half transparent" case does not test this
+      // rule on its own: that pixel becomes the first non-opaque one, so it
+      // becomes the key, and the genuinely transparent pixels then trip the
+      // "more than one transparent colour" rule instead. Deleting the partial
+      // check left the test green. Breaking one rule at a time is the only
+      // way either check is on the hook for its own answer.
+      {"png_gray16_trns_4x2.png", "the key pixel made half transparent",
+          [key_of](GIMG_Raster * r) {
+            uint16_t key[4];
+            if (!key_of(r, key)) { return; }
+            const uint16_t v[4] = {key[0], key[1], key[2], 0x8000u};
+            narrow_put(r, 1, 0, v);
+          },
+          6},
+      {"png_rgb16_trns_4x2.png", "the key pixel made half transparent",
+          [key_of](GIMG_Raster * r) {
+            uint16_t key[4];
+            if (!key_of(r, key)) { return; }
+            const uint16_t v[4] = {key[0], key[1], key[2], 0x8000u};
+            narrow_put(r, 1, 0, v);
+          },
+          6},
+      {"png_gray16_trns_4x2.png", "a second transparent colour",
+          [](GIMG_Raster * r) {
+            const uint16_t v[4] = {0x7777u, 0x7777u, 0x7777u, 0};
+            narrow_put(r, 3, 1, v);
+          },
+          6},
+      {"png_rgb16_trns_4x2.png", "a second transparent colour",
+          [](GIMG_Raster * r) {
+            const uint16_t v[4] = {0x7777u, 0x8888u, 0x9999u, 0};
+            narrow_put(r, 3, 1, v);
+          },
+          6},
+      {"png_gray16_trns_4x2.png", "an opaque pixel wearing the key",
+          [key_of](GIMG_Raster * r) {
+            uint16_t key[4];
+            if (!key_of(r, key)) { return; }
+            const uint16_t v[4] = {key[0], key[1], key[2], OPAQUE16};
+            narrow_put(r, 2, 0, v);
+          },
+          6},
+      {"png_rgb16_trns_4x2.png", "an opaque pixel wearing the key",
+          [key_of](GIMG_Raster * r) {
+            uint16_t key[4];
+            if (!key_of(r, key)) { return; }
+            const uint16_t v[4] = {key[0], key[1], key[2], OPAQUE16};
+            narrow_put(r, 2, 0, v);
+          },
+          6},
+      {"png_gray16_trns_4x2.png", "a grey pixel given a colour cast",
+          [](GIMG_Raster * r) {
+            uint16_t v[4];
+            narrow_get(r, 3, 0, v);
+            v[0] = 0xF00Fu;
+            narrow_put(r, 3, 0, v);
+          },
+          // Colour type 2 is not on offer here: this writer only writes
+          // types 2 and 4 for a document that arrived as one, so a frame
+          // that came in grayscale and stopped being grayscale goes to 6.
+          6},
+      // The controls: an edit that keeps every rule must still narrow, or the
+      // cases above would pass against a writer that never narrows at all.
+      {"png_gray16_trns_4x2.png", "control: a different grey, still narrowable",
+          [](GIMG_Raster * r) {
+            const uint16_t v[4] = {0x2222u, 0x2222u, 0x2222u, OPAQUE16};
+            narrow_put(r, 1, 1, v);
+          },
+          0},
+      {"png_rgb16_trns_4x2.png", "control: a different colour, still narrowable",
+          [](GIMG_Raster * r) {
+            const uint16_t v[4] = {0x2222u, 0x3333u, 0x4444u, OPAQUE16};
+            narrow_put(r, 1, 1, v);
+          },
+          2},
+  };
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.file) + ": " + c.what);
+    const NarrowResult nr = save_after_editing(c.file, c.edit);
+    ASSERT_FALSE(nr.wrote.empty()) << "the fixture did not decode";
+    ASSERT_EQ(nr.head.bit_depth, 16) << "a 16-bit raster must stay 16-bit";
+    EXPECT_EQ(nr.head.color_type, c.want_color_type);
+    EXPECT_TRUE(nr.survived)
+        << "the pixels the caller wrote are not the pixels that came back";
+    if (c.want_color_type == 0 || c.want_color_type == 2) {
+      EXPECT_EQ(nr.head.trns_size, c.want_color_type == 0 ? 2 : 6)
+          << "a narrowed frame carries the key as a tRNS chunk";
+    }
+    else {
+      EXPECT_EQ(nr.head.trns_size, -1)
+          << "colour type 6 has an alpha channel and needs no tRNS";
+    }
+  }
+}
