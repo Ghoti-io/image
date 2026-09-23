@@ -422,7 +422,18 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
   // 64 bits per pixel is a fixed BGRA layout of s2.13 samples.  No mask can
   // describe a sample that is not an integer, so BI_BITFIELDS at 64 is not a
   // thing, and neither is any RLE: the encodings all index bytes.
-  if (out->bit_count == 64 && out->compression != GIMG_BMP_COMP_RGB) {
+  //
+  // An embedded stream is exempt, because for those biBitCount describes the
+  // image the wrapper stands in for and constrains nothing - the same reason
+  // the switch above does not check it, and the reason a BI_PNG file is
+  // accepted with biBitCount 0.  Refusing one at 64 while accepting it at 0
+  // read the field as meaningful in the one place this codec says it is not.
+  //
+  // Every compression this rule is actually about refuses 64 in its own arm
+  // above, so nothing reaches here; -Wswitch on that switch is what keeps
+  // that true when a compression method is added.
+  if (out->bit_count == 64 && out->compression != GIMG_BMP_COMP_RGB &&
+      !gimg_bmp_is_embedded(out->compression)) {
     bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE,
         "64 bits per pixel is only defined for BI_RGB");
     return GIMG_ERR_CORRUPT;

@@ -1401,3 +1401,127 @@ TEST(BmpDecode, AProfileLargerThanThisCodecReadsLeavesTheFileUntagged) {
   EXPECT_EQ(ci->icc_size, 0u);
   EXPECT_EQ(ci->icc_bytes, nullptr);
 }
+
+namespace {
+
+/** Every pixel of a decoded fixture, or an empty vector if it did not load. */
+std::vector<uint8_t> decoded_pixels(const char * name) {
+  Loaded img;
+  if (img.load(name) != GIMG_OK || img.decode() != GIMG_OK) { return {}; }
+  std::vector<uint8_t> out;
+  for (uint32_t y = 0; y < img.height(); y++) {
+    for (uint32_t x = 0; x < img.width(); x++) {
+      const bmp_test::Rgba p = img.at(x, y);
+      out.push_back(p.r);
+      out.push_back(p.g);
+      out.push_back(p.b);
+      out.push_back(p.a);
+    }
+  }
+  return out;
+}
+
+/** The first error a load reported, or "" when it reported none. */
+std::string refusal_reason(const char * name, GIMG_Result * out_r) {
+  std::vector<uint8_t> bytes;
+  if (!bmp_test::load_file(name, bytes)) { return "(fixture missing)"; }
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    return "(no stream)";
+  }
+  GIMG_Diagnostics diag = {};
+  GIMG_Doc * doc = nullptr;
+  *out_r = gimg_doc_load(s, nullptr, &diag, &doc);
+  std::string why;
+  for (size_t i = 0; i < diag.count; i++) {
+    if (diag.items[i].severity == GIMG_DIAG_ERROR &&
+        diag.items[i].recommended_action) {
+      why = diag.items[i].recommended_action;
+      break;
+    }
+  }
+  gimg_diagnostics_destroy(&diag);
+  if (doc) { gimg_doc_destroy(doc); }
+  gimg_stream_destroy(s);
+  return why;
+}
+
+} // namespace
+
+/**
+ * ulCompression 1 and 2 mean RLE8 and RLE4 to an OS/2 2.x header exactly as
+ * they do to a Windows one, and that shared half of the vocabulary had no
+ * fixture: every RLE8 and RLE4 file here carried a BITMAPINFOHEADER, so the
+ * two arms that resolve those numbers in an OS/2 header were never taken.
+ *
+ * The same encoded stream in both headers must decode to the same picture,
+ * which needs no reference decoder to check.
+ */
+TEST(BmpLoad, AnOs2HeaderReadsTheRunLengthCodingsItSharesWithWindows) {
+  const std::vector<uint8_t> win8 = decoded_pixels("bmp_8x2_win_rle8.bmp");
+  ASSERT_FALSE(win8.empty()) << "the Windows RLE8 fixture did not decode";
+  EXPECT_EQ(decoded_pixels("bmp_8x2_os2v2_rle8.bmp"), win8);
+
+  const std::vector<uint8_t> win4 = decoded_pixels("bmp_8x2_win_rle4.bmp");
+  ASSERT_FALSE(win4.empty()) << "the Windows RLE4 fixture did not decode";
+  EXPECT_EQ(decoded_pixels("bmp_8x2_os2v2_rle4.bmp"), win4);
+}
+
+/**
+ * Every compression method is defined for one bit depth, or for bitfields
+ * two, and a header that disagrees with itself does not say which half to
+ * believe. Each rule had a refusal written for it and no file that reached
+ * it.
+ *
+ * The reason is asserted rather than the code, because these all return
+ * GIMG_ERR_CORRUPT and so does everything else in the loader: checking the
+ * code alone would pass if the file were refused three rules earlier for
+ * something else entirely. That is not hypothetical - it happened while
+ * these were being written. A 64bpp BI_RLE8 fixture was meant for the rule
+ * reserving 64 bits for BI_RGB and never reached it, because RLE8's own
+ * depth check refuses first.
+ */
+TEST(BmpLoad, AHeaderThatDisagreesWithItselfSaysWhichHalfIsWrong) {
+  const struct {
+    const char * file;
+    const char * reason;
+  } cases[] = {
+      {"bmp_rle8_at_4bpp.bmp", "RLE8 requires 8 bits per pixel"},
+      {"bmp_huffman_at_8bpp.bmp", "Huffman 1D requires 1 bit per pixel"},
+      {"bmp_rle24_at_8bpp.bmp", "RLE24 requires 24 bits per pixel"},
+      {"bmp_bitfields_at_24bpp.bmp",
+          "bitfields require 16 or 32 bits per pixel"},
+  };
+  for (const auto & c : cases) {
+    SCOPED_TRACE(c.file);
+    GIMG_Result r = GIMG_OK;
+    const std::string why = refusal_reason(c.file, &r);
+    EXPECT_EQ(r, GIMG_ERR_CORRUPT);
+    EXPECT_EQ(why, c.reason);
+  }
+}
+
+/**
+ * biBitCount describes the image a BI_JPEG or BI_PNG wrapper stands in for,
+ * not the stream inside it, which carries its own depth. So the same payload
+ * must decode the same way whatever the wrapper claims.
+ *
+ * 64 used to be the one value that did not, and the reason is worth keeping:
+ * the rule reserving 64 bits per pixel for BI_RGB is about channel masks and
+ * byte-indexed run lengths - neither of which an embedded stream has - and
+ * every compression it was written for already refuses 64 in its own arm, so
+ * the only files it ever reached were the ones it was not about. A BI_PNG
+ * file with biBitCount 0 was accepted the whole time, and 0 is not a pixel
+ * depth at all.
+ */
+TEST(BmpLoad, TheWrappersBitCountDoesNotConstrainAnEmbeddedStream) {
+  const std::vector<uint8_t> want =
+      decoded_pixels("bmp_4x4_embedded_png.bmp");
+  ASSERT_FALSE(want.empty()) << "the embedded PNG fixture did not decode";
+  for (const char * name : {"bmp_4x4_embedded_png_bpp0.bmp",
+           "bmp_4x4_embedded_png_bpp32.bmp",
+           "bmp_4x4_embedded_png_bpp64.bmp"}) {
+    SCOPED_TRACE(name);
+    EXPECT_EQ(decoded_pixels(name), want);
+  }
+}
