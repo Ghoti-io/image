@@ -8315,3 +8315,148 @@ TEST(JpegLoad, TheDecodePrecisionOptionIsNotImplemented) {
     }
   }
 }
+
+namespace {
+
+/** Set GIMG_JPEG_RECOVER_STUFF_ZERO for as long as this lives. */
+class RecoverStuffZero {
+public:
+  explicit RecoverStuffZero(bool on) {
+    if (on) { setenv("GIMG_JPEG_RECOVER_STUFF_ZERO", "1", 1); }
+    else { unsetenv("GIMG_JPEG_RECOVER_STUFF_ZERO"); }
+  }
+  ~RecoverStuffZero() { unsetenv("GIMG_JPEG_RECOVER_STUFF_ZERO"); }
+  RecoverStuffZero(const RecoverStuffZero &) = delete;
+  RecoverStuffZero & operator=(const RecoverStuffZero &) = delete;
+};
+
+/** Every way to shorten one scan's entropy data, keeping the rest of the
+ * file - so the result still parses and the shortage is the decoder's to
+ * find.  Cutting the tail off instead removes the EOI and the file is
+ * refused while it is still being read. */
+std::vector<std::vector<uint8_t>> scans_cut_short(
+    const std::vector<uint8_t> & src, size_t stride) {
+  std::vector<std::vector<uint8_t>> out;
+  for (const FoundSegment & s : segments_of(src)) {
+    if (s.marker != 0xDA || s.entropy_end <= s.entropy + 1) { continue; }
+    const size_t n = s.entropy_end - s.entropy;
+    std::vector<size_t> keeps;
+    for (size_t keep = 1; keep < n; keep += stride) { keeps.push_back(keep); }
+    // The last few bytes as well, whatever the stride lands on.  A cut one
+    // byte from the end is the one that runs out of bits inside the scan's
+    // *last* block, which is the only way to reach the arms that answer
+    // is_last_block without the recovery flag being set at all.
+    for (size_t back = 1; back <= 8 && back < n; back++) {
+      keeps.push_back(n - back);
+    }
+    std::sort(keeps.begin(), keeps.end());
+    keeps.erase(std::unique(keeps.begin(), keeps.end()), keeps.end());
+    for (size_t keep : keeps) {
+      std::vector<uint8_t> b(src.begin(), src.begin() + (long)(s.entropy + keep));
+      b.insert(b.end(), src.begin() + (long)s.entropy_end, src.end());
+      out.push_back(std::move(b));
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+// GIMG_JPEG_RECOVER_STUFF_ZERO, the opt-in recovery mode.
+//
+// T.81 B.2.2 leaves the value of the bits that pad a scan to a byte boundary
+// unspecified, and a progressive refinement scan that ends mid-block gives
+// this decoder nothing to read.  It refuses, which is right: the bits are
+// missing, not padding.  Setting GIMG_JPEG_RECOVER_STUFF_ZERO=1 says to
+// treat them as zero anyway and hand back whatever picture that makes -
+// which is what a tool recovering a damaged file wants and what a library
+// checking one does not, hence the opt-in.
+//
+// Nine arms across the progressive decoders read that flag, and the whole
+// mode was untested: the suite never set the variable, and the truncation
+// sweep cannot reach it, because cutting the tail off a JPEG takes the EOI
+// with it and the file is refused while it is still being parsed.  Cutting
+// inside a scan and leaving the rest is what gets past the parser.
+//
+// The assertion is the difference, both ways round.  Off, most of these are
+// refused; on, they all decode.  If the flag did nothing, the two counts
+// would be equal - which is the only shape of failure this can have that is
+// not a crash.
+TEST(JpegLoad, TheStuffZeroRecoveryModeIsOptInAndSalvagesAShortScan) {
+  const char * fixtures[] = {"progressive_sample.jpg", "cmyk_progressive.jpg",
+      "cmyk12_ljt_prog.jpg"};
+  // A stride over the cut points rather than every byte: the arms are reached
+  // in the first handful of cuts and the whole run is paid for in every ASan
+  // build.  The counts below are what says the sweep is still wide enough.
+  const size_t kStride = 7;
+
+  long refused_off = 0, decoded_off = 0;
+  long refused_on = 0, decoded_on = 0;
+  long cuts = 0;
+  for (const char * name : fixtures) {
+    SCOPED_TRACE(name);
+    std::vector<uint8_t> src;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name, src));
+    const Decoded whole = decode_described(src);
+    ASSERT_EQ(whole.result, GIMG_OK) << "the fixture itself must decode";
+
+    const std::vector<std::vector<uint8_t>> cut = scans_cut_short(src, kStride);
+    ASSERT_GT(cut.size(), 5u) << "no scan was long enough to cut";
+    cuts += (long)cut.size();
+
+    {
+      RecoverStuffZero off(false);
+      for (const std::vector<uint8_t> & b : cut) {
+        const Decoded d = decode_described(b);
+        if (d.result == GIMG_OK) { decoded_off++; }
+        else {
+          refused_off++;
+          EXPECT_EQ(d.result, GIMG_ERR_CORRUPT)
+              << "a scan that ran out of bits is corrupt data, not a limit or "
+                 "an unsupported feature";
+        }
+      }
+    }
+    {
+      RecoverStuffZero on(true);
+      for (const std::vector<uint8_t> & b : cut) {
+        const Decoded d = decode_described(b);
+        if (d.result == GIMG_OK) {
+          decoded_on++;
+          EXPECT_EQ(d.w, whole.w) << "a salvaged picture is the whole size";
+          EXPECT_EQ(d.h, whole.h);
+          EXPECT_EQ(d.bits, whole.bits);
+        }
+        else {
+          refused_on++;
+        }
+      }
+    }
+  }
+
+  std::printf("  %ld cuts: off %ld decoded / %ld refused, on %ld decoded / "
+              "%ld refused\n",
+      cuts, decoded_off, refused_off, decoded_on, refused_on);
+
+  EXPECT_GT(refused_off, 20)
+      << "with the recovery off a short scan is refused; if almost nothing "
+         "is refused the cuts are not landing inside the entropy data";
+  EXPECT_GT(decoded_on, refused_off)
+      << "turning the recovery on must salvage the ones that were refused; "
+         "equal counts is what a flag that does nothing looks like";
+  EXPECT_EQ(refused_on, 0)
+      << "the recovery mode answers every short scan - it is a broad hammer, "
+         "and this says so rather than leaving it to be discovered";
+
+  // And it is off again afterwards, which is what makes it opt-in rather than
+  // something a decode in this process inherits from an earlier one.
+  std::vector<uint8_t> src;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file(fixtures[0], src));
+  const std::vector<std::vector<uint8_t>> cut = scans_cut_short(src, kStride);
+  long after = 0;
+  for (const std::vector<uint8_t> & b : cut) {
+    if (decode_described(b).result != GIMG_OK) { after++; }
+  }
+  EXPECT_GT(after, 0)
+      << "the variable must not still be set once the guard is gone";
+}
