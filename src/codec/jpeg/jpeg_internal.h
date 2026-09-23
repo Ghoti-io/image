@@ -1235,11 +1235,10 @@ GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
 
 GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
-    const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel, uint8_t Ss, uint8_t Se,
-    uint8_t Ah, uint8_t Al, const GIMG_Allocator * alloc,
+    const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
+    uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
-    size_t * out_scan_size, int16_t * state_after_scan_out,
-    const int16_t * state_after_previous_scan, int sync_debug_scan_index);
+    size_t * out_scan_size);
 
 /** Fill scaled default quant tables (quality 1..100). */
 void gimg_jpeg_default_quant_scaled(

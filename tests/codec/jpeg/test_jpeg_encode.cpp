@@ -3470,6 +3470,16 @@ TEST(JpegEncode, ProgressiveMinimalDimensions8x8And16x16) {
   }
 }
 
+/**
+ * A refinement progression decodes to the same picture as a baseline file.
+ *
+ * The script used to be `{0,0,0,0}`, `{1,63,0,0}`, `{1,63,1,0}`: an initial
+ * scan that held nothing back, and then a refinement of a bit that was never
+ * withheld. T.81 G.1.1.1.2 has no such file - a scan's Ah must be the Al the
+ * previous scan over those coefficients used - and the save now refuses it
+ * rather than writing something no decoder can read. The script below holds
+ * one bit back and refines it, which is what the old one was meant to say.
+ */
 TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
@@ -3506,12 +3516,13 @@ TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
   gimg_stream_destroy(out_baseline);
 
   static const GIMG_JPEG_Progressive_Scan refine_scans[] = {
-      {0, 0, 0, 0},  // DC initial
-      {1, 63, 0, 0}, // AC initial Ss=1..63
-      {1, 63, 1, 0}, // AC refinement same band
+      {0, 0, 0, 1},  // DC initial, one bit held back
+      {1, 63, 0, 1}, // AC initial, one bit held back
+      {0, 0, 1, 0},  // DC refinement
+      {1, 63, 1, 0}, // AC refinement of the same band
   };
   GIMG_JPEG_Progressive_Config refine_config = {
-      .scan_count = 3,
+      .scan_count = 4,
       .scans = refine_scans,
   };
   GIMG_Stream * out_refine = nullptr;
@@ -7595,5 +7606,307 @@ TEST(JpegEncode, ARefusedOptionSetFreesTheRasterItDecoded) {
            "below would hold however much leaked";
     EXPECT_EQ(f.outstanding, 0)
         << f.outstanding << " block(s) kept after refusing " << ref.why;
+  }
+}
+
+namespace {
+
+/** A 32x32 RGBA gradient with a per-pixel perturbation, so blocks have AC. */
+GIMG_Raster * progression_source(void) {
+  GIMG_Raster * r = nullptr;
+  if (gimg_raster_create(32u, 32u, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+          nullptr, 0, &r) != GIMG_OK) {
+    return nullptr;
+  }
+  unsigned char * px = (unsigned char *)gimg_raster_pixels(r);
+  const size_t stride = gimg_raster_stride_bytes(r);
+  for (uint32_t y = 0; y < 32u; y++) {
+    for (uint32_t x = 0; x < 32u; x++) {
+      px[y * stride + x * 4 + 0] = (unsigned char)(x * 8u + ((y * 13u) & 31u));
+      px[y * stride + x * 4 + 1] = (unsigned char)(y * 8u + ((x * 7u) & 31u));
+      px[y * stride + x * 4 + 2] = (unsigned char)(((x ^ y) * 9u) & 0xFFu);
+      px[y * stride + x * 4 + 3] = 255u;
+    }
+  }
+  return r;
+}
+
+} // namespace
+
+/**
+ * A real successive-approximation progression, checked against libjpeg.
+ *
+ * The encoder's default progression is two scans - `{0,0,0,0}` then
+ * `{1,63,0,0}` - which hold no bits back at all: Ah and Al are zero
+ * throughout, so every coefficient is sent once and complete. That is a legal
+ * progressive file and it is not the one anybody writes. libjpeg's
+ * `jpeg_simple_progression`, which produced very nearly every progressive JPEG
+ * in circulation, sends the DC one bit short and refines it, and sends each AC
+ * band two bits short and refines it twice.
+ *
+ * Nothing exercised that, and the encoder did not implement it. **The point
+ * transform was not applied anywhere**: every scan wrote its coefficients at
+ * full precision while the scan header above them declared Al, so a decoder
+ * shifted them left again. Measured against the same image at Al = 0, a mean
+ * absolute error of 28.7 per channel out of 255 - and libjpeg and this
+ * library's decoder agreed on it, because the file really did say that. The
+ * suite's one refinement test scripted `{1,63,0,0}` then `{1,63,1,0}`: an
+ * initial scan that already sent every bit, followed by a refinement of a bit
+ * that had not been held back. **A refinement scan only refines something if
+ * the scan before it left something out.**
+ *
+ * Two assertions, and both matter:
+ *
+ *   - the picture is **identical** to the same image written in one pass.
+ *     Successive approximation splits the coefficients across scans; it does
+ *     not change them, so anything but an exact match is a defect. This holds
+ *     without the oracle.
+ *   - libjpeg reads the same pixels out of it. Refinement bits are the one
+ *     part of Annex G where an encoder and a decoder written together can
+ *     agree with each other and with nobody else - the correction bits mean
+ *     nothing except relative to what the previous scan said, so a shared
+ *     misreading round-trips perfectly. libjpeg has no such arrangement with
+ *     us, and this codec's decoder is bit-exact with it elsewhere.
+ */
+TEST(JpegEncode, ASuccessiveApproximationProgressionSaysWhatLibjpegReads) {
+  static const GIMG_JPEG_Progressive_Scan one_pass[] = {
+      {0, 0, 0, 0},
+      {1, 63, 0, 0},
+  };
+  // libjpeg's jpeg_simple_progression, in the order it emits. The DC
+  // refinement between the two AC refinements is what the old encoder could
+  // not write: it insisted that a refinement scan follow the initial scan of
+  // its own band directly.
+  static const GIMG_JPEG_Progressive_Scan simple_progression[] = {
+      {0, 0, 0, 1},  // DC, one bit held back
+      {1, 5, 0, 2},  // low AC band, two bits held back
+      {6, 63, 0, 2}, // high AC band, two bits held back
+      {1, 63, 2, 1}, // AC refinement, bit 1
+      {0, 0, 1, 0},  // DC refinement, the last bit
+      {1, 63, 1, 0}, // AC refinement, the last bit
+  };
+
+  struct Case {
+    const char * name;
+    const GIMG_JPEG_Progressive_Scan * scans;
+    unsigned scan_count;
+    uint16_t restart_interval;
+  };
+  const Case cases[] = {
+      {"progressive_successive_approximation.jpg", simple_progression, 6u, 0u},
+      // Every scan of a progression may carry restart markers, and each of the
+      // four scan writers emits them from a place of its own.
+      {"progressive_successive_restarts.jpg", simple_progression, 6u, 4u},
+  };
+
+  // The same image in one pass, as the thing every case must equal.
+  std::vector<uint8_t> one_pass_pixels;
+  {
+    GIMG_Raster * raster = progression_source();
+    ASSERT_NE(raster, nullptr);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK);
+    gimg_raster_destroy(raster);
+    const GIMG_JPEG_Progressive_Config cfg = {2u, one_pass};
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.quality = 90;
+    opts.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
+    opts.jpeg_progressive = 1;
+    opts.jpeg_progressive_config = &cfg;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+    const void * data = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &data, &size);
+    const std::vector<uint8_t> bytes(
+        (const uint8_t *)data, (const uint8_t *)data + size);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+    DocStreamGuard in;
+    ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &in.s),
+        GIMG_OK);
+    ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+    RasterGuard got;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+    const unsigned char * px = (const unsigned char *)gimg_raster_pixels(got.r);
+    const size_t stride = gimg_raster_stride_bytes(got.r);
+    for (uint32_t y = 0; y < 32u; y++) {
+      for (uint32_t x = 0; x < 32u; x++) {
+        for (int ch = 0; ch < 3; ch++) {
+          one_pass_pixels.push_back(px[y * stride + x * 4 + (size_t)ch]);
+        }
+      }
+    }
+  }
+  ASSERT_EQ(one_pass_pixels.size(), 32u * 32u * 3u);
+
+  bool oracle_ran = false;
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.name);
+    GIMG_Raster * raster = progression_source();
+    ASSERT_NE(raster, nullptr);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK);
+    gimg_raster_destroy(raster);
+
+    const GIMG_JPEG_Progressive_Config cfg = {c.scan_count, c.scans};
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.quality = 90;
+    opts.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
+    opts.jpeg_progressive = 1;
+    opts.jpeg_progressive_config = &cfg;
+    opts.jpeg_restart_interval = c.restart_interval;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK)
+        << "libjpeg's own progression must be writable";
+    const void * data = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &data, &size);
+    const std::vector<uint8_t> written(
+        (const uint8_t *)data, (const uint8_t *)data + size);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+    ASSERT_GT(written.size(), 0u);
+
+    jpeg_test::write_jpeg_output(c.name, written.data(), written.size());
+
+    DocStreamGuard in;
+    ASSERT_EQ(gimg_stream_create_memory(written.data(), written.size(), &in.s),
+        GIMG_OK);
+    ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+    RasterGuard got;
+    ASSERT_EQ(
+        gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+    ASSERT_NE(got.r, nullptr);
+    ASSERT_EQ(gimg_raster_width(got.r), 32u);
+    ASSERT_EQ(gimg_raster_height(got.r), 32u);
+    {
+      const unsigned char * px = (const unsigned char *)gimg_raster_pixels(got.r);
+      const size_t stride = gimg_raster_stride_bytes(got.r);
+      for (uint32_t y = 0; y < 32u; y++) {
+        for (uint32_t x = 0; x < 32u; x++) {
+          for (int ch = 0; ch < 3; ch++) {
+            const size_t i = ((size_t)y * 32u + x) * 3u + (size_t)ch;
+            ASSERT_EQ((int)px[y * stride + x * 4 + (size_t)ch],
+                (int)one_pass_pixels[i])
+                << "successive approximation changed pixel (" << x << "," << y
+                << ") channel " << ch
+                << "; it reorders the bits, it does not alter them";
+          }
+        }
+      }
+    }
+
+    const std::string jpeg_path = jpeg_test::jpeg_output_dir() + "/" + c.name;
+    const std::string raw_path =
+        jpeg_test::jpeg_output_dir() + "/libjpeg_" + c.name + ".raw";
+    std::vector<uint8_t> libjpeg_pixels;
+    uint32_t ow = 0, oh = 0;
+    int omode = -1;
+    if (jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(),
+            raw_path.c_str(), libjpeg_pixels, &ow, &oh, &omode)) {
+      oracle_ran = true;
+      EXPECT_EQ(ow, 32u);
+      EXPECT_EQ(oh, 32u);
+      EXPECT_EQ(omode, 1) << "three components => RGB";
+      EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(
+          got.r, libjpeg_pixels.data(), ow, oh, omode, 0))
+          << "libjpeg read different pixels out of our successive-"
+             "approximation scans than we did";
+    }
+  }
+  if (!oracle_ran) {
+    GTEST_SKIP() << "the libjpeg decode oracle did not run; the comparison "
+                    "against an outside decoder is half of this test - build "
+                    "it with `make jpeg-oracle-tools`.";
+  }
+}
+
+/**
+ * A scan script that describes no readable file is refused before it is one.
+ *
+ * T.81 G.1.1.1.2 makes successive approximation a chain: a coefficient is sent
+ * once at some point transform, and each later scan over it refines exactly
+ * one bit, so a scan's Ah is the previous scan's Al and its own Al is one
+ * lower. A script that breaks the chain produces a file this library's decoder
+ * refuses with GIMG_ERR_CORRUPT and libjpeg rejects as broken data - which is
+ * the right answer arriving in the wrong place, because the caller has by then
+ * been told the save worked and has the bytes.
+ *
+ * Each refusal is paired with the nearest script that is legal, so the test
+ * says which rule is doing the refusing rather than only that something did.
+ */
+TEST(JpegEncode, AProgressionThatBreaksTheRefinementChainIsRefused) {
+  struct Script {
+    const char * why;
+    std::vector<GIMG_JPEG_Progressive_Scan> scans;
+    GIMG_Result expected;
+  };
+  const std::vector<Script> scripts = {
+      {"refines a bit the initial scan did not hold back",
+          {{0, 0, 0, 0}, {1, 63, 0, 0}, {1, 63, 1, 0}}, GIMG_ERR_UNSUPPORTED},
+      {"refines a band no earlier scan sent at all",
+          {{0, 0, 0, 1}, {0, 0, 1, 0}, {1, 63, 1, 0}}, GIMG_ERR_UNSUPPORTED},
+      {"skips a bit: Al two below Ah",
+          {{0, 0, 0, 2}, {1, 63, 0, 2}, {1, 63, 2, 0}}, GIMG_ERR_UNSUPPORTED},
+      {"sends the same coefficients for the first time twice",
+          {{0, 0, 0, 0}, {1, 63, 0, 0}, {1, 63, 0, 0}}, GIMG_ERR_UNSUPPORTED},
+      // The controls: the same shapes, with the chain intact.
+      {"holds one bit back and refines it",
+          {{0, 0, 0, 1}, {1, 63, 0, 1}, {0, 0, 1, 0}, {1, 63, 1, 0}}, GIMG_OK},
+      {"holds two bits back and refines them one at a time",
+          {{0, 0, 0, 2}, {1, 63, 0, 2}, {1, 63, 2, 1}, {0, 0, 2, 1},
+              {0, 0, 1, 0}, {1, 63, 1, 0}},
+          GIMG_OK},
+      {"two AC bands, each refined by a scan over both",
+          {{0, 0, 0, 1}, {1, 5, 0, 1}, {6, 63, 0, 1}, {0, 0, 1, 0},
+              {1, 63, 1, 0}},
+          GIMG_OK},
+  };
+
+  for (const Script & sc : scripts) {
+    SCOPED_TRACE(sc.why);
+    GIMG_Raster * raster = progression_source();
+    ASSERT_NE(raster, nullptr);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK);
+    gimg_raster_destroy(raster);
+    const GIMG_JPEG_Progressive_Config cfg = {
+        (unsigned)sc.scans.size(), sc.scans.data()};
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.quality = 90;
+    opts.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
+    opts.jpeg_progressive = 1;
+    opts.jpeg_progressive_config = &cfg;
+    GIMG_Save_Report report = {};
+    const GIMG_Result r = gimg_doc_save(doc, out, "jpeg", &opts, &report);
+    EXPECT_EQ(r, sc.expected);
+
+    if (r == GIMG_OK) {
+      // A script this accepts has to describe a file that reads back, or the
+      // rule is only moving the failure rather than catching it.
+      const void * data = nullptr;
+      size_t size = 0;
+      gimg_stream_output_buffer(out, &data, &size);
+      const std::vector<uint8_t> bytes(
+          (const uint8_t *)data, (const uint8_t *)data + size);
+      DocStreamGuard in;
+      ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &in.s),
+          GIMG_OK);
+      ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+      RasterGuard got;
+      EXPECT_EQ(
+          gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK)
+          << "accepted a script whose file does not decode";
+    }
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
   }
 }

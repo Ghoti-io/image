@@ -2558,27 +2558,44 @@ static GIMG_Result jpeg_validate_progressive_config(
       return GIMG_ERR_UNSUPPORTED;
     }
   }
-  // T.81 Annex G: initial AC bands [Ss,Se] (Ah=0, Ss>=1) must not overlap.
+  // T.81 G.1.1.1.2: a coefficient is sent once at some point transform Al and
+  // then refined one bit at a time, so a scan's Ah has to be the Al of the
+  // scan that last touched the same coefficients, and its own Al one lower.
+  //
+  // This is checked because it cannot be recovered from: a script that
+  // refines a bit no earlier scan held back describes a file no decoder can
+  // read.  This library's own decoder refuses one with GIMG_ERR_CORRUPT, and
+  // so does libjpeg, which is the right answer - but it is the wrong place to
+  // find out, because by then the caller has been told the save succeeded.
+  //
+  // `sent[k]` is the point transform the last scan covering coefficient k
+  // used, or -1 for a coefficient no scan has sent yet.  The DC coefficient
+  // is index 0 and its scans are the ones with Ss = Se = 0, so the same array
+  // covers both without a special case.  This subsumes the older check that
+  // initial AC bands must not overlap: a second initial scan over a
+  // coefficient already sent is exactly a coefficient whose sent[k] is not -1.
+  int sent[64];
+  for (int k = 0; k < 64; k++) {
+    sent[k] = -1;
+  }
   for (unsigned i = 0; i < config->scan_count; i++) {
-    uint8_t Ss_i = config->scans[i].Ss;
-    uint8_t Se_i = config->scans[i].Se;
-    uint8_t Ah_i = config->scans[i].Ah;
-    int ac_initial_i = (Ah_i == 0 && (Ss_i != 0 || Se_i != 0));
-    if (!ac_initial_i) {
-      continue;
+    const unsigned Ss = config->scans[i].Ss;
+    const unsigned Se = config->scans[i].Se;
+    const int Ah = (int)config->scans[i].Ah;
+    const int Al = (int)config->scans[i].Al;
+    if (Ah != 0 && Al != Ah - 1) {
+      return GIMG_ERR_UNSUPPORTED;
     }
-    for (unsigned j = i + 1; j < config->scan_count; j++) {
-      uint8_t Ss_j = config->scans[j].Ss;
-      uint8_t Se_j = config->scans[j].Se;
-      uint8_t Ah_j = config->scans[j].Ah;
-      int ac_initial_j = (Ah_j == 0 && (Ss_j != 0 || Se_j != 0));
-      if (!ac_initial_j) {
-        continue;
+    for (unsigned k = Ss; k <= Se && k < 64u; k++) {
+      if (Ah == 0) {
+        if (sent[k] != -1) {
+          return GIMG_ERR_UNSUPPORTED; // sent twice for the first time
+        }
       }
-      // Bands [Ss_i, Se_i] and [Ss_j, Se_j] overlap iff Ss_i <= Se_j && Ss_j <= Se_i
-      if (Ss_i <= (unsigned)Se_j && Ss_j <= (unsigned)Se_i) {
-        return GIMG_ERR_UNSUPPORTED;
+      else if (sent[k] != Ah) {
+        return GIMG_ERR_UNSUPPORTED; // refining a bit nothing held back
       }
+      sent[k] = Al;
     }
   }
   return GIMG_OK;
@@ -3039,24 +3056,13 @@ after_prog_tables:
     }
     n += written;
   }
-  // State after AC initial scan so refinement scan can tell newly vs already nonzero.
-  int16_t * ac_initial_state = NULL;
-  if (scan_count >= 2) {
-    int need_state = 0;
-    for (unsigned s = 1; s < scan_count && !need_state; s++) {
-      int prev_ac_initial = (scans[s - 1].Ah == 0 &&
-          (scans[s - 1].Ss != 0 || scans[s - 1].Se != 0));
-      int this_refinement =
-          (scans[s].Ah != 0 && (scans[s].Ss != 0 || scans[s].Se != 0));
-      if (prev_ac_initial && this_refinement) {
-        need_state = 1;
-      }
-    }
-    if (need_state) {
-      ac_initial_state =
-          (int16_t *)gimg_malloc(alloc, total_blocks * 64 * sizeof(int16_t));
-    }
-  }
+  // No scan carries state forward to the next.  A refinement scan works out
+  // which coefficients its predecessor already sent from the coefficients and
+  // the two point transforms (see gimg_jpeg_encode_progressive_scan), so a
+  // buffer the size of the whole frame used to be allocated here for nothing
+  // - and the scans had to be ordered so that each refinement followed the
+  // initial scan of its own band, which is not an order T.81 requires and not
+  // the order libjpeg writes.
   // T.81 G.1.2.2: "In a scan with Ss not equal to zero, Ns shall be one" - an
   // AC scan is always non-interleaved.  A DC scan (Ss = Se = 0) may carry all
   // the components together.  This encoder used to write every scan with every
@@ -3089,14 +3095,8 @@ after_prog_tables:
     (void)vm;
   }
   for (unsigned s = 0; s < scan_count; s++) {
-    int this_ac_initial =
-        (scans[s].Ah == 0 && (scans[s].Ss != 0 || scans[s].Se != 0));
-    int this_refinement =
-        (scans[s].Ah != 0 && (scans[s].Ss != 0 || scans[s].Se != 0));
-    int prev_ac_initial = (s > 0 && scans[s - 1].Ah == 0 &&
-        (scans[s - 1].Ss != 0 || scans[s - 1].Se != 0));
     int is_ac_scan = (scans[s].Ss != 0 || scans[s].Se != 0);
-    int ac_refine = this_refinement;
+    int ac_refine = (scans[s].Ah != 0 && is_ac_scan);
 
     // Components written in this script entry: one scan each for an AC scan
     // (G.1.2.2 requires it), and all of them together for a DC scan - unless
@@ -3112,7 +3112,6 @@ after_prog_tables:
       size_t scan_size = 0;
       int scan_components = split ? 1 : num_components;
       int16_t * packed = NULL;
-      int16_t * packed_state = NULL;
       const int16_t * enc_coef = coef_buffer;
       size_t enc_blocks = total_blocks;
       uint8_t one_samp[3] = {1, 1, 1};
@@ -3129,7 +3128,6 @@ after_prog_tables:
         size_t nblocks = (size_t)blk_w * (size_t)blk_h;
         packed = (int16_t *)gimg_malloc(alloc, nblocks * 64 * sizeof(int16_t));
         if (!packed) {
-          gimg_free(alloc, ac_initial_state);
           return GIMG_ERR_OOM;
         }
         jpeg_gather_component_blocks((int16_t *)coef_buffer, packed, blk_w,
@@ -3141,17 +3139,6 @@ after_prog_tables:
         // One block per MCU: present the component's grid as its own image.
         enc_w = blk_w * 8u;
         enc_h_px = blk_h * 8u;
-        if (ac_initial_state) {
-          packed_state =
-              (int16_t *)gimg_malloc(alloc, nblocks * 64 * sizeof(int16_t));
-          if (!packed_state) {
-            gimg_free(alloc, packed);
-            gimg_free(alloc, ac_initial_state);
-            return GIMG_ERR_OOM;
-          }
-          jpeg_gather_component_blocks(ac_initial_state, packed_state, blk_w,
-              blk_h, h_samp, v_samp, num_components, comp, mcu_per_row_enc, 0);
-        }
       }
 
       // T.81 B.2.3: the tables this scan's SOS names must be the tables the
@@ -3163,14 +3150,6 @@ after_prog_tables:
       if (split && num_components > 1) {
         scan_tbl = ac_scan_tbl;
       }
-      int16_t * state_out = NULL;
-      const int16_t * state_in = NULL;
-      if (ac_initial_state) {
-        int16_t * state_base = packed_state ? packed_state : ac_initial_state;
-        state_out = this_ac_initial ? state_base : NULL;
-        state_in = (this_refinement && prev_ac_initial) ? state_base : NULL;
-      }
-
       if (arithmetic) {
         // T.81 Annex D and G.2.  The same coder serves both precisions, and it
         // needs no previous-scan state: the point transform is a shift.
@@ -3191,18 +3170,10 @@ after_prog_tables:
         r = gimg_jpeg_encode_progressive_scan(enc_w, enc_h_px, scan_components,
             enc_coef, enc_blocks, enc_h, enc_v, scan_tbl, scans[s].Ss,
             scans[s].Se, scans[s].Ah, scans[s].Al, alloc, restart_interval,
-            &scan_data, &scan_size, state_out, state_in, (int)s);
+            &scan_data, &scan_size);
       }
-      if (r == GIMG_OK && packed_state && this_ac_initial) {
-        // Put the state this scan produced back where a later refinement scan
-        // over the interleaved buffer will find it.
-        jpeg_gather_component_blocks(ac_initial_state, packed_state, blk_w,
-            blk_h, h_samp, v_samp, num_components, comp, mcu_per_row_enc, 1);
-      }
-      gimg_free(alloc, packed_state);
       gimg_free(alloc, packed);
       if (r != GIMG_OK) {
-        gimg_free(alloc, ac_initial_state);
         return r;
       }
 
@@ -3210,13 +3181,11 @@ after_prog_tables:
       r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
       if (r != GIMG_OK) {
         gimg_free(alloc, scan_data);
-        gimg_free(alloc, ac_initial_state);
         return r;
       }
       r = jpeg_write_u16(stream, sos_len, &n);
       if (r != GIMG_OK) {
         gimg_free(alloc, scan_data);
-        gimg_free(alloc, ac_initial_state);
         return r;
       }
       // A DC scan names every component, so this is sized for B.2.3's widest
@@ -3254,19 +3223,16 @@ after_prog_tables:
       r = gimg_stream_write(stream, sos, tail + 3, &written);
       if (r != GIMG_OK) {
         gimg_free(alloc, scan_data);
-        gimg_free(alloc, ac_initial_state);
         return r;
       }
       n += written;
       r = jpeg_write_scan_data_with_stuffing(stream, scan_data, scan_size, &n);
       gimg_free(alloc, scan_data);
       if (r != GIMG_OK) {
-        gimg_free(alloc, ac_initial_state);
         return r;
       }
     }
   }
-  gimg_free(alloc, ac_initial_state);
   r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_EOI, &n);
   if (r != GIMG_OK) {
     return r;

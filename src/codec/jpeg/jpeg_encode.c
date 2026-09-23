@@ -1562,14 +1562,50 @@ GIMG_Result gimg_jpeg_encode_arith_progressive_scan(uint32_t width,
   return GIMG_OK;
 }
 
+/**
+ * The DC point transform of T.81 G.1.2.1: an arithmetic right shift.
+ *
+ * Written out rather than left as `v >> al` because a right shift of a
+ * negative int is implementation-defined in C, and this one has to floor -
+ * that is what the decoder undoes.  The AC point transform is a different
+ * operation (G.1.2.2 divides the magnitude, truncating toward zero), so the
+ * two are not interchangeable and neither is spelled as the other.
+ */
+static int jpeg_dc_point_transform(int v, int al) {
+  return (v < 0) ? ~((~v) >> al) : (v >> al);
+}
+
+/**
+ * One scan of a progressive frame, T.81 Annex G.
+ *
+ * **The point transform is the whole of successive approximation, and this
+ * used to ignore it.** Every branch wrote the coefficients at full precision
+ * whatever Al said, while the scan header it sits under declared Al - so a
+ * decoder shifted them left again and the picture came out wrong: measured
+ * against the same image at Al = 0, a mean absolute error of 28.7 per channel
+ * out of 255, with libjpeg and this library's own decoder agreeing on the
+ * wrong answer because the file really did say that. Nothing caught it
+ * because nothing asked: the encoder's default progression is `{0,0,0,0}`
+ * then `{1,63,0,0}`, which holds no bits back at all, and the one refinement
+ * test scripted a refinement of a bit that had not been held back.
+ *
+ * The refinement scan no longer takes the previous scan's coefficients as an
+ * argument either. What it needs to know is which coefficients the previous
+ * scan already sent, and that follows from the coefficient itself: the
+ * previous scan ran at Al = Ah, so it sent k as nonzero exactly when
+ * |coef| >> Ah != 0, and this scan newly makes k nonzero exactly when
+ * |coef| >> Al == 1. Deriving it removes a whole coefficient-sized buffer,
+ * and with it the rule that a refinement scan had to come immediately after
+ * the initial scan of its band - the rule that made libjpeg's own
+ * `jpeg_simple_progression` unwritable, because there the DC refinement sits
+ * between the two AC refinements.
+ */
 GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     int num_components, const int16_t * coef_buffer, size_t total_blocks,
-    const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel, uint8_t Ss, uint8_t Se,
-    uint8_t Ah, uint8_t Al, const GIMG_Allocator * alloc,
+    const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
+    uint8_t Ss, uint8_t Se, uint8_t Ah, uint8_t Al, const GIMG_Allocator * alloc,
     uint16_t restart_interval, unsigned char ** out_scan_data,
-    size_t * out_scan_size, int16_t * state_after_scan_out,
-    const int16_t * state_after_previous_scan, int sync_debug_scan_index) {
-  (void)sync_debug_scan_index;
+    size_t * out_scan_size) {
   if (!alloc || !out_scan_data || !out_scan_size) {
     return GIMG_ERR_INTERNAL;
   }
@@ -1606,6 +1642,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
   build_derived_tbl(gimg_jpeg_std_ac_lum_bits, gimg_jpeg_std_ac_lum_vals, 162, &ac_lum_tbl);
   build_derived_tbl(gimg_jpeg_std_ac_chr_bits, gimg_jpeg_std_ac_chr_vals, 162, &ac_chr_tbl);
 
+  const int al = (Al <= 15u) ? (int)Al : 0;
   jpeg_bit_writer w = {0};
   int last_dc[GIMG_JPEG_MAX_COMPONENTS] = {0};
   size_t block_off = 0;
@@ -1614,7 +1651,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
 
   if (Ss == 0 && Se == 0) {
     if (Ah == 0) {
-      // DC initial (T.81 Annex G.1.2.1): encode only DC difference per block.
+      // DC initial (T.81 G.1.2.1): the point-transformed DC difference.
       for (;;) {
         if (restart_interval > 0 && mcu_index > 0 &&
             (mcu_index % (size_t)restart_interval) == 0) {
@@ -1641,7 +1678,7 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
           for (size_t b = 0; b < nblocks; b++) {
             size_t block_idx = block_off + mcu_block_off + b;
             const int16_t * block = coef_buffer + block_idx * 64;
-            int dc_val = (int)block[0];
+            int dc_val = jpeg_dc_point_transform((int)block[0], al);
             int diff = dc_val - last_dc[c];
             last_dc[c] = dc_val;
             int nbits = jpeg_nbits(diff);
@@ -1667,9 +1704,11 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
       }
     }
     else {
-      // DC refinement (T.81 Annex G.1.1.2.1): one bit per block (Al-th bit of DC).
-      // Decoder sets block[0] |= (bit << Al).
-      unsigned int bitpos = (Al <= 15u) ? Al : 0;
+      // DC refinement (T.81 G.1.1.2.1): one bit per block, the Al-th bit of
+      // the DC coefficient.  Of the coefficient, not of its magnitude: the
+      // decoder ORs this bit into a value it is reconstructing in two's
+      // complement, so for a negative DC the two differ and the old
+      // magnitude-based bit was the wrong one.
       for (;;) {
         if (restart_interval > 0 && mcu_index > 0 &&
             (mcu_index % (size_t)restart_interval) == 0) {
@@ -1690,9 +1729,8 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
           for (size_t b = 0; b < nblocks; b++) {
             size_t block_idx = block_off + mcu_block_off + b;
             const int16_t * block = coef_buffer + block_idx * 64;
-            int dc = (int)block[0];
-            int mag = dc < 0 ? -dc : dc;
-            unsigned int bit = (unsigned int)((mag >> bitpos) & 1);
+            unsigned int bit = (unsigned int)(
+                jpeg_dc_point_transform((int)block[0], al) & 1);
             bit_writer_put_bits(&w, alloc, bit, 1);
           }
           mcu_block_off += nblocks;
@@ -1705,14 +1743,16 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     }
   }
   else if (Ah != 0) {
-    // AC refinement (T.81 Annex G.1.2.2): (run,size=1) + refinement bit for newly nonzero;
-    // correction bits for already-nonzero. state_after_previous is coefficient state after AC initial.
-    const int16_t * prev = state_after_previous_scan;
-    if (!prev) {
-      gimg_free(alloc, w.buf);
-      return GIMG_ERR_UNSUPPORTED;
-    }
-    // Per call, not cached; see the note on the other derived tables.
+    // AC refinement, T.81 G.1.2.3.
+    //
+    // Three kinds of coefficient in the band, told apart by |coef| >> Al:
+    // zero means the previous scan sent nothing and this scan sends nothing;
+    // one means newly nonzero, and gets a (run, 1) symbol and a sign bit; more
+    // than one means the previous scan already sent it, and it gets a single
+    // correction bit.  The correction bits do not appear where the
+    // coefficients do - they are held back and written after the next symbol,
+    // because the decoder only knows how many to read once it has that
+    // symbol.
     jpeg_derived_tbl ac_refine_tbl;
     build_derived_tbl(gimg_jpeg_std_ac_refine_bits, gimg_jpeg_std_ac_refine_vals,
         GIMG_JPEG_AC_REFINE_VALS, &ac_refine_tbl);
@@ -1720,7 +1760,6 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     unsigned int k_end = (unsigned int)Se;
     if (k_end > 63)
       k_end = 63;
-    int bitpos = (Al <= 15u) ? (int)Al : 0;
     for (;;) {
       if (restart_interval > 0 && mcu_index > 0 &&
           (mcu_index % (size_t)restart_interval) == 0) {
@@ -1741,62 +1780,65 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
         for (size_t b = 0; b < nblocks; b++) {
           size_t block_idx = block_off + mcu_block_off + b;
           const int16_t * block = coef_buffer + block_idx * 64;
-          const int16_t * p = prev + block_idx * 64;
-          unsigned int start = k_start;
-          for (unsigned int k = k_start; k <= k_end;) {
-            int coef = (int)block[k];
-            int prev_val = (int)p[k];
-            int mag = coef < 0 ? -coef : coef;
-            int newly_nz = (prev_val == 0 && mag != 0 &&
-                (mag & (1 << bitpos)) != 0);
-            if (newly_nz) {
-              int run = (int)(k - start);
-              while (run >= 16) {
-                if (ac_refine_tbl.len[0xF0] > 0)
-                  bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[0xF0],
-                      ac_refine_tbl.len[0xF0]);
-                run -= 16;
-                start += 16;
-              }
-              int symbol = (run << 4) | 1;
-              if (symbol >= 0 && symbol <= 255 &&
-                  ac_refine_tbl.len[symbol] > 0) {
-                bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[symbol],
-                    ac_refine_tbl.len[symbol]);
-              }
-              unsigned int ref_bit = (coef > 0) ? 1u : 0u;
-              bit_writer_put_bits(&w, alloc, ref_bit, 1);
-              for (unsigned int pos = start; pos < k; pos++) {
-                if (p[pos] != 0) {
-                  int cmag = (int)block[pos];
-                  if (cmag < 0)
-                    cmag = -cmag;
-                  unsigned int corr =
-                      (unsigned int)((cmag >> bitpos) & 1);
-                  bit_writer_put_bits(&w, alloc, corr, 1);
-                }
-              }
-              start = k + 1;
-              k++;
-            }
-            else if (prev_val != 0) {
-              k++;
-            }
-            else {
-              k++;
-            }
+
+          int absval[64];
+          // The index of the last newly-nonzero coefficient, or 0 for none -
+          // an AC band starts at 1, so 0 cannot be one of its indices.  A run
+          // of zeroes is only worth a ZRL while there is still a symbol to
+          // come; past this point the rest of the band is an EOB.
+          unsigned int eob = 0;
+          for (unsigned int k = k_start; k <= k_end; k++) {
+            int mag = (int)block[k];
+            if (mag < 0)
+              mag = -mag;
+            absval[k] = mag >> al;
+            if (absval[k] == 1)
+              eob = k;
           }
-          if (ac_refine_tbl.len[0] > 0)
-            bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[0],
-                ac_refine_tbl.len[0]);
-          for (unsigned int pos = start; pos <= k_end; pos++) {
-            if (p[pos] != 0) {
-              int cmag = (int)block[pos];
-              if (cmag < 0)
-                cmag = -cmag;
-              unsigned int corr = (unsigned int)((cmag >> bitpos) & 1);
-              bit_writer_put_bits(&w, alloc, corr, 1);
+
+          unsigned char corr[64];
+          unsigned int ncorr = 0;
+          unsigned int run = 0;
+          for (unsigned int k = k_start; k <= k_end; k++) {
+            const int t = absval[k];
+            if (t == 0) {
+              run++;
+              continue;
             }
+            while (run > 15 && k <= eob) {
+              if (ac_refine_tbl.len[0xF0] > 0)
+                bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[0xF0],
+                    ac_refine_tbl.len[0xF0]);
+              run -= 16;
+              for (unsigned int i = 0; i < ncorr; i++)
+                bit_writer_put_bits(&w, alloc, corr[i], 1);
+              ncorr = 0;
+            }
+            if (t > 1) {
+              // Already nonzero: one correction bit, written later.
+              corr[ncorr++] = (unsigned char)(t & 1);
+              continue;
+            }
+            const int symbol = (int)((run << 4) | 1u);
+            if (symbol >= 0 && symbol <= 255 && ac_refine_tbl.len[symbol] > 0) {
+              bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[symbol],
+                  ac_refine_tbl.len[symbol]);
+            }
+            bit_writer_put_bits(&w, alloc, block[k] < 0 ? 0u : 1u, 1);
+            for (unsigned int i = 0; i < ncorr; i++)
+              bit_writer_put_bits(&w, alloc, corr[i], 1);
+            ncorr = 0;
+            run = 0;
+          }
+          if (run > 0 || ncorr > 0) {
+            // EOB with a run of one block, then the correction bits for the
+            // coefficients it covers.
+            if (ac_refine_tbl.len[0] > 0)
+              bit_writer_put_bits(&w, alloc, ac_refine_tbl.code[0],
+                  ac_refine_tbl.len[0]);
+            for (unsigned int i = 0; i < ncorr; i++)
+              bit_writer_put_bits(&w, alloc, corr[i], 1);
+            ncorr = 0;
           }
         }
         mcu_block_off += nblocks;
@@ -1808,7 +1850,9 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
     }
   }
   else {
-    // AC initial scan (T.81 Annex G.1.2.2): encode AC in band [Ss, Se].
+    // AC initial scan (T.81 G.1.2.2): the band [Ss, Se], point transformed.
+    // The transform divides the magnitude and keeps the sign, so it truncates
+    // toward zero - unlike the DC one, which floors.
     unsigned int k_start = (unsigned int)Ss;
     unsigned int k_end = (unsigned int)Se;
     if (k_end > 63)
@@ -1835,32 +1879,26 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
         for (size_t b = 0; b < nblocks; b++) {
           size_t block_idx = block_off + mcu_block_off + b;
           const int16_t * block = coef_buffer + block_idx * 64;
-          if (state_after_scan_out) {
-            for (int i = 0; i < 64; i++)
-              state_after_scan_out[block_idx * 64 + i] = 0;
-          }
-          for (unsigned int k = k_start; k <= k_end;) {
-            int run = 0;
-            while (k <= k_end && block[k] == 0) {
+          unsigned int run = 0;
+          for (unsigned int k = k_start; k <= k_end; k++) {
+            int coeff = (int)block[k];
+            int mag = coeff < 0 ? -coeff : coeff;
+            mag >>= al;
+            if (mag == 0) {
               run++;
-              k++;
+              continue;
             }
-            if (k > k_end) {
-              if (ac_tbl->len[0] > 0)
-                bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
-              break;
-            }
+            coeff = (coeff < 0) ? -mag : mag;
             while (run >= 16) {
               if (ac_tbl->len[0xF0] > 0)
                 bit_writer_put_bits(
                     &w, alloc, ac_tbl->code[0xF0], ac_tbl->len[0xF0]);
               run -= 16;
             }
-            int coeff = (int)block[k];
             int size = jpeg_nbits(coeff);
             if (size > 10)
               size = 10;
-            int symbol = (run << 4) | size;
+            int symbol = (int)((run << 4) | (unsigned int)size);
             if (symbol >= 0 && symbol <= 255 && ac_tbl->len[symbol] > 0) {
               bit_writer_put_bits(
                   &w, alloc, ac_tbl->code[symbol], ac_tbl->len[symbol]);
@@ -1870,10 +1908,12 @@ GIMG_Result gimg_jpeg_encode_progressive_scan(uint32_t width, uint32_t height,
                   extra += (1 << size) - 1;
                 bit_writer_put_bits(&w, alloc, (unsigned int)extra, size);
               }
-              if (state_after_scan_out)
-                state_after_scan_out[block_idx * 64 + k] = (int16_t)coeff;
             }
-            k++;
+            run = 0;
+          }
+          if (run > 0) {
+            if (ac_tbl->len[0] > 0)
+              bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
           }
         }
         mcu_block_off += nblocks;
