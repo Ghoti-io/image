@@ -1654,3 +1654,126 @@ TEST(BmpEncode, KnownPrimariesWithNoTransferWriteEndpointsAndNoGamma) {
   EXPECT_EQ(back->transfer, GIMG_TRANSFER_UNKNOWN)
       << "the file stated no curve, so neither does the raster";
 }
+
+namespace {
+
+/**
+ * A pattern with no two neighbours alike, so every pixel is a literal.
+ *
+ * RLE24 has two modes: a run of one colour, and an "absolute" block of
+ * literal pixels for stretches with no run in them. The only RLE24 fixture in
+ * the suite is eight-pixel runs, which is all of the first mode and none of
+ * the second - so the absolute-mode writer had never produced a byte.
+ */
+Rgba true_color_no_runs(uint32_t x, uint32_t y) {
+  // Red carries x and green carries y, so every pixel of a 96x5 image is a
+  // different colour - 480 of them, past the 256 that would let the writer
+  // choose an indexed encoding instead of RLE24 - and no two neighbours match.
+  return Rgba{(uint8_t)x, (uint8_t)y, (uint8_t)(((x * 7u) + (y * 13u)) & 0xFFu),
+      255};
+}
+
+/**
+ * Runs and literals side by side, with the literal stretches at the lengths
+ * the encoder decides on: 1 and 2 (written as one-pixel runs, because an
+ * absolute block costs more), and 3 and up (written as a block, padded when
+ * the pixel count is odd).
+ *
+ * The literals are all distinct, for the same reason as above: fewer than 257
+ * colours and the writer picks an indexed encoding, and RLE24 never runs.
+ */
+Rgba true_color_mixed(uint32_t x, uint32_t y) {
+  // A 24-pixel cycle: 6 of one colour, then 1, 2, 3, 4 and 5 distinct ones,
+  // then 3 of one colour again.
+  const uint32_t c = x % 24u;
+  if (c < 6u) {
+    return Rgba{(uint8_t)(200u + (x / 24u)), (uint8_t)y, 1u, 255};
+  }
+  if (c >= 21u) {
+    return Rgba{(uint8_t)(210u + (x / 24u)), (uint8_t)y, 2u, 255};
+  }
+  return Rgba{(uint8_t)x, (uint8_t)y, 0u, 255};
+}
+
+} // namespace
+
+/**
+ * RLE24's absolute mode is written, and reads back as what went in.
+ *
+ * Run-length encoding has a second half: a block of literal pixels, for the
+ * stretches a run cannot cover. The suite's one RLE24 fixture is eight-pixel
+ * runs, so the writer's literal branch - the run-length search, the choice
+ * between one-pixel runs and an absolute block, and the pad byte after an odd
+ * block - had never executed. An encoder half of whose output has never been
+ * produced has never been read back either.
+ *
+ * The property is exact: RLE is lossless, so whatever mixture of runs and
+ * literals the encoder chooses, the file must decode to the pixels that went
+ * in. The mixed pattern below crosses the encoder's own decision boundary in
+ * both directions - stretches of 1 and 2 literals, which cost less as
+ * one-pixel runs, and of 3, 4 and 5, which cost less as a block, one of them
+ * odd so the pad byte is written.
+ *
+ * Both patterns give every pixel a colour of its own where it is not part of
+ * a run, which is not decoration: fewer than 257 colours and the writer picks
+ * an indexed encoding instead, and RLE24 never runs at all. The first attempt
+ * at this test got BI_RLE8 back and asserted nothing about RLE24.
+ *
+ * What is *not* asserted is which encoding the writer picks for a given
+ * stretch. Moving the one-pixel-run threshold from three literals to two
+ * leaves the test green, and rightly: both spellings are valid RLE24 and both
+ * decode to the same pixels, so that boundary is a size choice and not a
+ * correctness one. The size choice that does matter - RLE24 against plain
+ * rows - is asserted, in both directions.
+ */
+TEST(BmpEncode, Rle24WritesLiteralRunsAndReadsThemBack) {
+  struct Case {
+    const char * what;
+    Rgba (*pixel)(uint32_t, uint32_t);
+    bool expect_smaller;
+  };
+  const Case cases[] = {
+      {"no two neighbours alike", true_color_no_runs, false},
+      {"runs and literals side by side", true_color_mixed, true},
+  };
+
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    GIMG_Raster * raster = make_raster(96, 5, c.pixel);
+    ASSERT_NE(raster, nullptr);
+    GIMG_Save_Options options;
+    memset(&options, 0, sizeof(options));
+    options.bmp_rle = GIMG_BMP_RLE_AUTO;
+    options.bmp_allow_rle24 = 1;
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+
+    // Whether the encoder chose RLE24 or fell back to plain rows, the picture
+    // must survive; which it chose is asserted separately, because a fallback
+    // that quietly dropped pixels would pass a round-trip on its own.
+    const uint32_t compression = read_u32(bytes, 30);
+    if (c.expect_smaller) {
+      EXPECT_EQ(compression, 4u)
+          << "a pattern with runs in it should have been worth compressing";
+    }
+    else {
+      EXPECT_EQ(compression, 0u)
+          << "a pattern with no runs at all cannot be smaller as RLE24, and "
+             "the writer must fall back rather than produce a bigger file";
+    }
+    expect_round_trip(bytes, 96, 5, c.pixel);
+  }
+
+  // And the file that does exercise the absolute-mode writer, published so
+  // the outside verifier reads it too.
+  GIMG_Raster * raster = make_raster(96, 5, true_color_mixed);
+  ASSERT_NE(raster, nullptr);
+  GIMG_Save_Options options;
+  memset(&options, 0, sizeof(options));
+  options.bmp_rle = GIMG_BMP_RLE_AUTO;
+  options.bmp_allow_rle24 = 1;
+  std::vector<uint8_t> bytes;
+  ASSERT_EQ(save_raster_with_options(raster, &options, bytes), GIMG_OK);
+  publish_for_verification(
+      "rle24_os2_mixed_96x5.bmp", bytes, 96, 5, true_color_mixed);
+}
