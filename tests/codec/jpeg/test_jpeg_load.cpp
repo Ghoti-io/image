@@ -28,6 +28,8 @@
 #if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#include <io.h>
 #endif
 
 #include "jpeg_test_utils.h"
@@ -37,6 +39,19 @@
 #include "../../../src/meta/exif_internal.h"
 
 namespace {
+
+/** Set or remove GIMG_JPEG_RECOVER_STUFF_ZERO where the library's getenv()
+ * will see it. Windows has no setenv; _putenv_s() updates the C runtime's
+ * copy of the environment, which is the one getenv() reads, and an empty
+ * value removes the variable. */
+void set_stuff_zero_recovery(bool on) {
+#if defined(_WIN32)
+  _putenv_s("GIMG_JPEG_RECOVER_STUFF_ZERO", on ? "1" : "");
+#else
+  if (on) { setenv("GIMG_JPEG_RECOVER_STUFF_ZERO", "1", 1); }
+  else { unsetenv("GIMG_JPEG_RECOVER_STUFF_ZERO"); }
+#endif
+}
 
 void append(std::vector<uint8_t> & out, const unsigned char * p, size_t n) {
   out.insert(out.end(), p, p + n);
@@ -5310,8 +5325,8 @@ bool cut_segment(const std::vector<uint8_t> & f, size_t index, size_t cut,
  * it into the tests that run after this one. */
 class WithStuffZeroRecovery {
 public:
-  WithStuffZeroRecovery() { setenv("GIMG_JPEG_RECOVER_STUFF_ZERO", "1", 1); }
-  ~WithStuffZeroRecovery() { unsetenv("GIMG_JPEG_RECOVER_STUFF_ZERO"); }
+  WithStuffZeroRecovery() { set_stuff_zero_recovery(true); }
+  ~WithStuffZeroRecovery() { set_stuff_zero_recovery(false); }
 };
 
 /** Redirects fd 2 to a temporary file for a scope and hands back what was
@@ -8322,11 +8337,8 @@ namespace {
 /** Set GIMG_JPEG_RECOVER_STUFF_ZERO for as long as this lives. */
 class RecoverStuffZero {
 public:
-  explicit RecoverStuffZero(bool on) {
-    if (on) { setenv("GIMG_JPEG_RECOVER_STUFF_ZERO", "1", 1); }
-    else { unsetenv("GIMG_JPEG_RECOVER_STUFF_ZERO"); }
-  }
-  ~RecoverStuffZero() { unsetenv("GIMG_JPEG_RECOVER_STUFF_ZERO"); }
+  explicit RecoverStuffZero(bool on) { set_stuff_zero_recovery(on); }
+  ~RecoverStuffZero() { set_stuff_zero_recovery(false); }
   RecoverStuffZero(const RecoverStuffZero &) = delete;
   RecoverStuffZero & operator=(const RecoverStuffZero &) = delete;
 };
