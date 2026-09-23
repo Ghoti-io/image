@@ -2678,6 +2678,48 @@ TEST(JpegLoad, LoadJpegWithRstInScanSucceeds) {
   gimg_stream_destroy(s);
 }
 
+// The positive half of the DNL rules: a DNL that agrees with the height the
+// frame header stated is accepted, and the file loads.
+//
+// This test existed once, was marked DISABLED when it failed, and was then
+// deleted outright - leaving make_minimal_jpeg_with_dnl_after_scan() with no
+// caller, which is how it was found.  The reason given for disabling it was
+// that "DNL logic is covered by LoadJpegWithDnlMismatchFails and
+// LoadJpegDnlBeforeScanFails".  It is not: those two both assert a refusal,
+// so a decoder that refused *every* DNL segment would pass both of them.  Two
+// refusals cannot tell "rejects a bad DNL" from "rejects all DNL", and this
+// is the case that separates them.
+//
+// Measured, not asserted: with the in-scan DNL path made to refuse every
+// segment it reads, this test fails and those two still pass.  Two later
+// tests do catch that mutation - DnlSuppliesAHeightTheFrameHeaderLeftAtZero
+// and DriAndDnlPayloadLengthsAreChecked - so the decoder was not left
+// unguarded in the meantime.  What was wrong was the reasoning: a pair of
+// refusals was offered as cover for the accepting case, and it never was.
+//
+// The stated cause - "minimal stream with pending-marker path fails in this
+// test harness" - no longer reproduces: the stream loads.  Whatever it was
+// has been fixed since, so the test is restored rather than left disabled.
+//
+// Note which path this exercises.  A legal DNL arrives after the first scan
+// and is read by the in-scan marker handling in jpeg_load.c; the segment-loop
+// case handles a DNL that turns up as a standalone segment, which is the
+// illegal before-scan shape.  Mutating the segment loop leaves this test
+// green, so it is the in-scan path that has to be broken to see it fail.
+TEST(JpegLoad, ADnlThatAgreesWithTheStatedHeightIsAccepted) {
+  std::vector<uint8_t> jpeg = make_minimal_jpeg_with_dnl_after_scan();
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK)
+      << "a DNL stating the height the SOF already stated is legal (T.81 "
+         "B.2.5) and must not be refused";
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
 TEST(JpegLoad, LoadJpegWithDnlMismatchFails) {
   // DNL after first scan but number of lines does not match SOF height.
   std::vector<uint8_t> jpeg = make_minimal_jpeg_with_dnl_mismatch();
