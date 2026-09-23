@@ -30,6 +30,7 @@
 #include "../../../src/codec/png/png_internal.h"
 #include <fstream>
 #include <set>
+#include <algorithm>
 #include <string>
 
 TEST(PngEncode, SaveNullDocReturnsInternal) {
@@ -3973,9 +3974,9 @@ namespace {
  * Save @p png again, optionally replacing its raster with an opaque colour
  * one of the same size and depth. Returns the bytes written.
  */
-::testing::AssertionResult resave_maybe_recolored(
-    const std::vector<uint8_t> & png, bool recolor,
-    std::vector<uint8_t> & out) {
+::testing::AssertionResult resave_recolored_to(
+    const std::vector<uint8_t> & png, const GIMG_Pixel_Format * recolor_to,
+    GIMG_Meta_Policy policy, std::vector<uint8_t> & out) {
   GIMG_Stream * in_s = nullptr;
   if (gimg_stream_create_memory(png.data(), png.size(), &in_s) != GIMG_OK) {
     return ::testing::AssertionFailure() << "input stream";
@@ -3987,7 +3988,7 @@ namespace {
     return ::testing::AssertionFailure() << "load: " << (int)r;
   }
   GIMG_Item * item = gimg_doc_item(doc, 0);
-  if (recolor) {
+  if (recolor_to) {
     GIMG_Raster * gray = nullptr;
     r = gimg_item_decode(item, nullptr, &gray);
     if (r != GIMG_OK) {
@@ -3997,7 +3998,7 @@ namespace {
     }
     GIMG_Raster * rgba = nullptr;
     r = gimg_raster_create(gimg_raster_width(gray), gimg_raster_height(gray),
-        &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &rgba);
+        recolor_to, GIMG_RASTER_OWNED, nullptr, 0, &rgba);
     if (r == GIMG_OK) {
       memset(gimg_raster_pixels(rgba), 0x40,
           gimg_raster_stride_bytes(rgba) * gimg_raster_height(rgba));
@@ -4017,7 +4018,7 @@ namespace {
     return ::testing::AssertionFailure() << "output stream";
   }
   GIMG_Save_Options opts = {};
-  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  opts.metadata_policy = policy;
   GIMG_Save_Report report = {};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   if (r == GIMG_OK) {
@@ -4031,6 +4032,34 @@ namespace {
   gimg_stream_destroy(in_s);
   return r == GIMG_OK ? ::testing::AssertionSuccess()
                       : ::testing::AssertionFailure() << "save: " << (int)r;
+}
+
+/** The PRESERVE_ALL case, which is what every caller of this wanted. */
+::testing::AssertionResult resave_maybe_recolored(
+    const std::vector<uint8_t> & png, bool recolor,
+    std::vector<uint8_t> & out) {
+  return resave_recolored_to(
+      png, recolor ? &GIMG_PIXEL_RGBA8 : nullptr, GIMG_META_PRESERVE_ALL, out);
+}
+
+/** Every chunk type in @p png, in the order written. */
+std::vector<std::string> chunk_types(const std::vector<uint8_t> & png) {
+  std::vector<std::string> out;
+  size_t i = 8;
+  while (i + 12 <= png.size()) {
+    const uint32_t n = ((uint32_t)png[i] << 24) | ((uint32_t)png[i + 1] << 16) |
+        ((uint32_t)png[i + 2] << 8) | (uint32_t)png[i + 3];
+    out.push_back(std::string((const char *)&png[i + 4], 4));
+    if (out.back() == "IEND") { break; }
+    if (i + 12u + (size_t)n < i) { break; }
+    i += 12u + (size_t)n;
+  }
+  return out;
+}
+
+bool has_chunk(const std::vector<uint8_t> & png, const char * type) {
+  const std::vector<std::string> ts = chunk_types(png);
+  return std::find(ts.begin(), ts.end(), std::string(type)) != ts.end();
 }
 
 } // namespace
@@ -4573,6 +4602,229 @@ TEST(PngEncode, AnEditThatBreaksTheTrnsRuleStopsTheNarrowing) {
     else {
       EXPECT_EQ(nr.head.trns_size, -1)
           << "colour type 6 has an alpha channel and needs no tRNS";
+    }
+  }
+}
+
+// Every metadata policy, over a file carrying every kind of ancillary chunk.
+//
+// The saver writes ancillary chunks from four separate loops, one per policy
+// family, and each loop decides again - on its own - whether a chunk is
+// semantic, whether it still applies after a change of color type, and whether
+// it must be deferred until after PLTE.  That is the same set of decisions
+// written four times, and only two of the four had ever run over a file with
+// anything in it to decide about: the KEEP_RAW_ONLY loop's whole body, the one
+// that retargets and defers an unknown chunk, was at zero hits.
+//
+// The fixture carries one of each kind at once - a private chunk with no
+// meaning to anybody (prVt), a known semantic one (gAMA), one whose payload
+// depends on the color type (bKGD), one that must follow PLTE (hIST), and one
+// that the policies disagree about (tEXt) - so each policy is asked the same
+// question and answers for itself.  A palette source is used because that is
+// what makes bKGD and hIST meaningful and deferral real.
+TEST(PngEncode, EachMetadataPolicyDecidesEveryAncillaryChunkForItself) {
+  std::vector<uint8_t> base;
+  ASSERT_TRUE(png_test::load_png_file("png_palette_trns_bkgd_hist.png", base))
+      << "Run tests/data/png/generate.py";
+  ASSERT_TRUE(has_chunk(base, "PLTE")) << "the source must be a palette image";
+  ASSERT_TRUE(has_chunk(base, "bKGD")) << "it must arrive carrying bKGD";
+  ASSERT_TRUE(has_chunk(base, "hIST")) << "and hIST";
+
+  // A private chunk: lowercase third letter would make it "safe to copy", so
+  // the reserved bit is left clear and the name is simply unknown.
+  const std::vector<uint8_t> priv = {'h', 'e', 'l', 'l', 'o'};
+  std::vector<uint8_t> png = with_chunk_after_ihdr(base, "prVt", priv);
+  // gAMA: known semantic, four bytes of 100000 (gamma 1/2.2 * 100000).
+  png = with_chunk_after_ihdr(png, "gAMA", {0x00, 0x00, 0xB1, 0x8F});
+  // tEXt: known semantic, and the policies disagree about it.
+  {
+    std::vector<uint8_t> t = {'C', 'o', 'm', 'm', 'e', 'n', 't', 0};
+    for (char c : std::string("policy sweep")) { t.push_back((uint8_t)c); }
+    png = with_chunk_after_ihdr(png, "tEXt", t);
+  }
+
+  // What each policy is for, read off the four chunks that separate them:
+  // prVt is something only the file knows, gAMA is semantic metadata that the
+  // document model also carries as a common field, tEXt is semantic metadata
+  // that it does not, and bKGD/hIST are semantic metadata tied to the palette.
+  struct P {
+    GIMG_Meta_Policy policy;
+    const char * name;
+    bool keeps_private;   ///< prVt: a chunk with no meaning to this library.
+    bool keeps_common;    ///< gAMA: semantic, and a common field as well.
+    bool keeps_semantic;  ///< tEXt: semantic and nothing more.
+    /**
+     * bKGD and hIST.  gimg_png_chunk_is_known_semantic() names eight chunks -
+     * iCCP, sRGB, gAMA, cHRM, eXIf, tEXt, zTXt, iTXt - and bKGD and hIST are
+     * not among them, so KEEP_RAW_ONLY treats them as content the file came
+     * with rather than metadata about it and keeps them, while
+     * KEEP_COMMON_ONLY, which keeps only what the document model carries,
+     * does not.  That is the one place the two "keep some" policies disagree
+     * in the other direction, and it is why they need separate columns.
+     */
+    bool keeps_palette_tied;
+  };
+  const P policies[] = {
+      {GIMG_META_PRESERVE_ALL, "PRESERVE_ALL", true, true, true, true},
+      {GIMG_META_DROP_ALL, "DROP_ALL", false, false, false, false},
+      // The two Exif policies edit one chunk and pass everything else
+      // through, so on a file with no eXIf they must match PRESERVE_ALL
+      // exactly - which is what makes them a control for it.
+      {GIMG_META_STRIP_GPS, "STRIP_GPS", true, true, true, true},
+      {GIMG_META_NORMALIZE_EXIF, "NORMALIZE_EXIF", true, true, true, true},
+      {GIMG_META_KEEP_RAW_ONLY, "KEEP_RAW_ONLY", true, false, false, true},
+      {GIMG_META_KEEP_COMMON_ONLY, "KEEP_COMMON_ONLY", false, true, false,
+          false},
+  };
+  static_assert(sizeof(policies) / sizeof(policies[0]) ==
+          (size_t)GIMG_META_POLICY_COUNT,
+      "a policy was added and this sweep did not notice");
+
+  // Twice: once with the palette left alone, and once with the raster
+  // replaced by a grayscale one.  The second is what makes the retargeting
+  // real - a bKGD for a palette image is one byte, an index, and for a
+  // grayscale one it is a two-byte level, so the saver must rewrite it or
+  // drop it rather than copy a byte that now means something else.  hIST has
+  // no grayscale form at all and must go.
+  for (const GIMG_Pixel_Format * recolor : {(const GIMG_Pixel_Format *)nullptr,
+           &GIMG_PIXEL_GRAY8}) {
+    for (const P & p : policies) {
+      SCOPED_TRACE(std::string(p.name) +
+          (recolor ? ", recolored to grayscale" : ", palette kept"));
+      std::vector<uint8_t> out;
+      ASSERT_TRUE(resave_recolored_to(png, recolor, p.policy, out));
+      std::string got;
+      for (const std::string & t : chunk_types(out)) { got += t + " "; }
+      std::printf("  %-18s %-12s %s\n", p.name,
+          recolor ? "grayscale" : "palette", got.c_str());
+      const bool palette_kept = !recolor;
+
+      EXPECT_EQ(has_chunk(out, "prVt"), p.keeps_private)
+          << "a private chunk is exactly what separates the policies that "
+             "keep what the file came with from the ones that do not";
+      // KEEP_COMMON_ONLY writes the document's own common metadata rather
+      // than the chunks the file arrived with, and that metadata lives on the
+      // raster's color info - so replacing the raster replaces it, and there
+      // is no gamma left to write.  Every other policy that keeps gAMA keeps
+      // the chunk itself and is unaffected.
+      const bool gama_expected =
+          p.keeps_common && (palette_kept || p.policy != GIMG_META_KEEP_COMMON_ONLY);
+      EXPECT_EQ(has_chunk(out, "gAMA"), gama_expected)
+          << "gAMA is semantic metadata that is also a common color field";
+      EXPECT_EQ(has_chunk(out, "tEXt"), p.keeps_semantic)
+          << "tEXt is semantic and nothing the document model carries, so it "
+             "goes only where all semantic metadata goes";
+      // This fixture's palette holds no neutral entry, and a background that
+      // is not a shade of gray has no grayscale bKGD to become (PNG 11.3.5.1
+      // gives color type 0 a single level).  So on the recolored half it is
+      // dropped by every policy, which is the retargeting working rather than
+      // the policy changing its mind; the test below asks the retarget
+      // directly, with a background that can translate.
+      EXPECT_EQ(has_chunk(out, "bKGD"), p.keeps_palette_tied && palette_kept)
+          << "bKGD is not one of the eight chunks this library calls known "
+             "semantic metadata, so KEEP_RAW_ONLY keeps it and "
+             "KEEP_COMMON_ONLY does not";
+      EXPECT_EQ(has_chunk(out, "hIST"), p.keeps_palette_tied && palette_kept)
+          << "hIST is one frequency per palette entry (PNG 11.3.2.4), so it "
+             "cannot survive a frame that has no palette";
+      EXPECT_EQ(has_chunk(out, "PLTE"), palette_kept)
+          << "PLTE is the picture, not metadata about it";
+      EXPECT_EQ(has_chunk(out, "tRNS"), palette_kept)
+          << "so is tRNS, which is this image's alpha";
+      if (has_chunk(out, "bKGD")) {
+        EXPECT_EQ(chunk_payload(out, "bKGD").size(), 1u)
+            << "bKGD is a single palette index for a palette image";
+      }
+
+      // PNG 11.3.3.3 and 11.3.2.4: bKGD and hIST refer to palette entries, so
+      // where they survive they must follow PLTE.  This is the deferral the
+      // saver does in every one of its four loops.
+      const std::vector<std::string> ts = chunk_types(out);
+      const auto plte = std::find(ts.begin(), ts.end(), std::string("PLTE"));
+      for (const char * after : {"bKGD", "hIST"}) {
+        const auto at = std::find(ts.begin(), ts.end(), std::string(after));
+        if (at == ts.end()) { continue; }
+        ASSERT_NE(plte, ts.end())
+            << after << " was written but there is no PLTE for it to index";
+        EXPECT_LT(plte - ts.begin(), at - ts.begin())
+            << after << " must come after PLTE";
+      }
+
+      EXPECT_TRUE(has_chunk(out, "IHDR"));
+      EXPECT_TRUE(has_chunk(out, "IEND"));
+    }
+  }
+}
+
+// PNG 11.3.5.1: bKGD says what color to show the image against, and the shape
+// of that statement depends on the color type - one palette index, one gray
+// level, or three samples.  So a save that changes the color type must
+// rewrite the chunk, or drop it when the new color type cannot say the same
+// thing, rather than carry bytes forward that now mean something else.
+//
+// All three outcomes, named: kept when nothing changed, rewritten when the
+// background translates, dropped when it does not.  The rewritten case is
+// also the only one that exercises the saver's deferral buffer, because a
+// rewritten payload lives in a local that goes out of scope before the chunk
+// is written after PLTE - so it has to be copied, and until now nothing had
+// made it copy anything.
+TEST(PngEncode, ABackgroundIsRewrittenOrDroppedWhenTheColourTypeChanges) {
+  std::vector<uint8_t> gray;
+  ASSERT_TRUE(png_test::load_png_file("png_2x2_gray.png", gray))
+      << "Run tests/data/png/generate.py";
+
+  struct Case {
+    const char * what;
+    std::vector<uint8_t> bkgd;         ///< Payload for an 8-bit gray source.
+    const GIMG_Pixel_Format * to;      ///< nullptr keeps the color type.
+    bool survives;
+    size_t out_size;
+  };
+  const Case cases[] = {
+      {"gray to gray: nothing to translate", {0x00, 0x80}, nullptr, true, 2u},
+      // A gray background is R=G=B in truecolor, so it always translates.
+      {"gray to RGBA: one level becomes three samples", {0x00, 0x80},
+          &GIMG_PIXEL_RGBA8, true, 6u},
+      {"gray to RGBA, black", {0x00, 0x00}, &GIMG_PIXEL_RGBA8, true, 6u},
+      {"gray to RGBA, white", {0x00, 0xFF}, &GIMG_PIXEL_RGBA8, true, 6u},
+      // PNG 11.3.5.1 gives a grayscale bKGD two bytes; one is not that chunk
+      // and is not carried into a new file.
+      {"a payload the source's own color type never had", {0x80}, nullptr,
+          false, 0u},
+  };
+
+  // Both policy families, because the saver writes ancillary chunks from one
+  // loop per family and each does this same work over again - including its
+  // own copy of the deferral buffer.
+  const struct {
+    GIMG_Meta_Policy policy;
+    const char * name;
+  } policies[] = {{GIMG_META_PRESERVE_ALL, "PRESERVE_ALL"},
+      {GIMG_META_KEEP_RAW_ONLY, "KEEP_RAW_ONLY"}};
+
+  for (const auto & pol : policies) {
+    for (const Case & c : cases) {
+      SCOPED_TRACE(std::string(pol.name) + ": " + c.what);
+      const std::vector<uint8_t> png =
+          with_chunk_after_ihdr(gray, "bKGD", c.bkgd);
+      std::vector<uint8_t> out;
+      ASSERT_TRUE(resave_recolored_to(png, c.to, pol.policy, out));
+      ASSERT_EQ(has_chunk(out, "bKGD"), c.survives);
+      if (!c.survives) { continue; }
+      const std::vector<uint8_t> got = chunk_payload(out, "bKGD");
+      EXPECT_EQ(got.size(), c.out_size);
+      if (c.to == &GIMG_PIXEL_RGBA8 && got.size() == 6u) {
+        EXPECT_EQ(got[0], c.bkgd[0]);
+        EXPECT_EQ(got[1], c.bkgd[1]);
+        EXPECT_EQ(got[2], c.bkgd[0]);
+        EXPECT_EQ(got[3], c.bkgd[1]);
+        EXPECT_EQ(got[4], c.bkgd[0]);
+        EXPECT_EQ(got[5], c.bkgd[1]) << "a gray background is R = G = B";
+      }
+      if (!c.to) {
+        EXPECT_EQ(got, c.bkgd)
+            << "nothing changed, so the bytes must be the ones that arrived";
+      }
     }
   }
 }
