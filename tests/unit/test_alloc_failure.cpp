@@ -138,60 +138,107 @@ struct Case {
  * the loader rather than being a number someone picked.
  */
 TEST(AllocFailure, EveryFailedLoadFreesEverythingItTook) {
-  const Case cases[] = {
-      {"jpeg", GIMG_TEST_DATA_JPEG, "plain_gray.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "progressive_sample.jpg"},
-      // Each of these reaches a segment the two above do not, and so a
-      // different set of allocations and of arms that free them: arithmetic
-      // conditioning tables, restart intervals, a hierarchical sequence with
-      // its per-frame state, and a lossless frame.  A sweep is only ever as
-      // wide as the paths its fixtures walk.
-      {"jpeg", GIMG_TEST_DATA_JPEG, "arith_rgb_64x64_420.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "libjpeg_restart_rgb.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_gray_2level.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_gray_lossless.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "baseline_gray12.jpg"},
-      {"png", GIMG_TEST_DATA_PNG, "png_exif.png"},
+  // Every fixture in the tree, for the same reason the decode sweep
+  // enumerates: which segments a loader walks is decided by the file, and a
+  // list of names samples an axis whose members each answer differently.  The
+  // eight names this used to carry never reached a thumbnail, so the arms that
+  // give one back when the document cannot take it had never run - and the
+  // loader attaches thumbnails from three different places.
+  const std::string root = std::string(GIMG_TEST_DATA_JPEG) + "/..";
+  const std::string bmp_dir = root + "/bmp";
+  const std::string gif_dir = root + "/gif";
+  struct Dir {
+    const char * codec;
+    const char * path;
+    const char * ext;
+  } dirs[] = {
+      {"jpeg", GIMG_TEST_DATA_JPEG, ".jpg"},
+      {"png", GIMG_TEST_DATA_PNG, ".png"},
+      {"bmp", bmp_dir.c_str(), ".bmp"},
+      {"gif", gif_dir.c_str(), ".gif"},
   };
-  for (const Case & c : cases) {
-    std::vector<uint8_t> bytes;
-    if (!read_file(c.dir, c.file, bytes)) {
-      ADD_FAILURE() << "missing fixture " << c.file;
+
+  long swept = 0, skipped = 0, injections = 0;
+  std::vector<std::string> seen;
+  for (const Dir & d : dirs) {
+    DIR * dp = opendir(d.path);
+    if (!dp) {
+      ADD_FAILURE() << "cannot read fixture directory " << d.path;
       continue;
     }
-
-    // A clean run first: it must succeed, and it says how far to sweep.
-    Failing probe;
-    init(probe);
-    ASSERT_EQ(load_with(c.codec, bytes, probe), GIMG_OK)
-        << c.file << " must load when nothing fails";
-    ASSERT_EQ(probe.outstanding, 0)
-        << c.file << " leaks on the success path: " << probe.outstanding
-        << " blocks";
-    const long total = probe.attempts;
-    std::printf("  %-24s %ld allocations through the codec allocator\n",
-        c.file, total);
-    ASSERT_GT(total, 0) << c.file << " made no allocations through the codec "
-                           "allocator, so this sweep would test nothing";
-
-    for (long n = 1; n <= total; n++) {
-      Failing f;
-      init(f);
-      f.fail_at = n;
-      const GIMG_Result r = load_with(c.codec, bytes, f);
-      EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM || r == GIMG_ERR_CORRUPT ||
-          r == GIMG_ERR_FORMAT || r == GIMG_ERR_LIMIT ||
-          r == GIMG_ERR_UNSUPPORTED)
-          << c.file << ": allocation " << n << " of " << total
-          << " failed and the load returned " << (int)r;
-      EXPECT_EQ(f.outstanding, 0)
-          << c.file << ": " << f.outstanding
-          << " block(s) leaked when allocation " << n << " of " << total
-          << " failed";
-      if (f.outstanding != 0) {
-        break; // One report per fixture is enough to act on.
+    std::vector<std::string> names;
+    while (struct dirent * e = readdir(dp)) {
+      const std::string n = e->d_name;
+      if (n.size() > strlen(d.ext) &&
+          n.compare(n.size() - strlen(d.ext), strlen(d.ext), d.ext) == 0) {
+        names.push_back(n);
       }
     }
+    closedir(dp);
+    std::sort(names.begin(), names.end());
+
+    for (const std::string & name : names) {
+      std::vector<uint8_t> bytes;
+      if (!read_file(d.path, name.c_str(), bytes)) { continue; }
+
+      // A clean run first: it says how far to sweep, and a fixture that does
+      // not load on its own is not a subject - plenty here are deliberately
+      // malformed.
+      Failing probe;
+      init(probe);
+      if (load_with(d.codec, bytes, probe) != GIMG_OK) {
+        skipped++;
+        continue;
+      }
+      ASSERT_EQ(probe.outstanding, 0)
+          << name << " leaks on the success path: " << probe.outstanding
+          << " blocks";
+      const long total = probe.attempts;
+      if (total == 0) { skipped++; continue; }
+      swept++;
+      seen.push_back(name);
+
+      for (long n = 1; n <= total; n++) {
+        Failing f;
+        init(f);
+        f.fail_at = n;
+        const GIMG_Result r = load_with(d.codec, bytes, f);
+        injections++;
+        EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM ||
+            r == GIMG_ERR_CORRUPT || r == GIMG_ERR_FORMAT ||
+            r == GIMG_ERR_LIMIT || r == GIMG_ERR_UNSUPPORTED)
+            << name << ": allocation " << n << " of " << total
+            << " failed and the load returned " << (int)r;
+        EXPECT_EQ(f.outstanding, 0)
+            << name << ": " << f.outstanding
+            << " block(s) leaked when allocation " << n << " of " << total
+            << " failed";
+        if (f.outstanding != 0) {
+          break; // One report per fixture is enough to act on.
+        }
+      }
+    }
+  }
+
+  std::printf("  %ld fixtures swept, %ld skipped, %ld injected loads\n",
+      swept, skipped, injections);
+  ASSERT_GT(swept, 50)
+      << "only " << swept << " fixtures loaded cleanly - a sweep this narrow "
+                             "is not measuring what it claims to";
+
+  // The segments that are easiest to lose.  Each carries state the others do
+  // not - arithmetic conditioning tables, a restart interval, a hierarchical
+  // sequence's per-frame state, a lossless frame, an Exif thumbnail, a JFXX
+  // one - so if a rename takes one out of the tree this sweep says so rather
+  // than quietly narrowing.
+  const char * required[] = {"plain_gray.jpg", "progressive_sample.jpg",
+      "arith_rgb_64x64_420.jpg", "libjpeg_restart_rgb.jpg",
+      "hier_gray_2level.jpg", "hier_gray_lossless.jpg", "baseline_gray12.jpg",
+      "png_exif.png"};
+  for (const char * want : required) {
+    EXPECT_NE(std::find(seen.begin(), seen.end(), std::string(want)),
+        seen.end())
+        << want << " is no longer among the fixtures this sweep loads";
   }
 }
 
