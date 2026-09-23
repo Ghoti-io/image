@@ -7797,3 +7797,132 @@ TEST(JpegLoad, AOneFrameHierarchicalSequenceDrawsWhatTheFrameDrewAlone) {
   EXPECT_GE(wide_seen, 6) << "if no case is wider than eight bits this test "
                              "no longer reaches the arms it was written for";
 }
+
+namespace {
+
+/** One marker segment of a JPEG, as a byte offset and a payload extent. */
+struct FoundSegment {
+  uint8_t marker = 0;
+  size_t at = 0;        ///< Offset of the 0xFF byte.
+  size_t payload = 0;   ///< Offset of the first payload byte after the length.
+  size_t payload_len = 0;
+  size_t entropy = 0;   ///< For SOS: first entropy byte.
+  size_t entropy_end = 0;
+};
+
+/** Walk the marker segments, stepping over entropy-coded data after each SOS. */
+std::vector<FoundSegment> segments_of(const std::vector<uint8_t> & d) {
+  std::vector<FoundSegment> segs;
+  size_t i = 2;
+  while (i + 1 < d.size()) {
+    if (d[i] != 0xFF) { break; }
+    uint8_t m = d[i + 1];
+    if (m == 0xD9) { break; }
+    if ((m >= 0xD0 && m <= 0xD7) || m == 0x01) { i += 2; continue; }
+    if (i + 3 >= d.size()) { break; }
+    size_t ln = ((size_t)d[i + 2] << 8) | d[i + 3];
+    if (ln < 2 || i + 2 + ln > d.size()) { break; }
+    FoundSegment s;
+    s.marker = m;
+    s.at = i;
+    s.payload = i + 4;
+    s.payload_len = ln - 2;
+    i += 2 + ln;
+    if (m == 0xDA) {
+      s.entropy = i;
+      while (i + 1 < d.size()) {
+        if (d[i] == 0xFF && d[i + 1] != 0x00 && !(d[i + 1] >= 0xD0 && d[i + 1] <= 0xD7)) {
+          break;
+        }
+        i++;
+      }
+      s.entropy_end = i;
+    }
+    segs.push_back(s);
+  }
+  return segs;
+}
+
+bool is_sof_marker(uint8_t m) {
+  return (m >= 0xC0 && m <= 0xCF) && m != 0xC4 && m != 0xC8 && m != 0xCC;
+}
+
+} // namespace
+
+// T.81 B.2.4.1 and A.2: what a frame of a hierarchical sequence does when the
+// tables it names are not there, or when its entropy-coded data runs out.
+//
+// hier_decode_dct_frame allocates a plane per component before it decodes a
+// single block, so every way out of the decode loop has to give those planes
+// back.  That cleanup had never run: coverage showed the whole `fail:` block
+// at zero hits, because no fixture asks a hierarchical frame a question it
+// cannot answer.  The truncation sweep does not reach it either - cutting the
+// tail of a hierarchical file removes the EOI, and the file is then refused
+// while it is still being parsed, before any plane is allocated.
+//
+// Two of the four ways out are live, and the other two were measured to be
+// shadowed by the parser and are named here so the next reader does not go
+// looking for a fixture that cannot exist:
+//
+//   - a scan component selector naming a component the frame does not have is
+//     refused as GIMG_ERR_FORMAT while the scan header is read;
+//   - a quantization table index of 4 or more is refused the same way while
+//     the frame header is read.  An index inside the range that no DQT ever
+//     defined is not, and that is the case below.
+TEST(JpegLoad, AHierarchicalFrameThatCannotFinishGivesItsPlanesBack) {
+  std::vector<uint8_t> src;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("hierarchical_2level.jpg", src));
+  const std::vector<FoundSegment> segs = segments_of(src);
+
+  const FoundSegment * dhp = nullptr;
+  const FoundSegment * sof = nullptr;
+  const FoundSegment * sos = nullptr;
+  for (const FoundSegment & s : segs) {
+    if (s.marker == 0xDE) { dhp = &s; continue; }
+    if (dhp && !sof && is_sof_marker(s.marker)) { sof = &s; continue; }
+    if (sof && !sos && s.marker == 0xDA) { sos = &s; }
+  }
+  ASSERT_NE(dhp, nullptr) << "the fixture must be a hierarchical sequence";
+  ASSERT_NE(sof, nullptr) << "it must have a frame after the DHP";
+  ASSERT_NE(sos, nullptr) << "that frame must have a scan";
+  ASSERT_GT(sos->entropy_end, sos->entropy + 8u)
+      << "the scan must have entropy data to cut";
+
+  // Control: untouched, this is a picture.
+  const Decoded whole = decode_described(src);
+  ASSERT_EQ(whole.result, GIMG_OK) << "the fixture itself must decode";
+
+  // A component whose quantization table index is in range but was never
+  // defined.  GIMG_JPEG_MAX_QUANT_TABLES is 4, so 3 is a legal index; no DQT
+  // in this file defines it.
+  {
+    std::vector<uint8_t> b = src;
+    ASSERT_GE(sof->payload_len, 6u + 3u);
+    uint8_t nf = b[sof->payload + 5];
+    ASSERT_GT(nf, 0u);
+    size_t tq = sof->payload + 6 + (size_t)(nf - 1) * 3 + 2;
+    ASSERT_LT(tq, b.size());
+    ASSERT_NE(b[tq], 3) << "the fixture must not already use table 3";
+    b[tq] = 3;
+    const Decoded d = decode_described(b);
+    EXPECT_EQ(d.result, GIMG_ERR_CORRUPT)
+        << "a frame naming a quantization table nothing defined must be "
+           "refused, not decoded with whatever is in the slot";
+  }
+
+  // The entropy-coded data cut short in the middle of the frame, with
+  // everything after it - the second frame and the EOI - left in place, so
+  // the file still parses and the failure happens inside the decode loop.
+  int refused = 0;
+  for (size_t keep = 1; keep < sos->entropy_end - sos->entropy; keep += 3) {
+    std::vector<uint8_t> b(src.begin(), src.begin() + (long)(sos->entropy + keep));
+    b.insert(b.end(), src.begin() + (long)sos->entropy_end, src.end());
+    const Decoded d = decode_described(b);
+    EXPECT_NE(d.result, GIMG_OK)
+        << "a frame whose entropy data ends early cannot have decoded, at "
+           "keep=" << keep;
+    if (d.result == GIMG_ERR_CORRUPT) { refused++; }
+  }
+  EXPECT_GT(refused, 5) << "if nothing was refused as corrupt the cut is not "
+                           "landing inside the decode loop";
+}
