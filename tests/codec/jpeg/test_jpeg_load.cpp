@@ -5686,6 +5686,133 @@ TEST(JpegLoad, AnAcRunPastTheEndOfTheBlockIsRefused) {
 
 namespace {
 
+/**
+ * A DHT segment with bit counts given verbatim.
+ *
+ * append_dht() above writes one code of length one, which is all the symbol
+ * tests need. These cases are about the counts themselves, so they need to
+ * say what each of the sixteen lengths holds. Symbol values are 0, 1, 2, ...
+ * because every table here is refused while the code lengths are being
+ * assigned, before any symbol is read.
+ */
+void append_dht_counts(std::vector<uint8_t> & buf, uint8_t tc_th,
+    const std::vector<uint8_t> & bits) {
+  EXPECT_EQ(bits.size(), 16u) << "a DHT declares exactly sixteen lengths";
+  size_t nsyms = 0;
+  for (uint8_t b : bits) { nsyms += b; }
+  const size_t L = 2 + 1 + 16 + nsyms;
+  append(buf, (const unsigned char *)"\xFF\xC4", 2);
+  buf.push_back((uint8_t)(L >> 8));
+  buf.push_back((uint8_t)(L & 0xFFu));
+  buf.push_back(tc_th);
+  for (uint8_t b : bits) { buf.push_back(b); }
+  for (size_t i = 0; i < nsyms; i++) { buf.push_back((uint8_t)(i & 0xFFu)); }
+}
+
+/** An 8x8 grayscale baseline JPEG whose DC table has exactly these counts. */
+std::vector<uint8_t> make_dc_counts_jpeg(const std::vector<uint8_t> & dc_bits) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) { buf.push_back(1); }
+  append_dht_counts(buf, 0x00, dc_bits);
+  // A plain AC table, so that only the DC table is under test.
+  append_dht_counts(buf, 0x10,
+      {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+  append(buf, (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00", 10);
+  buf.push_back(0x00);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+} // namespace
+
+/**
+ * A Huffman table that uses the codeword T.81 C.2 reserves is refused.
+ *
+ * C.2 requires the all-ones codeword of a length to stay unassigned, and the
+ * canonical assignment reaches it exactly when the running code equals
+ * 1 << len. The check read `code > (1u << len)`, which is over-subscription
+ * alone, so a table sitting exactly on the boundary was accepted.
+ *
+ * Both shapes below are ones libjpeg rejects as "Bogus Huffman table
+ * definition", measured by feeding it these same tables; the second is the
+ * smallest there is, two codes of length one, where the second code is `1`.
+ * The asymmetry was one-sided and worth naming: this library's own encoder
+ * gives the reserved codeword up (jpeg_gen_huff_table), so the reader was
+ * accepting tables neither its own writer nor libjpeg will produce.
+ *
+ * Watched to fail: restoring `>` in jpeg_build_huff_table() makes both cases
+ * decode instead of being refused, so the assertion is on the boundary itself
+ * and not on some later consequence of it.
+ */
+TEST(JpegLoad, ADhtThatUsesTheReservedCodewordIsRefused) {
+  // Control first. Every case below expects a refusal, and a builder that
+  // emits a file refused for some unrelated reason would satisfy all of them
+  // while testing nothing. One code of length one is a valid DC table, so
+  // this file must decode.
+  EXPECT_EQ(decode_size(make_dc_counts_jpeg(
+                            {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}),
+                nullptr, nullptr),
+      GIMG_OK)
+      << "a valid one-code table must decode, or the refusals below prove "
+         "nothing";
+
+  struct Case {
+    const char * what;
+    std::vector<uint8_t> bits;
+  } cases[] = {
+      // One code at each length 1..15, two at 16. Each length takes one fewer
+      // than the maximum, so the code tracks 2^len - 1 and the last 16-bit
+      // codeword lands on 0xFFFF.
+      {"0xFFFF assigned at length 16",
+          {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2}},
+      // Complete at length one: codes 0 and 1, and 1 is all ones.
+      {"complete at length one",
+          {2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+  };
+
+  for (const Case & c : cases) {
+    EXPECT_EQ(decode_size(make_dc_counts_jpeg(c.bits), nullptr, nullptr),
+        GIMG_ERR_CORRUPT)
+        << c.what << ": T.81 C.2 reserves that codeword";
+  }
+}
+
+/**
+ * Bit counts that describe an impossible table are refused.
+ *
+ * These three are the arms jpeg_build_huff_table() checks before and during
+ * the code assignment, and no encoder emits any of them, which is why a
+ * fixture cannot reach them. The over-subscribed case is the control: it was
+ * refused before the reserved-codeword change too, so it pins the behaviour
+ * that was already right rather than the one that moved.
+ */
+TEST(JpegLoad, DhtCountsThatDescribeNoTableAreRefused) {
+  struct Case {
+    const char * what;
+    std::vector<uint8_t> bits;
+  } cases[] = {
+      {"no codes at any length",
+          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"more than 256 symbols",
+          {0, 0, 0, 0, 0, 0, 0, 150, 150, 0, 0, 0, 0, 0, 0, 0}},
+      {"over-subscribed at length one (control)",
+          {3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+  };
+
+  for (const Case & c : cases) {
+    EXPECT_EQ(decode_size(make_dc_counts_jpeg(c.bits), nullptr, nullptr),
+        GIMG_ERR_CORRUPT)
+        << c.what << ": the counts do not describe a Huffman table";
+  }
+}
+
+namespace {
+
 /** One IPTC IIM dataset: 0x1C, record, number, 2-byte length, value. */
 void append_iptc(std::vector<uint8_t> & out, uint8_t record, uint8_t dataset,
     const std::string & value) {

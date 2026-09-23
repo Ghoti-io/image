@@ -217,10 +217,12 @@ int jpeg_build_huff_table(
     if (count > 0) {
       tbl->max_code[len] = (uint16_t)(code + count - 1);
       tbl->base_index[len] = base;
+      // base + k cannot reach num_syms: base is the number of codes shorter
+      // than `len`, k < count, and num_syms is the sum of every count, so the
+      // index is always below it.  A bound was tested here and could not fire;
+      // the guard that makes it safe is the `num_syms > 256` refusal above,
+      // which is what keeps the write inside tbl->values[256].
       for (int k = 0; k < count; k++) {
-        if ((size_t)base + (size_t)k >= num_syms) {
-          return -1;
-        }
         tbl->values[base + k] = vals[base + k];
       }
       base += count;
@@ -232,23 +234,33 @@ int jpeg_build_huff_table(
     }
     code += count;
     // T.81 Figure C.2 (Generate_code) and C.3: after the codes of length `len`
-    // are assigned, the next code must still fit in `len` bits.  If it does
-    // not, the bit counts describe more codes than that length can hold - an
-    // over-subscribed table, which has no canonical assignment.  libjpeg
-    // rejects the same condition as "Bogus Huffman table definition".  Without
-    // this, min_code/max_code silently wrap and the decoder matches codewords
-    // that the table never defined.
-    if (code > (uint32_t)(1u << len)) {
+    // are assigned, the next code must still fit in `len` bits, and the codes
+    // already assigned must not have used the all-ones codeword of that
+    // length, which C.2 reserves.  Both are the same test with `>=`: at
+    // equality the last code handed out was all ones, and above it the bit
+    // counts describe more codes than the length can hold - an
+    // over-subscribed table, which has no canonical assignment.
+    //
+    // This was `>`, which caught only over-subscription.  That accepted two
+    // shapes libjpeg rejects as "Bogus Huffman table definition": a table
+    // complete at some length, and one whose last 16-bit codeword is 0xFFFF.
+    // The asymmetry was one-sided - jpeg_gen_huff_table() already gives that
+    // codeword up when writing - so the reader accepted tables this library
+    // will not produce and libjpeg will not read.
+    //
+    // Without the check at all, min_code/max_code silently wrap and the
+    // decoder matches codewords the table never defined.
+    if (code >= (uint32_t)(1u << len)) {
       return -1;
     }
     code <<= 1;
   }
-  // C.2: the all-ones codeword of the longest length is reserved, so a table
-  // that consumes the entire code space at 16 bits is still valid only if it
-  // leaves that one free.
-  if (code > (uint32_t)(1u << 17)) {
-    return -1;
-  }
+  // No check follows the loop.  One did - `code > (1u << 17)`, described as
+  // enforcing the reserved codeword - and it could not fire: the in-loop test
+  // holds code below 1<<16 at len 16, so the final shift leaves it below
+  // 1<<17.  Searching the bit-count vectors that reach the end of the loop put
+  // the maximum at exactly 1<<17, the threshold and never past it.  The rule
+  // it named is enforced above, at the length where the codeword is assigned.
 #if GIMG_JPEG_DEBUG_DHT_DC
   if (dht[0] == 0x00) {
     (void)fprintf(stderr,
