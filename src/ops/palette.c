@@ -413,6 +413,12 @@ static GIMG_Result pal_median_cut(pal_colors_t * cols, uint16_t max_colors,
       int extent = 0;
       (void)pal_box_axis(&boxes[i], &extent);
       if (extent <= 0) {
+        // Unreachable, and kept because what makes it so lives elsewhere: the
+        // colour array is deduplicated, so a box holding two or more entries
+        // - which the test above has already established - holds two colours
+        // that differ, and two colours that differ have an extent of at least
+        // one on the axis they differ along.  A change to how the histogram
+        // is built is what would break that, not a change here.
         continue;
       }
       const uint64_t score = boxes[i].pixels * (uint64_t)extent;
@@ -441,6 +447,14 @@ static GIMG_Result pal_median_cut(pal_colors_t * cols, uint16_t max_colors,
         break;
       }
     }
+    // Neither of these can fire, for reasons that are about the loop above
+    // rather than about the data, and they are kept because that loop is the
+    // kind that gets rewritten.  `hi - lo` is at least 2, so the loop body
+    // runs at least once and leaves `cut` at `i + 1` for some `i >= lo`,
+    // which is more than `lo`; and `i` never exceeds `hi - 2`, so `cut`
+    // never reaches `hi`.  What they guard is the split below, where a cut
+    // at either edge would make an empty box and then a division by its zero
+    // pixel count.
     if (cut <= box->lo) {
       cut = box->lo + 1u;
     }
@@ -615,6 +629,11 @@ GIMG_Result gimg_ops_palette_from_raster(
     pal_unkey(hist.key[i], out_palette->entries[i]);
   }
   // An image of no pixels has no colours; a table still needs one entry.
+  // No such image reaches here: gimg_raster_create() refuses a zero width or
+  // height, so every raster has at least one pixel and every pixel adds a
+  // key - a fully transparent one included, which collapses to a single
+  // colour rather than to none.  The fallback is what the count means, not a
+  // case that happens.
   out_palette->count = (uint16_t)(hist.n ? hist.n : 1u);
   pal_hist_free(&hist);
   return GIMG_OK;
@@ -658,6 +677,9 @@ GIMG_Result gimg_ops_palette_build(const GIMG_Raster * const * src,
 
   memset(out_palette, 0, sizeof(*out_palette));
   if (hist.n == 0u) {
+    // Unreachable for the same reason as the one-entry fallback in
+    // gimg_ops_palette_from_raster(): a raster of no pixels is refused at
+    // creation, and every pixel contributes a key.
     out_palette->count = 1u;
     pal_hist_free(&hist);
     return GIMG_OK;

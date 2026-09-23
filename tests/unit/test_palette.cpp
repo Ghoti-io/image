@@ -122,6 +122,23 @@ Rgba gray_ramp(uint32_t x, uint32_t y) {
   return Rgba{v, v, v, 255};
 }
 
+/**
+ * One colour almost everywhere, a handful of others once each.
+ *
+ * Median cut splits a box at the median of its longest axis, weighted by how
+ * many pixels carry each colour.  A distribution this skewed puts the median
+ * on the box's own edge, which would give a split with nothing on one side of
+ * it, so the cut has to be pushed inwards by one.
+ */
+Rgba one_colour_and_a_few_strays(uint32_t x, uint32_t y) {
+  const uint32_t n = y * 64u + x;
+  if (n % 401u == 0u) {
+    return Rgba{static_cast<uint8_t>(200u + (n % 40u)),
+        static_cast<uint8_t>(n % 200u), static_cast<uint8_t>(n % 251u), 255};
+  }
+  return Rgba{8, 9, 10, 255};
+}
+
 } // namespace
 
 TEST(Palette, CountsDistinctColours) {
@@ -313,6 +330,101 @@ TEST(Palette, OnePaletteForSeveralFrames) {
   }
   gimg_raster_destroy(a);
   gimg_raster_destroy(b);
+}
+
+// The colour budget is clamped at both ends.
+//
+// gimg_ops_palette_from_raster() builds the exact palette and refuses when
+// the image has more colours than asked for, so max_colors is a ceiling on
+// what it will accept.  Zero means "as many as a palette holds" rather than
+// "none" - a table of no entries is not a thing anyone can want - and asking
+// for more than GIMG_PALETTE_MAX_ENTRIES is the same request as asking for
+// exactly that many, because a GIMG_Palette holds no more.  Neither clamp
+// had run: every caller in the suite asks for a number between 2 and 256.
+TEST(Palette, AskingForNoColoursOrTooManyMeansAsManyAsAPaletteHolds) {
+  GIMG_Raster * r = make(12, 8, four);
+  ASSERT_NE(r, nullptr);
+  GIMG_Palette at_max;
+  ASSERT_EQ(gimg_ops_palette_from_raster(
+                r, (uint16_t)GIMG_PALETTE_MAX_ENTRIES, &at_max),
+      GIMG_OK);
+  ASSERT_EQ(at_max.count, 4u);
+
+  for (uint16_t asked : {(uint16_t)0u,
+           (uint16_t)(GIMG_PALETTE_MAX_ENTRIES + 1u), (uint16_t)1000u,
+           (uint16_t)65535u}) {
+    SCOPED_TRACE(asked);
+    GIMG_Palette p;
+    ASSERT_EQ(gimg_ops_palette_from_raster(r, asked, &p), GIMG_OK);
+    EXPECT_EQ(p.count, at_max.count);
+    EXPECT_EQ(entries_of(p), entries_of(at_max))
+        << "the same palette, not merely the same count";
+  }
+  gimg_raster_destroy(r);
+
+  // And the ceiling is real: an image with more colours than a palette holds
+  // is refused however the budget was spelled, rather than being quantized
+  // behind the caller's back.  That is what says 0 and 65535 were clamped to
+  // 256 and not to something larger.
+  GIMG_Raster * big = make(32, 32, ramp);
+  ASSERT_NE(big, nullptr);
+  size_t distinct = 0;
+  ASSERT_EQ(gimg_ops_count_colors(big, 0, &distinct, nullptr), GIMG_OK);
+  ASSERT_GT(distinct, GIMG_PALETTE_MAX_ENTRIES);
+  for (uint16_t asked : {(uint16_t)0u, (uint16_t)65535u}) {
+    GIMG_Palette p;
+    EXPECT_EQ(gimg_ops_palette_from_raster(big, asked, &p),
+        GIMG_ERR_UNSUPPORTED)
+        << "budget " << asked;
+  }
+  gimg_raster_destroy(big);
+}
+
+// A histogram skewed far enough that the median lands on the box's edge.
+//
+// Median cut splits a box at the median of its longest axis, weighted by
+// pixel count.  When almost every pixel is one colour, that median is the
+// box's own low edge, and cutting there would leave one side empty - so the
+// cut is pushed inwards by one.  Both of those clamps had never run: every
+// image the suite quantizes is a ramp, where the colours are spread evenly
+// and the median lands in the middle.
+TEST(Palette, ASkewedHistogramStillSplitsIntoUsableBoxes) {
+  GIMG_Raster * r = make(64, 64, one_colour_and_a_few_strays);
+  ASSERT_NE(r, nullptr);
+  size_t distinct = 0;
+  ASSERT_EQ(gimg_ops_count_colors(r, 0, &distinct, nullptr), GIMG_OK);
+  ASSERT_GT(distinct, 8u) << "there must be more colours than boxes asked "
+                             "for, or nothing is split at all";
+
+  const GIMG_Raster * frames[1] = {r};
+  GIMG_Quantize_Options q;
+  memset(&q, 0, sizeof(q));
+  q.max_colors = 8u;
+  GIMG_Palette p;
+  ASSERT_EQ(gimg_ops_palette_build(frames, 1u, &q, &p), GIMG_OK);
+  EXPECT_GT(p.count, 0u);
+  EXPECT_LE(p.count, 8u);
+
+  // A degenerate split shows up as a palette that cannot represent the one
+  // colour almost every pixel has.  Applying it is what says so.
+  GIMG_Raster * out = nullptr;
+  ASSERT_EQ(gimg_ops_palette_apply(r, &p, GIMG_DITHER_NONE, &out), GIMG_OK);
+  ASSERT_NE(out, nullptr);
+  const std::set<uint32_t> table = entries_of(p);
+  for (uint32_t c : colors_of(out)) {
+    EXPECT_TRUE(table.count(c) != 0u) << "a colour outside the palette";
+  }
+  // (1,1) is one of the pixels carrying the dominant colour - (0,0) is a
+  // stray, since its index is a multiple of the stride between them.
+  const auto * base =
+      static_cast<const uint8_t *>(gimg_raster_pixels_const(out));
+  const uint8_t * px = base + gimg_raster_stride_bytes(out) + 4u;
+  EXPECT_NEAR(px[0], 8, 4) << "the colour almost every pixel has must come "
+                              "back as itself, near enough";
+  EXPECT_NEAR(px[1], 9, 4);
+  EXPECT_NEAR(px[2], 10, 4);
+  gimg_raster_destroy(out);
+  gimg_raster_destroy(r);
 }
 
 TEST(Palette, ACallerSuppliedPaletteIsUsedAsGiven) {
