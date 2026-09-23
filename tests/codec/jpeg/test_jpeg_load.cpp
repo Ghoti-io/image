@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <set>
+#include <cmath>
 #include <dirent.h>
 #include <algorithm>
 #include <cstdio>
@@ -8459,4 +8460,115 @@ TEST(JpegLoad, TheStuffZeroRecoveryModeIsOptInAndSalvagesAShortScan) {
   }
   EXPECT_GT(after, 0)
       << "the variable must not still be set once the guard is gone";
+}
+
+namespace {
+
+/** Set the transform byte of the first Adobe APP14 segment. */
+bool set_adobe_transform(std::vector<uint8_t> & jpeg, uint8_t transform) {
+  for (const FoundSegment & s : segments_of(jpeg)) {
+    if (s.marker != 0xEE || s.payload_len < 12) { continue; }
+    if (memcmp(&jpeg[s.payload], "Adobe", 5) != 0) { continue; }
+    jpeg[s.payload + 11] = transform;  // Adobe, version, flags0, flags1, Tf.
+    return true;
+  }
+  return false;
+}
+
+/** Decode and hand back the RGBA bytes. */
+bool decode_rgba(const std::vector<uint8_t> & bytes, uint32_t * out_w,
+    uint32_t * out_h, std::vector<uint8_t> & out) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    return false;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (r != GIMG_OK) { return false; }
+  GIMG_Raster * ras = nullptr;
+  r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &ras);
+  bool ok = false;
+  if (r == GIMG_OK && ras) {
+    *out_w = gimg_raster_width(ras);
+    *out_h = gimg_raster_height(ras);
+    const size_t stride = gimg_raster_stride_bytes(ras);
+    const auto * px = (const unsigned char *)gimg_raster_pixels_const(ras);
+    out.assign((size_t)*out_w * *out_h * 4u, 0);
+    for (uint32_t y = 0; y < *out_h; y++) {
+      memcpy(out.data() + (size_t)y * *out_w * 4u, px + (size_t)y * stride,
+          (size_t)*out_w * 4u);
+    }
+    ok = true;
+  }
+  if (ras) { gimg_raster_destroy(ras); }
+  gimg_doc_destroy(doc);
+  return ok;
+}
+
+} // namespace
+
+// A lossless frame whose three components are YCbCr rather than RGB.
+//
+// T.81 Annex H says nothing about colour: a lossless frame carries three
+// components and the file says elsewhere what they mean.  An Adobe APP14 with
+// a transform of 0 says RGB and one with a transform of 1 says YCbCr, and
+// this decoder honours both - but every three-component lossless fixture in
+// the tree carries transform 0, so the conversion arm and the chroma sampling
+// beside it had never run.
+//
+// The APP14 transform is one byte, so the two readings of the same file are
+// the same bytes with that byte changed.  That makes the property exact
+// rather than approximate: whatever the RGB reading gives, the YCbCr reading
+// must give the JFIF conversion of, because the samples underneath are
+// identical.  A tolerance of one is for the rounding, not for the colour.
+TEST(JpegLoad, ALosslessFrameSaidToBeYCbCrIsConverted) {
+  const char * fixtures[] = {"lossless_rgb_psv4.jpg", "lossless_noninterleaved.jpg",
+      "lossless_rgb_psv7_pt1.jpg"};
+  for (const char * name : fixtures) {
+    SCOPED_TRACE(name);
+    std::vector<uint8_t> src;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name, src));
+
+    std::vector<uint8_t> as_rgb = src;
+    ASSERT_TRUE(set_adobe_transform(as_rgb, 0))
+        << "the fixture must carry an Adobe APP14 to rewrite";
+    std::vector<uint8_t> as_ycc = src;
+    ASSERT_TRUE(set_adobe_transform(as_ycc, 1));
+    ASSERT_NE(as_rgb, as_ycc) << "the two must differ by that one byte";
+
+    uint32_t w = 0, h = 0, w2 = 0, h2 = 0;
+    std::vector<uint8_t> rgb, ycc;
+    ASSERT_TRUE(decode_rgba(as_rgb, &w, &h, rgb));
+    ASSERT_TRUE(decode_rgba(as_ycc, &w2, &h2, ycc));
+    ASSERT_EQ(w, w2);
+    ASSERT_EQ(h, h2);
+    ASSERT_GT(w * h, 0u);
+
+    // JFIF's conversion, written out here rather than borrowed, so this is a
+    // second opinion on the arm under test and not a copy of it.
+    long differing = 0, checked = 0;
+    for (size_t i = 0; i + 3 < rgb.size(); i += 4) {
+      const double yy = rgb[i];
+      const double cb = (double)rgb[i + 1] - 128.0;
+      const double cr = (double)rgb[i + 2] - 128.0;
+      const int want[3] = {(int)lround(yy + 1.402 * cr),
+          (int)lround(yy - 0.344136 * cb - 0.714136 * cr),
+          (int)lround(yy + 1.772 * cb)};
+      for (int c = 0; c < 3; c++) {
+        const int clamped = want[c] < 0 ? 0 : (want[c] > 255 ? 255 : want[c]);
+        ASSERT_LE(std::abs((int)ycc[i + c] - clamped), 1)
+            << "pixel " << (i / 4) << " channel " << c
+            << ": the samples are the same bytes, so the two readings differ "
+               "only by the colour transform";
+        checked++;
+      }
+      if (memcmp(&rgb[i], &ycc[i], 3) != 0) { differing++; }
+    }
+    EXPECT_GT(checked, 0);
+    EXPECT_GT(differing, (long)(w * h) / 4)
+        << "control: if the two readings draw the same picture the fixture "
+           "is grey and the conversion arm proves nothing";
+    EXPECT_EQ(ycc[3], rgb[3]) << "alpha is not part of the transform";
+  }
 }
