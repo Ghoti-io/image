@@ -72,9 +72,11 @@ void jpeg_bitstream_init(
  * @return 1 if a restart marker was consumed, 0 otherwise.
  */
 static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
-  if (bs->byte_off >= bs->size || bs->data[bs->byte_off] != 0xFF) {
-    return 0;
-  }
+  // The only caller is the loop at the top of jpeg_bitstream_read_bit(), whose
+  // own condition is `byte_off < size && data[byte_off] == 0xFF`.  A test for
+  // those two stood here and could not fire.  What is still needed is the
+  // byte after the 0xFF, which the caller has not looked at: at the end of the
+  // buffer there is none, and then this is not a marker.
   if (bs->byte_off + 1 >= bs->size) {
     return 0;
   }
@@ -173,6 +175,14 @@ int jpeg_bitstream_read_bits(gimg_jpeg_bitstream_t * bs, int n) {
   // than a machine word is certainly invalid; fuzzing reached a 255-bit read,
   // which shifted an int by more than its width.  Accumulate in unsigned so the
   // shift is defined for every width this accepts.
+  //
+  // No caller can reach this today, and that is a property of the callers
+  // rather than of the input: every one of them bounds the width to 15 first -
+  // the two DC paths refuse a category above 15, the AC paths take `sym & 0x0F`
+  // and the EOB run is 1..14, and the lossless decoder refuses `s > 16` and
+  // handles 16 without reading.  It is kept as the second line of defence it
+  // has already had to be once, and ADcCategoryAboveFifteenIsRefused documents
+  // which of the two is load-bearing for which decoder.
   if (n < 0 || n > 16) {
     return -1;
   }

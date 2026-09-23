@@ -5696,7 +5696,7 @@ namespace {
  * assigned, before any symbol is read.
  */
 void append_dht_counts(std::vector<uint8_t> & buf, uint8_t tc_th,
-    const std::vector<uint8_t> & bits) {
+    const std::vector<uint8_t> & bits, int symbol = -1) {
   EXPECT_EQ(bits.size(), 16u) << "a DHT declares exactly sixteen lengths";
   size_t nsyms = 0;
   for (uint8_t b : bits) { nsyms += b; }
@@ -5706,7 +5706,9 @@ void append_dht_counts(std::vector<uint8_t> & buf, uint8_t tc_th,
   buf.push_back((uint8_t)(L & 0xFFu));
   buf.push_back(tc_th);
   for (uint8_t b : bits) { buf.push_back(b); }
-  for (size_t i = 0; i < nsyms; i++) { buf.push_back((uint8_t)(i & 0xFFu)); }
+  for (size_t i = 0; i < nsyms; i++) {
+    buf.push_back(symbol >= 0 ? (uint8_t)symbol : (uint8_t)(i & 0xFFu));
+  }
 }
 
 /** An 8x8 grayscale baseline JPEG whose DC table has exactly these counts. */
@@ -5729,6 +5731,223 @@ std::vector<uint8_t> make_dc_counts_jpeg(const std::vector<uint8_t> & dc_bits) {
 }
 
 } // namespace
+
+namespace {
+
+/**
+ * A 16x8 grayscale baseline JPEG in two MCUs, optionally with DRI = 1.
+ *
+ * Three details are load-bearing. The DC table's only code is 0 and decodes
+ * to category 15, so every DC costs sixteen bits: that is what keeps the bit
+ * reader still reading when it walks into the restart marker, instead of
+ * finishing the MCU two bits in. The DC quantiser is 64 rather than 1, so a
+ * DC difference of one survives the IDCT as a visible eight levels instead of
+ * rounding away - with a quantiser of 1 every case below decodes to the same
+ * black image and the comparison proves nothing. And the frame is two MCUs
+ * wide, because a restart interval of one needs a second interval to start.
+ */
+std::vector<uint8_t> make_restart_resync_jpeg(
+    bool with_dri, const std::vector<uint8_t> & scan) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF0: L=11, P=8, Y=8, X=16, Nf=1, C=0 H=1 V=1 Tq=0.
+  append(buf,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x10\x01\x00\x11\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) { buf.push_back(i == 0 ? 64 : 1); }
+  if (with_dri) {
+    append(buf, (const unsigned char *)"\xFF\xDD\x00\x04\x00\x01", 6);
+  }
+  append_dht_counts(buf, 0x00, {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      0x0F);  // DC: code 0 -> category 15.
+  append_dht_counts(buf, 0x10, {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      0x00);  // AC: code 0 -> EOB.
+  append(buf, (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00", 10);
+  buf.insert(buf.end(), scan.begin(), scan.end());
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+/** Decode and hash the pixels, so two files can be compared by what they
+ * draw rather than by whether they were accepted. */
+GIMG_Result decode_pixel_hash(const std::vector<uint8_t> & bytes,
+    uint64_t * out_hash) {
+  GIMG_Stream * s = nullptr;
+  GIMG_Result r = gimg_stream_create_memory(bytes.data(), bytes.size(), &s);
+  if (r != GIMG_OK) { return r; }
+  GIMG_Doc * doc = nullptr;
+  r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (r != GIMG_OK) { return r; }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  GIMG_Raster * ras = nullptr;
+  r = item ? gimg_item_decode(item, nullptr, &ras) : GIMG_ERR_INTERNAL;
+  if (r == GIMG_OK && ras) { *out_hash = jpeg_test::raster_pixel_hash(ras); }
+  if (ras) { gimg_raster_destroy(ras); }
+  gimg_doc_destroy(doc);
+  return r;
+}
+
+} // namespace
+
+namespace {
+
+/** A progressive 8x8 grayscale JPEG with a DC scan and no AC table defined. */
+std::vector<uint8_t> make_progressive_dc_only_jpeg(bool define_ac) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF2: L=11, P=8, Y=8, X=8, Nf=1, C=0 H=1 V=1 Tq=0.
+  append(buf,
+      (const unsigned char *)"\xFF\xC2\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11\x00",
+      13);
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) { buf.push_back(1); }
+  append_dht_counts(buf, 0x00, {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      0x00);  // DC: code 0 -> category 0.
+  if (define_ac) {
+    append_dht_counts(buf, 0x10,
+        {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 0x00);
+  }
+  // SOS: Ns=1, Cs=0, Td=0 Ta=0, Ss=0 Se=0 Ah=0 Al=0 - a DC scan.
+  append(buf, (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x00\x00", 10);
+  buf.push_back(0x00);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+} // namespace
+
+/**
+ * A progressive scan naming an AC table the file never defined still decodes.
+ *
+ * T.81 B.2.4 has a scan use the table most recently defined before its
+ * entropy-coded segment. When the file defined none, the decoder falls back to
+ * the Annex K.4 default rather than refusing - the table is built for every
+ * component of every scan, DC scans included, so a file that carries only a DC
+ * scan needs an AC table it will never read from.
+ *
+ * The control is the same file with the AC table present: it must decode too,
+ * or this would only be showing that the builder emits something readable.
+ * Watched to fail: making the fallback return NULL turns the first case into
+ * GIMG_ERR_CORRUPT while the control keeps decoding.
+ */
+TEST(JpegLoad, AProgressiveScanWithNoAcTableUsesTheBuiltInOne) {
+  EXPECT_EQ(decode_size(make_progressive_dc_only_jpeg(true), nullptr, nullptr),
+      GIMG_OK)
+      << "control: the same file with an AC table must decode";
+  EXPECT_EQ(decode_size(make_progressive_dc_only_jpeg(false), nullptr, nullptr),
+      GIMG_OK)
+      << "a scan that never defined an AC table falls back to Annex K.4";
+}
+
+/**
+ * A restart marker that byte alignment misses is still found, and not read as
+ * picture data.
+ *
+ * T.81 B.2.1 has the encoder pad to a byte boundary before a restart marker,
+ * so jpeg_bitstream_align_skip_rst() discards the partial byte and expects the
+ * marker there. When it is not there that function gives up - and leaves
+ * expect_rst set, which is what lets the bit reader consume the marker when it
+ * reaches it. Every place that sets expect_rst calls align_skip_rst on the
+ * next line, so this second path only runs for a stream whose marker is not
+ * where B.2.1 says, and no fixture has one.
+ *
+ * The assertion is on what the file draws, not on whether it was accepted:
+ * a marker read as sixteen bits of picture data would still decode, just to a
+ * different image. So the misaligned file must match the same scan with the
+ * marker bytes removed - a consumed marker contributes nothing - and the
+ * control is the identical bytes with no DRI, where nothing sets expect_rst,
+ * the 0xFF 0xD0 is not a marker to this reader, and its bits do become data.
+ * Without that control the first comparison would pass just as well if the
+ * marker were being skipped for some unrelated reason.
+ */
+TEST(JpegLoad, ARestartMarkerPastTheAlignedPositionIsStillConsumed) {
+  // MCU0 ends one bit into byte 2, so alignment looks at byte 3. Putting the
+  // marker at byte 4 leaves a data byte there, which is what makes
+  // align_skip_rst give up.
+  const std::vector<uint8_t> late{0, 0, 0, 0, 0xFF, 0xD0, 0, 0, 0};
+  const std::vector<uint8_t> stripped{0, 0, 0, 0, 0, 0, 0};
+
+  uint64_t late_hash = 0, stripped_hash = 0, as_data_hash = 0;
+  ASSERT_EQ(decode_pixel_hash(make_restart_resync_jpeg(true, late), &late_hash),
+      GIMG_OK);
+  ASSERT_EQ(
+      decode_pixel_hash(make_restart_resync_jpeg(true, stripped), &stripped_hash),
+      GIMG_OK);
+  ASSERT_EQ(
+      decode_pixel_hash(make_restart_resync_jpeg(false, late), &as_data_hash),
+      GIMG_OK);
+
+  EXPECT_NE(late_hash, as_data_hash)
+      << "control: with no DRI the marker bytes are picture data, so these "
+         "two must differ - if they do not, the comparison below is blind";
+  EXPECT_EQ(late_hash, stripped_hash)
+      << "a restart marker the alignment step missed must be consumed, "
+         "leaving the same picture as if it were not there";
+}
+
+/**
+ * A scan whose last byte is 0xFF is refused, not read past.
+ *
+ * 0xFF is the marker prefix, so the bit reader looks at the byte after it
+ * before deciding what it is. When the 0xFF is the last byte there is no such
+ * byte, and two separate places have to notice: the marker check before the
+ * bits are read, and the byte-stuffing step after them. Both are reached by
+ * this one file, and neither is reachable from a well-formed one - B.1.1.5
+ * stuffs a 0x00 after every 0xFF the entropy coder emits, so a conformant
+ * scan never ends on one.
+ *
+ * The control is a single zero byte, which decodes: the one code in each table
+ * is codeword 0, so a zero bit is DC category 0 and the next is EOB. Without
+ * it a refusal below would only mean the builder emits something unreadable.
+ * It is worth stating which way the bits go, because the first attempt at this
+ * control used 0xFF 0x00 - a correctly stuffed data byte - and it was refused
+ * too: eight one bits match a codeword of 0 at no length. The stuffing was
+ * right and the bits were wrong.
+ */
+TEST(JpegLoad, AScanEndingInAMarkerPrefixIsRefused) {
+  const OneBitTable dc{0, 0, 0x00};  // category 0: no extra bits.
+  const OneBitTable ac{1, 0, 0x00};  // EOB.
+
+  const std::vector<uint8_t> ok{0x00};
+  EXPECT_EQ(decode_size(make_crafted_table_jpeg(0xC0, dc, ac, 0x00, 0x3F, 0x00,
+                            ok),
+                nullptr, nullptr),
+      GIMG_OK)
+      << "control: a zero bit is a codeword in both tables, so this decodes";
+
+  const std::vector<uint8_t> dangling{0xFF};
+  EXPECT_EQ(decode_size(make_crafted_table_jpeg(0xC0, dc, ac, 0x00, 0x3F, 0x00,
+                            dangling),
+                nullptr, nullptr),
+      GIMG_ERR_CORRUPT)
+      << "a 0xFF with nothing after it is not a symbol and not a marker";
+}
+
+/**
+ * Sixteen bits that complete no codeword are refused.
+ *
+ * A canonical Huffman table is searched one bit at a time up to the sixteen-bit
+ * maximum T.81 allows. If none of the sixteen prefixes matches, there is no
+ * symbol and the scan is invalid - but the loop simply ends, and what it does
+ * then is the arm being reached here.
+ *
+ * A DC table holding one code of length one assigns codeword 0, so a run of
+ * one bits matches at no length. Sixteen of them need two 0xFF data bytes,
+ * each written as the stuffed pair B.1.1.5 requires.
+ */
+TEST(JpegLoad, SixteenBitsMatchingNoCodewordAreRefused) {
+  const OneBitTable dc{0, 0, 0x00};
+  const OneBitTable ac{1, 0, 0x00};
+  const std::vector<uint8_t> all_ones{0xFF, 0x00, 0xFF, 0x00};
+
+  EXPECT_EQ(decode_size(make_crafted_table_jpeg(0xC0, dc, ac, 0x00, 0x3F, 0x00,
+                            all_ones),
+                nullptr, nullptr),
+      GIMG_ERR_CORRUPT)
+      << "no codeword is sixteen ones in a table whose only code is 0";
+}
 
 /**
  * A Huffman table that uses the codeword T.81 C.2 reserves is refused.
