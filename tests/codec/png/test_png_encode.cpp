@@ -3953,6 +3953,77 @@ const uint16_t OPAQUE16 = 0xFFFFu;
  * for a 16-bit frame and one byte at a time otherwise, and no fixture carried
  * a tRNS chunk at 16 bits, so the wide half had never executed.
  */
+// A grayscale frame that arrived at 1, 2 or 4 bits is written back at that
+// depth only when every sample could have come from it: PNG 13.12 rescales a
+// sample of depth d to 8 bits as round(s * 255 / (2^d-1)), and reversing that
+// is exact only for the values the rescaling can produce.  At depth 1 those
+// are 0 and 255, at depth 2 they are 0, 85, 170 and 255, and at depth 4 the
+// multiples of 17.
+//
+// gimg_png_gray_fits_depth says which, and its "no" had never been taken:
+// every fixture reaching it was a picture that had come from that depth, so
+// nothing had asked the writer to notice a sample that had not.  A broken
+// check would narrow anyway and quietly round the sample away, and the loaded
+// picture would still match the fixture it came from.  Both answers are
+// asserted here, so the narrowing cannot pass by never happening or by
+// always happening.
+TEST(PngEncode, AGraySampleThatCannotSurviveTheNarrowDepthKeepsEightBits) {
+  struct Case {
+    const char * file;
+    int depth;
+    int representable; ///< A value that depth can hold exactly.
+  };
+  // 136 is 8*255/15 and 170 is 2*255/3; both are exactly what reversing the
+  // rescale gives, so they narrow.  128 is not reachable at any of the three.
+  const Case cases[] = {
+      {"png_gray1_32x8.png", 1, 255},
+      {"png_gray2_32x8.png", 2, 170},
+      {"png_gray4_32x8.png", 4, 136},
+  };
+  const uint16_t breaks = 128;
+  for (const Case & c : cases) {
+    SCOPED_TRACE(std::string(c.file) + " at depth " + std::to_string(c.depth));
+    auto set00 = [](GIMG_Raster * r, unsigned value) {
+      const GIMG_Pixel_Format * f = gimg_raster_format(r);
+      // These decode to one 8-bit channel; writing four would run off the
+      // pixel.
+      ASSERT_EQ(f->channel_count, 1u);
+      ASSERT_EQ(f->bits_per_channel[0], 8u);
+      ((unsigned char *)gimg_raster_pixels(r))[0] = (unsigned char)value;
+    };
+
+    // Untouched, the frame goes back out at the depth it came in at.  Without
+    // this the two edits below could both pass on a writer that never narrows.
+    const NarrowResult plain =
+        save_after_editing(c.file, [](GIMG_Raster *) {});
+    ASSERT_FALSE(plain.wrote.empty()) << "fixture did not load";
+    EXPECT_EQ(plain.head.color_type, 0);
+    EXPECT_EQ(plain.head.bit_depth, c.depth)
+        << "the writer stopped narrowing a frame that never changed";
+    EXPECT_TRUE(plain.survived);
+
+    // A sample that depth can hold: still narrowed.
+    const NarrowResult ok = save_after_editing(
+        c.file, [&](GIMG_Raster * r) { set00(r, (unsigned)c.representable); });
+    ASSERT_FALSE(ok.wrote.empty());
+    EXPECT_EQ(ok.head.bit_depth, c.depth)
+        << "a sample this depth can hold should not have forced 8 bits";
+    EXPECT_TRUE(ok.survived) << "the representable sample did not come back";
+
+    // A sample it cannot: 8 bits, and the sample survives rather than being
+    // rounded to the nearest one the narrow depth could have held.
+    const NarrowResult wide =
+        save_after_editing(c.file, [&](GIMG_Raster * r) { set00(r, breaks); });
+    ASSERT_FALSE(wide.wrote.empty());
+    EXPECT_EQ(wide.head.color_type, 0);
+    EXPECT_EQ(wide.head.bit_depth, 8)
+        << "a sample outside the depth was narrowed into it anyway";
+    EXPECT_TRUE(wide.survived) << "the sample was rounded away";
+    ASSERT_FALSE(wide.read_back.empty());
+    EXPECT_EQ((unsigned)wide.read_back[0], (unsigned)breaks);
+  }
+}
+
 TEST(PngEncode, AnEditThatBreaksTheTrnsRuleStopsTheNarrowing) {
   struct Case {
     const char * file;
