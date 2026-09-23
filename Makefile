@@ -1465,11 +1465,19 @@ test-ubsan: ## Alias for test-asan (ASan+UBSan run together)
 test-ubsan: test-asan
 
 clean: ## Remove all contents of the build directories.
-# The sanitizer tree is removed too. It is a sibling of the ordinary build
-# directory rather than a child, so a clean that names only the ordinary one
-# leaves instrumented objects behind - and they are the ones a stale-binary
-# mistake is hardest to notice with, because they still run.
-	-@rm -rvf $(BUILD_DIR) $(ASAN_BUILD_DIR)
+# Removes ./build itself rather than the trees a particular invocation would
+# have written to. Every tree the build makes is a sibling under ./build named
+# for its configuration -- linux/release, linux/release-asan, linux/debug,
+# linux/release-fuzz -- and naming them individually means a clean removes
+# only the ones whose variables the current command line happens to expand to.
+# `make clean` after `make BUILD=debug` left the whole debug tree behind, and
+# no `clean` at any setting ever removed the fuzz tree.
+#
+# Leftover objects are worse than leftover disk. They are instrumented or
+# built with different flags, they still link, and they still run, so the
+# mistake surfaces as a result that disagrees with the source rather than as a
+# build failure.
+	-@rm -rvf ./build
 
 clean-test-out: ## Remove test output (tests/out/jpeg, tests/out/png). Run 'make test' to regenerate.
 	-@rm -rf $(TEST_OUT_JPEG) $(TEST_OUT_PNG) $(TEST_OUT_BMP)
