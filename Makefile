@@ -158,10 +158,39 @@ LDCONF_INSTALL_PATH :=
 endif
 
 
+# The optimization level is the one thing that distinguishes the two builds'
+# compile flags. `release` is what gets installed and what anything linking
+# against this library actually runs, so it is compiled for speed; `debug` is
+# compiled for stepping through. -g stays in both, because a release build
+# that cannot be read in a debugger is a release build nobody can diagnose,
+# and the symbols cost only file size.
+#
+# This library keeps -O3 rather than the suite's -O2 floor; moving it further
+# would need a benchmark figure recorded beside the flag.
+#
+# Until now the BUILD=debug block below renamed the artifact and nothing else,
+# so `make BUILD=debug` compiled at -O3 under a -debug filename: a debug build
+# that could not be stepped through.
+#
+# CXXFLAGS deliberately keeps its own literal -O1 and does not follow this.
+# Only the library is C; CXXFLAGS compiles the gtest harness, and what a debug
+# build exists to step through is the library.
+#
+# `make coverage` appends --coverage -O0 through EXTRA_CFLAGS, which lands
+# after this one, and the last -O wins. `make tsan` does not use CFLAGS at all
+# and carries its own -O1. `make asan` does use CFLAGS and ASAN_UBSAN_FLAGS
+# adds no -O of its own, so the sanitizer build takes whichever level is set
+# here - -O3 for release, and now -O0 under BUILD=debug.
+ifeq ($(BUILD),debug)
+OPT_CFLAGS := -O0
+else
+OPT_CFLAGS := -O3
+endif
+
 CXX := g++
 CXXFLAGS := -pedantic-errors -Wall -Wextra -Werror -Wno-error=unused-function -Wfatal-errors -std=c++20 -O1 -g $(EXTRA_CXXFLAGS)
 CC := cc
-CFLAGS := -pedantic-errors -Wall -Wextra -Werror -Wno-error=unused-function -Wfatal-errors -std=c17 -O3 -g $(EXTRA_CFLAGS)
+CFLAGS := -pedantic-errors -Wall -Wextra -Werror -Wno-error=unused-function -Wfatal-errors -std=c17 $(OPT_CFLAGS) -g $(EXTRA_CFLAGS)
 # Library-specific compile flags (export symbols on Windows, PIC on Linux)
 # GIMG_BUILD enables DLL export on Windows (checked by GIMG_API macro)
 # GIMG_TEST_BUILD enables export of internal functions for testing (checked by GIMG_INTERNAL_API macro)
