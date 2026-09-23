@@ -540,20 +540,26 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   // held in extra[] and handed to the coefficient walk beside the others.
   uint16_t * extra[GIMG_JPEG_MAX_COMPONENTS];
   memset(extra, 0, sizeof(extra));
-  if (num_components >= 3) {
+  // One plane per component, and the count is the component count.  A
+  // two-component frame is legal (T.81 B.2.2 gives it no meaning, and the
+  // decoder reads one) and needs comp_cb; asking for three here meant it did
+  // not get one, and the fill below wrote every second sample through NULL.
+  if (num_components >= 2) {
     comp_cb = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
+  }
+  if (num_components >= 3) {
     comp_cr = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));
-    if (!comp_cb || !comp_cr) {
-      // Both pointers, not just the one that is obviously live: either
-      // allocation can be the one that failed, and the arm used to hand back
-      // comp_cb only - so a failure of comp_cb with comp_cr succeeding leaked
-      // a whole component plane.  gimg_free ignores NULL, which is what the
-      // loop below this already relies on.
-      gimg_free(alloc, comp_y);
-      gimg_free(alloc, comp_cb);
-      gimg_free(alloc, comp_cr);
-      return GIMG_ERR_OOM;
-    }
+  }
+  if ((num_components >= 2 && !comp_cb) || (num_components >= 3 && !comp_cr)) {
+    // Both pointers, not just the one that is obviously live: either
+    // allocation can be the one that failed, and the arm used to hand back
+    // comp_cb only - so a failure of comp_cb with comp_cr succeeding leaked
+    // a whole component plane.  gimg_free ignores NULL, which is what the
+    // loop below this already relies on.
+    gimg_free(alloc, comp_y);
+    gimg_free(alloc, comp_cb);
+    gimg_free(alloc, comp_cr);
+    return GIMG_ERR_OOM;
   }
   for (int c = 3; c < num_components; c++) {
     extra[c] = (uint16_t *)gimg_malloc(alloc, comp_size * sizeof(uint16_t));

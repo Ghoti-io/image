@@ -8344,3 +8344,136 @@ TEST(JpegEncode, TheColorTransformNeverNeedsItsClamps) {
     }
   }
 }
+
+/**
+ * A frame may carry any number of components from 1 to 255.
+ *
+ * T.81 B.2.2 says so and attaches no meaning past four, and this decoder
+ * agrees: it has an arm for "two components, or five to 255" that hands the
+ * samples back as they came in. The writer did not. Its twelve-bit half
+ * allocates three named planes - luma and two chroma - and asked for the
+ * second and third together, under `num_components >= 3`. A two-component
+ * frame got one plane, and then wrote every second sample through the NULL
+ * pointer where the other should have been.
+ *
+ * It is a segfault on a save, from a raster the library will hand you: a
+ * two-channel 16-bit raster is what gimg_pixel_format_multichannel builds,
+ * and the eight-bit writer accepts the same document without complaint. The
+ * eight-bit path allocates one plane per component in a loop, which is why
+ * it never had the bug - the same job written twice, and only one of the two
+ * counting correctly.
+ *
+ * So this sweeps the component counts either side of the named ones at both
+ * precisions. Values are held to a mean error rather than exactly, because
+ * the DCT is lossy at any quality; that is still enough to catch a component
+ * written into another component's plane, which is the quiet version of what
+ * crashed here.
+ */
+TEST(JpegEncode, AFrameCarriesAsManyComponentsAsItSays) {
+  const uint32_t w = 16, h = 9;
+  long written = 0;
+  for (int num_components = 1; num_components <= 6; num_components++) {
+    for (int precision : {8, 12}) {
+      SCOPED_TRACE("components " + std::to_string(num_components) +
+          ", precision " + std::to_string(precision));
+      GIMG_Pixel_Format fmt = {};
+      ASSERT_EQ(gimg_pixel_format_multichannel((uint8_t)num_components,
+                    (uint8_t)(precision == 12 ? 16 : 8), &fmt),
+          GIMG_OK);
+
+      GIMG_Doc * doc = nullptr;
+      ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+      GIMG_Raster * raster = nullptr;
+      ASSERT_EQ(gimg_raster_create(
+                    w, h, &fmt, GIMG_RASTER_OWNED, NULL, 0, &raster),
+          GIMG_OK);
+      const size_t bpp = gimg_raster_bytes_per_pixel(&fmt);
+      const size_t stride = gimg_raster_stride_bytes(raster);
+      auto * px = (unsigned char *)gimg_raster_pixels(raster);
+      // Each component gets its own gradient, so a component written into
+      // another one's plane is a different picture and not a coincidence.
+      std::vector<int> want((size_t)w * h * (size_t)num_components);
+      for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+          for (int c = 0; c < num_components; c++) {
+            const unsigned raw = (x * 23u + y * 47u + (unsigned)c * 91u);
+            const int v =
+                (int)(precision == 12 ? (raw & 0xFFFu) : (raw & 0xFFu));
+            want[((size_t)y * w + x) * (size_t)num_components + (size_t)c] = v;
+            unsigned char * p = px + y * stride + x * bpp;
+            if (precision == 12) {
+              // A 12-bit sample is left-justified in a 16-bit raster.
+              ((uint16_t *)(void *)p)[c] = (uint16_t)(v << 4);
+            }
+            else {
+              p[c] = (unsigned char)v;
+            }
+          }
+        }
+      }
+      gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+      GIMG_Stream * os = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+      GIMG_Save_Options so = {};
+      so.metadata_policy = GIMG_META_DROP_ALL;
+      so.quality = 95;
+      so.jpeg_precision = (uint8_t)precision;
+      GIMG_Save_Report rep = {};
+      const GIMG_Result sr = gimg_doc_save(doc, os, "jpeg", &so, &rep);
+      ASSERT_EQ(sr, GIMG_OK) << "a frame this many components wide is legal";
+      const void * buf = nullptr;
+      size_t bn = 0;
+      gimg_stream_output_buffer(os, &buf, &bn);
+      const std::vector<uint8_t> file(
+          (const uint8_t *)buf, (const uint8_t *)buf + bn);
+      gimg_doc_destroy(doc);
+      gimg_stream_destroy(os);
+
+      DocStreamGuard in;
+      ASSERT_EQ(
+          gimg_stream_create_memory(file.data(), file.size(), &in.s), GIMG_OK);
+      ASSERT_EQ(gimg_doc_load(in.s, nullptr, nullptr, &in.d), GIMG_OK);
+      RasterGuard got;
+      ASSERT_EQ(
+          gimg_item_decode(gimg_doc_item(in.d, 0), nullptr, &got.r), GIMG_OK);
+      ASSERT_NE(got.r, nullptr);
+      EXPECT_EQ(gimg_raster_width(got.r), w);
+      EXPECT_EQ(gimg_raster_height(got.r), h);
+
+      // One and three components are named shapes - gray and YCbCr - and come
+      // back as the library's gray and RGBA rasters. The rest have no
+      // convention, so the count is carried through as it arrived.
+      const GIMG_Pixel_Format * gf = gimg_raster_format(got.r);
+      if (num_components != 1 && num_components != 3 && num_components != 4) {
+        ASSERT_EQ(gf->channel_count, (uint8_t)num_components);
+        const auto * gp = (const unsigned char *)gimg_raster_pixels_const(got.r);
+        const size_t gs = gimg_raster_stride_bytes(got.r);
+        const size_t gbpp = gimg_raster_bytes_per_pixel(gf);
+        const int scale = (precision == 12) ? 16 : 1; // 12 bits in 16
+        double err = 0.0;
+        for (uint32_t y = 0; y < h; y++) {
+          for (uint32_t x = 0; x < w; x++) {
+            const unsigned char * p = gp + y * gs + x * gbpp;
+            for (int c = 0; c < num_components; c++) {
+              const int v = (gf->bits_per_channel[0] == 16)
+                  ? (int)(((const uint16_t *)(const void *)p)[c] / scale)
+                  : (int)p[c];
+              const int expect =
+                  want[((size_t)y * w + x) * (size_t)num_components +
+                      (size_t)c];
+              err += (v > expect) ? (v - expect) : (expect - v);
+            }
+          }
+        }
+        const double max_sample = (precision == 12) ? 4095.0 : 255.0;
+        const double mean = err / (double)want.size() / max_sample;
+        EXPECT_LT(mean, 0.02)
+            << "mean error " << mean << " of full scale: a component came "
+               "back as something other than the one that went in";
+      }
+      written++;
+    }
+  }
+  ASSERT_EQ(written, 12L);
+}
