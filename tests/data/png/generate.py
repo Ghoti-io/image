@@ -362,6 +362,7 @@ def main() -> None:
     _write_subbyte_and_interlace_fixtures()
     _write_grayalpha_fixtures()
     _write_16bit_trns_fixtures()
+    _write_apng_blend_fixtures()
     _write_zlib_integrity_fixtures()
     _write_suggested_palette_fixtures()
     _write_filter_fixtures()
@@ -555,6 +556,77 @@ def _gray_8x8_raw() -> bytes:
         out.append(0)
         out += bytes((x * 8 + y * 3) & 0xFF for x in range(8))
     return bytes(out)
+
+
+def _write_apng_blend_fixtures() -> None:
+    """An APNG frame composited OVER a canvas that is not fully opaque.
+
+    Every APNG fixture using BLEND_OP_OVER was 1x1, and the only 8-bit one was
+    grayscale - where the source alpha is always 255, so the partial-alpha arm
+    of the compositing loop never ran at all. That arm is the whole of APNG's
+    OVER, and it was wrong: it used the opaque-destination simplification,
+    which mixes in the colour stored behind a transparent destination pixel
+    instead of ignoring it.
+
+    Four by two, RGBA. The first frame's alphas span 0 to 255 and the second
+    frame's do too, so the pixels where either alpha is 0 or 255 pin the
+    boundaries and the rest are the general case. A canvas is transparent
+    wherever no frame has painted yet, which is why the alpha-0 destination
+    column is the important one rather than a curiosity.
+    """
+    signature = b"\x89PNG\r\n\x1a\n"
+    w, h = 4, 2
+
+    first = [
+        [(255, 0, 0, 0), (0, 255, 0, 64), (0, 0, 255, 128), (255, 255, 0, 255)],
+        [(0, 128, 255, 32), (255, 0, 255, 192), (128, 128, 128, 96),
+         (10, 20, 30, 255)],
+    ]
+    second = [
+        [(0, 0, 255, 128), (255, 255, 255, 128), (0, 0, 0, 64),
+         (0, 255, 255, 192)],
+        [(255, 255, 0, 200), (0, 0, 0, 128), (255, 255, 255, 255), (1, 2, 3, 0)],
+    ]
+
+    def rgba_raw(rows):
+        return b"".join(b"\x00" + b"".join(struct.pack("BBBB", *px)
+                                           for px in row) for row in rows)
+
+    def fctl(seq, dispose, blend):
+        return struct.pack(">IIIIIHHBB", seq, w, h, 0, 0, 1, 10, dispose, blend)
+
+    png = (
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+        + png_chunk(b"acTL", struct.pack(">II", 2, 0))
+        + png_chunk(b"fcTL", fctl(0, 0, 0))   # dispose NONE, blend SOURCE
+        + png_chunk(b"IDAT", idat_zlib(rgba_raw(first)))
+        + png_chunk(b"fcTL", fctl(1, 0, 1))   # dispose NONE, blend OVER
+        + png_chunk(b"fdAT",
+                    struct.pack(">I", 2) + idat_zlib(rgba_raw(second)))
+        + png_chunk(b"IEND", b"")
+    )
+    write_png("png_apng_blend_over_partial.png", png)
+
+    # The same picture at sixteen bits: the decoder composites 8- and 16-bit
+    # frames through separate loops, and both carried the same simplification.
+    def rgba16_raw(rows):
+        return b"".join(b"\x00" + b"".join(
+            struct.pack(">HHHH", *(c * 257 for c in px)) for px in row)
+            for row in rows)
+
+    png16 = (
+        signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 16, 6, 0, 0, 0))
+        + png_chunk(b"acTL", struct.pack(">II", 2, 0))
+        + png_chunk(b"fcTL", fctl(0, 0, 0))
+        + png_chunk(b"IDAT", idat_zlib(rgba16_raw(first)))
+        + png_chunk(b"fcTL", fctl(1, 0, 1))
+        + png_chunk(b"fdAT",
+                    struct.pack(">I", 2) + idat_zlib(rgba16_raw(second)))
+        + png_chunk(b"IEND", b"")
+    )
+    write_png("png_apng_blend_over_partial16.png", png16)
 
 
 def _write_16bit_trns_fixtures() -> None:

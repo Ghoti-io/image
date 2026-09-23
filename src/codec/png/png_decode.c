@@ -368,11 +368,34 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
           dst[3] = src[3];
         }
         else if (sa != 0) {
-          unsigned int inv_sa = 255 - sa;
-          dst[0] = (unsigned char)((src[0] * sa + dst[0] * inv_sa) / 255);
-          dst[1] = (unsigned char)((src[1] * sa + dst[1] * inv_sa) / 255);
-          dst[2] = (unsigned char)((src[2] * sa + dst[2] * inv_sa) / 255);
-          dst[3] = (unsigned char)(sa + (unsigned int)dst[3] * inv_sa / 255);
+          // Porter-Duff Over, non-premultiplied (PNG "Alpha Channel
+          // Processing", which APNG's BLEND_OP_OVER refers to):
+          //   Ao = As + Ad*(1-As)
+          //   Co = (Cs*As + Cd*Ad*(1-As)) / Ao
+          // The destination's own alpha weights its colour, and the result is
+          // divided by the composite alpha.  Dropping both - which is what
+          // this did - is only correct when the destination is opaque, and
+          // the error is not subtle: over a fully transparent pixel the
+          // spec says the destination contributes nothing, while the
+          // simplified form mixes in the colour stored behind its zero
+          // alpha.  A canvas is transparent wherever no frame has painted
+          // yet, so that is the common case, not a corner.
+          //
+          // Scaled to integers: with As = sa/255, Ad = da/255 and
+          // (1-As) = inv_sa/255, both sides carry 255^2, leaving
+          //   Co = (Cs*sa*255 + Cd*da*inv_sa) / (sa*255 + da*inv_sa)
+          //   Ao = (sa*255 + da*inv_sa) / 255
+          // The widest intermediate is 255*255*255, well inside uint32.
+          const unsigned int inv_sa = 255u - sa;
+          const unsigned int da = (unsigned int)dst[3];
+          const unsigned int ao = sa * 255u + da * inv_sa; // never 0: sa > 0
+          dst[0] = (unsigned char)(
+              ((unsigned int)src[0] * sa * 255u + (unsigned int)dst[0] * da * inv_sa) / ao);
+          dst[1] = (unsigned char)(
+              ((unsigned int)src[1] * sa * 255u + (unsigned int)dst[1] * da * inv_sa) / ao);
+          dst[2] = (unsigned char)(
+              ((unsigned int)src[2] * sa * 255u + (unsigned int)dst[2] * da * inv_sa) / ao);
+          dst[3] = (unsigned char)(ao / 255u);
         }
         src += 4;
         dst += 4;
@@ -399,20 +422,30 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
             memcpy(dst, src, 8);
           }
           else if (sa != 0) {
-            uint32_t inv_sa = 65535u - (uint32_t)sa;
+            const uint32_t inv_sa = 65535u - (uint32_t)sa;
+            const uint32_t da =
+                (uint32_t)((uint16_t)dst[6] | ((uint16_t)dst[7] << 8));
+            // See the eight-bit branch: the destination's alpha weights its
+            // colour and the result is divided by the composite alpha.  This
+            // used the opaque-destination simplification its own comment
+            // described, which is wrong wherever the canvas is not yet fully
+            // painted.
+            const uint64_t ao =
+                (uint64_t)sa * 65535u + (uint64_t)da * inv_sa; // sa > 0
             for (int c = 0; c < 4; c++) {
               uint16_t sc =
                   (uint16_t)src[c * 2] | ((uint16_t)src[c * 2 + 1] << 8);
               uint16_t dc =
                   (uint16_t)dst[c * 2] | ((uint16_t)dst[c * 2 + 1] << 8);
-              uint64_t sum;
+              uint32_t v;
               if (c < 3) {
-                sum = (uint64_t)sc * (uint32_t)sa + (uint64_t)dc * inv_sa;
+                const uint64_t sum = (uint64_t)sc * (uint64_t)sa * 65535u +
+                    (uint64_t)dc * (uint64_t)da * inv_sa;
+                v = (uint32_t)(sum / ao);
               }
               else {
-                sum = (uint64_t)sa * 65535u + (uint64_t)dc * inv_sa;
+                v = (uint32_t)(ao / 65535u);
               }
-              uint32_t v = (uint32_t)(sum / 65535u);
               if (v > 65535u) {
                 v = 65535u;
               }

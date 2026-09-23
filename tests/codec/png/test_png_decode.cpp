@@ -2696,3 +2696,221 @@ TEST(PngLoad, ARefusedFileSaysWhichRuleItBroke) {
     EXPECT_TRUE(why.empty()) << "a file that loaded reported an error: " << why;
   }
 }
+
+namespace {
+
+/**
+ * Porter-Duff Over, non-premultiplied, written out from the spec rather than
+ * copied from the decoder - PNG's "Alpha Channel Processing", which APNG's
+ * BLEND_OP_OVER points at:
+ *
+ *     Ao = As + Ad*(1-As)
+ *     Co = (Cs*As + Cd*Ad*(1-As)) / Ao
+ *
+ * Integer form: with As = sa/255, Ad = da/255 and (1-As) = inv/255, both
+ * sides carry 255^2 and cancel.
+ */
+void spec_over(const uint8_t src[4], const uint8_t dst[4], uint8_t out[4]) {
+  const unsigned sa = src[3], da = dst[3];
+  if (sa == 255u) {
+    for (int i = 0; i < 4; i++) { out[i] = src[i]; }
+    return;
+  }
+  if (sa == 0u) {
+    for (int i = 0; i < 4; i++) { out[i] = dst[i]; }
+    return;
+  }
+  const unsigned inv = 255u - sa;
+  const unsigned ao = sa * 255u + da * inv;
+  for (int i = 0; i < 3; i++) {
+    out[i] = (uint8_t)(((unsigned)src[i] * sa * 255u +
+                           (unsigned)dst[i] * da * inv) / ao);
+  }
+  out[3] = (uint8_t)(ao / 255u);
+}
+
+} // namespace
+
+/**
+ * APNG's BLEND_OP_OVER, onto a canvas that is not fully opaque.
+ *
+ * This was wrong, and nothing could see it: every APNG fixture that used OVER
+ * was 1x1, and the only 8-bit one was grayscale - where the source alpha is
+ * always 255, so the partial-alpha arm never ran on any input. The arm is the
+ * whole of APNG's OVER.
+ *
+ * What it did was Co = (Cs*As + Cd*(1-As)), which is Porter-Duff with the
+ * destination's own alpha dropped and the division by the composite alpha
+ * dropped with it. That simplification is exact when the destination is
+ * opaque - the sixteen-bit branch even said so in a comment - and wrong
+ * everywhere else. The failure is not a rounding difference: over a fully
+ * transparent destination the spec says the destination contributes nothing,
+ * while the simplified form mixes in whatever colour is stored behind that
+ * zero alpha. A canvas is transparent wherever no frame has painted yet, so
+ * that is the ordinary case.
+ *
+ * The expectation is computed from the spec formula rather than taken from
+ * another decoder, because the obvious oracle is wrong here too: Pillow's
+ * APNG path produces this same incorrect colour, and disagrees with Pillow's
+ * own Image.alpha_composite - which does match the formula below, on every
+ * pixel of this fixture. An oracle that shares the bug reads as agreement.
+ */
+TEST(PngDecode, AFrameBlendedOverATransparentCanvasIgnoresWhatIsBehindIt) {
+  std::vector<uint8_t> bytes;
+  ASSERT_TRUE(
+      png_test::load_png_file("png_apng_blend_over_partial.png", bytes));
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(doc), 2u);
+
+  // Frame 0 is written with BLEND_OP_SOURCE, so it is the canvas frame 1
+  // composites onto - read it back rather than restating it here, so the
+  // expectation cannot drift from the fixture.
+  GIMG_Raster * first = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &first), GIMG_OK);
+  ASSERT_NE(first, nullptr);
+  const uint32_t w = gimg_raster_width(first), h = gimg_raster_height(first);
+  ASSERT_EQ(w, 4u);
+  ASSERT_EQ(h, 2u);
+
+  std::vector<uint8_t> canvas((size_t)w * h * 4u);
+  {
+    const auto * p = (const uint8_t *)gimg_raster_pixels_const(first);
+    const size_t stride = gimg_raster_stride_bytes(first);
+    for (uint32_t y = 0; y < h; y++) {
+      memcpy(canvas.data() + (size_t)y * w * 4u, p + (size_t)y * stride, w * 4u);
+    }
+  }
+  gimg_raster_destroy(first);
+
+  // The second frame's own pixels, as the fixture stores them.
+  const uint8_t frame[2][4][4] = {
+      {{0, 0, 255, 128}, {255, 255, 255, 128}, {0, 0, 0, 64}, {0, 255, 255, 192}},
+      {{255, 255, 0, 200}, {0, 0, 0, 128}, {255, 255, 255, 255}, {1, 2, 3, 0}},
+  };
+
+  GIMG_Raster * second = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &second), GIMG_OK);
+  ASSERT_NE(second, nullptr);
+  const auto * got = (const uint8_t *)gimg_raster_pixels_const(second);
+  const size_t got_stride = gimg_raster_stride_bytes(second);
+
+  long transparent_destinations = 0;
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      SCOPED_TRACE("pixel " + std::to_string(x) + "," + std::to_string(y));
+      const uint8_t * dst = canvas.data() + ((size_t)y * w + x) * 4u;
+      uint8_t want[4];
+      spec_over(frame[y][x], dst, want);
+      const uint8_t * have = got + (size_t)y * got_stride + (size_t)x * 4u;
+      for (int c = 0; c < 4; c++) {
+        EXPECT_EQ((int)have[c], (int)want[c])
+            << "channel " << c << " of the composite";
+      }
+      if (dst[3] == 0) { transparent_destinations++; }
+    }
+  }
+  // The alarm: the case that fails against the old code is the one where the
+  // destination is invisible, so the fixture has to contain some.
+  ASSERT_GT(transparent_destinations, 0)
+      << "no pixel in this fixture composites over a transparent destination, "
+         "so it cannot see the defect it was written for";
+
+  gimg_raster_destroy(second);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+/**
+ * The same rule at sixteen bits, because it is a different loop.
+ *
+ * The decoder composites 8-bit and 16-bit frames through separate code, and
+ * both carried the same simplification - the sixteen-bit one with a comment
+ * spelling out the full formula directly above code that did not implement
+ * it. Fixing one and testing one would have left the other exactly as it was.
+ *
+ * The fixture is the eight-bit one scaled by 257, so every sample is an exact
+ * 16-bit representation of its 8-bit value and the two tests can be compared
+ * by eye when one of them fails.
+ */
+TEST(PngDecode, ASixteenBitFrameBlendsTheSameWayAnEightBitOneDoes) {
+  std::vector<uint8_t> bytes;
+  ASSERT_TRUE(
+      png_test::load_png_file("png_apng_blend_over_partial16.png", bytes));
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(doc), 2u);
+
+  GIMG_Raster * first = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &first), GIMG_OK);
+  ASSERT_NE(first, nullptr);
+  ASSERT_EQ(gimg_raster_format(first)->bits_per_channel[0], 16);
+  const uint32_t w = gimg_raster_width(first), h = gimg_raster_height(first);
+
+  std::vector<uint16_t> canvas((size_t)w * h * 4u);
+  {
+    const auto * p = (const uint8_t *)gimg_raster_pixels_const(first);
+    const size_t stride = gimg_raster_stride_bytes(first);
+    for (uint32_t y = 0; y < h; y++) {
+      memcpy(canvas.data() + (size_t)y * w * 4u, p + (size_t)y * stride,
+          (size_t)w * 8u);
+    }
+  }
+  gimg_raster_destroy(first);
+
+  const uint8_t frame8[2][4][4] = {
+      {{0, 0, 255, 128}, {255, 255, 255, 128}, {0, 0, 0, 64}, {0, 255, 255, 192}},
+      {{255, 255, 0, 200}, {0, 0, 0, 128}, {255, 255, 255, 255}, {1, 2, 3, 0}},
+  };
+
+  GIMG_Raster * second = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &second), GIMG_OK);
+  ASSERT_NE(second, nullptr);
+  const auto * got = (const uint8_t *)gimg_raster_pixels_const(second);
+  const size_t got_stride = gimg_raster_stride_bytes(second);
+
+  long transparent_destinations = 0;
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      SCOPED_TRACE("pixel " + std::to_string(x) + "," + std::to_string(y));
+      const uint16_t * dst = canvas.data() + ((size_t)y * w + x) * 4u;
+      const uint64_t sa = (uint64_t)frame8[y][x][3] * 257u;
+      const uint64_t da = dst[3];
+      uint16_t want[4];
+      if (sa == 65535u) {
+        for (int c = 0; c < 4; c++) {
+          want[c] = (uint16_t)(frame8[y][x][c] * 257u);
+        }
+      }
+      else if (sa == 0u) {
+        for (int c = 0; c < 4; c++) { want[c] = dst[c]; }
+      }
+      else {
+        const uint64_t inv = 65535u - sa;
+        const uint64_t ao = sa * 65535u + da * inv;
+        for (int c = 0; c < 3; c++) {
+          want[c] = (uint16_t)(((uint64_t)frame8[y][x][c] * 257u * sa * 65535u +
+                                   (uint64_t)dst[c] * da * inv) / ao);
+        }
+        want[3] = (uint16_t)(ao / 65535u);
+      }
+      const auto * have =
+          (const uint16_t *)(const void *)(got + (size_t)y * got_stride +
+              (size_t)x * 8u);
+      for (int c = 0; c < 4; c++) {
+        EXPECT_EQ((int)have[c], (int)want[c]) << "channel " << c;
+      }
+      if (dst[3] == 0) { transparent_destinations++; }
+    }
+  }
+  ASSERT_GT(transparent_destinations, 0);
+
+  gimg_raster_destroy(second);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
