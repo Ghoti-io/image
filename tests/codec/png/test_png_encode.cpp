@@ -2078,6 +2078,61 @@ TEST(PngAncillaryRetarget, PaletteSignificantBitsDescribeEightBitSamples) {
   EXPECT_EQ(got.payload, want);
 }
 
+TEST(PngAncillaryRetarget, EqualColorCountsBecomeTheOneGrayCount) {
+  // The other side of UnequalColorCountsCannotBecomeOneGrayCount: when the
+  // three counts do agree, one gray count says exactly the same thing, so the
+  // chunk is rewritten rather than dropped. Without this case the "counts
+  // disagree" rule is the only one on the path and the rewrite never runs.
+  SourceImage src(2, 8);
+  Retargeted got = Retarget(GIMG_PNG_sBIT, {5, 5, 5}, src, 0, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  const std::vector<unsigned char> want = {5};
+  EXPECT_EQ(got.payload, want);
+}
+
+TEST(PngAncillaryRetarget, AGrayTargetWithAlphaKeepsBothCounts) {
+  // Color type 4 carries a gray count and an alpha count, and the source's
+  // alpha count is the one that applies - the writer is not adding a channel
+  // here, it is keeping one.
+  SourceImage src(6, 8); // R, G, B, A
+  Retargeted got = Retarget(GIMG_PNG_sBIT, {5, 5, 5, 6}, src, 4, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  const std::vector<unsigned char> want = {5, 6};
+  EXPECT_EQ(got.payload, want);
+}
+
+TEST(PngAncillaryRetarget, ATruecolorTargetDropsTheAlphaCount) {
+  SourceImage src(6, 8);
+  Retargeted got = Retarget(GIMG_PNG_sBIT, {5, 6, 7, 8}, src, 2, 8);
+  EXPECT_EQ(got.what, GIMG_PNG_RETARGET_REPLACE);
+  const std::vector<unsigned char> want = {5, 6, 7};
+  EXPECT_EQ(got.payload, want);
+}
+
+TEST(PngAncillaryRetarget, SignificantBitsForAPaletteNeedThePaletteToStay) {
+  // 11.3.2.4 makes the three values describe PLTE's samples. A frame arriving
+  // as anything else has no palette those counts were taken from, so they
+  // cannot be made to describe the one the writer would build.
+  SourceImage from_truecolor(2, 8);
+  EXPECT_EQ(Retarget(GIMG_PNG_sBIT, {5, 6, 7}, from_truecolor, 3, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+  SourceImage from_palette(3, 8);
+  EXPECT_EQ(Retarget(GIMG_PNG_sBIT, {5, 6, 7}, from_palette, 3, 4).what,
+      GIMG_PNG_RETARGET_KEEP);
+}
+
+TEST(PngAncillaryRetarget, AnSbitOfTheWrongLengthIsNotReadAtAll) {
+  // The payload length is fixed by the SOURCE color type (11.3.2.4): one
+  // value for type 0, two for 4, three for 2 and 3, four for 6. A file
+  // carrying any other length is not describing this image, and reading it
+  // anyway would mean indexing past what it holds.
+  SourceImage src(2, 8); // three values expected
+  EXPECT_EQ(Retarget(GIMG_PNG_sBIT, {5}, src, 6, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+  EXPECT_EQ(Retarget(GIMG_PNG_sBIT, {5, 6, 7, 8}, src, 6, 8).what,
+      GIMG_PNG_RETARGET_DROP);
+}
+
 // -- hIST -------------------------------------------------------------------
 
 TEST(PngAncillaryRetarget, AHistogramWithoutItsPaletteIsDropped) {
