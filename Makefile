@@ -1216,7 +1216,24 @@ endif
 # One list feeds both the checks and the no-recover set, because those two
 # drifting apart is how a check gets enabled and then quietly allowed to pass.
 UBSAN_CHECKS := undefined,float-cast-overflow
-ASAN_UBSAN_FLAGS := -fsanitize=address,$(UBSAN_CHECKS) -fno-sanitize-recover=$(UBSAN_CHECKS) -fno-omit-frame-pointer -g
+# The sanitizer build pins its own -O1 rather than inheriting the release -O3
+# through CFLAGS, which is what it did until now.  It lands after CFLAGS on
+# the compile line and the last -O wins.
+#
+# Not for detection.  Measured on gcc 14.2 with these exact checks, one defect
+# per program: heap-use-after-free, stack-buffer-overflow, signed integer
+# overflow and float-to-int overflow are all caught at -O0, -O1, -O2 and -O3
+# alike, and a strict-aliasing violation is caught at none of them - an
+# instrumented build of one the optimizer actually exploits still prints the
+# wrong answer and reports nothing.  So the level buys no detection either
+# way, and the hazard that was supposed to justify inheriting is not visible
+# to this instrument at all; `make check-aliasing` is what covers that.
+#
+# The reason is reproduction.  The fuzz harnesses build at their own -O1, so
+# pinning here puts the sanitizer gate and the fuzzers on one codegen and a
+# finding from either reproduces under the other.  It also stops the gate
+# moving silently the next time the release level moves.
+ASAN_UBSAN_FLAGS := -fsanitize=address,$(UBSAN_CHECKS) -fno-sanitize-recover=$(UBSAN_CHECKS) -fno-omit-frame-pointer -g -O1
 ASAN_BUILD_DIR := ./build/$(BUILD)-asan
 ASAN_OBJ_DIR := $(ASAN_BUILD_DIR)/objects
 ASAN_APP_DIR := $(ASAN_BUILD_DIR)/apps
