@@ -26,6 +26,8 @@
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
+#include <dirent.h>
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <vector>
@@ -244,62 +246,108 @@ struct ExifOp {
  * every block is handed back.
  */
 TEST(AllocFailure, EveryFailedDecodeFreesEverythingItTook) {
-  const Case cases[] = {
-      // Each walks a decoder the others do not. The two hierarchical ones are
-      // here for the per-frame planes and the reference frame they carry
-      // between frames, which is the deepest partial state in the library.
-      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_gray_2level.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_gray_lossless.jpg"},
-      // A hierarchical sequence whose frames are progressive reaches a third
-      // per-frame decoder, with its own partial state to unwind.
-      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_rgb_progressive.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_noninterleaved_444.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "progressive_sample.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "arith_rgb_64x64_420.jpg"},
-      {"jpeg", GIMG_TEST_DATA_JPEG, "baseline_gray12.jpg"},
-      {"png", GIMG_TEST_DATA_PNG, "png_exif.png"},
+  // Every fixture in the tree, not a chosen few. Which decoder a file reaches
+  // is decided by the file - precision, scan count, component count, entropy
+  // coder - so a list of names is a sample of an axis whose members each
+  // answer differently, and the earlier list of six reached one of the
+  // hierarchical decoder's three cleanup blocks. Enumerating is cheap here:
+  // the sweep is bounded by what a clean decode allocates, which is tens of
+  // calls, not by the size of the picture.
+  // bmp and gif have no define of their own; they are siblings of the two
+  // that do, which is how the conversion sweep reaches them as well.
+  const std::string root = std::string(GIMG_TEST_DATA_JPEG) + "/..";
+  const std::string bmp_dir = root + "/bmp";
+  const std::string gif_dir = root + "/gif";
+  struct Dir {
+    const char * codec;
+    const char * path;
+    const char * ext;
+  } dirs[] = {
+      {"jpeg", GIMG_TEST_DATA_JPEG, ".jpg"},
+      {"png", GIMG_TEST_DATA_PNG, ".png"},
+      {"bmp", bmp_dir.c_str(), ".bmp"},
+      {"gif", gif_dir.c_str(), ".gif"},
   };
-  for (const Case & c : cases) {
-    std::vector<uint8_t> bytes;
-    if (!read_file(c.dir, c.file, bytes)) {
-      ADD_FAILURE() << "missing fixture " << c.file;
+
+  long swept = 0, skipped = 0, injections = 0;
+  std::vector<std::string> seen;
+  for (const Dir & d : dirs) {
+    DIR * dp = opendir(d.path);
+    if (!dp) {
+      ADD_FAILURE() << "cannot read fixture directory " << d.path;
       continue;
     }
-
-    // A clean run first: it must decode, and it says how far to sweep.
-    Failing probe;
-    init(probe);
-    long after_load = 0;
-    ASSERT_EQ(load_and_decode_with(c.codec, bytes, probe, &after_load), GIMG_OK)
-        << c.file << " must decode when nothing fails";
-    ASSERT_EQ(probe.outstanding, 0)
-        << c.file << " leaks on the success path: " << probe.outstanding
-        << " blocks";
-    const long total = probe.attempts;
-    std::printf("  %-24s %ld allocations, %ld of them after the load\n",
-        c.file, total, total - after_load);
-    std::fflush(stdout);
-    ASSERT_GT(total, after_load)
-        << c.file << " allocated nothing while decoding, so this sweep would "
-                     "test nothing beyond the load sweep";
-
-    for (long n = after_load + 1; n <= total; n++) {
-      Failing f;
-      init(f);
-      f.fail_at = n;
-      long ignored = 0;
-      const GIMG_Result r =
-          load_and_decode_with(c.codec, bytes, f, &ignored);
-      EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM || r == GIMG_ERR_CORRUPT ||
-          r == GIMG_ERR_FORMAT || r == GIMG_ERR_LIMIT ||
-          r == GIMG_ERR_UNSUPPORTED)
-          << c.file << ": allocation " << n << " of " << total
-          << " failed and the decode returned " << (int)r;
-      EXPECT_EQ(f.outstanding, 0)
-          << c.file << ": " << f.outstanding
-          << " block(s) leaked when allocation " << n << " of " << total
-          << " failed";
+    std::vector<std::string> names;
+    while (struct dirent * e = readdir(dp)) {
+      const std::string n = e->d_name;
+      if (n.size() > strlen(d.ext) &&
+          n.compare(n.size() - strlen(d.ext), strlen(d.ext), d.ext) == 0) {
+        names.push_back(n);
+      }
     }
+    closedir(dp);
+    std::sort(names.begin(), names.end());
+
+    for (const std::string & name : names) {
+      std::vector<uint8_t> bytes;
+      if (!read_file(d.path, name.c_str(), bytes)) { continue; }
+
+      // A clean run first: it says how far to sweep, and a fixture that does
+      // not decode on its own is not a subject - plenty here are deliberately
+      // malformed.
+      Failing probe;
+      init(probe);
+      long after_load = 0;
+      if (load_and_decode_with(d.codec, bytes, probe, &after_load) != GIMG_OK) {
+        skipped++;
+        continue;
+      }
+      ASSERT_EQ(probe.outstanding, 0)
+          << name << " leaks on the success path: " << probe.outstanding
+          << " blocks";
+      const long total = probe.attempts;
+      if (total <= after_load) { skipped++; continue; }
+      swept++;
+      seen.push_back(name);
+
+      for (long n = after_load + 1; n <= total; n++) {
+        Failing f;
+        init(f);
+        f.fail_at = n;
+        long ignored = 0;
+        const GIMG_Result r =
+            load_and_decode_with(d.codec, bytes, f, &ignored);
+        injections++;
+        EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM ||
+            r == GIMG_ERR_CORRUPT || r == GIMG_ERR_FORMAT ||
+            r == GIMG_ERR_LIMIT || r == GIMG_ERR_UNSUPPORTED)
+            << name << ": allocation " << n << " of " << total
+            << " failed and the decode returned " << (int)r;
+        EXPECT_EQ(f.outstanding, 0)
+            << name << ": " << f.outstanding
+            << " block(s) leaked when allocation " << n << " of " << total
+            << " failed";
+      }
+    }
+  }
+
+  std::printf("  %ld fixtures swept, %ld skipped, %ld injected decodes\n",
+      swept, skipped, injections);
+  ASSERT_GT(swept, 50)
+      << "only " << swept << " fixtures decoded cleanly - a sweep this narrow "
+                             "is not measuring what it claims to";
+
+  // The decoders that are easiest to lose. Each reaches machinery none of the
+  // others does, so if a rename or a move takes one out of the tree this
+  // sweep should say so rather than quietly narrowing.
+  const char * required[] = {"hier_gray_2level.jpg", "hier_gray_lossless.jpg",
+      "hier_rgb_progressive.jpg", "hier_noninterleaved_444.jpg",
+      "progressive_sample.jpg", "arith_rgb_64x64_420.jpg",
+      "baseline_gray12.jpg", "cmyk_ljt_sub.jpg"};
+  for (const char * want : required) {
+    EXPECT_NE(std::find(seen.begin(), seen.end(), std::string(want)),
+        seen.end())
+        << want << " is no longer among the fixtures this sweep decodes";
   }
 }
 
