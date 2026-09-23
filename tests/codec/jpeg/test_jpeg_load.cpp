@@ -6689,3 +6689,162 @@ TEST(JpegLoad, TheHierarchicalFramingRulesAreEnforced) {
          "the loader said: "
       << why;
 }
+
+namespace {
+
+/** A DQT payload: one Pq/Tq byte then @p entries table elements. */
+std::vector<uint8_t> dqt_payload(uint8_t pq_tq, bool sixteen_bit,
+    uint16_t fill = 1u, int zero_at = -1) {
+  std::vector<uint8_t> p{pq_tq};
+  for (int i = 0; i < 64; i++) {
+    const uint16_t v = (i == zero_at) ? 0u : fill;
+    if (sixteen_bit) { p.push_back((uint8_t)(v >> 8)); }
+    p.push_back((uint8_t)(v & 0xFFu));
+  }
+  return p;
+}
+
+/** A frame-header payload at a chosen precision and size. */
+std::vector<uint8_t> frame_payload(uint8_t precision, uint16_t w, uint16_t h) {
+  return {precision, (uint8_t)(h >> 8), (uint8_t)(h & 0xFFu),
+      (uint8_t)(w >> 8), (uint8_t)(w & 0xFFu), 0x01, 0x01, 0x11, 0x00};
+}
+
+} // namespace
+
+/**
+ * A quantization table that T.81 B.2.4.1 does not allow is refused.
+ *
+ * Pq selects 8- or 16-bit elements and must be zero for an 8-bit frame, Tq
+ * picks one of four tables, and no element may be zero - dequantization
+ * multiplies by it, so a zero silently discards a coefficient rather than
+ * failing anywhere a reader would look. Every fixture in the suite has valid
+ * tables, so none of these had run.
+ */
+TEST(JpegLoad, AQuantizationTableOutsideT81IsRefused) {
+  // Pq = 2.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDBu, dqt_payload(0x20u, false)}}), "Pq must be 0 or 1"));
+  // Tq = 4, one past the four tables that exist.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDBu, dqt_payload(0x04u, false)}}), "Tq above 3"));
+  // A zero element.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDBu, dqt_payload(0x00u, false, 1u, 17)}}),
+      "zero quantization value"));
+  // 16-bit elements declared in an 8-bit frame.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xC0u, frame_payload(8u, 8u, 8u)},
+          {0xDBu, dqt_payload(0x10u, true)}}),
+      "Pq=1 with 8-bit sample precision"));
+  // The control: a table that breaks none of those is not refused for any of
+  // them.
+  const std::string why =
+      refusal_reason(make_segments({{0xDBu, dqt_payload(0x00u, false)}}));
+  EXPECT_EQ(why.find("DQT"), std::string::npos)
+      << "a valid DQT must not trip a DQT rule, but the loader said: " << why;
+}
+
+/**
+ * DRI and DNL segments of the wrong length are refused.
+ *
+ * Both carry exactly one 16-bit value and T.81 fixes their segment lengths at
+ * four, so a payload of any other size is not the segment it claims to be.
+ * DNL additionally bounds the line count it declares.
+ */
+TEST(JpegLoad, DriAndDnlPayloadLengthsAreChecked) {
+  EXPECT_TRUE(RefusedBecause(make_segments({{0xDDu, {0x00u}}}),
+      "DRI payload must be 2 bytes"));
+  EXPECT_TRUE(RefusedBecause(make_segments({{0xDDu, {0x00u, 0x04u, 0x00u}}}),
+      "DRI payload must be 2 bytes"));
+
+  // DNL is only meaningful after a scan, so one has to come first.
+  const std::vector<Segment> upto_scan = {
+      {0xC0u, frame_payload(8u, 8u, 8u)},
+      {0xDBu, dqt_payload(0x00u, false)},
+      {0xC4u, std::vector<uint8_t>(17u, 0x00u)},
+      {0xDAu, {0x01u, 0x01u, 0x00u, 0x00u, 0x3Fu, 0x00u}},
+  };
+  std::vector<Segment> bad_len = upto_scan;
+  bad_len.push_back({0xDCu, {0x00u}});
+  EXPECT_TRUE(RefusedBecause(make_segments(bad_len),
+      "DNL payload must be 2 bytes"));
+
+  std::vector<Segment> zero_lines = upto_scan;
+  zero_lines.push_back({0xDCu, {0x00u, 0x00u}});
+  EXPECT_TRUE(RefusedBecause(make_segments(zero_lines),
+      "DNL number of lines out of range"));
+}
+
+/**
+ * Arithmetic conditioning outside T.81 Table B.6 is refused.
+ *
+ * DAC gives each table a class and a destination and then a conditioning
+ * byte, read as L and U for a DC table and as Kx for an AC one. The three
+ * bounds are separate checks; the suite's arithmetic fixtures are all valid,
+ * so none had run.
+ */
+TEST(JpegLoad, ArithmeticConditioningOutOfRangeIsRefused) {
+  // Table class 2.
+  EXPECT_TRUE(RefusedBecause(make_segments({{0xCCu, {0x20u, 0x00u}}}),
+      "table class or destination out of range"));
+  // Destination 4, one past the four that exist.
+  EXPECT_TRUE(RefusedBecause(make_segments({{0xCCu, {0x04u, 0x00u}}}),
+      "table class or destination out of range"));
+  // DC conditioning with L above U.
+  EXPECT_TRUE(RefusedBecause(make_segments({{0xCCu, {0x00u, 0x05u}}}),
+      "L greater than U"));
+  // AC conditioning with Kx zero.
+  EXPECT_TRUE(RefusedBecause(make_segments({{0xCCu, {0x10u, 0x00u}}}),
+      "Kx out of range"));
+  // AC conditioning with Kx above 63.
+  EXPECT_TRUE(RefusedBecause(make_segments({{0xCCu, {0x10u, 0x40u}}}),
+      "Kx out of range"));
+  // The control: class 0, destination 0, L = U = 0 is the default and legal.
+  const std::string why =
+      refusal_reason(make_segments({{0xCCu, {0x00u, 0x00u}}}));
+  EXPECT_EQ(why.find("DAC"), std::string::npos)
+      << "valid conditioning must not trip a DAC rule, but: " << why;
+}
+
+/**
+ * A frame that contradicts the DHP it follows is refused.
+ *
+ * T.81 B.3.1 makes DHP the envelope for the whole hierarchical sequence: the
+ * frames share its precision and none may exceed its dimensions, and J.1
+ * requires the first frame to be non-differential since there is nothing yet
+ * to take a difference from. All four are separate checks and a valid
+ * hierarchical fixture reaches none of them.
+ */
+TEST(JpegLoad, AFrameContradictingItsDhpIsRefused) {
+  const std::vector<uint8_t> dhp = frame_payload(8u, 8u, 8u);
+
+  // A differential frame first, with no reference to differ from.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDEu, dhp}, {0xC5u, frame_payload(8u, 8u, 8u)}}),
+      "starts with a differential frame"));
+  // A frame at a different sample precision. It has to be SOF1, extended
+  // sequential: a baseline frame is 8-bit by definition (T.81 B.2.2), so a
+  // baseline frame at 12 bits is refused as a bad frame header before the
+  // comparison with DHP is ever made - which the reason assertion is what
+  // caught, having been written with SOF0 first.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDEu, dhp}, {0xC1u, frame_payload(12u, 8u, 8u)}}),
+      "precision differs from DHP"));
+  // A frame wider than the envelope.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDEu, dhp}, {0xC0u, frame_payload(8u, 16u, 8u)}}),
+      "wider than DHP declares"));
+  // A frame taller than the envelope.
+  EXPECT_TRUE(RefusedBecause(
+      make_segments({{0xDEu, dhp}, {0xC0u, frame_payload(8u, 8u, 16u)}}),
+      "taller than DHP declares"));
+
+  // The control: a frame that fits is not refused for any of those reasons.
+  const std::string why = refusal_reason(
+      make_segments({{0xDEu, dhp}, {0xC0u, frame_payload(8u, 8u, 8u)}}));
+  EXPECT_EQ(why.find("DHP"), std::string::npos)
+      << "a frame inside its DHP envelope must not trip one of these, but "
+         "the loader said: "
+      << why;
+}
