@@ -7926,3 +7926,234 @@ TEST(JpegLoad, AHierarchicalFrameThatCannotFinishGivesItsPlanesBack) {
   EXPECT_GT(refused, 5) << "if nothing was refused as corrupt the cut is not "
                            "landing inside the decode loop";
 }
+
+namespace {
+
+/** Decode @p bytes with @p options and hash the pixels. */
+uint64_t decode_hash_with(const std::vector<uint8_t> & bytes,
+    const GIMG_Decode_Options * options, GIMG_Result * out_r) {
+  uint64_t h = 0;
+  GIMG_Stream * s = nullptr;
+  *out_r = gimg_stream_create_memory(bytes.data(), bytes.size(), &s);
+  if (*out_r != GIMG_OK) { return 0; }
+  GIMG_Doc * doc = nullptr;
+  *out_r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (*out_r != GIMG_OK) { return 0; }
+  GIMG_Raster * ras = nullptr;
+  *out_r = gimg_item_decode(gimg_doc_item(doc, 0), options, &ras);
+  if (*out_r == GIMG_OK && ras) { h = jpeg_test::raster_pixel_hash(ras); }
+  if (ras) { gimg_raster_destroy(ras); }
+  gimg_doc_destroy(doc);
+  return h;
+}
+
+} // namespace
+
+// The chroma upsampling option, asked of a hierarchical sequence.
+//
+// hier_emit_raster reads GIMG_Decode_Options the same way the single-frame
+// emitter does, and the two are meant to answer alike - but nothing had ever
+// handed a hierarchical decode any options at all.  The line that reads the
+// field was at zero hits, which means the whole option was dead for this
+// format: a caller asking for the box filter would have been given the
+// triangle one, silently, and no test would have noticed.
+TEST(JpegLoad, AHierarchicalSequenceHonoursTheChromaUpsamplingOption) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("hier_rgb_420.jpg", jpeg))
+      << "the fixture must be subsampled, or the filters cannot differ";
+
+  GIMG_Result r = GIMG_ERR_INTERNAL;
+  const uint64_t null_hash = decode_hash_with(jpeg, nullptr, &r);
+  ASSERT_EQ(r, GIMG_OK);
+
+  GIMG_Decode_Options zeroed = {};
+  const uint64_t zeroed_hash = decode_hash_with(jpeg, &zeroed, &r);
+  ASSERT_EQ(r, GIMG_OK);
+
+  GIMG_Decode_Options fancy = {};
+  fancy.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
+  const uint64_t fancy_hash = decode_hash_with(jpeg, &fancy, &r);
+  ASSERT_EQ(r, GIMG_OK);
+
+  GIMG_Decode_Options simple = {};
+  simple.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE;
+  const uint64_t simple_hash = decode_hash_with(jpeg, &simple, &r);
+  ASSERT_EQ(r, GIMG_OK);
+
+  EXPECT_EQ(zeroed_hash, null_hash)
+      << "a zero-initialized options struct must decode as NULL does";
+  EXPECT_EQ(fancy_hash, null_hash)
+      << "the triangle filter is the default, so asking for it by name must "
+         "not change the answer";
+  EXPECT_NE(simple_hash, null_hash)
+      << "the box filter must reach the hierarchical emitter; if this passes "
+         "only because the fixture is not subsampled, the two above prove "
+         "nothing either";
+}
+
+namespace {
+
+/** The Compression=7 (TIFF/JPEG) Exif thumbnail case, as a whole JPEG. */
+std::vector<uint8_t> make_jpeg_with_tiff_jpeg_thumbnail(
+    const std::vector<uint8_t> & strip_bytes) {
+  const std::vector<uint8_t> exif =
+      make_exif_with_tiff_jpeg_thumbnail(strip_bytes);
+  std::vector<uint8_t> jpeg;
+  append(jpeg, (const unsigned char *)"\xFF\xD8", 2);
+  const size_t app1_payload = 6 + exif.size();
+  if (2u + app1_payload >= 65536u) { return std::vector<uint8_t>(); }
+  const uint16_t app1_len = (uint16_t)(2 + app1_payload);
+  append(jpeg, (const unsigned char *)"\xFF\xE1", 2);
+  jpeg.push_back((uint8_t)(app1_len >> 8));
+  jpeg.push_back((uint8_t)(app1_len & 0xFF));
+  append(jpeg, (const unsigned char *)"Exif\0\0", 6);
+  jpeg.insert(jpeg.end(), exif.begin(), exif.end());
+  append(jpeg,
+      (const unsigned char *)"\xFF\xC0\x00\x0B\x08\x00\x08\x00\x08\x01\x00\x11"
+                             "\x00",
+      13);
+  append(jpeg, (const unsigned char *)"\xFF\xDB\x00\x43\x00", 5);
+  for (int i = 0; i < 64; i++) { jpeg.push_back(1); }
+  append(jpeg, (const unsigned char *)"\xFF\xC4\x00\x13\x00", 5);
+  for (int i = 0; i < 16; i++) { jpeg.push_back(0); }
+  append(jpeg,
+      (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00", 10);
+  append(jpeg, (const unsigned char *)"\xFF\xD9", 2);
+  return jpeg;
+}
+
+/** A JPEG carrying one JFXX thumbnail of extension code @p code. */
+std::vector<uint8_t> make_jpeg_with_jfxx_thumbnail(uint8_t code,
+    const std::vector<uint8_t> & ext) {
+  std::vector<uint8_t> jfxx = with_prefix("JFXX\0", 5, std::string());
+  jfxx.push_back(code);
+  jfxx.insert(jfxx.end(), ext.begin(), ext.end());
+  std::vector<uint8_t> jpeg;
+  if (!jpeg_with_apps({{0xE0u, jfif_app0_no_thumbnail()}, {0xE0u, jfxx}},
+          jpeg)) {
+    return std::vector<uint8_t>();
+  }
+  return jpeg;
+}
+
+} // namespace
+
+// Every way a thumbnail can be attached, with an allocation failing.
+//
+// The loader attaches a second item from six different places - an Exif IFD1
+// thumbnail that is a JPEG, one that is uncompressed strips, one in TIFF/JPEG
+// form, a JFIF APP0 thumbnail, and JFXX extension codes 0x11 and 0x13 - and
+// each one ends in the same shape: grow the document to two items, and if that
+// cannot be done, give the raster back.  Five of those six `else` arms had
+// never run.  The document's own allocation is what fails there, and the
+// sweeps that fail allocations were running over files from the fixture
+// directory, none of which carries a thumbnail at all; the six fixtures here
+// are built in the test, the same way the tests that read each thumbnail form
+// build theirs.
+//
+// A leak here is one thumbnail-sized raster per image, on a machine that has
+// just told the loader it is out of memory.
+TEST(JpegLoad, EveryThumbnailPathGivesTheRasterBackWhenTheDocumentCannotGrow) {
+  std::vector<uint8_t> strip_bytes;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", strip_bytes));
+
+  std::vector<uint8_t> pal_ext;
+  pal_ext.push_back(2u);
+  pal_ext.push_back(2u);
+  for (int i = 0; i < 256; i++) {
+    pal_ext.push_back((uint8_t)i);
+    pal_ext.push_back((uint8_t)(255 - i));
+    pal_ext.push_back((uint8_t)(i / 2));
+  }
+  for (uint8_t i : {3u, 40u, 200u, 255u}) { pal_ext.push_back(i); }
+
+  std::vector<uint8_t> rgb_ext;
+  rgb_ext.push_back(2u);
+  rgb_ext.push_back(2u);
+  for (int i = 0; i < 4; i++) {
+    rgb_ext.push_back((uint8_t)(0x10 + i));
+    rgb_ext.push_back((uint8_t)(0x40 + i));
+    rgb_ext.push_back((uint8_t)(0x80 + i));
+  }
+
+  struct Case {
+    const char * what;
+    std::vector<uint8_t> jpeg;
+  };
+  std::vector<Case> cases;
+  cases.push_back({"Exif IFD1, uncompressed strips",
+      make_jpeg_with_exif_uncompressed_thumbnail()});
+  cases.push_back({"Exif IFD1, TIFF/JPEG (Compression=7)",
+      make_jpeg_with_tiff_jpeg_thumbnail(strip_bytes)});
+  cases.push_back({"JFIF APP0 thumbnail, RGB",
+      make_jpeg_with_jfif_thumbnail(true)});
+  cases.push_back({"JFIF APP0 thumbnail, one byte per pixel",
+      make_jpeg_with_jfif_thumbnail(false)});
+  cases.push_back({"JFXX 0x11 (palette)",
+      make_jpeg_with_jfxx_thumbnail(0x11u, pal_ext)});
+  cases.push_back({"JFXX 0x13 (RGB)",
+      make_jpeg_with_jfxx_thumbnail(0x13u, rgb_ext)});
+  cases.push_back({"JFXX 0x10 (a whole JPEG)",
+      make_jpeg_with_jfxx_thumbnail(0x10u, strip_bytes)});
+
+  GIMG_Codec * codec = gimg_codec_by_name("jpeg");
+  ASSERT_NE(codec, nullptr);
+
+  long total_injections = 0;
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    ASSERT_FALSE(c.jpeg.empty()) << "the fixture must have been built";
+
+    auto run = [&](gimg_test::Failing & f, size_t * out_items) {
+      const GIMG_Allocator * saved = codec->allocator;
+      codec->allocator = &f.a;
+      GIMG_Stream * s = nullptr;
+      GIMG_Result r = gimg_stream_create_memory(c.jpeg.data(), c.jpeg.size(), &s);
+      if (r == GIMG_OK) {
+        GIMG_Doc * doc = nullptr;
+        r = gimg_doc_load(s, nullptr, nullptr, &doc);
+        if (out_items) {
+          *out_items = (r == GIMG_OK && doc) ? gimg_doc_item_count(doc) : 0;
+        }
+        if (doc) { gimg_doc_destroy(doc); }
+        gimg_stream_destroy(s);
+      }
+      codec->allocator = saved;
+      return r;
+    };
+
+    // The control the whole case rests on: without it a fixture whose
+    // thumbnail the loader quietly ignored would sweep just as green, and
+    // reach none of the arms this test is named for.
+    gimg_test::Failing probe;
+    gimg_test::init(probe);
+    size_t items = 0;
+    ASSERT_EQ(run(probe, &items), GIMG_OK) << "the fixture must load";
+    ASSERT_EQ(items, 2u)
+        << "the thumbnail must have become a second item, or the attach path "
+           "this case is for was never taken";
+    ASSERT_EQ(probe.outstanding, 0) << "it leaks on the success path";
+
+    const long total = probe.attempts;
+    ASSERT_GT(total, 0L);
+    for (long i = 1; i <= total; i++) {
+      gimg_test::Failing f;
+      gimg_test::init(f);
+      f.fail_at = i;
+      const GIMG_Result r = run(f, nullptr);
+      total_injections++;
+      EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM || r == GIMG_ERR_CORRUPT ||
+          r == GIMG_ERR_FORMAT || r == GIMG_ERR_LIMIT ||
+          r == GIMG_ERR_UNSUPPORTED)
+          << "allocation " << i << " of " << total << " failed and the load "
+          << "returned " << (int)r;
+      EXPECT_EQ(f.outstanding, 0)
+          << f.outstanding << " block(s) leaked when allocation " << i
+          << " of " << total << " failed";
+      if (f.outstanding != 0) { break; }
+    }
+  }
+  std::printf("  thumbnail attach paths: %ld injected loads over %zu forms\n",
+      total_injections, cases.size());
+}
