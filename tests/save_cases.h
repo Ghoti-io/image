@@ -347,6 +347,16 @@ inline std::vector<SaveCase> save_cases(void) {
         0u, nullptr});
   }
   {
+    // The twelve-bit scan writer is a separate function with its own
+    // alphabets, so the eight-bit cases say nothing about it.
+    GIMG_Save_Options o = opt();
+    o.jpeg_progressive = 1;
+    o.jpeg_progressive_config = simple_progression();
+    o.jpeg_precision = 12;
+    cases.push_back({"jpeg successive 12-bit", "jpeg", &GIMG_PIXEL_RGBA12, o,
+        0u, nullptr});
+  }
+  {
     GIMG_Save_Options o = opt();
     cases.push_back({"jpeg every app segment", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u,
         attach_jpeg_app_segments});
