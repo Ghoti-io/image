@@ -5818,6 +5818,64 @@ std::vector<uint8_t> make_progressive_dc_only_jpeg(bool define_ac) {
 
 } // namespace
 
+namespace {
+
+/**
+ * An 8x8 twelve-bit extended-sequential JPEG whose single component asks for
+ * quantisation table @p tq.
+ *
+ * SOF1 rather than SOF0 on purpose: T.81 Table B.2 fixes baseline at eight
+ * bits, so the same frame written as SOF0 is refused while it is being loaded
+ * and never reaches a decoder at all. Twelve bits is what routes it to the
+ * extended decoder, which is the one that owns the check under test.
+ */
+std::vector<uint8_t> make_twelve_bit_jpeg(uint8_t tq) {
+  std::vector<uint8_t> buf;
+  append(buf, (const unsigned char *)"\xFF\xD8", 2);
+  // SOF1: L=11, P=12, Y=8, X=8, Nf=1, C=0 H=1 V=1 Tq.
+  append(buf, (const unsigned char *)"\xFF\xC1\x00\x0B\x0C\x00\x08\x00\x08\x01\x00\x11", 12);
+  buf.push_back(tq);
+  // DQT for table 0 only, Pq=1 as B.2.4.1 requires at twelve bits.
+  append(buf, (const unsigned char *)"\xFF\xDB\x00\x83\x10", 5);
+  for (int i = 0; i < 64; i++) { buf.push_back(0); buf.push_back(1); }
+  append_dht_counts(buf, 0x00, {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      0x00);
+  append_dht_counts(buf, 0x10, {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      0x00);
+  append(buf, (const unsigned char *)"\xFF\xDA\x00\x08\x01\x00\x00\x00\x3F\x00", 10);
+  buf.push_back(0x00);
+  append(buf, (const unsigned char *)"\xFF\xD9", 2);
+  return buf;
+}
+
+} // namespace
+
+/**
+ * A frame naming a quantisation table the file never defined is refused.
+ *
+ * T.81 B.2.2 has each component name the table to dequantise it with, and
+ * nothing obliges the file to have sent that table. Believing the reference
+ * would read a table full of whatever the state was initialised to.
+ *
+ * Twelve bits is what makes this reachable. The check belongs to the extended
+ * decoder, which handles every precision but eight, and an eight-bit frame
+ * with the same defect is refused by a check that runs earlier - measured, by
+ * counting entries into both. The equivalent progressive frame is refused
+ * earlier still, in jpeg_decode_progressive_scans, so the copy of this check
+ * in the progressive decoder stays shadowed.
+ *
+ * The control is the same frame asking for table 0, which the file does
+ * define: it must decode, or this would be measuring whether a hand-built
+ * twelve-bit frame is readable at all rather than what it asks for.
+ */
+TEST(JpegLoad, AFrameNamingAnUndefinedQuantTableIsRefused) {
+  EXPECT_EQ(decode_size(make_twelve_bit_jpeg(0), nullptr, nullptr), GIMG_OK)
+      << "control: table 0 is defined, so this frame decodes";
+  EXPECT_EQ(decode_size(make_twelve_bit_jpeg(1), nullptr, nullptr),
+      GIMG_ERR_CORRUPT)
+      << "no DQT ever defined table 1";
+}
+
 /**
  * A progressive scan naming an AC table the file never defined still decodes.
  *

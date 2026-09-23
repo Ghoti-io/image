@@ -268,6 +268,13 @@ static GIMG_Result jpeg_decode_baseline_extended(
           if (sof->comp_id[comp_idx] == scan0->comp_id[s])
             break;
         }
+        // Shadowed: the loader matches every scan's component selector
+        // against the frame's components and refuses the file when one names
+        // a component the frame does not have, so this cannot fire from any
+        // input.  Measured - a crafted frame whose scan names component 7 is
+        // refused with GIMG_ERR_FORMAT while it is still being loaded, and
+        // this branch never runs.  Kept because it guards the indexing two
+        // lines down.
         if (comp_idx >= num_comp) {
           goto ext_fail;
         }
@@ -943,6 +950,11 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
             break;
           }
         }
+        // Shadowed twice over: by the loader, as in the extended sequential
+        // decoder above, and by jpeg_decode_progressive_scans(), which walks
+        // the same scans first and refuses the file before this decoder is
+        // reached.  A progressive frame carrying either defect comes back
+        // GIMG_ERR_CORRUPT from there, with neither of these branches run.
         if (comp_idx >= num_comp) {
           goto fail_comp;
         }
