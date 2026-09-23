@@ -178,9 +178,27 @@ endif
 #
 # `make coverage` appends --coverage -O0 through EXTRA_CFLAGS, which lands
 # after this one, and the last -O wins. `make tsan` does not use CFLAGS at all
-# and carries its own -O1. `make asan` does use CFLAGS and ASAN_UBSAN_FLAGS
-# adds no -O of its own, so the sanitizer build takes whichever level is set
-# here - -O3 for release, and now -O0 under BUILD=debug.
+# and carries its own -O1. `make fuzz` builds its own compile line and does not
+# see this variable either.
+#
+# `make asan` DOES use CFLAGS, and ASAN_UBSAN_FLAGS adds no -O of its own, so
+# the sanitizer build takes whichever level is set here.  Measured on compile
+# lines only:
+#
+#   make -n test-asan PREFIX=... | grep -- ' -c ' | grep -oE -- '-O[0-3s]'
+#     59 C translation units at -O3   (this variable, via CFLAGS)
+#     35 C++ test units    at -O1   (CXXFLAGS, which does not follow it)
+#
+# Filtering to ` -c ` matters: unfiltered the same command reports 69 -O1
+# rather than 35, because g++ is also the linker driver and carries CXXFLAGS
+# onto 34 link lines, where the -O does nothing without LTO.
+#
+# So this library's ASan gate runs at what ships, not at the -O1 that is the
+# usual recommendation for it.  That is recorded rather than changed: whether
+# a sanitizer gate should be pinned at -O1 for legible traces, or should run
+# at the level that actually ships, is a real question with honest arguments
+# both ways, and it is a suite-wide decision rather than this Makefile's.
+# Under BUILD=debug the gate follows to -O0.
 ifeq ($(BUILD),debug)
 OPT_CFLAGS := -O0
 else
