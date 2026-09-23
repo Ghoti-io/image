@@ -1040,6 +1040,164 @@ bool round_trip_exif(const std::vector<uint8_t> & exif,
 
 } // namespace
 
+namespace {
+/** Build a doc in memory, attach `exif` as its eXIf, save PNG under `policy`,
+ * and return the eXIf chunk payload the writer emitted (empty if none). */
+bool fresh_doc_exif(const std::vector<uint8_t> & exif, GIMG_Meta_Policy policy,
+    std::vector<uint8_t> & out_exif, GIMG_Result * out_save) {
+  out_exif.clear();
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_create(&doc) != GIMG_OK) { return false; }
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(4, 3, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0,
+          &raster) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return false;
+  }
+  memset(gimg_raster_pixels(raster), 0x55,
+      gimg_raster_stride_bytes(raster) * 3u);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  // A fresh doc has no raw-metadata block until something asks for one;
+  // gimg_doc_meta_raw only reports what is there.
+  GIMG_Meta_Raw * raw = nullptr;
+  if (gimg_doc_ensure_meta_raw(doc, &raw) != GIMG_OK || !raw) {
+    gimg_doc_destroy(doc);
+    return false;
+  }
+  if (gimg_meta_raw_attach(raw, "png", 0x65584966u, exif.data(), exif.size()) !=
+      GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return false;
+  }
+  GIMG_Stream * out = nullptr;
+  if (gimg_stream_create_memory_output(&out) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    return false;
+  }
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = policy;
+  GIMG_Save_Report report = {};
+  const GIMG_Result sr = gimg_doc_save(doc, out, "png", &opts, &report);
+  if (out_save) { *out_save = sr; }
+  gimg_doc_destroy(doc);
+  if (sr != GIMG_OK) { gimg_stream_destroy(out); return true; }
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out, &p, &n);
+  const std::vector<uint8_t> saved(
+      (const uint8_t *)p, (const uint8_t *)p + n);
+  gimg_stream_destroy(out);
+  for (size_t i = 8; i + 8 < saved.size();) {
+    const unsigned len = ((unsigned)saved[i] << 24) |
+        ((unsigned)saved[i + 1] << 16) | ((unsigned)saved[i + 2] << 8) |
+        (unsigned)saved[i + 3];
+    if (memcmp(&saved[i + 4], "eXIf", 4) == 0) {
+      out_exif.assign(saved.begin() + (long)i + 8,
+          saved.begin() + (long)i + 8 + (long)len);
+      break;
+    }
+    i += 12u + len;
+  }
+  return true;
+}
+} // namespace
+
+// A document built in memory rather than loaded from a PNG still carries Exif
+// through a save: gimg_doc_meta_raw is public and gimg_meta_raw_attach fills
+// it, which is how a caller who made an image attaches Exif to it.  The writer
+// takes a different branch for that case - there is no gimg_png_doc_state_t to
+// read the chunk back out of - and every existing Exif test here loads
+// png_exif.png first, so that branch and the two Exif policies inside it had
+// never run.
+TEST(PngEncode, ExifAttachedToADocumentBuiltInMemoryIsWrittenAndFiltered) {
+  const std::vector<uint8_t> exif = make_exif_with_gps();
+  ASSERT_TRUE(exif_has_gps_tag(exif)) << "the fixture must start with GPS";
+
+  // The control: the chunk is written at all, and keeps its GPS.
+  std::vector<uint8_t> kept;
+  GIMG_Result sr = GIMG_ERR_INTERNAL;
+  ASSERT_TRUE(fresh_doc_exif(exif, GIMG_META_PRESERVE_ALL, kept, &sr));
+  ASSERT_EQ(sr, GIMG_OK);
+  ASSERT_FALSE(kept.empty())
+      << "no eXIf chunk: a doc built in memory lost its Exif on save";
+  EXPECT_TRUE(exif_has_gps_tag(kept));
+  EXPECT_EQ(exif_ifd0_entry_count(kept), 3);
+
+  // The policy is applied on this branch too.
+  std::vector<uint8_t> stripped;
+  ASSERT_TRUE(fresh_doc_exif(exif, GIMG_META_STRIP_GPS, stripped, &sr));
+  ASSERT_EQ(sr, GIMG_OK);
+  ASSERT_FALSE(stripped.empty()) << "STRIP_GPS removes GPS, not all Exif";
+  EXPECT_FALSE(exif_has_gps_tag(stripped)) << "STRIP_GPS left tag 0x8825";
+  EXPECT_EQ(exif_ifd0_entry_count(stripped), 2);
+  EXPECT_LT(stripped.size(), kept.size());
+
+  // NORMALIZE_EXIF rewrites rather than drops.
+  std::vector<uint8_t> normalized;
+  ASSERT_TRUE(fresh_doc_exif(exif, GIMG_META_NORMALIZE_EXIF, normalized, &sr));
+  ASSERT_EQ(sr, GIMG_OK);
+  EXPECT_FALSE(normalized.empty())
+      << "NORMALIZE_EXIF dropped the chunk instead of rewriting it";
+}
+
+// gimg_doc_copy is documented as not copying codec_private - "the result is a
+// synthetic document" - while deep-copying meta_raw.  So copying a PNG that
+// carries Exif and saving the copy is the ordinary route into the same
+// stateless branch, and is exactly the "save variants" use the copy function
+// names.  The Exif has to survive that, or copying a document quietly loses
+// metadata it says it copied.
+TEST(PngEncode, ACopiedDocumentKeepsTheExifItsOriginalCarried) {
+  std::vector<uint8_t> file;
+  ASSERT_TRUE(png_test::load_png_file("png_exif.png", file));
+  const std::vector<uint8_t> exif = make_exif_with_gps();
+  ASSERT_TRUE(replace_exif_chunk(file, exif));
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(file.data(), file.size(), &in), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(in);
+  // The raster has to be decoded before the copy: a copy takes attached
+  // rasters, and an item that was loaded but never decoded copies as an item
+  // with no raster.
+  ASSERT_EQ(gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr), GIMG_OK);
+
+  GIMG_Doc * copy = nullptr;
+  ASSERT_EQ(gimg_doc_copy(doc, &copy), GIMG_OK);
+  gimg_doc_destroy(doc);
+  ASSERT_NE(copy, nullptr);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(copy, out, "png", &opts, &report), GIMG_OK);
+  gimg_doc_destroy(copy);
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out, &p, &n);
+  const std::vector<uint8_t> saved(
+      (const uint8_t *)p, (const uint8_t *)p + n);
+  gimg_stream_destroy(out);
+
+  std::vector<uint8_t> got;
+  for (size_t i = 8; i + 8 < saved.size();) {
+    const unsigned len = ((unsigned)saved[i] << 24) |
+        ((unsigned)saved[i + 1] << 16) | ((unsigned)saved[i + 2] << 8) |
+        (unsigned)saved[i + 3];
+    if (memcmp(&saved[i + 4], "eXIf", 4) == 0) {
+      got.assign(saved.begin() + (long)i + 8,
+          saved.begin() + (long)i + 8 + (long)len);
+      break;
+    }
+    i += 12u + len;
+  }
+  ASSERT_FALSE(got.empty()) << "the copy was saved without its eXIf chunk";
+  EXPECT_TRUE(exif_has_gps_tag(got));
+  EXPECT_EQ(exif_ifd0_entry_count(got), 3);
+}
+
 /**
  * The control: without the policy, the GPS pointer survives a save.
  *
