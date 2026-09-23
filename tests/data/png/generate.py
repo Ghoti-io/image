@@ -628,6 +628,96 @@ def _write_apng_blend_fixtures() -> None:
     )
     write_png("png_apng_blend_over_partial16.png", png16)
 
+    # The canvas an APNG composites into is chosen by colour type, and every
+    # APNG fixture was colour type 0 or 6 - so the arms for truecolour,
+    # palette and gray+alpha had never run. Each of these is paired with an
+    # RGBA8 file holding the same picture already expanded, so the test is a
+    # differential: the colour type must not change the composite. That needs
+    # no hand-written expectation table and no outside decoder.
+    def apng_pair(name, ihdr_extra, depth, colour_type, prelude,
+                  frame0_raw, frame1_raw, rgba0, rgba1):
+        png = (
+            signature
+            + png_chunk(b"IHDR",
+                        struct.pack(">IIBBBBB", w, h, depth, colour_type,
+                                    0, 0, 0))
+            + prelude
+            + png_chunk(b"acTL", struct.pack(">II", 2, 0))
+            + png_chunk(b"fcTL", fctl(0, 0, 0))
+            + png_chunk(b"IDAT", idat_zlib(frame0_raw))
+            + png_chunk(b"fcTL", fctl(1, 0, 1))
+            + png_chunk(b"fdAT", struct.pack(">I", 2) + idat_zlib(frame1_raw))
+            + png_chunk(b"IEND", b"")
+        )
+        write_png(f"png_apng_{name}.png", png)
+        equiv = (
+            signature
+            + png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + png_chunk(b"acTL", struct.pack(">II", 2, 0))
+            + png_chunk(b"fcTL", fctl(0, 0, 0))
+            + png_chunk(b"IDAT", idat_zlib(rgba_raw(rgba0)))
+            + png_chunk(b"fcTL", fctl(1, 0, 1))
+            + png_chunk(b"fdAT",
+                        struct.pack(">I", 2) + idat_zlib(rgba_raw(rgba1)))
+            + png_chunk(b"IEND", b"")
+        )
+        write_png(f"png_apng_{name}_rgba.png", equiv)
+        _ = ihdr_extra
+
+    # Colour type 2, with a tRNS key so the alpha is not trivially opaque.
+    key = (255, 0, 0)
+    rgb0 = [[(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)],
+            [(0, 128, 255), (255, 0, 255), (128, 128, 128), (10, 20, 30)]]
+    rgb1 = [[(0, 0, 255), (255, 255, 255), (0, 0, 0), (0, 255, 255)],
+            [(255, 255, 0), (0, 0, 0), (255, 255, 255), (255, 0, 0)]]
+
+    def rgb_raw(rows):
+        return b"".join(b"\x00" + b"".join(struct.pack("BBB", *px)
+                                           for px in row) for row in rows)
+
+    def keyed(rows):
+        return [[px + ((0,) if px == key else (255,)) for px in row]
+                for row in rows]
+
+    apng_pair("ct2_trns", None, 8, 2,
+              png_chunk(b"tRNS", struct.pack(">HHH", *key)),
+              rgb_raw(rgb0), rgb_raw(rgb1), keyed(rgb0), keyed(rgb1))
+
+    # Colour type 3, with a per-entry tRNS: one entry invisible, one partial.
+    palette = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0),
+               (128, 128, 128)]
+    alphas = [0, 128, 255, 255, 255]
+    idx0 = [[0, 1, 2, 3], [4, 0, 1, 2]]
+    idx1 = [[1, 1, 0, 0], [2, 3, 4, 0]]
+
+    def idx_raw(rows):
+        return b"".join(b"\x00" + bytes(row) for row in rows)
+
+    def expand(rows):
+        return [[palette[i] + (alphas[i],) for i in row] for row in rows]
+
+    apng_pair("ct3_trns", None, 8, 3,
+              png_chunk(b"PLTE",
+                        b"".join(struct.pack("BBB", *c) for c in palette))
+              + png_chunk(b"tRNS", bytes(alphas)),
+              idx_raw(idx0), idx_raw(idx1), expand(idx0), expand(idx1))
+
+    # Colour type 4: gray + alpha, alphas spanning the range.
+    ga0 = [[(255, 0), (128, 64), (64, 128), (0, 255)],
+           [(200, 32), (100, 192), (50, 96), (10, 255)]]
+    ga1 = [[(0, 128), (255, 128), (0, 64), (128, 192)],
+           [(255, 200), (0, 128), (255, 255), (1, 0)]]
+
+    def ga_raw(rows):
+        return b"".join(b"\x00" + b"".join(struct.pack("BB", *px)
+                                           for px in row) for row in rows)
+
+    def gray_rgba(rows):
+        return [[(g, g, g, a) for (g, a) in row] for row in rows]
+
+    apng_pair("ct4", None, 8, 4, b"",
+              ga_raw(ga0), ga_raw(ga1), gray_rgba(ga0), gray_rgba(ga1))
+
 
 def _write_16bit_trns_fixtures() -> None:
     """Sixteen-bit gray and truecolour with a tRNS key.

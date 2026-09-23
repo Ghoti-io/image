@@ -2914,3 +2914,77 @@ TEST(PngDecode, ASixteenBitFrameBlendsTheSameWayAnEightBitOneDoes) {
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
 }
+
+/**
+ * The colour type an APNG is stored in must not change the picture it makes.
+ *
+ * The canvas an APNG composites into is chosen by colour type, and every APNG
+ * fixture was type 0 or 6 - so the arms for truecolour, palette and
+ * gray+alpha had never run, in a decoder where the frame also has to be
+ * expanded to RGBA (a tRNS key for type 2, per-entry alpha for type 3,
+ * replicated gray for type 4) before it can be blended at all.
+ *
+ * Each fixture is paired with an RGBA8 file holding the same picture already
+ * expanded, so this is a differential rather than a table of expected pixels:
+ * whatever the right answer is, both files must give it. That needs no
+ * hand-written expectation - which would be a second chance to encode the
+ * same misunderstanding - and no outside decoder, which on this format has
+ * already been shown to share our mistakes.
+ */
+TEST(PngDecode, AnApngsColorTypeDoesNotChangeThePictureItComposites) {
+  const struct {
+    const char * typed;
+    const char * rgba;
+    const char * what;
+  } cases[] = {
+      {"png_apng_ct2_trns.png", "png_apng_ct2_trns_rgba.png",
+          "truecolour with a tRNS key"},
+      {"png_apng_ct3_trns.png", "png_apng_ct3_trns_rgba.png",
+          "palette with per-entry alpha"},
+      {"png_apng_ct4.png", "png_apng_ct4_rgba.png", "gray plus alpha"},
+  };
+
+  for (const auto & c : cases) {
+    SCOPED_TRACE(c.what);
+    std::vector<uint8_t> frames[2][2]; // [file][frame index]
+    const char * names[2] = {c.typed, c.rgba};
+    for (int f = 0; f < 2; f++) {
+      std::vector<uint8_t> bytes;
+      ASSERT_TRUE(png_test::load_png_file(names[f], bytes)) << names[f];
+      GIMG_Stream * s = nullptr;
+      ASSERT_EQ(
+          gimg_stream_create_memory(bytes.data(), bytes.size(), &s), GIMG_OK);
+      GIMG_Doc * doc = nullptr;
+      ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK) << names[f];
+      ASSERT_EQ(gimg_doc_item_count(doc), 2u) << names[f];
+      for (size_t i = 0; i < 2; i++) {
+        GIMG_Raster * r = nullptr;
+        ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, i), nullptr, &r),
+            GIMG_OK);
+        ASSERT_NE(r, nullptr);
+        const GIMG_Pixel_Format * fmt = gimg_raster_format(r);
+        // Both sides decode to a composited RGBA8 canvas; if that ever stops
+        // being true the comparison below would be meaningless.
+        ASSERT_EQ(fmt->channel_count, 4);
+        ASSERT_EQ(fmt->bits_per_channel[0], 8);
+        const uint32_t w = gimg_raster_width(r), h = gimg_raster_height(r);
+        const size_t stride = gimg_raster_stride_bytes(r);
+        const auto * p = (const uint8_t *)gimg_raster_pixels_const(r);
+        frames[f][i].resize((size_t)w * h * 4u);
+        for (uint32_t y = 0; y < h; y++) {
+          memcpy(frames[f][i].data() + (size_t)y * w * 4u,
+              p + (size_t)y * stride, (size_t)w * 4u);
+        }
+        gimg_raster_destroy(r);
+      }
+      gimg_doc_destroy(doc);
+      gimg_stream_destroy(s);
+    }
+    ASSERT_FALSE(frames[0][0].empty());
+    EXPECT_EQ(frames[0][0], frames[1][0])
+        << "the first frame already differs, so the expansion to RGBA is "
+           "wrong before any compositing happens";
+    EXPECT_EQ(frames[0][1], frames[1][1])
+        << "the frames expand the same way but composite differently";
+  }
+}
