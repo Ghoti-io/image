@@ -103,8 +103,9 @@ static int jpeg_bitstream_skip_marker_at_ff(gimg_jpeg_bitstream_t * bs) {
  * Step over what follows a 0xFF the reader has just consumed the bits of.
  *
  * Call only when byte_off was advanced past a 0xFF byte.  By the invariant
- * described above, what follows is the 0x00 of byte stuffing, or a restart
- * marker, or nothing this reader may move over.
+ * described above, what follows is the 0x00 of byte stuffing that B.1.1.5
+ * requires after every 0xFF the entropy coder emits, or something this
+ * reader may not move over.
  */
 static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
   if (bs->byte_off >= bs->size) {
@@ -121,19 +122,14 @@ static void jpeg_bitstream_skip_after_ff(gimg_jpeg_bitstream_t * bs) {
     bs->byte_off++; // T.81 B.2.2
     return;
   }
-  if (m == 0xFF && bs->byte_off + 1 < bs->size &&
-      bs->data[bs->byte_off + 1] >= 0xD0 &&
-      bs->data[bs->byte_off + 1] <= 0xD7 && bs->expect_rst) {
-    bs->expect_rst = 0;
-#if GIMG_JPEG_DEBUG_RST_DEC
-    (void)fprintf(stderr, "RST_DEC skip_after_ff (0xFF 0xDx) at byte_off=%zu\n",
-        bs->byte_off - 1);
-    (void)fflush(stderr);
-#endif
-    bs->byte_off += 2;
-    bs->bit_off = 0;
-    bs->rst_just_skipped = 1;
-  }
+  // A restart marker used to be consumed here as well, for the shape
+  // 0xFF 0xFF 0xDn - a data 0xFF followed by a fill byte and a marker.  It
+  // never ran: B.1.1.5 stuffs a 0x00 after every 0xFF the entropy coder
+  // emits, so the byte after a data 0xFF is 0x00 in any conformant stream,
+  // and a non-conformant one has no claim on being decoded.  Deleting it
+  // leaves every test passing, fill-byte streams included - those are
+  // handled by jpeg_bitstream_align_skip_rst(), which is where the decoder
+  // actually looks for a restart marker.
 }
 
 int jpeg_bitstream_read_bit(gimg_jpeg_bitstream_t * bs) {
@@ -380,11 +376,15 @@ void jpeg_bitstream_align_skip_rst(gimg_jpeg_bitstream_t * bs) {
       pos += 1;
     }
   }
-  // B.1.1.2: any number of 0xFF fill bytes may precede a marker.
-  while (pos + 1 < bs->size && bs->data[pos] == 0xFF &&
-      bs->data[pos + 1] == 0xFF) {
-    pos++;
-  }
+  // B.1.1.2 permits any number of 0xFF fill bytes before a marker, and a loop
+  // skipping them used to stand here.  It was measured, with a counter inside
+  // it, to run zero times: a stream padded with one to four fill bytes before
+  // every restart marker still decodes to identical pixels without it,
+  // because the fill is consumed by the bit reader as data bits before
+  // alignment runs, so `pos` already points at the marker when it gets here.
+  // Restored only against an input that reaches it - see
+  // FillBytesBeforeARestartMarkerAreSteppedOver, which covers the behaviour
+  // and does not reach this.
   if (pos + 1 >= bs->size) {
     return;
   }
