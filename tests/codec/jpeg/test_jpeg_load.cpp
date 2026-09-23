@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <set>
+#include <dirent.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -8156,4 +8157,111 @@ TEST(JpegLoad, EveryThumbnailPathGivesTheRasterBackWhenTheDocumentCannotGrow) {
   }
   std::printf("  thumbnail attach paths: %ld injected loads over %zu forms\n",
       total_injections, cases.size());
+}
+
+namespace {
+
+/** Decode with @p options and report the raster's shape as well as its hash. */
+Decoded decode_described_with(const std::vector<uint8_t> & bytes,
+    const GIMG_Decode_Options * options) {
+  Decoded d;
+  GIMG_Stream * s = nullptr;
+  d.result = gimg_stream_create_memory(bytes.data(), bytes.size(), &s);
+  if (d.result != GIMG_OK) { return d; }
+  GIMG_Doc * doc = nullptr;
+  d.result = gimg_doc_load(s, nullptr, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (d.result != GIMG_OK) { return d; }
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  GIMG_Raster * ras = nullptr;
+  d.result = item ? gimg_item_decode(item, options, &ras) : GIMG_ERR_INTERNAL;
+  if (d.result == GIMG_OK && ras) {
+    d.w = gimg_raster_width(ras);
+    d.h = gimg_raster_height(ras);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(ras);
+    d.channels = fmt ? fmt->channel_count : 0;
+    d.bits = fmt ? gimg_pixel_format_channel_bits(fmt, 0) : 0;
+    d.hash = jpeg_test::raster_pixel_hash(ras);
+  }
+  if (ras) { gimg_raster_destroy(ras); }
+  gimg_doc_destroy(doc);
+  return d;
+}
+
+} // namespace
+
+// The chroma upsampling option, asked of every decoder in the file.
+//
+// GIMG_Decode_Options::jpeg_chroma_upsampling is read in eight places: once
+// per emitter, and the decoder has one emitter per shape of frame - baseline
+// YCbCr, four components, an unknown component count, twelve-bit forms of
+// each, RGB frames, and the progressive extended path.  Only the first of
+// them had ever been given options.  The other seven read the field for the
+// first time here, which means a caller asking any of those decoders for the
+// box filter had been given the triangle one, silently.
+//
+// Enumerating is the point.  Which emitter a file reaches is decided by the
+// file - component count, precision, entropy coder, progressive or not - so a
+// list of names samples an axis whose members each answer separately, and the
+// names anyone would have picked are the ones already covered.
+//
+// Two things are asserted of every fixture: that naming the default filter
+// changes nothing, and that asking for the box filter still produces a raster
+// of the same shape.  The third is counted rather than asserted per file,
+// because a fixture with no subsampling has nothing to upsample and must come
+// out identical: across the tree, a good many must differ, or the option is
+// not reaching the emitters at all.
+TEST(JpegLoad, EveryDecoderHonoursTheChromaUpsamplingOption) {
+  DIR * dp = opendir(GIMG_TEST_DATA_JPEG);
+  ASSERT_NE(dp, nullptr) << "cannot read " << GIMG_TEST_DATA_JPEG;
+  std::vector<std::string> names;
+  while (struct dirent * e = readdir(dp)) {
+    const std::string n = e->d_name;
+    if (n.size() > 4 && n.compare(n.size() - 4, 4, ".jpg") == 0) {
+      names.push_back(n);
+    }
+  }
+  closedir(dp);
+  std::sort(names.begin(), names.end());
+
+  GIMG_Decode_Options fancy = {};
+  fancy.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_FANCY;
+  GIMG_Decode_Options simple = {};
+  simple.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE;
+
+  long decoded = 0, differed = 0;
+  for (const std::string & name : names) {
+    std::vector<uint8_t> bytes;
+    if (!jpeg_test::load_jpeg_file(name.c_str(), bytes)) { continue; }
+    const Decoded base = decode_described_with(bytes, nullptr);
+    if (base.result != GIMG_OK) { continue; }  // Many here are malformed.
+    decoded++;
+    SCOPED_TRACE(name);
+
+    const Decoded f = decode_described_with(bytes, &fancy);
+    EXPECT_EQ(f.result, GIMG_OK);
+    EXPECT_EQ(f.hash, base.hash)
+        << "the triangle filter is the default, so naming it must not change "
+           "the picture";
+
+    const Decoded s = decode_described_with(bytes, &simple);
+    EXPECT_EQ(s.result, GIMG_OK)
+        << "the box filter must not make a decodable file undecodable";
+    EXPECT_EQ(s.w, base.w);
+    EXPECT_EQ(s.h, base.h);
+    EXPECT_EQ(s.channels, base.channels);
+    EXPECT_EQ(s.bits, base.bits)
+        << "the filter chooses how chroma is read, not how wide a sample is";
+    if (s.hash != base.hash) { differed++; }
+  }
+
+  std::printf("  %ld fixtures decoded, %ld drew differently under the box "
+              "filter\n", decoded, differed);
+  ASSERT_GT(decoded, 120)
+      << "only " << decoded << " fixtures decoded - a sweep this narrow is "
+                               "not reaching the emitters it claims to";
+  EXPECT_GT(differed, 30)
+      << "only " << differed << " fixtures changed under the box filter; if "
+         "the option were being dropped on the floor this is exactly what it "
+         "would look like";
 }

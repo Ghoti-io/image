@@ -8615,6 +8615,26 @@ TEST(JpegEncode, AFrameCarriesAsManyComponentsAsItSays) {
       EXPECT_EQ(gimg_raster_width(got.r), w);
       EXPECT_EQ(gimg_raster_height(got.r), h);
 
+      // And again with the box filter named explicitly.  These two arms of
+      // the decoder - the eight-bit one and the extended one - are the only
+      // places the upsampling option was never read: nothing but this test
+      // produces a frame with two components or with five, so nothing but
+      // this test can hand those arms a GIMG_Decode_Options at all, and it
+      // was decoding with NULL.  A component here is written at 1x1, so
+      // there is nothing to upsample and the two filters must agree exactly;
+      // what that pins is that the SIMPLE branch of these arms exists and
+      // emits the same picture, rather than being unreachable code.
+      GIMG_Decode_Options simple = {};
+      simple.jpeg_chroma_upsampling = GIMG_JPEG_CHROMA_UPSAMPLE_SIMPLE;
+      RasterGuard box;
+      ASSERT_EQ(
+          gimg_item_decode(gimg_doc_item(in.d, 0), &simple, &box.r), GIMG_OK);
+      ASSERT_NE(box.r, nullptr);
+      EXPECT_EQ(jpeg_test::raster_pixel_hash(box.r),
+          jpeg_test::raster_pixel_hash(got.r))
+          << "nothing is subsampled here, so the box filter and the triangle "
+             "filter must draw the same picture";
+
       // One and three components are named shapes - gray and YCbCr - and come
       // back as the library's gray and RGBA rasters. The rest have no
       // convention, so the count is carried through as it arrived.
