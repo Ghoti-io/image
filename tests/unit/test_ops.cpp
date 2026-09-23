@@ -277,6 +277,90 @@ TEST(Ops, RasterEqualNull) {
   gimg_raster_destroy(a);
 }
 
+// Alpha zero, at both ends of the premultiply pair.
+//
+// Premultiplying a transparent pixel zeroes its colour, because the colour is
+// multiplied by nothing; unpremultiplying one leaves it alone, because there
+// is nothing to divide by and 0/0 is not a colour.  The two are not each
+// other's inverse there, which is the whole reason both arms exist - and
+// neither had ever run, because the only test of the pair uses one pixel at
+// alpha 128.
+TEST(Ops, ATransparentPixelIsZeroedGoingInAndLeftAloneComingBack) {
+  GIMG_Raster * r = nullptr;
+  gimg_raster_create(
+      2, 1, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &r);
+  ASSERT_NE(r, nullptr);
+  unsigned char * p = (unsigned char *)gimg_raster_pixels(r);
+  // Transparent, with colour under it that nobody can see.
+  p[0] = 200; p[1] = 100; p[2] = 50; p[3] = 0;
+  // Opaque, as a control: whatever happens to it is not about alpha zero.
+  p[4] = 200; p[5] = 100; p[6] = 50; p[7] = 255;
+
+  ASSERT_EQ(gimg_alpha_premultiply(r), GIMG_OK);
+  EXPECT_EQ(p[0], 0) << "colour under alpha zero is multiplied away";
+  EXPECT_EQ(p[1], 0);
+  EXPECT_EQ(p[2], 0);
+  EXPECT_EQ(p[3], 0) << "and the alpha itself is untouched";
+  EXPECT_EQ(p[4], 200) << "control: an opaque pixel keeps its colour";
+  EXPECT_EQ(p[5], 100);
+  EXPECT_EQ(p[6], 50);
+
+  ASSERT_EQ(gimg_alpha_unpremultiply(r), GIMG_OK);
+  EXPECT_EQ(p[0], 0) << "there is nothing to divide by, so nothing changes - "
+                        "the pair is not an inverse at alpha zero, and the "
+                        "colour that was there is gone for good";
+  EXPECT_EQ(p[1], 0);
+  EXPECT_EQ(p[2], 0);
+  EXPECT_EQ(p[3], 0);
+  EXPECT_EQ(p[4], 200);
+  gimg_raster_destroy(r);
+}
+
+// Equality compares the format, not only the pixels.
+//
+// gimg_ops_raster_equal() checks the channel model, type and count, then the
+// bits per channel, and only then the bytes.  Only the dimensions and the
+// bytes had ever been asked: every test of it compares two RGBA8 rasters, so
+// two rasters of different formats had never been handed to it at all.
+//
+// The pairs below differ in one thing each, and each is a pair a caller could
+// plausibly hold - a grey raster beside a colour one, and eight bits beside
+// sixteen.
+TEST(Ops, RastersOfDifferentFormatsAreNotEqual) {
+  struct Case {
+    const GIMG_Pixel_Format * a;
+    const GIMG_Pixel_Format * b;
+    const char * what;
+  };
+  const Case cases[] = {
+      {&GIMG_PIXEL_GRAY8, &GIMG_PIXEL_RGBA8, "channel count and model"},
+      {&GIMG_PIXEL_GRAY8, &GIMG_PIXEL_GRAY16, "bits per channel"},
+      {&GIMG_PIXEL_RGBA8, &GIMG_PIXEL_RGBA16, "bits per channel, four of them"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    GIMG_Raster * a = nullptr;
+    GIMG_Raster * b = nullptr;
+    ASSERT_EQ(gimg_raster_create(2, 2, c.a, GIMG_RASTER_OWNED, nullptr, 0, &a),
+        GIMG_OK);
+    ASSERT_EQ(gimg_raster_create(2, 2, c.b, GIMG_RASTER_OWNED, nullptr, 0, &b),
+        GIMG_OK);
+    // Zeroed both ways, so nothing but the format can be the difference.
+    memset(gimg_raster_pixels(a), 0,
+        gimg_raster_stride_bytes(a) * gimg_raster_height(a));
+    memset(gimg_raster_pixels(b), 0,
+        gimg_raster_stride_bytes(b) * gimg_raster_height(b));
+    EXPECT_FALSE(gimg_ops_raster_equal(a, b));
+    EXPECT_FALSE(gimg_ops_raster_equal(b, a)) << "and the other way round";
+    EXPECT_TRUE(gimg_ops_raster_equal(a, a))
+        << "control: each is equal to itself, so the comparison is not "
+           "simply answering false";
+    EXPECT_TRUE(gimg_ops_raster_equal(b, b));
+    gimg_raster_destroy(a);
+    gimg_raster_destroy(b);
+  }
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
