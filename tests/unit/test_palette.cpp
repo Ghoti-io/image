@@ -550,6 +550,43 @@ TEST(Palette, TwoColoursIsTheSmallestAnimationWorthAsking) {
   gimg_raster_destroy(r);
 }
 
+// A quantization method outside the enum is refused.
+//
+// GIMG_Quantize_Method has exactly one value today, so the only way to reach
+// the check is to hold something that is not one - which a caller can do,
+// because an enum in C holds any integer of its underlying type, and a
+// caller building GIMG_Quantize_Options from a config file or another
+// library's constant is exactly how a stray value arrives.  Refusing is
+// right: the alternative is quantizing by whatever method happens to be
+// first and reporting success.
+//
+// Nothing had ever passed one, because there is no second method to pass.
+TEST(Palette, AQuantizeMethodOutsideTheEnumIsRefused) {
+  GIMG_Raster * r = make(8, 8, ramp);
+  ASSERT_NE(r, nullptr);
+  const GIMG_Raster * frames[1] = {r};
+
+  // Control: the one method there is works.
+  GIMG_Quantize_Options ok;
+  memset(&ok, 0, sizeof(ok));
+  ok.max_colors = 8u;
+  ok.method = GIMG_QUANTIZE_MEDIAN_CUT;
+  GIMG_Palette p;
+  ASSERT_EQ(gimg_ops_palette_build(frames, 1u, &ok, &p), GIMG_OK);
+
+  for (int bad : {(int)GIMG_QUANTIZE_METHOD_COUNT, 7, -1, 1000}) {
+    SCOPED_TRACE(bad);
+    GIMG_Quantize_Options q;
+    memset(&q, 0, sizeof(q));
+    q.max_colors = 8u;
+    q.method = (GIMG_Quantize_Method)bad;
+    GIMG_Palette out;
+    memset(&out, 0xAB, sizeof(out));
+    EXPECT_EQ(gimg_ops_palette_build(frames, 1u, &q, &out), GIMG_ERR_INTERNAL);
+  }
+  gimg_raster_destroy(r);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
