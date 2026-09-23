@@ -8820,3 +8820,59 @@ TEST(JpegEncode, ATableWantingLongCodewordsIsBroughtInsideSixteenBits) {
   EXPECT_EQ(jpeg_build_huff_table(fpayload.data(), fpayload.size(), &tbl), 0)
       << "control: an ordinary distribution builds a table the decoder takes";
 }
+
+/**
+ * The table generator answers a degenerate request without inventing a table.
+ *
+ * Two shapes reach it and neither comes from an image. A symbol count outside
+ * 1..256 is a caller error - T.81 B.2.4.2 allows no more - and frequencies
+ * that are all zero are a scan that coded nothing, which a hierarchical or
+ * differential frame can produce when a component's every block is empty.
+ *
+ * Both must come back saying so rather than half-filled: a `bits` array left
+ * holding whatever was on the stack would be written into a DHT segment as if
+ * it meant something.
+ *
+ * The control is a distribution that does define a table, so that "out_n is
+ * zero" is a statement about these inputs and not about the generator.
+ */
+TEST(JpegEncode, AGeneratorAskedForNoTableReturnsNone) {
+  unsigned char bits[17];
+  unsigned char vals[256];
+  int n = -1;
+
+  // Frequencies all zero: only the generator's own reserved symbol is live,
+  // and one symbol is not a code.
+  std::vector<uint32_t> none(257, 0);
+  memset(bits, 0xAA, sizeof bits);
+  n = -1;
+  jpeg_gen_huff_table(none.data(), 256, bits, vals, &n);
+  EXPECT_EQ(n, 0) << "no frequency means no symbol to give a codeword to";
+  for (int L = 1; L <= 16; L++) {
+    EXPECT_EQ(bits[L], 0) << "length " << L << " must be cleared, not left "
+                             "holding what was on the stack";
+  }
+
+  // A symbol count T.81 does not allow, either side.
+  for (int bad : {0, 257, -1}) {
+    std::vector<uint32_t> freq(300, 7);
+    memset(bits, 0xAA, sizeof bits);
+    n = -1;
+    jpeg_gen_huff_table(freq.data(), bad, bits, vals, &n);
+    EXPECT_EQ(n, 0) << "num_symbols " << bad << " is not a table";
+    for (int L = 1; L <= 16; L++) {
+      EXPECT_EQ(bits[L], 0) << "num_symbols " << bad << ", length " << L;
+    }
+  }
+
+  // Control: an ordinary request still produces a table.
+  std::vector<uint32_t> ok(257, 0);
+  for (int i = 0; i < 8; i++) { ok[(size_t)i] = (uint32_t)(i + 1); }
+  memset(bits, 0xAA, sizeof bits);
+  n = -1;
+  jpeg_gen_huff_table(ok.data(), 256, bits, vals, &n);
+  EXPECT_EQ(n, 8) << "control: eight frequencies, eight codewords";
+  int total = 0;
+  for (int L = 1; L <= 16; L++) { total += bits[L]; }
+  EXPECT_EQ(total, n);
+}
