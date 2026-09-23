@@ -98,6 +98,16 @@ TEST(AllocFailure, EveryFailedLoadFreesEverythingItTook) {
   const Case cases[] = {
       {"jpeg", GIMG_TEST_DATA_JPEG, "plain_gray.jpg"},
       {"jpeg", GIMG_TEST_DATA_JPEG, "progressive_sample.jpg"},
+      // Each of these reaches a segment the two above do not, and so a
+      // different set of allocations and of arms that free them: arithmetic
+      // conditioning tables, restart intervals, a hierarchical sequence with
+      // its per-frame state, and a lossless frame.  A sweep is only ever as
+      // wide as the paths its fixtures walk.
+      {"jpeg", GIMG_TEST_DATA_JPEG, "arith_rgb_64x64_420.jpg"},
+      {"jpeg", GIMG_TEST_DATA_JPEG, "libjpeg_restart_rgb.jpg"},
+      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_gray_2level.jpg"},
+      {"jpeg", GIMG_TEST_DATA_JPEG, "hier_gray_lossless.jpg"},
+      {"jpeg", GIMG_TEST_DATA_JPEG, "baseline_gray12.jpg"},
       {"png", GIMG_TEST_DATA_PNG, "png_exif.png"},
   };
   for (const Case & c : cases) {
