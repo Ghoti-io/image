@@ -938,6 +938,11 @@ TEST_LD_PATH := $(APP_DIR):$(LIB_INSTALL_PATH)/$(SUITE)
 # everything.  Dropping -fstrict-aliasing would make this gate silent at any
 # level, and silent reads as clean - which is what the planted control below
 # is for.  It is checked on every run rather than trusted.
+#
+# The sweep compiles the library's own sources, so it defines GIMG_BUILD as
+# the library build does. Without it, on Windows every exported definition
+# meets a dllimport declaration and the sweep fails to compile at all; on
+# Linux GIMG_BUILD changes nothing.
 ALIAS_FLAGS := -std=c17 -O2 -fstrict-aliasing -fsyntax-only -Wstrict-aliasing=1
 
 check-aliasing: ## Fail on a strict-aliasing violation; no sanitizer sees these
@@ -958,7 +963,7 @@ check-aliasing: ## Fail on a strict-aliasing violation; no sanitizer sees these
 		printf "%s\n" "-fstrict-aliasing; the -O level is not what this depends on." >&2; \
 		exit 1; \
 	fi; \
-	if ! $(CC) $(ALIAS_FLAGS) $(INCLUDE) $$files > $$tmp/out 2>&1; then \
+	if ! $(CC) $(ALIAS_FLAGS) -DGIMG_BUILD $(INCLUDE) $$files > $$tmp/out 2>&1; then \
 		printf "\033[0;31m### check-aliasing could not look ###\033[0m\n" >&2; \
 		printf "The sweep failed to compile, so it found nothing for the wrong\n" >&2; \
 		printf "reason. This is not the same as finding nothing:\n\n" >&2; \
