@@ -607,6 +607,65 @@ extern "C" const char * __lsan_default_suppressions(void) {
 
 namespace {
 
+#if defined(_WIN32)
+
+/**
+ * A comma-decimal locale on Windows, or unusable if there is none.
+ *
+ * Windows has no locale_t, newlocale or uselocale, and needs nothing
+ * generated: every installation carries the German locale under its
+ * Windows name. So this holds the name, and InLocale below switches to it
+ * with setlocale(). The MSVCRT that MINGW64 links cannot make that per
+ * thread, so the switch is process-wide for the few lines InLocale is alive;
+ * nothing else runs in this process while it is. Both mingw's printf, which
+ * the C++ test gets, and the CRT's, which the C library gets, take their
+ * decimal point from it.
+ */
+class CommaLocale {
+public:
+  CommaLocale() {
+    for (const char * name :
+        {"German_Germany.1252", "German", "French_France.1252", "de-DE"}) {
+      if (writes_a_comma(name)) {
+        name_ = name;
+        return;
+      }
+    }
+  }
+  bool usable() const { return !name_.empty(); }
+  const char * get() const { return name_.c_str(); }
+
+private:
+  static bool writes_a_comma(const char * name) {
+    const char * current = setlocale(LC_NUMERIC, nullptr);
+    const std::string saved = current ? current : "C";
+    if (!setlocale(LC_NUMERIC, name)) { return false; }
+    char b[16];
+    std::snprintf(b, sizeof(b), "%.1f", 0.5);
+    setlocale(LC_NUMERIC, saved.c_str());
+    return std::strchr(b, ',') != nullptr;
+  }
+  std::string name_;
+};
+
+/** Formats in @p comma's LC_NUMERIC for as long as this lives. */
+class InLocale {
+public:
+  explicit InLocale(const CommaLocale & comma) {
+    const char * current = setlocale(LC_NUMERIC, nullptr);
+    saved_ = current ? current : "C";
+    setlocale(LC_NUMERIC, comma.get());
+  }
+  ~InLocale() { setlocale(LC_NUMERIC, saved_.c_str()); }
+  InLocale(const InLocale &) = delete;
+  InLocale & operator=(const InLocale &) = delete;
+
+private:
+  std::string saved_;
+};
+
+#else
+
 /**
  * A comma-decimal locale, generated on demand, or unusable if impossible.
  *
@@ -659,6 +718,22 @@ private:
   locale_t handle_ = (locale_t)0;
   std::string dir_;
 };
+
+/** Formats in @p comma's LC_NUMERIC, on this thread, for as long as this
+ * lives. */
+class InLocale {
+public:
+  explicit InLocale(const CommaLocale & comma)
+      : prev_(uselocale(comma.get())) {}
+  ~InLocale() { uselocale(prev_); }
+  InLocale(const InLocale &) = delete;
+  InLocale & operator=(const InLocale &) = delete;
+
+private:
+  locale_t prev_;
+};
+
+#endif
 
 /** The ASCII of the profile's desc tag, or empty if it has none. */
 std::string desc_of(const std::vector<uint8_t> & icc) {
@@ -731,9 +806,11 @@ TEST(IccSynthesis, TheProfileDoesNotDependOnLcNumeric) {
     const std::vector<uint8_t> in_c = synth(info);
     ASSERT_FALSE(in_c.empty()) << "synthesis failed for gamma " << g;
 
-    locale_t prev = uselocale(comma.get());
-    const std::vector<uint8_t> in_comma = synth(info);
-    uselocale(prev);
+    std::vector<uint8_t> in_comma;
+    {
+      InLocale in(comma);
+      in_comma = synth(info);
+    }
     ASSERT_FALSE(in_comma.empty());
 
     EXPECT_EQ(desc_of(in_c), desc_of(in_comma))
@@ -756,10 +833,11 @@ TEST(IccSynthesis, TheCommaLocaleActuallyChangesPrintf) {
   ASSERT_TRUE(comma.usable());
   char c_buf[16];
   std::snprintf(c_buf, sizeof(c_buf), "%.4g", 2.2);
-  locale_t prev = uselocale(comma.get());
   char comma_buf[16];
-  std::snprintf(comma_buf, sizeof(comma_buf), "%.4g", 2.2);
-  uselocale(prev);
+  {
+    InLocale in(comma);
+    std::snprintf(comma_buf, sizeof(comma_buf), "%.4g", 2.2);
+  }
   EXPECT_STREQ(c_buf, "2.2");
   EXPECT_STREQ(comma_buf, "2,2")
       << "the locale under test does not change the separator, so the test "
