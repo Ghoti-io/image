@@ -1688,6 +1688,86 @@ static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
 }
 
 /**
+ * Whether every pixel of @a raster is an entry of @a state's palette.
+ *
+ * A palette only stores an image if each of its pixels names an entry; the
+ * writer has no other way to turn a color into an index, and inventing one
+ * would be quantization (11.2.2).  Asking first is what lets the caller fall
+ * back to a palette of its own, or to truecolor, instead of encoding until a
+ * pixel fails.
+ *
+ * The map is built once and used for the whole raster, as the encoder does.
+ */
+static bool gimg_png_raster_fits_palette(const GIMG_Raster * raster,
+    const gimg_png_doc_state_t * state) {
+  if (!raster || !state || !state->plte || state->plte_size == 0) {
+    return false;
+  }
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  if (!fmt || fmt->channel_model != GIMG_CHANNEL_RGBA ||
+      fmt->channel_count != 4 || fmt->bits_per_channel[0] != 8) {
+    return false;
+  }
+  gimg_png_color_lut_t lut;
+  gimg_png_palette_lut_build(state, &lut);
+  uint32_t w = gimg_raster_width(raster);
+  uint32_t h = gimg_raster_height(raster);
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      uint8_t index = 0;
+      if (!gimg_png_palette_index_lut(raster, &lut, x, y, &index)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether the palette the file arrived with still describes every frame.
+ *
+ * Frame 0 is passed in because the caller already holds it; the rest are asked
+ * of the document, and a frame that will not decode is left for the frame loop
+ * to report - this function only answers the palette question.
+ *
+ * An animation has to ask about all of its frames, and for a reason that has
+ * nothing to do with editing: an APNG frame is composited onto the canvas
+ * before it becomes a raster, and compositing a partly transparent palette
+ * entry over another one produces a color that is in no palette.  So a
+ * perfectly good color-type-3 APNG can have frames its own PLTE cannot spell,
+ * and a writer that assumed otherwise could not save a file it had just read.
+ */
+static bool gimg_png_doc_fits_palette(const GIMG_Doc * doc,
+    const GIMG_Raster * frame0, const gimg_png_doc_state_t * state) {
+  if (!gimg_png_raster_fits_palette(frame0, state)) {
+    return false;
+  }
+  size_t count = gimg_doc_item_count(doc);
+  for (size_t i = 1; i < count; i++) {
+    GIMG_Item * item = gimg_doc_item((GIMG_Doc *)doc, i);
+    if (!item) {
+      return false;
+    }
+    GIMG_Raster * raster = gimg_item_raster(item);
+    if (raster) {
+      if (!gimg_png_raster_fits_palette(raster, state)) {
+        return false;
+      }
+      continue;
+    }
+    if (gimg_item_decode(item, NULL, &raster) != GIMG_OK || !raster) {
+      return false;
+    }
+    bool fits = gimg_png_raster_fits_palette(raster, state);
+    gimg_raster_destroy(raster);
+    if (!fits) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Encode one raster to zlib-wrapped DEFLATE (same format as IDAT/fdAT).
  * On success, *out_zlib is allocated and must be freed by caller.
  */
@@ -1901,6 +1981,32 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
         bit_depth = 8;
       }
     }
+  }
+  // The palette a file arrived with describes the pixels it arrived with, and
+  // the document may no longer hold those: one edited pixel is enough, and an
+  // APNG needs no edit at all, because compositing a partly transparent entry
+  // makes a color the palette never held.
+  //
+  // So it is a question and not an assumption, and it is asked here, before
+  // anything reaches the stream. Asked later - by encoding until a pixel has
+  // no index - it produced a truncated file with a result code after it.
+  //
+  // GIMG_PNG_PALETTE_KEEP is for the caller who means the palette as a
+  // constraint: that the indices are what matters, and an image that has left
+  // them should be refused rather than silently rewritten in another color
+  // type. Every other setting treats it as what it is, a way of storing the
+  // picture, and falls back to a palette built from the raster or to
+  // truecolor. Neither fallback loses anything: both are exact.
+  if (use_palette && !gimg_png_doc_fits_palette(doc, raster, state)) {
+    if (options && options->png_palette == GIMG_PNG_PALETTE_KEEP) {
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    use_palette = false;
+    color_type = 0;
+    bit_depth = 0;
   }
   // A tRNS the writer derives from the raster's alpha, when color type 2 can
   // carry it (PNG 11.3.2.1). Empty when the image needs no transparency, or

@@ -466,8 +466,8 @@ typedef struct {
    * values force one filter on every row, which is mainly useful for testing
    * that each of the five reconstructs. */
   uint8_t png_filter;
-  /** Whether the PNG writer may build a palette for a raster that did not
-   * arrive with one (11.2.2, color type 3).
+  /** How the PNG writer decides whether to store the image through a palette
+   * (11.2.2, color type 3).
    *
    * GIMG_PNG_PALETTE_AUTO (0, default) builds one when the image has no more
    * than 256 distinct colors and the palette form is the smaller file.  That
@@ -477,9 +477,23 @@ typedef struct {
    * more colors than that is written as truecolor, because reducing it would
    * be an image-processing decision and not a codec's.
    *
-   * GIMG_PNG_PALETTE_NEVER refuses to build one.  A frame that arrived as a
-   * palette image is still written back as one either way: that is preserving
-   * what the file was, not creating something new.  Ignored for non-PNG. */
+   * GIMG_PNG_PALETTE_NEVER refuses to build one, and writes truecolor.
+   *
+   * A frame that *arrived* as a palette image is written back through its own
+   * palette under both of those, which preserves the entries and their order
+   * rather than creating something new - but only while that palette still
+   * describes the picture.  It need not: one pixel painted a color the table
+   * does not hold is enough, and an APNG needs no edit at all, because a frame
+   * is composited onto the canvas before it becomes a raster and compositing a
+   * partly transparent entry produces a color that is in no palette.  When the
+   * palette no longer fits, AUTO builds one that does and NEVER writes
+   * truecolor; both are exact, so nothing about the picture is lost - only the
+   * indices.
+   *
+   * GIMG_PNG_PALETTE_KEEP is for the caller who means those indices: it treats
+   * the palette the file arrived with as a constraint and returns
+   * GIMG_ERR_UNSUPPORTED, before writing anything, for an image that has left
+   * it.  With no palette to keep it behaves as AUTO.  Ignored for non-PNG. */
   uint8_t png_palette;
 
   /** Whether the BMP writer may store an image through a palette.
@@ -647,6 +661,7 @@ typedef struct {
  * @{ */
 #define GIMG_PNG_PALETTE_AUTO 0u  ///< Build one when it is lossless and smaller. Default.
 #define GIMG_PNG_PALETTE_NEVER 1u ///< Never build one for a raster that had none.
+#define GIMG_PNG_PALETTE_KEEP 2u  ///< Refuse an image that has left the palette it arrived with.
 /** @} */
 
 /**

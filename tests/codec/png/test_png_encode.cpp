@@ -4848,78 +4848,6 @@ TEST(PngEncode, ABackgroundIsRewrittenOrDroppedWhenTheColourTypeChanges) {
 // from inside a test.  What the test does say is that the refusal is total -
 // a single pixel off the palette is enough - and that it is the only thing
 // standing between a caller and a picture drawn from the wrong colors.
-TEST(PngEncode, APaletteImageRepaintedOffItsPaletteIsRefusedRatherThanGuessed) {
-  std::vector<uint8_t> base;
-  ASSERT_TRUE(png_test::load_png_file("png_palette_trns_bkgd_hist.png", base))
-      << "Run tests/data/png/generate.py";
-
-  // Control: untouched, the file saves.
-  std::vector<uint8_t> out;
-  ASSERT_TRUE(resave_recolored_to(base, nullptr, GIMG_META_PRESERVE_ALL, out));
-  ASSERT_TRUE(has_chunk(out, "PLTE"));
-
-  // Decode it, and put the same pixels back unchanged: still a palette image,
-  // still every pixel in the palette, so this must save too.  Without this
-  // the refusal below could be about the raster having been replaced at all.
-  {
-    GIMG_Stream * in_s = nullptr;
-    ASSERT_EQ(gimg_stream_create_memory(base.data(), base.size(), &in_s),
-        GIMG_OK);
-    GIMG_Doc * doc = nullptr;
-    ASSERT_EQ(gimg_doc_load(in_s, nullptr, nullptr, &doc), GIMG_OK);
-    GIMG_Item * item = gimg_doc_item(doc, 0);
-    GIMG_Raster * ras = nullptr;
-    ASSERT_EQ(gimg_item_decode(item, nullptr, &ras), GIMG_OK);
-    const GIMG_Pixel_Format * fmt = gimg_raster_format(ras);
-    ASSERT_EQ(fmt->channel_count, 4) << "a palette PNG decodes to RGBA8, "
-                                        "which is the format the saver reuses "
-                                        "the palette for";
-    gimg_item_set_raster(item, ras);
-
-    GIMG_Stream * os = nullptr;
-    ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
-    GIMG_Save_Options so = {};
-    so.metadata_policy = GIMG_META_PRESERVE_ALL;
-    GIMG_Save_Report rep = {};
-    EXPECT_EQ(gimg_doc_save(doc, os, "png", &so, &rep), GIMG_OK)
-        << "the very pixels that came out must go back in";
-    gimg_stream_destroy(os);
-    gimg_doc_destroy(doc);
-    gimg_stream_destroy(in_s);
-  }
-
-  // Now one pixel changed to a color the palette does not hold.
-  for (bool interlaced : {false, true}) {
-    SCOPED_TRACE(interlaced ? "interlaced" : "not interlaced");
-    GIMG_Stream * in_s = nullptr;
-    ASSERT_EQ(gimg_stream_create_memory(base.data(), base.size(), &in_s),
-        GIMG_OK);
-    GIMG_Doc * doc = nullptr;
-    ASSERT_EQ(gimg_doc_load(in_s, nullptr, nullptr, &doc), GIMG_OK);
-    GIMG_Item * item = gimg_doc_item(doc, 0);
-    GIMG_Raster * ras = nullptr;
-    ASSERT_EQ(gimg_item_decode(item, nullptr, &ras), GIMG_OK);
-    auto * px = (unsigned char *)gimg_raster_pixels(ras);
-    px[0] = 0x11;  // no entry of this palette is 0x11,0x22,0x33
-    px[1] = 0x22;
-    px[2] = 0x33;
-    gimg_item_set_raster(item, ras);
-
-    GIMG_Stream * os = nullptr;
-    ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
-    GIMG_Save_Options so = {};
-    so.metadata_policy = GIMG_META_PRESERVE_ALL;
-    so.interlaced = interlaced ? 1 : 0;
-    GIMG_Save_Report rep = {};
-    EXPECT_EQ(gimg_doc_save(doc, os, "png", &so, &rep), GIMG_ERR_UNSUPPORTED)
-        << "one pixel off the palette is enough; the alternative to refusing "
-           "is writing some other color's index and calling it the picture";
-    gimg_stream_destroy(os);
-    gimg_doc_destroy(doc);
-    gimg_stream_destroy(in_s);
-  }
-}
-
 namespace {
 
 /**
@@ -5036,3 +4964,143 @@ TEST(PngEncode, AFrameAlreadyCompositedIsNotCompositedAgain) {
   }
 }
 
+// A palette PNG whose picture has left its palette.
+//
+// Two ways in. One is an edit: paint a pixel a color the table does not hold.
+// The other needs no edit at all - an APNG frame is composited before it
+// becomes a raster, and compositing a partly transparent palette entry onto
+// another one makes a color that is in no palette, so a color-type-3 APNG can
+// have frames its own PLTE cannot spell the moment it is read.
+//
+// The palette is a way of storing the picture, so by default the writer picks
+// another way: a palette built from the raster, or truecolor. Both are exact.
+// GIMG_PNG_PALETTE_KEEP is for the caller who means the indices instead, and
+// refuses - before writing anything, which is the part that was wrong when
+// refusing was the only behavior.
+TEST(PngEncode, APaletteThePictureHasLeftIsReplacedUnlessTheCallerKeepsIt) {
+  std::vector<uint8_t> base;
+  ASSERT_TRUE(png_test::load_png_file("png_palette_trns_bkgd_hist.png", base))
+      << "Run tests/data/png/generate.py";
+
+  // Control: untouched, it saves through its own palette.
+  {
+    GIMG_Save_Options opts = {};
+    GIMG_Result r = GIMG_ERR_INTERNAL;
+    std::vector<uint8_t> saved;
+    ASSERT_TRUE(resave_with(base, &opts, &r, saved));
+    ASSERT_EQ(r, GIMG_OK);
+    EXPECT_TRUE(has_chunk(saved, "PLTE"))
+        << "nothing has changed, so the entries and their order are kept";
+    EXPECT_EQ(decoded_frames(saved), decoded_frames(base));
+  }
+
+  // One pixel painted off the palette, under each setting.
+  struct Case {
+    uint8_t palette_option;
+    const char * label;
+    GIMG_Result expect;
+  };
+  const Case cases[] = {
+      {GIMG_PNG_PALETTE_AUTO, "AUTO", GIMG_OK},
+      {GIMG_PNG_PALETTE_NEVER, "NEVER", GIMG_OK},
+      {GIMG_PNG_PALETTE_KEEP, "KEEP", GIMG_ERR_UNSUPPORTED},
+  };
+  for (const Case & c : cases) {
+    for (bool interlaced : {false, true}) {
+      SCOPED_TRACE(std::string(c.label) +
+          (interlaced ? " interlaced" : " not interlaced"));
+      GIMG_Stream * in_s = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory(base.data(), base.size(), &in_s),
+          GIMG_OK);
+      GIMG_Doc * doc = nullptr;
+      ASSERT_EQ(gimg_doc_load(in_s, nullptr, nullptr, &doc), GIMG_OK);
+      GIMG_Item * item = gimg_doc_item(doc, 0);
+      GIMG_Raster * ras = nullptr;
+      ASSERT_EQ(gimg_item_decode(item, nullptr, &ras), GIMG_OK);
+      const GIMG_Pixel_Format * fmt = gimg_raster_format(ras);
+      ASSERT_EQ(fmt->channel_count, 4)
+          << "a palette PNG decodes to RGBA8, which is the format the saver "
+             "reuses the palette for";
+      auto * px = (unsigned char *)gimg_raster_pixels(ras);
+      px[0] = 0x11;  // no entry of this palette is 0x11,0x22,0x33
+      px[1] = 0x22;
+      px[2] = 0x33;
+      px[3] = 0xFF;
+      gimg_item_set_raster(item, ras);
+
+      GIMG_Stream * os = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+      GIMG_Save_Options so = {};
+      so.metadata_policy = GIMG_META_PRESERVE_ALL;
+      so.interlaced = interlaced ? 1 : 0;
+      so.png_palette = c.palette_option;
+      GIMG_Save_Report rep = {};
+      EXPECT_EQ(gimg_doc_save(doc, os, "png", &so, &rep), c.expect);
+
+      const void * buf = nullptr;
+      size_t size = 0;
+      gimg_stream_output_buffer(os, &buf, &size);
+      if (c.expect == GIMG_OK) {
+        std::vector<uint8_t> saved(static_cast<const uint8_t *>(buf),
+            static_cast<const uint8_t *>(buf) + size);
+        std::vector<uint8_t> back = decoded_frames(saved);
+        ASSERT_FALSE(back.empty());
+        EXPECT_EQ(back[5], 0x11);
+        EXPECT_EQ(back[6], 0x22);
+        EXPECT_EQ(back[7], 0x33)
+            << "whichever color type it chose, the new color must survive";
+        if (c.palette_option == GIMG_PNG_PALETTE_NEVER) {
+          EXPECT_FALSE(has_chunk(saved, "PLTE")) << "NEVER means truecolor";
+        }
+        // AUTO is free to build a palette that does fit, and for a six-pixel
+        // fixture it measures that one as the larger file and writes
+        // truecolor instead - which is AUTO's documented rule and not this
+        // test's subject. What matters here is that neither setting kept the
+        // palette the picture had left.
+        else if (has_chunk(saved, "PLTE")) {
+          EXPECT_NE(chunk_payload(saved, "PLTE"), chunk_payload(base, "PLTE"))
+              << "a palette it built, not the one that no longer fits";
+        }
+      }
+      else {
+        EXPECT_EQ(size, 0u)
+            << "a refusal decided before the signature leaves no file behind";
+        EXPECT_EQ(rep.bytes_written, 0u);
+      }
+      gimg_stream_destroy(os);
+      gimg_doc_destroy(doc);
+      gimg_stream_destroy(in_s);
+    }
+  }
+}
+
+// The APNG half of the same question, which no edit is needed to reach: this
+// file is a valid color-type-3 animation, and the writer could not save what
+// it had just read. It got as far as the IDAT before a pixel of frame 1 had no
+// index, so it left a truncated PNG on the stream and returned a result code
+// after it.
+TEST(PngEncode, APaletteAnimationCompositingHasLeftIsStillSaved) {
+  std::vector<uint8_t> src;
+  ASSERT_TRUE(png_test::load_png_file("png_apng_ct3_trns.png", src))
+      << "Run tests/data/png/generate.py";
+  std::vector<uint8_t> want = decoded_frames(src);
+  ASSERT_FALSE(want.empty());
+
+  GIMG_Save_Options opts = {};
+  GIMG_Result r = GIMG_ERR_INTERNAL;
+  std::vector<uint8_t> saved;
+  ASSERT_TRUE(resave_with(src, &opts, &r, saved));
+  EXPECT_EQ(r, GIMG_OK) << "a file this library read, it can write";
+  EXPECT_EQ(decoded_frames(saved), want);
+  EXPECT_FALSE(has_chunk(saved, "PLTE"))
+      << "an animation gets truecolor rather than a palette per frame: every "
+         "APNG frame shares one color type";
+
+  // KEEP says the palette is the point, so it refuses - and writes nothing.
+  GIMG_Save_Options keep = {};
+  keep.png_palette = GIMG_PNG_PALETTE_KEEP;
+  std::vector<uint8_t> refused;
+  ASSERT_TRUE(resave_with(src, &keep, &r, refused));
+  EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(refused.size(), 0u);
+}
