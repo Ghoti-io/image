@@ -6,6 +6,8 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <cmath>
 #include <cstdint>
@@ -558,8 +560,16 @@ static GIMG_Doc * create_doc_with_raster_and_exif() {
   if (gimg_doc_ensure_meta_raw(doc, &raw) != GIMG_OK)
     return nullptr;
   std::vector<uint8_t> exif = make_minimal_exif_payload();
-  std::vector<uint8_t> app1_payload = {'E', 'x', 'i', 'f', 0, 0};
-  app1_payload.insert(app1_payload.end(), exif.begin(), exif.end());
+  // Sized once and filled, rather than a six-byte vector grown by insert():
+  // GCC 16 at -O1 follows insert()'s reallocation into the copy of the old
+  // six bytes and reports that memcpy as reading past them (-Warray-bounds),
+  // although the range it copies is exactly those six.
+  static const uint8_t kExifHeader[6] = {'E', 'x', 'i', 'f', 0, 0};
+  std::vector<uint8_t> app1_payload(sizeof(kExifHeader) + exif.size());
+  std::copy(kExifHeader, kExifHeader + sizeof(kExifHeader),
+      app1_payload.begin());
+  std::copy(exif.begin(), exif.end(),
+      app1_payload.begin() + (std::ptrdiff_t)sizeof(kExifHeader));
   if (gimg_meta_raw_attach(raw, "jpeg", kJpegRawApp1Exif, app1_payload.data(),
           app1_payload.size()) != GIMG_OK) {
     gimg_doc_destroy(doc);
