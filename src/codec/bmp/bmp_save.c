@@ -744,6 +744,18 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   if (gimg_doc_item_count(doc) == 0) {
     return GIMG_ERR_FORMAT;
   }
+  // Item 0 and no other, which is the whole of what this writer stores.
+  //
+  // A document can hold several items for two reasons. It was an animation,
+  // which BMP has no way to be; or it was an OS/2 bitmap array ('BA'), the
+  // same picture rendered for several displays, which the loader exposes as
+  // one item per entry and this writer has no code to put back.
+  //
+  // Both are written as the first item alone, and the save reports GIMG_OK.
+  // Refusing instead would break the ordinary way to get a frame out of an
+  // animation - load a GIF, save a BMP - which is a thing callers do
+  // deliberately and the far commoner case. So it is item 0 and a documented
+  // silence (see gimg_doc_save), not an error.
   GIMG_Item * item = gimg_doc_item((GIMG_Doc *)doc, 0);
   if (!item) {
     return GIMG_ERR_INTERNAL;

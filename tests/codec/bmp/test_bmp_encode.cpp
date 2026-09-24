@@ -2028,3 +2028,42 @@ TEST(BmpEncode, AStretchTooShortToBeAnAbsoluteRunIsEncodedAsRunsOfOne) {
     expect_round_trip(bytes, 512, 8, true_color_runs_with_two_lone_pixels);
   }
 }
+
+TEST(BmpEncode, ADocumentOfSeveralItemsIsSavedAsItsFirstOne) {
+  // BMP has no way to be an animation, and this writer has no code to put an
+  // OS/2 bitmap array back together - so a document of several items comes out
+  // as item 0, and the save reports GIMG_OK.
+  //
+  // The alternative is refusing, and that would break the ordinary way to ask
+  // for one frame of an animation as a BMP: load the animation, save a BMP.
+  // So the loss is deliberate, and this test is what says so out loud - the
+  // behaviour was otherwise written down nowhere and asserted nowhere.
+  Loaded original;
+  ASSERT_EQ(original.load("bmp_array_2_entries.bmp"), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(original.doc()), 2u)
+      << "the fixture must have a second entry for there to be one to lose";
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  GIMG_Save_Report report = {};
+  EXPECT_EQ(gimg_doc_save(original.doc(), out, "bmp", &opts, &report), GIMG_OK)
+      << "not an error: the items past the first are dropped in silence";
+  const void * buf = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &buf, &size);
+  std::vector<uint8_t> bytes(static_cast<const uint8_t *>(buf),
+      static_cast<const uint8_t *>(buf) + size);
+  gimg_stream_destroy(out);
+
+  Loaded again;
+  ASSERT_EQ(again.load_bytes(bytes), GIMG_OK);
+  EXPECT_EQ(gimg_doc_item_count(again.doc()), 1u) << "one entry came back";
+
+  // And it is the first entry, not the second: BitmapArrayExposesEveryEntry
+  // pins the two apart by their first pixel.
+  ASSERT_EQ(again.decode(), GIMG_OK);
+  ASSERT_EQ(original.decode(nullptr, 0), GIMG_OK);
+  EXPECT_EQ(again.at(0, 0), original.at(0, 0));
+  EXPECT_EQ(again.at(1, 0), original.at(1, 0));
+}

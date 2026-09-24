@@ -689,6 +689,15 @@ typedef struct {
  * @param doc The document. Its item 0 supplies the pixels: the raster
  *   attached to it when there is one, otherwise the writer decodes the item
  *   itself, whichever codec loaded the document.
+ *
+ *   What becomes of the items after it is the format's to say, and they do
+ *   not agree. PNG writes them as the frames of an APNG and GIF as the frames
+ *   of an animation; JPEG writes item 1 as the Exif thumbnail and ignores the
+ *   rest; BMP writes item 0 alone and returns GIMG_OK, because the usual way
+ *   to ask for one frame of an animation as a BMP is to hand the whole
+ *   animation over, and refusing that would be worse than dropping the frames
+ *   the format cannot hold. So saving a document of several items as a BMP is
+ *   lossy by design and says so only here.
  * @param stream Destination, opened for output.
  * @param format_name "png", "jpeg", "bmp" or "gif" - the name of a
  *   registered codec, as gimg_codec_name() reports it.
