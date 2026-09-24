@@ -92,6 +92,62 @@ std::vector<uint8_t> slurp(const std::string & path) {
       (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
+/** The codec name a fixture's extension asks for, or nullptr. */
+const char * format_of(const std::string & path) {
+  const std::string ext = std::filesystem::path(path).extension().string();
+  if (ext == ".png") {
+    return "png";
+  }
+  if (ext == ".jpg" || ext == ".jpeg") {
+    return "jpeg";
+  }
+  if (ext == ".bmp") {
+    return "bmp";
+  }
+  if (ext == ".gif") {
+    return "gif";
+  }
+  return nullptr;
+}
+
+/**
+ * Every frame of a document, decoded and laid end to end with its shape.
+ *
+ * Two of these compare equal only when the documents are the same picture,
+ * frame for frame and pixel for pixel. Empty when anything fails, which the
+ * caller checks against the copy it took of the source.
+ */
+std::vector<uint8_t> decoded_frames(GIMG_Doc * doc) {
+  std::vector<uint8_t> flat;
+  const size_t count = gimg_doc_item_count(doc);
+  for (size_t i = 0; i < count; i++) {
+    GIMG_Raster * raster = nullptr;
+    if (gimg_item_decode(gimg_doc_item(doc, i), nullptr, &raster) != GIMG_OK ||
+        !raster) {
+      return {};
+    }
+    const uint32_t w = gimg_raster_width(raster);
+    const uint32_t h = gimg_raster_height(raster);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    const size_t bpp = static_cast<size_t>(fmt->channel_count) *
+        (gimg_pixel_format_channel_bits(fmt, 0) / 8u);
+    const size_t stride = gimg_raster_stride_bytes(raster);
+    const auto * px =
+        static_cast<const uint8_t *>(gimg_raster_pixels_const(raster));
+    for (uint32_t v : {w, h, static_cast<uint32_t>(bpp)}) {
+      for (int b = 0; b < 4; b++) {
+        flat.push_back(static_cast<uint8_t>(v >> (8 * b)));
+      }
+    }
+    for (uint32_t y = 0; y < h; y++) {
+      flat.insert(flat.end(), px + static_cast<size_t>(y) * stride,
+          px + static_cast<size_t>(y) * stride + static_cast<size_t>(w) * bpp);
+    }
+    gimg_raster_destroy(raster);
+  }
+  return flat;
+}
+
 } // namespace
 
 /**
@@ -431,7 +487,7 @@ TEST(SelfRoundTrip, EveryFileWeWriteIsOneWeCanRead) {
       << "found only " << files.size() << " fixtures; the data directories "
       << "are probably not where this was built to look";
 
-  size_t sources = 0, written = 0, refused = 0;
+  size_t sources = 0, written = 0, refused = 0, same_format_compared = 0;
   for (const std::string & path : files) {
     const std::vector<uint8_t> src = slurp(path);
     if (src.size() < 16) {
@@ -459,6 +515,10 @@ TEST(SelfRoundTrip, EveryFileWeWriteIsOneWeCanRead) {
       continue;
     }
     sources++;
+    // What the source is, and what it looks like, for the same-format pass
+    // below. Taken after the decode loop above, so every frame is in hand.
+    const char * own_format = format_of(path);
+    const std::vector<uint8_t> source_pixels = decoded_frames(doc);
 
     for (const char * fmt : kFormats) {
       GIMG_Stream * out = nullptr;
@@ -471,10 +531,22 @@ TEST(SelfRoundTrip, EveryFileWeWriteIsOneWeCanRead) {
       GIMG_Save_Report report;
       memset(&report, 0, sizeof(report));
       const GIMG_Result sr = gimg_doc_save(doc, out, fmt, &opts, &report);
+      const bool same_format = own_format && std::strcmp(fmt, own_format) == 0;
       if (sr != GIMG_OK) {
         refused++;
+        // A codec that cannot hold this says so, and that is an answer - but
+        // not when the codec is the one the file came from. A PNG this
+        // library read is a PNG it can write; anything else is the writer
+        // disagreeing with the reader about what the library supports.
+        //
+        // This is what a palette APNG failed: compositing took its frames off
+        // its own PLTE and the writer had no fallback, so it refused a file it
+        // had just decoded - after putting 203 bytes of it on the stream.
+        EXPECT_FALSE(same_format)
+            << "refused to write " << path << " back as " << fmt
+            << " (result " << sr << "), the format it came from";
         gimg_stream_destroy(out);
-        continue; // A codec that cannot hold this says so; that is an answer.
+        continue;
       }
       const void * p = nullptr;
       size_t n = 0;
@@ -511,6 +583,25 @@ TEST(SelfRoundTrip, EveryFileWeWriteIsOneWeCanRead) {
             gimg_raster_destroy(raster);
           }
         }
+        // Reading it back is one question; getting the same picture is
+        // another, and only the second one catches a writer that stores
+        // something coherent and wrong. An APNG whose frames were written
+        // with the blend operation their pixels had already been through
+        // reloaded perfectly and came back more opaque every frame.
+        //
+        // Only for the format the file came from, and only for the lossless
+        // ones. JPEG is excluded because it is lossy and BMP because it keeps
+        // item 0 alone, which is its documented behaviour and is pinned by
+        // BmpEncode.ADocumentOfSeveralItemsIsSavedAsItsFirstOne.
+        if (same_format && (std::strcmp(fmt, "png") == 0 ||
+                               std::strcmp(fmt, "gif") == 0)) {
+          ASSERT_FALSE(source_pixels.empty())
+              << path << ": the source must decode for this to compare";
+          EXPECT_EQ(decoded_frames(reloaded), source_pixels)
+              << path << " does not survive being written as " << fmt
+              << ": it reloads, but it is a different picture";
+          same_format_compared++;
+        }
         gimg_doc_destroy(reloaded);
       }
       gimg_stream_destroy(back);
@@ -522,9 +613,11 @@ TEST(SelfRoundTrip, EveryFileWeWriteIsOneWeCanRead) {
   EXPECT_GT(sources, 100u) << "too few fixtures loaded and decoded to mean "
                               "anything";
   EXPECT_GT(written, 400u) << "too few files written to mean anything";
-  std::printf(
-      "    %zu sources, %zu files written and read back, %zu saves refused\n",
-      sources, written, refused);
+  EXPECT_GT(same_format_compared, 60u)
+      << "too few lossless files compared pixel for pixel against the source";
+  std::printf("    %zu sources, %zu files written and read back, %zu saves "
+              "refused, %zu compared to the source pixel for pixel\n",
+      sources, written, refused, same_format_compared);
 }
 
 int main(int argc, char ** argv) {
