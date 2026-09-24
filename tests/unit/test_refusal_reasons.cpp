@@ -48,8 +48,24 @@
 #include <map>
 #include <string>
 #include <vector>
+#if defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 namespace {
+
+/** Whether directory entry @p e of @p dir is itself a directory. MinGW's
+ * struct dirent has no d_type, so Windows asks stat() instead. */
+bool entry_is_directory(const std::string & dir, const struct dirent * e) {
+#if defined(_WIN32)
+  struct stat st;
+  return stat((dir + "/" + e->d_name).c_str(), &st) == 0 &&
+      S_ISDIR(st.st_mode);
+#else
+  (void)dir;
+  return e->d_type == DT_DIR;
+#endif
+}
 
 /** The format a file's first bytes claim, or "" if none of the four. */
 const char * signature_of(const std::vector<uint8_t> & b) {
@@ -75,7 +91,7 @@ void sweep(const std::string & dir, std::map<std::string, Tally> & by_format) {
   if (!d) { return; }
   while (struct dirent * e = readdir(d)) {
     const std::string name = e->d_name;
-    if (name == "." || name == ".." || e->d_type == DT_DIR) { continue; }
+    if (name == "." || name == ".." || entry_is_directory(dir, e)) { continue; }
     std::ifstream f(dir + "/" + name, std::ios::binary | std::ios::ate);
     if (!f) { continue; }
     const std::streamsize size = f.tellg();

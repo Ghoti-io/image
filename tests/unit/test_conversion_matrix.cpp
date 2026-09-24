@@ -61,8 +61,24 @@
 #include <map>
 #include <string>
 #include <vector>
+#if defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 namespace {
+
+/** Whether directory entry @p e of @p dir is itself a directory. MinGW's
+ * struct dirent has no d_type, so Windows asks stat() instead. */
+bool entry_is_directory(const std::string & dir, const struct dirent * e) {
+#if defined(_WIN32)
+  struct stat st;
+  return stat((dir + "/" + e->d_name).c_str(), &st) == 0 &&
+      S_ISDIR(st.st_mode);
+#else
+  (void)dir;
+  return e->d_type == DT_DIR;
+#endif
+}
 
 struct Decoded {
   uint32_t width = 0;
@@ -230,7 +246,7 @@ TEST(ConversionMatrix, EveryFixtureSurvivesEveryFormatThatCanHoldIt) {
     std::vector<std::string> names;
     while (struct dirent * e = readdir(d)) {
       const std::string n = e->d_name;
-      if (n == "." || n == ".." || e->d_type == DT_DIR) { continue; }
+      if (n == "." || n == ".." || entry_is_directory(dir, e)) { continue; }
       names.push_back(n);
     }
     closedir(d);
