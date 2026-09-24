@@ -2639,7 +2639,32 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       delay_den = 100;
     }
     uint8_t dispose_op = (uint8_t)gimg_item_dispose_op(frame_item);
-    uint8_t blend_op = (uint8_t)gimg_item_blend_op(frame_item);
+    //
+    // WHY THE BLEND OPERATION IS NOT THE ITEM'S
+    //
+    // Every frame this writer emits is the whole canvas as it should look -
+    // full size, at 0,0 - because that is what a document item holds: the
+    // frame already composited onto what came before it.
+    //
+    // APNG_BLEND_OP_OVER asks the decoder to composite the frame onto the
+    // canvas.  Echoing the source's OVER for pixels that have already been
+    // composited asks for it a second time: a frame the file drew at alpha
+    // 0x80 came back at 0xBF, and would keep climbing over more frames.
+    //
+    // It went unnoticed because the second composite is the identity whenever
+    // the frame is opaque, or the frame before it disposed to background so
+    // that OVER lands on transparency - which covers most real animations and
+    // all but two of this repository's fixtures.
+    //
+    // A whole canvas wants APNG_BLEND_OP_SOURCE, which replaces.  The item's
+    // own blend_op is what the file said, and load still reports it; it is not
+    // a description of the pixels the document is holding.
+    //
+    // Disposal needs no such correction: whatever it does to the canvas, the
+    // next frame covers all of it, and the one after the last frame is what
+    // the animation loops onto.
+    //
+    uint8_t blend_op = 0u;
     unsigned char fctl[GIMG_PNG_fcTL_LEN];
     gimg_png_build_fctl(fctl, apng_sequence++, width, height, 0u, 0u,
         delay_num, delay_den, dispose_op, blend_op);
@@ -2726,7 +2751,9 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       delay_den = 100;
     }
     uint8_t dispose_op = (uint8_t)gimg_item_dispose_op(frame_item);
-    uint8_t blend_op = (uint8_t)gimg_item_blend_op(frame_item);
+    // SOURCE, for the reason spelled out at frame 0's fcTL above: this frame
+    // is the finished canvas, so OVER would composite it a second time.
+    uint8_t blend_op = 0u;
     unsigned char fctl[GIMG_PNG_fcTL_LEN];
     gimg_png_build_fctl(fctl, apng_sequence++, width, height, 0u, 0u,
         delay_num, delay_den, dispose_op, blend_op);

@@ -1750,7 +1750,10 @@ TEST(PngEncode, ApngRoundTrip) {
   EXPECT_EQ(num, 25u);
   EXPECT_EQ(den, 100u);
   EXPECT_EQ(gimg_item_dispose_op(item1), GIMG_DISPOSE_BACKGROUND);
-  EXPECT_EQ(gimg_item_blend_op(item1), GIMG_BLEND_OVER);
+  EXPECT_EQ(gimg_item_blend_op(item1), GIMG_BLEND_SOURCE)
+      << "the file said OVER, and the writer says SOURCE on purpose: the "
+         "frames it writes are finished canvases, so OVER would composite "
+         "them a second time. See AFrameAlreadyCompositedIsNotCompositedAgain";
 
   GIMG_Raster * r0 = nullptr;
   GIMG_Raster * r1 = nullptr;
@@ -4916,3 +4919,120 @@ TEST(PngEncode, APaletteImageRepaintedOffItsPaletteIsRefusedRatherThanGuessed) {
     gimg_stream_destroy(in_s);
   }
 }
+
+namespace {
+
+/**
+ * Every frame of a PNG, decoded and laid end to end.
+ *
+ * Each frame contributes its shape and its pixels, so two vectors compare
+ * equal only when the files describe the same animation pixel for pixel.
+ * Empty when anything fails, which the caller checks against a control.
+ */
+std::vector<uint8_t> decoded_frames(const std::vector<uint8_t> & png) {
+  std::vector<uint8_t> flat;
+  GIMG_Stream * in = nullptr;
+  if (gimg_stream_create_memory(png.data(), png.size(), &in) != GIMG_OK) {
+    return {};
+  }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_load(in, nullptr, nullptr, &doc) != GIMG_OK) {
+    gimg_stream_destroy(in);
+    return {};
+  }
+  size_t count = gimg_doc_item_count(doc);
+  for (size_t i = 0; i < count; i++) {
+    GIMG_Item * item = gimg_doc_item(doc, i);
+    GIMG_Raster * raster = nullptr;
+    if (!item || gimg_item_decode(item, nullptr, &raster) != GIMG_OK) {
+      gimg_doc_destroy(doc);
+      gimg_stream_destroy(in);
+      return {};
+    }
+    uint32_t w = gimg_raster_width(raster);
+    uint32_t h = gimg_raster_height(raster);
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    size_t bpp = (size_t)fmt->channel_count *
+        (gimg_pixel_format_channel_bits(fmt, 0) / 8u);
+    size_t stride = gimg_raster_stride_bytes(raster);
+    const auto * px =
+        static_cast<const uint8_t *>(gimg_raster_pixels_const(raster));
+    for (uint8_t byte : {(uint8_t)(w & 0xFFu), (uint8_t)(w >> 8),
+             (uint8_t)(h & 0xFFu), (uint8_t)(h >> 8), (uint8_t)bpp}) {
+      flat.push_back(byte);
+    }
+    for (uint32_t y = 0; y < h; y++) {
+      flat.insert(flat.end(), px + (size_t)y * stride,
+          px + (size_t)y * stride + (size_t)w * bpp);
+    }
+    gimg_raster_destroy(raster);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in);
+  return flat;
+}
+
+/** Load, save with @a options, and hand back what was written. */
+bool resave_with(const std::vector<uint8_t> & png,
+    const GIMG_Save_Options * options, GIMG_Result * out_result,
+    std::vector<uint8_t> & out) {
+  GIMG_Stream * in = nullptr;
+  if (gimg_stream_create_memory(png.data(), png.size(), &in) != GIMG_OK) {
+    return false;
+  }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_load(in, nullptr, nullptr, &doc) != GIMG_OK) {
+    gimg_stream_destroy(in);
+    return false;
+  }
+  GIMG_Stream * os = nullptr;
+  if (gimg_stream_create_memory_output(&os) != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in);
+    return false;
+  }
+  GIMG_Save_Report report = {};
+  *out_result = gimg_doc_save(doc, os, "png", options, &report);
+  const void * buf = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(os, &buf, &size);
+  out.assign(static_cast<const uint8_t *>(buf),
+      static_cast<const uint8_t *>(buf) + size);
+  gimg_stream_destroy(os);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in);
+  return true;
+}
+
+} // namespace
+
+// An APNG frame is composited onto the canvas before it becomes a raster, so
+// the frames a document holds are finished pictures. Writing them back with
+// the blend operation the file carried asks a decoder to composite them a
+// second time, and a partly transparent frame comes back more opaque than it
+// went in - 0x80 became 0xBF, and would keep climbing over more frames.
+//
+// The three files here are the same animation shape with the alpha moved
+// around, which is what decides whether the second composite is visible:
+// partial alpha shows it, opaque pixels hide it, and a frame that disposes to
+// background hides it because OVER then lands on transparency.
+TEST(PngEncode, AFrameAlreadyCompositedIsNotCompositedAgain) {
+  for (const char * name : {"png_apng_blend_over_partial.png",
+           "png_apng_ct4.png", "png_apng_2frame.png"}) {
+    SCOPED_TRACE(name);
+    std::vector<uint8_t> src;
+    ASSERT_TRUE(png_test::load_png_file(name, src))
+        << "Run tests/data/png/generate.py";
+    std::vector<uint8_t> want = decoded_frames(src);
+    ASSERT_FALSE(want.empty()) << "the fixture itself must decode";
+
+    GIMG_Save_Options opts = {};
+    GIMG_Result r = GIMG_ERR_INTERNAL;
+    std::vector<uint8_t> saved;
+    ASSERT_TRUE(resave_with(src, &opts, &r, saved));
+    ASSERT_EQ(r, GIMG_OK);
+    EXPECT_EQ(decoded_frames(saved), want)
+        << "every frame must come back the color it went in as";
+  }
+}
+
