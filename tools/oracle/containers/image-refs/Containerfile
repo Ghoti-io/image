@@ -1,0 +1,152 @@
+# Every reference decoder this library is measured against, in one image.
+#
+# notes/suite/CONTAINERS.md is the specification; section 4a is the argument
+# for this particular image. The other libraries containerised their oracles to
+# pin a *moving* reference. Here the problem was a different one: four of the
+# five references below are a package install away, all four are present on the
+# machine this was written on, and so twenty-one tests that reach for one have
+# never once failed to find it. On a machine without them they skip, gtest
+# prints SKIPPED, and `make test` exits 0.
+#
+#   An oracle can be correctly pinned and still absent, and absence is the
+#   failure mode that reads as success.
+#
+# So this image exists for presence first and pinning second, which is the
+# reverse of `unicode` and `font`, and the reason it carries five references
+# rather than one: the tests reach for several of them in a single run, and an
+# engine invocation per reference would be five images to keep in step.
+#
+# ---------------------------------------------------------------------------
+#
+# Two kinds of pin (CONTAINERS.md section 2.6) and this image is the second
+# kind: built here, so there is no digest to trust and two builds of this file
+# are not two copies of one image. What is pinned instead is everything the
+# build reads - the base by digest, every apt package by full version, the two
+# git checkouts by the commit tools/oracle/VERSIONS already names - and the
+# run-time version check in oracle_env.check_pin() is the real guarantee. That
+# check runs in *both* modes here, as in `font`, because no reference named
+# below comes from a stock image whose digest could stand in for it.
+#
+# Build it with `make oracle-build`, which is:
+#   podman build -t ghoti-image-oracle-refs:deb13-1 \
+#       -f tools/oracle/containers/image-refs/Containerfile tools/oracle
+# The build context is tools/oracle/ rather than this directory, so that
+# VERSIONS - the file that already pinned bmplib and bmpsuite, and is read by
+# fetch.sh with the same awk - is the single place those two commits are
+# written down.
+FROM docker.io/library/debian:13-slim@sha256:7792b1f7702a86946cd518db72b6a407302c3e9bc1635634368b878189e8221c
+
+# The locale, written down rather than inherited. CONTAINERS.md section 1.1 is
+# why: an unset LANG produced fifty false disagreements in the vim oracle, and
+# an oracle that reads its answers back through Python's default encoding is
+# exposed to exactly that. PYTHONHASHSEED because a dict order that varies is
+# a corpus order that varies.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONHASHSEED=0
+
+# The four references that come from Debian, at full versions rather than
+# names. A bare `apt-get install python3-pil` would silently install a
+# different Pillow and report the difference as a codec defect.
+#
+#   python3-pil            Pillow: the decode and encode oracle for JPEG, and
+#                          the reader every verify_*_output.py checks our
+#                          output with. Debian's build links the system
+#                          libjpeg-turbo below, which is deliberate - see the
+#                          note after this block.
+#   libjpeg62-turbo-dev    libjpeg-turbo: what tests/tools/jpeg-oracle builds
+#                          against, for the pixel and coefficient dumps.
+#   libgif-dev             giflib: what tests/tools/gif-oracle builds against.
+#                          Authoritative for LZW, interlace and colour tables;
+#                          not for compositing, which it does not do.
+#   zlib1g-dev             what bmplib links, and what a PNG comparison would
+#                          need if one is ever built here.
+#
+# gcc/make/meson/ninja/git are the build half: bmplib and bmpsuite are built
+# below, and the three oracle tools under tests/tools/ are compiled inside this
+# image at run time by `make oracle-tools`, against these headers and no
+# others.
+#
+# These pins will eventually fail to resolve when the archive moves past them.
+# That is the intended failure and not a bug to route around: snapshot.debian.org
+# is the durable answer when it first happens, and it is not worth the weight
+# before then.
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends \
+      python3=3.13.5-1 \
+      python3-pil=11.1.0-5+deb13u4 \
+      libjpeg62-turbo-dev=1:2.1.5-4 \
+      libgif-dev=5.2.2-1+deb13u1 \
+      zlib1g-dev=1:1.3.dfsg+really1.3.1-1+b1 \
+      gcc=4:14.2.0-1 \
+      libc6-dev=2.41-12+deb13u4 \
+      make=4.4.1-2 \
+      meson=1.7.0-1 \
+      ninja-build=1.12.1-1 \
+      git=1:2.47.3-0+deb13u1 \
+      ca-certificates=20250419 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pillow and the C tools now share one libjpeg-turbo, and that is a change
+# rather than an accident worth recording. On the host they are two: pip's
+# Pillow wheel bundles its own libjpeg-turbo and tests/tools/jpeg-oracle links
+# the system one, and jpeg_test_utils.cpp tried Pillow *first and libjpeg
+# otherwise* - a silent fallback between two references that a green line could
+# not tell apart. Inside this image the fallback still exists in the code but
+# can no longer change the answer, because both spellings reach libjpeg-turbo
+# 2.1.5. That makes the claim the tests print an honest one: the reference is
+# libjpeg-turbo 2.1.5, asked through Pillow or through our own dumper.
+
+# bmplib and bmpsuite, at the commits tools/oracle/VERSIONS pins.
+#
+# These two were already pinned before this image existed - VERSIONS says why,
+# and it is the right reason - but a pinned *source* built by whatever compiler
+# the host has is a half-recorded reference. "bmplib agrees on 79 of 91 files"
+# names a decoder built here, from that commit, by gcc 14.2.0, and now it can
+# be rebuilt somewhere else and be the same decoder.
+#
+# VERSIONS is read with the same `awk '$1 == name { print $2; exit }'` that
+# fetch.sh uses. First match wins, so a duplicate key added earlier in the file
+# shadows the real one - a record line there is a contract.
+COPY VERSIONS /build/VERSIONS
+RUN set -eu; \
+    ref() { awk -v n="$1" '$1 == n { print $2; exit }' /build/VERSIONS; }; \
+    bmplib_ref="$(ref bmplib)"; \
+    bmpsuite_ref="$(ref bmpsuite)"; \
+    test -n "$bmplib_ref" || { echo "VERSIONS has no bmplib line" >&2; exit 1; }; \
+    test -n "$bmpsuite_ref" || { echo "VERSIONS has no bmpsuite line" >&2; exit 1; }; \
+    git clone --quiet --filter=blob:none --no-checkout \
+        https://github.com/rupertwh/bmplib.git /opt/bmplib; \
+    git -C /opt/bmplib checkout --quiet "$bmplib_ref"; \
+    meson setup --buildtype=release /opt/bmplib/build /opt/bmplib >/dev/null; \
+    ninja -C /opt/bmplib/build >/dev/null; \
+    git clone --quiet --filter=blob:none --no-checkout \
+        https://github.com/jsummers/bmpsuite.git /opt/bmpsuite; \
+    git -C /opt/bmpsuite checkout --quiet "$bmpsuite_ref"; \
+    make -C /opt/bmpsuite >/dev/null; \
+    test -f /opt/bmpsuite/q/pal1huffmsb.bmp || { \
+        echo "bmpsuite built no images" >&2; exit 1; }; \
+    printf '%s\n' "$bmplib_ref" > /opt/bmplib.ref; \
+    printf '%s\n' "$bmpsuite_ref" > /opt/bmpsuite.ref; \
+    rm -rf /opt/bmplib/.git /opt/bmpsuite/.git /build/VERSIONS
+
+# bmplib's headers and shared object, where a compile inside this image finds
+# them without every caller naming a path.
+ENV BMPLIB_ROOT=/opt/bmplib \
+    BMPSUITE_ROOT=/opt/bmpsuite \
+    LD_LIBRARY_PATH=/opt/bmplib/build
+
+# The version probe, copied in rather than written with printf inside a RUN.
+# CONTAINERS.md section 7 records why: a printf'd script puts a quoting layer
+# between the check and the fact it checks, and the first draft of `font`'s
+# image had its \x27 escapes reach the file literally.
+COPY containers/image-refs/image-oracle-version /usr/local/bin/image-oracle-version
+COPY containers/image-refs/probe_jpeg.c containers/image-refs/probe_gif.c /build/
+RUN set -eu; \
+    chmod +x /usr/local/bin/image-oracle-version; \
+    gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_jpeg /build/probe_jpeg.c; \
+    gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_gif /build/probe_gif.c -lgif; \
+    rm -rf /build; \
+    for ref in pillow libjpeg giflib bmplib bmpsuite; do \
+        /usr/local/bin/image-oracle-version "$ref"; \
+    done

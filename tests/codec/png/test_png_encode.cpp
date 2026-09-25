@@ -403,9 +403,11 @@ TEST(PngEncode, RoundTrip1x1Gray) {
   GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
   GIMG_Save_Report report = {};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
-  if (r != GIMG_OK) {
-    GTEST_SKIP() << "gimg_doc_save returned " << r << " (round-trip save)";
-  }
+  /* A refusal here used to be a skip, which made this test pass against the
+   * one defect it exists to catch: a file this library has just read and
+   * cannot write back. There is nothing conditional about a 1x1 grayscale
+   * PNG. */
+  ASSERT_EQ(r, GIMG_OK) << "this library read this PNG and will not write it";
   EXPECT_GT(report.bytes_written, 0u);
 
   const void * out_ptr = nullptr;
@@ -473,9 +475,8 @@ TEST(PngEncode, RoundTrip1x1Rgba) {
   GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
   GIMG_Save_Report report = {};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
-  if (r != GIMG_OK) {
-    GTEST_SKIP() << "gimg_doc_save returned " << r << " (round-trip RGBA)";
-  }
+  /* See RoundTrip1x1Gray: a refusal is the finding, not a reason to stop. */
+  ASSERT_EQ(r, GIMG_OK) << "this library read this PNG and will not write it";
 
   const void * out_ptr = nullptr;
   size_t saved_size = 0;
@@ -952,9 +953,9 @@ TEST(PngEncode, SaveWithPreserveAllKeepsExif) {
   GIMG_Save_Options opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
   GIMG_Save_Report report = {};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
-  if (r != GIMG_OK) {
-    GTEST_SKIP() << "gimg_doc_save returned " << r << " (preserve eXIf)";
-  }
+  /* See RoundTrip1x1Gray. A save that refuses under PRESERVE_ALL is exactly
+   * what this test is for. */
+  ASSERT_EQ(r, GIMG_OK) << "this library read this PNG and will not write it";
 
   const void * out_ptr = nullptr;
   size_t saved_size = 0;

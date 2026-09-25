@@ -33,6 +33,23 @@
 #endif
 
 #include "jpeg_test_utils.h"
+#include "../../oracle_gate.h"
+
+/*
+ * The two references this file compares against, each with a gate of its own.
+ *
+ * Both were reachable on every machine this file has ever run on, which is why
+ * the eight tests below that name one had never once failed to find it, and
+ * why the SKIPPED they would print reads exactly like a pass. See
+ * tests/oracle_gate.h.
+ *
+ * One sentinel per reference, and not one for the file: notes/suite/
+ * CONTAINERS.md section 4a records `compress` losing sixteen tests to a file
+ * that had a sentinel for one of its two references and a comment that read as
+ * covering both.
+ */
+ORACLE_SENTINEL(JpegLoad, pillow)
+ORACLE_SENTINEL(JpegLoad, libjpeg)
 #include "../../exif_test_utils.h"
 #include "../../failing_allocator.h"
 #include "../../../src/codec/codec_internal.h"
@@ -2981,7 +2998,12 @@ TEST(JpegLoad, DecodeBaselineGrayOracleRaw) {
   int oracle_mode = -1;
   if (!jpeg_test::load_jpeg_oracle_raw(
           "baseline_8x8_gray", oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Run python3 tests/data/jpeg/generate_jpeg_oracle_raws.py to create .raw oracle";
+    /* Not a skip. The .raw is committed - all sixty-nine of them are - so the
+     * only way here is a checkout that is missing one, and a comparison that
+     * silently does not happen is what this file has just stopped doing. */
+    FAIL() << "tests/data/jpeg/baseline_8x8_gray.raw is committed and is not "
+              "there. Regenerate it with `python3 tests/data/jpeg/"
+              "generate_jpeg_oracle_raws.py`, or check out the file.";
   }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", jpeg))
@@ -3069,7 +3091,11 @@ TEST(JpegLoad, DecodeFixtureOraclesRaw) {
     gimg_doc_destroy(doc);
   }
   if (compared == 0) {
-    GTEST_SKIP() << "No .raw oracles found. Run python3 tests/data/jpeg/generate_jpeg_oracle_raws.py";
+    /* Sixty-nine .raw oracles are committed beside the fixtures, so zero
+     * comparisons means the sweep found none of them - the failure a count
+     * with no floor under it cannot report. */
+    FAIL() << "No .raw oracle was read, and sixty-nine are committed in "
+              "tests/data/jpeg/. This sweep compared nothing.";
   }
 }
 
@@ -3399,7 +3425,8 @@ TEST(JpegLoad, DecodeArithmetic12Bit) {
 TEST(JpegLoad, Decode12BitColorFillsTheWholeRaster) {
   std::vector<uint8_t> jpeg;
   if (!jpeg_test::load_jpeg_file("baseline_rgb12_444.jpg", jpeg)) {
-    GTEST_SKIP() << "Fixture tests/data/jpeg/baseline_rgb12_444.jpg not found.";
+    FAIL() << "tests/data/jpeg/baseline_rgb12_444.jpg is committed and is "
+              "not there.";
   }
   GIMG_Stream * s = nullptr;
   ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
@@ -3453,8 +3480,8 @@ TEST(JpegLoad, Decode12BitColorFillsTheWholeRaster) {
 TEST(JpegLoad, Decode12Bit422SingleRowMatchesReference) {
   std::vector<uint8_t> jpeg;
   if (!jpeg_test::load_jpeg_file("baseline_rgb12_422_16x1.jpg", jpeg)) {
-    GTEST_SKIP()
-        << "Fixture tests/data/jpeg/baseline_rgb12_422_16x1.jpg not found.";
+    FAIL() << "tests/data/jpeg/baseline_rgb12_422_16x1.jpg is committed and "
+              "is not there.";
   }
   static const uint16_t expected[16][3] = {
     { 177, 3997,   50},
@@ -3506,8 +3533,11 @@ TEST(JpegLoad, Decode12Bit422SingleRowMatchesReference) {
 TEST(JpegLoad, Decode12BitFixture) {
   std::vector<uint8_t> jpeg;
   if (!jpeg_test::load_jpeg_file("baseline_gray12.jpg", jpeg)) {
-    GTEST_SKIP() << "Optional 12-bit fixture tests/data/jpeg/baseline_gray12.jpg not found. "
-                    "Copy from tests/out/jpeg/ after running JpegEncode.SaveGray12ThenLoadDecode.";
+    /* It says "optional" because it once was: the comment above still
+     * describes copying it out of tests/out/. It has been committed for some
+     * time, so the branch is now only reachable from a broken checkout. */
+    FAIL() << "tests/data/jpeg/baseline_gray12.jpg is committed and is not "
+              "there.";
   }
   GIMG_Stream * s = nullptr;
   ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
@@ -3540,7 +3570,7 @@ TEST(JpegLoad, DecodeBaselineGrayPillowOracle) {
   int oracle_mode = -1;
   if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
           oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+    GTEST_SKIP() << "the decode oracle did not answer for this fixture; the pinned reference is reachable or PillowOracleIsReachable would have failed";
   }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", jpeg))
@@ -3574,7 +3604,7 @@ TEST(JpegLoad, DecodeBaselineYcbcrPillowOracle) {
   int oracle_mode = -1;
   if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
           oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+    GTEST_SKIP() << "the decode oracle did not answer for this fixture; the pinned reference is reachable or PillowOracleIsReachable would have failed";
   }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_16x16_ycbcr.jpg", jpeg))
@@ -3631,7 +3661,7 @@ TEST(JpegLoad, DecodeProgressivePillowOracle) {
   int oracle_mode = -1;
   if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
           oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+    GTEST_SKIP() << "the decode oracle did not answer for this fixture; the pinned reference is reachable or PillowOracleIsReachable would have failed";
   }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("progressive_sample.jpg", jpeg))
@@ -3746,7 +3776,7 @@ TEST(JpegLoad, DecodeExifOrientationPillowOracle) {
   int oracle_mode = -1;
   if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
           oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+    GTEST_SKIP() << "the decode oracle did not answer for this fixture; the pinned reference is reachable or PillowOracleIsReachable would have failed";
   }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_exif_orientation.jpg", jpeg))
@@ -3811,7 +3841,7 @@ TEST(JpegLoad, DecodeWithIccPillowOracle) {
   int oracle_mode = -1;
   if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
           oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+    GTEST_SKIP() << "the decode oracle did not answer for this fixture; the pinned reference is reachable or PillowOracleIsReachable would have failed";
   }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_with_icc.jpg", jpeg))
@@ -4000,7 +4030,7 @@ TEST(JpegLoad, DecodeCmykPillowOracle) {
   int oracle_mode = -1;
   if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
           oracle_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Decode oracle (Pillow or libjpeg) required. See tests/data/jpeg/README.md.";
+    GTEST_SKIP() << "the decode oracle did not answer for this fixture; the pinned reference is reachable or PillowOracleIsReachable would have failed";
   }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("cmyk_sample.jpg", jpeg))
@@ -4042,7 +4072,7 @@ TEST(JpegLoad, DecodeJpegWithIccVsLibjpeg) {
   int oracle_mode = -1;
   if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
           libjpeg_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Run make jpeg-oracle-tools (see tests/data/jpeg/README.md)";
+    GTEST_SKIP() << "the decode oracle did not answer for this fixture; build the reference with `make oracle-build oracle-tools`";
   }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_with_icc.jpg", jpeg))
@@ -4072,7 +4102,7 @@ TEST(JpegLoad, DecodeJpegWithIccVsLibjpeg) {
 TEST(JpegLoad, DecodeLibjpegEncodedBaseline) {
   std::string jpeg_path = jpeg_test::jpeg_output_dir() + "/libjpeg_encoded_baseline.jpg";
   if (!jpeg_test::libjpeg_encode_baseline_to_file(jpeg_path.c_str(), 640, 480, 85)) {
-    GTEST_SKIP() << "Install Pillow (pip install Pillow) for the encode oracle";
+    GTEST_SKIP() << "the Pillow encode oracle did not answer; it is pinned in tools/oracle/containers/IMAGES and built by `make oracle-build`";
   }
   std::string raw_path = jpeg_test::jpeg_output_dir() + "/libjpeg_encoded_baseline.raw";
   std::vector<uint8_t> libjpeg_pixels;
@@ -4080,7 +4110,7 @@ TEST(JpegLoad, DecodeLibjpegEncodedBaseline) {
   int oracle_mode = -1;
   if (!jpeg_test::libjpeg_decode_to_oracle_raw(jpeg_path.c_str(), raw_path.c_str(),
           libjpeg_pixels, &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Run make jpeg-oracle-tools (dump_jpeg_pixels_ref)";
+    GTEST_SKIP() << "dump_jpeg_pixels_ref did not answer; build it with `make oracle-build oracle-tools`";
   }
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(jpeg_test::load_jpeg_from_path(jpeg_path.c_str(), jpeg));

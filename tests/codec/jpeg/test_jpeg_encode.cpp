@@ -24,6 +24,14 @@
 #include <vector>
 
 #include "jpeg_test_utils.h"
+#include "../../oracle_gate.h"
+
+/*
+ * The one reference this file compares against. See tests/oracle_gate.h: the
+ * two comparisons below that name it could not fail to find it on the machine
+ * they were written on, and a machine without it read as a pass.
+ */
+ORACLE_SENTINEL(JpegEncode, libjpeg)
 #include "../../exif_test_utils.h"
 #include "../../failing_allocator.h"
 #include "../../../src/codec/codec_internal.h"
@@ -2742,7 +2750,8 @@ TEST(JpegEncode, RoundTripExifThumbnailPreserved) {
   // still present.
   std::vector<uint8_t> jpeg;
   if (!jpeg_test::load_jpeg_file("jpeg_exif_orientation.jpg", jpeg)) {
-    GTEST_SKIP() << "Need tests/data/jpeg/jpeg_exif_orientation.jpg";
+    FAIL() << "tests/data/jpeg/jpeg_exif_orientation.jpg is committed and is "
+              "not there.";
   }
   GIMG_Stream * in_stream = nullptr;
   ASSERT_EQ(
@@ -2960,7 +2969,7 @@ TEST(JpegEncode, EncodeRestartIntervalThenLoadDecodeAndLibjpegOracle) {
   if (!jpeg_test::libjpeg_decode_to_oracle_raw(
           jpeg_path_ri.c_str(), raw_path_ri.c_str(), libjpeg_ri, &oracle_w_ri,
           &oracle_h_ri, &oracle_mode_ri)) {
-    GTEST_SKIP() << "Run make jpeg-oracle-tools (see tests/data/jpeg/README.md)";
+    GTEST_SKIP() << "the decode oracle did not answer for this fixture; build the reference with `make oracle-build oracle-tools`";
   }
   EXPECT_EQ(oracle_w_ri, 32u);
   EXPECT_EQ(oracle_h_ri, 32u)

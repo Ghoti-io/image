@@ -1,0 +1,18 @@
+#!/bin/sh
+# What oracle_env.py's probe runs: one line naming the reference that will
+# answer, taken from the reference itself rather than from the image's tag.
+#
+# One script for five references because they share an image. Each arm reports
+# the thing that decides whether a disagreement can be a defect: the library's
+# own version for the three decoders, and the pinned commit for the two that
+# are a git checkout rather than a release.
+set -eu
+case "${1:-}" in
+  pillow)   exec python3 -c 'from PIL import Image; print("Pillow", Image.__version__)' ;;
+  libjpeg)  exec /usr/local/bin/probe_jpeg ;;
+  giflib)   exec /usr/local/bin/probe_gif ;;
+  bmplib)   printf 'bmplib %s\n' "$(cat /opt/bmplib.ref)" ;;
+  bmpsuite) printf 'bmpsuite %s\n' "$(cat /opt/bmpsuite.ref)" ;;
+  *)        printf 'image-oracle-version: no such reference: %s\n' "${1:-}" >&2
+            exit 2 ;;
+esac

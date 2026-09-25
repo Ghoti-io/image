@@ -1,0 +1,66 @@
+# The oracle image, pinned.
+#
+# One line per reference, tab-separated: <name> <image-ref> <version> <what it
+# answers>. Read by tools/oracle/oracle_env.py, which splits on tabs and takes
+# three fields. It is machine-read, not documentation.
+#
+# All five names share one image, which is the shape this library needs and not
+# the shape `unicode` and `font` have: a single `make test` reaches for several
+# of these references, sometimes in one test binary, so five images would be
+# five things to keep in step for no gain. notes/suite/CONTAINERS.md section 4a
+# is the argument for having an image here at all - the problem it solves is
+# *absence*, not drift. Every reference below is present on the machine this
+# was written on, which is why twenty-one tests that reach for one have never
+# yet failed to find it, and why the skip they would print reads as success.
+#
+# Two kinds of pin and they are not the same guarantee (CONTAINERS.md section
+# 2.6). This image is **built here**, so there is no digest to trust: what is
+# pinned is everything its Containerfile reads, and the run-time version check
+# is the real guarantee. `oracle_env.check_pin()` therefore runs in **both**
+# modes, as in `font` and unlike `unicode`, because no line below names a stock
+# image whose digest could stand in for the check.
+#
+# Raising a pin is deliberate. A newer Pillow is newer answers, and a new
+# answer that disagrees is a finding to triage rather than a regression to fix.
+#
+# Building it:
+#   podman build -t ghoti-image-oracle-refs:deb13-1 \
+#       -f tools/oracle/containers/image-refs/Containerfile tools/oracle
+# `make oracle-build` does exactly that. The tag says deb13 because the base is
+# what decides four of the five versions, and -1 is a revision that moves when
+# the contents do; `:latest` is never a tag here.
+
+# The three decoders that come from Debian at a pinned version.
+#
+# libjpeg-turbo is reached two ways - through Pillow and through
+# tests/tools/jpeg-oracle - and inside this image both spellings are the same
+# 2.1.5, which is a change from the host where Pillow's pip wheel bundles its
+# own. jpeg_test_utils.cpp tries Pillow first and the dumper otherwise; that
+# fallback can no longer change the answer.
+pillow	localhost/ghoti-image-oracle-refs:deb13-1	Pillow 11.1.0	Decoded pixels for JPEG, and the reader every verify_*_output.py checks our output with
+libjpeg	localhost/ghoti-image-oracle-refs:deb13-1	libjpeg-turbo 2.1.5	Decoded pixels and DCT coefficients, through tests/tools/jpeg-oracle
+giflib	localhost/ghoti-image-oracle-refs:deb13-1	giflib 5.2.2	LZW expansion, interlace order, colour tables and geometry - not compositing
+
+# The two that are a git checkout rather than a release. Their version field is
+# `@VERSIONS`, which means the pin lives in tools/oracle/VERSIONS and is read
+# from there.
+#
+# Deliberately an indirection rather than a copy. Those two commits were pinned
+# long before this image existed, VERSIONS says why in its own words, and
+# fetch.sh reads it with `awk '$1 == name { print $2; exit }'` - first match
+# wins. CONTAINERS.md section 2.2: a pin written in two files is a pin that can
+# disagree with itself, and the disagreement is silent.
+#
+# What the image adds to them is the other half of the pin. A commit says which
+# *source*; it does not say which compiler built it. "bmplib agrees on 79 of 91
+# files" named a decoder built by whatever the host had until now.
+bmplib	localhost/ghoti-image-oracle-refs:deb13-1	@VERSIONS	OS/2 Huffman 1D, bitmap arrays and 64-bit BMPs - the formats no installed decoder reads
+bmpsuite	localhost/ghoti-image-oracle-refs:deb13-1	@VERSIONS	The 91-file conformance corpus tests/data/bmp/bmpsuite_sweep.py runs
+
+# Not here, and each is its own piece of work:
+#   libpng      a second reading of every PNG this library writes; Pillow is
+#               the reader today and it cannot see bKGD at all, so the gate it
+#               anchors is narrower than it looks (memory: png-bkgd-oracles)
+#   IJG v10     third_party/jpeg-10, built by hand from a tarball today, and
+#               the only reference here for SOF3 lossless and for arithmetic
+#               coding. It is the one this library most wants pinned next.

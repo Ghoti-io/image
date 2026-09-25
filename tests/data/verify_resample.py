@@ -36,10 +36,17 @@ import sys
 import tempfile
 from fractions import Fraction
 
-try:
-    from PIL import Image
-except ImportError:
-    Image = None
+# Pillow is not imported here, and that is the point. This script runs our own
+# resample_tool as well as asking the reference, so it cannot re-exec itself
+# into the pinned image the way the other verification scripts do - a
+# host-built binary is not something the oracle image should be asked to run.
+# The reference half is asked as one batch instead, through
+# resample_oracle_pillow.py; see ask_pillow() below.
+ORACLE_EXEC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "tools", "oracle", "oracle-exec")
+ORACLE_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "resample_oracle_pillow.py")
 
 # Our GIMG_Resample_Filter value -> (name, Pillow resampling, exact?)
 FILTERS = [
@@ -162,6 +169,36 @@ def self_test():
     return failures
 
 
+def ask_pillow(cases, workdir):
+    """Run every case through the pinned Pillow in one process.
+
+    `cases` is a list of (in_path, mode, sw, sh, dw, dh, pillow_filter,
+    out_path). Returns None on success, or a string saying what went wrong.
+
+    A failure here is never absorbed into "compared nothing": the caller turns
+    it into a non-zero exit, because this script's whole claim is a comparison
+    against a named reference and a run that did not reach one has not made it.
+    """
+    batch = "".join("\t".join(str(f) for f in case) + "\n" for case in cases)
+    argv = [ORACLE_EXEC, "--scratch", workdir, "pillow", "--",
+            sys.executable or "python3", ORACLE_SCRIPT]
+    if not os.path.isfile(ORACLE_EXEC):
+        return "tools/oracle/oracle-exec is missing"
+    result = subprocess.run(argv, input=batch.encode(), capture_output=True)
+    if result.returncode != 0:
+        return ("the pinned Pillow did not answer (exit %d):\n  %s"
+                % (result.returncode,
+                   result.stderr.decode(errors="replace").strip()))
+    # The denominator, checked rather than assumed: an oracle that wrote
+    # nothing and exited 0 would otherwise read as agreement on every case.
+    said = result.stdout.decode(errors="replace").strip().splitlines()
+    count = int(said[-1]) if said and said[-1].isdigit() else -1
+    if count != len(cases):
+        return ("the reference answered %s of %d cases"
+                % (count if count >= 0 else "an unreadable number", len(cases)))
+    return None
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: verify_resample.py <path to resample_tool>",
@@ -172,11 +209,6 @@ def main():
         print(f"resample_tool not found or not executable: {tool}\n"
               f"Build it with: make resample-tool", file=sys.stderr)
         return 1
-    if Image is None:
-        print("Pillow (PIL) is required to verify the resampler. "
-              "Install with: pip install Pillow", file=sys.stderr)
-        return 1
-
     problems = self_test()
     if problems:
         for p in problems:
@@ -189,13 +221,24 @@ def main():
     compared = 0
     exact = 0
     tie_diffs = 0
+    # Three phases rather than one loop, because the reference now answers in
+    # one batch instead of in this process. The comparisons below are unchanged
+    # - only where Pillow's side of them comes from has moved.
     with tempfile.TemporaryDirectory() as workdir:
+        # 1. Run our resampler, and lay down the bytes the reference will be
+        #    asked about. The reference reads these files rather than
+        #    regenerating the input from make_input(), so it answers for
+        #    exactly what our tool was given: a second copy of a generator is
+        #    a second thing that can drift.
+        cases = []
+        records = []
         for mode, channels in (("L", 1), ("RGBA", 4)):
-            for filt, name, pil_name, must_match in FILTERS:
-                resampling = getattr(Image.Resampling, pil_name)
-                for (sw, sh) in SIZES:
-                    raw = make_input(sw, sh, mode, 0x9E3779B9 ^ (sw * 131 + sh))
-                    img = Image.frombytes(mode, (sw, sh), raw)
+            for (sw, sh) in SIZES:
+                raw = make_input(sw, sh, mode, 0x9E3779B9 ^ (sw * 131 + sh))
+                in_path = os.path.join(workdir, f"in_{mode}_{sw}x{sh}.raw")
+                with open(in_path, "wb") as handle:
+                    handle.write(raw)
+                for filt, name, pil_name, must_match in FILTERS:
                     for (dw, dh) in TARGETS:
                         ours, err = run_tool(tool, raw, sw, sh, channels, dw,
                                              dh, filt, workdir)
@@ -204,37 +247,58 @@ def main():
                                 f"{name} {mode} {sw}x{sh} -> {dw}x{dh}: "
                                 f"tool failed: {err}")
                             continue
-                        theirs = img.resize((dw, dh), resampling).tobytes()
-                        compared += 1
-                        if ours == theirs:
-                            exact += 1
-                            continue
-                        if must_match:
-                            differing = sum(1 for a, b in zip(ours, theirs)
-                                            if a != b)
-                            worst = max(abs(a - b)
-                                        for a, b in zip(ours, theirs))
-                            errors.append(
-                                f"{name} {mode} {sw}x{sh} -> {dw}x{dh}: "
-                                f"{differing} of {len(ours)} bytes differ from "
-                                f"Pillow, worst by {worst}")
-                        else:
-                            found = check_nearest(ours, theirs, sw, sh, dw, dh,
-                                                  channels)
-                            if found:
-                                errors.append(
-                                    f"{name} {mode} {sw}x{sh} -> {dw}x{dh}: "
-                                    + found[0])
-                            else:
-                                tie_diffs += 1
-                        # NEAREST is also held to the exact integer mapping,
-                        # independently of what Pillow thinks.
-                        if name == "NEAREST" and sh == 1 and dh == 1:
-                            want = nearest_expected(raw, sw, dw, channels)
-                            if ours != want:
-                                errors.append(
-                                    f"NEAREST {mode} {sw} -> {dw}: does not "
-                                    f"match floor((i + 0.5) * n / m)")
+                        out_path = os.path.join(
+                            workdir,
+                            f"ref_{mode}_{name}_{sw}x{sh}_{dw}x{dh}.raw")
+                        cases.append((in_path, mode, sw, sh, dw, dh, pil_name,
+                                      out_path))
+                        records.append((name, mode, sw, sh, dw, dh, channels,
+                                        must_match, ours, raw, out_path))
+
+        # 2. Ask the pinned Pillow, once.
+        if not cases:
+            print("verify_resample.py built no cases to compare",
+                  file=sys.stderr)
+            return 2
+        why = ask_pillow(cases, workdir)
+        if why:
+            print(f"\033[0;31m\n### The resampler was not compared ###"
+                  f"\033[0m\n  {why}", file=sys.stderr)
+            return 2
+
+        # 3. Compare.
+        for (name, mode, sw, sh, dw, dh, channels, must_match, ours, raw,
+                out_path) in records:
+            with open(out_path, "rb") as handle:
+                theirs = handle.read()
+            compared += 1
+            if ours == theirs:
+                exact += 1
+            elif must_match:
+                differing = sum(1 for a, b in zip(ours, theirs) if a != b)
+                worst = max(abs(a - b) for a, b in zip(ours, theirs))
+                errors.append(
+                    f"{name} {mode} {sw}x{sh} -> {dw}x{dh}: "
+                    f"{differing} of {len(ours)} bytes differ from "
+                    f"Pillow, worst by {worst}")
+            else:
+                found = check_nearest(ours, theirs, sw, sh, dw, dh, channels)
+                if found:
+                    errors.append(f"{name} {mode} {sw}x{sh} -> {dw}x{dh}: "
+                                  + found[0])
+                else:
+                    tie_diffs += 1
+            # NEAREST is also held to the exact integer mapping,
+            # independently of what Pillow thinks. It runs whether or not the
+            # two agreed, which the single-loop version did not: it sat after
+            # a `continue` taken on every exact match, so the one case where
+            # both could be wrong together was the one it did not check.
+            if name == "NEAREST" and sh == 1 and dh == 1:
+                want = nearest_expected(raw, sw, dw, channels)
+                if ours != want:
+                    errors.append(
+                        f"NEAREST {mode} {sw} -> {dw}: does not "
+                        f"match floor((i + 0.5) * n / m)")
 
     if errors:
         print("\033[0;31m\n### Resampler disagrees with Pillow ###\033[0m",

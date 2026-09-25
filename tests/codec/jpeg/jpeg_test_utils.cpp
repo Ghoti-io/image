@@ -17,6 +17,7 @@
 #include <ghoti.io/image/raster.h>
 
 #include "jpeg_test_utils.h"
+#include "../../oracle_gate.h"
 
 namespace jpeg_test {
 
@@ -301,6 +302,55 @@ bool rasters_equal_with_tolerance(
   return true;
 }
 
+/**
+ * Wrap a command so that it runs against the pinned reference rather than
+ * against whatever this machine has.
+ *
+ * Every oracle call below used to be a bare `python3 script ...` or a bare
+ * path to a compiled dumper, which asks this machine what it happens to have
+ * installed. tools/oracle/oracle-exec asks tools/oracle/containers/IMAGES
+ * instead, and refuses rather than falling back. See tests/oracle_gate.h for
+ * why that matters more than it looks: nothing here had ever failed to find an
+ * oracle on the machine it was written on.
+ *
+ * @p reference is a name from IMAGES ("pillow", "libjpeg").
+ * @p scratch and @p scratch2 are directories the oracle must be able to
+ * write, or empty when it only reads. Naming them is the caller's job; a
+ * caller that forgets fails on a missing path inside the container instead of
+ * writing where nobody reads. There are two because the encode oracle writes
+ * its JPEG and its scan dump, and a caller may put them in different places.
+ *
+ * Returns the empty string when the repository root cannot be found, which
+ * every caller turns into "the oracle did not run" - the sentinel tests are
+ * what turn that into a failure.
+ */
+static std::string oracle_cmd(const char * reference,
+    const std::string & inner, const std::string & scratch,
+    const std::string & scratch2 = std::string()) {
+  std::string root = oracle_gate::repo_root();
+  if (root.empty()) {
+    return std::string();
+  }
+  std::string cmd = "\"" + root + "/tools/oracle/oracle-exec\"";
+  if (!scratch.empty()) {
+    cmd += " --scratch \"" + scratch + "\"";
+  }
+  if (!scratch2.empty() && scratch2 != scratch) {
+    cmd += " --scratch \"" + scratch2 + "\"";
+  }
+  cmd += " ";
+  cmd += reference;
+  cmd += " -- ";
+  cmd += inner;
+  return cmd;
+}
+
+/** The directory part of a path, for declaring an oracle's writable mount. */
+static std::string dir_of(const std::string & path) {
+  size_t slash = path.rfind('/');
+  return (slash == std::string::npos) ? std::string(".") : path.substr(0, slash);
+}
+
 /** Try Pillow-based decode oracle (Python). Returns true if script ran and output parsed. */
 static bool run_pillow_decode_oracle(const char * file_path, uint64_t * out_hash,
     uint32_t * out_width, uint32_t * out_height) {
@@ -310,7 +360,13 @@ static bool run_pillow_decode_oracle(const char * file_path, uint64_t * out_hash
   if (!check.good()) {
     return false;
   }
-  std::string cmd = "python3 \"" + script + "\" \"" + std::string(file_path) + "\" 2>";
+  std::string cmd = oracle_cmd("pillow",
+      "python3 \"" + script + "\" \"" + std::string(file_path) + "\"",
+      std::string());
+  if (cmd.empty()) {
+    return false;
+  }
+  cmd += " 2>";
 #ifdef _WIN32
   cmd += "NUL";
 #else
@@ -347,8 +403,14 @@ static bool run_pillow_decode_oracle_to_raw(const char * jpeg_path, const char *
   if (!check.good()) {
     return false;
   }
-  std::string cmd = "python3 \"" + script + "\" -o \"" + std::string(raw_path) +
-      "\" \"" + std::string(jpeg_path) + "\" 2>";
+  std::string cmd = oracle_cmd("pillow",
+      "python3 \"" + script + "\" -o \"" + std::string(raw_path) +
+          "\" \"" + std::string(jpeg_path) + "\"",
+      dir_of(raw_path));
+  if (cmd.empty()) {
+    return false;
+  }
+  cmd += " 2>";
 #ifdef _WIN32
   cmd += "NUL";
 #else
@@ -358,7 +420,29 @@ static bool run_pillow_decode_oracle_to_raw(const char * jpeg_path, const char *
   return (ret == 0);
 }
 
-/** Run decode oracle (Pillow script first, else libjpeg binary) and parse one line. */
+/**
+ * Run the decode oracle and parse its one line: Pillow first, our libjpeg
+ * dumper otherwise.
+ *
+ * That ordering used to be a silent fallback between two *availabilities* -
+ * "whichever of these this machine has" - which is the shape
+ * notes/suite/CONTAINERS.md section 2.1 forbids, because a gate whose
+ * reference is not the one it names prints the same green line as one whose
+ * is. Two things changed it into something defensible.
+ *
+ * First, both spellings now reach the same pinned libjpeg-turbo 2.1.5: Debian
+ * builds its Pillow against the system library, so inside the image the choice
+ * cannot change an answer. On the host it could - a pip Pillow wheel carries
+ * its own libjpeg-turbo - and the two were measured against each other over
+ * every fixture here before this was written: 87 comparable, 0 disagreements.
+ *
+ * Second, the sentinel tests require *both* references to be reachable, so
+ * this is no longer where an absence gets absorbed. What is left is a
+ * per-fixture fallback rather than a per-machine one: Pillow refuses some
+ * files this dumper reads, and asking the second when the first declines is
+ * a reasonable thing for a test helper to do. The name still says libjpeg
+ * because libjpeg is what answers in both arms.
+ */
 static bool run_libjpeg_oracle(const std::string & oracle_dir,
     const char * file_path, uint64_t * out_hash, uint32_t * out_width,
     uint32_t * out_height) {
@@ -374,7 +458,12 @@ static bool run_libjpeg_oracle(const std::string & oracle_dir,
   std::string ref = ref_std;
   if (std::ifstream(ref_debug).good())
     ref = ref_debug;
-  std::string cmd = "\"" + ref + "\" \"" + file_path + "\" 2>";
+  std::string cmd = oracle_cmd("libjpeg",
+      "\"" + ref + "\" \"" + file_path + "\"", std::string());
+  if (cmd.empty()) {
+    return false;
+  }
+  cmd += " 2>";
 #ifdef _WIN32
   cmd += "NUL";
 #else
@@ -413,7 +502,12 @@ static bool run_libjpeg_oracle_to_raw(const std::string & oracle_dir,
 #ifdef _WIN32
   ref += ".exe";
 #endif
-  std::string cmd = "\"" + ref + "\" -o \"" + raw_path + "\" \"" + jpeg_path + "\"";
+  std::string cmd = oracle_cmd("libjpeg",
+      "\"" + ref + "\" -o \"" + raw_path + "\" \"" + jpeg_path + "\"",
+      dir_of(raw_path));
+  if (cmd.empty()) {
+    return false;
+  }
 #ifdef _WIN32
   cmd += " 2>NUL";
 #else
@@ -451,8 +545,19 @@ bool libjpeg_encode_baseline_to_file(const char * jpeg_path,
   (void)std::snprintf(h, sizeof(h), "%u", height);
   (void)std::snprintf(q, sizeof(q), "%d", quality);
   std::string scan_tmp = jpeg_output_dir() + "/libjpeg_enc_scan_tmp.bin";
-  std::string cmd = "python3 \"" + script + "\" " + w + " " + h + " " + q +
-      " \"" + scan_tmp + "\" 0 \"" + std::string(jpeg_path) + "\" 2>";
+  /* Two writable paths and they are usually the same directory; when a caller
+   * asks for a JPEG somewhere else, both have to be declared or the oracle
+   * fails on the one that was not. */
+  std::string scratch = dir_of(jpeg_path);
+  std::string scan_dir = dir_of(scan_tmp);
+  std::string cmd = oracle_cmd("pillow",
+      "python3 \"" + script + "\" " + w + " " + h + " " + q +
+          " \"" + scan_tmp + "\" 0 \"" + std::string(jpeg_path) + "\"",
+      scratch, scan_dir);
+  if (cmd.empty()) {
+    return false;
+  }
+  cmd += " 2>";
 #ifdef _WIN32
   cmd += "NUL";
 #else

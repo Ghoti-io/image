@@ -64,6 +64,16 @@ import os
 import struct
 import subprocess
 import sys
+# Pillow is this script's oracle, so it must be the pinned Pillow and not
+# whichever one this machine has. This re-execs the whole script into the image
+# before anything imports PIL, so a machine without Pillow lands in the
+# container rather than dying on the import - and a machine *with* Pillow still
+# answers with the pinned one. See tests/data/oracle_reexec.py.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from oracle_reexec import inside_or_reexec  # noqa: E402
+
+inside_or_reexec("pillow")
+
 
 GIFLIB_TOOL = os.environ.get(
     "GIF_ORACLE_GIFLIB",

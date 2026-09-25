@@ -740,6 +740,69 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep (needs BMPSUITE=
 		--decoder $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION) \
 		$(if $(BMPSUITE),--suite $(BMPSUITE),)
 
+####################################################################
+# Oracles
+####################################################################
+#
+# Every reference decoder this library is measured against is pinned into one
+# container image and reached through tools/oracle/oracle-exec. See
+# tools/oracle/containers/IMAGES for the pins and notes/suite/CONTAINERS.md for
+# the pattern; section 4a is the argument for this library having an image at
+# all, and it is not the argument the other libraries had. Theirs was drift.
+# Ours was absence:
+#
+#   An oracle can be correctly pinned and still absent, and absence is the
+#   failure mode that reads as success.
+#
+# GHOTI_ORACLE_MODE=host runs this machine's own decoders instead, and says so
+# in the line every gate prints. It is not a fallback: nothing selects it
+# automatically, because a gate whose reference is not the one it names prints
+# the same green line as one whose is.
+ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-1
+ORACLE_EXEC := tools/oracle/oracle-exec
+ORACLE_ENGINE ?= docker
+
+oracle-build: ## Build the pinned oracle image (all five references)
+	@printf '### Building %s ###\n' "$(ORACLE_IMAGE)"
+	$(ORACLE_ENGINE) build -t $(ORACLE_IMAGE) \
+		-f tools/oracle/containers/image-refs/Containerfile tools/oracle
+	@$(MAKE) --no-print-directory oracle-verify
+
+oracle-verify: ## Print which reference answers for each name, and at what version
+	@python3 tools/oracle/oracle_env.py
+
+# The three oracle tools are our sources compiled against the image's headers,
+# inside the image, which is the property that makes them a pinned reference
+# rather than a reference-shaped thing built against whatever this machine has.
+# They are written into gitignored build/ directories that are mounted
+# read-write for the compile; everything else the container sees is read-only.
+JPEG_ORACLE_TOOLS := dump_jpeg_pixels_ref dump_jpeg_coef_ref
+
+oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the image
+	@mkdir -p tests/tools/jpeg-oracle/build tests/tools/gif-oracle/build \
+		tests/tools/bmp-oracle/build
+	@for t in $(JPEG_ORACLE_TOOLS); do \
+		printf '### Building oracle tool %s (in %s) ###\n' "$$t" "$(ORACLE_IMAGE)"; \
+		$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/jpeg-oracle/build" \
+			libjpeg -- gcc -O2 -g -std=c17 -Wall -Wextra \
+			-o "$(CURDIR)/tests/tools/jpeg-oracle/build/$$t" \
+			"$(CURDIR)/tests/tools/jpeg-oracle/$$t.c" -ljpeg || exit 1; \
+	done
+	@printf '### Building oracle tool dump_gif_pixels_giflib (in %s) ###\n' "$(ORACLE_IMAGE)"
+	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/gif-oracle/build" \
+		giflib -- gcc -O2 -g -std=c17 -Wall -Wextra \
+		-o "$(CURDIR)/tests/tools/gif-oracle/build/dump_gif_pixels_giflib" \
+		"$(CURDIR)/tests/tools/gif-oracle/dump_gif_pixels_giflib.c" -lgif
+	@printf '### Building oracle tool dump_bmp_pixels_bmplib (in %s) ###\n' "$(ORACLE_IMAGE)"
+	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/bmp-oracle/build" \
+		bmplib -- sh -c 'gcc -O2 -g -std=c17 -Wall -Wextra -o "$$1" "$$2" \
+			-I"$$BMPLIB_ROOT" -L"$$BMPLIB_ROOT/build" -lbmp' sh \
+		"$(CURDIR)/tests/tools/bmp-oracle/build/dump_bmp_pixels_bmplib" \
+		"$(CURDIR)/tests/tools/bmp-oracle/dump_bmp_pixels_bmplib.c"
+	@printf '\033[0;32mOracle tools built against the pinned references.\033[0m\n'
+
+.PHONY: oracle-build oracle-verify oracle-tools
+
 # bmplib oracle tool. The source is tracked in tests/tools/bmp-oracle; the
 # binary it builds is not, and neither is the bmplib checkout it needs. bmplib
 # is the only decoder reachable from here that reads OS/2 Huffman 1D, OS/2
@@ -1083,22 +1146,30 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 		printf "\033[0m\n\n"; \
 		GIMG_IMAGE_ROOT="$(IMAGE_ROOT)" LD_LIBRARY_PATH="$(TEST_LD_PATH)" $$test_exe --gtest_brief=1 || exit 1; \
 	done
-	@printf "\033[0;30;43m\n############################\n### Verifying PNG output (PIL) ###\n############################\033[0m\n\n"; \
+	@# Every step below is joined with && rather than ;.
+	@# It used to be ';', and five of these six could not fail the build: the
+	@# recipe is one shell command list, its status is the last command's, and
+	@# `verify && printf passed; printf next-banner; ...` throws away every
+	@# status but the last. Reproduced on GNU Make 4.4.1 before it was changed:
+	@# a recipe whose first step is `false && printf` exits 0.
+	@printf "\033[0;30;43m\n############################\n### Verifying output against the pinned references ###\n############################\033[0m\n\n" && \
+	python3 $(CURDIR)/tools/oracle/oracle_env.py pillow && \
+	printf "\033[0;30;43m\n### Verifying PNG output ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/png/verify_png_output.py $(TEST_OUT_PNG) && \
-	printf "\033[0;32mPNG output verification passed.\033[0m\n"; \
-	printf "\033[0;30;43m\n############################\n### Verifying JPEG output (PIL) ###\n############################\033[0m\n\n"; \
+	printf "\033[0;32mPNG output verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying JPEG output ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/jpeg/verify_jpeg_output.py $(TEST_OUT_JPEG) && \
-	printf "\033[0;32mJPEG output verification passed.\033[0m\n"; \
-	printf "\033[0;30;43m\n############################\n### Verifying BMP output ###\n############################\033[0m\n\n"; \
+	printf "\033[0;32mJPEG output verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying BMP output ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/bmp/verify_bmp_output.py $(TEST_OUT_BMP) && \
-	printf "\033[0;32mBMP output verification passed.\033[0m\n"; \
-	printf "\033[0;30;43m\n############################\n### Verifying GIF output ###\n############################\033[0m\n\n"; \
+	printf "\033[0;32mBMP output verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying GIF output ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
-	printf "\033[0;32mGIF output verification passed.\033[0m\n"; \
-	printf "\033[0;30;43m\n############################\n### Verifying output structure ###\n############################\033[0m\n\n"; \
+	printf "\033[0;32mGIF output verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying output structure ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
-	printf "\033[0;32mOutput structure verification passed.\033[0m\n"; \
-	printf "\033[0;30;43m\n############################\n### Verifying the resampler (PIL) ###\n############################\033[0m\n\n"; \
+	printf "\033[0;32mOutput structure verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying the resampler ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_resample.py $(APP_DIR)/resample_tool$(EXE_EXTENSION) && \
 	printf "\033[0;32mResampler verification passed.\033[0m\n"
 
