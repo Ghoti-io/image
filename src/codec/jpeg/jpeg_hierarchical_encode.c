@@ -340,8 +340,9 @@ static void henc_set_whole_block_scan(
  */
 static GIMG_Result henc_split_scans(const GIMG_Allocator * alloc,
     uint32_t width, uint32_t height, int num_components, const int16_t * coef,
-    size_t total_blocks, int arithmetic, uint16_t restart_interval,
-    int differential, gimg_jpeg_enc_frame_t * fr) {
+    size_t total_blocks, int arithmetic, const jpeg_arith_cond_t * cond,
+    uint16_t restart_interval, int differential,
+    gimg_jpeg_enc_frame_t * fr) {
   if (num_components < 1 ||
       (unsigned)num_components > GIMG_JPEG_MAX_HIER_SCANS) {
     return GIMG_ERR_UNSUPPORTED;
@@ -367,10 +368,8 @@ static GIMG_Result henc_split_scans(const GIMG_Allocator * alloc,
     unsigned char * dht = NULL;
     size_t dht_len = 0;
     if (arithmetic) {
-      jpeg_arith_cond_t cond;
-      jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_scan_from_coef_buffer(blk_w * 8u, blk_h * 8u,
-          1, packed, nblocks, NULL, NULL, NULL, &cond, alloc, restart_interval,
+          1, packed, nblocks, NULL, NULL, NULL, cond, alloc, restart_interval,
           differential, &sc->data, &sc->size);
     }
     else if (differential) {
@@ -427,7 +426,8 @@ static GIMG_Result henc_split_scans(const GIMG_Allocator * alloc,
 static GIMG_Result henc_progressive_scans(const GIMG_Allocator * alloc,
     uint32_t width, uint32_t height, int num_components,
     const int16_t * coef, size_t total_blocks, int arithmetic,
-    uint16_t restart_interval, int differential, gimg_jpeg_enc_frame_t * fr) {
+    const jpeg_arith_cond_t * cond, uint16_t restart_interval,
+    int differential, gimg_jpeg_enc_frame_t * fr) {
   if (num_components < 1 ||
       (unsigned)(1 + num_components) > GIMG_JPEG_MAX_HIER_SCANS) {
     return GIMG_ERR_UNSUPPORTED;
@@ -439,11 +439,9 @@ static GIMG_Result henc_progressive_scans(const GIMG_Allocator * alloc,
   {
     gimg_jpeg_enc_scan_t * sc = &fr->scans[0];
     if (arithmetic) {
-      jpeg_arith_cond_t cond;
-      jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_progressive_scan(width, height,
           num_components, coef, total_blocks, NULL, NULL, NULL, differential,
-          0, 0, 0, 0, &cond, alloc, restart_interval, &sc->data, &sc->size);
+          0, 0, 0, 0, cond, alloc, restart_interval, &sc->data, &sc->size);
     }
     else {
       r = gimg_jpeg_encode_progressive_scan_extended(width, height,
@@ -497,10 +495,8 @@ static GIMG_Result henc_progressive_scans(const GIMG_Allocator * alloc,
       enc_h = blk_h * 8u;
     }
     if (arithmetic) {
-      jpeg_arith_cond_t cond;
-      jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_progressive_scan(enc_w, enc_h, 1, enc_coef,
-          enc_blocks, NULL, NULL, NULL, differential, 1, 63, 0, 0, &cond,
+          enc_blocks, NULL, NULL, NULL, differential, 1, 63, 0, 0, cond,
           alloc, restart_interval, &sc->data, &sc->size);
     }
     else {
@@ -546,10 +542,10 @@ void gimg_jpeg_free_enc_frames(const GIMG_Allocator * alloc,
 GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int levels, int arithmetic,
     gimg_jpeg_hier_process_t process, int lossless_psv,
-    uint16_t restart_interval, const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, gimg_jpeg_enc_frame_t * frames,
-    unsigned * out_num_frames, int * out_num_components,
-    int * out_precision) {
+    const jpeg_arith_cond_t * cond, uint16_t restart_interval,
+    const uint16_t * quant_luma, const uint16_t * quant_chroma,
+    gimg_jpeg_enc_frame_t * frames, unsigned * out_num_frames,
+    int * out_num_components, int * out_precision) {
   if (!raster || !frames || !out_num_frames || !out_num_components ||
       !quant_luma || !quant_chroma) {
     return GIMG_ERR_INTERNAL;
@@ -718,7 +714,7 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
         const int32_t * one = pl[c];
         size_t one_stride = pls[c];
         r = gimg_jpeg_encode_lossless_planes(alloc, &one, &one_stride, w0, h0,
-            1, precision, lossless_psv, restart_interval, arithmetic,
+            1, precision, lossless_psv, restart_interval, arithmetic, cond,
             &ll_scans[c].data, &ll_scans[c].size, &ll_scans[c].dht,
             &ll_scans[c].dht_len);
         ll_scans[c].component = (uint8_t)c;
@@ -728,7 +724,8 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     else {
       r = gimg_jpeg_encode_lossless_planes(alloc, (const int32_t * const *)pl,
           pls, w0, h0, num_components, precision, lossless_psv,
-          restart_interval, arithmetic, &ll_scans[0].data, &ll_scans[0].size,
+          restart_interval, arithmetic, cond, &ll_scans[0].data,
+          &ll_scans[0].size,
           &ll_scans[0].dht, &ll_scans[0].dht_len);
       ll_scans[0].component = 0xFFu;
       ll_num_scans = 1u;
@@ -823,17 +820,15 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     }
     if (progressive) {
       r = henc_progressive_scans(alloc, w0, h0, num_components, coef,
-          total_blocks, arithmetic, restart_interval, 0, &frames[0]);
+          total_blocks, arithmetic, cond, restart_interval, 0, &frames[0]);
     }
     else if (num_components > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS) {
       r = henc_split_scans(alloc, w0, h0, num_components, coef, total_blocks,
-          arithmetic, restart_interval, 0, &frames[0]);
+          arithmetic, cond, restart_interval, 0, &frames[0]);
     }
     else if (arithmetic) {
-      jpeg_arith_cond_t cond;
-      jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_scan_from_coef_buffer(w0, h0, num_components,
-          coef, total_blocks, NULL, NULL, NULL, &cond, alloc,
+          coef, total_blocks, NULL, NULL, NULL, cond, alloc,
           restart_interval, 0,
           &frames[0].scans[0].data, &frames[0].scans[0].size);
       henc_set_whole_block_scan(&frames[0], num_components, 0);
@@ -915,14 +910,15 @@ differential_frames:
           const int32_t * one = plane_ptr[si];
           size_t one_stride = plane_stride[si];
           r = gimg_jpeg_encode_lossless_differential(alloc, &one, &one_stride,
-              w, h, 1, restart_interval, arithmetic, &frames[k].scans[si].data,
-              &frames[k].scans[si].size, &one_dht, &one_dht_len);
+              w, h, 1, restart_interval, arithmetic, cond,
+              &frames[k].scans[si].data, &frames[k].scans[si].size, &one_dht,
+              &one_dht_len);
         }
         else {
           r = gimg_jpeg_encode_lossless_differential(alloc, plane_ptr,
               plane_stride, w, h, num_components, restart_interval, arithmetic,
-              &frames[k].scans[si].data, &frames[k].scans[si].size, &one_dht,
-              &one_dht_len);
+              cond, &frames[k].scans[si].data, &frames[k].scans[si].size,
+              &one_dht, &one_dht_len);
         }
         if (one_dht && !frames[k].dht) {
           frames[k].dht = one_dht;
@@ -974,17 +970,15 @@ differential_frames:
     }
     if (progressive) {
       r = henc_progressive_scans(alloc, w, h, num_components, coef,
-          total_blocks, arithmetic, restart_interval, 1, &frames[k]);
+          total_blocks, arithmetic, cond, restart_interval, 1, &frames[k]);
     }
     else if (num_components > (int)GIMG_JPEG_MAX_SCAN_COMPONENTS) {
       r = henc_split_scans(alloc, w, h, num_components, coef, total_blocks,
-          arithmetic, restart_interval, 1, &frames[k]);
+          arithmetic, cond, restart_interval, 1, &frames[k]);
     }
     else if (arithmetic) {
-      jpeg_arith_cond_t cond;
-      jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_scan_from_coef_buffer(w, h, num_components,
-          coef, total_blocks, NULL, NULL, NULL, &cond, alloc,
+          coef, total_blocks, NULL, NULL, NULL, cond, alloc,
           restart_interval, 1,
           &frames[k].scans[0].data, &frames[k].scans[0].size);
       henc_set_whole_block_scan(&frames[k], num_components, 0);

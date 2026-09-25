@@ -731,13 +731,15 @@ static void jpeg_ll_flush(jpeg_ll_writer * w) {
 /** Entropy-code a frame's differences; see the definition below. */
 static GIMG_Result jpeg_lossless_entropy_encode(const GIMG_Allocator * alloc,
     int32_t * diffs, size_t n_diffs, uint32_t width, int num_comp,
-    uint16_t restart_interval, int arithmetic, uint32_t * freq_in,
+    uint16_t restart_interval, int arithmetic,
+    const jpeg_arith_cond_t * cond, uint32_t * freq_in,
     unsigned char ** out_scan_data, size_t * out_scan_size,
     unsigned char ** out_dht, size_t * out_dht_len);
 
 GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int psv, uint16_t restart_interval,
-    int arithmetic, gimg_jpeg_lossless_scan_t * out_scans,
+    int arithmetic, const jpeg_arith_cond_t * cond,
+    gimg_jpeg_lossless_scan_t * out_scans,
     unsigned * out_num_scans, uint32_t * out_width, uint32_t * out_height,
     int * out_num_components, int * out_precision) {
   if (!alloc || !raster || !out_scans || !out_num_scans) {
@@ -846,7 +848,7 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
       const int32_t * one = plane_ptr[c];
       size_t one_stride = plane_stride[c];
       pr = gimg_jpeg_encode_lossless_planes(alloc, &one, &one_stride, width,
-          height, 1, precision, psv, restart_interval, arithmetic,
+          height, 1, precision, psv, restart_interval, arithmetic, cond,
           &out_scans[c].data, &out_scans[c].size, &out_scans[c].dht,
           &out_scans[c].dht_len);
       out_scans[c].component = (uint8_t)c;
@@ -855,7 +857,7 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
   }
   else {
     pr = gimg_jpeg_encode_lossless_planes(alloc, plane_ptr, plane_stride, width,
-        height, num_comp, precision, psv, restart_interval, arithmetic,
+        height, num_comp, precision, psv, restart_interval, arithmetic, cond,
         &out_scans[0].data, &out_scans[0].size, &out_scans[0].dht,
         &out_scans[0].dht_len);
     out_scans[0].component = 0xFFu; // every component, interleaved
@@ -897,7 +899,8 @@ GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
  */
 static GIMG_Result jpeg_lossless_entropy_encode(const GIMG_Allocator * alloc,
     int32_t * diffs, size_t n_diffs, uint32_t width, int num_comp,
-    uint16_t restart_interval, int arithmetic, uint32_t * freq_in,
+    uint16_t restart_interval, int arithmetic,
+    const jpeg_arith_cond_t * cond, uint32_t * freq_in,
     unsigned char ** out_scan_data, size_t * out_scan_size,
     unsigned char ** out_dht, size_t * out_dht_len) {
   uint32_t freq_local[JPEG_LL_SYMBOLS + 1];
@@ -920,8 +923,6 @@ static GIMG_Result jpeg_lossless_entropy_encode(const GIMG_Allocator * alloc,
     jpeg_arith_sink_t sink = {&aw, alloc, 0};
     jpeg_arith_encoder_t e;
     jpeg_arith_lossless_stats_t astats;
-    jpeg_arith_cond_t cond;
-    jpeg_arith_cond_defaults(&cond);
     jpeg_arith_encoder_init(&e, jpeg_arith_lossless_sink_emit, &sink);
     jpeg_arith_lossless_stats_reset(&astats);
 
@@ -963,7 +964,7 @@ static GIMG_Result jpeg_lossless_entropy_encode(const GIMG_Allocator * alloc,
         da[c] = 0; // H.1.2.3.1: Da is zero at the start of every line.
       }
       int cat = 0;
-      jpeg_arith_lossless_encode_diff(&e, &astats, &cond, 0, da[c],
+      jpeg_arith_lossless_encode_diff(&e, &astats, cond, 0, da[c],
           (int)db[(size_t)x * (size_t)num_comp + (size_t)c], diffs[i], &cat);
       da[c] = cat;
       db[(size_t)x * (size_t)num_comp + (size_t)c] = (uint8_t)cat;
@@ -1081,8 +1082,8 @@ static GIMG_Result jpeg_lossless_entropy_encode(const GIMG_Allocator * alloc,
 GIMG_Result gimg_jpeg_encode_lossless_differential(const GIMG_Allocator * alloc,
     const int32_t * const * planes, const size_t * plane_stride, uint32_t width,
     uint32_t height, int num_comp, uint16_t restart_interval, int arithmetic,
-    unsigned char ** out_scan_data, size_t * out_scan_size,
-    unsigned char ** out_dht, size_t * out_dht_len) {
+    const jpeg_arith_cond_t * cond, unsigned char ** out_scan_data,
+    size_t * out_scan_size, unsigned char ** out_dht, size_t * out_dht_len) {
   if (!alloc || !planes || !plane_stride || !out_scan_data || !out_scan_size ||
       !out_dht || !out_dht_len || num_comp < 1 ||
       num_comp > (int)GIMG_JPEG_MAX_COMPONENTS || width == 0 || height == 0) {
@@ -1120,14 +1121,15 @@ GIMG_Result gimg_jpeg_encode_lossless_differential(const GIMG_Allocator * alloc,
     }
   }
   return jpeg_lossless_entropy_encode(alloc, diffs, n_diffs, width, num_comp,
-      restart_interval, arithmetic, NULL, out_scan_data, out_scan_size,
+      restart_interval, arithmetic, cond, NULL, out_scan_data, out_scan_size,
       out_dht, out_dht_len);
 }
 
 GIMG_Result gimg_jpeg_encode_lossless_planes(const GIMG_Allocator * alloc,
     const int32_t * const * planes, const size_t * plane_stride, uint32_t width,
     uint32_t height, int num_comp, int precision, int psv,
-    uint16_t restart_interval, int arithmetic, unsigned char ** out_scan_data,
+    uint16_t restart_interval, int arithmetic,
+    const jpeg_arith_cond_t * cond, unsigned char ** out_scan_data,
     size_t * out_scan_size, unsigned char ** out_dht, size_t * out_dht_len) {
   if (!alloc || !planes || !plane_stride || !out_scan_data || !out_scan_size ||
       !out_dht || !out_dht_len || num_comp < 1 ||
@@ -1204,6 +1206,6 @@ GIMG_Result gimg_jpeg_encode_lossless_planes(const GIMG_Allocator * alloc,
   }
   #undef LL_AT
   return jpeg_lossless_entropy_encode(alloc, diffs, n_diffs, width, num_comp,
-      restart_interval, arithmetic, freq, out_scan_data, out_scan_size, out_dht,
-      out_dht_len);
+      restart_interval, arithmetic, cond, freq, out_scan_data, out_scan_size,
+      out_dht, out_dht_len);
 }

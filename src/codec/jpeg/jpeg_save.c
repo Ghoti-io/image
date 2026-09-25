@@ -481,8 +481,8 @@ static void jpeg_rgb12_to_ycbcr12(uint16_t r, uint16_t g, uint16_t b,
  * baseline: fill coef then encode one scan (Ss=0,Se=63) via extended tables. */
 static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
-    bool progressive, bool arithmetic, uint16_t restart_interval,
-    unsigned char ** out_scan_data,
+    bool progressive, bool arithmetic, const jpeg_arith_cond_t * cond,
+    uint16_t restart_interval, unsigned char ** out_scan_data,
     size_t * out_scan_size, int16_t ** out_coef_buffer, size_t * out_total_blocks,
     uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
@@ -908,11 +908,9 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     // T.81 Annex D.  The coder is the same at either precision: it codes binary
     // decisions about coefficient magnitudes, and a wider coefficient simply
     // makes the magnitude chain longer.
-    jpeg_arith_cond_t cond;
-    jpeg_arith_cond_defaults(&cond);
     r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
         num_components, coef_buf, out_blocks, h_samp, v_samp, out_tbl_sel,
-        &cond, alloc, restart_interval, 0, &scan_data, &scan_size);
+        cond, alloc, restart_interval, 0, &scan_data, &scan_size);
   }
   else {
     // T.81 Annex F: baseline sequential uses DC table for DC then AC table for
@@ -972,7 +970,8 @@ static void jpeg_planes_free(
  */
 static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
-    bool progressive, bool arithmetic, uint16_t restart_interval,
+    bool progressive, bool arithmetic, const jpeg_arith_cond_t * cond,
+    uint16_t restart_interval,
     unsigned fdct_method, unsigned quant_method, unsigned cmyk_transform,
     unsigned char ** out_scan_data,
     size_t * out_scan_size, int16_t ** out_coef_buffer,
@@ -1091,7 +1090,7 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       *out_adobe_transform = 0; // see below: three components must say so
     }
     return jpeg_raster_to_scan_data_12bit(alloc, raster, quality,
-        chroma_subsampling, progressive, arithmetic, restart_interval,
+        chroma_subsampling, progressive, arithmetic, cond, restart_interval,
         out_scan_data,
         out_scan_size, out_coef_buffer, out_total_blocks, quant_luma,
         quant_chroma, out_width, out_height, out_num_components, out_h_samp,
@@ -1504,10 +1503,8 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
   size_t scan_size = 0;
   if (arithmetic) {
     // T.81 Annex D in place of Annex F; the coefficients are the same.
-    jpeg_arith_cond_t cond;
-    jpeg_arith_cond_defaults(&cond);
     r = gimg_jpeg_encode_arith_scan_from_coef_buffer(width, height,
-        num_components, coef_buf, total_blocks, h_ptr, v_ptr, tbl_ptr, &cond,
+        num_components, coef_buf, total_blocks, h_ptr, v_ptr, tbl_ptr, cond,
         alloc, restart_interval, 0, &scan_data, &scan_size);
   }
   else {
@@ -1860,8 +1857,9 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const gimg_jpeg_enc_frame_t * frames, unsigned num_frames,
-    uint16_t restart_interval, bool arithmetic, int precision,
-    int hier_is_color, size_t * out_n) {
+    uint16_t restart_interval, bool arithmetic,
+    const jpeg_arith_cond_t * cond, int precision, int hier_is_color,
+    size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   size_t written = 0;
   GIMG_Result r;
@@ -2029,25 +2027,18 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
       n += written;
     }
     if (arithmetic) {
-      // B.2.4.3 defaults, written out rather than left implicit.
+      // The conditioning, written out rather than left implicit - B.2.4.3's
+      // defaults unless the caller asked for something else.
       int tables = gimg_jpeg_uses_second_table(tbl_sel, num_components) ? 2 : 1;
+      unsigned char dac[2 * 2 * GIMG_JPEG_ARITH_TABLES];
+      size_t dl = gimg_jpeg_build_dac(cond, tables, 0, dac);
       r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
       if (r != GIMG_OK) {
         return r;
       }
-      r = jpeg_write_u16(stream, (uint16_t)(2 + 2 * 2 * tables), &n);
+      r = jpeg_write_u16(stream, (uint16_t)(2 + dl), &n);
       if (r != GIMG_OK) {
         return r;
-      }
-      unsigned char dac[8];
-      size_t dl = 0;
-      for (int t = 0; t < tables; t++) {
-        dac[dl++] = (unsigned char)(0x00 | t);
-        dac[dl++] = 0x10;
-      }
-      for (int t = 0; t < tables; t++) {
-        dac[dl++] = (unsigned char)(0x10 | t);
-        dac[dl++] = 0x05;
       }
       r = gimg_stream_write(stream, dac, dl, &written);
       if (r != GIMG_OK) {
@@ -2168,8 +2159,8 @@ static GIMG_Result jpeg_write_noninterleaved_scans(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components,
     const uint8_t * h_samp, const uint8_t * v_samp, const uint8_t * tbl_sel,
     const int16_t * coef_buffer,
-    int precision, bool arithmetic, uint16_t restart_interval,
-    const GIMG_Allocator * alloc, size_t * out_n) {
+    int precision, bool arithmetic, const jpeg_arith_cond_t * cond,
+    uint16_t restart_interval, const GIMG_Allocator * alloc, size_t * out_n) {
   (void)tbl_sel;
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r = GIMG_OK;
@@ -2217,10 +2208,8 @@ static GIMG_Result jpeg_write_noninterleaved_scans(GIMG_Stream * stream,
     size_t scan_size = 0;
     static const uint8_t one_samp[3] = {1, 1, 1};
     if (arithmetic) {
-      jpeg_arith_cond_t cond;
-      jpeg_arith_cond_defaults(&cond);
       r = gimg_jpeg_encode_arith_scan_from_coef_buffer(cw, ch, 1, packed,
-          nblocks, one_samp, one_samp, NULL, &cond, alloc, restart_interval,
+          nblocks, one_samp, one_samp, NULL, cond, alloc, restart_interval,
           0, &scan_data, &scan_size);
     }
     else if (precision > 8) {
@@ -2295,7 +2284,8 @@ static GIMG_Result jpeg_write_image_body(GIMG_Stream * stream, uint32_t width,
     const uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const unsigned char * scan_data, size_t scan_size, int precision,
-    uint16_t restart_interval, bool arithmetic, const int16_t * coef_buffer,
+    uint16_t restart_interval, bool arithmetic,
+    const jpeg_arith_cond_t * cond, const int16_t * coef_buffer,
     const GIMG_Allocator * alloc, unsigned abbreviated, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
@@ -2414,24 +2404,15 @@ after_tables:
     // defaults - L = 0 and U = 1 for DC, Kx = 5 for AC - written out rather
     // than left implicit, which is what libjpeg does as well.
     int tables = gimg_jpeg_uses_second_table(tbl_sel, num_components) ? 2 : 1;
-    uint16_t dac_len = (uint16_t)(2 + 2 * 2 * tables);
+    unsigned char dac[2 * 2 * GIMG_JPEG_ARITH_TABLES];
+    size_t dl = gimg_jpeg_build_dac(cond, tables, 0, dac);
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
     if (r != GIMG_OK) {
       return r;
     }
-    r = jpeg_write_u16(stream, dac_len, &n);
+    r = jpeg_write_u16(stream, (uint16_t)(2 + dl), &n);
     if (r != GIMG_OK) {
       return r;
-    }
-    unsigned char dac[8];
-    size_t dl = 0;
-    for (int t = 0; t < tables; t++) {
-      dac[dl++] = (unsigned char)(0x00 | t); // Tc = 0 (DC), Tb = t
-      dac[dl++] = 0x10;                      // U = 1, L = 0
-    }
-    for (int t = 0; t < tables; t++) {
-      dac[dl++] = (unsigned char)(0x10 | t); // Tc = 1 (AC), Tb = t
-      dac[dl++] = 0x05;                      // Kx = 5
     }
     r = gimg_stream_write(stream, dac, dl, &written);
     if (r != GIMG_OK) {
@@ -2470,7 +2451,7 @@ after_tables:
   // the same file either way; only the scans differ.
   if (coef_buffer) {
     r = jpeg_write_noninterleaved_scans(stream, width, height, num_components,
-        h_samp, v_samp, tbl_sel, coef_buffer, precision, arithmetic,
+        h_samp, v_samp, tbl_sel, coef_buffer, precision, arithmetic, cond,
         restart_interval, alloc, &n);
     if (r != GIMG_OK) {
       return r;
@@ -2700,8 +2681,9 @@ static void jpeg_gather_component_blocks(int16_t * interleaved,
  */
 static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     uint32_t width, uint32_t height, int num_components, int precision,
-    int psv, int arithmetic, const gimg_jpeg_lossless_scan_t * scans,
-    unsigned num_scans, uint16_t restart_interval, size_t * out_n) {
+    int psv, int arithmetic, const jpeg_arith_cond_t * cond,
+    const gimg_jpeg_lossless_scan_t * scans, unsigned num_scans,
+    uint16_t restart_interval, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   size_t written = 0;
   GIMG_Result r;
@@ -2778,19 +2760,17 @@ static GIMG_Result jpeg_write_image_body_lossless(GIMG_Stream * stream,
     // which use the DC conditioning (H.1.2.3.3 gives the defaults L = 0 and
     // U = 1), so there is no AC entry to write.  One table serves every
     // component because the scan names table 0 for all of them.
-    uint16_t dac_len = 4;
+    unsigned char dac[2 * 2 * GIMG_JPEG_ARITH_TABLES];
+    size_t dl = gimg_jpeg_build_dac(cond, 1, 1, dac);
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
     if (r != GIMG_OK) {
       return r;
     }
-    r = jpeg_write_u16(stream, dac_len, &n);
+    r = jpeg_write_u16(stream, (uint16_t)(2 + dl), &n);
     if (r != GIMG_OK) {
       return r;
     }
-    unsigned char dac[2];
-    dac[0] = 0x00; // Tc = 0 (DC/lossless), Tb = 0
-    dac[1] = 0x10; // U = 1, L = 0
-    r = gimg_stream_write(stream, dac, sizeof(dac), &written);
+    r = gimg_stream_write(stream, dac, dl, &written);
     if (r != GIMG_OK) {
       return r;
     }
@@ -2888,8 +2868,9 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     const uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES],
     const int16_t * coef_buffer, size_t total_blocks,
     const GIMG_JPEG_Progressive_Scan * scans, unsigned scan_count,
-    int precision, bool arithmetic, const GIMG_Allocator * alloc,
-    uint16_t restart_interval, unsigned abbreviated, size_t * out_n) {
+    int precision, bool arithmetic, const jpeg_arith_cond_t * cond,
+    const GIMG_Allocator * alloc, uint16_t restart_interval,
+    unsigned abbreviated, size_t * out_n) {
   size_t n = (out_n ? *out_n : 0);
   GIMG_Result r;
   size_t written = 0;
@@ -2953,27 +2934,18 @@ static GIMG_Result jpeg_write_image_body_progressive(GIMG_Stream * stream,
     }
   }
   if (arithmetic) {
-    // T.81 B.2.4.3: DAC in place of DHT, with the B.2.4.3 default conditioning
-    // written out explicitly.
+    // T.81 B.2.4.3: DAC in place of DHT, with the conditioning written out
+    // explicitly - the defaults unless the caller asked for something else.
     int tables = gimg_jpeg_uses_second_table(tbl_sel, num_components) ? 2 : 1;
-    uint16_t dac_len = (uint16_t)(2 + 2 * 2 * tables);
+    unsigned char dac[2 * 2 * GIMG_JPEG_ARITH_TABLES];
+    size_t dl = gimg_jpeg_build_dac(cond, tables, 0, dac);
     r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_DAC, &n);
     if (r != GIMG_OK) {
       return r;
     }
-    r = jpeg_write_u16(stream, dac_len, &n);
+    r = jpeg_write_u16(stream, (uint16_t)(2 + dl), &n);
     if (r != GIMG_OK) {
       return r;
-    }
-    unsigned char dac[8];
-    size_t dl = 0;
-    for (int t = 0; t < tables; t++) {
-      dac[dl++] = (unsigned char)(0x00 | t);
-      dac[dl++] = 0x10; // U = 1, L = 0
-    }
-    for (int t = 0; t < tables; t++) {
-      dac[dl++] = (unsigned char)(0x10 | t);
-      dac[dl++] = 0x05; // Kx = 5
     }
     r = gimg_stream_write(stream, dac, dl, &written);
     if (r != GIMG_OK) {
@@ -3155,11 +3127,9 @@ after_prog_tables:
       if (arithmetic) {
         // T.81 Annex D and G.2.  The same coder serves both precisions, and it
         // needs no previous-scan state: the point transform is a shift.
-        jpeg_arith_cond_t cond;
-        jpeg_arith_cond_defaults(&cond);
         r = gimg_jpeg_encode_arith_progressive_scan(enc_w, enc_h_px,
             scan_components, enc_coef, enc_blocks, enc_h, enc_v, scan_tbl, 0,
-            scans[s].Ss, scans[s].Se, scans[s].Ah, scans[s].Al, &cond, alloc,
+            scans[s].Ss, scans[s].Se, scans[s].Ah, scans[s].Al, cond, alloc,
             restart_interval, &scan_data, &scan_size);
       }
       else if (precision > 8) {
@@ -3294,6 +3264,23 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   // something it cannot be: a hierarchical sequence here is built out of the
   // sequential DCT process at 8 bits, and each of these asks for a different
   // process for the frames.
+  // T.81 B.2.4.3: the arithmetic coder's conditioning, built once here and
+  // handed to every writer and every entropy call below.  It used to be built
+  // in nine separate places from the defaults, with four more places spelling
+  // the same two bytes into a DAC payload by hand, so nothing a caller said
+  // could reach it.  Validated here, before a byte is written: conditioning a
+  // conforming decoder would reject is refused rather than clamped.
+  jpeg_arith_cond_t arith_cond;
+  {
+    GIMG_Result cr = gimg_jpeg_cond_from_options(options, &arith_cond);
+    if (cr != GIMG_OK) {
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      return cr;
+    }
+  }
+
   int hier_levels = (options && options->jpeg_hierarchical_levels)
       ? (int)options->jpeg_hierarchical_levels
       : 0;
@@ -3304,6 +3291,34 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   if (hier_levels != 0 &&
       (options && options->jpeg_precision != 0 &&
           options->jpeg_precision != 8)) {
+    if (raster_owned) {
+      gimg_raster_destroy(raster);
+    }
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  // Nor can it change the arithmetic conditioning, for a worse reason: it
+  // produces the wrong picture.
+  //
+  // With B.2.4.3's defaults a hierarchical arithmetic file is exact - its
+  // pixels match the Huffman file of the same pyramid at every level.  With a
+  // stated L the decoded image changes, which it must not: conditioning is an
+  // entropy-coding choice and the reconstruction is built from coefficients, so
+  // the picture cannot depend on it.  Something in the hierarchical pair
+  // disagrees about a classification, and the encoder was measured making three
+  // more of them than the decoder.
+  //
+  // A sweep over five images, three processes and L from 1 to 4 put the fault
+  // entirely inside this one combination: 59 of 235 cases changed the picture
+  // and every one of them was hierarchical; sequential, progressive and
+  // lossless were exact in all of them.  Those arms had never run before this
+  // option existed, so the bug is older than the option and was simply
+  // unreachable - see notes/image.
+  //
+  // Refused rather than shipped, because a wrong picture with an OK result is
+  // the worst thing this writer could return.  Lifting this needs the
+  // hierarchical disagreement found, and the test that pins the refusal names
+  // what to delete when it is.
+  if (hier_levels != 0 && !gimg_jpeg_cond_is_default(&arith_cond)) {
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -3589,8 +3604,9 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       hier_process = GIMG_JPEG_HIER_PROGRESSIVE;
     }
     r = gimg_jpeg_encode_hierarchical(alloc, raster, hier_levels, arithmetic,
-        hier_process, lossless_psv, restart_interval, quant_luma, quant_chroma,
-        hier_frames, &hier_num_frames, &num_components, &precision);
+        hier_process, lossless_psv, &arith_cond, restart_interval, quant_luma,
+        quant_chroma, hier_frames, &hier_num_frames, &num_components,
+        &precision);
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -3616,8 +3632,8 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
     r = gimg_jpeg_encode_lossless(alloc, raster, lossless_psv, restart_interval,
-        arithmetic, lossless_scans, &lossless_num_scans, &width, &height,
-        &num_components, &precision);
+        arithmetic, &arith_cond, lossless_scans, &lossless_num_scans, &width,
+        &height, &num_components, &precision);
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }
@@ -3630,7 +3646,7 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   // from a finished scan, because it needs the blocks again, one component at
   // a time.  That is the same buffer the progressive path asks for.
   r = jpeg_raster_to_scan_data(alloc, raster, quality, chroma_subsampling,
-      progressive || non_interleaved, arithmetic, restart_interval,
+      progressive || non_interleaved, arithmetic, &arith_cond, restart_interval,
       fdct_method, quant_method, cmyk_transform,
       &scan_data,
       &scan_size, &coef_buffer, &total_blocks, quant_luma, quant_chroma, &width,
@@ -3979,8 +3995,11 @@ have_scan:
               // The JFIF thumbnail stays Huffman whatever the main image
               // uses: it is read by viewers that may know nothing of Annex D,
               // and it is too small for the difference to matter.
+              // Huffman, so the conditioning never reaches the bytes; the
+              // thumbnail is read by viewers that may know nothing of Annex D.
               r = jpeg_raster_to_scan_data(alloc, thumb_raster, thumb_quality,
-                  CHROMA_444, false, false, 0, fdct_method, quant_method, 0u,
+                  CHROMA_444, false, false, &arith_cond, 0, fdct_method,
+                  quant_method, 0u,
                   &thumb_scan,
                   &thumb_scan_size, NULL, NULL, tq_luma, tq_chroma, &tw, &th,
                   &tnc, NULL, NULL, NULL, &thumb_prec, NULL);
@@ -3996,10 +4015,12 @@ have_scan:
                   r = jpeg_write_marker(
                       mem_stream, GIMG_JPEG_MARKER_SOI, &mem_n);
                   if (r == GIMG_OK) {
+                    // The thumbnail is Huffman-coded, so its conditioning
+                    // is never written; it is passed for the signature's sake.
                     r = jpeg_write_image_body(mem_stream, tw, th, tnc, NULL,
                         NULL, NULL, tq_luma, tq_chroma, thumb_scan,
-                        thumb_scan_size, 8, 0, false, NULL, alloc, 0u,
-                        &mem_n);
+                        thumb_scan_size, 8, 0, false, &arith_cond, NULL, alloc,
+                        0u, &mem_n);
                   }
                   if (r == GIMG_OK) {
                     const void * jpeg_buf = NULL;
@@ -4388,18 +4409,18 @@ have_scan:
         num_components > 1 ? h_samp : NULL,
         num_components > 1 ? v_samp : NULL, tbl_sel, quant_luma, quant_chroma,
         coef_buffer, total_blocks, scans, scan_count, precision, arithmetic,
-        alloc,
-        restart_interval, abbreviated, &report->bytes_written);
+        &arith_cond, alloc, restart_interval, abbreviated,
+        &report->bytes_written);
   }
   else if (hier_levels != 0) {
     r = jpeg_write_image_body_hierarchical(stream, width, height,
         num_components, tbl_sel, quant_luma, quant_chroma, hier_frames,
-        hier_num_frames, restart_interval, arithmetic, precision,
-        hier_is_color, &report->bytes_written);
+        hier_num_frames, restart_interval, arithmetic, &arith_cond,
+        precision, hier_is_color, &report->bytes_written);
   }
   else if (lossless_psv != 0) {
     r = jpeg_write_image_body_lossless(stream, width, height, num_components,
-        precision, lossless_psv, arithmetic, lossless_scans,
+        precision, lossless_psv, arithmetic, &arith_cond, lossless_scans,
         lossless_num_scans, restart_interval, &report->bytes_written);
   }
   else {
@@ -4407,7 +4428,7 @@ have_scan:
         num_components > 1 ? h_samp : NULL,
         num_components > 1 ? v_samp : NULL, tbl_sel, quant_luma, quant_chroma,
         scan_data, scan_size, precision, restart_interval, arithmetic,
-        non_interleaved ? coef_buffer : NULL, alloc, abbreviated,
+        &arith_cond, non_interleaved ? coef_buffer : NULL, alloc, abbreviated,
         &report->bytes_written);
   }
 

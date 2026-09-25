@@ -306,25 +306,19 @@ int jpeg_arith_decode(jpeg_arith_decoder_t * d, uint8_t * st) {
 }
 
 /**
- * The conditioning bounds this library never writes.
+ * T.81 B.2.4.3's defaults: L = 0 and U = 1 for DC, Kx = 5 for AC.
  *
- * T.81 F.1.4.4.1.2 classifies a DC difference as small or large by comparing
- * its magnitude against `(1 << L) >> 1`, where L comes from the DAC segment
- * (B.2.4.3).  The default L is 0, which makes that bound 0 - and a magnitude
- * is never negative, so with the default conditioning the "small" arm cannot
- * be taken at all.  It appears three times: twice in the decoder and once in
- * the encoder, and none of the three has ever run.
+ * The bounds decide where "small" ends when a DC difference is classified for
+ * the next block's context (F.1.4.4.1.2), which compares the magnitude against
+ * `(1 << L) >> 1`.  With L = 0 that bound is 0, and a magnitude is never
+ * negative, so the default conditioning cannot take the small arm at all.
  *
- * That is not an accident of the fixtures.  jpeg_save.c writes B.2.4.3's
- * defaults on every arithmetic frame and offers no way to ask for anything
- * else, so no file this library produces can reach those arms, and no
- * round trip can test them.  Reaching them needs a file from an encoder that
- * states a non-zero L, and the corpus has none - every DAC in it is the
- * default pair.  jpeg_load.c does read L and store it, so the arms are live
- * for such a file; they are simply not reachable from here.
- *
- * Recorded so the next reader does not spend an afternoon looking for a
- * fixture that cannot be built with what is in this repository.
+ * That was for a long time the only conditioning this library could write, so
+ * three arms - two in the decoder, one in the encoder - had never run.  Not for
+ * want of a fixture: the writer hardcoded the defaults in four places and
+ * offered no way to ask for anything else, so nothing it produced could reach
+ * them.  gimg_jpeg_cond_from_options is what closed that, and the arms are now
+ * reachable from this library's own round trip.
  */
 void jpeg_arith_cond_defaults(jpeg_arith_cond_t * cond) {
   // T.81 B.2.4.3: absent a DAC segment, the conditioning is L = 0, U = 1 for
@@ -334,6 +328,73 @@ void jpeg_arith_cond_defaults(jpeg_arith_cond_t * cond) {
     cond->dc_u[i] = 1;
     cond->ac_k[i] = 5;
   }
+}
+
+GIMG_Result gimg_jpeg_cond_from_options(
+    const GIMG_Save_Options * options, jpeg_arith_cond_t * cond) {
+  if (!cond) {
+    return GIMG_ERR_INTERNAL;
+  }
+  jpeg_arith_cond_defaults(cond);
+  if (!options) {
+    return GIMG_OK;
+  }
+  // 0 is the default for each, but only L has 0 as a legal stated value too -
+  // which is why L needs no sentinel and the other two do.
+  const uint8_t l = options->jpeg_arith_dc_l;
+  const uint8_t u =
+      options->jpeg_arith_dc_u != 0 ? options->jpeg_arith_dc_u : 1u;
+  const uint8_t k =
+      options->jpeg_arith_ac_k != 0 ? options->jpeg_arith_ac_k : 5u;
+  // B.2.4.3: 0 <= L <= U <= 15, and 1 <= Kx <= 63.  Refused rather than
+  // clamped - a clamp writes a file the caller did not ask for, and the caller
+  // would find out from someone else's decoder.
+  if (l > 15u || u > 15u || l > u || k < 1u || k > 63u) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  for (int i = 0; i < GIMG_JPEG_ARITH_TABLES; i++) {
+    cond->dc_l[i] = l;
+    cond->dc_u[i] = u;
+    cond->ac_k[i] = k;
+  }
+  return GIMG_OK;
+}
+
+int gimg_jpeg_cond_is_default(const jpeg_arith_cond_t * cond) {
+  if (!cond) {
+    return 1;
+  }
+  jpeg_arith_cond_t d;
+  jpeg_arith_cond_defaults(&d);
+  return memcmp(cond, &d, sizeof(d)) == 0 ? 1 : 0;
+}
+
+size_t gimg_jpeg_build_dac(const jpeg_arith_cond_t * cond, int tables,
+    int dc_only, unsigned char * out) {
+  if (!cond || !out || tables < 1) {
+    return 0;
+  }
+  if (tables > GIMG_JPEG_ARITH_TABLES) {
+    tables = GIMG_JPEG_ARITH_TABLES;
+  }
+  size_t n = 0;
+  // B.2.4.3: each entry is Tc/Tb then Cs.  For a DC table Cs packs U in the
+  // high nibble and L in the low one; for an AC table it is Kx alone.
+  for (int t = 0; t < tables; t++) {
+    out[n++] = (unsigned char)(0x00 | t); // Tc = 0 (DC), Tb = t
+    out[n++] =
+        (unsigned char)(((cond->dc_u[t] & 0x0Fu) << 4) | (cond->dc_l[t] & 0x0Fu));
+  }
+  if (dc_only) {
+    // A lossless frame's scans code differences, not blocks, so there is no AC
+    // conditioning to state (H.1.2.3.3 uses the DC bounds for them).
+    return n;
+  }
+  for (int t = 0; t < tables; t++) {
+    out[n++] = (unsigned char)(0x10 | t); // Tc = 1 (AC), Tb = t
+    out[n++] = (unsigned char)cond->ac_k[t];
+  }
+  return n;
 }
 
 void jpeg_arith_stats_reset(jpeg_arith_stats_t * s) {

@@ -9102,3 +9102,280 @@ TEST(JpegEncode, APrecisionTheConversionCannotReachIsReported) {
   gimg_doc_destroy(doc);
   EXPECT_EQ(f.outstanding, 0) << "the refusal leaked";
 }
+
+namespace {
+
+/** The payload of the first DAC segment (T.81 B.2.4.3), or empty. */
+std::vector<uint8_t> first_dac(const std::vector<uint8_t> & jpg) {
+  size_t i = 2;
+  while (i + 4 <= jpg.size() && jpg[i] == 0xFF) {
+    const uint8_t m = jpg[i + 1];
+    if (m == 0x01 || (m >= 0xD0 && m <= 0xD7)) {
+      i += 2;
+      continue;
+    }
+    if (m == 0xD9 || m == 0xDA) {
+      break;
+    }
+    const size_t len = ((size_t)jpg[i + 2] << 8) | jpg[i + 3];
+    if (len < 2 || i + 2 + len > jpg.size()) {
+      break;
+    }
+    if (m == 0xCC) {
+      return std::vector<uint8_t>(
+          jpg.begin() + (long)(i + 4), jpg.begin() + (long)(i + 2 + len));
+    }
+    i += 2 + len;
+  }
+  return {};
+}
+
+/** Save and hand back the bytes, plus the decoded pixels' hash. */
+struct Saved {
+  GIMG_Result result = GIMG_ERR_INTERNAL;
+  std::vector<uint8_t> bytes;
+  uint64_t hash = 0;
+  bool decoded = false;
+};
+
+Saved save_jpeg_with(
+    const std::vector<uint8_t> & src, const GIMG_Save_Options & opts) {
+  Saved out;
+  GIMG_Stream * in = nullptr;
+  if (gimg_stream_create_memory(src.data(), src.size(), &in) != GIMG_OK) {
+    return out;
+  }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_load(in, nullptr, nullptr, &doc) != GIMG_OK) {
+    gimg_stream_destroy(in);
+    return out;
+  }
+  GIMG_Stream * os = nullptr;
+  if (gimg_stream_create_memory_output(&os) == GIMG_OK) {
+    GIMG_Save_Report rep = {};
+    out.result = gimg_doc_save(doc, os, "jpeg", &opts, &rep);
+    const void * p = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(os, &p, &n);
+    out.bytes.assign(
+        static_cast<const uint8_t *>(p), static_cast<const uint8_t *>(p) + n);
+    gimg_stream_destroy(os);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(in);
+
+  if (out.result == GIMG_OK && !out.bytes.empty()) {
+    GIMG_Stream * s2 = nullptr;
+    if (gimg_stream_create_memory(out.bytes.data(), out.bytes.size(), &s2) ==
+        GIMG_OK) {
+      GIMG_Doc * d2 = nullptr;
+      if (gimg_doc_load(s2, nullptr, nullptr, &d2) == GIMG_OK) {
+        GIMG_Raster * r = nullptr;
+        if (gimg_item_decode(gimg_doc_item(d2, 0), nullptr, &r) == GIMG_OK) {
+          out.hash = jpeg_test::raster_pixel_hash(r);
+          out.decoded = true;
+          gimg_raster_destroy(r);
+        }
+        gimg_doc_destroy(d2);
+      }
+      gimg_stream_destroy(s2);
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+// T.81 B.2.4.3's conditioning, which the caller can now state.
+//
+// The writer used to hardcode the defaults - in nine places that built the
+// conditioning and four more that spelled the DAC payload's two bytes by hand -
+// so no file it produced could carry anything else, and three arms of the
+// classification in F.1.4.4.1.2 had never run in either the encoder or the
+// decoder.
+//
+// The property that matters is that conditioning is an entropy-coding choice:
+// it must change the file and not the picture. Both halves are checked, because
+// a coder that ignored the option would keep the picture too.
+TEST(JpegEncode, ArithmeticConditioningChangesTheFileAndNotThePicture) {
+  const char * files[] = {"baseline_640x480_gray.jpg",
+      "baseline_640x480_ycbcr.jpg", "baseline_16x16_ycbcr.jpg"};
+  struct Process {
+    const char * name;
+    uint8_t progressive;
+    uint8_t lossless_psv;
+  };
+  const Process processes[] = {
+      {"sequential", 0, 0}, {"progressive", 1, 0}, {"lossless", 0, 1}};
+
+  size_t compared = 0, sizes_differed = 0;
+  for (const char * file : files) {
+    std::vector<uint8_t> src;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(file, src)) << file;
+    for (const Process & proc : processes) {
+      SCOPED_TRACE(std::string(file) + " " + proc.name);
+      GIMG_Save_Options base = {};
+      base.jpeg_arithmetic = 1;
+      base.jpeg_progressive = proc.progressive;
+      base.jpeg_lossless_predictor = proc.lossless_psv;
+      const Saved ref = save_jpeg_with(src, base);
+      ASSERT_EQ(ref.result, GIMG_OK);
+      ASSERT_TRUE(ref.decoded) << "the default-conditioning file must decode";
+      // B.2.4.3's defaults, written out rather than left implicit: DC Cs packs
+      // U in the high nibble and L in the low, so U = 1, L = 0 is 0x10.
+      const std::vector<uint8_t> ref_dac = first_dac(ref.bytes);
+      ASSERT_GE(ref_dac.size(), 2u) << "an arithmetic frame states its DAC";
+      EXPECT_EQ(ref_dac[1], 0x10) << "default DC conditioning";
+
+      for (uint8_t l = 1; l <= 4; l++) {
+        for (uint8_t u : {(uint8_t)8, (uint8_t)15}) {
+          GIMG_Save_Options o = base;
+          o.jpeg_arith_dc_l = l;
+          o.jpeg_arith_dc_u = u;
+          const Saved got = save_jpeg_with(src, o);
+          ASSERT_EQ(got.result, GIMG_OK)
+              << "L=" << (int)l << " U=" << (int)u << " is inside B.2.4.3";
+          ASSERT_TRUE(got.decoded) << "L=" << (int)l << " will not decode";
+          const std::vector<uint8_t> dac = first_dac(got.bytes);
+          ASSERT_GE(dac.size(), 2u);
+          EXPECT_EQ(dac[1], (uint8_t)((u << 4) | l))
+              << "the DAC must say what was asked for";
+          EXPECT_EQ(got.hash, ref.hash)
+              << "L=" << (int)l << " U=" << (int)u
+              << " changed the picture; conditioning is an entropy-coding "
+                 "choice and the samples must not depend on it";
+          compared++;
+          if (got.bytes.size() != ref.bytes.size()) {
+            sizes_differed++;
+          }
+        }
+      }
+
+      // Kx, the AC threshold, on its own.
+      for (uint8_t k : {(uint8_t)1, (uint8_t)5, (uint8_t)20, (uint8_t)63}) {
+        GIMG_Save_Options o = base;
+        o.jpeg_arith_ac_k = k;
+        const Saved got = save_jpeg_with(src, o);
+        ASSERT_EQ(got.result, GIMG_OK) << "Kx=" << (int)k;
+        ASSERT_TRUE(got.decoded);
+        EXPECT_EQ(got.hash, ref.hash) << "Kx=" << (int)k << " changed the picture";
+        compared++;
+      }
+    }
+  }
+  EXPECT_GT(compared, 60u) << "too few conditionings tried to mean anything";
+  // If nothing the option did reached the bytes, every hash above would still
+  // have matched - so the sweep needs at least one file that came out a
+  // different size, or it is not testing an option at all.
+  EXPECT_GT(sizes_differed, 0u)
+      << "no conditioning changed any file's size, so nothing was written";
+}
+
+TEST(JpegEncode, ConditioningOutsideItsClauseIsRefusedNotClamped) {
+  std::vector<uint8_t> src;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_16x16_ycbcr.jpg", src));
+  struct Case {
+    uint8_t l, u, k;
+    const char * why;
+  };
+  const Case bad[] = {
+      {2, 1, 0, "L above U (B.2.4.3 requires L <= U)"},
+      {15, 1, 0, "L above the default U"},
+      {16, 0, 0, "L above 15"},
+      {0, 16, 0, "U above 15"},
+      {5, 4, 0, "L above a stated U"},
+      {0, 0, 64, "Kx above 63"},
+      {0, 0, 200, "Kx far above 63"},
+  };
+  for (const Case & c : bad) {
+    SCOPED_TRACE(c.why);
+    GIMG_Save_Options o = {};
+    o.jpeg_arithmetic = 1;
+    o.jpeg_arith_dc_l = c.l;
+    o.jpeg_arith_dc_u = c.u;
+    o.jpeg_arith_ac_k = c.k;
+    const Saved got = save_jpeg_with(src, o);
+    EXPECT_EQ(got.result, GIMG_ERR_UNSUPPORTED)
+        << "accepted, which means it was clamped and the file says something "
+           "the caller did not ask for";
+    EXPECT_EQ(got.bytes.size(), 0u) << "refused before writing";
+  }
+
+  // And the boundaries themselves are legal, or the refusals above prove
+  // nothing about where the line is.
+  const Case good[] = {
+      {0, 0, 0, "L = U = 0"},
+      {15, 15, 0, "L = U = 15"},
+      {0, 15, 1, "the widest band, Kx at its minimum"},
+      {0, 0, 63, "Kx at its maximum"},
+  };
+  for (const Case & c : good) {
+    SCOPED_TRACE(c.why);
+    GIMG_Save_Options o = {};
+    o.jpeg_arithmetic = 1;
+    o.jpeg_arith_dc_l = c.l;
+    o.jpeg_arith_dc_u = c.u;
+    o.jpeg_arith_ac_k = c.k;
+    const Saved got = save_jpeg_with(src, o);
+    EXPECT_EQ(got.result, GIMG_OK) << "inside B.2.4.3 and refused";
+  }
+}
+
+// A hierarchical sequence will not take stated conditioning, and this is why.
+//
+// With B.2.4.3's defaults a hierarchical arithmetic file is exact: its pixels
+// match the Huffman file of the same pyramid at every level. With a stated L
+// the decoded picture changes - which it must not, because the reconstruction
+// is built from coefficients and cannot depend on an entropy-coding choice.
+// The encoder was measured making three more DC classifications than the
+// decoder, so the two disagree somewhere inside the hierarchical pair.
+//
+// A sweep over five images, three processes and L from 1 to 4 put the fault
+// entirely inside this combination: 59 of 235 cases changed the picture and
+// every one was hierarchical, while sequential, progressive and lossless were
+// exact in all of them. Those arms had never run before the option existed, so
+// the bug is older than the option and was merely unreachable.
+//
+// **When the hierarchical disagreement is found and fixed, delete the refusal
+// in jpeg_save.c and this test, and fold hierarchical into the sweep above.**
+TEST(JpegEncode, AHierarchicalSequenceRefusesStatedConditioningForNow) {
+  std::vector<uint8_t> src;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_640x480_gray.jpg", src));
+
+  for (uint8_t levels = 1; levels <= 3; levels++) {
+    SCOPED_TRACE(levels);
+    // Control: the same pyramid with the defaults is written, and matches the
+    // Huffman file of the same pyramid - which is what says the refusal below
+    // is about the conditioning and not about hierarchical arithmetic itself.
+    GIMG_Save_Options huff = {};
+    huff.jpeg_hierarchical_levels = levels;
+    const Saved as_huffman = save_jpeg_with(src, huff);
+    ASSERT_EQ(as_huffman.result, GIMG_OK);
+    ASSERT_TRUE(as_huffman.decoded);
+
+    GIMG_Save_Options defaults = {};
+    defaults.jpeg_arithmetic = 1;
+    defaults.jpeg_hierarchical_levels = levels;
+    const Saved as_arith = save_jpeg_with(src, defaults);
+    ASSERT_EQ(as_arith.result, GIMG_OK);
+    ASSERT_TRUE(as_arith.decoded);
+    EXPECT_EQ(as_arith.hash, as_huffman.hash)
+        << "with the defaults the two entropy coders must agree on the picture";
+
+    // Stated conditioning: refused, and nothing written.
+    for (uint8_t l = 1; l <= 4; l++) {
+      GIMG_Save_Options o = defaults;
+      o.jpeg_arith_dc_l = l;
+      o.jpeg_arith_dc_u = 15;
+      const Saved got = save_jpeg_with(src, o);
+      EXPECT_EQ(got.result, GIMG_ERR_UNSUPPORTED)
+          << "L=" << (int)l << ": accepted, and the picture it writes is wrong";
+      EXPECT_EQ(got.bytes.size(), 0u);
+    }
+    // Kx alone is refused the same way: the refusal is on the conditioning
+    // being non-default, not on L specifically.
+    GIMG_Save_Options kx = defaults;
+    kx.jpeg_arith_ac_k = 20;
+    EXPECT_EQ(save_jpeg_with(src, kx).result, GIMG_ERR_UNSUPPORTED);
+  }
+}

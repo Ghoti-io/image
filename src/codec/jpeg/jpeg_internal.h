@@ -492,6 +492,39 @@ GIMG_Result jpeg_arith_lossless_restart(
 /** Set the conditioning defaults of T.81 B.2.4.3. */
 void jpeg_arith_cond_defaults(jpeg_arith_cond_t * cond);
 
+/**
+ * Conditioning for a save, from the caller's options (T.81 B.2.4.3).
+ *
+ * Fills @p cond with B.2.4.3's defaults and then applies whatever
+ * GIMG_Save_Options states, validating as it goes: L must not exceed U, and
+ * each value must be inside the range its clause gives.  Returns
+ * GIMG_ERR_UNSUPPORTED rather than clamping, because a clamp would write a
+ * file the caller did not ask for.
+ *
+ * @p options may be NULL, which is the defaults.
+ */
+GIMG_Result gimg_jpeg_cond_from_options(
+    const GIMG_Save_Options * options, jpeg_arith_cond_t * cond);
+
+/**
+ * Build a DAC segment's payload (T.81 B.2.4.3).
+ *
+ * @p tables is how many of the four the frame uses, and @p dc_only asks for
+ * the DC entries alone - which is what a lossless frame needs, its scans
+ * having no AC coefficients to condition.
+ *
+ * One function because there are four places that write this segment, and
+ * before there was one they held four copies of the same two constants.
+ *
+ * @param out At least 2 * 2 * GIMG_JPEG_ARITH_TABLES bytes.
+ * @return The number of bytes written.
+ */
+size_t gimg_jpeg_build_dac(const jpeg_arith_cond_t * cond, int tables,
+    int dc_only, unsigned char * out);
+
+/** Whether @p cond is exactly B.2.4.3's defaults. */
+int gimg_jpeg_cond_is_default(const jpeg_arith_cond_t * cond);
+
 /** Start decoding an entropy-coded segment (INITDEC, T.81 D.2.8). */
 void jpeg_arith_decoder_init(jpeg_arith_decoder_t * d,
     const unsigned char * data, size_t size);
@@ -981,7 +1014,8 @@ GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
 GIMG_Result gimg_jpeg_encode_lossless_planes(const GIMG_Allocator * alloc,
     const int32_t * const * planes, const size_t * plane_stride, uint32_t width,
     uint32_t height, int num_comp, int precision, int psv,
-    uint16_t restart_interval, int arithmetic, unsigned char ** out_scan_data,
+    uint16_t restart_interval, int arithmetic,
+    const jpeg_arith_cond_t * cond, unsigned char ** out_scan_data,
     size_t * out_scan_size, unsigned char ** out_dht, size_t * out_dht_len);
 
 /**
@@ -995,8 +1029,8 @@ GIMG_Result gimg_jpeg_encode_lossless_planes(const GIMG_Allocator * alloc,
 GIMG_Result gimg_jpeg_encode_lossless_differential(const GIMG_Allocator * alloc,
     const int32_t * const * planes, const size_t * plane_stride, uint32_t width,
     uint32_t height, int num_comp, uint16_t restart_interval, int arithmetic,
-    unsigned char ** out_scan_data, size_t * out_scan_size,
-    unsigned char ** out_dht, size_t * out_dht_len);
+    const jpeg_arith_cond_t * cond, unsigned char ** out_scan_data,
+    size_t * out_scan_size, unsigned char ** out_dht, size_t * out_dht_len);
 
 /**
  * One scan of a lossless frame, with the Huffman table its own differences
@@ -1021,7 +1055,8 @@ typedef struct {
  */
 GIMG_Result gimg_jpeg_encode_lossless(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int psv, uint16_t restart_interval,
-    int arithmetic, gimg_jpeg_lossless_scan_t * out_scans,
+    int arithmetic, const jpeg_arith_cond_t * cond,
+    gimg_jpeg_lossless_scan_t * out_scans,
     unsigned * out_num_scans, uint32_t * out_width, uint32_t * out_height,
     int * out_num_components, int * out_precision);
 
@@ -1123,10 +1158,10 @@ typedef enum {
 GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int levels, int arithmetic,
     gimg_jpeg_hier_process_t process, int lossless_psv,
-    uint16_t restart_interval, const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, gimg_jpeg_enc_frame_t * frames,
-    unsigned * out_num_frames, int * out_num_components,
-    int * out_precision);
+    const jpeg_arith_cond_t * cond, uint16_t restart_interval,
+    const uint16_t * quant_luma, const uint16_t * quant_chroma,
+    gimg_jpeg_enc_frame_t * frames, unsigned * out_num_frames,
+    int * out_num_components, int * out_precision);
 
 /** Free the scan data and tables of an encoded sequence. */
 void gimg_jpeg_free_enc_frames(const GIMG_Allocator * alloc,

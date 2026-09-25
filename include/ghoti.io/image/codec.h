@@ -461,6 +461,34 @@ typedef struct {
    * generated from the very coefficients it codes and so cannot be written
    * before them.  Ignored for non-JPEG. */
   uint8_t jpeg_abbreviated;
+  /** @name Arithmetic conditioning (T.81 B.2.4.3, the DAC segment)
+   *
+   * What the arithmetic coder treats as a small difference and where it stops
+   * counting a block's coefficients as low-frequency.  These only reach a file
+   * written with `jpeg_arithmetic`; a Huffman frame has no DAC segment and
+   * ignores them.
+   *
+   * They are a tuning choice, not a correctness one: any conforming decoder
+   * reads the DAC and follows it, and the same picture comes back whatever is
+   * set.  What changes is how well the coder's statistics fit the image, and so
+   * the size of the file.  B.2.4.3's defaults suit photographic data; an image
+   * with an unusually flat or unusually busy DC channel does better elsewhere.
+   *
+   * L greater than U is refused with GIMG_ERR_UNSUPPORTED, as is any value out
+   * of the range its clause gives, rather than being clamped: a caller who
+   * asked for conditioning a decoder would reject should hear about it here
+   * and not from the decoder.
+   * @{ */
+  /** DC conditioning lower bound L, 0 to 15.  0 is both the default and a
+   * legal value, so there is no sentinel to distinguish. */
+  uint8_t jpeg_arith_dc_l;
+  /** DC conditioning upper bound U, L to 15.  0 means B.2.4.3's default of 1,
+   * which is why U cannot be set to 0 - a band from 0 to 0 is what L = U = 0
+   * already says. */
+  uint8_t jpeg_arith_dc_u;
+  /** AC conditioning Kx, 1 to 63.  0 means B.2.4.3's default of 5. */
+  uint8_t jpeg_arith_ac_k;
+  /** @} */
   /** PNG row filter (11.2.4, filter method 0). GIMG_PNG_FILTER_ADAPTIVE (0,
    * default) chooses per row by the heuristic PNG 12.8 recommends; the other
    * values force one filter on every row, which is mainly useful for testing
