@@ -351,50 +351,6 @@ static std::string dir_of(const std::string & path) {
   return (slash == std::string::npos) ? std::string(".") : path.substr(0, slash);
 }
 
-/** Try Pillow-based decode oracle (Python). Returns true if script ran and output parsed. */
-static bool run_pillow_decode_oracle(const char * file_path, uint64_t * out_hash,
-    uint32_t * out_width, uint32_t * out_height) {
-  std::string data_dir = resolved_data_dir();
-  std::string script = data_dir + "/decode_oracle_pillow.py";
-  std::ifstream check(script);
-  if (!check.good()) {
-    return false;
-  }
-  std::string cmd = oracle_cmd("pillow",
-      "python3 \"" + script + "\" \"" + std::string(file_path) + "\"",
-      std::string());
-  if (cmd.empty()) {
-    return false;
-  }
-  cmd += " 2>";
-#ifdef _WIN32
-  cmd += "NUL";
-#else
-  cmd += "/dev/null";
-#endif
-  FILE * pipe = popen(cmd.c_str(), "r");
-  if (!pipe) {
-    return false;
-  }
-  char line[256];
-  if (!fgets(line, static_cast<int>(sizeof(line)), pipe)) {
-    pclose(pipe);
-    return false;
-  }
-  pclose(pipe);
-  unsigned long long h = 0;
-  unsigned int w = 0, ht = 0;
-  char mode[8];
-  if (sscanf(line, "HASH %16llx WIDTH %u HEIGHT %u MODE %7s", &h, &w, &ht,
-             mode) != 4) {
-    return false;
-  }
-  *out_hash = static_cast<uint64_t>(h);
-  *out_width = w;
-  *out_height = ht;
-  return true;
-}
-
 /** Try Pillow decode oracle with -o raw_path. Returns true on success. */
 static bool run_pillow_decode_oracle_to_raw(const char * jpeg_path, const char * raw_path) {
   std::string data_dir = resolved_data_dir();
@@ -421,8 +377,8 @@ static bool run_pillow_decode_oracle_to_raw(const char * jpeg_path, const char *
 }
 
 /**
- * Run the decode oracle and parse its one line: Pillow first, our libjpeg
- * dumper otherwise.
+ * Run the decode oracle into a .raw: Pillow first, our libjpeg dumper
+ * otherwise.
  *
  * That ordering used to be a silent fallback between two *availabilities* -
  * "whichever of these this machine has" - which is the shape
@@ -443,56 +399,6 @@ static bool run_pillow_decode_oracle_to_raw(const char * jpeg_path, const char *
  * a reasonable thing for a test helper to do. The name still says libjpeg
  * because libjpeg is what answers in both arms.
  */
-static bool run_libjpeg_oracle(const std::string & oracle_dir,
-    const char * file_path, uint64_t * out_hash, uint32_t * out_width,
-    uint32_t * out_height) {
-  if (run_pillow_decode_oracle(file_path, out_hash, out_width, out_height)) {
-    return true;
-  }
-  std::string ref_debug = oracle_dir + "/dump_jpeg_pixels_ref_debug";
-  std::string ref_std = oracle_dir + "/dump_jpeg_pixels_ref";
-#ifdef _WIN32
-  ref_debug += ".exe";
-  ref_std += ".exe";
-#endif
-  std::string ref = ref_std;
-  if (std::ifstream(ref_debug).good())
-    ref = ref_debug;
-  std::string cmd = oracle_cmd("libjpeg",
-      "\"" + ref + "\" \"" + file_path + "\"", std::string());
-  if (cmd.empty()) {
-    return false;
-  }
-  cmd += " 2>";
-#ifdef _WIN32
-  cmd += "NUL";
-#else
-  cmd += "/dev/null";
-#endif
-  FILE * pipe = popen(cmd.c_str(), "r");
-  if (!pipe) {
-    return false;
-  }
-  char line[256];
-  if (!fgets(line, static_cast<int>(sizeof(line)), pipe)) {
-    pclose(pipe);
-    return false;
-  }
-  pclose(pipe);
-  unsigned long long h = 0;
-  unsigned int w = 0, ht = 0;
-  char mode[8];
-  if (sscanf(line, "HASH %16llx WIDTH %u HEIGHT %u MODE %7s", &h, &w, &ht,
-             mode) != 4) {
-    return false;
-  }
-  *out_hash = static_cast<uint64_t>(h);
-  *out_width = w;
-  *out_height = ht;
-  return true;
-}
-
-/** Run decode oracle to .raw (Pillow script first, else libjpeg binary). */
 static bool run_libjpeg_oracle_to_raw(const std::string & oracle_dir,
     const char * jpeg_path, const char * raw_path) {
   if (run_pillow_decode_oracle_to_raw(jpeg_path, raw_path)) {
@@ -568,26 +474,6 @@ bool libjpeg_encode_baseline_to_file(const char * jpeg_path,
   }
   std::ifstream f(jpeg_path, std::ios::binary | std::ios::ate);
   return f && f.tellg() > 0;
-}
-
-bool pillow_oracle_hash(const char * fixture_filename, uint64_t * out_hash,
-    uint32_t * out_width, uint32_t * out_height) {
-  if (!fixture_filename || !out_hash || !out_width || !out_height) {
-    return false;
-  }
-  std::string data_dir(resolved_data_dir());
-  std::string path = data_dir + "/" + fixture_filename;
-  return run_libjpeg_oracle(resolved_oracle_dir(), path.c_str(), out_hash, out_width,
-                           out_height);
-}
-
-bool pillow_oracle_hash_from_path(const char * file_path, uint64_t * out_hash,
-    uint32_t * out_width, uint32_t * out_height) {
-  if (!file_path || !out_hash || !out_width || !out_height) {
-    return false;
-  }
-  return run_libjpeg_oracle(resolved_oracle_dir(), file_path, out_hash, out_width,
-                            out_height);
 }
 
 bool load_jpeg_from_path(const char * file_path, std::vector<uint8_t> & out) {

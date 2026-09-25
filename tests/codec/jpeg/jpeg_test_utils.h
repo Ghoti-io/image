@@ -79,23 +79,6 @@ void write_jpeg_output(
 void write_jpeg_expected_pixels(
     const char * filename_base, const uint8_t * rgb_data, size_t size);
 
-/**
- * Run dump_jpeg_pixels_ref (libjpeg-based decode oracle) on a fixture and
- * parse expected hash and dimensions. The tool is found through
- * GIMG_JPEG_ORACLE_DIR; its source is tests/tools/jpeg-oracle. Returns true
- * and sets out_* if the tool succeeds; otherwise false (e.g. ref not built).
- * Build the ref with: make oracle-build oracle-tools (see tests/data/jpeg/README.md).
- */
-bool pillow_oracle_hash(const char * fixture_filename, uint64_t * out_hash,
-    uint32_t * out_width, uint32_t * out_height);
-
-/**
- * Same as pillow_oracle_hash but for an arbitrary file path (e.g. from
- * jpeg_output_dir()). Ref tool is run from tests/data/jpeg/.
- */
-bool pillow_oracle_hash_from_path(const char * file_path, uint64_t * out_hash,
-    uint32_t * out_width, uint32_t * out_height);
-
 /** Load a JPEG file from an arbitrary path (e.g. jpeg_output_dir() + filename). */
 bool load_jpeg_from_path(const char * file_path, std::vector<uint8_t> & out);
 
