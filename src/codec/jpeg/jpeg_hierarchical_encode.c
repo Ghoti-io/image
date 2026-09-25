@@ -542,7 +542,8 @@ void gimg_jpeg_free_enc_frames(const GIMG_Allocator * alloc,
 GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int levels, int arithmetic,
     gimg_jpeg_hier_process_t process, int lossless_psv,
-    const jpeg_arith_cond_t * cond, uint16_t restart_interval,
+    const jpeg_arith_cond_t * cond, unsigned fdct_method,
+    uint16_t restart_interval,
     const uint16_t * quant_luma, const uint16_t * quant_chroma,
     gimg_jpeg_enc_frame_t * frames, unsigned * out_num_frames,
     int * out_num_components, int * out_precision) {
@@ -964,7 +965,8 @@ differential_frames:
     }
     size_t total_blocks = 0;
     r = gimg_jpeg_fill_coef_buffer_differential(w, h, num_components, plane_ptr,
-        plane_stride, NULL, quant_luma, quant_chroma, coef, &total_blocks);
+        plane_stride, NULL, quant_luma, quant_chroma, fdct_method, coef,
+        &total_blocks);
     if (r != GIMG_OK) {
       goto done;
     }

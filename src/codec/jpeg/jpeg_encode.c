@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 #include "../../core/alloc_internal.h"
@@ -106,7 +107,59 @@ static void compute_reciprocal(uint32_t divisor, int16_t * tbl) {
   tbl[3] = (int16_t)(r - (int)(sizeof(int16_t) * 8));
 }
 
-static void jpeg_fdct_islow(int32_t * data) {
+/**
+ * The forward DCT written as T.81 A.3.3 defines it (GIMG_JPEG_FDCT_REF).
+ *
+ * Equation 4 in A.3.3, evaluated in double precision with no factoring:
+ *
+ *   S(u,v) = 1/4 C(u) C(v) SUM SUM s(y,x) cos((2x+1)u pi/16) cos((2y+1)v pi/16)
+ *
+ * with C(0) = 1/sqrt(2) and C(k) = 1 otherwise.  Sixty-four multiply-adds per
+ * coefficient against the fast transform's handful, and that is the point: it
+ * is the definition, so it has no factoring to get wrong.  It exists to be
+ * something gimg_jpeg_fdct_islow can be checked against inside this repository,
+ * without libjpeg installed.
+ *
+ * The result is scaled up by eight to match gimg_jpeg_fdct_islow's output, which is
+ * the convention the quantization step downstream expects.  That makes the two
+ * interchangeable at the call site, which is what lets a test difference them
+ * on the same input.
+ */
+void gimg_jpeg_fdct_ref(int32_t * data) {
+  // cos((2i+1) k pi / 16).  Rebuilt per block rather than cached in a file
+  // static: this transform is the slow one on purpose, and a shared table
+  // would be the one piece of state two threads could race on.
+  double cosine[8][8];
+  for (int i = 0; i < 8; i++) {
+    for (int k = 0; k < 8; k++) {
+      cosine[i][k] = cos((2.0 * (double)i + 1.0) * (double)k *
+          3.14159265358979323846 / 16.0);
+    }
+  }
+  double out[DCTSIZE2];
+  for (int v = 0; v < 8; v++) {
+    for (int u = 0; u < 8; u++) {
+      double sum = 0.0;
+      for (int y = 0; y < 8; y++) {
+        for (int x = 0; x < 8; x++) {
+          sum += (double)data[y * 8 + x] * cosine[x][u] * cosine[y][v];
+        }
+      }
+      const double cu = (u == 0) ? 0.70710678118654752440 : 1.0;
+      const double cv = (v == 0) ? 0.70710678118654752440 : 1.0;
+      // 1/4 C(u) C(v) SUM, times the eight gimg_jpeg_fdct_islow scales by.
+      out[v * 8 + u] = 2.0 * cu * cv * sum;
+    }
+  }
+  for (int i = 0; i < DCTSIZE2; i++) {
+    // Round to nearest, halves away from zero, which is what the integer
+    // transform's DESCALE does.
+    data[i] = (int32_t)(out[i] < 0.0 ? -(int64_t)(-out[i] + 0.5)
+                                     : (int64_t)(out[i] + 0.5));
+  }
+}
+
+void gimg_jpeg_fdct_islow(int32_t * data) {
   int64_t tmp0, tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
   int64_t tmp10, tmp11, tmp12, tmp13;
   int64_t z1, z2, z3, z4, z5;
@@ -218,6 +271,14 @@ static void jpeg_fdct_islow(int32_t * data) {
 
     dataptr++;
   }
+}
+
+static void jpeg_fdct(int32_t * data, unsigned method) {
+  if (method == GIMG_JPEG_FDCT_REF) {
+    gimg_jpeg_fdct_ref(data);
+    return;
+  }
+  gimg_jpeg_fdct_islow(data);
 }
 
 // Quantize DCT coefficients per T.81 Annex F (round to integer).
@@ -337,7 +398,6 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
     const uint8_t * tbl_sel, const uint16_t * quant_luma,
     const uint16_t * quant_chroma, unsigned fdct_method, unsigned quant_method,
     int16_t * coef_buffer, size_t * out_total_blocks) {
-  (void)fdct_method;
   if (!comps || !strides || num_components < 1 ||
       num_components > (int)GIMG_JPEG_MAX_COMPONENTS) {
     return GIMG_ERR_INTERNAL;
@@ -460,7 +520,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer(uint32_t width,
               }
             }
 #endif
-            jpeg_fdct_islow(block);
+            jpeg_fdct(block, fdct_method);
             // Optional debug: dump Cb after FDCT (before quant) for comparison.
 #if GIMG_JPEG_DUMP_FIRST_MCU_COEF
             if (c == 1 && mcu_x == 0 && mcu_y == 0 && by == 0 && bx == 0) {
@@ -1362,7 +1422,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
     uint32_t height, int num_components, const uint16_t * const * comps,
     const size_t * strides, const uint8_t * h_samp, const uint8_t * v_samp,
     const uint8_t * tbl_sel, const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, int16_t * coef_buffer,
+    const uint16_t * quant_chroma, unsigned fdct_method, int16_t * coef_buffer,
     size_t * out_total_blocks) {
   if (!comps || !strides || num_components < 1 ||
       num_components > (int)GIMG_JPEG_MAX_COMPONENTS) {
@@ -1444,7 +1504,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
                 block[row * 8 + col] = (int16_t)((int32_t)s - level_shift);
               }
             }
-            jpeg_fdct_islow(block);
+            jpeg_fdct(block, fdct_method);
             jpeg_quantize_block_16bit(block, quant, out);
             last_dc[c] = out[0];
             out += 64;
@@ -2539,7 +2599,7 @@ GIMG_Result gimg_jpeg_fill_coef_buffer_differential(uint32_t width,
     uint32_t height, int num_components, const int32_t * const * planes,
     const size_t * plane_stride, const uint8_t * tbl_sel,
     const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, int16_t * coef_buffer,
+    const uint16_t * quant_chroma, unsigned fdct_method, int16_t * coef_buffer,
     size_t * out_total_blocks) {
   if (!planes || !plane_stride || !coef_buffer || !out_total_blocks ||
       num_components < 1 ||
@@ -2577,7 +2637,7 @@ GIMG_Result gimg_jpeg_fill_coef_buffer_differential(uint32_t width,
             block[row * 8 + col] = plane[(size_t)y * stride + x];
           }
         }
-        jpeg_fdct_islow(block);
+        jpeg_fdct(block, fdct_method);
         jpeg_quantize_block(block, quant, out);
         out += 64;
       }

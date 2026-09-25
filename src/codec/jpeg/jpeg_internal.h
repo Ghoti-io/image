@@ -525,6 +525,25 @@ size_t gimg_jpeg_build_dac(const jpeg_arith_cond_t * cond, int tables,
 /** Whether @p cond is exactly B.2.4.3's defaults. */
 int gimg_jpeg_cond_is_default(const jpeg_arith_cond_t * cond);
 
+/**
+ * @name The two forward DCTs (T.81 A.3.3)
+ *
+ * Both take 64 level-shifted samples in row-major order and replace them with
+ * coefficients in row-major order, scaled up by eight - the convention the
+ * quantization step expects.  Interchangeable at the call site on purpose: that
+ * is what lets a test hand both the same block and difference the results.
+ *
+ * Not static, and not because anything outside this codec calls them.  The
+ * reference transform's only job is to be an oracle for the fast one, and an
+ * oracle nothing can reach is not one.
+ * @{ */
+/** The factored integer transform (GIMG_JPEG_FDCT_LOEFFLER).  Fast. */
+void gimg_jpeg_fdct_islow(int32_t * data);
+/** A.3.3 equation 4 in double precision (GIMG_JPEG_FDCT_REF).  Slow, and has
+ * no factoring to get wrong. */
+void gimg_jpeg_fdct_ref(int32_t * data);
+/** @} */
+
 /** Start decoding an entropy-coded segment (INITDEC, T.81 D.2.8). */
 void jpeg_arith_decoder_init(jpeg_arith_decoder_t * d,
     const unsigned char * data, size_t size);
@@ -993,7 +1012,7 @@ GIMG_Result gimg_jpeg_fill_coef_buffer_differential(uint32_t width,
     uint32_t height, int num_components, const int32_t * const * planes,
     const size_t * plane_stride, const uint8_t * tbl_sel,
     const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, int16_t * coef_buffer,
+    const uint16_t * quant_chroma, unsigned fdct_method, int16_t * coef_buffer,
     size_t * out_total_blocks);
 
 GIMG_Result gimg_jpeg_encode_differential_scan(uint32_t width, uint32_t height,
@@ -1158,7 +1177,8 @@ typedef enum {
 GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, int levels, int arithmetic,
     gimg_jpeg_hier_process_t process, int lossless_psv,
-    const jpeg_arith_cond_t * cond, uint16_t restart_interval,
+    const jpeg_arith_cond_t * cond, unsigned fdct_method,
+    uint16_t restart_interval,
     const uint16_t * quant_luma, const uint16_t * quant_chroma,
     gimg_jpeg_enc_frame_t * frames, unsigned * out_num_frames,
     int * out_num_components, int * out_precision);
@@ -1305,7 +1325,7 @@ GIMG_Result gimg_jpeg_progressive_fill_coef_buffer_12bit(uint32_t width,
     uint32_t height, int num_components, const uint16_t * const * comps,
     const size_t * strides, const uint8_t * h_samp, const uint8_t * v_samp,
     const uint8_t * tbl_sel, const uint16_t * quant_luma,
-    const uint16_t * quant_chroma, int16_t * coef_buffer,
+    const uint16_t * quant_chroma, unsigned fdct_method, int16_t * coef_buffer,
     size_t * out_total_blocks);
 
 /** Progressive scan encode with extended tables (12-bit). */

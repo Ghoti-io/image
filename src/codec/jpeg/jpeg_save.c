@@ -482,7 +482,8 @@ static void jpeg_rgb12_to_ycbcr12(uint16_t r, uint16_t g, uint16_t b,
 static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     const GIMG_Raster * raster, unsigned quality, unsigned chroma_subsampling,
     bool progressive, bool arithmetic, const jpeg_arith_cond_t * cond,
-    uint16_t restart_interval, unsigned char ** out_scan_data,
+    unsigned fdct_method, uint16_t restart_interval,
+    unsigned char ** out_scan_data,
     size_t * out_scan_size, int16_t ** out_coef_buffer, size_t * out_total_blocks,
     uint16_t quant_luma[GIMG_JPEG_DQT_ENTRIES],
     uint16_t quant_chroma[GIMG_JPEG_DQT_ENTRIES], uint32_t * out_width,
@@ -873,7 +874,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   }
   GIMG_Result r = gimg_jpeg_progressive_fill_coef_buffer_12bit(width, height,
       num_components, comps12, strides12, h_ptr, v_ptr, out_tbl_sel,
-      quant_luma, quant_chroma, coef_buf, &out_blocks);
+      quant_luma, quant_chroma, fdct_method, coef_buf, &out_blocks);
   for (int c = 3; c < num_components; c++) {
     gimg_free(alloc, extra[c]);
     extra[c] = NULL;
@@ -1090,8 +1091,8 @@ static GIMG_Result jpeg_raster_to_scan_data(const GIMG_Allocator * alloc,
       *out_adobe_transform = 0; // see below: three components must say so
     }
     return jpeg_raster_to_scan_data_12bit(alloc, raster, quality,
-        chroma_subsampling, progressive, arithmetic, cond, restart_interval,
-        out_scan_data,
+        chroma_subsampling, progressive, arithmetic, cond, fdct_method,
+        restart_interval, out_scan_data,
         out_scan_size, out_coef_buffer, out_total_blocks, quant_luma,
         quant_chroma, out_width, out_height, out_num_components, out_h_samp,
         out_v_samp, out_tbl_sel);
@@ -3604,9 +3605,9 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       hier_process = GIMG_JPEG_HIER_PROGRESSIVE;
     }
     r = gimg_jpeg_encode_hierarchical(alloc, raster, hier_levels, arithmetic,
-        hier_process, lossless_psv, &arith_cond, restart_interval, quant_luma,
-        quant_chroma, hier_frames, &hier_num_frames, &num_components,
-        &precision);
+        hier_process, lossless_psv, &arith_cond, fdct_method,
+        restart_interval, quant_luma, quant_chroma, hier_frames,
+        &hier_num_frames, &num_components, &precision);
     if (raster_owned) {
       gimg_raster_destroy(raster);
     }

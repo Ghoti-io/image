@@ -8955,67 +8955,215 @@ namespace {
 
 } // namespace
 
-// jpeg_fdct_method and jpeg_quant_method change nothing about the output.
+namespace {
+
+/** The first item's pixels, decoded and packed tight. Empty on any failure. */
+std::vector<uint8_t> decoded_pixels(const std::vector<uint8_t> & jpg) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(jpg.data(), jpg.size(), &s) != GIMG_OK) {
+    return {};
+  }
+  GIMG_Doc * doc = nullptr;
+  if (gimg_doc_load(s, nullptr, nullptr, &doc) != GIMG_OK) {
+    gimg_stream_destroy(s);
+    return {};
+  }
+  GIMG_Raster * r = nullptr;
+  std::vector<uint8_t> out;
+  if (gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &r) == GIMG_OK && r) {
+    const uint32_t w = gimg_raster_width(r);
+    const uint32_t h = gimg_raster_height(r);
+    const GIMG_Pixel_Format * f = gimg_raster_format(r);
+    const size_t bpp = (size_t)f->channel_count *
+        (gimg_pixel_format_channel_bits(f, 0) / 8u);
+    const size_t stride = gimg_raster_stride_bytes(r);
+    const auto * px = static_cast<const uint8_t *>(gimg_raster_pixels_const(r));
+    for (uint32_t y = 0; y < h; y++) {
+      out.insert(out.end(), px + (size_t)y * stride,
+          px + (size_t)y * stride + (size_t)w * bpp);
+    }
+    gimg_raster_destroy(r);
+  }
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  return out;
+}
+
+} // namespace
+
+// jpeg_quant_method changes nothing about the output; jpeg_fdct_method does.
 //
-// The header used to describe both as choices between implementations to
-// compare against each other, which is true of neither:
+// The header used to describe both as choices between implementations, which
+// was true of neither:
 //
-//   - GIMG_JPEG_FDCT_REF names a reference float transform that does not
-//     exist.  The value is accepted, carried through gimg_jpeg_save() into
-//     the block encoder, and discarded there with a cast to void.
-//   - GIMG_JPEG_QUANT_DIV does run - both arms of that branch are taken -
-//     but the reciprocal form is an exact division by multiplication rather
-//     than an approximation, so the two quantize every coefficient alike.
+//   - GIMG_JPEG_FDCT_REF named a reference transform that did not exist.  The
+//     value was accepted, carried through gimg_jpeg_save() into the block
+//     encoder, and discarded there with a cast to void.
+//   - GIMG_JPEG_QUANT_DIV does run - both arms of that branch are taken - but
+//     the reciprocal form is an exact division by multiplication rather than an
+//     approximation, so the two quantize every coefficient alike.
 //
-// So the four combinations write byte-identical files, and this pins that
-// over the settings that change what the encoder does around them: every
-// quality, baseline and progressive, and all three subsampling modes.  It is
-// not an endorsement - either option could be made to mean something - but
-// until then a caller reaching for one should find out here rather than by
-// measuring their own output and finding no difference.
-TEST(JpegEncode, TheFdctAndQuantizationMethodOptionsChangeNoOutput) {
-  long compared = 0;
+// The first is now implemented, so this sweep asks two different questions of
+// the two options: that quantization still writes byte-identical files, and
+// that the transform choice reaches the bytes at all.  Both matter - an option
+// that silently does nothing is what this test was written to catch, and the
+// quantization half is still in that state deliberately.
+TEST(JpegEncode, QuantizationMethodChangesNoOutputAndTheDctChoiceDoes) {
+  long configs = 0, quant_differed = 0, fdct_differed = 0;
   for (int quality = 1; quality <= 100; quality += 9) {
     for (int progressive = 0; progressive < 2; progressive++) {
       for (uint8_t sub : {(uint8_t)GIMG_JPEG_CHROMA_420,
                (uint8_t)GIMG_JPEG_CHROMA_422, (uint8_t)GIMG_JPEG_CHROMA_444}) {
-        std::vector<uint8_t> baseline_bytes;
-        for (uint8_t fdct : {(uint8_t)GIMG_JPEG_FDCT_LOEFFLER,
-                 (uint8_t)GIMG_JPEG_FDCT_REF}) {
-          for (uint8_t quant : {(uint8_t)GIMG_JPEG_QUANT_RECIP,
-                   (uint8_t)GIMG_JPEG_QUANT_DIV}) {
-            SCOPED_TRACE("quality " + std::to_string(quality) +
-                (progressive ? ", progressive" : ", baseline") +
-                ", subsampling " + std::to_string((int)sub) + ", fdct " +
-                std::to_string((int)fdct) + ", quant " +
-                std::to_string((int)quant));
-            GIMG_Save_Options o = {};
-            o.metadata_policy = GIMG_META_DROP_ALL;
-            o.quality = (uint8_t)quality;
-            o.jpeg_progressive = (uint8_t)progressive;
-            o.jpeg_chroma_subsampling = sub;
-            o.jpeg_fdct_method = fdct;
-            o.jpeg_quant_method = quant;
-            std::vector<uint8_t> bytes;
-            ASSERT_TRUE(save_gradient_jpeg(o, bytes));
-            ASSERT_FALSE(bytes.empty());
-            if (baseline_bytes.empty()) {
-              baseline_bytes = bytes;
-              continue;
-            }
-            EXPECT_EQ(bytes, baseline_bytes)
-                << "this combination wrote a different file, so one of these "
-                   "options has started to mean something and the header "
-                   "saying it does not is now wrong";
-            compared++;
+        SCOPED_TRACE("quality " + std::to_string(quality) +
+            (progressive ? ", progressive" : ", baseline") + ", subsampling " +
+            std::to_string((int)sub));
+        GIMG_Save_Options base = {};
+        base.metadata_policy = GIMG_META_DROP_ALL;
+        base.quality = (unsigned)quality;
+        base.jpeg_progressive = (uint8_t)progressive;
+        base.jpeg_chroma_subsampling = sub;
+
+        std::vector<uint8_t> loeffler;
+        ASSERT_TRUE(save_gradient_jpeg(base, loeffler));
+        ASSERT_FALSE(loeffler.empty());
+        configs++;
+
+        // Quantization: every arm, byte for byte the same file.
+        for (uint8_t quant : {(uint8_t)GIMG_JPEG_QUANT_RECIP,
+                 (uint8_t)GIMG_JPEG_QUANT_DIV}) {
+          GIMG_Save_Options o = base;
+          o.jpeg_quant_method = quant;
+          std::vector<uint8_t> bytes;
+          ASSERT_TRUE(save_gradient_jpeg(o, bytes));
+          EXPECT_EQ(bytes, loeffler)
+              << "quant method " << (int)quant
+              << " wrote a different file, so this option has started to mean "
+                 "something and the header saying it does not is now wrong";
+          if (bytes != loeffler) {
+            quant_differed++;
           }
         }
+
+        // The transform: a different file is allowed, a different picture is
+        // allowed only slightly. The two transforms agree to within one in any
+        // coefficient, and a coefficient is worth a quantization step, so at
+        // low quality a sample can move by several levels.
+        GIMG_Save_Options ref = base;
+        ref.jpeg_fdct_method = GIMG_JPEG_FDCT_REF;
+        std::vector<uint8_t> ref_bytes;
+        ASSERT_TRUE(save_gradient_jpeg(ref, ref_bytes));
+        ASSERT_FALSE(ref_bytes.empty());
+        if (ref_bytes != loeffler) {
+          fdct_differed++;
+        }
+        const std::vector<uint8_t> a = decoded_pixels(loeffler);
+        const std::vector<uint8_t> b = decoded_pixels(ref_bytes);
+        ASSERT_FALSE(a.empty()) << "the Loeffler file must decode";
+        ASSERT_EQ(a.size(), b.size()) << "the reference file must decode to "
+                                         "the same shape";
+        int worst = 0;
+        for (size_t i = 0; i < a.size(); i++) {
+          const int d = std::abs((int)a[i] - (int)b[i]);
+          if (d > worst) {
+            worst = d;
+          }
+        }
+        // Measured worst over this sweep: 7 of 255, on 0.37% of samples.
+        // Bounded well above that, because the point is "the same picture",
+        // not the exact number.
+        EXPECT_LE(worst, 32)
+            << "the two transforms disagree by " << worst
+            << " in a sample, which is more than a rounding difference of one "
+               "coefficient can explain";
       }
     }
   }
-  EXPECT_EQ(compared, 12L * 2L * 3L * 3L)
-      << "every combination must have been compared, or the sweep is not as "
-         "wide as it says";
+  EXPECT_EQ(configs, 12L * 2L * 3L) << "the sweep is not as wide as it says";
+  EXPECT_EQ(quant_differed, 0L);
+  // The half that says the option is implemented. Without this the test would
+  // pass just as well against the version that threw the value away.
+  EXPECT_GT(fdct_differed, 0L)
+      << "no configuration wrote a different file for the reference transform, "
+         "so the option is being discarded again";
+}
+
+// The reference transform exists to be an oracle, so this is the gate that
+// uses it: the definition of the DCT against the factored integer transform,
+// on the same blocks, with nothing else in the way.
+//
+// T.81 A.3.3 equation 4 has no factoring to get wrong, so a disagreement is
+// the fast transform's. libjpeg-turbo already checks it end to end, but only
+// where libjpeg is installed; this runs everywhere the suite does.
+//
+// Its resolution was measured rather than assumed, by walking one of the
+// transform's constants away from its correct value: FIX_0_765366865 wrong by
+// 10 in 6270 (0.16%) fails this test, and so does everything larger, up to the
+// 8% that would be a transcription error. Wrong by 3 (0.05%) does not, because
+// three parts in 8192 of a coefficient is under one bit of the descaled output
+// - so this catches a factoring or transcription mistake and does not pretend
+// to catch a last-bit one.
+TEST(JpegEncode, TheFactoredDctAgreesWithTheDefinition) {
+  // xorshift32, so the block sequence is the same on every platform and a
+  // failure is reproducible from the seed alone.
+  uint32_t x = 2463534242u;
+  auto next = [&x]() {
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return x;
+  };
+  long worst = 0, differed = 0, total = 0;
+  int worst_dc = 0;
+  for (int trial = 0; trial < 4000; trial++) {
+    int32_t ref[64], fast[64];
+    for (int i = 0; i < 64; i++) {
+      // The range the encoder actually feeds a block: level-shifted samples.
+      const int32_t v = (int32_t)((next() >> 16) & 0xFFu) - 128;
+      ref[i] = v;
+      fast[i] = v;
+    }
+    gimg_jpeg_fdct_ref(ref);
+    gimg_jpeg_fdct_islow(fast);
+    for (int i = 0; i < 64; i++) {
+      const long d = std::labs((long)ref[i] - (long)fast[i]);
+      if (d > worst) {
+        worst = d;
+      }
+      if (d != 0) {
+        differed++;
+      }
+      if (i == 0 && d > worst_dc) {
+        worst_dc = (int)d;
+      }
+      total++;
+    }
+  }
+  EXPECT_LE(worst, 1) << "the factored transform is off by " << worst
+                      << " from the definition somewhere; more than one is a "
+                         "factoring error, not rounding";
+  EXPECT_EQ(worst_dc, 0) << "DC is a plain sum and has nothing to round";
+  // The two are not required to be identical - the fast one rounds at
+  // intermediate stages - but if they never differed at all the reference would
+  // not be exercising anything, and a stub that called the fast transform twice
+  // would pass the bound above.
+  EXPECT_GT(differed, 0L) << "the two transforms agreed on every one of "
+                          << total << " coefficients, which means one of them "
+                                      "is not being called";
+
+  // A flat block has a known answer: DC is 8 * 8 * the sample, everything else
+  // zero. This is the check that says the scaling convention is right, which
+  // the comparison above cannot - both could be scaled wrongly together.
+  for (int32_t level : {-128, -1, 0, 1, 100, 127}) {
+    int32_t flat[64];
+    for (int i = 0; i < 64; i++) {
+      flat[i] = level;
+    }
+    gimg_jpeg_fdct_ref(flat);
+    EXPECT_EQ(flat[0], level * 64) << "DC of a flat block at " << level;
+    for (int i = 1; i < 64; i++) {
+      EXPECT_EQ(flat[i], 0) << "AC coefficient " << i << " of a flat block";
+    }
+  }
 }
 
 // A precision the caller asked for and the library could not deliver.

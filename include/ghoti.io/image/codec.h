@@ -283,8 +283,9 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
 #define GIMG_JPEG_CHROMA_420 0
 #define GIMG_JPEG_CHROMA_422 1
 #define GIMG_JPEG_CHROMA_444 2
-/** FDCT method: Loeffler (libjpeg-compatible, default) or reference.
- * The reference transform is not implemented; see GIMG_Save_Options. */
+/** FDCT method: Loeffler (libjpeg-compatible, default) or the T.81 A.3.3
+ * definition, which is there as an oracle for the first; see
+ * GIMG_Save_Options. */
 #define GIMG_JPEG_FDCT_LOEFFLER 0
 #define GIMG_JPEG_FDCT_REF     1
 /** Quantization method: reciprocal-based (libjpeg-compatible, default) or
@@ -328,12 +329,24 @@ typedef struct {
   uint8_t exif_thumbnail_quality; ///< Thumbnail JPEG quality 1–100 when
                                   ///< format 6 or 7; 0 = default (85).
   uint8_t jpeg_chroma_subsampling; ///< GIMG_JPEG_CHROMA_420 (default), 422, 444.
-  /** FDCT method.  **Not implemented: only the Loeffler transform exists.**
+  /** Which forward DCT to use.
    *
-   * GIMG_JPEG_FDCT_REF was meant to select a reference float DCT to compare
-   * against.  There is no such transform in this library; the value is
-   * accepted, carried all the way to the block encoder, and discarded there.
-   * Every value of this field writes exactly the same file. */
+   * GIMG_JPEG_FDCT_LOEFFLER (0, default) is the factored integer transform
+   * every encode should want: the coefficients it produces are byte-exact
+   * against libjpeg-turbo.
+   *
+   * GIMG_JPEG_FDCT_REF is T.81 A.3.3 equation 4 evaluated directly in double
+   * precision - sixty-four multiply-adds per coefficient instead of a handful.
+   * It exists to be an oracle rather than a choice: being the definition, it
+   * has no factoring to get wrong, so differencing the two says whether the
+   * fast one is right without libjpeg installed.  Over 20000 random blocks the
+   * two never differ by more than one in any coefficient and agree exactly at
+   * DC.
+   *
+   * **Expect it to be slow.**  Use it to check a build, or on a platform where
+   * the fast transform is suspect; do not reach for it to make prettier files,
+   * because it does not - the difference is under one part in a quantization
+   * step. */
   uint8_t jpeg_fdct_method;
   /** Quantization: GIMG_JPEG_QUANT_RECIP (0, default) or
    * GIMG_JPEG_QUANT_DIV (1).
