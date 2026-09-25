@@ -8282,20 +8282,18 @@ TEST(JpegLoad, EveryDecoderHonoursTheChromaUpsamplingOption) {
          "would look like";
 }
 
-// GIMG_Decode_Options::jpeg_precision does nothing.
+// GIMG_Decode_Options::jpeg_precision names the depth the raster comes back at.
 //
-// The header described it as naming the depth to decode to - 8, 12 or 16,
-// with the library converting when the file's precision differs - and no line
-// in the library reads the field.  Every value behaves as 0.  A caller who set
-// it to 8 on a twelve-bit file got GRAY16 back, with no error and nothing
-// said, which is the failure mode a documented-but-absent option always has.
+// It spent its whole life documented and unread: every value behaved as 0, so a
+// caller who set 8 on a twelve-bit file got GRAY16 with no error and nothing
+// said. A test pinned that gap so it could not be closed by accident; this is
+// the test it turned into.
 //
-// This pins the gap rather than closing it: implementing it changes what
-// existing callers are handed, and so does deleting the field, and neither is
-// a decision to take from inside a test.  What the test buys is that it cannot
-// be settled by accident - implementing the option, or removing it, fails here
-// and has to be done on purpose.
-TEST(JpegLoad, TheDecodePrecisionOptionIsNotImplemented) {
+// Every JPEG process decodes through one funnel, gimg_jpeg_decode, and the
+// conversion is applied there rather than in each of the four - so this sweep
+// covers a sequential, a twelve-bit, a progressive, a lossless and a
+// hierarchical file to check that the funnel is really the only path.
+TEST(JpegLoad, TheDecodePrecisionOptionRestatesTheRasterAtTheDepthAsked) {
   struct Case {
     const char * jpg;
     uint8_t file_bits;
@@ -8305,31 +8303,99 @@ TEST(JpegLoad, TheDecodePrecisionOptionIsNotImplemented) {
       {"baseline_gray12.jpg", 16},
       {"baseline_rgb12_444.jpg", 16},
       {"baseline_16x16_ycbcr.jpg", 8},
+      {"progressive_32x32.jpg", 8},
+      {"lossless_gray_psv1.jpg", 8},
+      {"hier_gray_2level.jpg", 8},
   };
+  size_t widened = 0, narrowed = 0;
   for (const Case & c : cases) {
     SCOPED_TRACE(c.jpg);
     std::vector<uint8_t> bytes;
-    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, bytes));
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(c.jpg, bytes)) << "missing fixture";
     const Decoded base = decode_described_with(bytes, nullptr);
     ASSERT_EQ(base.result, GIMG_OK);
     EXPECT_EQ(base.bits, c.file_bits)
-        << "with no options the decode follows the file, which is the "
-           "behaviour every value of the option below also gets";
+        << "with no options the decode follows the file";
 
-    for (uint8_t want : {(uint8_t)0, (uint8_t)8, (uint8_t)12, (uint8_t)16}) {
+    // 0 is "the file's own", and must be byte-for-byte what no options gives.
+    {
+      GIMG_Decode_Options o = {};
+      o.jpeg_precision = 0;
+      const Decoded d = decode_described_with(bytes, &o);
+      EXPECT_EQ(d.result, GIMG_OK);
+      EXPECT_EQ(d.bits, base.bits);
+      EXPECT_EQ(d.hash, base.hash) << "zero must mean exactly no conversion";
+    }
+
+    for (uint8_t want : {(uint8_t)8, (uint8_t)12, (uint8_t)16}) {
       GIMG_Decode_Options o = {};
       o.jpeg_precision = want;
       const Decoded d = decode_described_with(bytes, &o);
       EXPECT_EQ(d.result, GIMG_OK)
-          << "asking for precision " << (int)want << " must not fail either";
-      EXPECT_EQ(d.bits, c.file_bits)
-          << "jpeg_precision = " << (int)want
-          << " changed the sample width, so it has been implemented; the "
-             "header says it is not, and one of the two needs updating";
-      EXPECT_EQ(d.hash, base.hash)
-          << "jpeg_precision = " << (int)want << " changed the picture";
+          << "precision " << (int)want << " is one of the three accepted";
+      EXPECT_EQ(d.bits, want == 12 ? 12 : want)
+          << "asked for " << (int)want << " and got " << (int)d.bits;
+      EXPECT_EQ(d.w, base.w) << "a depth change is not a resize";
+      EXPECT_EQ(d.h, base.h);
+      EXPECT_EQ(d.channels, base.channels)
+          << "nor a change of channel count";
+      if (want > c.file_bits) {
+        widened++;
+      }
+      else if (want < c.file_bits) {
+        narrowed++;
+      }
     }
   }
+  // The sweep has to contain both directions or it is measuring one of them.
+  EXPECT_GT(widened, 0u) << "no case widened; the 8-bit fixtures are missing";
+  EXPECT_GT(narrowed, 0u) << "no case narrowed; the deep fixtures are missing";
+
+  // A value that is none of the three is refused rather than ignored, which is
+  // the whole difference between this field now and this field before.
+  std::vector<uint8_t> bytes;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_8x8_gray.jpg", bytes));
+  for (uint8_t bad : {(uint8_t)1, (uint8_t)7, (uint8_t)10, (uint8_t)13,
+           (uint8_t)17, (uint8_t)255}) {
+    GIMG_Decode_Options o = {};
+    o.jpeg_precision = bad;
+    const Decoded d = decode_described_with(bytes, &o);
+    EXPECT_EQ(d.result, GIMG_ERR_UNSUPPORTED)
+        << "precision " << (int)bad
+        << " was accepted, which means it was ignored";
+  }
+}
+
+// Widening then narrowing must come back to where it started: the conversion
+// this option performs has to be the library's own, not a second copy of it.
+TEST(JpegLoad, ADepthRestatedAndRestatedBackIsTheOriginal) {
+  std::vector<uint8_t> bytes;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_16x16_ycbcr.jpg", bytes));
+  GIMG_Decode_Options none = {};
+  const Decoded at8 = decode_described_with(bytes, &none);
+  ASSERT_EQ(at8.result, GIMG_OK);
+  ASSERT_EQ(at8.bits, 8);
+
+  // Decode at 16, convert back to 8 with the public operation, and the hash
+  // must be the 8-bit decode's. If the option used a different rounding rule
+  // from gimg_ops_convert_bit_depth, this is where it would show.
+  GIMG_Decode_Options wide = {};
+  wide.jpeg_precision = 16;
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * r16 = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), &wide, &r16), GIMG_OK);
+  ASSERT_EQ(gimg_pixel_format_channel_bits(gimg_raster_format(r16), 0), 16);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_ops_convert_bit_depth(r16, 8, &back), GIMG_OK);
+  EXPECT_EQ(jpeg_test::raster_pixel_hash(back), at8.hash)
+      << "16 and back to 8 is not the 8-bit decode";
+  gimg_raster_destroy(back);
+  gimg_raster_destroy(r16);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
 }
 
 namespace {

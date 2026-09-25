@@ -756,19 +756,27 @@ typedef struct {
    * live at zero: when it did, `GIMG_Decode_Options o = {};` quietly decoded
    * with a different filter than passing no options at all. */
   uint8_t jpeg_chroma_upsampling;
-  /** JPEG decode-to precision.  **Not implemented: this field is read
-   * nowhere, and every value behaves as 0.**
+  /** JPEG decode-to precision: the depth the raster comes back at.
    *
-   * What a decode gives you is the file's own precision: 8 bits comes back
-   * as GRAY8 or RGBA8, and 12 or 16 as GRAY16 or RGBA16 with a 12-bit sample
-   * left-justified.  This field was meant to name a different depth - 8, 12
-   * or 16 - and have the library convert, and it does not: setting it to 8
-   * on a twelve-bit file still returns GRAY16, with no error and nothing
-   * said.  Measured at every value on both an eight-bit and a twelve-bit
-   * file; JpegLoad.TheDecodePrecisionOptionIsNotImplemented pins it, so
-   * whichever way this is settled the change will be a deliberate one.
+   * 0 (default) is the file's own precision - 8 bits comes back as GRAY8 or
+   * RGBA8, and 12 or 16 as GRAY12/GRAY16 or RGBA12/RGBA16.  8, 12 or 16 names
+   * a depth to restate it at instead, through the same conversion
+   * gimg_ops_convert_bit_depth performs, so this option saves a step rather
+   * than reaching anything a caller could not reach itself.
    *
-   * Convert the raster afterwards for now; see \ref api_options. */
+   * This is the reading counterpart of GIMG_Save_Options::jpeg_precision, but
+   * it is not bounded the same way.  T.81 Table B.2 allows only 8 and 12 in a
+   * DCT-based *frame*, which is why the writer refuses 16 there; that
+   * constrains what a file may say and not what a caller may ask for, and
+   * widening an 8-bit image to 16 is exact.  So all three are accepted here.
+   *
+   * Any other value is refused with GIMG_ERR_UNSUPPORTED.  It is not ignored:
+   * ignoring it is what this field did before it was implemented, and a caller
+   * who writes 10 has a misunderstanding that silence does not fix.
+   *
+   * Applies to every JPEG process - sequential, progressive, lossless and
+   * hierarchical - and to the Exif thumbnail at item 1, so that one document
+   * does not hand back two different depths.  Ignored for non-JPEG. */
   uint8_t jpeg_precision;
   /** GIF: what goes where no frame has drawn.
    *
