@@ -9017,3 +9017,88 @@ TEST(JpegEncode, TheFdctAndQuantizationMethodOptionsChangeNoOutput) {
       << "every combination must have been compared, or the sweep is not as "
          "wide as it says";
 }
+
+// A precision the caller asked for and the library could not deliver.
+//
+// gimg_ops_convert_bit_depth builds the converted raster through the *source
+// raster's* allocator, so a raster carrying a failing allocator is the way in.
+// The conversion's failure used to be dropped: the frame was written at the
+// precision the raster already had and the save returned GIMG_OK, so a caller
+// who asked for eight bits got twelve and was told nothing.
+//
+// bmp_save.c has the same call and has always checked it, which is what made
+// this one a drift rather than a policy.
+TEST(JpegEncode, APrecisionTheConversionCannotReachIsReported) {
+  // Sixteen bits in, eight asked for: a conversion must happen.
+  gimg_test::Failing f;
+  f.a.ctx = &f;
+  f.a.malloc_fn = gimg_test::f_malloc;
+  f.a.calloc_fn = gimg_test::f_calloc;
+  f.a.realloc_fn = gimg_test::f_realloc;
+  f.a.free_fn = gimg_test::f_free;
+
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create_with_allocator(&f.a, 16, 16, &GIMG_PIXEL_GRAY16,
+                GIMG_RASTER_OWNED, nullptr, 0, &raster),
+      GIMG_OK);
+  auto * px = static_cast<uint16_t *>(gimg_raster_pixels(raster));
+  const size_t stride = gimg_raster_stride_bytes(raster);
+  for (uint32_t y = 0; y < 16; y++) {
+    for (uint32_t x = 0; x < 16; x++) {
+      *(uint16_t *)((uint8_t *)px + y * stride + x * 2u) =
+          static_cast<uint16_t>((x * 16u + y) << 4);
+    }
+  }
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  GIMG_Save_Options opts = {};
+  opts.jpeg_precision = 8;
+
+  // Control: with the allocator passing, the save succeeds and the file says
+  // eight bits. Without this the refusal below could be about anything.
+  {
+    f.fail_at = -1;
+    GIMG_Stream * os = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+    GIMG_Save_Report rep = {};
+    ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &opts, &rep), GIMG_OK);
+    const void * buf = nullptr;
+    size_t n = 0;
+    gimg_stream_output_buffer(os, &buf, &n);
+    // SOF0's sample precision is the byte after the segment length (T.81
+    // B.2.2), which is the first 0xFFC0 in a baseline file.
+    const auto * b = static_cast<const uint8_t *>(buf);
+    size_t sof = 0;
+    for (size_t i = 2; i + 1 < n; i++) {
+      if (b[i] == 0xFF && b[i + 1] == 0xC0) {
+        sof = i;
+        break;
+      }
+    }
+    ASSERT_GT(sof, 0u) << "no SOF0 in the control output";
+    EXPECT_EQ(b[sof + 4], 8) << "the control must actually have converted";
+    gimg_stream_destroy(os);
+  }
+
+  // Now fail the allocation the conversion makes. It is the next one this
+  // allocator is asked for, because the raster is built and the codec has its
+  // own allocator for everything else.
+  const long before = f.attempts;
+  f.fail_at = before + 1;
+  GIMG_Stream * os = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
+  GIMG_Save_Report rep = {};
+  const GIMG_Result r = gimg_doc_save(doc, os, "jpeg", &opts, &rep);
+  EXPECT_NE(r, GIMG_OK)
+      << "the save wrote a file at a precision the caller did not ask for and "
+         "called it success";
+  EXPECT_EQ(r, GIMG_ERR_OOM);
+  gimg_stream_destroy(os);
+
+  gimg_doc_destroy(doc);
+  EXPECT_EQ(f.outstanding, 0) << "the refusal leaked";
+}

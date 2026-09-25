@@ -3380,13 +3380,23 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       GIMG_Raster * converted = NULL;
       GIMG_Result r_conv =
           gimg_ops_convert_bit_depth(raster, want_bits, &converted);
-      if (r_conv == GIMG_OK && converted) {
+      // A conversion that failed used to be dropped here, with no else: the
+      // frame was then written at the precision the raster already had, and
+      // the save reported GIMG_OK.  A caller who asked for eight bits got
+      // twelve and was told nothing - and the way to reach it is an
+      // allocation failure, which is to say the case where the caller most
+      // needs to be told.
+      if (r_conv != GIMG_OK || !converted) {
         if (raster_owned) {
           gimg_raster_destroy(raster);
         }
-        raster = converted;
-        raster_owned = 1;
+        return r_conv != GIMG_OK ? r_conv : GIMG_ERR_OOM;
       }
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      raster = converted;
+      raster_owned = 1;
     }
   }
 
