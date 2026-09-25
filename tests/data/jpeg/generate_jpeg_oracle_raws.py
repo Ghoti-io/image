@@ -33,6 +33,16 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The .raw files this writes are the committed decode oracle for most of the
+# fixtures beside them, so the Pillow that writes them is part of what they
+# mean - the same argument as the fixture generators. See
+# tests/data/oracle_reexec.py.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from oracle_reexec import inside_or_reexec  # noqa: E402
+
+inside_or_reexec("pillow",
+    scratch=[os.path.dirname(os.path.abspath(__file__))])
+
 from oracle_path import BUILD_HINT, find_oracle, repo_root
 
 try:

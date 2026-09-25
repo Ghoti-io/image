@@ -3051,6 +3051,7 @@ TEST(JpegLoad, DecodeFixtureOraclesRaw) {
       "baseline_8x8_gray_q100",
       "baseline_640x480_gray",
       "jpeg_exif_orientation",
+      "jpeg_exif_thumbnail",
       "jpeg_with_icc",
       "cmyk_sample",
   };

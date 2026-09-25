@@ -2745,71 +2745,169 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
   gimg_doc_destroy(doc);
 }
 
+/**
+ * A thumbnail read out of a file survives being written back.
+ *
+ * This loaded jpeg_exif_orientation.jpg, which carries no thumbnail, and every
+ * comparison sat inside `if (item_count_before >= 2)`. With one item the whole
+ * body was inert: the only live assertion was that the item count had not
+ * *shrunk*, so a writer that dropped every thumbnail it was given passed this
+ * test, and so did one that refused to read them in the first place.
+ *
+ * It has a fixture of its own now - jpeg_exif_thumbnail.jpg, an 8x8 gradient
+ * with a 4x4 gradient in EXIF's IFD1. The SaveTwoItemsExifThumbnail* and
+ * RoundTripExifThumbnailFormat* tests beside it build their thumbnails in
+ * memory and check dimensions; this one is the case where the thumbnail
+ * arrived from a file and the question is whether its *pixels* came back.
+ *
+ * Two arms, because only one of them can ask for equality:
+ *
+ *   format 1 (uncompressed)  IFD1 carries raw samples, so nothing re-encodes
+ *                            and the pixels must be identical. Measured: 0 of
+ *                            16 samples differ.
+ *   the default (format 6)   IFD1 carries a JPEG stream, so a round trip is a
+ *                            second lossy generation and exact equality is the
+ *                            wrong assertion. Measured: 9 of 16 samples
+ *                            differ, worst by 2 - which is why the tolerance
+ *                            below is 2 and not a round number. A thumbnail
+ *                            that had been dropped, blanked or swapped would
+ *                            differ across this gradient by two orders more.
+ *
+ * What this does *not* pin, found by arming it: under PRESERVE_ALL there are
+ * two routes by which the thumbnail can survive - the writer re-encoding it
+ * out of item 1, and the loaded APP1 segment being written back whole with its
+ * IFD1 still in it. Disabling the first leaves the second, and this test
+ * passes either way, because both preserve the picture and that is what it
+ * asks about. The tests beside it that build a document by hand have no APP1
+ * to fall back on and so do pin the encoding path.
+ *
+ * Both of its live assertions were watched to fail: a reader that stops
+ * exposing IFD1 makes the item count 1 against 2, and a thumbnail re-encoded
+ * at quality 1 differs on 16 of 16 samples by up to 38 against the tolerance
+ * of 2.
+ */
 TEST(JpegEncode, RoundTripExifThumbnailPreserved) {
-  // Load JPEG with EXIF thumbnail, save (preserve), load again; thumbnail
-  // still present.
   std::vector<uint8_t> jpeg;
-  if (!jpeg_test::load_jpeg_file("jpeg_exif_orientation.jpg", jpeg)) {
-    FAIL() << "tests/data/jpeg/jpeg_exif_orientation.jpg is committed and is "
-              "not there.";
-  }
-  GIMG_Stream * in_stream = nullptr;
-  ASSERT_EQ(
-      gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in_stream), GIMG_OK);
-  GIMG_Doc * doc = nullptr;
-  GIMG_Result r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
-  gimg_stream_destroy(in_stream);
-  ASSERT_EQ(r, GIMG_OK);
-  ASSERT_NE(doc, nullptr);
-  size_t item_count_before = gimg_doc_item_count(doc);
-  uint64_t thumb_hash_before = 0;
-  if (item_count_before >= 2) {
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("jpeg_exif_thumbnail.jpg", jpeg))
+      << "tests/data/jpeg/jpeg_exif_thumbnail.jpg is committed; regenerate it "
+         "with `python3 tests/data/jpeg/generate.py`";
+
+  // The thumbnail as the file holds it, which both arms are measured against.
+  std::vector<uint8_t> want;
+  uint32_t want_w = 0, want_h = 0;
+  {
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    ASSERT_EQ(gimg_doc_item_count(doc), 2u)
+        << "the fixture carries an EXIF thumbnail, so it is two items";
     GIMG_Raster * thumb = nullptr;
-    if (gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &thumb) == GIMG_OK &&
-        thumb) {
-      thumb_hash_before = jpeg_test::raster_pixel_hash(thumb);
-      gimg_raster_destroy(thumb);
-    }
-  }
-
-  GIMG_Stream * out_stream = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
-  GIMG_Save_Options save_opts = {.metadata_policy = GIMG_META_PRESERVE_ALL};
-  GIMG_Save_Report report = {};
-  r = gimg_doc_save(doc, out_stream, "jpeg", &save_opts, &report);
-  gimg_doc_destroy(doc);
-  doc = nullptr;
-  ASSERT_EQ(r, GIMG_OK);
-
-  const void * out_buf = nullptr;
-  size_t out_size = 0;
-  gimg_stream_output_buffer(out_stream, &out_buf, &out_size);
-  std::vector<uint8_t> saved(out_size);
-  memcpy(saved.data(), out_buf, out_size);
-  gimg_stream_destroy(out_stream);
-
-  in_stream = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &in_stream),
-      GIMG_OK);
-  r = gimg_doc_load(in_stream, nullptr, nullptr, &doc);
-  gimg_stream_destroy(in_stream);
-  ASSERT_EQ(r, GIMG_OK);
-  ASSERT_NE(doc, nullptr);
-  DocStreamGuard guard_preserved;
-  guard_preserved.d = doc;
-  guard_preserved.s = nullptr;
-  EXPECT_GE(gimg_doc_item_count(doc), item_count_before);
-  if (item_count_before >= 2 && gimg_doc_item_count(doc) >= 2) {
-    GIMG_Raster * thumb = nullptr;
-    r = gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &thumb);
-    ASSERT_EQ(r, GIMG_OK);
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &thumb),
+        GIMG_OK);
     ASSERT_NE(thumb, nullptr);
-    EXPECT_EQ(jpeg_test::raster_pixel_hash(thumb), thumb_hash_before)
-        << "Thumbnail pixels should match after round-trip";
+    want_w = gimg_raster_width(thumb);
+    want_h = gimg_raster_height(thumb);
+    EXPECT_EQ(want_w, 4u);
+    EXPECT_EQ(want_h, 4u);
+    const size_t stride = gimg_raster_stride_bytes(thumb);
+    const size_t bpp = gimg_raster_bytes_per_pixel(gimg_raster_format(thumb));
+    const uint8_t * px = static_cast<const uint8_t *>(
+        gimg_raster_pixels(thumb));
+    for (uint32_t y = 0; y < want_h; y++) {
+      want.insert(want.end(), px + y * stride,
+          px + y * stride + (size_t)want_w * bpp);
+    }
     gimg_raster_destroy(thumb);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
   }
-  guard_preserved.d = nullptr;
-  gimg_doc_destroy(doc);
+  // A flat thumbnail would pass a tolerance test against a flat original, so
+  // say out loud that the fixture is not flat.
+  ASSERT_FALSE(want.empty());
+  EXPECT_NE(*std::min_element(want.begin(), want.end()),
+      *std::max_element(want.begin(), want.end()))
+      << "the fixture's thumbnail must be a gradient for a tolerance to mean "
+         "anything";
+
+  struct Arm {
+    uint8_t format;
+    int tolerance;
+    const char * what;
+  };
+  const Arm arms[] = {
+      {GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED, 0, "raw samples, so exactly"},
+      {GIMG_EXIF_THUMB_FORMAT_DEFAULT, 2, "a JPEG stream, so within 2"},
+  };
+  for (const Arm & arm : arms) {
+    SCOPED_TRACE(arm.what);
+    GIMG_Stream * in = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &in),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &doc), GIMG_OK);
+
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.metadata_policy = GIMG_META_PRESERVE_ALL;
+    opts.exif_thumbnail_format = arm.format;
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+    const void * buf = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &buf, &size);
+    std::vector<uint8_t> saved(static_cast<const uint8_t *>(buf),
+        static_cast<const uint8_t *>(buf) + size);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in);
+
+    GIMG_Stream * back = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(saved.data(), saved.size(), &back),
+        GIMG_OK);
+    GIMG_Doc * reread = nullptr;
+    ASSERT_EQ(gimg_doc_load(back, nullptr, nullptr, &reread), GIMG_OK);
+    // Equality, not GE: a save that *added* an item would satisfy GE as
+    // readily as one that kept the thumbnail.
+    ASSERT_EQ(gimg_doc_item_count(reread), 2u)
+        << "the round trip must carry the same two items";
+    GIMG_Raster * thumb = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(reread, 1), nullptr, &thumb),
+        GIMG_OK);
+    ASSERT_NE(thumb, nullptr);
+    EXPECT_EQ(gimg_raster_width(thumb), want_w);
+    EXPECT_EQ(gimg_raster_height(thumb), want_h);
+    const size_t stride = gimg_raster_stride_bytes(thumb);
+    const size_t bpp = gimg_raster_bytes_per_pixel(gimg_raster_format(thumb));
+    const uint8_t * px = static_cast<const uint8_t *>(
+        gimg_raster_pixels(thumb));
+    std::vector<uint8_t> got;
+    for (uint32_t y = 0; y < gimg_raster_height(thumb); y++) {
+      got.insert(got.end(), px + y * stride,
+          px + y * stride + (size_t)gimg_raster_width(thumb) * bpp);
+    }
+    gimg_raster_destroy(thumb);
+    gimg_doc_destroy(reread);
+    gimg_stream_destroy(back);
+
+    ASSERT_EQ(got.size(), want.size());
+    int worst = 0;
+    size_t differing = 0;
+    for (size_t i = 0; i < want.size(); i++) {
+      const int d = std::abs((int)want[i] - (int)got[i]);
+      if (d != 0) {
+        differing++;
+      }
+      if (d > worst) {
+        worst = d;
+      }
+    }
+    EXPECT_LE(worst, arm.tolerance)
+        << differing << " of " << want.size()
+        << " samples differ, worst by " << worst
+        << "; the thumbnail did not survive the round trip";
+  }
 }
 
 TEST(JpegEncode, ChromaSubsamplingOption) {

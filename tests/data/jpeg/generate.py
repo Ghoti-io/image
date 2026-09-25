@@ -10,6 +10,7 @@ Or from this dir: python3 generate.py
 Writes manifest.json listing all fixtures with width, height, mode, progressive,
 quality, has_exif, has_icc for tests and tooling.
 """
+import io
 import json
 import os
 import sys
@@ -235,6 +236,51 @@ def main() -> None:
         "file": "jpeg_exif_orientation.jpg",
         "width": 8, "height": 8, "mode": "L",
         "progressive": False, "quality": 85, "has_exif": has_exif, "has_icc": False,
+    })
+
+    # ---- With an EXIF thumbnail ----
+    #
+    # A fixture of its own rather than a second property on the one above.
+    # jpeg_exif_orientation.jpg is read by four tests, a committed .raw oracle
+    # and a golden pixel hash; one fixture, one property keeps a failure
+    # pointing at one thing. This one exists because
+    # JpegEncode.RoundTripExifThumbnailPreserved had no thumbnail to preserve -
+    # it loaded the orientation fixture, which carries none, and its only live
+    # assertion was that the item count had not shrunk.
+    #
+    # The thumbnail is a gradient rather than a flat field so that "the
+    # thumbnail survived" cannot be satisfied by a blank raster of the right
+    # size, and the main image is a different gradient so that the two cannot
+    # be confused for each other.
+    thumb_img = Image.new("L", (4, 4))
+    thumb_img.putdata([(x * 60 + y * 15) % 256 for y in range(4) for x in range(4)])
+    thumb_buf = io.BytesIO()
+    thumb_img.save(thumb_buf, format="JPEG", quality=85)
+    thumb_bytes = thumb_buf.getvalue()
+    thumb_main = Image.new("L", (8, 8))
+    thumb_main.putdata([(x * 30 + y * 7) % 256 for y in range(8) for x in range(8)])
+    # T.81 has nothing to say about this; the thumbnail lives in EXIF's IFD1,
+    # and Compression 6 is what says it is a JPEG stream rather than raw
+    # samples. The resolution tags are what piexif expects beside it.
+    thumb_exif = {
+        "0th": {},
+        "Exif": {},
+        "GPS": {},
+        "1st": {
+            piexif.ImageIFD.Compression: 6,
+            piexif.ImageIFD.XResolution: (72, 1),
+            piexif.ImageIFD.YResolution: (72, 1),
+            piexif.ImageIFD.ResolutionUnit: 2,
+        },
+        "thumbnail": thumb_bytes,
+    }
+    write_jpeg("jpeg_exif_thumbnail.jpg", thumb_main,
+               exif=piexif.dump(thumb_exif))
+    manifest.append({
+        "file": "jpeg_exif_thumbnail.jpg",
+        "width": 8, "height": 8, "mode": "L",
+        "progressive": False, "quality": 85, "has_exif": True,
+        "has_icc": False, "has_thumbnail": True,
     })
 
     # ---- With ICC (minimal profile: 128-byte header + tag table) ----

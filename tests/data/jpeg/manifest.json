@@ -140,6 +140,17 @@
     "has_icc": false
   },
   {
+    "file": "jpeg_exif_thumbnail.jpg",
+    "width": 8,
+    "height": 8,
+    "mode": "L",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": true,
+    "has_icc": false,
+    "has_thumbnail": true
+  },
+  {
     "file": "jpeg_with_icc.jpg",
     "width": 8,
     "height": 8,

@@ -2824,7 +2824,11 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
         frame_raster_owned = 1;
       }
       else if (r == GIMG_ERR_UNSUPPORTED) {
-        return GIMG_ERR_FORMAT;
+        // Passed through rather than turned into GIMG_ERR_FORMAT. A frame this
+        // library cannot decode is not a malformed document: FORMAT says the
+        // bytes are broken, and here the bytes are fine and the codec is
+        // short.
+        return GIMG_ERR_UNSUPPORTED;
       }
       else {
         return r != GIMG_OK ? r : GIMG_ERR_FORMAT;
@@ -2835,7 +2839,20 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       if (frame_raster_owned) {
         gimg_raster_destroy(frame_raster);
       }
-      return GIMG_ERR_FORMAT;
+      // UNSUPPORTED, not FORMAT.
+      //
+      // APNG gives every frame an offset and a size in its fcTL, so a smaller
+      // frame is legal in the format; this writer does not place them and
+      // requires the canvas size. Either way the document is *askable* and
+      // this writer cannot express it, which is what UNSUPPORTED means -
+      // FORMAT says the input is broken data, and it is not.
+      //
+      // Found by the conversion matrix the day a JPEG carrying an EXIF
+      // thumbnail joined the corpus: that is a two-item document whose items
+      // are 8x8 and 4x4, and until then nothing in tests/data/ held one whose
+      // items differ in size. Every other refusal in that sweep already said
+      // UNSUPPORTED.
+      return GIMG_ERR_UNSUPPORTED;
     }
     if (!use_palette) {
       uint8_t ct = 0;
@@ -2848,7 +2865,11 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
         if (frame_raster_owned) {
           gimg_raster_destroy(frame_raster);
         }
-        return GIMG_ERR_FORMAT;
+        // Also UNSUPPORTED, for the reason above: one IHDR governs every
+        // frame of an APNG, so frames that do not share a colour type and bit
+        // depth are a document this writer cannot express rather than a
+        // broken one.
+        return GIMG_ERR_UNSUPPORTED;
       }
     }
     uint16_t delay_num = 0, delay_den = 0;
