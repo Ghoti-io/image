@@ -13,7 +13,27 @@ Compare the result with compare_12bit_to_libjpeg.py.
 """
 import math, os, random, struct, subprocess, sys
 
-CJPEG = os.environ.get("GIMG_CJPEG12", "cjpeg")
+CJPEG = os.environ.get(
+    "GIMG_CJPEG12", "/opt/libjpeg-turbo/bin/cjpeg-static")
+# The path inside the pinned oracle image, where libjpeg-turbo 3.0.4 is built
+# from the commit tools/oracle/VERSIONS names. It used to default to the bare
+# `cjpeg`, which on any ordinary system is an 8-bit build that cannot write a
+# P=12 frame - so this generator's corpus, and the fixtures taken from it,
+# depended on a binary that existed on one machine.
+# GHOTI_ORACLE_MODE=host runs a local build instead, and says nothing about
+# which, because nothing records it.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
+ORACLE_EXEC = os.path.join(_ROOT, "tools", "oracle", "oracle-exec")
+
+
+def oracle_argv(inner, scratch=()):
+    if os.environ.get("GHOTI_ORACLE_MODE") == "host":
+        return list(inner)
+    argv = [ORACLE_EXEC]
+    for path in scratch:
+        argv += ["--scratch", os.path.abspath(path)]
+    return argv + ["libjpeg12", "--"] + list(inner)
 
 
 def write_pnm(path, w, h, vals, color):
@@ -71,8 +91,13 @@ def main():
                     cmd = [CJPEG, "-precision", "12", "-quality", str(q)] + mode
                     if samp:
                         cmd += ["-sample", samp]
-                    cmd += ["-outfile", os.path.join(outdir, name), src]
-                    if subprocess.run(cmd, capture_output=True).returncode == 0:
+                    cmd += ["-outfile",
+                            os.path.abspath(os.path.join(outdir, name)),
+                            os.path.abspath(src)]
+                    if subprocess.run(
+                            oracle_argv(cmd, scratch=[outdir]),
+                            capture_output=True,
+                            stdin=subprocess.DEVNULL).returncode == 0:
                         n += 1
                     else:
                         print("encode failed:", name, file=sys.stderr)

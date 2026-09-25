@@ -14,6 +14,25 @@ Or from this dir: python3 generate.py
 import os
 import struct
 import zlib
+# A fixture generator is pinned for the same reason a comparison oracle is:
+# a fixture's bytes are part of what it means, and "whatever Pillow this
+# machine has" is not a version anything records. `font` pins its fontTools
+# for exactly this (notes/suite/CONTAINERS.md section 7), and the fixtures
+# under this directory are committed, so the version that wrote them outlives
+# the machine that ran it.
+#
+# The one directory this script writes is declared read-write; the rest of the
+# tree stays read-only, which is the same rule a comparison runs under and the
+# reason a generator has to name its output rather than have it assumed.
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+from oracle_reexec import inside_or_reexec  # noqa: E402
+
+inside_or_reexec("pillow",
+    scratch=[_os.path.dirname(_os.path.abspath(__file__))])
+
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 

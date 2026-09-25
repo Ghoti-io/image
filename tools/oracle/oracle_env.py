@@ -79,6 +79,10 @@ PROBE = {
     "bmpsuite": "bmpsuite ",
     "pixbuf": "GdkPixbuf ",
     "netpbm": "netpbm ",
+    "imagemagick": "ImageMagick ",
+    "piexif": "piexif ",
+    "libjpeg12": "libjpeg-turbo ",
+    "ijg10": "jpeg-10 ",
 }
 
 CONTAINER_PROBE = "image-oracle-version"
@@ -132,17 +136,26 @@ def pins():
                     "containers/IMAGES: not three tab-separated fields: %r"
                     % line)
             name, image, version = parts[0], parts[1], parts[2]
-            if version == "@VERSIONS":
-                # The pin lives in tools/oracle/VERSIONS. An absent key is a
-                # hard error rather than an empty expectation, because an empty
-                # expectation is contained in every answer and check_pin()
-                # would then pass against anything.
-                ref = versions_file().get(name)
+            if version.startswith("@VERSIONS"):
+                # The pin lives in tools/oracle/VERSIONS. Bare "@VERSIONS" uses
+                # this reference's own name as the key; "@VERSIONS:<key>" names
+                # a different one, which two of these need because what the
+                # image calls `libjpeg12` and `ijg10` VERSIONS calls by the
+                # upstream project's name. Spelling the key rather than
+                # renaming either file: VERSIONS is read by fetch.sh too, and
+                # IMAGES' names are what a caller passes to oracle-exec.
+                key = (version.split(":", 1)[1] if ":" in version else name)
+                # An absent key is a hard error rather than an empty
+                # expectation, because an empty expectation is contained in
+                # every answer and check_pin() would then pass against
+                # anything.
+                ref = versions_file().get(key)
                 if not ref:
                     raise OracleUnavailable(
-                        "IMAGES says %s is pinned in tools/oracle/VERSIONS, "
-                        "and VERSIONS has no %s line" % (name, name))
-                version = "%s %s" % (name, ref)
+                        "IMAGES says %s is pinned in tools/oracle/VERSIONS "
+                        "under %r, and VERSIONS has no such line"
+                        % (name, key))
+                version = "%s %s" % (key, ref)
             _pins[name] = (image, version, parts[3] if len(parts) > 3 else "")
     return _pins
 

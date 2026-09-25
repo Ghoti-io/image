@@ -3785,11 +3785,19 @@ TEST(JpegLoad, DecodeExifOrientationPillowOracle) {
   ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  // Unconditional, and it was not - in this test and in the one beside it.
+  //
+  // Both read `if (meta) { EXPECT_EQ(...) }` with a message ending "(if
+  // generate.py was run with piexif)", and the fixture in the repository had
+  // been generated without it: no APP1 segment at all, `"has_exif": false` in
+  // the manifest that records it, `meta` null, and the only assertion about an
+  // orientation in either test never ran. Two tests named for a property of a
+  // fixture that did not have it. The generator is pinned now and piexif is
+  // not optional there, so a null meta is the finding rather than the excuse.
   GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
-  if (meta) {
-    EXPECT_EQ(gimg_meta_common_orientation(meta), GIMG_ORIENTATION_ROTATE_90_CW)
-        << "EXIF Orientation 6 = 90 CW (if generate.py was run with piexif)";
-  }
+  ASSERT_NE(meta, nullptr) << "the fixture carries an APP1 EXIF segment";
+  EXPECT_EQ(gimg_meta_common_orientation(meta), GIMG_ORIENTATION_ROTATE_90_CW)
+      << "EXIF Orientation 6 is 90 degrees clockwise";
   GIMG_Item * item = gimg_doc_item(doc, 0);
   ASSERT_NE(item, nullptr);
   GIMG_Raster * raster = nullptr;
@@ -3813,11 +3821,19 @@ TEST(JpegLoad, GoldenExifOrientation) {
   ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  // Unconditional, and it was not - in this test and in the one beside it.
+  //
+  // Both read `if (meta) { EXPECT_EQ(...) }` with a message ending "(if
+  // generate.py was run with piexif)", and the fixture in the repository had
+  // been generated without it: no APP1 segment at all, `"has_exif": false` in
+  // the manifest that records it, `meta` null, and the only assertion about an
+  // orientation in either test never ran. Two tests named for a property of a
+  // fixture that did not have it. The generator is pinned now and piexif is
+  // not optional there, so a null meta is the finding rather than the excuse.
   GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
-  if (meta) {
-    EXPECT_EQ(gimg_meta_common_orientation(meta), GIMG_ORIENTATION_ROTATE_90_CW)
-        << "EXIF Orientation 6 = 90 CW (if generate.py was run with piexif)";
-  }
+  ASSERT_NE(meta, nullptr) << "the fixture carries an APP1 EXIF segment";
+  EXPECT_EQ(gimg_meta_common_orientation(meta), GIMG_ORIENTATION_ROTATE_90_CW)
+      << "EXIF Orientation 6 is 90 degrees clockwise";
   GIMG_Item * item = gimg_doc_item(doc, 0);
   ASSERT_NE(item, nullptr);
   GIMG_Raster * raster = nullptr;

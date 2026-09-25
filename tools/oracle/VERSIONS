@@ -6,3 +6,22 @@
 # name      ref
 bmplib      e7910ac36bfdc6c46fcaf5f8291ed9956ba98fd8
 bmpsuite    555e43af40c330249234279b6d2bc6162370a2f0
+
+# Two more references, pinned when the oracle image was built (2026-09-25).
+# Read by the same awk, first match wins; a record line is a contract.
+#
+# libjpeg-turbo 3.0.4 is a *second* libjpeg and not a replacement for the
+# system one. Debian 13 ships 2.1.5, which is what Pillow links and what the
+# eight-bit comparisons are measured against; 3.x is the one that carries the
+# 8-, 12- and 16-bit codecs in one library, and it is the only reference this
+# library has ever had for its twelve-bit path. The lightweight tag 3.0.4
+# points straight at this commit.
+libjpeg-turbo   f29eda648547b36aa594c4116c7764a6c8a079b9
+
+# IJG v10 has no repository to pin a commit in - only tarballs - so the pin is
+# the bytes. **This digest is our own measurement of the file we fetched, not
+# a digest IJG publishes**: https://ijg.org/files/ carries no checksums beside
+# the releases, which is a weaker guarantee than bmplib's commit or
+# libjpeg-turbo's and is worth knowing when it next fails to match. It is the
+# only reference here for SOF3 lossless and for arithmetic coding.
+jpeg-10         sha256:8b9eaa13242690ebd03e1728ab1edf97a81a78ed6e83624d493655f31ac95ab5

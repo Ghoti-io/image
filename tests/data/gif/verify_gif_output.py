@@ -190,6 +190,10 @@ def frames_for(dirpath, name):
 def verify_directory(dirpath):
     errors = []
     checked = 0
+    # Which decoders actually answered for at least one file. A decoder that
+    # is not installed raises and is skipped case by case, so only this set
+    # separates "all four agreed" from "the one that was there agreed".
+    answered = set()
 
     if not os.path.isdir(dirpath):
         return ["not a directory: %s" % dirpath], 0
@@ -232,6 +236,7 @@ def verify_directory(dirpath):
                         continue
                     got = got[start:start + len(want)]
                 read_by_someone = True
+                answered.add(decoder_name)
                 problem = compare(got, want)
                 if problem:
                     errors.append("%s frame %d: %s reads it as %s"
@@ -247,7 +252,7 @@ def verify_directory(dirpath):
             elif agreed:
                 checked += 1
 
-    return errors, checked
+    return errors, checked, answered
 
 
 def comment_pillow(path):
@@ -303,13 +308,29 @@ def check_comment(dirpath, name, path):
 def main():
     dirpath = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", "..", "out", "gif")
-    errors, checked = verify_directory(dirpath)
+    errors, checked, answered = verify_directory(dirpath)
     for e in errors:
         print("  %s" % e, file=sys.stderr)
     if errors:
         print("GIF output verification FAILED", file=sys.stderr)
         return 1
-    print("  %d encoder frames read back and matched" % checked)
+    # Name the decoders, and require all four.
+    #
+    # This line used to say only how many frames matched, and that is how this
+    # script lost a decoder without anyone noticing: it was moved into the
+    # pinned oracle image before ImageMagick was in it, `importable()` dropped
+    # the one it could not run, and "21 encoder frames read back and matched"
+    # came out identical to the run with four. A count with no denominator
+    # beside it cannot tell a smaller sweep from a clean one.
+    missing = [name for name, _, _ in DECODERS if name not in answered]
+    print("  %d encoder frames read back and matched, by %s"
+          % (checked, ", ".join(sorted(answered)) or "nothing"))
+    if missing:
+        print("  %s did not answer for any file; every decoder named here is "
+              "pinned in tools/oracle/containers/IMAGES and present in the "
+              "image `make oracle-build` builds."
+              % ", ".join(missing), file=sys.stderr)
+        return 1
     return 0
 
 

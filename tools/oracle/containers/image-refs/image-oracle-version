@@ -15,6 +15,12 @@ case "${1:-}" in
   bmpsuite) printf 'bmpsuite %s\n' "$(cat /opt/bmpsuite.ref)" ;;
   pixbuf)   exec python3 -c 'import gi; gi.require_version("GdkPixbuf", "2.0"); from gi.repository import GdkPixbuf; print("GdkPixbuf %d.%d.%d" % (GdkPixbuf.PIXBUF_MAJOR, GdkPixbuf.PIXBUF_MINOR, GdkPixbuf.PIXBUF_MICRO))' ;;
   netpbm)   printf 'netpbm %s\n' "$(bmptopnm --version 2>&1 | sed -n 's/.*Netpbm \([0-9.]*\).*/\1/p' | head -1)" ;;
+  imagemagick)
+            printf 'ImageMagick %s\n' "$(magick -version | sed -n 's/^Version: ImageMagick \([0-9.-]*\).*/\1/p' | head -1)" ;;
+  piexif)   exec python3 -c 'import piexif; print("piexif", piexif.VERSION)' ;;
+  libjpeg12)
+            printf 'libjpeg-turbo %s\n' "$(cat /opt/libjpeg-turbo.ref)" ;;
+  ijg10)    printf 'jpeg-10 sha256:%s\n' "$(cat /opt/jpeg-10.ref)" ;;
   *)        printf 'image-oracle-version: no such reference: %s\n' "${1:-}" >&2
             exit 2 ;;
 esac

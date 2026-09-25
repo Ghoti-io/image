@@ -136,7 +136,7 @@
     "mode": "L",
     "progressive": false,
     "quality": 85,
-    "has_exif": false,
+    "has_exif": true,
     "has_icc": false
   },
   {

@@ -775,7 +775,7 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep against the four
 # in the line every gate prints. It is not a fallback: nothing selects it
 # automatically, because a gate whose reference is not the one it names prints
 # the same green line as one whose is.
-ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-2
+ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-3
 ORACLE_EXEC := tools/oracle/oracle-exec
 ORACLE_ENGINE ?= docker
 
@@ -833,19 +833,16 @@ oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the im
 # in the image, which is how the two were diffed against each other; what it no
 # longer does is build a second set nobody can tell apart.
 
-# IJG v10 (Independent JPEG Group reference, third_party/jpeg-10). Decode precision 8-12 only;
-# rejects 16-bit and extended DHT (242 AC symbols). See tests/data/jpeg/README.md.
-jpeg-ijg10-build: ## Build IJG v10 (configure + make) in third_party/jpeg-10. Requires source from ijg.org (jpegsrc.v10.tar.gz).
-	@IJG=third_party/jpeg-10; \
-	if [ ! -d "$$IJG" ]; then \
-		echo "Extract IJG v10 first: cd third_party && curl -sL -o jpegsrc.v10.tar.gz https://ijg.org/files/jpegsrc.v10.tar.gz && tar -xzf jpegsrc.v10.tar.gz"; \
-		exit 1; \
-	fi; \
-	if [ ! -f "$$IJG/Makefile" ]; then \
-		(cd $$IJG && ./configure --prefix=$$(pwd)/build); \
-	fi; \
-	$(MAKE) -C $$IJG
-	@echo "IJG v10 built. Run third_party/jpeg-10/djpeg for decode (8-12 bit only; not 16-bit oracle)."
+# IJG v10 used to be built here, by a target that told you to fetch a tarball
+# from ijg.org by hand into third_party/. It is in the pinned oracle image
+# now, at the SHA-256 tools/oracle/VERSIONS names, and reachable as the
+# reference `ijg10`:
+#
+#   tools/oracle/oracle-exec ijg10 -- /opt/jpeg-10/djpeg -pnm <file>
+#
+# Nothing compares against it yet, and IMAGES says why: measured over every
+# fixture here it reads a strict subset of what libjpeg-turbo already reads,
+# and disagrees with it on half of the overlap.
 
 # PNG tests link the shared png_test_utils helper.
 $(APP_DIR)/testPng_decode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_png_decode.o $(TEST_HELPER_OBJ) $(PNG_TEST_UTILS_OBJ) $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
@@ -877,7 +874,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 ####################################################################
 
 # General commands
-.PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build coverage check-symbols
+.PHONY: clean clean-test-out cloc docs docs-pdf examples coverage check-symbols
 .PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif fuzz-gif-encode
 .PHONY: bmp-dump-raster bmpsuite resample-tool
 # Release build commands

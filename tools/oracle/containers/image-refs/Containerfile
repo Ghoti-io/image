@@ -28,7 +28,7 @@
 # below comes from a stock image whose digest could stand in for it.
 #
 # Build it with `make oracle-build`, which is:
-#   podman build -t ghoti-image-oracle-refs:deb13-2 \
+#   podman build -t ghoti-image-oracle-refs:deb13-3 \
 #       -f tools/oracle/containers/image-refs/Containerfile tools/oracle
 # The build context is tools/oracle/ rather than this directory, so that
 # VERSIONS - the file that already pinned bmplib and bmpsuite, and is read by
@@ -68,6 +68,21 @@ ENV LANG=C.UTF-8 \
 #                          the rest - `make bmpsuite` is not part of `make
 #                          test`, so nothing in a routine build had ever asked
 #                          them anything.
+#   imagemagick            `magick -coalesce`: a GIF reader independent of both
+#                          giflib and this library, and the only one here that
+#                          composites a whole animation. It is the fourth
+#                          decoder verify_gif_output.py asks, and moving that
+#                          script into this image without it dropped it
+#                          silently - the script's summary line names a frame
+#                          count and not its decoders, so three read exactly
+#                          like four.
+#   python3-piexif         What tests/data/jpeg/generate.py writes an EXIF
+#                          orientation with. Not a comparison oracle: a
+#                          *generator* dependency, and pinned for the reason
+#                          `font` pins its fontTools - a fixture's bytes should
+#                          depend on a recorded version rather than on whoever
+#                          last ran the generator.
+#   cmake, nasm, curl      The build half for the two references below.
 #
 # gcc/make/meson/ninja/git are the build half: bmplib and bmpsuite are built
 # below, and the three oracle tools under tests/tools/ are compiled inside this
@@ -88,6 +103,11 @@ RUN apt-get update -qq \
       python3-gi=3.50.0-4+b1 \
       gir1.2-gdkpixbuf-2.0=2.42.12+dfsg-4+deb13u1 \
       netpbm=2:11.10.02-1 \
+      imagemagick=8:7.1.1.43+dfsg1-1+deb13u12 \
+      python3-piexif=1.1.3-2 \
+      cmake=3.31.6-2 \
+      nasm=2.16.03-1 \
+      curl=8.14.1-2+deb13u5 \
       gcc=4:14.2.0-1 \
       libc6-dev=2.41-12+deb13u4 \
       make=4.4.1-2 \
@@ -138,13 +158,82 @@ RUN set -eu; \
         echo "bmpsuite built no images" >&2; exit 1; }; \
     printf '%s\n' "$bmplib_ref" > /opt/bmplib.ref; \
     printf '%s\n' "$bmpsuite_ref" > /opt/bmpsuite.ref; \
-    rm -rf /opt/bmplib/.git /opt/bmpsuite/.git /build/VERSIONS
+    rm -rf /opt/bmplib/.git /opt/bmpsuite/.git
+
+# libjpeg-turbo 3.0.4, built here beside Debian's 2.1.5 rather than instead of
+# it.
+#
+# They answer different questions and both are wanted. Debian's is what Pillow
+# links and what every eight-bit comparison in this library is measured
+# against; 3.x is the one that carries the 8-, 12- and 16-bit codecs in a
+# single library and picks by the frame's precision, and it is the only
+# reference this library has ever had for its twelve-bit path - tests/data/
+# jpeg/README.md records four defects that comparing against it found.
+#
+# Until now it was a paragraph of build instructions and nothing else: the
+# `*_ljt_*` fixtures and the "352 of 352 byte-exact" figure both name a
+# compiler invocation that had to be typed by hand, on a machine that still
+# had the tree lying around. The cmake flags are the README's, unchanged, so
+# that what is built here is what those fixtures were generated against.
+RUN set -eu; \
+    ref="$(awk '$1 == "libjpeg-turbo" { print $2; exit }' /build/VERSIONS)"; \
+    test -n "$ref" || { echo "VERSIONS has no libjpeg-turbo line" >&2; exit 1; }; \
+    git clone --quiet --filter=blob:none --no-checkout \
+        https://github.com/libjpeg-turbo/libjpeg-turbo.git /tmp/ljt; \
+    git -C /tmp/ljt checkout --quiet "$ref"; \
+    cmake -S /tmp/ljt -B /tmp/ljt-build -DCMAKE_BUILD_TYPE=Release \
+        -DENABLE_SHARED=OFF -DWITH_TURBOJPEG=OFF -DWITH_SIMD=OFF >/dev/null; \
+    cmake --build /tmp/ljt-build --target cjpeg-static djpeg-static \
+        jpeg-static -j "$(nproc)" >/dev/null; \
+    mkdir -p /opt/libjpeg-turbo/bin; \
+    cp /tmp/ljt-build/cjpeg-static /tmp/ljt-build/djpeg-static \
+        /opt/libjpeg-turbo/bin/; \
+    printf '%s\n' "$ref" > /opt/libjpeg-turbo.ref; \
+    /opt/libjpeg-turbo/bin/cjpeg-static -version >/dev/null 2>&1 || true; \
+    rm -rf /tmp/ljt /tmp/ljt-build
+
+# IJG v10, the Independent JPEG Group's own reference implementation.
+#
+# Pinned because it was asked for, and measured afterwards: it reads 73 of this
+# library's 151 JPEG fixtures, a strict subset of libjpeg-turbo 2.1.5's 88, and
+# it reads no SOF3 lossless file at all - so the reason this library wanted it,
+# written in tools/oracle/containers/IMAGES and in the Makefile before that,
+# was wrong on both halves. The note in IMAGES has the figures.
+#
+# There is no repository to name a commit in, so the pin is the bytes - and `tools/oracle/VERSIONS`
+# says plainly that the digest is ours rather than one IJG publishes, because
+# https://ijg.org/files/ carries none. A fetch that does not match is a
+# refusal here rather than a warning: a reference that is not the one the pin
+# names is worse than no reference, since it prints the same green line.
+#
+# Its configure needs no unusual flags; what it wants is to be built where it
+# will stay, because djpeg finds nothing at run time but itself.
+RUN set -eu; \
+    want="$(awk '$1 == "jpeg-10" { print $2; exit }' /build/VERSIONS)"; \
+    want="${want#sha256:}"; \
+    test -n "$want" || { echo "VERSIONS has no jpeg-10 line" >&2; exit 1; }; \
+    curl -sSL -o /tmp/jpegsrc.tar.gz https://ijg.org/files/jpegsrc.v10.tar.gz; \
+    got="$(sha256sum /tmp/jpegsrc.tar.gz | cut -d" " -f1)"; \
+    if [ "$got" != "$want" ]; then \
+        printf 'jpeg-10: VERSIONS says %s and the download is %s\n' \
+            "$want" "$got" >&2; \
+        exit 1; \
+    fi; \
+    mkdir -p /opt/jpeg-10; \
+    tar -xzf /tmp/jpegsrc.tar.gz -C /opt/jpeg-10 --strip-components=1; \
+    cd /opt/jpeg-10 && ./configure --quiet >/dev/null && make -j "$(nproc)" >/dev/null; \
+    test -x /opt/jpeg-10/djpeg || { echo "IJG v10 built no djpeg" >&2; exit 1; }; \
+    printf '%s\n' "$got" > /opt/jpeg-10.ref; \
+    rm -f /tmp/jpegsrc.tar.gz /build/VERSIONS
 
 # bmplib's headers and shared object, where a compile inside this image finds
 # them without every caller naming a path.
 ENV BMPLIB_ROOT=/opt/bmplib \
     BMPSUITE_ROOT=/opt/bmpsuite \
-    LD_LIBRARY_PATH=/opt/bmplib/build
+    LD_LIBRARY_PATH=/opt/bmplib/build \
+    IJG10_ROOT=/opt/jpeg-10 \
+    GIMG_CJPEG12=/opt/libjpeg-turbo/bin/cjpeg-static \
+    GIMG_DJPEG12=/opt/libjpeg-turbo/bin/djpeg-static
 
 # The version probe, copied in rather than written with printf inside a RUN.
 # CONTAINERS.md section 7 records why: a printf'd script puts a quoting layer
@@ -157,6 +246,7 @@ RUN set -eu; \
     gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_jpeg /build/probe_jpeg.c; \
     gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_gif /build/probe_gif.c -lgif; \
     rm -rf /build; \
-    for ref in pillow libjpeg giflib bmplib bmpsuite pixbuf netpbm; do \
+    for ref in pillow libjpeg giflib bmplib bmpsuite pixbuf netpbm \
+                   imagemagick piexif libjpeg12 ijg10; do \
         /usr/local/bin/image-oracle-version "$ref"; \
     done

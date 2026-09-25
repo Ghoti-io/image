@@ -13,6 +13,23 @@ quality, has_exif, has_icc for tests and tooling.
 import json
 import os
 import sys
+# A fixture generator is pinned for the same reason a comparison oracle is:
+# a fixture's bytes are part of what it means, and "whatever Pillow this
+# machine has" is not a version anything records. `font` pins its fontTools
+# for exactly this (notes/suite/CONTAINERS.md section 7), and the fixtures
+# under this directory are committed, so the version that wrote them outlives
+# the machine that ran it.
+#
+# The one directory this script writes is declared read-write; the rest of the
+# tree stays read-only, which is the same rule a comparison runs under and the
+# reason a generator has to name its output rather than have it assumed.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from oracle_reexec import inside_or_reexec  # noqa: E402
+
+inside_or_reexec("pillow",
+    scratch=[os.path.dirname(os.path.abspath(__file__))])
+
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -21,11 +38,17 @@ try:
 except ImportError:
     sys.exit("Pillow is required. Install with: pip install Pillow")
 
-# Optional: for EXIF orientation in jpeg_exif_orientation.jpg
-try:
-    import piexif
-except ImportError:
-    piexif = None
+# piexif, which writes the EXIF orientation in jpeg_exif_orientation.jpg.
+#
+# Not optional any more, and the change matters. It used to be a try/except
+# that left `piexif = None`, and the generator then wrote the fixture *without*
+# an orientation tag and printed a note - so a machine without piexif produced
+# a file named for a property it did not have, and every test that reads that
+# orientation would be checking a fixture that never carried one. It is pinned
+# in tools/oracle/containers/IMAGES and present in the image this script
+# re-execs into, so a failure here is a broken image and not a missing
+# convenience.
+import piexif
 
 
 def write_jpeg(name: str, img: Image.Image, **save_kw) -> None:
@@ -200,15 +223,14 @@ def main() -> None:
     # ---- With EXIF orientation (tag 274 = 6, 90° CW) ----
     exif_img = Image.new("L", (8, 8), color=200)
     has_exif = False
-    if piexif:
-        zeroth_ifd = {piexif.ImageIFD.Orientation: 6}
-        exif_dict = {"0th": zeroth_ifd, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
-        exif_bytes = piexif.dump(exif_dict)
-        write_jpeg("jpeg_exif_orientation.jpg", exif_img, exif=exif_bytes)
-        has_exif = True
-    else:
-        write_jpeg("jpeg_exif_orientation.jpg", exif_img)
-        print("Note: install piexif for EXIF orientation in jpeg_exif_orientation.jpg: pip install piexif")
+    # No branch here any more: the fixture is named for its orientation tag,
+    # so writing it without one is writing a different fixture under the same
+    # name.
+    zeroth_ifd = {piexif.ImageIFD.Orientation: 6}
+    exif_dict = {"0th": zeroth_ifd, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+    exif_bytes = piexif.dump(exif_dict)
+    write_jpeg("jpeg_exif_orientation.jpg", exif_img, exif=exif_bytes)
+    has_exif = True
     manifest.append({
         "file": "jpeg_exif_orientation.jpg",
         "width": 8, "height": 8, "mode": "L",

@@ -46,6 +46,20 @@ case "${1:-}" in
   pillow)   exec python3 -c 'from PIL import Image; print("Pillow", Image.__version__)' ;;
   libjpeg)  build_and_run probe_jpeg.c $(pkg-config --cflags --libs libjpeg 2>/dev/null || echo -ljpeg) ;;
   giflib)   build_and_run probe_gif.c -lgif ;;
+  imagemagick)
+            command -v magick >/dev/null 2>&1 || {
+              printf 'ImageMagick is not installed on this machine\n' >&2; exit 2; }
+            printf 'ImageMagick %s\n' "$(magick -version | sed -n 's/^Version: ImageMagick \([0-9.-]*\).*/\1/p' | head -1)" ;;
+  piexif)   exec python3 -c 'import piexif; print("piexif", piexif.VERSION)' ;;
+  libjpeg12|ijg10)
+            # Deliberately not answerable here. Both are built from source
+            # inside the image, at a commit and a digest tools/oracle/VERSIONS
+            # names; a host build of either is a different binary that nothing
+            # records, and answering with its version would let check_pin()
+            # pass against it. That is the whole failure this directory exists
+            # to stop, so host mode says so instead.
+            printf '%s is built inside the oracle image and has no host equivalent; run without GHOTI_ORACLE_MODE=host\n' "$1" >&2
+            exit 2 ;;
   bmplib)   git_ref bmplib ;;
   bmpsuite) git_ref bmpsuite ;;
   pixbuf)   exec python3 -c 'import gi; gi.require_version("GdkPixbuf", "2.0"); from gi.repository import GdkPixbuf; print("GdkPixbuf %d.%d.%d" % (GdkPixbuf.PIXBUF_MAJOR, GdkPixbuf.PIXBUF_MINOR, GdkPixbuf.PIXBUF_MICRO))' ;;

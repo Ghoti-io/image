@@ -14,9 +14,47 @@ import subprocess, sys, struct, os
 # Point GIMG_DJPEG12 at a djpeg from a libjpeg-turbo built with 12-bit support.
 # See tests/data/jpeg/README.md for how to build one; the libjpeg most systems
 # ship is an 8-bit build and cannot open a P=12 frame at all.
-ORACLE = os.environ.get("GIMG_DJPEG12", "djpeg")
-DUMP = os.environ.get("GIMG_DUMP",
-    "/home/corey/Documents/ghoti.io/image/build/linux/release/apps/dump_jpeg_raster")
+ORACLE = os.environ.get(
+    "GIMG_DJPEG12", "/opt/libjpeg-turbo/bin/djpeg-static")
+# The path inside the image; GIMG_DJPEG12 overrides it for a host run.
+#
+# This default used to be the bare name `djpeg`, and the one below used to be
+# an absolute path into a directory that does not exist - the library moved
+# under libs/ and the string did not. Both were wrong in the same quiet way: a
+# default that resolves to something is not a default that resolves to the
+# right thing.
+DUMP = os.environ.get("GIMG_DUMP", os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))),
+    "build", "linux", "release", "apps", "dump_jpeg_raster"))
+
+# The 12-bit reference runs in the pinned oracle image, not on this machine.
+#
+# Until it was pinned this was a paragraph of build instructions in
+# tests/data/jpeg/README.md and a binary someone had to still have lying
+# around: GIMG_DJPEG12 defaulted to `djpeg`, which on any ordinary system is an
+# *8-bit* build that cannot open a P=12 frame at all. The figure this script
+# produces - "352 of 352 byte-exact" - named a compiler invocation rather than
+# a version. It is libjpeg-turbo 3.0.4 now, by commit, in
+# tools/oracle/containers/IMAGES under the name `libjpeg12`.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
+ORACLE_EXEC = os.path.join(_ROOT, "tools", "oracle", "oracle-exec")
+
+
+def oracle_argv(inner, scratch=()):
+    """`inner` run against the pinned libjpeg-turbo, or on this machine.
+
+    GHOTI_ORACLE_MODE=host runs it here instead, which is how a hand-built
+    tree is used - and it says so, because the answer is then from a reference
+    nothing records.
+    """
+    if os.environ.get("GHOTI_ORACLE_MODE") == "host":
+        return list(inner)
+    argv = [ORACLE_EXEC]
+    for path in scratch:
+        argv += ["--scratch", os.path.abspath(path)]
+    return argv + ["libjpeg12", "--"] + list(inner)
 
 def read_pnm(b):
     # P5 (gray) or P6 (rgb), possibly with comments
@@ -45,7 +83,15 @@ def narrow(v, maxv):
     return (v * maxv + 32767) // 65535
 
 def compare(path, verbose=False):
-    o = subprocess.run([ORACLE, "-pnm", path], capture_output=True)
+    # The corpus is usually outside the repository - generate_12bit_matrix.py
+    # writes wherever it is told - so the directory holding the file has to be
+    # declared or the reference cannot see it. Declared rather than guessed:
+    # an undeclared path fails as "can't open", which reads like a corrupt
+    # file rather than a missing mount.
+    full = os.path.abspath(path)
+    o = subprocess.run(
+        oracle_argv([ORACLE, "-pnm", full], scratch=[os.path.dirname(full)]),
+        capture_output=True, stdin=subprocess.DEVNULL)
     if o.returncode != 0:
         return ("oracle-fail", o.stderr.decode()[:200])
     w, h, nch, maxv, ref = read_pnm(o.stdout)
