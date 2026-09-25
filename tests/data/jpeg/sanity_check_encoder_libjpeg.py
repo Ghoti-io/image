@@ -22,6 +22,32 @@ import argparse
 import os
 import subprocess
 import sys
+# The reference is the pinned libjpeg-turbo in the oracle image, not whatever
+# `cjpeg` this machine has. Here that is 2.1.5, from Debian's
+# libjpeg-turbo-progs, and it works - which is the problem: a default that
+# resolves to *something* on the machine that wrote the script is how a
+# reference goes unrecorded. tools/oracle/containers/IMAGES pins 3.0.4 by
+# commit under the name `libjpeg12`. CJPEG still overrides it, and
+# GHOTI_ORACLE_MODE=host runs this machine's own.
+#
+# Note that the pinned one is a *different version* from what these scripts
+# used to reach, so a fixture regenerated through it is not guaranteed to be
+# the bytes already committed. None of these three run in `make test`; each is
+# a hand-run tool, and the one that writes a committed fixture
+# (create_libjpeg_progressive_fixture.py) should be diffed against what is in
+# the tree before anything it produces is committed.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
+ORACLE_EXEC = os.path.join(_ROOT, "tools", "oracle", "oracle-exec")
+
+
+def oracle_argv(inner, scratch=()):
+    if os.environ.get("GHOTI_ORACLE_MODE") == "host":
+        return list(inner)
+    argv = [ORACLE_EXEC]
+    for path in scratch:
+        argv += ["--scratch", os.path.abspath(path)]
+    return argv + ["libjpeg12", "--"] + list(inner)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Image project root (tests/data/jpeg -> ../../..)
@@ -132,12 +158,19 @@ def main() -> int:
             for x in range(W):
                 f.write(bytes([(x + y * 16) & 0xFF]))
     lj_prog_jpg = os.path.join(work, "encoder_lj_progressive_16.jpg")
-    cjpeg = os.environ.get("CJPEG", "cjpeg")
+    cjpeg = os.environ.get(
+        "CJPEG", "/opt/libjpeg-turbo/bin/cjpeg-static")
     r2 = subprocess.run(
-        [cjpeg, "-progressive", "-grayscale", "-quality", str(QUALITY), "-outfile", lj_prog_jpg, ppm_path],
+        oracle_argv(
+            [cjpeg, "-progressive", "-grayscale", "-quality", str(QUALITY),
+             "-outfile", os.path.abspath(lj_prog_jpg),
+             os.path.abspath(ppm_path)],
+            scratch=[os.path.dirname(os.path.abspath(lj_prog_jpg)),
+                     os.path.dirname(os.path.abspath(ppm_path))]),
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=120,
     )
     if r2.returncode != 0 or not os.path.isfile(lj_prog_jpg):
         print(f"  cjpeg failed: {r2.stderr or r2.stdout}", file=sys.stderr)

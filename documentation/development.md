@@ -4,19 +4,36 @@ This document describes the image library layout, error-handling policy, testing
 
 ## Prerequisites
 
-The following are required for the full test suite and JPEG verification:
+**A container engine, and nothing else.** Every reference decoder this library
+is measured against is pinned into one image and reached through
+`tools/oracle/oracle-exec`; `tools/oracle/containers/IMAGES` lists them with
+the version each answers at, and `notes/suite/CONTAINERS.md` is the pattern.
 
-- **Python 3** — Used to generate JPEG fixtures and verify encode output.
-- **Pillow (PIL)** — Used by `tests/data/jpeg/generate.py` (fixture generation) and `tests/data/jpeg/verify_jpeg_output.py` (encode verification). Install with `pip install Pillow`. JPEG fixtures: `python3 tests/data/jpeg/generate.py` (run after cloning or when adding fixtures).
-- **libjpeg-turbo (for decode oracle tests)** — The `Decode*PillowOracle` tests use **libjpeg** (stock, unmodified) as the decode oracle via small C tools whose sources are in `tests/tools/jpeg-oracle/`. Build them with `make oracle-build oracle-tools`; this requires the libjpeg development headers (Debian/Ubuntu: `libjpeg-dev`), not just the runtime library. If the oracle tools are not built, the decode oracle tests fail with a message to run `make oracle-build oracle-tools`. The image library **does not link to** libjpeg; the ref tools are used only by tests.
+```bash
+make oracle-build     # build the image (podman or docker)
+make oracle-tools     # compile the three oracle tools inside it
+make oracle-verify    # print what answers, and at what version
+```
 
-  - **Linux (e.g. WSL, Ubuntu/Debian):**
-    ```bash
-    sudo apt install libjpeg-turbo8-dev
-    ```
-  - **MSYS2 (Windows):** In a MINGW64 shell: `pacman -S mingw-w64-x86_64-libjpeg-turbo` (use `mingw-w64-i686-libjpeg-turbo` for 32‑bit).
+The references are Pillow, libjpeg-turbo 2.1.5, giflib, GdkPixbuf, netpbm,
+ImageMagick, piexif, bmplib and bmpsuite at pinned commits, libjpeg-turbo
+3.0.4 built from source for the 12- and 16-bit codecs, and IJG v10.
 
-- **libjpeg-turbo programs (optional)** — **cjpeg**/djpeg are used by `tests/data/jpeg/create_libjpeg_progressive_fixture.py` to generate a libjpeg-encoded progressive fixture. Optional; install `libjpeg-turbo-progs` (Linux) if you need that script.
+This used to be a list of things to `apt install` and `pip install`, and the
+list was the problem rather than the inconvenience: a machine that had them
+compared against whatever versions it had, and a machine that did not skipped
+the comparison and still exited 0. Neither is true now - an unreachable
+reference fails the suite and names the gate to drop if you meant to skip it.
+
+`GHOTI_ORACLE_MODE=host` runs this machine's own decoders instead, and says so
+in the line every gate prints. It is not a fallback: nothing selects it
+automatically, because a gate whose reference is not the one it names prints
+the same green line as one whose is. `GIMG_ORACLE_REQUIRED=0` turns the
+sentinels back into skips for a developer who has no engine and wants the rest
+of the suite.
+
+Python 3 is needed for the library's own tooling - the generators, the
+verification scripts and the coverage triage - and is not an oracle.
 
 ## Code layout
 
