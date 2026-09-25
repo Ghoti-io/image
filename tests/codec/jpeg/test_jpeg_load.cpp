@@ -3025,21 +3025,27 @@ TEST(JpegLoad, DecodeBaselineGrayOracleRaw) {
   gimg_doc_destroy(doc);
 }
 
-/** Per-fixture tolerance for oracle .raw comparison (Pillow vs our decoder).
- * Large baseline: Pillow vs our decoder can differ beyond rounding (e.g. IDCT);
- * allow moderate tolerance so we still get 640×480 decode coverage. */
-static int jpeg_fixture_oracle_tolerance(const char * base) {
-  if (strstr(base, "640x480") != nullptr) {
-    return 32;
-  }
-  return 0;
-}
-
-/** Decode every baseline (and EXIF/ICC/CMYK) fixture that has an oracle .raw
- * and compare to .raw. Progressive fixtures are not included here (Pillow
- * .raw can differ from our decoder due to chroma upsampling); use
- * Decode*PillowOracle for progressive. Generate .raw with:
- * python3 tests/data/jpeg/generate_jpeg_oracle_raws.py
+/**
+ * Decode every fixture with a committed oracle .raw and compare to it exactly.
+ *
+ * Two exclusions used to narrow this list, and measurement contradicts both.
+ *
+ * The first was a tolerance: any base containing "640x480" was compared at 32
+ * of 255, because "Pillow vs our decoder can differ beyond rounding (e.g.
+ * IDCT)". Both 640×480 fixtures match their oracle on all 921600 samples, so
+ * the 32 absorbed nothing that exists - it only stood ready to absorb a real
+ * regression, which on an image that size is exactly what a per-channel bound
+ * that wide does.
+ *
+ * The second was a category: progressive fixtures were kept out because
+ * "Pillow .raw can differ from our decoder due to chroma upsampling". That is
+ * true of the box filter, which no test here asks for. Under the triangle
+ * filter this decoder defaults to - which is Pillow's default too - every
+ * complete progressive fixture is byte-identical to its oracle. Six of them
+ * join the list below on that measurement. The truncated ones, whose behaviour
+ * really is different, are the next test.
+ *
+ * Generate the oracles with python3 tests/data/jpeg/generate_jpeg_oracle_raws.py
  */
 TEST(JpegLoad, DecodeFixtureOraclesRaw) {
   static const char * const fixtures[] = {
@@ -3054,16 +3060,25 @@ TEST(JpegLoad, DecodeFixtureOraclesRaw) {
       "jpeg_exif_thumbnail",
       "jpeg_with_icc",
       "cmyk_sample",
+      // Complete progressive files, and the baseline the 640x480 tolerance
+      // used to cover. Every one of them is exact.
+      "baseline_640x480_ycbcr",
+      "progressive_sample",
+      "progressive_32x32",
+      "progressive_640x480_ycbcr",
+      "progressive_8x8_gray",
+      "progressive_8x8_libjpeg",
   };
-  int compared = 0;
+  size_t compared = 0;
   for (const char * base : fixtures) {
     std::vector<uint8_t> oracle_pixels;
     uint32_t oracle_w = 0, oracle_h = 0;
     int oracle_mode = -1;
-    if (!jpeg_test::load_jpeg_oracle_raw(base, oracle_pixels,
-            &oracle_w, &oracle_h, &oracle_mode)) {
-      continue;  // skip if .raw not present (e.g. generate_jpeg_oracle_raws not run)
-    }
+    SCOPED_TRACE(base);
+    ASSERT_TRUE(jpeg_test::load_jpeg_oracle_raw(base, oracle_pixels,
+        &oracle_w, &oracle_h, &oracle_mode))
+        << "every oracle named here is committed, so a missing one is a "
+           "deleted file and not a generator nobody ran";
     std::string jpeg_name(base);
     jpeg_name += ".jpg";
     std::vector<uint8_t> jpeg;
@@ -3076,28 +3091,194 @@ TEST(JpegLoad, DecodeFixtureOraclesRaw) {
     GIMG_Item * item = gimg_doc_item(doc, 0);
     ASSERT_NE(item, nullptr);
     GIMG_Raster * raster = nullptr;
-    GIMG_Result decode_r = gimg_item_decode(item, nullptr, &raster);
-    if (decode_r != GIMG_OK) {
-      gimg_stream_destroy(s);
-      gimg_doc_destroy(doc);
-      continue;  // skip fixtures that fail to decode (e.g. progressive 640×480)
-    }
+    // The skip this replaced named "progressive 640x480" as the kind of file
+    // that fails to decode. That file decodes, and matches its oracle exactly.
+    ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
     compared++;
     gimg_stream_destroy(s);
-    int tolerance = jpeg_fixture_oracle_tolerance(base);
     EXPECT_TRUE(jpeg_test::raster_matches_oracle_raw(raster, oracle_pixels.data(),
-        oracle_w, oracle_h, oracle_mode, tolerance))
-        << "Fixture " << base << ": decode must match oracle .raw";
+        oracle_w, oracle_h, oracle_mode, 0))
+        << "decode must match oracle .raw exactly";
     gimg_raster_destroy(raster);
     gimg_doc_destroy(doc);
   }
-  if (compared == 0) {
-    /* Sixty-nine .raw oracles are committed beside the fixtures, so zero
-     * comparisons means the sweep found none of them - the failure a count
-     * with no floor under it cannot report. */
-    FAIL() << "No .raw oracle was read, and sixty-nine are committed in "
-              "tests/data/jpeg/. This sweep compared nothing.";
+  // A count against its own denominator rather than a floor of zero: a fixture
+  // that stops being compared is a failure now, whichever one it is.
+  ASSERT_EQ(compared, sizeof(fixtures) / sizeof(fixtures[0]))
+      << "compared " << compared << " of "
+      << (sizeof(fixtures) / sizeof(fixtures[0])) << " named fixtures";
+}
+
+/**
+ * What a progression cut short decodes to, measured against the oracle.
+ *
+ * tests/data/jpeg/ carries a .raw oracle beside nearly every fixture, and
+ * fourteen of them - two whole truncation series - were generated, committed,
+ * and read by nothing. A series like this decodes one image from two scans'
+ * worth of coefficients, then three, then four, up to the complete file, so it
+ * is the only population here that says anything about coefficients whose
+ * refinement bits never arrived.
+ *
+ * They were left out of the sweep above on the grounds that Pillow's .raw "can
+ * differ from our decoder due to chroma upsampling". The measurement is
+ * sharper than the exclusion, and it splits on exactly that word:
+ *
+ *   - the grayscale series is exact at every truncation, all five files;
+ *   - the colour series differs by at most 4 of 255 at two through five scans,
+ *     at most 2 at six through nine, and by nothing at ten, where the
+ *     progression is complete.
+ *
+ * A file with no chroma cannot differ however early it is cut, and a colour
+ * one converges as the bits arrive. So the entropy decode and the
+ * dequantisation of a half-refined coefficient agree with libjpeg exactly, and
+ * what differs is only how a chroma plane built from those coefficients is
+ * upsampled - which is a rendering choice for data that is not there yet, not
+ * a decode disagreement.
+ *
+ * The bounds below are each series' own largest measured difference rather
+ * than a round number picked to let them through, and the convergence is
+ * asserted as a shape - non-increasing, ending at zero - because that is the
+ * property. A regression in the progressive path breaks the shape.
+ */
+TEST(JpegLoad, ATruncatedProgressionConvergesOnTheOracleAsRefinementArrives) {
+  struct Case {
+    const char * base;
+    int scans;    // scans of the progression this file carries
+    int ceiling;  // largest per-channel difference from the oracle, measured
+  };
+
+  // Five names, four distinct files: progressive_8x8_gray_4scan_3scan is the
+  // four-scan file cut back to three and is byte-identical to _3scan. It is
+  // named anyway because its oracle is committed separately and this is the
+  // only test that reads either of them.
+  static const Case gray[] = {
+      {"progressive_8x8_gray_2scan", 2, 0},
+      {"progressive_8x8_gray_3scan", 3, 0},
+      {"progressive_8x8_gray_4scan_3scan", 3, 0},
+      {"progressive_8x8_gray_4scan", 4, 0},
+      {"progressive_8x8_gray_5scan", 5, 0},
+  };
+  // progressive_sample_10scan is byte-identical to progressive_sample: ten
+  // scans is the whole progression, which is why it is the member that must
+  // read exactly zero.
+  static const Case colour[] = {
+      {"progressive_sample_2scan", 2, 4},
+      {"progressive_sample_3scan", 3, 4},
+      {"progressive_sample_4scan", 4, 4},
+      {"progressive_sample_5scan", 5, 4},
+      {"progressive_sample_6scan", 6, 2},
+      {"progressive_sample_7scan", 7, 2},
+      {"progressive_sample_8scan", 8, 2},
+      {"progressive_sample_9scan", 9, 2},
+      {"progressive_sample_10scan", 10, 0},
+  };
+
+  // Returns the largest per-channel difference from the fixture's committed
+  // oracle, and how many samples differed at all.
+  auto measure = [](const char * base, long * out_worst, long * out_differing) {
+    std::vector<uint8_t> want;
+    uint32_t ow = 0, oh = 0;
+    int omode = -1;
+    ASSERT_TRUE(jpeg_test::load_jpeg_oracle_raw(base, want, &ow, &oh, &omode))
+        << "the oracle for this fixture is committed; run "
+           "tests/data/jpeg/generate_jpeg_oracle_raws.py if it is not";
+    ASSERT_TRUE(omode == jpeg_test::kOracleL || omode == jpeg_test::kOracleRgb);
+    const int ochan = (omode == jpeg_test::kOracleL) ? 1 : 3;
+
+    std::string name(base);
+    name += ".jpg";
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(jpeg_test::load_jpeg_file(name.c_str(), jpeg));
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(jpeg.data(), jpeg.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    // No options: the triangle filter is the default, and it is the filter the
+    // oracle used. Asking for the box filter here would compare two different
+    // renderings and measure the option rather than the decode.
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+        GIMG_OK)
+        << "a progression cut short is still a decodable file";
+    ASSERT_NE(raster, nullptr);
+    ASSERT_EQ(gimg_raster_width(raster), ow);
+    ASSERT_EQ(gimg_raster_height(raster), oh);
+
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    ASSERT_NE(fmt, nullptr);
+    const int ours = (int)fmt->channel_count;
+    ASSERT_EQ(ours, (ochan == 1) ? 1 : 4)
+        << "gray decodes to one channel and colour to RGBA, or the channel "
+           "walk below reads the wrong bytes";
+    const unsigned char * px =
+        (const unsigned char *)gimg_raster_pixels_const(raster);
+    const size_t stride = gimg_raster_stride_bytes(raster);
+
+    long worst = 0, differing = 0;
+    for (uint32_t y = 0; y < oh; y++) {
+      for (uint32_t x = 0; x < ow; x++) {
+        const unsigned char * p = px + (size_t)y * stride + (size_t)x * ours;
+        const unsigned char * q = want.data() + ((size_t)y * ow + x) * ochan;
+        for (int c = 0; c < ochan; c++) {
+          const int d = (int)p[c] - (int)q[c];
+          const long a = d < 0 ? -d : d;
+          if (a) {
+            differing++;
+            if (a > worst) { worst = a; }
+          }
+        }
+      }
+    }
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    *out_worst = worst;
+    *out_differing = differing;
+  };
+
+  for (const Case & c : gray) {
+    SCOPED_TRACE(std::string(c.base) + ": " + std::to_string(c.scans) +
+        " scans of a grayscale progression");
+    long worst = 0, differing = 0;
+    ASSERT_NO_FATAL_FAILURE(measure(c.base, &worst, &differing));
+    EXPECT_EQ(worst, 0)
+        << "a grayscale file has no chroma to upsample, so a truncation of one "
+           "must decode exactly however early it is cut - "
+        << differing << " samples differed, worst by " << worst;
   }
+
+  long previous = -1;
+  long colour_differing = 0;
+  for (const Case & c : colour) {
+    SCOPED_TRACE(std::string(c.base) + ": " + std::to_string(c.scans) +
+        " scans of a colour progression");
+    long worst = 0, differing = 0;
+    ASSERT_NO_FATAL_FAILURE(measure(c.base, &worst, &differing));
+    colour_differing += differing;
+
+    EXPECT_LE(worst, c.ceiling)
+        << "worst difference " << worst << " over a measured ceiling of "
+        << c.ceiling << " (" << differing << " samples differ)";
+    if (previous >= 0) {
+      EXPECT_LE(worst, previous)
+          << "worst difference rose from " << previous << " to " << worst
+          << " as a scan was added: refinement bits must narrow the gap to "
+             "the oracle, never widen it";
+    }
+    previous = worst;
+    if (c.scans == 10) {
+      EXPECT_EQ(worst, 0)
+          << "ten scans is the whole progression, so there is nothing left "
+             "unrefined and this file must match exactly";
+    }
+  }
+
+  // The control. Every ceiling above is an upper bound, so a comparison that
+  // silently stopped comparing - or a series that stopped being truncations -
+  // would satisfy all of them and the convergence would be vacuous.
+  ASSERT_GT(colour_differing, 0)
+      << "no colour truncation differed from its oracle anywhere, which the "
+         "ceilings above cannot tell apart from a decode that got better";
 }
 
 /** Non-trivial size (640×480) baseline YCbCr: decode and verify dimensions.

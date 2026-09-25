@@ -80,10 +80,21 @@ colour files deliberately cut short mid-progression. The difference is 4 of
 255 at two through five scans, 2 at six through nine, and **zero at ten,
 where the scan sequence is complete** - so the two decoders converge exactly
 as the refinement bits arrive, and differ only in how they render a
-progression that stops early. No test uses those eight fixtures. This is
-recorded as a measurement, not diagnosed: what a decoder should show for
-coefficients whose refinement never arrived is a quality choice, and ours is
-exact wherever the file is whole.
+progression that stops early. This is recorded as a measurement, not
+diagnosed: what a decoder should show for coefficients whose refinement never
+arrived is a quality choice, and ours is exact wherever the file is whole.
+
+Those eight fixtures went unused by any test until
+`ATruncatedProgressionConvergesOnTheOracleAsRefinementArrives`, which asserts
+the convergence rather than the individual numbers: each file within its own
+measured ceiling, the ceilings non-increasing as scans are added, and exactly
+zero where the progression completes. It reads the committed Pillow `.raw`
+oracles, which is a second instrument for the same figures - the paragraph
+above was measured with `compare_progressive_pixels.py` driving
+`dump_jpeg_pixels_ref`, and the 4-of-255 and 2-of-255 bounds came back
+identical from Pillow's stored decode. Both are libjpeg underneath, so this
+corroborates the transcription and the reading of the series, not the
+reference.
 
 Compiled copies of all six were once committed under `tests/data/jpeg/`. They were
 untracked: they are build output, they were checked in without the sources that
@@ -118,7 +129,7 @@ Each combination below has a sample `.jpg`; generate matching `.raw` oracles wit
 | `cmyk_sample.jpg` | 8×8 CMYK baseline JPEG |
 | `baseline_gray12.jpg` | 16×16 grayscale 12-bit (SOF1); from encoder test `SaveGray12ThenLoadDecode` (optional; if absent, `Decode12BitFixture` skips) |
 
-**Decode coverage:** `DecodeFixtureOraclesRaw` decodes every **baseline** (and EXIF/ICC/CMYK) fixture and compares to its `.raw`; progressive fixtures are covered by `Decode*PillowOracle` (libjpeg hash). `DecodeBaseline640x480Ycbcr` asserts successful decode and 640×480 dimensions for non-trivial size coverage (no Pillow .raw pixel comparison for that fixture).
+**Decode coverage:** `DecodeFixtureOraclesRaw` decodes every fixture with a committed `.raw` - baseline, EXIF, ICC, CMYK, and every **complete** progressive file - and compares to it with **zero tolerance**. The truncated progressions are the one exception and have their own test, above. Nothing here is compared by hash: the hash-returning oracle helpers this file used to describe (`pillow_oracle_hash`, and the `Decode*PillowOracle` "libjpeg hash" coverage claimed for progressive fixtures) had no callers at all and were deleted - `Decode*PillowOracle` compares pixels against a `.raw` produced at test time, like everything else. `DecodeBaseline640x480Ycbcr` remains as a dimensions check; its pixels are now compared in the sweep.
 
 **Progressive Pillow fixture (failing until implemented):** `DecodeProgressivePillowOracle` and `GoldenProgressive` in `testJpeg_load` **assert** that `gimg_item_decode` succeeds on Pillow-generated `progressive_sample.jpg`; they fail with "progressive decoder must decode Pillow fixture progressive_sample.jpg (feature not implemented)" until the progressive decoder supports that file. Other progressive tests (e.g. our own encoded progressive files) may still pass.
 
