@@ -8,7 +8,7 @@ Uses the same 16×16 grayscale test pattern as ProgressiveWithRefinementScanDeco
   pixel(x,y) = (x + y*16) & 0xFF
 
 Requires:
-  - encode_libjpeg_baseline_scan (make jpeg-oracle-tools) in this dir
+  - encode_libjpeg_baseline_scan (make oracle-build oracle-tools) in this dir
   - cjpeg (libjpeg-turbo-progs) for progressive encode
   - dump_jpeg_pixels_ref in this dir
   - dump_jpeg_raster (our decoder) - pass path or set LD_LIBRARY_PATH for build/apps

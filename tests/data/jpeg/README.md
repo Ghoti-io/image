@@ -4,7 +4,7 @@ Reference JPEG files for Phase 2 codec and golden tests.
 
 **Fixture generation:** Run `python3 tests/data/jpeg/generate.py` from the repo root. Pillow is required for generation; `piexif` is optional for EXIF orientation. See `documentation/development.md` (Prerequisites).
 
-**Decode oracle:** The `Decode*PillowOracle` and `.raw`-comparison tests compare **actual pixels** (raster) to the oracle’s .raw output, not hashes, so failures report the first differing pixel (e.g. `First pixel diff at (x,y): ours=(...) oracle=(...)`). By default they use **Python (Pillow)** via `decode_oracle_pillow.py` and `encode_oracle_pillow.py` in this directory—no libjpeg required. Require Pillow: `pip install Pillow`. If the Python scripts are missing or fail, the tests try the **libjpeg-based** oracle built by `make jpeg-oracle-tools` from **`tests/tools/jpeg-oracle/`**, when `GIMG_JPEG_ORACLE_DIR` points at its `build/` dir. The image library does not link to libjpeg; the C oracle is optional for instrumented debugging (e.g. bit-exact match with libjpeg).
+**Decode oracle:** The `Decode*PillowOracle` and `.raw`-comparison tests compare **actual pixels** (raster) to the oracle’s .raw output, not hashes, so failures report the first differing pixel (e.g. `First pixel diff at (x,y): ours=(...) oracle=(...)`). By default they use **Python (Pillow)** via `decode_oracle_pillow.py` and `encode_oracle_pillow.py` in this directory—no libjpeg required. Require Pillow: `pip install Pillow`. If the Python scripts are missing or fail, the tests try the **libjpeg-based** oracle built by `make oracle-build oracle-tools` from **`tests/tools/jpeg-oracle/`**, when `GIMG_JPEG_ORACLE_DIR` points at its `build/` dir. The image library does not link to libjpeg; the C oracle is optional for instrumented debugging (e.g. bit-exact match with libjpeg).
 
 **Encode verification:** After unit tests, `make test` runs `verify_jpeg_output.py`, which uses PIL to verify that JPEGs written to `tests/out/jpeg/` are valid (SOI, structure, optional dimension/SOF expectations). JPEG is lossy; we do not compare encode output to pre-encode source. Run verification only: `make test-verify-jpeg`.
 
@@ -12,7 +12,7 @@ Reference JPEG files for Phase 2 codec and golden tests.
 
 The libjpeg oracle tools are small C programs we wrote; they link system libjpeg,
 which the image library itself does not. Sources are tracked in
-**`tests/tools/jpeg-oracle/`**; `make jpeg-oracle-tools` builds them into
+**`tests/tools/jpeg-oracle/`**; `make oracle-build oracle-tools` builds them into
 `tests/tools/jpeg-oracle/build/` and prints the `GIMG_JPEG_ORACLE_DIR` to export.
 Building them needs the libjpeg **headers** (Debian/Ubuntu: `libjpeg-dev`); the
 runtime library alone is not enough. They are optional: every test that reaches
@@ -20,8 +20,8 @@ for an oracle tries Pillow first and skips if neither is available.
 
 | Tool | State |
 | --- | --- |
-| `dump_jpeg_pixels_ref` | source present; built by `make jpeg-oracle-tools`; verified |
-| `dump_jpeg_coef_ref` | source present; built by `make jpeg-oracle-tools` |
+| `dump_jpeg_pixels_ref` | source present; built by `make oracle-build oracle-tools`; verified |
+| `dump_jpeg_coef_ref` | source present; built by `make oracle-build oracle-tools` |
 | `dump_jpeg_raw_first_mcu` | **source lost** |
 | `encode_libjpeg_baseline_scan` | **source lost** |
 | `encode_libjpeg_baseline_rgb` | **source lost** |
@@ -91,7 +91,7 @@ build them, and four of the six had no source in the repo at any commit. Scripts
 in this directory that drive a lost tool are kept as a record of how the
 progressive decoder was debugged, but cannot be run until someone rewrites it.
 
-**Decoder oracle (.raw):** To test that our decoder matches an external oracle: (1) Oracle decodes a fixture JPEG and writes raw pixels to a `.raw` file. (2) Our decoder reads the same JPEG and decodes. (3) The test compares our decode to the `.raw` byte-for-byte. Generate oracle `.raw` files with `make jpeg-oracle-tools` (then set `GIMG_JPEG_ORACLE_DIR` as that target prints), then run `python3 tests/data/jpeg/generate_jpeg_oracle_raws.py`. CMYK fixtures require the oracle.
+**Decoder oracle (.raw):** To test that our decoder matches an external oracle: (1) Oracle decodes a fixture JPEG and writes raw pixels to a `.raw` file. (2) Our decoder reads the same JPEG and decodes. (3) The test compares our decode to the `.raw` byte-for-byte. Generate oracle `.raw` files with `make oracle-build oracle-tools` (then set `GIMG_JPEG_ORACLE_DIR` as that target prints), then run `python3 tests/data/jpeg/generate_jpeg_oracle_raws.py`. CMYK fixtures require the oracle.
 
 Grayscale and RGB fixtures use Pillow to produce `.raw`; CMYK fixtures use libjpeg (`dump_jpeg_pixels_ref -o <base>.raw <file.jpg>`). `.raw` format: 1 byte mode (0=L, 1=RGB, 2=CMYK), 4 bytes width LE, 4 height LE, then pixels. Tests such as `DecodeBaselineGrayOracleRaw` and `GoldenCmyk` load the corresponding `.raw` and compare with zero tolerance for a clear picture of any difference. **Direct libjpeg comparison:** `DecodeJpegWithIccVsLibjpeg` runs `dump_jpeg_pixels_ref -o <path> jpeg_with_icc.jpg` at test time and compares our decoder output to that `.raw` byte-for-byte, so you can compare what libjpeg decodes vs what we decode on the same file.
 

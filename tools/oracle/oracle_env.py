@@ -77,6 +77,8 @@ PROBE = {
     "giflib": "giflib ",
     "bmplib": "bmplib ",
     "bmpsuite": "bmpsuite ",
+    "pixbuf": "GdkPixbuf ",
+    "netpbm": "netpbm ",
 }
 
 CONTAINER_PROBE = "image-oracle-version"

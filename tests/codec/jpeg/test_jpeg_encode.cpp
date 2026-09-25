@@ -8025,7 +8025,7 @@ TEST(JpegEncode, ASuccessiveApproximationProgressionSaysWhatLibjpegReads) {
   if (!oracle_ran) {
     GTEST_SKIP() << "the libjpeg decode oracle did not run; the comparison "
                     "against an outside decoder is half of this test - build "
-                    "it with `make jpeg-oracle-tools`.";
+                    "it with `make oracle-build oracle-tools`.";
   }
 }
 

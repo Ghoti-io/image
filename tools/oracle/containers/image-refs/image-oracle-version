@@ -13,6 +13,8 @@ case "${1:-}" in
   giflib)   exec /usr/local/bin/probe_gif ;;
   bmplib)   printf 'bmplib %s\n' "$(cat /opt/bmplib.ref)" ;;
   bmpsuite) printf 'bmpsuite %s\n' "$(cat /opt/bmpsuite.ref)" ;;
+  pixbuf)   exec python3 -c 'import gi; gi.require_version("GdkPixbuf", "2.0"); from gi.repository import GdkPixbuf; print("GdkPixbuf %d.%d.%d" % (GdkPixbuf.PIXBUF_MAJOR, GdkPixbuf.PIXBUF_MINOR, GdkPixbuf.PIXBUF_MICRO))' ;;
+  netpbm)   printf 'netpbm %s\n' "$(bmptopnm --version 2>&1 | sed -n 's/.*Netpbm \([0-9.]*\).*/\1/p' | head -1)" ;;
   *)        printf 'image-oracle-version: no such reference: %s\n' "${1:-}" >&2
             exit 2 ;;
 esac

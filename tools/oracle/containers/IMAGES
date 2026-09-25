@@ -24,7 +24,7 @@
 # answer that disagrees is a finding to triage rather than a regression to fix.
 #
 # Building it:
-#   podman build -t ghoti-image-oracle-refs:deb13-1 \
+#   podman build -t ghoti-image-oracle-refs:deb13-2 \
 #       -f tools/oracle/containers/image-refs/Containerfile tools/oracle
 # `make oracle-build` does exactly that. The tag says deb13 because the base is
 # what decides four of the five versions, and -1 is a revision that moves when
@@ -37,9 +37,18 @@
 # 2.1.5, which is a change from the host where Pillow's pip wheel bundles its
 # own. jpeg_test_utils.cpp tries Pillow first and the dumper otherwise; that
 # fallback can no longer change the answer.
-pillow	localhost/ghoti-image-oracle-refs:deb13-1	Pillow 11.1.0	Decoded pixels for JPEG, and the reader every verify_*_output.py checks our output with
-libjpeg	localhost/ghoti-image-oracle-refs:deb13-1	libjpeg-turbo 2.1.5	Decoded pixels and DCT coefficients, through tests/tools/jpeg-oracle
-giflib	localhost/ghoti-image-oracle-refs:deb13-1	giflib 5.2.2	LZW expansion, interlace order, colour tables and geometry - not compositing
+pillow	localhost/ghoti-image-oracle-refs:deb13-2	Pillow 11.1.0	Decoded pixels for JPEG, and the reader every verify_*_output.py checks our output with
+libjpeg	localhost/ghoti-image-oracle-refs:deb13-2	libjpeg-turbo 2.1.5	Decoded pixels and DCT coefficients, through tests/tools/jpeg-oracle
+giflib	localhost/ghoti-image-oracle-refs:deb13-2	giflib 5.2.2	LZW expansion, interlace order, colour tables and geometry - not compositing
+
+# The other two BMP decoders tests/data/bmp/bmpsuite_sweep.py corroborates
+# with. They arrived a tag after the rest, because `make bmpsuite` is not part
+# of `make test` and so nothing in a routine build had ever asked them
+# anything - which is the same blindness in a different place: the survey that
+# found twenty-one skipped comparisons was reading the test binaries, and this
+# target is not one.
+pixbuf	localhost/ghoti-image-oracle-refs:deb13-2	GdkPixbuf 2.42.12	A third reading of every BMP in the suite
+netpbm	localhost/ghoti-image-oracle-refs:deb13-2	netpbm 11.10.2	A fourth, through bmptopnm
 
 # The two that are a git checkout rather than a release. Their version field is
 # `@VERSIONS`, which means the pin lives in tools/oracle/VERSIONS and is read
@@ -54,8 +63,8 @@ giflib	localhost/ghoti-image-oracle-refs:deb13-1	giflib 5.2.2	LZW expansion, int
 # What the image adds to them is the other half of the pin. A commit says which
 # *source*; it does not say which compiler built it. "bmplib agrees on 79 of 91
 # files" named a decoder built by whatever the host had until now.
-bmplib	localhost/ghoti-image-oracle-refs:deb13-1	@VERSIONS	OS/2 Huffman 1D, bitmap arrays and 64-bit BMPs - the formats no installed decoder reads
-bmpsuite	localhost/ghoti-image-oracle-refs:deb13-1	@VERSIONS	The 91-file conformance corpus tests/data/bmp/bmpsuite_sweep.py runs
+bmplib	localhost/ghoti-image-oracle-refs:deb13-2	@VERSIONS	OS/2 Huffman 1D, bitmap arrays and 64-bit BMPs - the formats no installed decoder reads
+bmpsuite	localhost/ghoti-image-oracle-refs:deb13-2	@VERSIONS	The 91-file conformance corpus tests/data/bmp/bmpsuite_sweep.py runs
 
 # Not here, and each is its own piece of work:
 #   libpng      a second reading of every PNG this library writes; Pillow is

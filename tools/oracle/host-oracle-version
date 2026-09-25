@@ -48,6 +48,8 @@ case "${1:-}" in
   giflib)   build_and_run probe_gif.c -lgif ;;
   bmplib)   git_ref bmplib ;;
   bmpsuite) git_ref bmpsuite ;;
+  pixbuf)   exec python3 -c 'import gi; gi.require_version("GdkPixbuf", "2.0"); from gi.repository import GdkPixbuf; print("GdkPixbuf %d.%d.%d" % (GdkPixbuf.PIXBUF_MAJOR, GdkPixbuf.PIXBUF_MINOR, GdkPixbuf.PIXBUF_MICRO))' ;;
+  netpbm)   printf 'netpbm %s\n' "$(bmptopnm --version 2>&1 | sed -n 's/.*Netpbm \([0-9.]*\).*/\1/p' | head -1)" ;;
   *)        printf 'host-oracle-version: no such reference: %s\n' "${1:-}" >&2
             exit 2 ;;
 esac

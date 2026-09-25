@@ -28,7 +28,7 @@
 # below comes from a stock image whose digest could stand in for it.
 #
 # Build it with `make oracle-build`, which is:
-#   podman build -t ghoti-image-oracle-refs:deb13-1 \
+#   podman build -t ghoti-image-oracle-refs:deb13-2 \
 #       -f tools/oracle/containers/image-refs/Containerfile tools/oracle
 # The build context is tools/oracle/ rather than this directory, so that
 # VERSIONS - the file that already pinned bmplib and bmpsuite, and is read by
@@ -61,6 +61,13 @@ ENV LANG=C.UTF-8 \
 #                          not for compositing, which it does not do.
 #   zlib1g-dev             what bmplib links, and what a PNG comparison would
 #                          need if one is ever built here.
+#   python3-gi +           GdkPixbuf: the third BMP decoder tests/data/bmp/
+#   gir1.2-gdkpixbuf-2.0   bmpsuite_sweep.py corroborates with.
+#   netpbm                 bmptopnm: the fourth. Those two answer only for the
+#                          sweep, which is why they arrived a tag later than
+#                          the rest - `make bmpsuite` is not part of `make
+#                          test`, so nothing in a routine build had ever asked
+#                          them anything.
 #
 # gcc/make/meson/ninja/git are the build half: bmplib and bmpsuite are built
 # below, and the three oracle tools under tests/tools/ are compiled inside this
@@ -78,6 +85,9 @@ RUN apt-get update -qq \
       libjpeg62-turbo-dev=1:2.1.5-4 \
       libgif-dev=5.2.2-1+deb13u1 \
       zlib1g-dev=1:1.3.dfsg+really1.3.1-1+b1 \
+      python3-gi=3.50.0-4+b1 \
+      gir1.2-gdkpixbuf-2.0=2.42.12+dfsg-4+deb13u1 \
+      netpbm=2:11.10.02-1 \
       gcc=4:14.2.0-1 \
       libc6-dev=2.41-12+deb13u4 \
       make=4.4.1-2 \
@@ -147,6 +157,6 @@ RUN set -eu; \
     gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_jpeg /build/probe_jpeg.c; \
     gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_gif /build/probe_gif.c -lgif; \
     rm -rf /build; \
-    for ref in pillow libjpeg giflib bmplib bmpsuite; do \
+    for ref in pillow libjpeg giflib bmplib bmpsuite pixbuf netpbm; do \
         /usr/local/bin/image-oracle-version "$ref"; \
     done

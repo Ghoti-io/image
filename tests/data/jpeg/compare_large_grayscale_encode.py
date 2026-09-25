@@ -14,7 +14,7 @@ Steps:
 Run from image/:
   python3 tests/data/jpeg/compare_large_grayscale_encode.py [--work-dir ...]
 
-Requires: make jpeg-oracle-tools, make test (testJpeg_encode).
+Requires: make oracle-build oracle-tools, make test (testJpeg_encode).
 """
 from __future__ import annotations
 

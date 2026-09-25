@@ -58,6 +58,6 @@ def find_oracle(name: str, explicit: str | None = None) -> str | None:
 
 
 BUILD_HINT = (
-    "Build it with: make jpeg-oracle-tools "
+    "Build it with: make oracle-build oracle-tools "
     "(then export GIMG_JPEG_ORACLE_DIR as that target prints)"
 )

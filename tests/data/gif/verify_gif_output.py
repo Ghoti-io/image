@@ -242,7 +242,7 @@ def verify_directory(dirpath):
                 errors.append(
                     "%s frame %d: no outside decoder read it. Install Pillow "
                     "(pip install Pillow) or ImageMagick, or build the giflib "
-                    "oracle (make gif-oracle-tools, which needs libgif-dev)."
+                    "oracle (make oracle-build oracle-tools, which needs libgif-dev)."
                     % (name, frame))
             elif agreed:
                 checked += 1

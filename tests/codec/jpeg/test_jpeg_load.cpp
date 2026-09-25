@@ -4062,7 +4062,7 @@ TEST(JpegLoad, DecodeCmykPillowOracle) {
 
 /** Decode jpeg_with_icc.jpg with libjpeg (ref -o), then decode the same file
  * with our decoder; compare pixels byte-for-byte. Ensures we match libjpeg
- * on a fixture we can decode. Requires make jpeg-oracle-tools. */
+ * on a fixture we can decode. Requires make oracle-build oracle-tools. */
 TEST(JpegLoad, DecodeJpegWithIccVsLibjpeg) {
   std::string data_dir(GIMG_TEST_DATA_JPEG);
   std::string jpeg_path = data_dir + "/jpeg_with_icc.jpg";
@@ -4144,7 +4144,7 @@ TEST(JpegLoad, GoldenCmyk) {
   int oracle_mode = -1;
   if (!jpeg_test::load_jpeg_oracle_raw("cmyk_sample", oracle_pixels,
           &oracle_w, &oracle_h, &oracle_mode)) {
-    GTEST_SKIP() << "Run make jpeg-oracle-tools then "
+    GTEST_SKIP() << "Run make oracle-build oracle-tools then "
                     "python3 tests/data/jpeg/generate_jpeg_oracle_raws.py to create cmyk_sample.raw";
   }
   std::vector<uint8_t> jpeg;

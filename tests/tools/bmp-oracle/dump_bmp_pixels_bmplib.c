@@ -9,7 +9,7 @@
  * LGPL/GPL and is therefore used as a separate process, never linked into the
  * library.  See documentation/formats/bmp.md.
  *
- * Build with `make bmp-oracle-tools`, which expects the source tree and its
+ * Build with `make oracle-build oracle-tools`, which expects the source tree and its
  * meson build directory under third_party/bmplib.
  *
  * Usage: dump_bmp_pixels_bmplib [options] <file.bmp>

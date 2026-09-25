@@ -735,10 +735,27 @@ resample-tool: $(APP_DIR)/resample_tool$(EXE_EXTENSION) ## Build resample_tool; 
 
 bmp-dump-raster: $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION) ## Build dump_bmp_raster; used by tests/data/bmp/bmpsuite_sweep.py
 
-bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep (needs BMPSUITE=<unpacked bmpsuite dir>)
+# The corpus is materialised out of the pinned image rather than fetched.
+#
+# bmpsuite's repository holds a generator, not the images, so "the corpus" is
+# whatever `make` produced from that commit - which is a property of the
+# machine that ran it until it is built somewhere pinned. It is built inside
+# the image at the commit tools/oracle/VERSIONS names, and copied out here
+# because this library's own decoder has to read the same files and does not
+# run in there. Verified byte-identical to a host build of the same commit, 91
+# files, when this was written.
+BMPSUITE_DIR := $(IMAGE_ROOT)/tests/out/bmpsuite
+BMPSUITE_OUT := $(IMAGE_ROOT)/tests/out/bmpsuite-sweep
+
+bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep against the four pinned decoders
+	@mkdir -p $(BMPSUITE_DIR) $(BMPSUITE_OUT)
+	@printf '### Materialising the pinned bmpsuite corpus ###\n'
+	@$(ORACLE_EXEC) --scratch "$(BMPSUITE_DIR)" bmpsuite -- \
+		sh -c 'cd /opt/bmpsuite && cp -r g q b x "$$1"/' sh "$(BMPSUITE_DIR)"
 	@python3 $(CURDIR)/tests/data/bmp/bmpsuite_sweep.py \
 		--decoder $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION) \
-		$(if $(BMPSUITE),--suite $(BMPSUITE),)
+		--suite $(if $(BMPSUITE),$(BMPSUITE),$(BMPSUITE_DIR)) \
+		--out $(BMPSUITE_OUT)
 
 ####################################################################
 # Oracles
@@ -758,7 +775,7 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep (needs BMPSUITE=
 # in the line every gate prints. It is not a fallback: nothing selects it
 # automatically, because a gate whose reference is not the one it names prints
 # the same green line as one whose is.
-ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-1
+ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-2
 ORACLE_EXEC := tools/oracle/oracle-exec
 ORACLE_ENGINE ?= docker
 
@@ -803,70 +820,18 @@ oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the im
 
 .PHONY: oracle-build oracle-verify oracle-tools
 
-# bmplib oracle tool. The source is tracked in tests/tools/bmp-oracle; the
-# binary it builds is not, and neither is the bmplib checkout it needs. bmplib
-# is the only decoder reachable from here that reads OS/2 Huffman 1D, OS/2
-# bitmap arrays and 64-bit BMPs, so it is what the sweep corroborates those
-# with. It is LGPL/GPL, which is why it stays a separate process built out of
-# third_party and is never linked into the library.
+# The three oracle tools used to have a target each here, building them
+# against this machine's headers into the same directories `oracle-tools` now
+# writes to. They are gone rather than kept beside it, because a binary in
+# tests/tools/*/build built against the host's libjpeg is indistinguishable
+# from one built against the pinned 2.1.5 - it runs, it answers, and it answers
+# for a version nothing records. A second resolution path that only in-tree
+# builds exercise is one that silently rots, which is the same rule that
+# forbids a sibling-checkout fallback for pkg-config.
 #
-# To provide it: tools/oracle/fetch.sh bmplib, which clones and builds it at
-# the commit tools/oracle/VERSIONS pins. Nothing it fetches is committed.
-BMPLIB_DIR := third_party/bmplib
-BMP_ORACLE_DIR := tests/tools/bmp-oracle
-BMP_ORACLE_OUT := $(BMP_ORACLE_DIR)/build
-
-bmp-oracle-tools: ## Build the bmplib oracle tool into tests/tools/bmp-oracle/build (needs third_party/bmplib built)
-	@if [ ! -f $(BMPLIB_DIR)/build/libbmp.so ] && [ ! -f $(BMPLIB_DIR)/build/libbmp.a ]; then \
-		echo "No bmplib build in $(BMPLIB_DIR)/build. Run tools/oracle/fetch.sh bmplib."; \
-		exit 1; \
-	fi
-	@mkdir -p $(BMP_ORACLE_OUT)
-	@printf '### Building oracle tool dump_bmp_pixels_bmplib ###\n'
-	$(CC) -O2 -g -std=c17 -Wall -Wextra \
-		-o $(BMP_ORACLE_OUT)/dump_bmp_pixels_bmplib$(EXE_EXTENSION) \
-		$(BMP_ORACLE_DIR)/dump_bmp_pixels_bmplib.c \
-		-I$(BMPLIB_DIR) -L$(BMPLIB_DIR)/build -lbmp \
-		-Wl,-rpath,$(CURDIR)/$(BMPLIB_DIR)/build
-
-# libjpeg oracle tools. Sources are tracked in tests/tools/jpeg-oracle; the
-# binaries they build are not. Optional: every test that reaches for an oracle
-# tries Pillow first and skips when neither is available. Needs the libjpeg
-# headers (Debian/Ubuntu: libjpeg-dev; the runtime library alone is not enough).
-JPEG_ORACLE_DIR := tests/tools/jpeg-oracle
-JPEG_ORACLE_OUT := $(JPEG_ORACLE_DIR)/build
-JPEG_ORACLE_TOOLS := dump_jpeg_pixels_ref dump_jpeg_coef_ref
-
-jpeg-oracle-tools: ## Build the libjpeg oracle tools into tests/tools/jpeg-oracle/build (needs libjpeg headers)
-	@mkdir -p $(JPEG_ORACLE_OUT)
-	@jflags=`pkg-config --cflags --libs libjpeg 2>/dev/null` || jflags=""; \
-	if [ -z "$$jflags" ]; then jflags="-ljpeg"; fi; \
-	for t in $(JPEG_ORACLE_TOOLS); do \
-		printf '### Building oracle tool %s ###\n' "$$t"; \
-		$(CC) -O2 -g -std=c17 -o $(JPEG_ORACLE_OUT)/$$t$(EXE_EXTENSION) \
-			$(JPEG_ORACLE_DIR)/$$t.c $$jflags || { \
-			echo "Could not build $$t. Install the libjpeg headers (Debian/Ubuntu: apt install libjpeg-dev)."; \
-			exit 1; }; \
-	done
-	@echo "Oracle tools in $(JPEG_ORACLE_OUT). Use them with:"
-	@echo "  export GIMG_JPEG_ORACLE_DIR=$(CURDIR)/$(JPEG_ORACLE_OUT)"
-
-
-# giflib oracle tool. Source is tracked in tests/tools/gif-oracle; the binary
-# it builds is not. Needs the giflib headers (Debian/Ubuntu: libgif-dev; the
-# runtime library alone is not enough).  giflib ships no pkg-config file, so
-# there is nothing to ask and the link flag is named directly.
-GIF_ORACLE_DIR := tests/tools/gif-oracle
-GIF_ORACLE_OUT := $(GIF_ORACLE_DIR)/build
-
-gif-oracle-tools: ## Build the giflib oracle tool into tests/tools/gif-oracle/build (needs libgif-dev)
-	@mkdir -p $(GIF_ORACLE_OUT)
-	@printf '### Building oracle tool dump_gif_pixels_giflib ###\n'
-	@$(CC) -O2 -g -std=c17 -Wall -Wextra \
-		-o $(GIF_ORACLE_OUT)/dump_gif_pixels_giflib$(EXE_EXTENSION) \
-		$(GIF_ORACLE_DIR)/dump_gif_pixels_giflib.c -lgif || { \
-		echo "Could not build the giflib oracle. Install the giflib headers (Debian/Ubuntu: apt install libgif-dev)."; \
-		exit 1; }
+# GHOTI_ORACLE_MODE=host still runs those binaries on this machine rather than
+# in the image, which is how the two were diffed against each other; what it no
+# longer does is build a second set nobody can tell apart.
 
 # IJG v10 (Independent JPEG Group reference, third_party/jpeg-10). Decode precision 8-12 only;
 # rejects 16-bit and extended DHT (242 AC symbols). See tests/data/jpeg/README.md.
@@ -914,7 +879,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 # General commands
 .PHONY: clean clean-test-out cloc docs docs-pdf examples jpeg-ijg10-build coverage check-symbols
 .PHONY: fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif fuzz-gif-encode
-.PHONY: bmp-dump-raster bmpsuite bmp-oracle-tools resample-tool jpeg-oracle-tools gif-oracle-tools
+.PHONY: bmp-dump-raster bmpsuite resample-tool
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-verify-gif test-verify-structure test-watch uninstall watch
 # Debug build commands

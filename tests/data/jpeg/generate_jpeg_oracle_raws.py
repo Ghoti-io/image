@@ -11,7 +11,7 @@ reads same JPEG, (2) decodes to raw, (3) compares to .raw.
 
 - L and RGB: Pillow decodes and writes .raw.
 - CMYK: libjpeg (dump_jpeg_pixels_ref -o) writes .raw so decoder tests match
-  libjpeg. Run `make jpeg-oracle-tools` first; the tool is found through
+  libjpeg. Run `make oracle-build oracle-tools` first; the tool is found through
   GIMG_JPEG_ORACLE_DIR or in that target's own output directory.
 - CMYK also gets a second file, `<base>.cmyk2rgb.raw`, holding Pillow's RGB
   rendering of the same image (mode 1). That is the oracle for
@@ -25,7 +25,7 @@ Usage:
   python3 tests/data/jpeg/generate_jpeg_oracle_raws.py [DIR]
   DIR defaults to tests/data/jpeg (fixture directory).
 
-Requires: Pillow (pip install Pillow). For CMYK: build with make jpeg-oracle-tools.
+Requires: Pillow (pip install Pillow). For CMYK: build with make oracle-build oracle-tools.
 """
 import os
 import struct

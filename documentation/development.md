@@ -8,7 +8,7 @@ The following are required for the full test suite and JPEG verification:
 
 - **Python 3** — Used to generate JPEG fixtures and verify encode output.
 - **Pillow (PIL)** — Used by `tests/data/jpeg/generate.py` (fixture generation) and `tests/data/jpeg/verify_jpeg_output.py` (encode verification). Install with `pip install Pillow`. JPEG fixtures: `python3 tests/data/jpeg/generate.py` (run after cloning or when adding fixtures).
-- **libjpeg-turbo (for decode oracle tests)** — The `Decode*PillowOracle` tests use **libjpeg** (stock, unmodified) as the decode oracle via small C tools whose sources are in `tests/tools/jpeg-oracle/`. Build them with `make jpeg-oracle-tools`; this requires the libjpeg development headers (Debian/Ubuntu: `libjpeg-dev`), not just the runtime library. If the oracle tools are not built, the decode oracle tests fail with a message to run `make jpeg-oracle-tools`. The image library **does not link to** libjpeg; the ref tools are used only by tests.
+- **libjpeg-turbo (for decode oracle tests)** — The `Decode*PillowOracle` tests use **libjpeg** (stock, unmodified) as the decode oracle via small C tools whose sources are in `tests/tools/jpeg-oracle/`. Build them with `make oracle-build oracle-tools`; this requires the libjpeg development headers (Debian/Ubuntu: `libjpeg-dev`), not just the runtime library. If the oracle tools are not built, the decode oracle tests fail with a message to run `make oracle-build oracle-tools`. The image library **does not link to** libjpeg; the ref tools are used only by tests.
 
   - **Linux (e.g. WSL, Ubuntu/Debian):**
     ```bash
@@ -149,7 +149,7 @@ written for.
 
 **JPEG test map:** Load and segment/limit behavior: `tests/codec/jpeg/test_jpeg_load.cpp` (e.g. SOF rejection, DNL, DHT/SOS negative tests, golden/oracle). Encode, round-trip, and save: `tests/codec/jpeg/test_jpeg_encode.cpp` (quality, chroma, progressive, 12-bit, DHT consistency, failure paths). Helpers: `jpeg_test_utils.cpp` / `jpeg_test_utils.h` (load_jpeg_file, raster hash, oracle helpers). Fuzz: `tests/fuzz/fuzz_jpeg_load` (load + decode; no crash on arbitrary input).
 
-**Regenerating JPEG fixtures and oracle verification:** From the repo root: `python3 tests/data/jpeg/generate.py` to regenerate fixtures (requires Pillow). Build libjpeg oracle tools: `make jpeg-oracle-tools` (sources in `tests/tools/jpeg-oracle/`; requires the libjpeg dev package). Verify encode output: `make test-verify-jpeg` or `python3 tests/data/jpeg/verify_jpeg_output.py`. Decode oracle (Pillow or libjpeg): see `tests/data/jpeg/README.md` for `generate_jpeg_oracle_raws.py`, `pillow_decode_hash.py`, and libjpeg ref tool usage.
+**Regenerating JPEG fixtures and oracle verification:** From the repo root: `python3 tests/data/jpeg/generate.py` to regenerate fixtures (requires Pillow). Build libjpeg oracle tools: `make oracle-build oracle-tools` (sources in `tests/tools/jpeg-oracle/`; requires the libjpeg dev package). Verify encode output: `make test-verify-jpeg` or `python3 tests/data/jpeg/verify_jpeg_output.py`. Decode oracle (Pillow or libjpeg): see `tests/data/jpeg/README.md` for `generate_jpeg_oracle_raws.py`, `pillow_decode_hash.py`, and libjpeg ref tool usage.
 
 ### Valgrind
 

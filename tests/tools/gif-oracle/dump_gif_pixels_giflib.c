@@ -27,7 +27,7 @@
  * second time scrambles exactly the interlaced files and leaves every
  * progressive one correct, which reads like a codec defect and is not one.
  *
- * Build with: make gif-oracle-tools
+ * Build with: make oracle-build oracle-tools
  *   cc -o dump_gif_pixels_giflib dump_gif_pixels_giflib.c -lgif
  *
  * Usage: dump_gif_pixels_giflib [--frame N] [--composite] [--info] <file.gif>

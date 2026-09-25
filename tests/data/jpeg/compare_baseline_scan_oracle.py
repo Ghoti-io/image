@@ -3,7 +3,7 @@
 Compare our encoder's baseline scan bytes to libjpeg's (oracle), byte-by-byte.
 
 Prerequisites:
-  1. make jpeg-oracle-tools   # builds encode_libjpeg_baseline_scan
+  1. make oracle-build oracle-tools   # builds encode_libjpeg_baseline_scan
   2. Run our encoder with GIMG_JPEG_DUMP_SCAN_BASELINE=<ours.bin> so it writes
      scan bytes to ours.bin (e.g. run the Large640x480BaselineGrayscale test
      with that env set, after ensuring the test writes the JPEG and we have

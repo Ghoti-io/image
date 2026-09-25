@@ -167,111 +167,65 @@ ORACLES_HONOUR_ALPHA = False
 # Installed decoders
 # ---------------------------------------------------------------------------
 
-def oracle_pil(path):
-    from PIL import Image
-    with Image.open(path) as im:
-        im.load()
-        return im.convert("RGBA").tobytes()
+# All four decoders live in the pinned oracle image and are asked there, in one
+# process for the whole corpus, by tests/data/bmp/bmp_oracle_batch.py. They
+# used to be called in this process against whatever this machine happened to
+# have installed - Pillow from pip, GdkPixbuf and netpbm from the distribution,
+# bmplib from a source build with the host compiler - and only bmplib's commit
+# was written down anywhere. See tools/oracle/containers/IMAGES.
+#
+# This script cannot re-exec into the image the way the verification scripts
+# do, because it also runs this library's own dump_bmp_raster, and a host-built
+# binary is not something the oracle image should be asked to run.
+ORACLE_NAMES = ("pil", "pixbuf", "netpbm", "bmplib")
+
+# Four levels up: this file is at <repo>/tests/data/bmp/.
+ORACLE_EXEC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))),
+    "tools", "oracle", "oracle-exec")
+ORACLE_BATCH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "bmp_oracle_batch.py")
+
+# oracle-exec names one reference per invocation and mounts one image; all four
+# of these share it, so any of the names does. `pil` is spelled here because it
+# is the one whose absence would be least obvious in the output.
+ORACLE_REFERENCE = "pillow"
 
 
-def oracle_pixbuf(path):
-    import gi
-    gi.require_version("GdkPixbuf", "2.0")
-    from gi.repository import GdkPixbuf
-    pb = GdkPixbuf.Pixbuf.new_from_file(path)
-    w, h, rowstride = pb.get_width(), pb.get_height(), pb.get_rowstride()
-    channels, data = pb.get_n_channels(), pb.get_pixels()
-    out = bytearray()
-    for y in range(h):
-        row = data[y * rowstride:y * rowstride + w * channels]
-        if channels == 4:
-            out += row
+def ask_oracles(cases, scratch):
+    """Run every (oracle, file) pair through the pinned decoders, once.
+
+    `cases` is a list of (oracle, bmp_path, out_path). Returns
+    (answers, counts, error): `answers` maps (oracle, bmp_path) to the decoded
+    RGBA or None, `counts` maps an oracle to (decoded, refused), and `error` is
+    a string when the batch could not be run at all.
+    """
+    if not os.path.isfile(ORACLE_EXEC):
+        return {}, {}, "tools/oracle/oracle-exec is missing"
+    batch = "".join("\t".join(case) + "\n" for case in cases)
+    result = subprocess.run(
+        [ORACLE_EXEC, "--scratch", scratch, ORACLE_REFERENCE, "--",
+         sys.executable or "python3", ORACLE_BATCH],
+        input=batch.encode(), capture_output=True)
+    if result.returncode != 0:
+        return {}, {}, ("the pinned decoders did not answer (exit %d):\n  %s"
+                        % (result.returncode,
+                           result.stderr.decode(errors="replace").strip()))
+    counts = {}
+    for line in result.stdout.decode(errors="replace").splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3:
+            counts[parts[0]] = (int(parts[1]), int(parts[2]))
+    answers = {}
+    for oracle, path, out_path in cases:
+        if os.path.isfile(out_path):
+            with open(out_path, "rb") as handle:
+                answers[(oracle, path)] = handle.read()
         else:
-            for x in range(w):
-                out += row[x * 3:x * 3 + 3] + b"\xff"
-    return bytes(out)
+            answers[(oracle, path)] = None
+    return answers, counts, None
 
-
-def oracle_netpbm(path):
-    proc = subprocess.run(["bmptopnm", path], capture_output=True)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.decode(errors="replace").strip())
-    return pnm_to_rgba(proc.stdout)
-
-
-def pnm_to_rgba(data):
-    """Convert a P1/P2/P3/P4/P5/P6 image to packed RGBA8."""
-    fields, i = [], 0
-    want = 3 if data[:2] in (b"P1", b"P4") else 4
-    while len(fields) < want:
-        while i < len(data) and data[i:i + 1].isspace():
-            i += 1
-        if data[i:i + 1] == b"#":
-            while i < len(data) and data[i] != 0x0A:
-                i += 1
-            continue
-        j = i
-        while j < len(data) and not data[j:j + 1].isspace():
-            j += 1
-        fields.append(data[i:j])
-        i = j
-    i += 1
-    magic, w, h = fields[0], int(fields[1]), int(fields[2])
-    maxval = int(fields[3]) if want == 4 else 1
-    body = data[i:]
-    out = bytearray()
-    if magic == b"P6":
-        for k in range(w * h):
-            out += body[k * 3:k * 3 + 3] + b"\xff"
-    elif magic == b"P5":
-        for k in range(w * h):
-            out += body[k:k + 1] * 3 + b"\xff"
-    elif magic == b"P4":
-        # Packed bits, one row at a time; 1 is black in PBM.
-        stride = (w + 7) // 8
-        for y in range(h):
-            for x in range(w):
-                bit = (body[y * stride + (x >> 3)] >> (7 - (x & 7))) & 1
-                v = 0 if bit else 255
-                out += bytes((v, v, v, 255))
-    else:
-        raise RuntimeError("unhandled PNM type " + magic.decode())
-    if maxval not in (1, 255) and magic in (b"P5", b"P6"):
-        raise RuntimeError("unhandled PNM maxval %d" % maxval)
-    return bytes(out)
-
-
-# bmplib is not installed by any package here; it is built from source into
-# third_party/bmplib by `make bmp-oracle-tools`, because it is the only decoder
-# reachable from here that reads OS/2 Huffman 1D, OS/2 bitmap arrays and 64-bit
-# BMPs.  When the tool has not been built, this oracle is simply absent, which
-# is the same treatment the other three get when they are not installed.
-BMPLIB_TOOL = os.environ.get(
-    "BMP_ORACLE_BMPLIB",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                 "..", "..", "tools", "bmp-oracle", "build",
-                 "dump_bmp_pixels_bmplib"))
-
-
-def oracle_bmplib(path):
-    if not os.path.isfile(BMPLIB_TOOL):
-        raise FileNotFoundError(BMPLIB_TOOL)
-    proc = subprocess.run([BMPLIB_TOOL, path], capture_output=True)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.decode(errors="replace").strip())
-    data = proc.stdout
-    if len(data) < 12 or data[:4] != b"BMPO":
-        raise RuntimeError("tool wrote no raster")
-    w = int.from_bytes(data[4:8], "little")
-    h = int.from_bytes(data[8:12], "little")
-    body = data[12:]
-    if len(body) != w * h * 4:
-        raise RuntimeError("tool wrote %d bytes for %dx%d" % (len(body), w, h))
-    return bytes(body)
-
-
-ORACLES = {"pil": oracle_pil, "pixbuf": oracle_pixbuf,
-           "netpbm": oracle_netpbm, "bmplib": oracle_bmplib}
 
 
 # ---------------------------------------------------------------------------
@@ -502,9 +456,15 @@ def main():
     args = parser.parse_args()
 
     if not args.suite or not os.path.isdir(args.suite):
-        print("bmpsuite: skipped (pass --suite or set BMPSUITE to an unpacked "
-              "copy of https://entropymine.com/jason/bmpsuite/)")
-        return 0
+        # Not a skip. The corpus is built inside the pinned image at the commit
+        # tools/oracle/VERSIONS names, and `make bmpsuite` materialises it
+        # before calling this; reaching here means that did not happen, and a
+        # sweep of nothing reported as success is the thing this file's whole
+        # conversion was about.
+        print("bmpsuite: no corpus at %r. `make bmpsuite` materialises the "
+              "pinned one out of the oracle image; pass --suite to point at "
+              "another." % (args.suite or ""), file=sys.stderr)
+        return 1
     if not os.path.isfile(args.decoder):
         print("bmpsuite: %s not built; run make bmp-dump-raster"
               % args.decoder, file=sys.stderr)
@@ -537,17 +497,55 @@ def main():
         parts = line.split("\t")
         status[parts[0]] = parts[1:]
 
-    available = {}
-    for name, fn in ORACLES.items():
-        try:
-            fn(files[0][2])
-            available[name] = fn
-        except ImportError:
-            pass
-        except FileNotFoundError:
-            pass
-        except Exception:
-            available[name] = fn
+    # The oracle half, asked once for the whole corpus rather than per file.
+    #
+    # There is no availability probe any more, and its absence is the point.
+    # It used to call each decoder on the first file and drop the ones that
+    # raised, so a machine missing three of the four swept the suite against
+    # one and said so in a line nobody reads as a warning. All four are pinned
+    # into one image now; an absent one is a failed run, not a smaller one.
+    cases = []
+    payload_of = {}
+    for group, name, path in files:
+        if name in REJECT:
+            continue
+        if not (status.get(name, [None])[0] == "ok"):
+            continue
+        for oracle in ORACLE_NAMES:
+            if name in ORACLE_IS_WRONG.get(oracle, {}):
+                continue
+            cases.append((oracle, path,
+                          os.path.join(out_dir,
+                                       "oracle_%s_%s.rgba" % (oracle, name))))
+        if name in EMBEDDED:
+            payload_path = os.path.join(out_dir, name + ".payload")
+            with open(payload_path, "wb") as handle:
+                handle.write(extract_embedded(path))
+            payload_of[name] = payload_path
+            for oracle in ORACLE_NAMES:
+                cases.append(
+                    (oracle, payload_path,
+                     os.path.join(out_dir,
+                                  "oracle_%s_%s.payload.rgba"
+                                  % (oracle, name))))
+
+    if not cases:
+        print("bmpsuite: no file decoded, so no oracle was asked anything",
+              file=sys.stderr)
+        return 1
+    answers, counts, why = ask_oracles(cases, out_dir)
+    if why:
+        print("bmpsuite: the suite was not corroborated: %s" % why,
+              file=sys.stderr)
+        return 2
+    # A decoder that read nothing at all is not a decoder that agreed with
+    # everything, and the two look identical from the failure count alone.
+    silent = [name for name in ORACLE_NAMES
+              if counts.get(name, (0, 0))[0] == 0]
+    if silent:
+        print("bmpsuite: %s read none of the %d files put to it"
+              % (", ".join(silent), len(files)), file=sys.stderr)
+        return 1
 
     failures = []
     checked_by_reference = 0
@@ -605,16 +603,12 @@ def main():
                     checked_by_reference += 1
 
         if name in EMBEDDED:
-            payload = extract_embedded(path)
+            payload_path = payload_of[name]
             checked = False
-            for oracle, fn in available.items():
-                tmp = os.path.join(out_dir, name + ".payload")
-                with open(tmp, "wb") as f:
-                    f.write(payload)
-                try:
-                    theirs = fn(tmp)
-                except Exception:
-                    continue
+            for oracle in ORACLE_NAMES:
+                theirs = answers.get((oracle, payload_path))
+                if theirs is None:
+                    continue  # a decoder that cannot read it is not evidence
                 problem = compare(ours, theirs, COLOUR_TOLERANCE,
                                   ORACLES_HONOUR_ALPHA)
                 if problem:
@@ -623,8 +617,6 @@ def main():
                                     % (group, name, oracle, problem))
                 else:
                     checked = True
-            if os.path.isfile(os.path.join(out_dir, name + ".payload")):
-                os.remove(os.path.join(out_dir, name + ".payload"))
             if checked:
                 checked_by_oracle += 1
             else:
@@ -633,12 +625,11 @@ def main():
             continue
 
         agreed = False
-        for oracle, fn in available.items():
+        for oracle in ORACLE_NAMES:
             if name in ORACLE_IS_WRONG.get(oracle, {}):
                 continue
-            try:
-                theirs = fn(path)
-            except Exception:
+            theirs = answers.get((oracle, path))
+            if theirs is None:
                 continue  # an oracle that cannot read a file is not evidence
             problem = compare(ours, theirs, COLOUR_TOLERANCE,
                               ORACLES_HONOUR_ALPHA)
@@ -655,12 +646,24 @@ def main():
                             % (group, name))
 
     print("bmpsuite %s" % args.suite)
+    # Which instrument answered, beside the numbers. A clean sweep against
+    # bmplib at a named commit is a different claim from a clean sweep against
+    # some bmplib, and a run that does not say which cannot be read later.
+    provenance = subprocess.run(
+        [sys.executable or "python3",
+         os.path.join(os.path.dirname(ORACLE_EXEC), "oracle_env.py"),
+         "pillow", "pixbuf", "netpbm", "bmplib", "bmpsuite"],
+        capture_output=True, text=True)
+    if provenance.returncode == 0:
+        print("  " + provenance.stdout.strip())
     print("  %d files; %d refused as intended" % (len(files),
                                                   rejected_as_expected))
     print("  %d checked against a decoder written from the specification"
           % checked_by_reference)
-    print("  %d corroborated by %s" % (checked_by_oracle,
-                                       ", ".join(sorted(available)) or "nothing"))
+    print("  %d corroborated by %s" % (
+        checked_by_oracle,
+        ", ".join("%s (%d read, %d refused)" % (n, counts[n][0], counts[n][1])
+                  for n in sorted(counts))))
     if failures:
         print("\n%d problems:" % len(failures))
         for line in failures:

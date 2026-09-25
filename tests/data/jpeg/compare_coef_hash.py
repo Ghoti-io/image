@@ -3,7 +3,7 @@
 Compare our decoder's final coefficient hash to libjpeg-turbo reference.
 
 Runs our decoder with DUMP_JPEG_COEF_AFTER_SCAN=1, parses the last scan hash,
-runs dump_jpeg_coef_ref (build it with `make jpeg-oracle-tools`), and
+runs dump_jpeg_coef_ref (build it with `make oracle-build oracle-tools`), and
 compares.
 
 Exit 0 if hashes match, 1 if they differ, 2 if setup failed (missing ref tool
