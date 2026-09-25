@@ -360,15 +360,6 @@ GIMG_Result gimg_jpeg_cond_from_options(
   return GIMG_OK;
 }
 
-int gimg_jpeg_cond_is_default(const jpeg_arith_cond_t * cond) {
-  if (!cond) {
-    return 1;
-  }
-  jpeg_arith_cond_t d;
-  jpeg_arith_cond_defaults(&d);
-  return memcmp(cond, &d, sizeof(d)) == 0 ? 1 : 0;
-}
-
 size_t gimg_jpeg_build_dac(const jpeg_arith_cond_t * cond, int tables,
     int dc_only, unsigned char * out) {
   if (!cond || !out || tables < 1) {

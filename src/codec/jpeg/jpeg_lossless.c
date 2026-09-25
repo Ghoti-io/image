@@ -436,7 +436,7 @@ GIMG_Result gimg_jpeg_decode_lossless(const gimg_jpeg_doc_state_t * state,
                 }
                 int cat = 0;
                 r = jpeg_arith_lossless_decode_diff(&ad, &astats,
-                    &state->arith_cond, scan->dc_tbl[sc], da_cat[ci],
+                    &scan->arith_cond, scan->dc_tbl[sc], da_cat[ci],
                     (int)db_cat[ci][x], &diff, &cat);
                 if (r != GIMG_OK) {
                   goto fail;

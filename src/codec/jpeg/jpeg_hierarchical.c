@@ -410,7 +410,7 @@ static GIMG_Result hier_decode_dct_frame(const gimg_jpeg_doc_state_t * state,
             }
             if (f->is_arithmetic) {
               r = jpeg_arith_decode_block_sequential(&ad, &astats,
-                  &f->arith_cond, ci, scan->dc_tbl[s], scan->ac_tbl[s], 63,
+                  &scan->arith_cond, ci, scan->dc_tbl[s], scan->ac_tbl[s], 63,
                   block_zig);
             }
             else {
@@ -691,7 +691,7 @@ static GIMG_Result hier_decode_lossless_frame(
                 }
                 int cat = 0;
                 r = jpeg_arith_lossless_decode_diff(&ad, &astats,
-                    &f->arith_cond, scan->dc_tbl[s], da_cat[ci],
+                    &scan->arith_cond, scan->dc_tbl[s], da_cat[ci],
                     (int)db_cat[ci][x], &diff, &cat);
                 if (r != GIMG_OK) {
                   goto fail;
@@ -850,7 +850,7 @@ static GIMG_Result hier_decode_progressive_frame(
   }
 
   r = jpeg_decode_progressive_scans(state, sof, f->scans, f->num_scans,
-      f->is_arithmetic, &f->arith_cond, f->is_differential, sequential,
+      f->is_arithmetic, f->is_differential, sequential,
       mcu_per_row, mcu_per_col, blk_w, blk_h, grid_w, coef);
   if (r != GIMG_OK) {
     goto fail;

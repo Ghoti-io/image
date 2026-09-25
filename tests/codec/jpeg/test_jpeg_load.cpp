@@ -8680,3 +8680,104 @@ TEST(JpegLoad, ALosslessFrameSaidToBeYCbCrIsConverted) {
     EXPECT_EQ(ycc[3], rgb[3]) << "alpha is not part of the transform";
   }
 }
+
+/**
+ * A DAC after every scan governs no scan.
+ *
+ * T.81 B.2.4.3's conditioning is a table specification, so what governs a scan
+ * is the conditioning most recently defined *before that scan*. This decoder
+ * used to read it out of the document state at the moment the scans were
+ * decoded - which, for a frame whose scans are buffered and decoded together,
+ * is whatever the last DAC in the file said, for all of them.
+ *
+ * Nothing this library writes could show that, because it writes one DAC per
+ * frame. The file here is built by hand for that reason: an ordinary
+ * progressive arithmetic file with one extra DAC spliced in after the last
+ * scan's data, naming values no scan should ever see. A decoder that keeps the
+ * conditioning per scan ignores it; the one this replaced decoded every scan
+ * with it and returned a different picture.
+ *
+ * The companion defect, and the one that was actually reachable, is in
+ * JpegEncode.AHierarchicalSequenceKeepsItsPictureUnderStatedConditioning.
+ */
+TEST(JpegLoad, ConditioningStatedAfterEveryScanGovernsNone) {
+  std::vector<uint8_t> src;
+  ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_640x480_gray.jpg", src));
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(src.data(), src.size(), &in), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &doc), GIMG_OK);
+  gimg_stream_destroy(in);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.jpeg_arithmetic = 1;
+  opts.jpeg_progressive = 1;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
+  const void * saved = nullptr;
+  size_t saved_size = 0;
+  gimg_stream_output_buffer(out, &saved, &saved_size);
+  std::vector<uint8_t> plain(
+      static_cast<const uint8_t *>(saved),
+      static_cast<const uint8_t *>(saved) + saved_size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  ASSERT_GT(plain.size(), 4u);
+  ASSERT_EQ(plain[plain.size() - 2], 0xFFu);
+  ASSERT_EQ(plain[plain.size() - 1], 0xD9u) << "expected the file to end at EOI";
+
+  // L = 4, U = 15, Kx = 20 - none of them the defaults, and none of them what
+  // the scans above were coded with.
+  const uint8_t trailing_dac[] = {
+      0xFF, 0xCC, 0x00, 0x06, 0x00, 0xF4, 0x10, 0x14};
+  std::vector<uint8_t> spliced(plain.begin(), plain.end() - 2);
+  spliced.insert(spliced.end(), std::begin(trailing_dac),
+      std::end(trailing_dac));
+  spliced.push_back(0xFFu);
+  spliced.push_back(0xD9u);
+
+  auto pixels_of = [](const std::vector<uint8_t> & bytes,
+                       std::vector<uint8_t> & out_px) -> GIMG_Result {
+    GIMG_Stream * s = nullptr;
+    GIMG_Result r = gimg_stream_create_memory(bytes.data(), bytes.size(), &s);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    GIMG_Doc * d = nullptr;
+    r = gimg_doc_load(s, nullptr, nullptr, &d);
+    if (r != GIMG_OK) {
+      gimg_stream_destroy(s);
+      return r;
+    }
+    GIMG_Raster * raster = nullptr;
+    r = gimg_item_decode(gimg_doc_item(d, 0), nullptr, &raster);
+    if (r == GIMG_OK) {
+      const uint32_t w = gimg_raster_width(raster);
+      const uint32_t h = gimg_raster_height(raster);
+      const size_t stride = gimg_raster_stride_bytes(raster);
+      const size_t bpp =
+          gimg_raster_bytes_per_pixel(gimg_raster_format(raster));
+      const uint8_t * px = static_cast<const uint8_t *>(
+          gimg_raster_pixels(raster));
+      out_px.clear();
+      for (uint32_t y = 0; y < h; y++) {
+        out_px.insert(out_px.end(), px + y * stride,
+            px + y * stride + (size_t)w * bpp);
+      }
+      gimg_raster_destroy(raster);
+    }
+    gimg_doc_destroy(d);
+    gimg_stream_destroy(s);
+    return r;
+  };
+
+  std::vector<uint8_t> without, with;
+  ASSERT_EQ(pixels_of(plain, without), GIMG_OK);
+  ASSERT_EQ(pixels_of(spliced, with), GIMG_OK)
+      << "the spliced file must still be readable; a DAC is a legal segment";
+  EXPECT_EQ(with, without)
+      << "a DAC that no scan is preceded by changed what the scans decoded to";
+}

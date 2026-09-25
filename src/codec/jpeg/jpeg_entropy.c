@@ -298,7 +298,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
             GIMG_Result r;
             if (state->is_arithmetic) {
               r = jpeg_arith_decode_block_sequential(&ad, &astats,
-                  &state->arith_cond, comp_idx, scan0->dc_tbl[s],
+                  &scan0->arith_cond, comp_idx, scan0->dc_tbl[s],
                   scan0->ac_tbl[s], 63, block_zig);
             }
             else {
@@ -978,7 +978,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
             GIMG_Result r;
             if (state->is_arithmetic) {
               r = jpeg_arith_decode_block_sequential(&ad, &astats,
-                  &state->arith_cond, comp_idx, scan0->dc_tbl[s],
+                  &scan0->arith_cond, comp_idx, scan0->dc_tbl[s],
                   scan0->ac_tbl[s], 63, block_zig);
             }
             else {
@@ -1287,8 +1287,8 @@ fail_comp:
  */
 GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
     const gimg_jpeg_sof_t * sof, const gimg_jpeg_scan_t * scans,
-    unsigned num_scans, int is_arithmetic, const jpeg_arith_cond_t * cond,
-    int differential, int sequential, uint32_t mcu_per_row,
+    unsigned num_scans, int is_arithmetic, int differential, int sequential,
+    uint32_t mcu_per_row,
     uint32_t mcu_per_col, const uint32_t * blk_w, const uint32_t * blk_h,
     const uint32_t * grid_w, int16_t * const * coef_blocks) {
   const uint8_t num_comp = sof->num_components;
@@ -1515,8 +1515,9 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
                   }
                 }
                 if (is_arithmetic) {
-                  r = jpeg_arith_decode_block_sequential(&ad, &astats, cond,
-                      comp_idx, scan->dc_tbl[s], scan->ac_tbl[s], 63, block);
+                  r = jpeg_arith_decode_block_sequential(&ad, &astats,
+                      &scan->arith_cond, comp_idx, scan->dc_tbl[s],
+                      scan->ac_tbl[s], 63, block);
                 }
                 else {
                   r = jpeg_decode_block(&bs, &dc_tables[scan->dc_tbl[s]],
@@ -1542,7 +1543,7 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
                 if (is_arithmetic) {
                   r = (ah == 0)
                       ? jpeg_arith_decode_block_prog_dc_first(&ad, &astats,
-                            cond, comp_idx, scan->dc_tbl[s], al,
+                            &scan->arith_cond, comp_idx, scan->dc_tbl[s], al,
                             block)
                       : jpeg_arith_decode_block_prog_dc_refine(
                             &ad, &astats, al, block);
@@ -1563,7 +1564,7 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
               else if (is_arithmetic) {
                 GIMG_Result r = (ah == 0)
                     ? jpeg_arith_decode_block_prog_ac_first(&ad, &astats,
-                          cond, scan->ac_tbl[s], ss, se, al,
+                          &scan->arith_cond, scan->ac_tbl[s], ss, se, al,
                           block)
                     : jpeg_arith_decode_block_prog_ac_refine(
                           &ad, &astats, scan->ac_tbl[s], ss, se, al, block);
@@ -1729,7 +1730,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
 
   {
     GIMG_Result rr = jpeg_decode_progressive_scans(state, sof, state->scans,
-        state->num_scans, state->is_arithmetic, &state->arith_cond, 0,
+        state->num_scans, state->is_arithmetic, 0,
         !state->is_progressive, mcu_per_row, mcu_per_col, blk_w, blk_h, grid_w,
         coef_blocks);
     if (rr != GIMG_OK) {

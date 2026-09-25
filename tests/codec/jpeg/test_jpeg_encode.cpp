@@ -9478,32 +9478,36 @@ TEST(JpegEncode, ConditioningOutsideItsClauseIsRefusedNotClamped) {
   }
 }
 
-// A hierarchical sequence will not take stated conditioning, and this is why.
-//
-// With B.2.4.3's defaults a hierarchical arithmetic file is exact: its pixels
-// match the Huffman file of the same pyramid at every level. With a stated L
-// the decoded picture changes - which it must not, because the reconstruction
-// is built from coefficients and cannot depend on an entropy-coding choice.
-// The encoder was measured making three more DC classifications than the
-// decoder, so the two disagree somewhere inside the hierarchical pair.
-//
-// A sweep over five images, three processes and L from 1 to 4 put the fault
-// entirely inside this combination: 59 of 235 cases changed the picture and
-// every one was hierarchical, while sequential, progressive and lossless were
-// exact in all of them. Those arms had never run before the option existed, so
-// the bug is older than the option and was merely unreachable.
-//
-// **When the hierarchical disagreement is found and fixed, delete the refusal
-// in jpeg_save.c and this test, and fold hierarchical into the sweep above.**
-TEST(JpegEncode, AHierarchicalSequenceRefusesStatedConditioningForNow) {
+/**
+ * A hierarchical sequence's picture does not depend on its conditioning.
+ *
+ * Conditioning is an entropy-coding choice: it changes how many bits the
+ * coefficients take, not what the coefficients are, so the decoded image has
+ * to be byte-identical whatever L and Kx say. This asserts both halves - that
+ * the file changes and that the picture does not - because one without the
+ * other passes against an option that is being ignored.
+ *
+ * It used to assert a refusal. The writer returned GIMG_ERR_UNSUPPORTED for
+ * any hierarchical frame with stated conditioning, because the picture came
+ * back wrong and a wrong picture with an OK result is the worst thing this
+ * writer could return. The cause was in the reader: DAC is a table segment,
+ * this library writes it *after* the frame header, and the hierarchical
+ * decoder took its conditioning from a snapshot made when the frame header
+ * was read - one segment too early. Every first frame of a pyramid decoded
+ * with B.2.4.3's defaults against an encoder using what the caller asked for.
+ * Fixed by recording the conditioning at each scan header, where the
+ * restart interval and the Huffman tables were already recorded and for the
+ * same reason.
+ */
+TEST(JpegEncode, AHierarchicalSequenceKeepsItsPictureUnderStatedConditioning) {
   std::vector<uint8_t> src;
   ASSERT_TRUE(jpeg_test::load_jpeg_file("baseline_640x480_gray.jpg", src));
 
   for (uint8_t levels = 1; levels <= 3; levels++) {
     SCOPED_TRACE(levels);
-    // Control: the same pyramid with the defaults is written, and matches the
-    // Huffman file of the same pyramid - which is what says the refusal below
-    // is about the conditioning and not about hierarchical arithmetic itself.
+    // Control: the same pyramid with the defaults, and the Huffman file of the
+    // same pyramid - which is what says an agreement below is about the
+    // conditioning and not about the two coders both being wrong together.
     GIMG_Save_Options huff = {};
     huff.jpeg_hierarchical_levels = levels;
     const Saved as_huffman = save_jpeg_with(src, huff);
@@ -9519,20 +9523,34 @@ TEST(JpegEncode, AHierarchicalSequenceRefusesStatedConditioningForNow) {
     EXPECT_EQ(as_arith.hash, as_huffman.hash)
         << "with the defaults the two entropy coders must agree on the picture";
 
-    // Stated conditioning: refused, and nothing written.
+    unsigned sizes_that_moved = 0;
     for (uint8_t l = 1; l <= 4; l++) {
+      SCOPED_TRACE(l);
       GIMG_Save_Options o = defaults;
       o.jpeg_arith_dc_l = l;
       o.jpeg_arith_dc_u = 15;
       const Saved got = save_jpeg_with(src, o);
-      EXPECT_EQ(got.result, GIMG_ERR_UNSUPPORTED)
-          << "L=" << (int)l << ": accepted, and the picture it writes is wrong";
-      EXPECT_EQ(got.bytes.size(), 0u);
+      ASSERT_EQ(got.result, GIMG_OK);
+      ASSERT_TRUE(got.decoded) << "L=" << (int)l << ": the file will not decode";
+      EXPECT_EQ(got.hash, as_arith.hash)
+          << "L=" << (int)l << ": the conditioning changed the picture";
+      if (got.bytes.size() != as_arith.bytes.size()) {
+        sizes_that_moved++;
+      }
     }
-    // Kx alone is refused the same way: the refusal is on the conditioning
-    // being non-default, not on L specifically.
+    // The other half. A writer that quietly ignored the option would pass
+    // every assertion above, because ignoring it is one way to leave the
+    // picture alone.
+    EXPECT_GT(sizes_that_moved, 0u)
+        << "no stated L changed the file's length, so nothing used it";
+
     GIMG_Save_Options kx = defaults;
     kx.jpeg_arith_ac_k = 20;
-    EXPECT_EQ(save_jpeg_with(src, kx).result, GIMG_ERR_UNSUPPORTED);
+    const Saved with_kx = save_jpeg_with(src, kx);
+    ASSERT_EQ(with_kx.result, GIMG_OK);
+    ASSERT_TRUE(with_kx.decoded);
+    EXPECT_EQ(with_kx.hash, as_arith.hash) << "Kx changed the picture";
+    EXPECT_NE(with_kx.bytes.size(), as_arith.bytes.size())
+        << "Kx changed nothing about the file, so nothing used it";
   }
 }

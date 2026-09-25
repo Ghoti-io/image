@@ -336,6 +336,24 @@ static inline void gimg_jpeg_sampling_max(int num_components,
  */
 #define GIMG_JPEG_MAX_ICC_PROFILE_SIZE (4u * 1024u * 1024u)
 
+/* Moved above gimg_jpeg_scan_t, which now carries one: the conditioning
+ * governing a scan is the conditioning in force at its own header. */
+/** Arithmetic conditioning tables, four of each (T.81 B.2.4.3). */
+#define GIMG_JPEG_ARITH_TABLES 4
+
+/**
+ * Conditioning for the arithmetic coder, from the DAC segment (T.81 B.2.4.3).
+ *
+ * B.2.4.3 gives the defaults for a frame that carries no DAC: L = 0 and U = 1
+ * for the DC tables, and Kx = 5 for the AC tables.  A Huffman-coded frame never
+ * needs these; an arithmetic one always has them, stated or defaulted.
+ */
+typedef struct {
+  uint8_t dc_l[GIMG_JPEG_ARITH_TABLES]; /**< lower classification bound */
+  uint8_t dc_u[GIMG_JPEG_ARITH_TABLES]; /**< upper classification bound */
+  uint8_t ac_k[GIMG_JPEG_ARITH_TABLES]; /**< Kx: the block-position threshold */
+} jpeg_arith_cond_t;
+
 /**
  * One scan (SOS) for baseline (single scan) or progressive (multiple scans).
  * For progressive, each SOS may be preceded by DHT; we snapshot the Huffman
@@ -358,6 +376,26 @@ typedef struct {
    * Keeping only the frame's latest value made every such file undecodable.
    */
   uint16_t restart_interval;
+  /**
+   * Arithmetic conditioning in force for this scan (T.81 B.2.4.3).
+   *
+   * Here for the same reason `restart_interval` is, and it took a wrong
+   * picture to notice: DAC is a table-specification segment, so it may sit
+   * between the frame header and a scan header, or between two scans, and what
+   * governs a scan is the conditioning most recently defined before *it*.
+   * This library's own writer puts DAC after SOF - so does its Huffman
+   * counterpart with DHT - and the hierarchical decoder, which read the
+   * conditioning off the frame, decoded every first frame with B.2.4.3's
+   * defaults against an encoder that had used what the caller asked for.
+   *
+   * The non-hierarchical path read it live from the document state instead,
+   * which is right for a file whose scans are decoded as they arrive and wrong
+   * for one whose scans are buffered: it would use the last DAC in the frame
+   * for all of them. Neither could go wrong while every file this library
+   * wrote carried one DAC, which is why both survived until an option made a
+   * second value expressible.
+   */
+  jpeg_arith_cond_t arith_cond;
   unsigned char * data;   ///< Concatenated entropy-coded segment data.
   size_t data_size;       ///< Length of data in bytes.
   /** Allocated size of data, which the loader grows geometrically.  Entropy
@@ -385,8 +423,6 @@ typedef struct {
 #define GIMG_JPEG_ARITH_DC_BINS 64
 /** Statistics bins for one AC table.  T.81 F.1.4.4.2 uses 245. */
 #define GIMG_JPEG_ARITH_AC_BINS 256
-/** Arithmetic conditioning tables, four of each (T.81 B.2.4.3). */
-#define GIMG_JPEG_ARITH_TABLES 4
 
 /** Where the arithmetic encoder puts finished bytes.  It stuffs its own 0x00
  * after a 0xFF (B.1.1.5), so this sink takes bytes literally. */
@@ -414,19 +450,6 @@ typedef struct {
   int ct;        /**< shift counter; negative while priming */
   uint8_t marker; /**< marker that ended the segment, 0 while inside it */
 } jpeg_arith_decoder_t;
-
-/**
- * Conditioning for the arithmetic coder, from the DAC segment (T.81 B.2.4.3).
- *
- * B.2.4.3 gives the defaults for a frame that carries no DAC: L = 0 and U = 1
- * for the DC tables, and Kx = 5 for the AC tables.  A Huffman-coded frame never
- * needs these; an arithmetic one always has them, stated or defaulted.
- */
-typedef struct {
-  uint8_t dc_l[GIMG_JPEG_ARITH_TABLES]; /**< lower classification bound */
-  uint8_t dc_u[GIMG_JPEG_ARITH_TABLES]; /**< upper classification bound */
-  uint8_t ac_k[GIMG_JPEG_ARITH_TABLES]; /**< Kx: the block-position threshold */
-} jpeg_arith_cond_t;
 
 /** Adaptive statistics for one scan (T.81 F.1.4.4).  Reset at the start of a
  * scan and at every restart interval (F.2.4.1). */
@@ -521,9 +544,6 @@ GIMG_Result gimg_jpeg_cond_from_options(
  */
 size_t gimg_jpeg_build_dac(const jpeg_arith_cond_t * cond, int tables,
     int dc_only, unsigned char * out);
-
-/** Whether @p cond is exactly B.2.4.3's defaults. */
-int gimg_jpeg_cond_is_default(const jpeg_arith_cond_t * cond);
 
 /**
  * @name The two forward DCTs (T.81 A.3.3)
@@ -1210,8 +1230,8 @@ GIMG_Result gimg_jpeg_decode_hierarchical(const gimg_jpeg_doc_state_t * state,
  */
 GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
     const gimg_jpeg_sof_t * sof, const gimg_jpeg_scan_t * scans,
-    unsigned num_scans, int is_arithmetic, const jpeg_arith_cond_t * cond,
-    int differential, int sequential, uint32_t mcu_per_row,
+    unsigned num_scans, int is_arithmetic, int differential, int sequential,
+    uint32_t mcu_per_row,
     uint32_t mcu_per_col, const uint32_t * blk_w, const uint32_t * blk_h,
     const uint32_t * grid_w, int16_t * const * coef_blocks);
 

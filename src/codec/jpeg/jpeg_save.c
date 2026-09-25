@@ -3297,34 +3297,6 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
     return GIMG_ERR_UNSUPPORTED;
   }
-  // Nor can it change the arithmetic conditioning, for a worse reason: it
-  // produces the wrong picture.
-  //
-  // With B.2.4.3's defaults a hierarchical arithmetic file is exact - its
-  // pixels match the Huffman file of the same pyramid at every level.  With a
-  // stated L the decoded image changes, which it must not: conditioning is an
-  // entropy-coding choice and the reconstruction is built from coefficients, so
-  // the picture cannot depend on it.  Something in the hierarchical pair
-  // disagrees about a classification, and the encoder was measured making three
-  // more of them than the decoder.
-  //
-  // A sweep over five images, three processes and L from 1 to 4 put the fault
-  // entirely inside this one combination: 59 of 235 cases changed the picture
-  // and every one of them was hierarchical; sequential, progressive and
-  // lossless were exact in all of them.  Those arms had never run before this
-  // option existed, so the bug is older than the option and was simply
-  // unreachable - see notes/image.
-  //
-  // Refused rather than shipped, because a wrong picture with an OK result is
-  // the worst thing this writer could return.  Lifting this needs the
-  // hierarchical disagreement found, and the test that pins the refusal names
-  // what to delete when it is.
-  if (hier_levels != 0 && !gimg_jpeg_cond_is_default(&arith_cond)) {
-    if (raster_owned) {
-      gimg_raster_destroy(raster);
-    }
-    return GIMG_ERR_UNSUPPORTED;
-  }
   // T.81 A.2.3: one non-interleaved scan per component instead of one
   // interleaved scan.  Refused where the standard already fixes the scan
   // arrangement or where a different writer owns it: Annex G's progressive

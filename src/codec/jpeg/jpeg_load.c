@@ -963,6 +963,12 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         // B.2.4.4: the restart interval in force is the one most recently
         // defined before this scan, which is not necessarily the frame's last.
         scan->restart_interval = state->restart_interval;
+        // B.2.4.3, and for the same reason: DAC may appear anywhere a table
+        // segment may, which includes after the frame header this scan belongs
+        // to. Taken here rather than at SOF, where a snapshot is always one
+        // segment too early for a writer that puts its DAC before SOS - this
+        // library's own does.
+        scan->arith_cond = state->arith_cond;
         scan->comp_count = ns;
         for (uint8_t i = 0; i < ns; i++) {
           scan->comp_id[i] = payload_buf[1 + i * 2];
