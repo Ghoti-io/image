@@ -259,6 +259,86 @@ TEST(TiffDecode, EveryDirectoryIsItsOwnPicture) {
   }
 }
 
+TEST(TiffDecode, EverySubByteDepthUnpacksMostSignificantBitFirst) {
+  // A row is padded to a byte boundary (TIFF 6.0 section 3), so six pixels at
+  // four bits is three bytes and not two and a half. A decoder that computed
+  // two and a half shears the picture one pixel further left on every row,
+  // which is why the fixtures are six wide rather than a multiple of eight.
+  struct Depth {
+    const char * file;
+    unsigned bits;
+  };
+  const Depth depths[] = {
+      {"tiff_6x5_gray1.tif", 1u},
+      {"tiff_6x5_gray2.tif", 2u},
+      {"tiff_6x5_gray4.tif", 4u},
+  };
+  for (const Depth & d : depths) {
+    SCOPED_TRACE(d.file);
+    Loaded img;
+    ASSERT_EQ(img.load(d.file), GIMG_OK) << img.reasons();
+    const std::vector<uint8_t> p = img.pixels();
+    ASSERT_EQ(p.size(), 6u * 5u);
+    const unsigned top = (1u << d.bits) - 1u;
+    for (uint32_t i = 0; i < 30u; i++) {
+      // The generator's ramp, and the expansion the format implies: 255 is
+      // divisible by 1, 3 and 15, so this conversion is exact at every
+      // sub-byte depth and no reader has a rounding choice to make.
+      const unsigned stored = (i * top) / 29u;
+      EXPECT_EQ((unsigned)p[i], (stored * 255u) / top)
+          << "sample " << i << " at " << d.bits << " bits";
+    }
+  }
+}
+
+TEST(TiffDecode, SixteenBitsStaySixteenBitsAndBothOrdersAgree) {
+  Loaded le, be;
+  ASSERT_EQ(le.load("tiff_4x4_gray16_le.tif"), GIMG_OK) << le.reasons();
+  ASSERT_EQ(be.load("tiff_4x4_gray16_be.tif"), GIMG_OK) << be.reasons();
+  const std::vector<uint8_t> a = le.pixels();
+  const std::vector<uint8_t> b = be.pixels();
+  ASSERT_EQ(a.size(), 4u * 4u * 2u) << "a 16-bit file must not be narrowed";
+  // The raster carries a copy of the format, not the address of the library's
+  // constant, so the fields are what say which format it is.
+  const GIMG_Pixel_Format * gray16 = gimg_raster_format(le.raster());
+  ASSERT_NE(gray16, nullptr);
+  EXPECT_EQ(gray16->channel_count, 1u);
+  EXPECT_EQ(gimg_pixel_format_channel_bits(gray16, 0), 16u);
+  // The byte-order pair again, and at sixteen bits it is the case that
+  // matters: this is the one place a file's declared order reaches past the
+  // header and into the pixels.
+  EXPECT_EQ(a, b);
+  const uint16_t * v = (const uint16_t *)(const void *)a.data();
+  for (uint32_t i = 0; i < 16u; i++) {
+    EXPECT_EQ((unsigned)v[i], (i * 65535u) / 15u) << "sample " << i;
+  }
+
+  Loaded rgb;
+  ASSERT_EQ(rgb.load("tiff_4x4_rgb16.tif"), GIMG_OK) << rgb.reasons();
+  const std::vector<uint8_t> c = rgb.pixels();
+  ASSERT_EQ(c.size(), 4u * 4u * 8u);
+  const GIMG_Pixel_Format * rgba16 = gimg_raster_format(rgb.raster());
+  ASSERT_NE(rgba16, nullptr);
+  EXPECT_EQ(rgba16->channel_count, 4u);
+  EXPECT_EQ(gimg_pixel_format_channel_bits(rgba16, 0), 16u);
+  const uint16_t * w = (const uint16_t *)(const void *)c.data();
+  EXPECT_EQ((unsigned)w[3], 65535u) << "an RGB image has no transparency";
+}
+
+TEST(TiffDecode, APaletteIsTheSamePictureAtEveryIndexWidth) {
+  // The same four colours and the same (x + y) % 4 picture, once with
+  // eight-bit indices and once with four-bit. Nothing about the picture
+  // depends on how wide its indices are, so the two rasters are the same
+  // bytes - a property that needs no reference decoder and catches an
+  // unpacking error that a single-depth test would call correct.
+  Loaded eight, four;
+  ASSERT_EQ(eight.load("tiff_4x4_palette.tif"), GIMG_OK) << eight.reasons();
+  ASSERT_EQ(four.load("tiff_4x4_palette4.tif"), GIMG_OK) << four.reasons();
+  const std::vector<uint8_t> a = eight.pixels();
+  ASSERT_FALSE(a.empty());
+  EXPECT_EQ(a, four.pixels());
+}
+
 TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   struct Case {
     const char * file;

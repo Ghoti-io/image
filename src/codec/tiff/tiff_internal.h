@@ -154,6 +154,9 @@ typedef struct {
                           ///< has_extra_samples.
   bool has_extra_samples;
   bool tiled; ///< True when TileWidth and TileLength are present.
+  /** The file's byte order, copied here so a row converter that reads 16-bit
+   * samples does not need the document state to find it. */
+  bool file_big_endian;
   uint32_t rows_per_strip;
   uint32_t tile_width;
   uint32_t tile_height;

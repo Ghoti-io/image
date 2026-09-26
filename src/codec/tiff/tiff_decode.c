@@ -58,9 +58,20 @@ typedef struct {
   size_t row_bytes; ///< Bytes per stored row of the block, padding included.
 } tiff_block_t;
 
+/** Bytes one stored row of @p pixels pixels occupies.
+ *
+ * Rounded up to a whole byte, because TIFF 6.0 section 3 pads every row to a
+ * byte boundary - which is why a 73-pixel-wide 4-bit image has 37-byte rows
+ * and not 36.5. Getting this wrong shears the picture one pixel further left
+ * on every row, which looks like a decoder that cannot count rather than one
+ * that cannot round. */
+static size_t tiff_row_bytes(const gimg_tiff_ifd_t * ifd, size_t pixels) {
+  const size_t bits = pixels * ifd->samples_per_pixel * ifd->bits_per_sample;
+  return (bits + 7u) / 8u;
+}
+
 static void tiff_block_rect(
     const gimg_tiff_ifd_t * ifd, size_t index, tiff_block_t * out) {
-  const size_t spp = ifd->samples_per_pixel;
   if (ifd->tiled) {
     const size_t across =
         ((size_t)ifd->width + ifd->tile_width - 1u) / ifd->tile_width;
@@ -68,14 +79,67 @@ static void tiff_block_rect(
     out->y = (uint32_t)((index / across) * ifd->tile_height);
     out->width = ifd->tile_width;
     out->height = ifd->tile_height;
-    out->row_bytes = (size_t)ifd->tile_width * spp;
+    out->row_bytes = tiff_row_bytes(ifd, ifd->tile_width);
     return;
   }
   out->x = 0u;
   out->y = (uint32_t)(index * ifd->rows_per_strip);
   out->width = ifd->width;
   out->height = ifd->rows_per_strip;
-  out->row_bytes = (size_t)ifd->width * spp;
+  out->row_bytes = tiff_row_bytes(ifd, ifd->width);
+}
+
+/**
+ * One sample out of a packed row.
+ *
+ * TIFF packs sub-byte samples **most significant bit first** within each
+ * byte (section 3), and a row starts on a byte boundary, so sample n of a
+ * 4-bit row is the high nibble of byte n/2 when n is even. Sixteen-bit
+ * samples are two bytes in the file's own order, which is why this needs to
+ * know it: a 16-bit TIFF written on a big-endian machine and read as
+ * little-endian is not subtly wrong, it is noise.
+ */
+static uint32_t tiff_sample(const unsigned char * row, size_t index,
+    unsigned bits, bool big_endian) {
+  switch (bits) {
+  case 8u:
+    return row[index];
+  case 16u: {
+    const unsigned char * p = row + (index * 2u);
+    return big_endian ? (((uint32_t)p[0] << 8) | p[1])
+                      : (((uint32_t)p[1] << 8) | p[0]);
+  }
+  default: {
+    const size_t bit = index * bits;
+    const unsigned shift = (unsigned)(8u - bits - (bit & 7u));
+    const uint32_t mask = (1u << bits) - 1u;
+    return (row[bit >> 3] >> shift) & mask;
+  }
+  }
+}
+
+/** The largest value a sample of @p bits bits can hold. */
+static uint32_t tiff_sample_max(unsigned bits) {
+  return (bits >= 32u) ? 0xFFFFFFFFu : ((1u << bits) - 1u);
+}
+
+/**
+ * A sample of @p bits bits as an 8-bit one.
+ *
+ * For 1, 2 and 4 bits this is exact and there is nothing to choose: 255 is
+ * divisible by 1, 3 and 15, so `v * 255 / max` has no remainder and every
+ * reader agrees. Sixteen bits is the case with a choice in it, and this
+ * takes the high byte for the reason tiff_map8 does - measured against
+ * libtiff rather than assumed.
+ */
+static uint8_t tiff_to_8(uint32_t v, unsigned bits) {
+  if (bits == 8u) {
+    return (uint8_t)v;
+  }
+  if (bits == 16u) {
+    return (uint8_t)(v >> 8);
+  }
+  return (uint8_t)((v * 255u) / tiff_sample_max(bits));
 }
 
 /**
@@ -117,29 +181,49 @@ static uint8_t tiff_map8(const gimg_tiff_ifd_t * ifd, uint16_t v) {
  * @param src First sample of the row inside the block.
  * @param dst First byte of the destination row, at the block's x offset.
  * @param pixels How many pixels of this row lie inside the image.
+ *
+ * The destination is 16-bit when @p wide, and then every value written is a
+ * 16-bit one in host order - which is what GIMG_PIXEL_GRAY16 and RGBA16 mean.
  */
 static void tiff_convert_row(const gimg_tiff_ifd_t * ifd,
-    const unsigned char * src, unsigned char * dst, size_t pixels) {
+    const unsigned char * src, unsigned char * dst, size_t pixels,
+    bool wide) {
+  const unsigned bits = ifd->bits_per_sample;
+  const bool be = ifd->file_big_endian;
+  const size_t spp = ifd->samples_per_pixel;
+  uint16_t * dst16 = (uint16_t *)(void *)dst;
+
   switch (ifd->photometric) {
   case GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO:
-    // Zero is white, so the sample is the complement of the intensity the
-    // library's GRAY8 carries (TIFF 6.0 section 8).
+  case GIMG_TIFF_PHOTOMETRIC_BLACK_IS_ZERO: {
+    // Zero is white in one of these and black in the other (section 8), and
+    // the complement is taken in whatever width the output is, not in the
+    // file's - complementing a 4-bit sample and then widening it is a
+    // different picture from widening it and then complementing.
+    const bool invert =
+        ifd->photometric == GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO;
     for (size_t i = 0; i < pixels; i++) {
-      dst[i] = (unsigned char)(255u - src[i]);
+      const uint32_t v = tiff_sample(src, i * spp, bits, be);
+      if (wide) {
+        const uint16_t w16 = (uint16_t)v;
+        dst16[i] = invert ? (uint16_t)(65535u - w16) : w16;
+      }
+      else {
+        const uint8_t v8 = tiff_to_8(v, bits);
+        dst[i] = invert ? (uint8_t)(255u - v8) : v8;
+      }
     }
     return;
-  case GIMG_TIFF_PHOTOMETRIC_BLACK_IS_ZERO:
-    memcpy(dst, src, pixels);
-    return;
+  }
   case GIMG_TIFF_PHOTOMETRIC_PALETTE: {
     // The map is all reds, then all greens, then all blues (section 8), so
     // each channel is one third of the way further in.
     const size_t third = ifd->color_map_count / 3u;
     for (size_t i = 0; i < pixels; i++) {
-      const size_t idx = src[i];
+      const size_t idx = tiff_sample(src, i, bits, be);
       unsigned char * p = dst + (i * 4u);
       if (idx >= third) {
-        // An index the map does not reach.  Opaque black rather than a read
+        // An index the map does not reach. Opaque black rather than a read
         // past the end; the load already refused a map shorter than the bit
         // depth needs, so this is reachable only from a map longer than three
         // times its third, which no writer produces.
@@ -156,32 +240,44 @@ static void tiff_convert_row(const gimg_tiff_ifd_t * ifd,
   }
   case GIMG_TIFF_PHOTOMETRIC_RGB:
   default: {
-    const size_t spp = ifd->samples_per_pixel;
-    const bool associated = ifd->has_extra_samples && spp == 4u &&
+    const bool associated = ifd->has_extra_samples && spp >= 4u &&
         ifd->extra_samples == GIMG_TIFF_EXTRA_ASSOCIATED_ALPHA;
+    const uint32_t full = wide ? 65535u : 255u;
     for (size_t i = 0; i < pixels; i++) {
-      const unsigned char * s = src + (i * spp);
-      unsigned char * p = dst + (i * 4u);
-      const unsigned char a = spp == 4u ? s[3] : 255u;
-      if (associated && a != 0u && a != 255u) {
+      const size_t at = i * spp;
+      uint32_t ch[4];
+      for (size_t k = 0; k < 3u; k++) {
+        const uint32_t v = tiff_sample(src, at + k, bits, be);
+        ch[k] = wide ? v : tiff_to_8(v, bits);
+      }
+      ch[3] = (spp >= 4u)
+          ? (wide ? tiff_sample(src, at + 3u, bits, be)
+                  : tiff_to_8(tiff_sample(src, at + 3u, bits, be), bits))
+          : full;
+      if (associated && ch[3] != 0u && ch[3] != full) {
         // Associated alpha is premultiplied (section 18) and this library's
-        // RGBA8 is not, so the colour is divided back out.  Rounded, and
+        // RGBA is not, so the colour is divided back out. Rounded, and
         // clamped because a file may store a colour brighter than its own
         // alpha allows, which unpremultiplying would otherwise overflow.
-        for (int k = 0; k < 3; k++) {
-          const unsigned v = ((unsigned)s[k] * 255u + (a / 2u)) / a;
-          p[k] = (unsigned char)(v > 255u ? 255u : v);
+        for (size_t k = 0; k < 3u; k++) {
+          const uint32_t v =
+              ((uint32_t)ch[k] * full + (ch[3] / 2u)) / ch[3];
+          ch[k] = v > full ? full : v;
         }
       }
-      else if (associated && a == 0u) {
-        p[0] = p[1] = p[2] = 0u;
+      else if (associated && ch[3] == 0u) {
+        ch[0] = ch[1] = ch[2] = 0u;
+      }
+      if (wide) {
+        for (size_t k = 0; k < 4u; k++) {
+          dst16[(i * 4u) + k] = (uint16_t)ch[k];
+        }
       }
       else {
-        p[0] = s[0];
-        p[1] = s[1];
-        p[2] = s[2];
+        for (size_t k = 0; k < 4u; k++) {
+          dst[(i * 4u) + k] = (uint8_t)ch[k];
+        }
       }
-      p[3] = a;
     }
     return;
   }
@@ -216,13 +312,22 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_LIMIT;
   }
 
-  // Grayscale keeps one channel; everything else becomes RGBA8, which is what
+  // Grayscale keeps one channel; everything else becomes RGBA, which is what
   // the BMP and GIF decoders also hand back for an indexed or colour image.
+  //
+  // Sixteen bits stay sixteen bits. Narrowing here would be a decision about
+  // the picture rather than about how it is stored, and this library has
+  // GRAY16 and RGBA16 precisely so a caller can make that decision itself; a
+  // palette image is the exception, because its map is narrowed to eight
+  // whatever the indices are wide.
   const bool gray = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO ||
       ifd->photometric == GIMG_TIFF_PHOTOMETRIC_BLACK_IS_ZERO;
-  const GIMG_Pixel_Format * format = gray ? &GIMG_PIXEL_GRAY8
-                                          : &GIMG_PIXEL_RGBA8;
-  const size_t out_bpp = gray ? 1u : 4u;
+  const bool wide = ifd->bits_per_sample == 16u &&
+      ifd->photometric != GIMG_TIFF_PHOTOMETRIC_PALETTE;
+  const GIMG_Pixel_Format * format = gray
+      ? (wide ? &GIMG_PIXEL_GRAY16 : &GIMG_PIXEL_GRAY8)
+      : (wide ? &GIMG_PIXEL_RGBA16 : &GIMG_PIXEL_RGBA8);
+  const size_t out_bpp = (gray ? 1u : 4u) * (wide ? 2u : 1u);
 
   GIMG_Raster * raster = NULL;
   GIMG_Result r = gimg_raster_create_with_allocator(alloc, ifd->width,
@@ -262,7 +367,7 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
       }
       unsigned char * dst = out + ((size_t)(rect.y + row) * out_stride) +
           ((size_t)rect.x * out_bpp);
-      tiff_convert_row(ifd, src + at, dst, across);
+      tiff_convert_row(ifd, src + at, dst, across, wide);
     }
   }
 

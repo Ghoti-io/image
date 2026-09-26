@@ -257,6 +257,7 @@ static void tiff_ifd_defaults(gimg_tiff_ifd_t * ifd) {
 static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
     GIMG_Diagnostics * diag, gimg_tiff_ifd_t * ifd, uint32_t * out_next) {
   tiff_ifd_defaults(ifd);
+  ifd->file_big_endian = st->big_endian;
   *out_next = 0u;
 
   if ((size_t)at + 2u > st->file_size) {
@@ -503,14 +504,21 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
         "SampleFormat names something other than an unsigned integer");
     return GIMG_ERR_UNSUPPORTED;
   }
-  if (ifd->bits_per_sample != 8u) {
+  switch (ifd->bits_per_sample) {
+  case 1u:
+  case 2u:
+  case 4u:
+  case 8u:
+  case 16u:
+    break;
+  default:
     // Zero is what the parser leaves when the samples disagree with each
     // other, which is a different statement from "a depth this codec does not
     // read", and the caller is told which.
     tiff_diag(diag, which,
         ifd->bits_per_sample == 0u
             ? "BitsPerSample differs between samples; not read yet"
-            : "only eight bits per sample is read so far");
+            : "a bit depth other than 1, 2, 4, 8 or 16; not read yet");
     return GIMG_ERR_UNSUPPORTED;
   }
   switch (ifd->photometric) {
@@ -526,6 +534,8 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
       tiff_diag(diag, which, "a palette image with more than one sample");
       return GIMG_ERR_UNSUPPORTED;
     }
+    // 3 * 2**BitsPerSample entries (section 8). At 16 bits that is 196,608
+    // of them, which is legal and is what depth/flower-palette-16.tif has.
     const size_t want = (size_t)3u << ifd->bits_per_sample;
     if (ifd->color_map_count < want) {
       tiff_diag(diag, which,

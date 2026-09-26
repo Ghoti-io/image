@@ -151,10 +151,31 @@ def rgb_ramp(w, h):
     return bytes(out)
 
 
+def pack_rows(values, w, h, bps, spp=1):
+    """Pack samples most significant bit first, each row starting on a byte.
+
+    TIFF 6.0 section 3: a row is padded to a byte boundary, which is why a
+    6-pixel 4-bit row is three bytes and not two and a half.
+    """
+    out = bytearray()
+    for y in range(h):
+        acc = 0
+        nbits = 0
+        for x in range(w * spp):
+            acc = (acc << bps) | (values[y * w * spp + x] & ((1 << bps) - 1))
+            nbits += bps
+            while nbits >= 8:
+                nbits -= 8
+                out.append((acc >> nbits) & 0xFF)
+        if nbits:
+            out.append((acc << (8 - nbits)) & 0xFF)
+    return bytes(out)
+
+
 def strip_fields(w, h, data, photometric, spp=1, extra=None, rows=None,
                  colormap=None, bps=8):
     rows = h if rows is None else rows
-    row_bytes = w * spp
+    row_bytes = (w * spp * bps + 7) // 8
     strips = (h + rows - 1) // rows
     # One strip here, or several; the offsets are filled in by build() only
     # for the single-strip case, so multi-strip files pass explicit offsets.
@@ -275,6 +296,58 @@ def main():
     write("tiff_two_pages.tif",
           build("II", [(strip_fields(4, 4, a, 1), a),
                        (strip_fields(4, 4, b, 1), b)]))
+
+    # ---- Every bit depth this codec reads, at both ends of the range ----
+    #
+    # The sub-byte depths are where a row's byte padding shows: 6 pixels at 4
+    # bits is three bytes, and a decoder that computed two and a half shears
+    # the picture one pixel further left on every row.
+    for bps in (1, 2, 4):
+        top = (1 << bps) - 1
+        vals = [((y * 6 + x) * top // (6 * 5 - 1)) for y in range(5)
+                for x in range(6)]
+        packed = pack_rows(vals, 6, 5, bps)
+        write("tiff_6x5_gray%d.tif" % bps,
+              build("II", [(strip_fields(6, 5, packed, 1, bps=bps), packed)]))
+
+    # 16-bit, in both byte orders, because a 16-bit sample is the one place a
+    # file's declared order reaches past the header and into the pixels.
+    wide = bytearray()
+    for i in range(W * H):
+        wide += struct.pack("<H", i * 65535 // (W * H - 1))
+    wide_be = bytearray()
+    for i in range(W * H):
+        wide_be += struct.pack(">H", i * 65535 // (W * H - 1))
+    write("tiff_4x4_gray16_le.tif",
+          build("II", [(strip_fields(W, H, bytes(wide), 1, bps=16),
+                        bytes(wide))]))
+    write("tiff_4x4_gray16_be.tif",
+          build("MM", [(strip_fields(W, H, bytes(wide_be), 1, bps=16),
+                        bytes(wide_be))]))
+
+    rgb16 = bytearray()
+    for y in range(H):
+        for x in range(W):
+            for v in (x * 65535 // (W - 1), y * 65535 // (H - 1),
+                      (x + y) * 65535 // (W + H - 2)):
+                rgb16 += struct.pack("<H", v)
+    write("tiff_4x4_rgb16.tif",
+          build("II", [(strip_fields(W, H, bytes(rgb16), 2, spp=3, bps=16),
+                        bytes(rgb16))]))
+
+    # A 4-bit palette: sixteen entries, and the indices packed two to a byte.
+    idx4 = [((x + y) % 4) for y in range(H) for x in range(W)]
+    packed4 = pack_rows(idx4, W, H, 4)
+    entries4 = 1 << 4
+    r4 = [0] * entries4
+    g4 = [0] * entries4
+    b4 = [0] * entries4
+    for i, (r, g, b) in enumerate(
+            [(0, 0, 0), (65535, 0, 0), (0, 65535, 0), (32768, 32768, 65535)]):
+        r4[i], g4[i], b4[i] = r, g, b
+    write("tiff_4x4_palette4.tif",
+          build("II", [(strip_fields(W, H, packed4, 3, bps=4,
+                                     colormap=r4 + g4 + b4), packed4)]))
 
     # ---- Refusals ----
     write("tiff_bad_magic.tif", b"II\x2b\x00" + b"\x00" * 12)

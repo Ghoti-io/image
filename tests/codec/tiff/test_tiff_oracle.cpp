@@ -114,7 +114,8 @@ std::vector<std::string> corpus() {
 }
 
 /** What this library makes of a file, widened to RGBA8. */
-Image ours(const std::string & dir, const std::string & name) {
+Image ours(const std::string & dir, const std::string & name,
+    bool narrow_by_high_byte) {
   Image img;
   std::ifstream f(dir + "/" + name, std::ios::binary);
   const std::vector<uint8_t> bytes(
@@ -141,12 +142,43 @@ Image ours(const std::string & dir, const std::string & name) {
           const uint8_t * src = p + ((size_t)y * stride) + ((size_t)x * bpp);
           uint8_t * dst = img.rgba.data() +
               (((size_t)y * img.width + x) * 4u);
-          if (bpp == 1u) {
+          // A 16-bit raster is narrowed to compare, and **libtiff narrows
+          // sixteen bits three different ways depending on which of its
+          // paths the file takes**. All three are measured, not assumed:
+          //
+          //   ColorMap entry   high byte   3139 of 3139 on flower-palette-08
+          //   greyscale sample high byte   3000 of 3000 on flower-minisblack-16
+          //   RGB sample       rounded     9000 of 9000 on flower-rgb-contig-16
+          //
+          // The codec follows libtiff only where the narrowing is forced -
+          // a ColorMap narrowed on the way into an 8-bit raster - and keeps
+          // full precision everywhere else, so a 16-bit file comes back as
+          // GRAY16 or RGBA16 and the caller decides. This comparison is
+          // therefore where the three rules have to be reproduced, and the
+          // caller passes which one applies.
+          const uint16_t * wide = (const uint16_t *)(const void *)src;
+          auto narrow = [narrow_by_high_byte](uint16_t v) {
+            return narrow_by_high_byte
+                ? (uint8_t)(v >> 8)
+                : (uint8_t)(((uint32_t)v * 255u + 32767u) / 65535u);
+          };
+          switch (bpp) {
+          case 1u:
             dst[0] = dst[1] = dst[2] = src[0];
             dst[3] = 255u;
-          }
-          else {
+            break;
+          case 2u:
+            dst[0] = dst[1] = dst[2] = narrow(wide[0]);
+            dst[3] = 255u;
+            break;
+          case 8u:
+            for (size_t k = 0; k < 4u; k++) {
+              dst[k] = narrow(wide[k]);
+            }
+            break;
+          default:
             std::memcpy(dst, src, 4u);
+            break;
           }
         }
       }
@@ -300,9 +332,11 @@ void sweep(const std::string & dir, const std::vector<std::string> & names,
     Tally * t) {
   const std::map<std::string, Reference> refs = ask_libtiff(dir, names);
   for (const std::string & name : names) {
-    const Image a = ours(dir, name);
     const auto found = refs.find(name);
     const Reference ref = (found == refs.end()) ? Reference() : found->second;
+    // Greyscale is the path where libtiff keeps the high byte; see ours().
+    const bool gray = ref.photometric == 0u || ref.photometric == 1u;
+    const Image a = ours(dir, name, gray);
     const Image b = ref.ok ? reference_pixels(name) : Image();
     if (!a.ok && !b.ok) {
       t->both_refused++;
