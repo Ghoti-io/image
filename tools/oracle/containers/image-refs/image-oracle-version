@@ -12,6 +12,7 @@ case "${1:-}" in
   libjpeg)  exec /usr/local/bin/probe_jpeg ;;
   giflib)   exec /usr/local/bin/probe_gif ;;
   libtiff)  exec /usr/local/bin/probe_tiff ;;
+  libtiffpic) printf 'libtiffpic sha256:%s\n' "$(cat /opt/libtiffpic.ref)" ;;
   bmplib)   printf 'bmplib %s\n' "$(cat /opt/bmplib.ref)" ;;
   bmpsuite) printf 'bmpsuite %s\n' "$(cat /opt/bmpsuite.ref)" ;;
   pixbuf)   exec python3 -c 'import gi; gi.require_version("GdkPixbuf", "2.0"); from gi.repository import GdkPixbuf; print("GdkPixbuf %d.%d.%d" % (GdkPixbuf.PIXBUF_MAJOR, GdkPixbuf.PIXBUF_MINOR, GdkPixbuf.PIXBUF_MICRO))' ;;

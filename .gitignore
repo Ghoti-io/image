@@ -50,6 +50,11 @@ tests/data/out
 tests/tools/gif-oracle/build
 tests/tools/tiff-oracle/build
 
+# The libtiff sample corpus, copied out of the pinned oracle image by
+# `make oracle-tools`. The pin is the tarball digest in tools/oracle/VERSIONS;
+# these bytes are a cache of it and do not belong in the tree.
+tests/data/tiff-corpus
+
 # libFuzzer writes a crash-<hash> file beside the binary when it finds one.
 # The interesting ones become test fixtures; none of them belong in the tree.
 # slow-unit-* is the same idea for an input that took longer than -timeout:

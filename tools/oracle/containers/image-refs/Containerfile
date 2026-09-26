@@ -159,6 +159,33 @@ RUN set -eu; \
     printf '%s\n' "$bmpsuite_ref" > /opt/bmpsuite.ref; \
     rm -rf /opt/bmplib/.git /opt/bmpsuite/.git
 
+# The libtiff sample set: 76 real TIFFs, written by encoders that are not ours
+# against a format none of us wrote. Everything tests/data/tiff/generate.py
+# produces is a file whose author already understood the case it covers, which
+# is the flattery a hand-built corpus always offers; this is the corrective.
+#
+# Pinned by the tarball's SHA-256, which tools/oracle/VERSIONS carries and
+# says plainly is our own measurement rather than a published one. The digest
+# is checked here, before anything is extracted, so a changed tarball fails
+# the build rather than quietly becoming the new corpus.
+RUN set -eu; \
+    ref() { awk -v n="$1" '$1 == n { print $2; exit }' /build/VERSIONS; }; \
+    want="$(ref libtiffpic)"; \
+    test -n "$want" || { echo "VERSIONS has no libtiffpic line" >&2; exit 1; }; \
+    want="${want#sha256:}"; \
+    curl -sSL -o /tmp/pics.tar.gz \
+        https://download.osgeo.org/libtiff/pics-3.8.0.tar.gz; \
+    got="$(sha256sum /tmp/pics.tar.gz | cut -d" " -f1)"; \
+    test "$got" = "$want" || { \
+        echo "libtiffpic digest is $got, VERSIONS says $want" >&2; exit 1; }; \
+    mkdir -p /opt/libtiffpic; \
+    tar xzf /tmp/pics.tar.gz -C /opt/libtiffpic --strip-components=1; \
+    rm -f /tmp/pics.tar.gz; \
+    find /opt/libtiffpic -name CVS -type d -prune -exec rm -rf {} +; \
+    n="$(find /opt/libtiffpic \( -name "*.tif" -o -name "*.tiff" \) | wc -l)"; \
+    test "$n" -ge 60 || { echo "libtiffpic has only $n images" >&2; exit 1; }; \
+    printf '%s\n' "$want" > /opt/libtiffpic.ref
+
 # libjpeg-turbo 3.0.4, built here beside Debian's 2.1.5 rather than instead of
 # it.
 #
@@ -284,7 +311,7 @@ RUN set -eu; \
     gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_gif /build/probe_gif.c -lgif; \
     gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_tiff /build/probe_tiff.c -ltiff; \
     rm -rf /build; \
-    for ref in pillow libjpeg giflib libtiff bmplib bmpsuite pixbuf netpbm \
+    for ref in pillow libjpeg giflib libtiff libtiffpic bmplib bmpsuite pixbuf netpbm \
                    imagemagick piexif libjpeg12 ijg10; do \
         /usr/local/bin/image-oracle-version "$ref"; \
     done

@@ -36,7 +36,14 @@
  *   cc -o dump_tiff_pixels_libtiff dump_tiff_pixels_libtiff.c -ltiff
  *
  * Usage: dump_tiff_pixels_libtiff [--page N] [--info] [-o out] <file.tif>
+ *        dump_tiff_pixels_libtiff --batch <outdir>   (paths on stdin)
  * Output: "TIFO" + u32 width LE + u32 height LE + RGBA8, on stdout unless -o.
+ *
+ * --batch exists because a container start costs more than a decode. One run
+ * reads a path per line, writes each raster to <outdir>/<path with slashes
+ * turned to underscores>.raw, and prints one tab-separated line per file
+ * saying what libtiff made of it. Sixty-one files went from sixty-one
+ * container starts to one.
  */
 #include <stdarg.h>
 #include <stdint.h>
@@ -60,6 +67,108 @@ static void quiet(const char * module, const char * fmt, va_list ap) {
   (void)ap;
 }
 
+/** Everything one file's line in --batch mode reports. */
+static int describe(TIFF * tif, uint32_t w, uint32_t h, char * out,
+    size_t out_size) {
+  uint16_t bps = 0, spp = 0, photo = 0xFFFFu, comp = 0, planar = 0;
+  uint32_t tw = 0, tl = 0;
+  TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bps);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &spp);
+  TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photo);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_COMPRESSION, &comp);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_PLANARCONFIG, &planar);
+  TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tw);
+  TIFFGetField(tif, TIFFTAG_TILELENGTH, &tl);
+  return snprintf(out, out_size,
+      "width=%u\theight=%u\tbps=%u\tspp=%u\tphotometric=%u\t"
+      "compression=%u\tplanar=%u\ttiled=%d",
+      w, h, bps, spp, photo, comp, planar, TIFFIsTiled(tif) ? 1 : 0);
+}
+
+/** Turn a corpus-relative path into one flat file name. */
+static void flatten(const char * name, char * out, size_t out_size) {
+  size_t i = 0;
+  for (; name[i] && i + 1u < out_size; i++) {
+    out[i] = (name[i] == '/' || name[i] == '\\') ? '_' : name[i];
+  }
+  out[i] = '\0';
+}
+
+/**
+ * Read paths from stdin, one per line, relative to `base`.
+ *
+ * A file libtiff cannot open or cannot decode prints `status=refused` and is
+ * not an error: the caller is comparing two readers and "it would not read
+ * this" is an answer. Only a broken invocation returns non-zero, so a caller
+ * can still tell "the oracle did not run" from "the oracle said no".
+ */
+static int batch(const char * base, const char * out_dir) {
+  char line[4096];
+  while (fgets(line, (int)sizeof(line), stdin)) {
+    size_t n = strlen(line);
+    while (n > 0u && (line[n - 1u] == '\n' || line[n - 1u] == '\r')) {
+      line[--n] = '\0';
+    }
+    if (n == 0u) {
+      continue;
+    }
+    char full[8192];
+    snprintf(full, sizeof(full), "%s/%s", base, line);
+    TIFF * tif = TIFFOpen(full, "r");
+    if (!tif) {
+      printf("%s\tstatus=refused\n", line);
+      continue;
+    }
+    uint32_t w = 0, h = 0;
+    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
+    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
+    char info[512];
+    describe(tif, w, h, info, sizeof(info));
+    if (w == 0u || h == 0u || (uint64_t)w * h > (uint64_t)1 << 28) {
+      printf("%s\tstatus=refused\t%s\n", line, info);
+      TIFFClose(tif);
+      continue;
+    }
+    uint32_t * raster = (uint32_t *)_TIFFmalloc((tmsize_t)w * h * 4);
+    if (!raster ||
+        !TIFFReadRGBAImageOriented(tif, w, h, raster, ORIENTATION_TOPLEFT,
+            0)) {
+      printf("%s\tstatus=refused\t%s\n", line, info);
+      if (raster) {
+        _TIFFfree(raster);
+      }
+      TIFFClose(tif);
+      continue;
+    }
+    char flat[4096];
+    flatten(line, flat, sizeof(flat));
+    char raw_path[8192];
+    snprintf(raw_path, sizeof(raw_path), "%s/%s.raw", out_dir, flat);
+    FILE * out = fopen(raw_path, "wb");
+    if (!out) {
+      fprintf(stderr, "cannot write %s\n", raw_path);
+      _TIFFfree(raster);
+      TIFFClose(tif);
+      return 1;
+    }
+    fwrite("TIFO", 1, 4, out);
+    put_u32_le(out, w);
+    put_u32_le(out, h);
+    for (uint32_t i = 0; i < w * h; i++) {
+      const uint32_t p = raster[i];
+      const unsigned char rgba[4] = {(unsigned char)TIFFGetR(p),
+          (unsigned char)TIFFGetG(p), (unsigned char)TIFFGetB(p),
+          (unsigned char)TIFFGetA(p)};
+      fwrite(rgba, 1, 4, out);
+    }
+    fclose(out);
+    _TIFFfree(raster);
+    TIFFClose(tif);
+    printf("%s\tstatus=ok\t%s\n", line, info);
+  }
+  return 0;
+}
+
 int main(int argc, char ** argv) {
   const char * path = NULL;
   const char * out_path = NULL;
@@ -67,6 +176,11 @@ int main(int argc, char ** argv) {
   int info_only = 0;
   int verbose = 0;
 
+  if (argc >= 4 && !strcmp(argv[1], "--batch")) {
+    TIFFSetWarningHandler(quiet);
+    TIFFSetErrorHandler(quiet);
+    return batch(argv[2], argv[3]);
+  }
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--page") && i + 1 < argc) {
       want_page = atoi(argv[++i]);
@@ -86,7 +200,9 @@ int main(int argc, char ** argv) {
   }
   if (!path) {
     fprintf(stderr,
-        "usage: %s [--page N] [--info] [--verbose] [-o out] <file.tif>\n",
+        "usage: %s [--page N] [--info] [--verbose] [-o out] <file.tif>\n"
+        "       %s --batch <base-dir> <out-dir>   (paths on stdin)\n",
+        argv[0],
         argv[0]);
     return 2;
   }

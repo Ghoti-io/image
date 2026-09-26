@@ -25,3 +25,14 @@ libjpeg-turbo   f29eda648547b36aa594c4116c7764a6c8a079b9
 # libjpeg-turbo's and is worth knowing when it next fails to match. It is the
 # only reference here for SOF3 lossless and for arithmetic coding.
 jpeg-10         sha256:8b9eaa13242690ebd03e1728ab1edf97a81a78ed6e83624d493655f31ac95ab5
+
+# The libtiff sample set, 76 real TIFFs covering every bit depth from 2 to 32,
+# planar and contiguous, palette, separated, LUV, and the CCITT fax
+# compressions - the corpus this library's own generator cannot write, because
+# a generator writes what its author already understood.
+#
+# Pinned by the bytes, like jpeg-10 and for the same reason: it is a tarball
+# on a download server with no repository behind it. **The digest is our own
+# measurement of the file we fetched**, taken 2026-09-26; download.osgeo.org
+# publishes no checksum beside it.
+libtiffpic     sha256:e0e34732b61e1ce49eff2c7a079994c856d2a5f772f5228c84678272bc6829a9

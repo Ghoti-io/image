@@ -788,7 +788,7 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep against the four
 # in the line every gate prints. It is not a fallback: nothing selects it
 # automatically, because a gate whose reference is not the one it names prints
 # the same green line as one whose is.
-ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-5
+ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-6
 ORACLE_EXEC := tools/oracle/oracle-exec
 ORACLE_ENGINE ?= docker
 
@@ -848,6 +848,17 @@ oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the im
 		libtiff -- gcc -O2 -g -std=c17 -Wall -Wextra -Werror \
 		-o "$(CURDIR)/tests/tools/tiff-oracle/build/dump_tiff_pixels_libtiff" \
 		"$(CURDIR)/tests/tools/tiff-oracle/dump_tiff_pixels_libtiff.c" -ltiff
+	@# The libtiff sample corpus lives in the image, and the sweep that reads
+	@# it runs on the host, so it is copied out here rather than mounted: a
+	@# read-only mount of the image's own filesystem is not a thing the engine
+	@# offers, and a corpus the comparison cannot open is a comparison that
+	@# silently shrinks. tests/data/tiff-corpus is gitignored - the pin is the
+	@# digest in tools/oracle/VERSIONS, not these bytes.
+	@printf '### Copying the libtiffpic corpus out of %s ###\n' "$(ORACLE_IMAGE)"
+	@rm -rf tests/data/tiff-corpus && mkdir -p tests/data/tiff-corpus
+	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/data/tiff-corpus" \
+		libtiffpic -- sh -c 'cp -R /opt/libtiffpic/. "$$1"' sh \
+		"$(CURDIR)/tests/data/tiff-corpus"
 	@printf '\033[0;32mOracle tools built against the pinned references.\033[0m\n'
 
 .PHONY: oracle-build oracle-verify oracle-tools

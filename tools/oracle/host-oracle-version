@@ -52,6 +52,12 @@ case "${1:-}" in
               printf 'ImageMagick is not installed on this machine\n' >&2; exit 2; }
             printf 'ImageMagick %s\n' "$(magick -version | sed -n 's/^Version: ImageMagick \([0-9.-]*\).*/\1/p' | head -1)" ;;
   piexif)   exec python3 -c 'import piexif; print("piexif", piexif.VERSION)' ;;
+  libtiffpic)
+            # Deliberately not answerable here, for the reason the two below
+            # are not: the corpus is fetched and digest-checked inside the
+            # image, and a host copy is a different directory that nothing
+            # records.
+            printf 'libtiffpic lives only in the oracle image\n' >&2; exit 2 ;;
   libjpeg12|ijg10)
             # Deliberately not answerable here. Both are built from source
             # inside the image, at a commit and a digest tools/oracle/VERSIONS

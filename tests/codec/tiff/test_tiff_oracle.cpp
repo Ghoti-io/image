@@ -51,6 +51,7 @@
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
 #include <iterator>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -68,26 +69,54 @@ struct Image {
 
 std::string data_dir() { return std::string(GIMG_TEST_DATA_TIFF); }
 std::string out_dir() { return std::string(GIMG_TEST_OUT_TIFF); }
+/** The libtiff sample set, copied out of the pinned image by
+ * `make oracle-tools`. Gitignored; the pin is the tarball digest. */
+std::string corpus_dir() {
+  return std::string(GIMG_TEST_DATA_TIFF) + "/../tiff-corpus";
+}
 
-std::vector<std::string> fixtures() {
-  std::vector<std::string> names;
-  DIR * d = opendir(data_dir().c_str());
-  if (!d) { return names; }
+bool looks_like_tiff_name(const std::string & n) {
+  return (n.size() > 4u && n.compare(n.size() - 4u, 4u, ".tif") == 0) ||
+      (n.size() > 5u && n.compare(n.size() - 5u, 5u, ".tiff") == 0);
+}
+
+/** Every .tif under `dir`, one level of subdirectory included - the sample
+ * set keeps its bit-depth files in `depth/`. */
+void collect(const std::string & dir, const std::string & prefix,
+    std::vector<std::string> * out, bool recurse) {
+  DIR * d = opendir(dir.c_str());
+  if (!d) { return; }
   while (struct dirent * e = readdir(d)) {
     const std::string n = e->d_name;
-    if (n.size() > 4u && n.compare(n.size() - 4u, 4u, ".tif") == 0) {
-      names.push_back(n);
+    if (n == "." || n == "..") { continue; }
+    if (looks_like_tiff_name(n)) {
+      out->push_back(prefix + n);
+    }
+    else if (recurse) {
+      collect(dir + "/" + n, prefix + n + "/", out, false);
     }
   }
   closedir(d);
+}
+
+std::vector<std::string> fixtures() {
+  std::vector<std::string> names;
+  collect(data_dir(), "", &names, false);
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+std::vector<std::string> corpus() {
+  std::vector<std::string> names;
+  collect(corpus_dir(), "", &names, true);
   std::sort(names.begin(), names.end());
   return names;
 }
 
 /** What this library makes of a file, widened to RGBA8. */
-Image ours(const std::string & name) {
+Image ours(const std::string & dir, const std::string & name) {
   Image img;
-  std::ifstream f(data_dir() + "/" + name, std::ios::binary);
+  std::ifstream f(dir + "/" + name, std::ios::binary);
   const std::vector<uint8_t> bytes(
       (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
   if (bytes.empty()) { return img; }
@@ -130,23 +159,93 @@ Image ours(const std::string & name) {
   return img;
 }
 
-/** What libtiff makes of the same file, through the pinned image. */
-Image theirs(const std::string & name) {
-  Image img;
-  const std::string root = oracle_gate::repo_root();
-  if (root.empty()) { return img; }
-  const std::string raw = out_dir() + "/" + name + ".libtiff.raw";
-  std::string cmd = "mkdir -p \"" + out_dir() + "\"";
-  if (std::system(cmd.c_str()) != 0) { return img; }
+/** What libtiff said about one file: its fields, and whether it decoded. */
+struct Reference {
+  bool ok = false;
+  unsigned photometric = 0xFFFFu;
+  unsigned compression = 1u;
+  unsigned bps = 0u;
+  unsigned spp = 0u;
+  unsigned planar = 1u;
+  bool tiled = false;
+};
 
-  cmd = "\"" + root + "/tools/oracle/oracle-exec\" --scratch \"" + out_dir() +
-      "\" libtiff -- \"" + root +
-      "/tests/tools/tiff-oracle/build/dump_tiff_pixels_libtiff\" -o \"" +
-      raw + "\" \"" + data_dir() + "/" + name + "\" >/dev/null 2>&1";
-  if (std::system(cmd.c_str()) != 0) {
-    return img; // libtiff refused the file; the caller counts that.
+std::string flatten(const std::string & name) {
+  std::string out = name;
+  for (char & c : out) {
+    if (c == '/') { c = '_'; }
   }
-  std::ifstream f(raw, std::ios::binary);
+  return out;
+}
+
+/**
+ * Ask libtiff about every file in one container run.
+ *
+ * A container start costs more than a decode, and the sample set is
+ * sixty-one files: asked one at a time this took twenty-six seconds, of which
+ * almost all was engine startup. The tool's --batch mode reads the paths on
+ * stdin and writes one raster per file, so the whole sweep is one run.
+ */
+std::map<std::string, Reference> ask_libtiff(const std::string & dir,
+    const std::vector<std::string> & names) {
+  std::map<std::string, Reference> out;
+  const std::string root = oracle_gate::repo_root();
+  if (root.empty()) { return out; }
+  if (std::system(("mkdir -p \"" + out_dir() + "\"").c_str()) != 0) {
+    return out;
+  }
+
+  const std::string list = out_dir() + "/batch.list";
+  {
+    std::ofstream f(list);
+    for (const std::string & n : names) { f << n << "\n"; }
+  }
+  const std::string answers = out_dir() + "/batch.answers";
+  const std::string cmd = "\"" + root + "/tools/oracle/oracle-exec\"" +
+      " --scratch \"" + out_dir() + "\" libtiff -- \"" + root +
+      "/tests/tools/tiff-oracle/build/dump_tiff_pixels_libtiff\" --batch \"" +
+      dir + "\" \"" + out_dir() + "\" < \"" + list + "\" > \"" +
+      answers + "\" 2>/dev/null";
+  if (std::system(cmd.c_str()) != 0) { return out; }
+
+  std::ifstream f(answers);
+  std::string line;
+  while (std::getline(f, line)) {
+    // name \t status=... \t key=value \t ...
+    std::vector<std::string> parts;
+    size_t at = 0;
+    while (at <= line.size()) {
+      const size_t tab = line.find('\t', at);
+      parts.push_back(line.substr(at, tab == std::string::npos
+                  ? std::string::npos
+                  : tab - at));
+      if (tab == std::string::npos) { break; }
+      at = tab + 1u;
+    }
+    if (parts.size() < 2u) { continue; }
+    Reference ref;
+    for (size_t i = 1; i < parts.size(); i++) {
+      const size_t eq = parts[i].find('=');
+      if (eq == std::string::npos) { continue; }
+      const std::string key = parts[i].substr(0, eq);
+      const std::string val = parts[i].substr(eq + 1u);
+      if (key == "status") { ref.ok = (val == "ok"); }
+      else if (key == "photometric") { ref.photometric = (unsigned)std::stoul(val); }
+      else if (key == "compression") { ref.compression = (unsigned)std::stoul(val); }
+      else if (key == "bps") { ref.bps = (unsigned)std::stoul(val); }
+      else if (key == "spp") { ref.spp = (unsigned)std::stoul(val); }
+      else if (key == "planar") { ref.planar = (unsigned)std::stoul(val); }
+      else if (key == "tiled") { ref.tiled = (val != "0"); }
+    }
+    out[parts[0]] = ref;
+  }
+  return out;
+}
+
+/** The raster libtiff left for one file, if it left one. */
+Image reference_pixels(const std::string & name) {
+  Image img;
+  std::ifstream f(out_dir() + "/" + flatten(name) + ".raw", std::ios::binary);
   const std::vector<uint8_t> blob(
       (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
   if (blob.size() < 12u || std::memcmp(blob.data(), "TIFO", 4) != 0) {
@@ -169,33 +268,60 @@ Image theirs(const std::string & name) {
 
 ORACLE_SENTINEL(TiffOracle, libtiff)
 
-TEST(TiffOracle, EveryFixtureLibtiffReadsIsReadTheSameWay) {
-  if (!oracle_gate::reachable("libtiff")) {
-    GTEST_SKIP() << "the sentinel above has already failed the run";
-  }
-  const std::vector<std::string> names = fixtures();
-  ASSERT_FALSE(names.empty()) << "no fixtures under " << data_dir();
+namespace {
 
-  long agreed = 0, differed = 0, both_refused = 0, only_we_read = 0,
-       only_they_read = 0;
-  std::vector<std::string> disagreements, we_alone, they_alone;
+/** libtiff's one-line description of a file, for the lists printed below. */
+std::string describe(const Reference & r) {
+  if (r.photometric == 0xFFFFu && r.bps == 0u) {
+    return "libtiff would not open it";
+  }
+  return "photometric " + std::to_string(r.photometric) + ", " +
+      std::to_string(r.bps) + " bits x " + std::to_string(r.spp) +
+      ", compression " + std::to_string(r.compression) +
+      (r.planar == 2u ? ", planar" : "") + (r.tiled ? ", tiled" : "");
+}
+
+struct Tally {
+  long agreed = 0;
+  long differed = 0;
+  long both_refused = 0;
+  long only_we_read = 0;
+  long only_they_read = 0;
+  std::vector<std::string> disagreements;
+  std::vector<std::string> we_alone;
+  std::vector<std::string> they_alone;
+  std::vector<std::string> neither;
+  long rounding_samples = 0;
+  long rounding_files = 0;
+};
+
+/** Compare one directory's files, sample for sample, in libtiff's space. */
+void sweep(const std::string & dir, const std::vector<std::string> & names,
+    Tally * t) {
+  const std::map<std::string, Reference> refs = ask_libtiff(dir, names);
   for (const std::string & name : names) {
-    const Image a = ours(name);
-    const Image b = theirs(name);
-    if (!a.ok && !b.ok) { both_refused++; continue; }
+    const Image a = ours(dir, name);
+    const auto found = refs.find(name);
+    const Reference ref = (found == refs.end()) ? Reference() : found->second;
+    const Image b = ref.ok ? reference_pixels(name) : Image();
+    if (!a.ok && !b.ok) {
+      t->both_refused++;
+      t->neither.push_back(name + " (" + describe(ref) + ")");
+      continue;
+    }
     if (a.ok && !b.ok) {
-      only_we_read++;
-      we_alone.push_back(name);
+      t->only_we_read++;
+      t->we_alone.push_back(name + " (" + describe(ref) + ")");
       continue;
     }
     if (!a.ok && b.ok) {
-      only_they_read++;
-      they_alone.push_back(name);
+      t->only_they_read++;
+      t->they_alone.push_back(name + " (" + describe(ref) + ")");
       continue;
     }
     if (a.width != b.width || a.height != b.height) {
-      differed++;
-      disagreements.push_back(name + ": geometry, ours " +
+      t->differed++;
+      t->disagreements.push_back(name + ": geometry, ours " +
           std::to_string(a.width) + "x" + std::to_string(a.height) +
           ", libtiff " + std::to_string(b.width) + "x" +
           std::to_string(b.height));
@@ -203,6 +329,8 @@ TEST(TiffOracle, EveryFixtureLibtiffReadsIsReadTheSameWay) {
     }
     size_t first_bad = (size_t)-1;
     long bad_samples = 0;
+    long rounding_samples = 0;
+    const bool palette = ref.photometric == 3u;
     for (size_t i = 0; i < a.rgba.size(); i += 4u) {
       const unsigned alpha = a.rgba[i + 3u];
       for (size_t k = 0; k < 4u; k++) {
@@ -211,18 +339,28 @@ TEST(TiffOracle, EveryFixtureLibtiffReadsIsReadTheSameWay) {
         const unsigned mine = (k == 3u)
             ? alpha
             : ((unsigned)a.rgba[i + k] * alpha + 127u) / 255u;
-        if (mine != b.rgba[i + k]) {
-          bad_samples++;
-          if (first_bad == (size_t)-1) { first_bad = i + k; }
-        }
+        const unsigned theirs = b.rgba[i + k];
+        if (mine == theirs) { continue; }
+        // No tolerance, deliberately. There was one here for a palette
+        // rounding difference, and measuring it turned it into a defect
+        // instead: libtiff narrows a ColorMap with `v >> 8` and this codec
+        // was rescaling, so the two disagreed by one on about half the
+        // entries of a real map. The codec matches now and the comparison is
+        // exact everywhere, which is the only setting in which a real
+        // one-sample defect cannot hide.
+        (void)palette;
+        bad_samples++;
+        if (first_bad == (size_t)-1) { first_bad = i + k; }
       }
     }
+    t->rounding_samples += rounding_samples;
+    if (rounding_samples > 0) { t->rounding_files++; }
     if (bad_samples == 0) {
-      agreed++;
+      t->agreed++;
     }
     else {
-      differed++;
-      disagreements.push_back(name + ": " + std::to_string(bad_samples) +
+      t->differed++;
+      t->disagreements.push_back(name + ": " + std::to_string(bad_samples) +
           " of " + std::to_string(a.rgba.size()) +
           " samples, first at pixel " + std::to_string(first_bad / 4u) +
           " channel " + std::to_string(first_bad % 4u) + ", ours " +
@@ -231,32 +369,97 @@ TEST(TiffOracle, EveryFixtureLibtiffReadsIsReadTheSameWay) {
           ") libtiff " + std::to_string((int)b.rgba[first_bad]));
     }
   }
+}
 
-  std::printf("  %s\n", oracle_gate::provenance("libtiff").c_str());
-  std::printf("  %zu fixtures: %ld agreed, %ld differed, %ld both refused, "
-              "%ld only we read, %ld only libtiff read\n",
-      names.size(), agreed, differed, both_refused, only_we_read,
-      only_they_read);
-
+void report(const char * label, const Tally & t) {
+  std::printf("  %s: %ld agreed, %ld differed, %ld both refused, %ld only we "
+              "read, %ld only libtiff read\n",
+      label, t.agreed, t.differed, t.both_refused, t.only_we_read,
+      t.only_they_read);
   // What libtiff reads and this codec does not is the to-do list, so it is
   // printed rather than counted. The reverse would be a finding: a file this
-  // library reads and the reference implementation will not is either a
-  // fixture that is not a TIFF or a place where we are being too generous.
-  for (const std::string & n : they_alone) {
+  // library reads and the reference implementation will not is either not a
+  // TIFF or a place where we are being too generous.
+  for (const std::string & n : t.they_alone) {
     std::printf("    libtiff reads and we do not: %s\n", n.c_str());
   }
-  for (const std::string & n : we_alone) {
+  for (const std::string & n : t.we_alone) {
     std::printf("    we read and libtiff does not: %s\n", n.c_str());
   }
+  for (const std::string & n : t.neither) {
+    std::printf("    neither reads: %s\n", n.c_str());
+  }
+  if (t.rounding_files > 0) {
+    std::printf("    %ld palette samples in %ld files differ by the "
+                "documented rounding of one\n",
+        t.rounding_samples, t.rounding_files);
+  }
+}
+
+} // namespace
+
+TEST(TiffOracle, EveryFixtureLibtiffReadsIsReadTheSameWay) {
+  if (!oracle_gate::reachable("libtiff")) {
+    GTEST_SKIP() << "the sentinel above has already failed the run";
+  }
+  const std::vector<std::string> names = fixtures();
+  ASSERT_FALSE(names.empty()) << "no fixtures under " << data_dir();
+  std::printf("  %s\n", oracle_gate::provenance("libtiff").c_str());
+
+  Tally t;
+  sweep(data_dir(), names, &t);
+  report("fixtures", t);
 
   // The alarm on the sweep itself. A comparison that reached no file agrees
   // with everything, and the count is the only thing that separates "libtiff
-  // read eleven files and said the same as us" from "libtiff read none".
-  EXPECT_GT(agreed + differed, 8)
-      << "only " << (agreed + differed)
+  // read twelve files and said the same as us" from "libtiff read none".
+  EXPECT_GT(t.agreed + t.differed, 8)
+      << "only " << (t.agreed + t.differed)
       << " files were compared at all, so this sweep is not seeing the corpus";
+  for (const std::string & line : t.disagreements) {
+    ADD_FAILURE() << line;
+  }
+}
 
-  for (const std::string & line : disagreements) {
+/**
+ * The same comparison over files this library did not write.
+ *
+ * tests/data/tiff/ is a generator's output, and a generator writes what its
+ * author had already understood: every fixture there covers a case somebody
+ * thought of. The libtiff sample set is 76 files written by other encoders
+ * against a format none of us wrote, which is the only kind of corpus that
+ * can surprise a decoder.
+ *
+ * **It is not required to be fully read**, and that is the point of running
+ * it now rather than when the codec is finished. What it must do is never
+ * *disagree*: a file this codec reads at all it must read the same way
+ * libtiff does. The count it cannot read is printed every run and is the work
+ * queue.
+ */
+TEST(TiffOracle, NothingInTheLibtiffSampleSetIsReadDifferently) {
+  if (!oracle_gate::reachable("libtiff")) {
+    GTEST_SKIP() << "the sentinel above has already failed the run";
+  }
+  const std::vector<std::string> names = corpus();
+  ASSERT_FALSE(names.empty())
+      << "the libtiff sample set is not in " << corpus_dir()
+      << ".\nRun `make oracle-tools`, which copies it out of the pinned "
+         "image. It is gitignored on purpose: the pin is the tarball digest "
+         "in tools/oracle/VERSIONS, not these bytes.";
+
+  Tally t;
+  sweep(corpus_dir(), names, &t);
+  report("libtiffpic", t);
+  std::printf("  %s\n", oracle_gate::provenance("libtiffpic").c_str());
+
+  // The see-alarm. libtiff's own RGBA reader refuses the 6-, 10-, 12-, 14-,
+  // 24- and 32-bit files in this set, so the number of images either reader
+  // can open is well under sixty-one; what this asserts is that the sweep is
+  // looking at the corpus at all, and it rises as the codec grows.
+  EXPECT_GT(t.agreed + t.differed + t.only_they_read, 30)
+      << "the sample set has 61 images and this run saw "
+      << (t.agreed + t.differed + t.only_they_read);
+  for (const std::string & line : t.disagreements) {
     ADD_FAILURE() << line;
   }
 }
