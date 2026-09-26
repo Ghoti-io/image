@@ -38,7 +38,9 @@
 #include "../codec_internal.h"
 #include "tiff_internal.h"
 
-#define TIFF_CAPABILITIES (GIMG_CAP_READ | GIMG_CAP_PALETTE)
+#define TIFF_CAPABILITIES                                                      \
+  (GIMG_CAP_READ | GIMG_CAP_WRITE | GIMG_CAP_PALETTE | GIMG_CAP_16BPC |        \
+      GIMG_CAP_CMYK)
 
 #if defined(__GNUC__) || defined(__clang__)
 #define GIMG_CONSTRUCTOR __attribute__((constructor))
@@ -68,6 +70,7 @@ static void gimg_tiff_register(void) {
   }
   codec->capabilities = TIFF_CAPABILITIES;
   gimg_codec_set_load_cb(codec, (gimg_codec_load_fn)gimg_tiff_load);
+  gimg_codec_set_save_cb(codec, (gimg_codec_save_fn)gimg_tiff_save);
   gimg_codec_set_decode_cb(codec, (gimg_codec_decode_fn)gimg_tiff_decode);
   gimg_codec_set_free_doc_private(codec, gimg_tiff_free_doc_state);
   (void)gimg_codec_register(codec);

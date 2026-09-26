@@ -53,10 +53,27 @@ converted, because that field carries dots per inch and nothing else.
 
 ## Save
 
-There is no TIFF writer. `GIMG_CAP_WRITE` is not set, so `gimg_doc_save()`
-refuses the format rather than half-writing one, and the cross-codec sweeps
-that look for a save target leave TIFF out rather than reporting its absence
-as a stream of failures.
+**Every item becomes a page.** TIFF is the only format this library writes
+that holds several pictures as pictures rather than as frames of an animation
+or as a thumbnail, so a document of several items goes out whole - none of
+the "item 0 and a documented silence" that BMP and JPEG need.
+
+Written: grayscale at 8 and 16 bits, RGB and RGBA at 8 and 16, and CMYK at 8
+and 16, always interleaved (PlanarConfiguration 1) and always in strips of
+about eight kilobytes. `ExtraSamples` says *unassociated* for an RGBA raster,
+because that is what this library's RGBA means and because libtiff's guess
+for a fourth sample it was not told about is "unspecified" rather than alpha.
+Resolution is written when the document carries DPI.
+
+Four options, all in @ref api_options "API options": `tiff_compression`
+(none, PackBits, LZW or Deflate), `tiff_predictor` (horizontal differencing),
+`tiff_big_endian`, and `tiff_rows_per_strip`. The default is an uncompressed
+little-endian file, which is the format's own default.
+
+The file is laid out in one pass over a plan rather than written and patched.
+Everything in a TIFF is found by absolute offset, so a writer either computes
+its offsets before it writes a byte or seeks back to fix them up - and seeking
+back is not available, because an output stream here is append-only.
 
 ## Compliance checklist
 
@@ -65,11 +82,13 @@ as a stream of failures.
 | Byte order | "II" and "MM" | - |
 | Version | 42 | 43 (BigTIFF) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | IFD chain | Any number up to 4096, refusing a chain that does not advance | A chain that points backwards or at itself &rarr; `GIMG_ERR_CORRUPT`; `max_frame_count` caps it lower |
-| Compression | 1 (none) | 2, 3, 4 (CCITT), 5 (LZW), 6/7 (JPEG), 8 (Deflate), 32773 (PackBits) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
-| Photometric | 0, 1, 2, 3 | 4 (mask), 5 (CMYK), 6 (YCbCr) and the rest &rarr; `GIMG_ERR_UNSUPPORTED` |
-| BitsPerSample | 8 | 1, 2, 4, 16, 32 &rarr; `GIMG_ERR_UNSUPPORTED`; samples that differ from each other are refused as that, separately |
-| SamplesPerPixel | 1 for grayscale and palette, 3 or 4 for RGB | Anything else &rarr; `GIMG_ERR_UNSUPPORTED` |
-| PlanarConfiguration | 1 (interleaved) | 2 (separate planes) &rarr; `GIMG_ERR_UNSUPPORTED` |
+| Compression (read) | 1 (none), 5 (LZW, including the pre-1993 bit-reversed spelling), 8 and 32946 (Deflate), 32773 (PackBits) | 2, 3, 4 (CCITT), 6/7 (JPEG), 32809 (ThunderScan), 34676/34677 (LogLuv) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| Compression (write) | none, PackBits, LZW, Deflate, with or without Predictor 2 | - |
+| Predictor | 1 and 2, at 8 and 16 bits | 3 (floating point) and any other value &rarr; `GIMG_ERR_UNSUPPORTED` |
+| Photometric | 0, 1, 2, 3, 5 (separated, read as CMYK) | 4 (mask), 6 (YCbCr), 32844/32845 (LogLuv) and the rest &rarr; `GIMG_ERR_UNSUPPORTED` |
+| BitsPerSample | 1, 2, 4, 8 and 16 | 6, 10, 12, 14, 24, 32 &rarr; `GIMG_ERR_UNSUPPORTED`; samples that differ from each other are refused as that, separately |
+| SamplesPerPixel | 1 for grayscale and palette, 3 or 4 for RGB, 4 for separated | Anything else &rarr; `GIMG_ERR_UNSUPPORTED` |
+| PlanarConfiguration | 1 and 2 | Any other value &rarr; `GIMG_ERR_CORRUPT`; the writer always writes 1 |
 | SampleFormat | 1 (unsigned integer) | 2 (signed), 3 (float) &rarr; `GIMG_ERR_UNSUPPORTED` |
 | Geometry | Strips and tiles | A block list whose length disagrees with the geometry &rarr; `GIMG_ERR_CORRUPT`; a block outside the file &rarr; `GIMG_ERR_CORRUPT` |
 | Source | A stream that knows its length | A non-seekable stream &rarr; `GIMG_ERR_UNSUPPORTED`, named |
@@ -122,11 +141,11 @@ divergence. The sweep prints that list every run.
 
 Listed so the absences are visible rather than discovered:
 
-- **Every compression method.** LZW, PackBits, Deflate, CCITT G3/G4 and JPEG.
-- **Bit depths other than 8**, including the 1-bit bilevel images that are
-  most of the TIFFs in the world.
-- **PlanarConfiguration 2**, CMYK, YCbCr, and transparency masks.
-- **A writer.**
+- **CCITT Group 3 and Group 4**, JPEG-in-TIFF, ThunderScan and LogLuv - the
+  compressions the sample set still names every run.
+- **YCbCr** (PhotometricInterpretation 6), and transparency masks.
+- **Bit depths of 6, 10, 12, 14, 24 and 32**, which libtiff's own RGBA reader
+  also refuses.
 - **Pyramids and SubIFDs.** `GIMG_ITEM_LEVEL` exists for them and nothing
   sets it yet; a reduced-resolution subfile currently loads as another page.
 - **Region decode.** A TIFF too large to hold is refused through

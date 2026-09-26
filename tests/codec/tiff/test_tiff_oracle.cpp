@@ -553,6 +553,152 @@ TEST(TiffOracle, NothingInTheLibtiffSampleSetIsReadDifferently) {
   }
 }
 
+/**
+ * Everything this codec writes, libtiff reads and agrees with.
+ *
+ * The round-trip sweep already checks that a TIFF this library writes is one
+ * it can read back, and that is the weaker half: a writer and a reader that
+ * share a misunderstanding agree with each other perfectly. This is the other
+ * half. Every fixture is written out in five ways - stored, PackBits, LZW,
+ * Deflate with the predictor, and big-endian - and libtiff is asked to read
+ * each one and compared sample for sample against the raster that went in.
+ */
+TEST(TiffOracle, EverythingWeWriteLibtiffReadsAndAgreesWith) {
+  if (!oracle_gate::reachable("libtiff")) {
+    GTEST_SKIP() << "the sentinel above has already failed the run";
+  }
+  struct Mode {
+    const char * name;
+    uint8_t compression;
+    uint8_t predictor;
+    uint8_t big_endian;
+  };
+  const Mode modes[] = {
+      {"stored", 0u, 0u, 0u},
+      {"packbits", 1u, 0u, 0u},
+      {"lzw", 2u, 0u, 0u},
+      {"deflate-predictor", 3u, 2u, 0u},
+      {"big-endian", 0u, 0u, 1u},
+  };
+
+  const std::string written_dir = out_dir() + "/written";
+  ASSERT_EQ(std::system(("rm -rf \"" + written_dir + "\" && mkdir -p \"" +
+                           written_dir + "\"")
+                            .c_str()),
+      0);
+
+  // Write everything first, then ask libtiff about the lot in one run.
+  std::vector<std::string> names;
+  std::map<std::string, std::vector<uint8_t>> expected;
+  std::map<std::string, std::pair<uint32_t, uint32_t>> shape;
+  long refused = 0;
+  for (const std::string & fixture : fixtures()) {
+    const Image source = ours(data_dir(), fixture, false);
+    if (!source.ok) { continue; }
+    std::vector<uint8_t> bytes;
+    {
+      std::ifstream f(data_dir() + "/" + fixture, std::ios::binary);
+      bytes.assign((std::istreambuf_iterator<char>(f)),
+          std::istreambuf_iterator<char>());
+    }
+    GIMG_Stream * in = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &in),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &doc), GIMG_OK);
+
+    for (const Mode & m : modes) {
+      GIMG_Stream * out = nullptr;
+      ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+      GIMG_Save_Options opts = {};
+      opts.tiff_compression = m.compression;
+      opts.tiff_predictor = m.predictor;
+      opts.tiff_big_endian = m.big_endian;
+      GIMG_Save_Report rep = {};
+      const GIMG_Result sr = gimg_doc_save(doc, out, "tiff", &opts, &rep);
+      if (sr == GIMG_OK) {
+        const void * buf = nullptr;
+        size_t size = 0;
+        gimg_stream_output_buffer(out, &buf, &size);
+        const std::string name = fixture + "." + m.name + ".tif";
+        std::ofstream f(written_dir + "/" + name, std::ios::binary);
+        f.write((const char *)buf, (long)size);
+        f.close();
+        names.push_back(name);
+        expected[name] = source.rgba;
+        shape[name] = {source.width, source.height};
+      }
+      else {
+        // A raster this writer has no TIFF shape for - a palette format, or
+        // a depth other than 8 and 16 - is refused rather than written
+        // wrong, and the count is printed so a writer that quietly stopped
+        // writing anything would show up as a number rather than as silence.
+        refused++;
+      }
+      gimg_stream_destroy(out);
+    }
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(in);
+  }
+  ASSERT_FALSE(names.empty()) << "nothing was written, so nothing was checked";
+
+  const std::map<std::string, Reference> refs =
+      ask_libtiff(written_dir, names);
+  long agreed = 0, differed = 0, unreadable = 0;
+  std::vector<std::string> problems;
+  for (const std::string & name : names) {
+    const auto found = refs.find(name);
+    if (found == refs.end() || !found->second.ok) {
+      unreadable++;
+      problems.push_back(name + ": libtiff would not read what we wrote");
+      continue;
+    }
+    const Image got = reference_pixels(name);
+    const std::vector<uint8_t> & want = expected[name];
+    if (!got.ok || got.width != shape[name].first ||
+        got.height != shape[name].second) {
+      differed++;
+      problems.push_back(name + ": geometry changed on the way out");
+      continue;
+    }
+    long bad = 0;
+    size_t first_bad = (size_t)-1;
+    for (size_t i = 0; i < want.size() && i < got.rgba.size(); i += 4u) {
+      const unsigned alpha = want[i + 3u];
+      for (size_t k = 0; k < 4u; k++) {
+        // libtiff's raster is premultiplied; ours is not. Same conversion as
+        // the read sweep, and for the same reason.
+        const unsigned mine = (k == 3u)
+            ? alpha
+            : ((unsigned)want[i + k] * alpha + 127u) / 255u;
+        if (mine != got.rgba[i + k]) {
+          bad++;
+          if (first_bad == (size_t)-1) { first_bad = i + k; }
+        }
+      }
+    }
+    if (bad == 0) {
+      agreed++;
+    }
+    else {
+      differed++;
+      problems.push_back(name + ": " + std::to_string(bad) + " samples, " +
+          "first at pixel " + std::to_string(first_bad / 4u) + " channel " +
+          std::to_string(first_bad % 4u));
+    }
+  }
+
+  std::printf("  wrote %zu files in %zu modes: %ld agreed with libtiff, "
+              "%ld differed, %ld unreadable, %ld saves refused\n",
+      names.size(), sizeof(modes) / sizeof(modes[0]), agreed, differed,
+      unreadable, refused);
+  EXPECT_GT(agreed, 30) << "too few files were written and read back for "
+                           "this to be a sweep";
+  for (const std::string & line : problems) {
+    ADD_FAILURE() << line;
+  }
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

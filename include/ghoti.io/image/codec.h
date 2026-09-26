@@ -707,9 +707,54 @@ typedef struct {
    * different instruction from a count of zero: browsers play such a file
    * once.  Ignored for non-GIF. */
   uint16_t gif_loop_count;
+
+  /** TIFF: how the strips are compressed.
+   *
+   * GIMG_TIFF_COMPRESS_NONE (0, the default) stores them, which is what the
+   * format's own default is and what a caller who chose TIFF for an
+   * uncompressed archive master expects. The other three are one option
+   * away and all lossless: PackBits is the format's own trivial run-length
+   * coding, LZW is what most TIFF writers use, and Deflate is the smallest.
+   * Ignored for non-TIFF. */
+  uint8_t tiff_compression;
+  /** TIFF: horizontal differencing before compression (Predictor, 317).
+   *
+   * 0 and 1 both mean none, which is the default. 2 subtracts each sample
+   * from the one a pixel to its left, which costs nothing and usually
+   * shrinks a photograph markedly under LZW or Deflate.
+   *
+   * Refused with GIMG_ERR_UNSUPPORTED when tiff_compression is NONE - a
+   * predictor with no compressor behind it makes a file larger and harder to
+   * read for nothing - and at a bit depth other than 8 or 16, which is where
+   * TIFF defines it. Ignored for non-TIFF. */
+  uint8_t tiff_predictor;
+  /** TIFF: write the file big-endian ("MM") rather than little ("II").
+   *
+   * Both are the format, equally, and a reader that cannot take either is
+   * broken; this exists because saying so is cheap and because a round trip
+   * through both orders is the sharpest test a byte-order-agnostic reader
+   * has. 0, the default, writes "II". Ignored for non-TIFF. */
+  uint8_t tiff_big_endian;
+  uint8_t _reserved_tiff;
+  /** TIFF: rows in one strip. 0, the default, picks a number that puts about
+   * eight kilobytes in each - libtiff's own rule, and for the same reason: a
+   * strip is the unit a reader has to hold at once. Ignored for non-TIFF. */
+  uint32_t tiff_rows_per_strip;
+
   /** Zero; room to grow, and the room a new format's options go in first. */
   uint8_t _reserved[8];
 } GIMG_Save_Options;
+
+/** @name TIFF compression (TIFF 6.0 sections 9 and 13)
+ *
+ * Every one of these is lossless; the format's lossy option is JPEG, which
+ * this codec neither reads nor writes.
+ * @{ */
+#define GIMG_TIFF_COMPRESS_NONE 0u     ///< Store the strips. The default.
+#define GIMG_TIFF_COMPRESS_PACKBITS 1u ///< PackBits (section 9).
+#define GIMG_TIFF_COMPRESS_LZW 2u      ///< LZW (section 13).
+#define GIMG_TIFF_COMPRESS_DEFLATE 3u  ///< Deflate, the smallest of the four.
+/** @} */
 
 /** @name PNG row filters (PNG 9.2, Table 9.1)
  * @{ */

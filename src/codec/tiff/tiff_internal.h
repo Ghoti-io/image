@@ -223,6 +223,10 @@ void gimg_tiff_undo_block_predictor(const gimg_tiff_ifd_t * ifd,
 /** Whether this codec can undo @p compression. */
 bool gimg_tiff_compression_known(uint16_t compression);
 
+GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
+    GIMG_Stream * stream, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report);
+
 GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
 
