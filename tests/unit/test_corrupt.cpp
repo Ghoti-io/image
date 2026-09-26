@@ -293,6 +293,7 @@ struct Case {
   GIMG_Result expect;
   Bytes bytes;
   Stage stage = AT_LOAD;
+  bool no_seek = false;  ///< Read it the way a pipe would be read.
   bool use_limits = false;
   GIMG_Limits limits{};
 };
@@ -301,7 +302,10 @@ struct Case {
 void run_case(const Case & c) {
   SCOPED_TRACE(c.name);
   GIMG_Stream * s = nullptr;
-  ASSERT_EQ(gimg_stream_create_memory(c.bytes.data(), c.bytes.size(), &s),
+  ASSERT_EQ(c.no_seek ? gimg_stream_create_memory_no_seek(
+                            c.bytes.data(), c.bytes.size(), &s)
+                      : gimg_stream_create_memory(
+                            c.bytes.data(), c.bytes.size(), &s),
       GIMG_OK);
 
   GIMG_Load_Options opts = {};
@@ -419,6 +423,30 @@ TEST(Corrupt, TheBmpLoaderNamesTheHeaderFieldItRefused) {
         GIMG_ERR_CORRUPT, make_bmp(s)});
   }
 
+  {
+    // Run-length data has no length the header can state: it runs from
+    // bfOffBits to the end of the file, so a stream that cannot say where its
+    // end is cannot supply it.
+    BmpSpec s;
+    s.width = 2;
+    s.height = 1;
+    s.bpp = 8u;
+    s.compression = 1u;  // BI_RLE8.
+    s.clr_used = 2u;
+    Bytes tail(8u, 0u);  // Two palette entries.
+    s.pixels_at = tail.size();
+    u8(tail, 2u);
+    u8(tail, 1u);
+    u8(tail, 0u);
+    u8(tail, 1u);
+    s.after_header = tail;
+    Case c{"run-length data read from something that cannot be measured",
+        "this compression requires a sized stream", GIMG_ERR_UNSUPPORTED,
+        make_bmp(s)};
+    c.no_seek = true;
+    cases.push_back(c);
+  }
+
   run_all(cases);
 }
 
@@ -510,6 +538,17 @@ TEST(Corrupt, TheBmpArrayWalkerNamesWhatBrokeTheChain) {
     append(b, make_bmp(bad));
     cases.push_back({"an entry the loader refuses",
         "a bitmap array entry did not load", GIMG_ERR_CORRUPT, b});
+  }
+
+  {
+    // The array chain is walked by absolute offset, which is the same
+    // requirement, for the same reason.
+    Bytes b = bmp_array_header(0u, 0u);
+    append(b, entry);
+    Case c{"an array read from something that cannot be measured",
+        "a bitmap array requires a sized stream", GIMG_ERR_UNSUPPORTED, b};
+    c.no_seek = true;
+    cases.push_back(c);
   }
 
   run_all(cases);

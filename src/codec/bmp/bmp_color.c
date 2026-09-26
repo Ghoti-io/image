@@ -246,7 +246,8 @@ GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
   size_t size = (size_t)header->profile_size;
 
   size_t stream_size = gimg_stream_size(stream);
-  if (stream_size && (at > stream_size || size > stream_size - at)) {
+  if (stream_size != GIMG_STREAM_SIZE_UNKNOWN &&
+      (at > stream_size || size > stream_size - at)) {
     // A profile that runs off the end of the file is not one.  This is not
     // fatal to the image, which decodes perfectly well untagged.
     return GIMG_OK;
@@ -406,7 +407,8 @@ GIMG_Result gimg_bmp_read_linked_path(GIMG_Stream * stream,
     return GIMG_OK;
   }
   size_t stream_size = gimg_stream_size(stream);
-  if (stream_size && (at > stream_size || size > stream_size - at)) {
+  if (stream_size != GIMG_STREAM_SIZE_UNKNOWN &&
+      (at > stream_size || size > stream_size - at)) {
     return GIMG_OK;
   }
 

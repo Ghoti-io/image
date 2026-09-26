@@ -376,7 +376,14 @@ GIMG_API size_t gimg_stream_tell(const GIMG_Stream * stream) {
 }
 
 GIMG_API size_t gimg_stream_size(const GIMG_Stream * stream) {
-  return stream ? stream->size : (size_t)-1;
+  // A stream that cannot seek does not know where its end is.  The memory
+  // stream behind a non-seekable one was handed a length, but answering it
+  // would make this a poor model of the pipe it stands for - and it is the
+  // only model the codecs are ever tested against.
+  if (!stream || !stream->can_seek) {
+    return GIMG_STREAM_SIZE_UNKNOWN;
+  }
+  return stream->size;
 }
 
 GIMG_API GIMG_Result gimg_stream_error(const GIMG_Stream * stream) {

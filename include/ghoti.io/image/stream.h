@@ -103,8 +103,20 @@ GIMG_API GIMG_Result gimg_stream_seek(GIMG_Stream * stream, size_t offset);
  */
 GIMG_API size_t gimg_stream_tell(const GIMG_Stream * stream);
 
+/** @brief What gimg_stream_size() answers when the length is not known. */
+#define GIMG_STREAM_SIZE_UNKNOWN ((size_t)-1)
+
 /**
- * @brief Total size in bytes (if known). (size_t)-1 if unknown.
+ * @brief Total size in bytes, or ::GIMG_STREAM_SIZE_UNKNOWN if not known.
+ *
+ * A stream that cannot seek cannot know where its end is, so the
+ * non-seekable constructors answer ::GIMG_STREAM_SIZE_UNKNOWN here even
+ * though a length was passed to them - a caller reading from a pipe has no
+ * such length to pass, and a stream that answered one would let a decoder
+ * take a shortcut that is not available on the source it stands for.
+ *
+ * Callers must test against ::GIMG_STREAM_SIZE_UNKNOWN. Zero is a length,
+ * not an absence: it is what an empty stream is.
  */
 GIMG_API size_t gimg_stream_size(const GIMG_Stream * stream);
 
@@ -131,7 +143,8 @@ GIMG_API GIMG_Result gimg_stream_create_memory_with_allocator(
 /**
  * @brief Create a read-only memory stream that does not support seek/tell.
  * Use for non-seekable sources (e.g. pipes); gimg_stream_tell returns
- * (size_t)-1 and gimg_stream_seek returns GIMG_ERR_UNSUPPORTED.
+ * (size_t)-1, gimg_stream_seek returns GIMG_ERR_UNSUPPORTED, and
+ * gimg_stream_size returns ::GIMG_STREAM_SIZE_UNKNOWN.
  */
 GIMG_API GIMG_Result gimg_stream_create_memory_no_seek(
     const void * data, size_t size, GIMG_Stream ** out_stream);

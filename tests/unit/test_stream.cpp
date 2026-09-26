@@ -79,6 +79,38 @@ TEST(StreamMemory, SeekAndTell) {
   gimg_stream_destroy(s);
 }
 
+TEST(StreamMemory, ANonSeekableStreamDoesNotKnowWhereItsEndIs) {
+  // The length passed to the constructor is what the test harness happens to
+  // have; a caller reading from a pipe has none to pass. A stream that
+  // answered one anyway would let a decoder measure a file it cannot measure,
+  // and the two BMP guards that exist for exactly that case - RLE and the
+  // bitmap array, both of which need a length they cannot compute - would be
+  // unreachable from any input.
+  const unsigned char data[] = {1, 2, 3};
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_no_seek(data, sizeof(data), &s),
+      GIMG_OK);
+  EXPECT_EQ(gimg_stream_size(s), GIMG_STREAM_SIZE_UNKNOWN);
+  EXPECT_EQ(gimg_stream_tell(s), (size_t)-1);
+  EXPECT_EQ(gimg_stream_seek(s, 0u), GIMG_ERR_UNSUPPORTED);
+  // Reading still works; it is the measuring that does not.
+  unsigned char b = 0;
+  size_t n = 0;
+  EXPECT_EQ(gimg_stream_read(s, &b, 1u, &n), GIMG_OK);
+  EXPECT_EQ(n, 1u);
+  EXPECT_EQ(b, 1);
+  gimg_stream_destroy(s);
+
+  // A seekable stream of no bytes answers zero, which is a length. Zero and
+  // "not known" are different answers and callers must not conflate them.
+  GIMG_Stream * empty = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(data, 0u, &empty), GIMG_OK);
+  EXPECT_EQ(gimg_stream_size(empty), 0u);
+  gimg_stream_destroy(empty);
+
+  EXPECT_EQ(gimg_stream_size(nullptr), GIMG_STREAM_SIZE_UNKNOWN);
+}
+
 TEST(StreamMemory, LimitsDefault) {
   GIMG_Limits lim = {};
   gimg_limits_default(&lim);

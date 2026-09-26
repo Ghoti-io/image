@@ -672,8 +672,9 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
   *out_size = 0;
 
   size_t stream_size = gimg_stream_size(stream);
+  const bool sized = stream_size != GIMG_STREAM_SIZE_UNKNOWN;
   if (data_offset < GIMG_BMP_FILE_HEADER_SIZE ||
-      (stream_size && (size_t)data_offset > stream_size)) {
+      (sized && (size_t)data_offset > stream_size)) {
     bmp_load_diag(diagnostics, (size_t)data_offset,
         "pixel data offset outside the file");
     return GIMG_ERR_CORRUPT;
@@ -686,7 +687,7 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
 
   size_t needed;
   if (variable_length) {
-    if (!stream_size) {
+    if (!sized) {
       // Neither an RLE stream nor an embedded JPEG or PNG has a length that
       // can be predicted from the header, so both are taken from bfOffBits to
       // the end of the file - which needs a stream that knows where that is.
@@ -724,7 +725,7 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
   // allocation from a 118-byte file - the shape of a denial of service, and
   // one that needs no limit set to defend against, because the file itself
   // says it is lying.
-  if (stream_size && needed > stream_size - (size_t)data_offset) {
+  if (sized && needed > stream_size - (size_t)data_offset) {
     bmp_load_diag(diagnostics, (size_t)data_offset,
         "the header names more pixel data than the file holds");
     return GIMG_ERR_CORRUPT;
@@ -818,7 +819,7 @@ static GIMG_Result bmp_load_array(GIMG_Codec * codec, GIMG_Stream * stream,
   *out_count = 0;
 
   size_t size = gimg_stream_size(stream);
-  if (!size) {
+  if (size == GIMG_STREAM_SIZE_UNKNOWN) {
     // The chain is walked by absolute offset, so it needs a stream that knows
     // where its end is - the same requirement RLE has, for the same reason.
     bmp_load_diag(diagnostics, 0u, "a bitmap array requires a sized stream");
