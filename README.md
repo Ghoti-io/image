@@ -72,7 +72,7 @@ installs `ghoti.io-image-dev` instead.
 ## Building the library
 
 [cutil](https://github.com/Ghoti-io/cutil) and
-[compress](https://github.com/coreyp1/compress) must already be installed
+[compress](https://github.com/Ghoti-io/compress) must already be installed
 where pkg-config can see them. A dependency it cannot find is a hard error
 naming the fix. Google Test builds the unit tests. Python 3 with Pillow is
 what `make test` uses to read this library's output back.
@@ -122,7 +122,7 @@ Both are found through pkg-config, and the installed `.pc` file names them,
 so a program that links `ghoti.io-image-0` links these too.
 
 - [ghoti.io-cutil](https://github.com/Ghoti-io/cutil) — the allocator and the overflow-checked size arithmetic.
-- [ghoti.io-compress](https://github.com/coreyp1/compress) — deflate and CRC-32 for PNG.
+- [ghoti.io-compress](https://github.com/Ghoti-io/compress) — deflate and CRC-32 for PNG.
 
 ## Documentation
 
