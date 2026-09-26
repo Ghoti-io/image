@@ -414,6 +414,19 @@ static GIMG_Result hier_decode_dct_frame(const gimg_jpeg_doc_state_t * state,
                   block_zig);
             }
             else {
+              // The last argument is jpeg_decode_block's is_last_block, and
+              // this is the only one of its four call sites that passes a
+              // literal 0. The other three - the two in jpeg_entropy.c and
+              // the progressive one - compute whether this is the final block
+              // of the scan and pass that, which lets an underflow there be
+              // read as T.81 B.2.2 padding rather than as corruption.
+              //
+              // So that tolerance is unavailable to a hierarchical frame, and
+              // it is not clear whether anything needs it: no fixture here
+              // requires it, and truncating one by a byte is refused by the
+              // sequential path too. Recorded rather than changed, because
+              // widening a decoder's tolerance with no input that demands it
+              // is how a reader starts accepting files it should not.
               r = jpeg_decode_block(&bs, &dc_tables[scan->dc_tbl[s]],
                   &ac_tables[scan->ac_tbl[s]], block_zig, &dc_pred[ci], 0);
             }
