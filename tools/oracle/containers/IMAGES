@@ -108,16 +108,44 @@ piexif	localhost/ghoti-image-oracle-refs:deb13-3	piexif 1.1.3	The EXIF writer te
 #   reads       IJG 73 of 151, libjpeg-turbo 2.1.5 88 of 151, and the set IJG
 #               reads is a strict *subset* - it adds no file at all.
 #
-# And on the 73 they share it is not a second opinion either: IJG v10 and
+# And on the 74 they share it is not a second opinion either: IJG v10 and
 # libjpeg-turbo 3.0.4 disagree on 37 of them. 25 of those are the chroma
-# upsampling filter, which IJG changed after 6b (`-nosmooth` on both sides
-# takes the disagreement to 12); the remaining 12 are not yet explained.
+# upsampling filter, which IJG changed after 6b; `-nosmooth` on both sides
+# takes the disagreement to 12.
 #
-# So it is pinned, reachable and reproducible - which is what was asked for -
-# and it is *not* wired to any comparison, because a reference that disagrees
-# with the one already here on half of what it reads is a piece of work to
-# characterise, not an oracle to switch on. The 12 unexplained files are where
-# that work starts.
+# **Those 12 are now characterised, and neither side has a bug (2026-09-26).**
+# Every one is a colour file, every differing sample is *green* - 356 of 356,
+# no red, no blue - every difference is exactly 1 of 255, and every one
+# disappears under `-grayscale`. All 26 grayscale fixtures the two share agree
+# exactly. So the entropy decode, the dequantisation and the IDCT are
+# bit-identical between them; only YCbCr-to-RGB differs.
+#
+# The cause is one pair of constants. libjpeg puts the whole green correction
+# in a table indexed by (Cb, Cr) and independent of Y:
+#
+#     G = range_limit[Y + ((Cb_g_tab[cb] + Cr_g_tab[cr]) >> 16)]
+#
+# The exact coefficients are 0.299*1.402/0.587 = 0.714136286 and
+# 0.114*1.772/0.587 = 0.344136286. IJG v10's jdcolor.c uses those. Turbo keeps
+# 6b's 0.71414 and 0.34414 - the same numbers rounded to five places - for
+# bit-compatibility with every libjpeg that came before. Red and blue come
+# from 1.402 and 1.772, which both spell identically, which is why red and
+# blue can never differ.
+#
+# The two tables disagree on 59 of the 65536 (Cb, Cr) pairs, by exactly +-1.
+# That predicts which pixels differ, and it was checked in both directions
+# over every 4:4:4 fixture the two share - 4:4:4 because with full-size chroma
+# planes no upsampling sits between the file and the arithmetic. Six were
+# measurable: the two that differ were predicted at the exact pixel, and the
+# four that agree were predicted to agree.
+#
+# It is still *not* wired to any comparison, and characterising it is the
+# reason rather than the obstacle. IJG reads a strict subset of what turbo
+# reads, so it adds no file; on the 74 it shares, the only disagreement it can
+# now produce is a constant this file has written down. A second opinion whose
+# every possible objection is known in advance is not an oracle, and giving it
+# a green-channel tolerance to hide the known case would be an exclusion wide
+# enough to absorb a real one.
 libjpeg12	localhost/ghoti-image-oracle-refs:deb13-3	@VERSIONS:libjpeg-turbo	The 12- and 16-bit JPEG codecs, through cjpeg-static and djpeg-static
 ijg10	localhost/ghoti-image-oracle-refs:deb13-3	@VERSIONS:jpeg-10	Pinned and reachable; answers nothing yet - see the note above for what it does and does not read
 
