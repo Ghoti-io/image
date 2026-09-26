@@ -201,14 +201,14 @@ static size_t gimg_icc_curv_size(unsigned int points) {
  * free to call setlocale() on another thread. A multi-byte separator collapses
  * to the single '.' the C locale would have written.
  *
- * A non-finite value is left as printf wrote it: "inf" and "nan" carry no
- * separator, and their letters would otherwise be mistaken for one.
+ * Every value that reaches here is finite and inside (0, 256), because
+ * gimg_icc_synthesize refuses the rest before describing anything. This used
+ * to begin by returning early for a non-finite gamma, on the grounds that the
+ * letters of "inf" and "nan" would be mistaken for separators - true, and
+ * unreachable: that gate admits neither.
  */
 static void gimg_icc_format_gamma(char * buf, size_t size, double gamma) {
   (void)snprintf(buf, size, "%.4g", gamma);
-  if (!isfinite(gamma)) {
-    return;
-  }
   char * w = buf;
   const char * r = buf;
   while (*r) {
@@ -260,11 +260,12 @@ static size_t gimg_icc_write_trc(
   }
   if (info->transfer == GIMG_TRANSFER_GAMMA) {
     // One sample point is a u8Fixed8Number gamma exponent.
+    // gimg_icc_synthesize has already refused anything outside (0, 256), so
+    // q cannot be negative and there is no low clamp here. It can still be
+    // 65536: 255.999 * 256 + 0.5 rounds past what sixteen bits hold, and that
+    // is what the one remaining clamp is for.
     double g = info->gamma_value * 256.0;
     long q = (long)(g + 0.5);
-    if (q < 0) {
-      q = 0;
-    }
     if (q > 0xFFFF) {
       q = 0xFFFF;
     }
@@ -307,7 +308,15 @@ GIMG_Result gimg_icc_synthesize(const GIMG_Allocator * alloc,
   }
   if (info->transfer == GIMG_TRANSFER_GAMMA &&
       !(info->gamma_value > 0.0 && info->gamma_value < 256.0)) {
-    // A gamma the curve type cannot hold says nothing worth writing.
+    // A gamma the curve type cannot hold says nothing worth writing. The
+    // comparison is written so that a NaN fails it: GIMG_Color_Info carries a
+    // double nothing polices, and infinity and NaN arrive here as readily as
+    // 300 does.
+    //
+    // This is also the only place that bound is enforced. Two guards
+    // downstream used to repeat it and could not be reached - see
+    // gimg_icc_format_gamma and the exponent clamp in gimg_icc_write_trc - so
+    // widening this test widens what they must cope with.
     return GIMG_OK;
   }
 

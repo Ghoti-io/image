@@ -23,6 +23,7 @@
  */
 
 #include <cstring>
+#include <limits>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/color.h>
 #include <ghoti.io/image/core.h>
@@ -41,6 +42,9 @@ constexpr double kS15Fixed16 = 65536.0;
 constexpr double kD50X = 0x0000F6D6 / kS15Fixed16;
 constexpr double kD50Y = 0x00010000 / kS15Fixed16;
 constexpr double kD50Z = 0x0000D32D / kS15Fixed16;
+
+/** Defined below, beside the locale machinery it shares a subject with. */
+std::string desc_of(const std::vector<uint8_t> & icc);
 
 uint32_t be32(const uint8_t * p) {
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -348,6 +352,116 @@ TEST(JpegSynthesizedIcc, EveryChannelGetsTheSameToneCurve) {
  * where there is nothing to repeat. A raster carrying both a profile and a
  * stated model must come out carrying its own profile.
  */
+/**
+ * The description falls back to the gamut's bare name, and says nothing more.
+ *
+ * gimg_icc_describe has four arms and three of them were reached: "sRGB" when
+ * the primaries and the transfer are both sRGB, "<gamut>, gamma <g>", and
+ * "<gamut>, linear". The fourth is what is left - a transfer this library
+ * carries but cannot state as a curve alongside primaries that are not sRGB -
+ * and nothing had ever produced it, because every raster in the suite either
+ * stated sRGB throughout or stated a gamma.
+ *
+ * The arm matters precisely because it is the silent one: it drops the
+ * transfer from the description rather than misstating it, and a reader of
+ * the profile has to be able to tell "Display P3" from "Display P3, linear".
+ */
+TEST(JpegSynthesizedIcc, AnUnstatableTransferLeavesTheDescriptionBare) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(save_as(
+      stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_SRGB, 0.0), "jpeg",
+      jpeg));
+  std::string desc = desc_of(profile_in(jpeg));
+  EXPECT_EQ(desc, "Adobe RGB (1998)")
+      << "sRGB's transfer curve on another gamut names the gamut alone";
+  EXPECT_EQ(desc.find(","), std::string::npos)
+      << "and adds no clause it cannot support";
+
+  // The control: the same gamut with a transfer it *can* state does say so,
+  // so the assertion above is about this arm and not about the gamut.
+  std::vector<uint8_t> linear;
+  ASSERT_TRUE(save_as(
+      stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_LINEAR, 0.0), "jpeg",
+      linear));
+  EXPECT_EQ(desc_of(profile_in(linear)), "Adobe RGB (1998), linear");
+}
+
+/**
+ * A gamma the curve type cannot hold produces no profile at all.
+ *
+ * ICC v2's single-point curveType stores the exponent as a u8Fixed8Number, so
+ * only (0, 256) is representable. gimg_icc_synthesize refuses the rest, and
+ * refuses by writing *nothing* rather than by returning an error: half a
+ * colour model is not worth stating, and a profile carrying a wrong exponent
+ * is worse than no profile.
+ *
+ * That gate had never been tested, and testing it settled two other
+ * questions. GIMG_Color_Info carries a plain double that nothing polices, so
+ * infinity and NaN reach here as easily as 300 does; all of them take this
+ * path. And the gate is what makes two guards further down unreachable - the
+ * negative clamp in gimg_icc_write_trc and the non-finite early return in
+ * gimg_icc_format_gamma, both since removed, since the value they guarded
+ * against can no longer arrive.
+ */
+TEST(JpegSynthesizedIcc, AGammaTheCurveTypeCannotHoldProducesNoProfile) {
+  const double inf = std::numeric_limits<double>::infinity();
+  struct Case {
+    double gamma;
+    const char * what;
+  };
+  static const Case cases[] = {
+      {inf, "infinity"},
+      {-inf, "negative infinity"},
+      {std::numeric_limits<double>::quiet_NaN(), "a NaN"},
+      {0.0, "zero, which the range excludes at its lower end"},
+      {-2.2, "a negative exponent"},
+      {256.0, "exactly 256, which the range excludes at its upper end"},
+      {1e9, "far past anything representable"},
+  };
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.what);
+    std::vector<uint8_t> jpeg;
+    ASSERT_TRUE(save_as(
+        stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, c.gamma), "jpeg",
+        jpeg));
+    EXPECT_TRUE(profile_in(jpeg).empty())
+        << "a gamma outside (0, 256) must produce no profile, not a wrong one";
+  }
+
+  // The control, without which every assertion above would also pass if
+  // synthesis had simply stopped working.
+  std::vector<uint8_t> good;
+  ASSERT_TRUE(save_as(
+      stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 2.2), "jpeg", good));
+  EXPECT_FALSE(profile_in(good).empty())
+      << "a gamma inside the range still produces one";
+}
+
+/**
+ * A gamma just inside the top of the range still rounds past what fits.
+ *
+ * The exponent is written as gamma * 256 rounded to nearest, so a gamma the
+ * gate admits - anything below 256 - can still land on 65536, which the
+ * sixteen bits cannot hold. 255.999 does exactly that. The clamp that catches
+ * it is the one arm of the pair that survives the gate above, and it had
+ * never run.
+ */
+TEST(JpegSynthesizedIcc, AGammaAtTheTopOfTheRangeIsClamped) {
+  std::vector<uint8_t> jpeg;
+  ASSERT_TRUE(save_as(
+      stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 255.999), "jpeg",
+      jpeg));
+  std::vector<uint8_t> profile = profile_in(jpeg);
+  ASSERT_FALSE(profile.empty()) << "255.999 is inside the range the gate admits";
+  auto [off, size] = tag_in(profile, "rTRC");
+  ASSERT_GE(size, 14u);
+  ASSERT_EQ(be32(profile.data() + off + 8), 1u);
+  unsigned raw = ((unsigned)profile.data()[off + 12] << 8) |
+      (unsigned)profile.data()[off + 13];
+  EXPECT_EQ(raw, 0xFFFFu)
+      << "gamma * 256 + 0.5 is 65536 here, which does not fit in sixteen bits";
+}
+
 TEST(JpegSynthesizedIcc, ACarriedProfileIsNotReplaced) {
   std::vector<uint8_t> carried(600, 0);
   carried[0] = 0;
