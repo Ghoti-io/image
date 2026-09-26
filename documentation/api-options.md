@@ -422,3 +422,27 @@ decode an unaligned one.
 Setting this together with `jpeg_progressive` or `jpeg_arithmetic` returns
 `GIMG_ERR_UNSUPPORTED`: progression belongs to the DCT-based processes, and
 arithmetic lossless is SOF11, which is not implemented.
+
+
+## What an item is: `GIMG_Item_Role`
+
+`gimg_doc_item(doc, 1)` does not mean the same thing in every format, and
+until this enum existed nothing said which it meant. A caller separating a
+thumbnail from an animation frame had to know which format it had loaded,
+which is the thing a format-independent document model exists to avoid.
+
+| Role | What it is | Set by |
+|---|---|---|
+| `GIMG_ITEM_IMAGE` | A picture in its own right: a lone image, or one page of several. The default. | PNG (still), JPEG item 0, BMP item 0 |
+| `GIMG_ITEM_FRAME` | A moment in an animation; the delay, dispose and blend fields describe how it is played. | GIF (every item), APNG |
+| `GIMG_ITEM_THUMBNAIL` | A small preview of another item. | JPEG item 1, the Exif IFD1 thumbnail |
+| `GIMG_ITEM_LEVEL` | A reduced-resolution version of another item — a pyramid level. | Nothing yet; reserved for TIFF |
+| `GIMG_ITEM_ALTERNATE` | Another rendering of the same picture, for the caller to choose between. | BMP `BA` array entries after the first |
+
+`gimg_item_role_subject()` names the item a thumbnail, level or alternate is
+*of*. For `GIMG_ITEM_IMAGE` and `GIMG_ITEM_FRAME` it is the item's own index,
+so it can be read without testing the role first.
+
+Zero is `GIMG_ITEM_IMAGE`, so a document built with `gimg_doc_create()` or
+`gimg_doc_from_raster()` already says the true thing without the caller
+setting anything.

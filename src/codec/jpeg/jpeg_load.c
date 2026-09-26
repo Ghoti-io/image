@@ -1760,13 +1760,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   doc->codec_private = state;
   doc->meta_raw = NULL;
   doc->meta_common = NULL;
-  doc->items[0].index = 0;
-  doc->items[0].doc = doc;
-  doc->items[0].frame_delay_num = 0;
-  doc->items[0].frame_delay_den = 0;
-  doc->items[0].dispose_op = GIMG_DISPOSE_NONE;
-  doc->items[0].blend_op = GIMG_BLEND_SOURCE;
-  doc->items[0].raster = NULL;
+  gimg_item_init(&doc->items[0], doc, 0u);
 
   // Attach APP segments and COM to doc meta_raw for round-trip; populate
   // meta_common.
@@ -2348,6 +2342,13 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
   }
 
+  // A JPEG's second item, when it has one, is the Exif IFD1 thumbnail: seven
+  // places above set the count to two and every one of them means this.
+  // Labelled once here rather than at each, so a path added later cannot
+  // forget to.
+  if (gimg_doc_item_count(doc) > 1u) {
+    gimg_item_set_role(gimg_doc_item(doc, 1u), GIMG_ITEM_THUMBNAIL, 0u);
+  }
   *out_doc = doc;
   return GIMG_OK;
 }

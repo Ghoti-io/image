@@ -64,13 +64,7 @@ GIMG_API GIMG_Result gimg_doc_create_with_allocator(
   doc->codec_private = NULL;
   doc->meta_raw = NULL;
   doc->meta_common = NULL;
-  doc->items[0].index = 0;
-  doc->items[0].doc = doc;
-  doc->items[0].frame_delay_num = 0;
-  doc->items[0].frame_delay_den = 0;
-  doc->items[0].dispose_op = GIMG_DISPOSE_NONE;
-  doc->items[0].blend_op = GIMG_BLEND_SOURCE;
-  doc->items[0].raster = NULL;
+  gimg_item_init(&doc->items[0], doc, 0u);
   *out_doc = doc;
   return GIMG_OK;
 }
@@ -117,6 +111,19 @@ GIMG_API GIMG_Item * gimg_doc_item(const GIMG_Doc * doc, size_t index) {
   return &doc->items[index];
 }
 
+void gimg_item_init(GIMG_Item * item, GIMG_Doc * doc, size_t index) {
+  if (!item) {
+    return;
+  }
+  memset(item, 0, sizeof(*item));
+  item->index = index;
+  item->doc = doc;
+  item->dispose_op = GIMG_DISPOSE_NONE;
+  item->blend_op = GIMG_BLEND_SOURCE;
+  item->role = GIMG_ITEM_IMAGE;
+  item->role_subject = index;
+}
+
 GIMG_API GIMG_Result gimg_doc_set_item_count(GIMG_Doc * doc, size_t count) {
   if (!doc || count < 1) {
     return GIMG_ERR_INTERNAL;
@@ -135,13 +142,7 @@ GIMG_API GIMG_Result gimg_doc_set_item_count(GIMG_Doc * doc, size_t count) {
     memcpy(new_items, doc->items, copy_count * sizeof(GIMG_Item));
   }
   for (size_t i = copy_count; i < count; i++) {
-    new_items[i].index = i;
-    new_items[i].doc = doc;
-    new_items[i].frame_delay_num = 0;
-    new_items[i].frame_delay_den = 0;
-    new_items[i].dispose_op = GIMG_DISPOSE_NONE;
-    new_items[i].blend_op = GIMG_BLEND_SOURCE;
-    new_items[i].raster = NULL;
+    gimg_item_init(&new_items[i], doc, i);
   }
   if (count < doc->item_count) {
     for (size_t i = count; i < doc->item_count; i++) {
@@ -415,6 +416,11 @@ GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
     gimg_item_set_frame_delay(di, num, den);
     gimg_item_set_dispose_op(di, gimg_item_dispose_op(si));
     gimg_item_set_blend_op(di, gimg_item_blend_op(si));
+    // This loop copies an item field by field, and so does gimg_item_copy()
+    // thirty lines below.  Two spellings of one operation: a field added to
+    // GIMG_Item has to be added to both, and the role was very nearly added
+    // to only one.
+    gimg_item_set_role(di, gimg_item_role(si), gimg_item_role_subject(si));
     GIMG_Raster * sr = gimg_item_raster(si);
     if (sr) {
       GIMG_Raster * copy_r = NULL;
@@ -490,6 +496,28 @@ GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator(
   return GIMG_OK;
 }
 
+GIMG_API GIMG_Item_Role gimg_item_role(const GIMG_Item * item) {
+  return item ? item->role : GIMG_ITEM_IMAGE;
+}
+
+GIMG_API size_t gimg_item_role_subject(const GIMG_Item * item) {
+  return item ? item->role_subject : 0u;
+}
+
+GIMG_API void gimg_item_set_role(
+    GIMG_Item * item, GIMG_Item_Role role, size_t subject) {
+  if (!item || role < 0 || role >= GIMG_ITEM_ROLE_COUNT) {
+    return;
+  }
+  item->role = role;
+  // IMAGE and FRAME are not *of* anything, so the subject is the item itself
+  // rather than whatever the caller happened to pass.  That way a caller may
+  // read gimg_item_role_subject() without first testing the role.
+  item->role_subject =
+      (role == GIMG_ITEM_IMAGE || role == GIMG_ITEM_FRAME) ? item->index
+                                                           : subject;
+}
+
 GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
     GIMG_Item * dst_item) {
   if (!src_item || !dst_item) {
@@ -500,6 +528,7 @@ GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
       (uint16_t)(src_item->frame_delay_den));
   gimg_item_set_dispose_op(dst_item, src_item->dispose_op);
   gimg_item_set_blend_op(dst_item, src_item->blend_op);
+  gimg_item_set_role(dst_item, src_item->role, src_item->role_subject);
   GIMG_Raster * sr = gimg_item_raster(src_item);
   if (sr) {
     const GIMG_Allocator * alloc = dst_item->doc ? dst_item->doc->allocator

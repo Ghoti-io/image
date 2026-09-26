@@ -697,6 +697,7 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
     // GIF counts delay in hundredths of a second (89a 23); the item model
     // carries a numerator over a denominator, so the denominator says so.
+    gimg_item_set_role(item, GIMG_ITEM_FRAME, i);
     gimg_item_set_frame_delay(item, f->delay_cs, 100u);
     gimg_item_set_dispose_op(item,
         f->disposal == GIMG_GIF_DISPOSAL_BACKGROUND ? GIMG_DISPOSE_BACKGROUND

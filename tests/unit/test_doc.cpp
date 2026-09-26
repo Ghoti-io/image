@@ -10,8 +10,17 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
+#include <ghoti.io/image/stream.h>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <gtest/gtest.h>
+#include <iterator>
+#include <map>
+#include <string>
+#include <vector>
+
+#include "../registry_sweep.h"
 
 TEST(Doc, CreateHasOneItem) {
   GIMG_Doc * doc = nullptr;
@@ -410,6 +419,220 @@ TEST(DocScreen, NullsAreTolerated) {
   gimg_doc_set_background_color(doc, nullptr);
   EXPECT_EQ(gimg_doc_background_color(doc, nullptr), 0);
   gimg_doc_destroy(doc);
+}
+
+// ---------------------------------------------------------------------------
+// What an item is
+// ---------------------------------------------------------------------------
+
+TEST(Doc, AnItemIsAnImageUntilSomethingSaysOtherwise) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 3), GIMG_OK);
+  for (size_t i = 0; i < 3; i++) {
+    GIMG_Item * item = gimg_doc_item(doc, i);
+    EXPECT_EQ(gimg_item_role(item), GIMG_ITEM_IMAGE);
+    EXPECT_EQ(gimg_item_role_subject(item), i)
+        << "an item that is not *of* anything is of itself";
+  }
+  EXPECT_EQ(gimg_item_role(nullptr), GIMG_ITEM_IMAGE);
+  EXPECT_EQ(gimg_item_role_subject(nullptr), 0u);
+  gimg_item_set_role(nullptr, GIMG_ITEM_FRAME, 0u);  // No-op, not a crash.
+  gimg_doc_destroy(doc);
+}
+
+TEST(Doc, ASubjectIsKeptOnlyByARoleThatHasOne) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  GIMG_Item * second = gimg_doc_item(doc, 1);
+
+  gimg_item_set_role(second, GIMG_ITEM_THUMBNAIL, 0u);
+  EXPECT_EQ(gimg_item_role(second), GIMG_ITEM_THUMBNAIL);
+  EXPECT_EQ(gimg_item_role_subject(second), 0u);
+
+  // A frame is not a thumbnail of anything, so the subject it is given is
+  // discarded rather than kept as a stale answer to a question nobody should
+  // be asking.
+  gimg_item_set_role(second, GIMG_ITEM_FRAME, 0u);
+  EXPECT_EQ(gimg_item_role_subject(second), 1u);
+
+  // A role outside the enum is ignored, not stored.
+  gimg_item_set_role(second, (GIMG_Item_Role)99, 0u);
+  EXPECT_EQ(gimg_item_role(second), GIMG_ITEM_FRAME);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Doc, ARoleSurvivesACopy) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  gimg_item_set_role(gimg_doc_item(doc, 1), GIMG_ITEM_LEVEL, 0u);
+
+  GIMG_Doc * copy = nullptr;
+  ASSERT_EQ(gimg_doc_copy(doc, &copy), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(copy), 2u);
+  EXPECT_EQ(gimg_item_role(gimg_doc_item(copy, 1)), GIMG_ITEM_LEVEL)
+      << "a copy that forgets what its items are is not a copy";
+  EXPECT_EQ(gimg_item_role_subject(gimg_doc_item(copy, 1)), 0u);
+  gimg_doc_destroy(copy);
+  gimg_doc_destroy(doc);
+}
+
+namespace {
+
+/** What role a codec's item at @p index of @p count should carry. */
+typedef GIMG_Item_Role (*RoleRule)(size_t index, size_t count);
+
+struct RoleClaim {
+  const char * codec;
+  RoleRule rule;
+};
+
+/** BMP: item 0 is the picture, and an array's later entries are renderings
+ * of it for other display devices. */
+GIMG_Item_Role bmp_role(size_t index, size_t count) {
+  (void)count;
+  return index == 0 ? GIMG_ITEM_IMAGE : GIMG_ITEM_ALTERNATE;
+}
+/** GIF: every item is a frame, including the only one of a still GIF - in
+ * the format's own terms a single image is a one-frame animation. */
+GIMG_Item_Role gif_role(size_t index, size_t count) {
+  (void)index;
+  (void)count;
+  return GIMG_ITEM_FRAME;
+}
+/** JPEG: item 1, when there is one, is the Exif IFD1 thumbnail. */
+GIMG_Item_Role jpeg_role(size_t index, size_t count) {
+  (void)count;
+  return index == 0 ? GIMG_ITEM_IMAGE : GIMG_ITEM_THUMBNAIL;
+}
+/** PNG: more than one item means APNG, and then every item is a frame. */
+GIMG_Item_Role png_role(size_t index, size_t count) {
+  (void)index;
+  return count > 1 ? GIMG_ITEM_FRAME : GIMG_ITEM_IMAGE;
+}
+
+/** The format the library says these bytes are, or "". */
+std::string probed_format(const std::vector<uint8_t> & bytes) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    return std::string();
+  }
+  GIMG_Probe_Result probe = {};
+  std::string name;
+  if (gimg_probe(s, &probe) == GIMG_OK && probe.format_name) {
+    name = probe.format_name;
+  }
+  gimg_stream_destroy(s);
+  return name;
+}
+
+/**
+ * One entry per registered codec, and the sweep below fails if a codec has
+ * none. A format whose items nobody has labelled is the state this whole
+ * field exists to end, so adding a codec has to mean deciding what its items
+ * are rather than inheriting a default.
+ */
+const RoleClaim kRoleClaims[] = {
+    {"bmp", bmp_role},
+    {"gif", gif_role},
+    {"jpeg", jpeg_role},
+    {"png", png_role},
+};
+
+const RoleClaim * claim_for(const std::string & codec) {
+  for (const RoleClaim & c : kRoleClaims) {
+    if (codec == c.codec) { return &c; }
+  }
+  return nullptr;
+}
+
+std::vector<uint8_t> slurp_file(const std::string & path) {
+  std::ifstream f(path, std::ios::binary);
+  return std::vector<uint8_t>(
+      (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+} // namespace
+
+TEST(Doc, EveryLoadedItemSaysWhatItIs) {
+  const std::vector<gimg_test::SweptCodec> codecs = gimg_test::swept_codecs();
+  ASSERT_FALSE(codecs.empty()) << "no codecs registered; nothing to sweep";
+
+  long checked = 0;
+  std::map<int, long> seen_roles;
+  for (const gimg_test::SweptCodec & c : codecs) {
+    const RoleClaim * claim = claim_for(c.name);
+    ASSERT_NE(claim, nullptr)
+        << c.name << " is registered and kRoleClaims does not say what its "
+                     "items are; decide that rather than defaulting it";
+
+    for (const std::string & name : gimg_test::sweep_image_files_in(c.data_dir)) {
+      const std::vector<uint8_t> bytes = slurp_file(c.data_dir + "/" + name);
+      if (bytes.empty()) { continue; }
+      GIMG_Stream * st = nullptr;
+      if (gimg_stream_create_memory(bytes.data(), bytes.size(), &st) !=
+          GIMG_OK) {
+        continue;
+      }
+      // A file in this codec's directory may still be another format - the
+      // BMP wrapper fixtures' PNG and JPEG payloads live there - so the claim
+      // below is applied only when the bytes really are this codec's.
+      const std::string probed = probed_format(bytes);
+      GIMG_Doc * doc = nullptr;
+      const GIMG_Result r = gimg_doc_load(st, nullptr, nullptr, &doc);
+      if (r == GIMG_OK && doc) {
+        const size_t n = gimg_doc_item_count(doc);
+        for (size_t i = 0; i < n; i++) {
+          GIMG_Item * item = gimg_doc_item(doc, i);
+          const GIMG_Item_Role role = gimg_item_role(item);
+          const size_t subject = gimg_item_role_subject(item);
+          seen_roles[(int)role]++;
+          checked++;
+
+          EXPECT_LT(subject, n)
+              << name << " item " << i << " is of item " << subject
+              << ", which this document does not have";
+          if (role == GIMG_ITEM_IMAGE || role == GIMG_ITEM_FRAME) {
+            EXPECT_EQ(subject, i) << name << " item " << i
+                                  << " is not *of* anything, so it is of "
+                                     "itself";
+          }
+          // A file that came from this codec's own directory may still be
+          // another format - the BMP wrapper fixtures' payloads live there -
+          // so the claim is only applied when the document is this codec's.
+          if (probed == c.name) {
+            const GIMG_Item_Role want = claim->rule(i, n);
+            EXPECT_EQ(role, want)
+                << name << " item " << i << " of " << n << " is labelled "
+                << (int)role << ", and " << c.name << " says it should be "
+                << (int)want;
+          }
+        }
+      }
+      if (doc) { gimg_doc_destroy(doc); }
+      gimg_stream_destroy(st);
+    }
+  }
+
+  EXPECT_GT(checked, 300) << "only " << checked
+                          << " items were looked at; this sweep is not seeing "
+                             "the fixture tree";
+  // The alarm that matters: a sweep over only still images would pass every
+  // assertion above while proving nothing about the three roles that are not
+  // the default.
+  EXPECT_GT(seen_roles[(int)GIMG_ITEM_FRAME], 0) << "no frame was seen";
+  EXPECT_GT(seen_roles[(int)GIMG_ITEM_THUMBNAIL], 0)
+      << "no Exif thumbnail was seen";
+  EXPECT_GT(seen_roles[(int)GIMG_ITEM_ALTERNATE], 0)
+      << "no BMP array entry was seen";
+  std::printf("  %ld items: %ld image, %ld frame, %ld thumbnail, %ld "
+              "alternate\n",
+      checked, seen_roles[(int)GIMG_ITEM_IMAGE],
+      seen_roles[(int)GIMG_ITEM_FRAME],
+      seen_roles[(int)GIMG_ITEM_THUMBNAIL],
+      seen_roles[(int)GIMG_ITEM_ALTERNATE]);
 }
 
 int main(int argc, char ** argv) {

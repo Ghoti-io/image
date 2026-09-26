@@ -822,13 +822,10 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   doc->meta_raw = NULL;
   doc->meta_common = NULL;
   for (size_t i = 0; i < item_count; i++) {
-    doc->items[i].index = i;
-    doc->items[i].doc = doc;
-    doc->items[i].frame_delay_num = 0;
-    doc->items[i].frame_delay_den = 0;
-    doc->items[i].dispose_op = GIMG_DISPOSE_NONE;
-    doc->items[i].blend_op = GIMG_BLEND_SOURCE;
-    doc->items[i].raster = NULL;
+    // This loader builds the item array itself rather than going through
+    // gimg_doc_set_item_count(), so it uses the shared initializer for the
+    // same reason that function does.
+    gimg_item_init(&doc->items[i], doc, i);
   }
   if (state->is_apng) {
     // acTL's num_plays, handed to the caller rather than left in the codec's
@@ -844,6 +841,9 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
                                                       : GIMG_DISPOSE_PREVIOUS;
       doc->items[i].blend_op =
           (f->blend_op == 0) ? GIMG_BLEND_SOURCE : GIMG_BLEND_OVER;
+      // An APNG's items are the moments of an animation.  A still PNG's one
+      // item keeps GIMG_ITEM_IMAGE.
+      gimg_item_set_role(&doc->items[i], GIMG_ITEM_FRAME, i);
     }
   }
 

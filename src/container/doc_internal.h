@@ -50,7 +50,22 @@ struct GIMG_Item {
   GIMG_Dispose_Op dispose_op; ///< Dispose op (fcTL dispose_op).
   GIMG_Blend_Op blend_op;     ///< Blend op (fcTL blend_op).
   GIMG_Raster * raster;       ///< Attached raster for synthetic docs (owned).
+  GIMG_Item_Role role;        ///< What this item is; IMAGE by default.
+  size_t role_subject;        ///< Item this is a thumbnail/level/alternate of;
+                              ///< its own index when the role is not "of".
 };
+
+/**
+ * @brief Put one item into its default state.
+ *
+ * Four places build a GIMG_Item: gimg_doc_create(), gimg_doc_set_item_count()
+ * and the PNG and JPEG loaders, which allocate the item array themselves. All
+ * four assigned the fields one at a time, so a field added to GIMG_Item
+ * started as whatever malloc returned in whichever of them was not updated -
+ * which is exactly what happened when the role was added, in the one that
+ * carried a comment warning about it for the *document*.
+ */
+void gimg_item_init(GIMG_Item * item, GIMG_Doc * doc, size_t index);
 
 /**
  * @brief Document container.

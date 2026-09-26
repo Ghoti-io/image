@@ -41,7 +41,7 @@ extern "C" {
 
 /** @brief Opaque document (container with one or more items). */
 typedef struct GIMG_Doc GIMG_Doc;
-/** @brief Opaque image item (page/frame/level/thumbnail). */
+/** @brief Opaque image item; gimg_item_role() says which kind. */
 typedef struct GIMG_Item GIMG_Item;
 
 /**
@@ -64,6 +64,65 @@ typedef enum {
   GIMG_BLEND_OVER,       ///< Alpha-blend over previous frame.
   GIMG_BLEND_OP_COUNT
 } GIMG_Blend_Op;
+
+/**
+ * @brief What an item is, relative to the document that holds it.
+ *
+ * Without this, `gimg_doc_item(doc, 1)` means three different things and
+ * nothing says which: the second frame of a GIF or an APNG, the Exif IFD1
+ * thumbnail of a JPEG, or another rendering of the same picture from a BMP
+ * `BA` array. A caller telling them apart had to know which format it
+ * loaded, which is the thing a format-independent document model exists to
+ * avoid.
+ *
+ * The default is ::GIMG_ITEM_IMAGE, so a document built from a raster, or an
+ * item a caller zero-initialized, already says the true thing.
+ */
+typedef enum {
+  /** A picture in its own right: a lone image, or one page of several. */
+  GIMG_ITEM_IMAGE = 0,
+  /** A moment in an animation. gimg_item_frame_delay(), the dispose op and
+   * the blend op describe how it is played. */
+  GIMG_ITEM_FRAME,
+  /** A small preview of another item, which gimg_item_role_subject() names. */
+  GIMG_ITEM_THUMBNAIL,
+  /** A reduced-resolution version of another item, which
+   * gimg_item_role_subject() names. A pyramid level. */
+  GIMG_ITEM_LEVEL,
+  /** Another rendering of the same picture, for the caller to choose between
+   * - an OS/2 `BA` array's entries, one per display device. The picture it is
+   * a rendering of is gimg_item_role_subject(). */
+  GIMG_ITEM_ALTERNATE,
+  GIMG_ITEM_ROLE_COUNT
+} GIMG_Item_Role;
+
+/**
+ * @brief What this item is. ::GIMG_ITEM_IMAGE when @p item is NULL.
+ */
+GIMG_API GIMG_Item_Role gimg_item_role(const GIMG_Item * item);
+
+/**
+ * @brief The index of the item this one is a thumbnail, level or alternate
+ * rendering of.
+ *
+ * Its own index for ::GIMG_ITEM_IMAGE and ::GIMG_ITEM_FRAME, which are not
+ * *of* anything, so a caller may read it without first testing the role.
+ * Zero when @p item is NULL.
+ */
+GIMG_API size_t gimg_item_role_subject(const GIMG_Item * item);
+
+/**
+ * @brief Say what this item is.
+ * @param item Item to label; NULL is a no-op.
+ * @param role The role. A value outside the enum is ignored.
+ * @param subject The index of the item it is a thumbnail, level or alternate
+ *   rendering of. Ignored - and set to the item's own index - for
+ *   ::GIMG_ITEM_IMAGE and ::GIMG_ITEM_FRAME. Not bounds-checked against the
+ *   document's item count, because a codec sets this while it is still
+ *   building the item list.
+ */
+GIMG_API void gimg_item_set_role(
+    GIMG_Item * item, GIMG_Item_Role role, size_t subject);
 
 /**
  * @brief Number of items in the document (always >= 1).

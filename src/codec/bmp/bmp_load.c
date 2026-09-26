@@ -999,6 +999,13 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
       gimg_bmp_free_doc_state(codec, state);
       return r;
     }
+    // An array's entries are the same picture drawn for different display
+    // devices, not pages of different pictures.  Which one to use is the
+    // caller's choice, which is what GIMG_ITEM_ALTERNATE says; entry 0 is the
+    // one they are alternatives to.
+    for (size_t i = 1; i < count; i++) {
+      gimg_item_set_role(gimg_doc_item(doc, i), GIMG_ITEM_ALTERNATE, 0u);
+    }
     doc->loaded_by_codec = codec;
     doc->codec_private = state;
     *out_doc = doc;
