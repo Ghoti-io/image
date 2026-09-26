@@ -205,12 +205,52 @@ GIMG_API void gimg_stream_destroy(GIMG_Stream * stream);
 //
 
 typedef struct GIMG_Limits {
-  size_t max_decoded_pixels;  ///< 0 = no limit.
-  size_t max_memory;          ///< 0 = no limit.
-  size_t max_metadata_size;   ///< 0 = no limit.
-  size_t max_frame_count;     ///< 0 = no limit.
-  size_t max_chunk_size;      ///< 0 = no limit (bomb protection).
-  unsigned int max_recursion; ///< 0 = default (e.g. TIFF IFD depth).
+  /**
+   * 0 = no limit. Read by every codec, at whichever stage knows the size:
+   * BMP and JPEG while parsing the frame header, PNG and GIF while decoding.
+   * A cap equal to the image's own pixel count passes and one below it is
+   * refused, so it bounds what it names rather than something near it.
+   */
+  size_t max_decoded_pixels;
+  /**
+   * 0 = no limit.
+   * @warning **Read by BMP only.** No other codec consults it, so a caller
+   * who sets this to bound a decode gets a bound on BMP and nothing on PNG,
+   * JPEG or GIF. Use max_decoded_pixels, which every codec reads, to bound
+   * the size of what comes back.
+   */
+  size_t max_memory;
+  /**
+   * 0 = no limit.
+   * @warning **Not honoured.** No code reads this field; it is declared so
+   * the shape of the struct is settled. Metadata is not capped by anything
+   * today - an Exif blob, an ICC profile or a text chunk is taken at whatever
+   * size the file gives, subject only to max_chunk_size where the format has
+   * chunks.
+   */
+  size_t max_metadata_size;
+  /**
+   * 0 = no limit.
+   * @warning **Read by PNG and GIF only.** Those are the two formats whose
+   * multi-image form (APNG, and GIF's own frames) this was written for. A
+   * BMP bitmap array also loads as several items and is not capped.
+   */
+  size_t max_frame_count;
+  /**
+   * 0 = no limit (bomb protection). Read by PNG, JPEG and GIF - the three
+   * formats built out of length-prefixed segments - and by whichever codec a
+   * BMP wrapping a PNG or a JPEG hands its payload to. A DIB has no chunk
+   * structure, so a plain BMP is unaffected.
+   */
+  size_t max_chunk_size;
+  /**
+   * 0 = default.
+   * @warning **Not honoured.** No code reads this field. It was declared for
+   * a TIFF codec that does not exist; the one nesting this library does have,
+   * a BMP that wraps a PNG or a JPEG, is one level deep by construction and
+   * needs no depth counter.
+   */
+  unsigned int max_recursion;
   uint8_t _reserved[4];
 } GIMG_Limits;
 

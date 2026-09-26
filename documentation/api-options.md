@@ -151,14 +151,19 @@ Used by `gimg_item_decode()`.
 
 **GIMG_Limits** (see `ghoti.io/image/stream.h`) is used by load and decode to cap resource use. Initialize with `gimg_limits_default()`; any field set to `0` means “no limit”.
 
-| Field                  | Use |
-|------------------------|-----|
-| `max_decoded_pixels`   | Decode: reject if width×height (or sum over passes/frames) exceeds this. |
-| `max_memory`           | General memory cap (format-specific). |
-| `max_metadata_size`    | Cap on metadata size (e.g. ancillary payload). |
-| `max_frame_count`      | Max frames (e.g. APNG). |
-| `max_chunk_size`       | Chunk parser: reject chunks larger than this (bomb protection). |
-| `max_recursion`        | Max recursion depth (e.g. TIFF IFD). |
+| Field                  | Read by | Use |
+|------------------------|---------|-----|
+| `max_decoded_pixels`   | PNG, JPEG, BMP, GIF | Reject if width×height (or the sum over frames) exceeds this. |
+| `max_memory`           | **BMP only** | A cap on what one image's pixel data may take. No other codec reads it. |
+| `max_metadata_size`    | **nothing** | Declared, not honoured. Metadata is taken at whatever size the file gives. |
+| `max_frame_count`      | PNG, GIF | Max frames (APNG, GIF). A BMP bitmap array is several items and is not capped. |
+| `max_chunk_size`       | PNG, JPEG, GIF | Reject a segment larger than this (bomb protection). A BMP wrapping a PNG or JPEG passes it down. |
+| `max_recursion`        | **nothing** | Declared, not honoured. Written for a TIFF codec that does not exist. |
+
+Two of the six are read by no code at all, and `max_memory` is read by one
+codec of four. That is a gap rather than a design: the intent is that each is
+either honoured everywhere or removed. Until then, **`max_decoded_pixels` is
+the only cap that bounds every format**, and it is the one to set.
 
 The compress library’s DEFLATE decoder may use a separate limit (e.g. `limits.max_output_bytes`) for decompression; the image library passes limits where applicable.
 
@@ -188,9 +193,10 @@ only a limit will stop it.
 This matches libpng and libjpeg, which have no built-in cap either, and it is
 the right default for a library that does not know whether it is decoding a
 thumbnail or a satellite image. It is the wrong setting for a service reading
-files it did not produce. **Set `max_decoded_pixels` and `max_memory` to
-whatever your largest legitimate input needs**, and the shape above becomes
-`GIMG_ERR_LIMIT` before anything is allocated.
+files it did not produce. **Set `max_decoded_pixels` to whatever your largest
+legitimate input needs**, and the shape above becomes `GIMG_ERR_LIMIT` before
+anything is allocated. `max_memory` is worth setting beside it, but it only
+bounds BMP - see the table above - so it is not a substitute.
 
 Limits set on the **load** are remembered and applied to a later **decode**
 that carries none of its own, so setting them once at load is enough - and the
