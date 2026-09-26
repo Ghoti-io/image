@@ -1,0 +1,711 @@
+/*
+ * SPDX-License-Identifier: LGPL-3.0-only
+ *
+ * Copyright (C) 2026 Corey Pennycuff
+ *
+ * This file is part of Ghoti.io Image.
+ *
+ * Ghoti.io Image is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License version 3 as
+ * published by the Free Software Foundation.
+ *
+ * Ghoti.io Image is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
+ * License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * @file
+ *
+ * Read a TIFF's header and image file directories (TIFF 6.0 sections 2, 8).
+ *
+ * A TIFF is a header naming the offset of the first IFD, and each IFD is a
+ * count, that many twelve-byte entries, and the offset of the next one.  An
+ * entry is a tag, a type, a count, and four bytes that hold the value when it
+ * fits and an offset to it when it does not.  Everything else in the format -
+ * where the pixels are, how they are compressed, what the samples mean - is a
+ * tag, which is why this file is mostly about reading one entry correctly and
+ * the rest is a table.
+ *
+ * Every IFD becomes an item.  A multi-page TIFF is several pictures in one
+ * file, which is what items are for and what the GIF, APNG and BMP array
+ * loaders already do with them.
+ */
+
+#include <ghoti.io/image/macros.h>
+
+#include <ghoti.io/cutil/safemath.h>
+#include <ghoti.io/image/codec.h>
+#include <ghoti.io/image/core.h>
+#include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/raster.h>
+#include <ghoti.io/image/stream.h>
+#include <string.h>
+
+#include "../../container/doc_internal.h"
+#include "../../core/alloc_internal.h"
+#include "../../core/resolution_internal.h"
+#include "../../core/safe_math_internal.h"
+#include "../codec_internal.h"
+#include "tiff_internal.h"
+
+/** Append a load diagnostic tagged with the codec name and a file offset. */
+static void tiff_diag(
+    GIMG_Diagnostics * d, size_t offset, const char * action) {
+  if (!d) {
+    return;
+  }
+  (void)gimg_diagnostics_append(
+      d, "tiff", offset, 0u, GIMG_DIAG_ERROR, action);
+}
+
+// ---------------------------------------------------------------------------
+// Byte-order-aware readers
+//
+// Every multi-byte value in a TIFF is written in the order the header
+// declared, which is not necessarily this machine's.  Nothing below reads a
+// value any other way.
+// ---------------------------------------------------------------------------
+
+static uint16_t tiff_u16(const unsigned char * p, bool be) {
+  return be ? (uint16_t)(((uint16_t)p[0] << 8) | p[1])
+            : (uint16_t)(((uint16_t)p[1] << 8) | p[0]);
+}
+
+static uint32_t tiff_u32(const unsigned char * p, bool be) {
+  return be ? (((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                  ((uint32_t)p[2] << 8) | (uint32_t)p[3])
+            : (((uint32_t)p[3] << 24) | ((uint32_t)p[2] << 16) |
+                  ((uint32_t)p[1] << 8) | (uint32_t)p[0]);
+}
+
+/** Bytes one value of @p type occupies, or 0 for a type this codec does not
+ * know.  An unknown type is not an error by itself - a file may carry tags
+ * this codec ignores - but its length cannot be computed, so such an entry is
+ * skipped rather than guessed at. */
+static size_t tiff_type_size(uint16_t type) {
+  switch (type) {
+  case GIMG_TIFF_TYPE_BYTE:
+  case GIMG_TIFF_TYPE_ASCII:
+  case GIMG_TIFF_TYPE_SBYTE:
+  case GIMG_TIFF_TYPE_UNDEFINED:
+    return 1u;
+  case GIMG_TIFF_TYPE_SHORT:
+  case GIMG_TIFF_TYPE_SSHORT:
+    return 2u;
+  case GIMG_TIFF_TYPE_LONG:
+  case GIMG_TIFF_TYPE_SLONG:
+  case GIMG_TIFF_TYPE_FLOAT:
+    return 4u;
+  case GIMG_TIFF_TYPE_RATIONAL:
+  case GIMG_TIFF_TYPE_SRATIONAL:
+  case GIMG_TIFF_TYPE_DOUBLE:
+    return 8u;
+  default:
+    return 0u;
+  }
+}
+
+/** One directory entry, resolved to where its values actually are. */
+typedef struct {
+  uint16_t tag;
+  uint16_t type;
+  uint32_t count;
+  const unsigned char * values; ///< NULL when the entry is out of bounds.
+  size_t value_bytes;
+} tiff_entry_t;
+
+/**
+ * Point @p out at an entry's values, wherever they are.
+ *
+ * Four bytes or fewer live in the entry itself, left-justified, in the file's
+ * byte order (TIFF 6.0 section 2, "IFD Entry").  Anything longer is at the
+ * offset those four bytes hold, and that offset is checked against the end of
+ * the file here rather than by every caller.
+ */
+static bool tiff_entry_at(const gimg_tiff_doc_state_t * st,
+    const unsigned char * entry, tiff_entry_t * out) {
+  out->tag = tiff_u16(entry + 0, st->big_endian);
+  out->type = tiff_u16(entry + 2, st->big_endian);
+  out->count = tiff_u32(entry + 4, st->big_endian);
+  out->values = NULL;
+  out->value_bytes = 0;
+
+  const size_t unit = tiff_type_size(out->type);
+  if (unit == 0u) {
+    return false; // A type this codec cannot size; the caller skips the tag.
+  }
+  size_t total = 0;
+  if (!gcu_safe_mul_size(unit, (size_t)out->count, &total)) {
+    return false;
+  }
+  if (total <= 4u) {
+    out->values = entry + 8;
+    out->value_bytes = total;
+    return true;
+  }
+  const uint32_t at = tiff_u32(entry + 8, st->big_endian);
+  size_t end = 0;
+  if (!gcu_safe_add_size((size_t)at, total, &end) || end > st->file_size) {
+    return false;
+  }
+  out->values = st->file + at;
+  out->value_bytes = total;
+  return true;
+}
+
+/** The @p index'th value of an entry, widened to 64 bits. Signed types are
+ * read as their unsigned counterparts: no tag this codec reads is negative,
+ * and a file that makes one negative is saying something this codec would
+ * refuse anyway. */
+static uint64_t tiff_value(
+    const gimg_tiff_doc_state_t * st, const tiff_entry_t * e, size_t index) {
+  const size_t unit = tiff_type_size(e->type);
+  const unsigned char * p = e->values + (index * unit);
+  switch (unit) {
+  case 1u:
+    return (uint64_t)*p;
+  case 2u:
+    return (uint64_t)tiff_u16(p, st->big_endian);
+  case 4u:
+    return (uint64_t)tiff_u32(p, st->big_endian);
+  case 8u:
+    // A RATIONAL is two LONGs; callers that want both read them directly.
+    return (uint64_t)tiff_u32(p, st->big_endian);
+  default:
+    return 0u;
+  }
+}
+
+/** Copy an entry's values into a freshly allocated uint64_t array. */
+static GIMG_Result tiff_value_array(const gimg_tiff_doc_state_t * st,
+    const tiff_entry_t * e, uint64_t ** out_values, size_t * out_count) {
+  *out_values = NULL;
+  *out_count = 0;
+  if (e->count == 0u) {
+    return GIMG_OK;
+  }
+  size_t bytes = 0;
+  if (!gcu_safe_mul_size((size_t)e->count, sizeof(uint64_t), &bytes)) {
+    return GIMG_ERR_LIMIT;
+  }
+  uint64_t * v = (uint64_t *)gimg_malloc(st->allocator, bytes);
+  if (!v) {
+    return GIMG_ERR_OOM;
+  }
+  for (size_t i = 0; i < e->count; i++) {
+    v[i] = tiff_value(st, e, i);
+  }
+  *out_values = v;
+  *out_count = e->count;
+  return GIMG_OK;
+}
+
+static void tiff_free_ifd(const GIMG_Allocator * a, gimg_tiff_ifd_t * ifd) {
+  gimg_free(a, ifd->block_offsets);
+  gimg_free(a, ifd->block_byte_counts);
+  gimg_free(a, ifd->color_map);
+  ifd->block_offsets = NULL;
+  ifd->block_byte_counts = NULL;
+  ifd->color_map = NULL;
+  ifd->block_count = 0;
+  ifd->color_map_count = 0;
+}
+
+void gimg_tiff_free_doc_state(GIMG_Codec * codec, void * codec_private) {
+  (void)codec;
+  gimg_tiff_doc_state_t * st = (gimg_tiff_doc_state_t *)codec_private;
+  if (!st) {
+    return;
+  }
+  const GIMG_Allocator * a = st->allocator;
+  for (size_t i = 0; i < st->ifd_count; i++) {
+    tiff_free_ifd(a, &st->ifds[i]);
+  }
+  gimg_free(a, st->ifds);
+  gimg_free(a, st->file);
+  gimg_free(a, st);
+}
+
+// ---------------------------------------------------------------------------
+// One directory
+// ---------------------------------------------------------------------------
+
+/** Install the TIFF 6.0 defaults, so a tag's absence means what the
+ * specification says it means rather than zero. */
+static void tiff_ifd_defaults(gimg_tiff_ifd_t * ifd) {
+  memset(ifd, 0, sizeof(*ifd));
+  ifd->bits_per_sample = 1u;                  // Section 8.
+  ifd->compression = GIMG_TIFF_COMPRESSION_NONE;
+  ifd->samples_per_pixel = 1u;
+  ifd->planar_config = 1u;
+  ifd->resolution_unit = 2u;                  // Inches.
+  ifd->sample_format = 1u;                    // Unsigned integer.
+  ifd->rows_per_strip = 0xFFFFFFFFu;          // "The whole image in one strip".
+  ifd->photometric = 0xFFFFu;                 // No default; absence is an error.
+}
+
+/**
+ * Read one IFD at @p at into @p ifd.
+ *
+ * @param out_next Offset of the following IFD, or 0 at the end of the chain.
+ */
+static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
+    GIMG_Diagnostics * diag, gimg_tiff_ifd_t * ifd, uint32_t * out_next) {
+  tiff_ifd_defaults(ifd);
+  *out_next = 0u;
+
+  if ((size_t)at + 2u > st->file_size) {
+    tiff_diag(diag, at, "the directory begins past the end of the file");
+    return GIMG_ERR_CORRUPT;
+  }
+  const uint32_t count = tiff_u16(st->file + at, st->big_endian);
+  size_t after = 0;
+  if (!gcu_safe_mul_size((size_t)count, 12u, &after) ||
+      !gcu_safe_add_size(after, (size_t)at + 2u, &after) ||
+      after + 4u > st->file_size) {
+    tiff_diag(diag, at, "the directory runs past the end of the file");
+    return GIMG_ERR_CORRUPT;
+  }
+  *out_next = tiff_u32(st->file + after, st->big_endian);
+
+  uint64_t * strip_offsets = NULL;
+  size_t strip_offset_count = 0;
+  uint64_t * strip_counts = NULL;
+  size_t strip_count_count = 0;
+  bool have_tile_width = false, have_tile_height = false;
+  GIMG_Result r = GIMG_OK;
+
+  for (uint32_t i = 0; i < count && r == GIMG_OK; i++) {
+    tiff_entry_t e;
+    if (!tiff_entry_at(st, st->file + at + 2u + ((size_t)i * 12u), &e)) {
+      // A type this codec cannot size, or values outside the file.  Skipping
+      // is right for a tag nobody reads and wrong for one that decides how to
+      // decode; the check after the loop is what separates them, because a
+      // required tag that was skipped is a required tag that is missing.
+      continue;
+    }
+    if (e.count == 0u) {
+      continue;
+    }
+    switch (e.tag) {
+    case GIMG_TIFF_TAG_IMAGE_WIDTH:
+      ifd->width = (uint32_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_IMAGE_LENGTH:
+      ifd->height = (uint32_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_BITS_PER_SAMPLE: {
+      // One value per sample, and this codec reads only files where they
+      // agree.  A file that stores eight bits of red beside four of green is
+      // legal and is refused below by name, rather than by reading the first
+      // value and quietly getting the rest wrong.
+      ifd->bits_per_sample = (uint16_t)tiff_value(st, &e, 0);
+      for (size_t k = 1; k < e.count; k++) {
+        if ((uint16_t)tiff_value(st, &e, k) != ifd->bits_per_sample) {
+          ifd->bits_per_sample = 0u; // Refused by the support check.
+          break;
+        }
+      }
+      break;
+    }
+    case GIMG_TIFF_TAG_COMPRESSION:
+      ifd->compression = (uint16_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_PHOTOMETRIC:
+      ifd->photometric = (uint16_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_SAMPLES_PER_PIXEL:
+      ifd->samples_per_pixel = (uint16_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_ROWS_PER_STRIP:
+      ifd->rows_per_strip = (uint32_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_PLANAR_CONFIG:
+      ifd->planar_config = (uint16_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_SAMPLE_FORMAT:
+      ifd->sample_format = (uint16_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_RESOLUTION_UNIT:
+      ifd->resolution_unit = (uint16_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_EXTRA_SAMPLES:
+      ifd->extra_samples = (uint16_t)tiff_value(st, &e, 0);
+      ifd->has_extra_samples = true;
+      break;
+    case GIMG_TIFF_TAG_TILE_WIDTH:
+      ifd->tile_width = (uint32_t)tiff_value(st, &e, 0);
+      have_tile_width = true;
+      break;
+    case GIMG_TIFF_TAG_TILE_LENGTH:
+      ifd->tile_height = (uint32_t)tiff_value(st, &e, 0);
+      have_tile_height = true;
+      break;
+    case GIMG_TIFF_TAG_STRIP_OFFSETS:
+    case GIMG_TIFF_TAG_TILE_OFFSETS:
+      gimg_free(st->allocator, strip_offsets);
+      r = tiff_value_array(st, &e, &strip_offsets, &strip_offset_count);
+      break;
+    case GIMG_TIFF_TAG_STRIP_BYTE_COUNTS:
+    case GIMG_TIFF_TAG_TILE_BYTE_COUNTS:
+      gimg_free(st->allocator, strip_counts);
+      r = tiff_value_array(st, &e, &strip_counts, &strip_count_count);
+      break;
+    case GIMG_TIFF_TAG_X_RESOLUTION:
+      if (e.value_bytes >= 8u) {
+        ifd->x_res_num = tiff_u32(e.values, st->big_endian);
+        ifd->x_res_den = tiff_u32(e.values + 4, st->big_endian);
+        ifd->has_x_res = ifd->x_res_den != 0u;
+      }
+      break;
+    case GIMG_TIFF_TAG_Y_RESOLUTION:
+      if (e.value_bytes >= 8u) {
+        ifd->y_res_num = tiff_u32(e.values, st->big_endian);
+        ifd->y_res_den = tiff_u32(e.values + 4, st->big_endian);
+        ifd->has_y_res = ifd->y_res_den != 0u;
+      }
+      break;
+    case GIMG_TIFF_TAG_COLOR_MAP: {
+      // Three runs of 2^BitsPerSample entries: all reds, then greens, then
+      // blues, each a 16-bit value (section 8).
+      size_t bytes = 0;
+      if (!gcu_safe_mul_size((size_t)e.count, sizeof(uint16_t), &bytes)) {
+        r = GIMG_ERR_LIMIT;
+        break;
+      }
+      gimg_free(st->allocator, ifd->color_map);
+      ifd->color_map = (uint16_t *)gimg_malloc(st->allocator, bytes);
+      if (!ifd->color_map) {
+        r = GIMG_ERR_OOM;
+        break;
+      }
+      for (size_t k = 0; k < e.count; k++) {
+        ifd->color_map[k] = (uint16_t)tiff_value(st, &e, k);
+      }
+      ifd->color_map_count = e.count;
+      break;
+    }
+    default:
+      break; // A tag this codec does not read.
+    }
+  }
+
+  ifd->tiled = have_tile_width && have_tile_height;
+
+  if (r == GIMG_OK) {
+    // A strip and a tile are the same thing to everything downstream: a block
+    // of pixels at an offset, with a length.  They are kept in one pair of
+    // arrays so that assembling the image is one loop rather than two.
+    if (strip_offset_count == 0u || strip_count_count != strip_offset_count) {
+      tiff_diag(diag, at,
+          "the offsets and the byte counts do not describe the same blocks");
+      r = GIMG_ERR_CORRUPT;
+    }
+    else {
+      ifd->block_offsets = strip_offsets;
+      ifd->block_byte_counts = strip_counts;
+      ifd->block_count = strip_offset_count;
+      strip_offsets = NULL;
+      strip_counts = NULL;
+    }
+  }
+  gimg_free(st->allocator, strip_offsets);
+  gimg_free(st->allocator, strip_counts);
+  if (r != GIMG_OK) {
+    tiff_free_ifd(st->allocator, ifd);
+  }
+  return r;
+}
+
+// ---------------------------------------------------------------------------
+// What this codec can decode
+//
+// Refused at load rather than at decode, because gimg_item_decode() has no
+// diagnostics parameter and a file rejected for its structure should say
+// which rule it broke.
+// ---------------------------------------------------------------------------
+
+/** How many blocks the image's geometry implies, so a file that names a
+ * different number is saying something inconsistent about itself. */
+static bool tiff_expected_block_count(
+    const gimg_tiff_ifd_t * ifd, size_t * out_count) {
+  if (ifd->tiled) {
+    if (ifd->tile_width == 0u || ifd->tile_height == 0u) {
+      return false;
+    }
+    const size_t across =
+        ((size_t)ifd->width + ifd->tile_width - 1u) / ifd->tile_width;
+    const size_t down =
+        ((size_t)ifd->height + ifd->tile_height - 1u) / ifd->tile_height;
+    return gcu_safe_mul_size(across, down, out_count);
+  }
+  const uint32_t rows = ifd->rows_per_strip;
+  if (rows == 0u) {
+    return false;
+  }
+  *out_count = ((size_t)ifd->height + rows - 1u) / rows;
+  return true;
+}
+
+static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
+    const gimg_tiff_ifd_t * ifd, const GIMG_Limits * limits,
+    GIMG_Diagnostics * diag, size_t which) {
+  if (ifd->width == 0u || ifd->height == 0u) {
+    tiff_diag(diag, which, "an image of zero width or height");
+    return GIMG_ERR_CORRUPT;
+  }
+  if (ifd->photometric == 0xFFFFu) {
+    tiff_diag(diag, which,
+        "no PhotometricInterpretation, which has no default (TIFF 6.0 8)");
+    return GIMG_ERR_CORRUPT;
+  }
+  if (ifd->compression != GIMG_TIFF_COMPRESSION_NONE) {
+    tiff_diag(diag, which,
+        "only uncompressed TIFF is read so far; this file is compressed");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (ifd->planar_config != 1u) {
+    tiff_diag(diag, which,
+        "PlanarConfiguration 2 stores the channels apart; not read yet");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (ifd->sample_format != 1u) {
+    tiff_diag(diag, which,
+        "SampleFormat names something other than an unsigned integer");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (ifd->bits_per_sample != 8u) {
+    // Zero is what the parser leaves when the samples disagree with each
+    // other, which is a different statement from "a depth this codec does not
+    // read", and the caller is told which.
+    tiff_diag(diag, which,
+        ifd->bits_per_sample == 0u
+            ? "BitsPerSample differs between samples; not read yet"
+            : "only eight bits per sample is read so far");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  switch (ifd->photometric) {
+  case GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO:
+  case GIMG_TIFF_PHOTOMETRIC_BLACK_IS_ZERO:
+    if (ifd->samples_per_pixel != 1u) {
+      tiff_diag(diag, which, "a grayscale image with more than one sample");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    break;
+  case GIMG_TIFF_PHOTOMETRIC_PALETTE: {
+    if (ifd->samples_per_pixel != 1u) {
+      tiff_diag(diag, which, "a palette image with more than one sample");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    const size_t want = (size_t)3u << ifd->bits_per_sample;
+    if (ifd->color_map_count < want) {
+      tiff_diag(diag, which,
+          "the ColorMap is shorter than the bit depth needs");
+      return GIMG_ERR_CORRUPT;
+    }
+    break;
+  }
+  case GIMG_TIFF_PHOTOMETRIC_RGB:
+    if (ifd->samples_per_pixel != 3u && ifd->samples_per_pixel != 4u) {
+      tiff_diag(diag, which, "an RGB image with neither three nor four samples");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    break;
+  default:
+    tiff_diag(diag, which,
+        "a PhotometricInterpretation this codec does not read yet");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  size_t want_blocks = 0;
+  if (!tiff_expected_block_count(ifd, &want_blocks)) {
+    tiff_diag(diag, which, "the strip or tile geometry does not add up");
+    return GIMG_ERR_CORRUPT;
+  }
+  if (ifd->block_count != want_blocks) {
+    tiff_diag(diag, which,
+        "the image names a different number of blocks than its geometry has");
+    return GIMG_ERR_CORRUPT;
+  }
+  // Every block has to lie inside the file.  Checked here, once, so that
+  // decode can copy without re-deciding whether the bytes are there.
+  for (size_t i = 0; i < ifd->block_count; i++) {
+    size_t end = 0;
+    if (!gcu_safe_add_size((size_t)ifd->block_offsets[i],
+            (size_t)ifd->block_byte_counts[i], &end) ||
+        end > st->file_size) {
+      tiff_diag(diag, which, "a strip or tile lies outside the file");
+      return GIMG_ERR_CORRUPT;
+    }
+  }
+
+  size_t pixels = 0;
+  if (gimg_safe_pixel_count(ifd->width, ifd->height, &pixels) != GIMG_OK) {
+    tiff_diag(diag, which, "the pixel count overflows");
+    return GIMG_ERR_LIMIT;
+  }
+  if (limits && limits->max_decoded_pixels &&
+      pixels > limits->max_decoded_pixels) {
+    tiff_diag(diag, which, "increase max_decoded_pixels");
+    return GIMG_ERR_LIMIT;
+  }
+  return GIMG_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Load
+// ---------------------------------------------------------------------------
+
+GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    GIMG_Doc ** out_doc) {
+  if (!codec || !stream || !out_doc) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_doc = NULL;
+  const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
+  const GIMG_Limits * limits = options ? options->limits : NULL;
+
+  const size_t size = gimg_stream_size(stream);
+  if (size == GIMG_STREAM_SIZE_UNKNOWN) {
+    // Everything in a TIFF is found by absolute offset and an offset may
+    // point backwards, so the file cannot be read as it arrives.
+    tiff_diag(diagnostics, 0u, "a TIFF requires a sized stream");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (size < 8u) {
+    tiff_diag(diagnostics, 0u, "truncated header");
+    return GIMG_ERR_CORRUPT;
+  }
+
+  gimg_tiff_doc_state_t * st = (gimg_tiff_doc_state_t *)gimg_calloc(
+      alloc, 1u, sizeof(gimg_tiff_doc_state_t));
+  if (!st) {
+    return GIMG_ERR_OOM;
+  }
+  st->allocator = alloc;
+  st->file_size = size;
+  st->file = (unsigned char *)gimg_malloc(alloc, size);
+  if (!st->file) {
+    gimg_tiff_free_doc_state(codec, st);
+    return GIMG_ERR_OOM;
+  }
+  GIMG_Result r = gimg_stream_seek(stream, 0u);
+  if (r == GIMG_OK) {
+    r = gimg_stream_read_exact(stream, st->file, size);
+  }
+  if (r != GIMG_OK) {
+    tiff_diag(diagnostics, 0u, "the file could not be read");
+    gimg_tiff_free_doc_state(codec, st);
+    return r;
+  }
+
+  r = gimg_tiff_read_header(st->file, size, &st->big_endian);
+  if (r != GIMG_OK) {
+    tiff_diag(diagnostics, 0u,
+        r == GIMG_ERR_UNSUPPORTED
+            ? "BigTIFF (version 43) is a different format; not read"
+            : "the file does not begin with a TIFF header");
+    gimg_tiff_free_doc_state(codec, st);
+    return r;
+  }
+
+  // Walk the chain, refusing one that does not move forward.  An offset that
+  // pointed backwards or at itself would loop here for ever.
+  uint32_t at = tiff_u32(st->file + 4, st->big_endian);
+  uint32_t previous = 0u;
+  while (at != 0u) {
+    if (st->ifd_count > 0u && at <= previous) {
+      tiff_diag(diagnostics, at, "the directory chain does not advance");
+      gimg_tiff_free_doc_state(codec, st);
+      return GIMG_ERR_CORRUPT;
+    }
+    if (st->ifd_count >= GIMG_TIFF_MAX_IFDS) {
+      tiff_diag(diagnostics, at, "more directories than this codec chains");
+      gimg_tiff_free_doc_state(codec, st);
+      return GIMG_ERR_LIMIT;
+    }
+    if (limits && limits->max_frame_count &&
+        st->ifd_count >= limits->max_frame_count) {
+      tiff_diag(diagnostics, at, "increase max_frame_count");
+      gimg_tiff_free_doc_state(codec, st);
+      return GIMG_ERR_LIMIT;
+    }
+    size_t bytes = 0;
+    if (!gcu_safe_mul_size(
+            st->ifd_count + 1u, sizeof(gimg_tiff_ifd_t), &bytes)) {
+      gimg_tiff_free_doc_state(codec, st);
+      return GIMG_ERR_LIMIT;
+    }
+    gimg_tiff_ifd_t * grown =
+        (gimg_tiff_ifd_t *)gimg_realloc(alloc, st->ifds, bytes);
+    if (!grown) {
+      gimg_tiff_free_doc_state(codec, st);
+      return GIMG_ERR_OOM;
+    }
+    st->ifds = grown;
+
+    uint32_t next = 0u;
+    r = tiff_read_ifd(st, at, diagnostics, &st->ifds[st->ifd_count], &next);
+    if (r != GIMG_OK) {
+      // The entry just written owns nothing: tiff_read_ifd frees what it took
+      // before returning a failure, and ifd_count still excludes it.
+      gimg_tiff_free_doc_state(codec, st);
+      return r;
+    }
+    st->ifd_count++;
+    r = tiff_check_supported(st, &st->ifds[st->ifd_count - 1u], limits,
+        diagnostics, st->ifd_count - 1u);
+    if (r != GIMG_OK) {
+      gimg_tiff_free_doc_state(codec, st);
+      return r;
+    }
+    previous = at;
+    at = next;
+  }
+
+  if (st->ifd_count == 0u) {
+    tiff_diag(diagnostics, 4u, "no image directories in the file");
+    gimg_tiff_free_doc_state(codec, st);
+    return GIMG_ERR_CORRUPT;
+  }
+
+  GIMG_Doc * doc = NULL;
+  r = gimg_doc_create_with_allocator(alloc, &doc);
+  if (r != GIMG_OK) {
+    gimg_tiff_free_doc_state(codec, st);
+    return r;
+  }
+  r = gimg_doc_set_item_count(doc, st->ifd_count);
+  if (r != GIMG_OK) {
+    gimg_doc_destroy(doc);
+    gimg_tiff_free_doc_state(codec, st);
+    return r;
+  }
+  // Every IFD is a picture in its own right - a page, not a moment - so every
+  // item keeps the default GIMG_ITEM_IMAGE.  See notes on the decode model:
+  // one item is one picture, and a one-page TIFF is a picture like any other.
+
+  // Resolution comes from the first directory, which is the one a caller
+  // showing a single image sees.  Only inches convert to DPI; centimetres and
+  // "no unit" say something this field cannot carry.
+  const gimg_tiff_ifd_t * first = &st->ifds[0];
+  if (first->resolution_unit == 2u && first->has_x_res && first->has_y_res) {
+    GIMG_Meta_Common * common = NULL;
+    if (gimg_doc_ensure_meta_common(doc, &common) == GIMG_OK && common) {
+      gimg_meta_common_set_dpi(common,
+          first->x_res_num / first->x_res_den,
+          first->y_res_num / first->y_res_den);
+    }
+  }
+
+  doc->loaded_by_codec = codec;
+  doc->codec_private = st;
+  *out_doc = doc;
+  return GIMG_OK;
+}

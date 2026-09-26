@@ -86,6 +86,21 @@ struct GIMG_Codec {
 };
 
 /**
+ * @brief Add a second (or third) magic to a codec already created.
+ *
+ * gimg_codec_create_stub_with_allocator() takes one, which is all a format
+ * with one spelling of its header needs. TIFF has four - a byte order marker
+ * crossed with a version number - and refusing three of them because the
+ * constructor takes one would be the shape of a defect this codebase has
+ * already had: a magic tested before the byte order rejects one whole
+ * endianness.
+ *
+ * @return GIMG_OK, or GIMG_ERR_OOM with the codec's existing magics intact.
+ */
+GIMG_Result gimg_codec_add_magic(
+    GIMG_Codec * codec, const void * bytes, size_t length, size_t offset);
+
+/**
  * @brief Set load callback (internal; used by codec registration).
  */
 void gimg_codec_set_load_cb(GIMG_Codec * codec, gimg_codec_load_fn fn);

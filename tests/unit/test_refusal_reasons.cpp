@@ -78,6 +78,16 @@ const char * signature_of(const std::vector<uint8_t> & b) {
   }
   if (b.size() >= 2 && b[0] == 'B' && b[1] == 'M') { return "bmp"; }
   if (b.size() >= 3 && memcmp(b.data(), "GIF", 3) == 0) { return "gif"; }
+  // Both byte orders, and the version read at the end the order names. A
+  // magic tested before the byte order would reject one whole endianness,
+  // which is a defect this codebase has had.
+  if (b.size() >= 4 &&
+      (memcmp(b.data(), "II\x2a\x00", 4) == 0 ||
+          memcmp(b.data(), "MM\x00\x2a", 4) == 0 ||
+          memcmp(b.data(), "II\x2b\x00", 4) == 0 ||
+          memcmp(b.data(), "MM\x00\x2b", 4) == 0)) {
+    return "tiff";
+  }
   return nullptr;
 }
 

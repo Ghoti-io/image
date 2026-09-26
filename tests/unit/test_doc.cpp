@@ -511,6 +511,15 @@ GIMG_Item_Role jpeg_role(size_t index, size_t count) {
 }
 
 
+/** TIFF: every IFD is a page, and a page is a picture in its own right
+ * however many of them there are - not a moment of one picture, which is what
+ * separates a multi-page TIFF from an animation. */
+GIMG_Item_Role tiff_role(size_t index, size_t count) {
+  (void)index;
+  (void)count;
+  return GIMG_ITEM_IMAGE;
+}
+
 /** The format the library says these bytes are, or "". */
 std::string probed_format(const std::vector<uint8_t> & bytes) {
   GIMG_Stream * s = nullptr;
@@ -537,6 +546,7 @@ const RoleClaim kRoleClaims[] = {
     {"gif", animated_role},
     {"jpeg", jpeg_role},
     {"png", animated_role},
+    {"tiff", tiff_role},
 };
 
 const RoleClaim * claim_for(const std::string & codec) {

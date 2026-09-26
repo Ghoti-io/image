@@ -599,6 +599,12 @@ $(OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_GIF=\"$(TEST_OUT_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
+# Tests in tests/codec/tiff/ (object name from basename for link).
+$(OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(FLAGS_STAMP)
+	@printf "\n### Compiling Test Object: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
 # Test in tests/codec/png/ (object name from basename for link)
 $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: test_png_chunk ###\n"
@@ -635,6 +641,7 @@ TEST_DATA_ROOT := $(IMAGE_ROOT)/tests/data
 TEST_OUT_ROOT := $(IMAGE_ROOT)/tests/out
 TEST_DATA_BMP := $(IMAGE_ROOT)/tests/data/bmp
 TEST_DATA_GIF := $(IMAGE_ROOT)/tests/data/gif
+TEST_DATA_TIFF := $(IMAGE_ROOT)/tests/data/tiff
 # Output directory for BMP encode test output.
 TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 TEST_OUT_GIF := $(IMAGE_ROOT)/tests/out/gif
@@ -1434,14 +1441,14 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp $(ASAN_FLAGS_STAMP)
 $(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_ROOT=\"$(TEST_DATA_ROOT)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/bmp/ (mirrors the non-ASan rule; without this the ASan
 # build has no way to make test_bmp_*.o and `make test-asan` does not build).
 $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling Test Object (ASan): $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_ROOT=\"$(TEST_DATA_ROOT)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling ASan Test: $* ###\n"
@@ -1452,6 +1459,11 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_GIF=\"$(TEST_OUT_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(ASAN_FLAGS_STAMP)
+	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(ASAN_FLAGS_STAMP)
 	@mkdir -p $(@D)

@@ -9,9 +9,13 @@ This is what the library implements.
 
 - PNG, including APNG.
 - JPEG, BMP and GIF.
+- TIFF, **read only and a baseline subset**: both byte orders, strips and
+  tiles, uncompressed 8-bit grayscale, RGB, RGBA and palette, every directory
+  as a page. No compression method and no writer yet. What is absent is
+  listed on the format's own page rather than left to be discovered.
 
-TIFF, WebP and the rest are planned and have no codec yet. A page for a
-format is written with its codec.
+WebP and the rest are planned and have no codec yet. A page for a format is
+written with its codec.
 
 ## Before you call it
 

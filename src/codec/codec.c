@@ -101,6 +101,33 @@ GIMG_API GIMG_Result gimg_codec_create_stub_with_allocator(
   return GIMG_OK;
 }
 
+GIMG_Result gimg_codec_add_magic(
+    GIMG_Codec * codec, const void * bytes, size_t length, size_t offset) {
+  if (!codec || !bytes || length == 0) {
+    return GIMG_ERR_INTERNAL;
+  }
+  const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
+  size_t grown = codec->magic_count + 1u;
+  gimg_codec_magic_t * bigger = (gimg_codec_magic_t *)gimg_realloc(
+      alloc, codec->magics, grown * sizeof(gimg_codec_magic_t));
+  if (!bigger) {
+    return GIMG_ERR_OOM;
+  }
+  codec->magics = bigger;
+  unsigned char * copy = (unsigned char *)gimg_malloc(alloc, length);
+  if (!copy) {
+    // The array grew and the codec keeps it: one spare slot costs nothing and
+    // magic_count still says how many are real.
+    return GIMG_ERR_OOM;
+  }
+  memcpy(copy, bytes, length);
+  codec->magics[codec->magic_count].bytes = copy;
+  codec->magics[codec->magic_count].length = length;
+  codec->magics[codec->magic_count].offset = offset;
+  codec->magic_count = grown;
+  return GIMG_OK;
+}
+
 void gimg_codec_set_free_doc_private(
     GIMG_Codec * codec, gimg_codec_free_doc_private_fn fn) {
   if (codec) {
