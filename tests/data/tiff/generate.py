@@ -12,6 +12,7 @@ The compressed ones will arrive with the code that decompresses them.
 """
 
 import struct
+import zlib
 
 # Field types, TIFF 6.0 section 2.
 BYTE, ASCII, SHORT, LONG, RATIONAL = 1, 2, 3, 4, 5
@@ -36,6 +37,7 @@ TAGS = {
     "TileLength": 323,
     "TileOffsets": 324,
     "TileByteCounts": 325,
+    "Predictor": 317,
     "ExtraSamples": 338,
     "SampleFormat": 339,
 }
@@ -148,6 +150,105 @@ def rgb_ramp(w, h):
             out += bytes([x * 255 // max(1, w - 1),
                           y * 255 // max(1, h - 1),
                           (x + y) * 255 // max(1, w + h - 2)])
+    return bytes(out)
+
+
+def packbits(data):
+    """PackBits, as TIFF 6.0 section 9 defines it.
+
+    A literal run is a count byte 0..127 followed by count+1 bytes; a repeat
+    is 257-count for 2..128 copies of the byte that follows. 128 is a no-op
+    and is never written.
+    """
+    out = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        # A run of three or more identical bytes is worth encoding as one.
+        run = 1
+        while i + run < n and data[i + run] == data[i] and run < 128:
+            run += 1
+        if run >= 3:
+            out.append(257 - run)
+            out.append(data[i])
+            i += run
+            continue
+        # Otherwise gather literals until a run of three shows up.
+        start = i
+        i += 1
+        while i < n and i - start < 128:
+            if (i + 2 < n and data[i] == data[i + 1] == data[i + 2]):
+                break
+            i += 1
+        out.append(i - start - 1)
+        out.extend(data[start:i])
+    return bytes(out)
+
+
+def tiff_lzw(data):
+    """TIFF 6.0 section 13 LZW: 8-bit literals, codes packed MSB first.
+
+    Written out rather than taken from a library because a fixture generated
+    by the same code that reads it proves nothing. The two ends here are
+    independent: this is the specification's algorithm, and the decoder is
+    Ghoti.io Compress's.
+
+    The width increases one code *early* - at 511, 1023 and 2047 rather than
+    512, 1024 and 2048 - which is the detail every LZW-in-TIFF implementation
+    has had to discover, and getting it wrong shifts every code after the
+    first 254 by one bit.
+    """
+    CLEAR, EOI = 256, 257
+    out = bytearray()
+    acc = 0
+    nbits = 0
+
+    def emit(code, width):
+        nonlocal acc, nbits
+        acc = (acc << width) | code
+        nbits += width
+        while nbits >= 8:
+            nbits -= 8
+            out.append((acc >> nbits) & 0xFF)
+
+    table = {bytes([i]): i for i in range(256)}
+    nxt = 258
+    width = 9
+    emit(CLEAR, width)
+    w = b""
+    for ch in data:
+        wc = w + bytes([ch])
+        if wc in table:
+            w = wc
+            continue
+        emit(table[w], width)
+        table[wc] = nxt
+        nxt += 1
+        # Early change: the width goes up one code before the table is full.
+        if nxt + 1 > (1 << width) and width < 12:
+            width += 1
+        elif nxt + 1 > (1 << 12):
+            emit(CLEAR, width)
+            table = {bytes([i]): i for i in range(256)}
+            nxt = 258
+            width = 9
+        w = bytes([ch])
+    if w:
+        emit(table[w], width)
+    emit(EOI, width)
+    if nbits:
+        out.append((acc << (8 - nbits)) & 0xFF)
+    return bytes(out)
+
+
+def horizontal_difference(data, w, h, spp=1):
+    """Predictor 2: each sample minus the one a pixel to its left."""
+    out = bytearray(data)
+    row_bytes = w * spp
+    for y in range(h):
+        base = y * row_bytes
+        for i in range(row_bytes - 1, spp - 1, -1):
+            out[base + i] = (out[base + i] - out[base + i - spp]) & 0xFF
     return bytes(out)
 
 
@@ -372,12 +473,43 @@ def main():
     write("tiff_4x4_cmyk.tif",
           build("II", [(strip_fields(W, H, cmyk, 5, spp=4), cmyk)]))
 
+    # ---- The same picture under every compression this codec undoes ----
+    #
+    # One picture, five spellings: a family where each member must decode to
+    # the same bytes as the stored one, so a compression that is subtly wrong
+    # fails rather than merely looking plausible. The predictor pair is the
+    # same idea one level down - horizontal differencing is reversible, so it
+    # cannot change the picture either.
+    big8 = gray_ramp(16, 8)
+    variants = [
+        ("tiff_16x8_none.tif", 1, big8, 1),
+        ("tiff_16x8_packbits.tif", 32773, packbits(big8), 1),
+        ("tiff_16x8_lzw.tif", 5, tiff_lzw(big8), 1),
+        ("tiff_16x8_deflate.tif", 8, zlib.compress(big8, 6), 1),
+        ("tiff_16x8_lzw_predictor.tif", 5,
+         tiff_lzw(horizontal_difference(big8, 16, 8)), 2),
+        ("tiff_16x8_deflate_predictor.tif", 8,
+         zlib.compress(horizontal_difference(big8, 16, 8), 6), 2),
+    ]
+    for name, comp, payload, predictor in variants:
+        fields = strip_fields(16, 8, payload, 1)
+        fields = [(t, ty, [comp] if t == TAGS["Compression"] else v)
+                  for (t, ty, v) in fields]
+        fields = [(t, ty, [len(payload)] if t == TAGS["StripByteCounts"] else v)
+                  for (t, ty, v) in fields]
+        if predictor != 1:
+            fields.append((TAGS["Predictor"], SHORT, [predictor]))
+        write(name, build("II", [(fields, payload)]))
+
     # ---- Refusals ----
     write("tiff_bad_magic.tif", b"II\x2b\x00" + b"\x00" * 12)
-    lzw = strip_fields(W, H, gray, 1)
-    lzw = [(t, ty, v) if t != TAGS["Compression"] else (t, ty, [5])
-           for (t, ty, v) in lzw]
-    write("tiff_lzw_unsupported.tif", build("II", [(lzw, gray)]))
+    # CCITT Group 3, which this codec does not undo. It was LZW here until
+    # LZW landed; a refusal fixture has to name something still refused, or
+    # the test that asserts the refusal starts asserting nothing.
+    ccitt = strip_fields(W, H, gray, 1)
+    ccitt = [(t, ty, v) if t != TAGS["Compression"] else (t, ty, [3])
+             for (t, ty, v) in ccitt]
+    write("tiff_ccitt_unsupported.tif", build("II", [(ccitt, gray)]))
     no_photo = [f for f in strip_fields(W, H, gray, 1)
                 if f[0] != TAGS["Photometric"]]
     write("tiff_no_photometric.tif", build("II", [(no_photo, gray)]))

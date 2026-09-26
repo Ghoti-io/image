@@ -44,6 +44,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "../../container/doc_internal.h"
@@ -354,13 +355,21 @@ static void tiff_unpremultiply(const tiff_output_t * out,
       if (a == full) {
         continue;
       }
+      if (a == 0u) {
+        // Nothing to divide by, and nothing to recover: a premultiplied
+        // colour at zero alpha should be zero, and where a writer's rounding
+        // left it at one, one is the most faithful thing to hand back.
+        // Zeroing it here would be inventing a value the file did not store.
+        continue;
+      }
       for (size_t k = 0; k < 3u; k++) {
         const uint32_t v = out->wide ? ((uint16_t *)(void *)p)[k] : p[k];
-        // Zero alpha keeps no colour to recover, and a file may store a
-        // colour brighter than its own alpha allows, which the division
-        // would otherwise overflow.
-        const uint32_t scaled =
-            (a == 0u) ? 0u : ((v * full + (a / 2u)) / a);
+        // A file may store a colour brighter than its own alpha allows,
+        // which the division would otherwise overflow. Saturating is the
+        // only thing an unassociated raster of this width can do with it,
+        // and it is where the conversion loses information: the excess
+        // cannot be recovered by multiplying back.
+        const uint32_t scaled = (v * full + (a / 2u)) / a;
         tiff_put(out, p, k, scaled > full ? full : scaled);
       }
     }
@@ -425,8 +434,30 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
         (size_t)ifd->height - rect.y < rect.height
         ? (size_t)ifd->height - rect.y
         : rect.height;
-    const unsigned char * src = st->file + ifd->block_offsets[b];
-    const size_t have = (size_t)ifd->block_byte_counts[b];
+    // What the block's geometry says it holds once expanded. A stored block
+    // is handed back in place; a compressed one is expanded into exactly this
+    // much room, which is also what tells the decoder where its rows are.
+    size_t want = 0;
+    if (!gcu_safe_mul_size(rect.height, rect.row_bytes, &want)) {
+      gimg_raster_destroy(raster);
+      return GIMG_ERR_LIMIT;
+    }
+    const unsigned char * src = NULL;
+    size_t have = 0;
+    bool owned = false;
+    r = gimg_tiff_block_bytes(st, ifd, b, want, &src, &have, &owned);
+    if (r != GIMG_OK) {
+      gimg_raster_destroy(raster);
+      return r;
+    }
+    if (owned) {
+      // The predictor is undone over the expanded block, before any row of
+      // it is read, because a difference is relative to the sample before it
+      // and the row converter works one row at a time.
+      gimg_tiff_undo_block_predictor(ifd, (unsigned char *)(uintptr_t)src,
+          have, rect.row_bytes,
+          rect.plane >= 0 ? 1u : ifd->samples_per_pixel);
+    }
 
     for (size_t row = 0; row < down; row++) {
       size_t at = 0;
@@ -442,6 +473,9 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
       unsigned char * dst = dst_pixels +
           ((size_t)(rect.y + row) * stride) + ((size_t)rect.x * out.bytes);
       tiff_convert_row(ifd, &out, src + at, dst, across, rect.plane);
+    }
+    if (owned) {
+      gimg_free(alloc, (void *)(uintptr_t)src);
     }
   }
 

@@ -86,6 +86,7 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TAG_X_RESOLUTION 282
 #define GIMG_TIFF_TAG_Y_RESOLUTION 283
 #define GIMG_TIFF_TAG_PLANAR_CONFIG 284
+#define GIMG_TIFF_TAG_PREDICTOR 317
 #define GIMG_TIFF_TAG_RESOLUTION_UNIT 296
 #define GIMG_TIFF_TAG_COLOR_MAP 320
 #define GIMG_TIFF_TAG_TILE_WIDTH 322
@@ -106,6 +107,8 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_COMPRESSION_JPEG 7
 #define GIMG_TIFF_COMPRESSION_DEFLATE 8
 #define GIMG_TIFF_COMPRESSION_PACKBITS 32773
+/** Deflate again, under the number that predates Adobe's registration. */
+#define GIMG_TIFF_COMPRESSION_DEFLATE_OLD 32946
 /** @} */
 
 /** @name PhotometricInterpretation (TIFF 6.0 section 8) @{ */
@@ -152,6 +155,8 @@ typedef struct {
   uint16_t resolution_unit;
   uint16_t extra_samples; ///< First ExtraSamples value; meaningful only when
                           ///< has_extra_samples.
+  uint16_t predictor;     ///< 1 = none, 2 = horizontal differencing (TIFF
+                          ///< Technical Note 2 / section 14).
   bool has_extra_samples;
   bool tiled; ///< True when TileWidth and TileLength are present.
   /** The file's byte order, copied here so a row converter that reads 16-bit
@@ -199,6 +204,24 @@ GIMG_Result gimg_tiff_read_header(
 GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc);
+
+/**
+ * Hand back one block's bytes, decompressed if they were compressed.
+ *
+ * @param want How many bytes the block's geometry says it holds.
+ * @param out_owned Set when the caller must free what came back; a stored
+ *   block points straight into the file and owns nothing.
+ */
+GIMG_Result gimg_tiff_block_bytes(const gimg_tiff_doc_state_t * st,
+    const gimg_tiff_ifd_t * ifd, size_t block, size_t want,
+    const unsigned char ** out_bytes, size_t * out_size, bool * out_owned);
+
+/** Undo horizontal differencing over one decompressed block, in place. */
+void gimg_tiff_undo_block_predictor(const gimg_tiff_ifd_t * ifd,
+    unsigned char * data, size_t size, size_t row_bytes, size_t channels);
+
+/** Whether this codec can undo @p compression. */
+bool gimg_tiff_compression_known(uint16_t compression);
 
 GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);

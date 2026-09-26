@@ -72,6 +72,12 @@ static int describe(TIFF * tif, uint32_t w, uint32_t h, char * out,
     size_t out_size) {
   uint16_t bps = 0, spp = 0, photo = 0xFFFFu, comp = 0, planar = 0;
   uint32_t tw = 0, tl = 0;
+  uint16_t extra_count = 0, * extra = NULL;
+  unsigned first_extra = 0u;
+  if (TIFFGetField(tif, TIFFTAG_EXTRASAMPLES, &extra_count, &extra) &&
+      extra_count > 0u && extra) {
+    first_extra = extra[0] + 1u; // 0 means "no ExtraSamples field at all".
+  }
   TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bps);
   TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &spp);
   TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photo);
@@ -81,8 +87,9 @@ static int describe(TIFF * tif, uint32_t w, uint32_t h, char * out,
   TIFFGetField(tif, TIFFTAG_TILELENGTH, &tl);
   return snprintf(out, out_size,
       "width=%u\theight=%u\tbps=%u\tspp=%u\tphotometric=%u\t"
-      "compression=%u\tplanar=%u\ttiled=%d",
-      w, h, bps, spp, photo, comp, planar, TIFFIsTiled(tif) ? 1 : 0);
+      "compression=%u\tplanar=%u\ttiled=%d\textra=%u",
+      w, h, bps, spp, photo, comp, planar, TIFFIsTiled(tif) ? 1 : 0,
+      first_extra);
 }
 
 /** Turn a corpus-relative path into one flat file name. */

@@ -245,6 +245,7 @@ static void tiff_ifd_defaults(gimg_tiff_ifd_t * ifd) {
   ifd->planar_config = 1u;
   ifd->resolution_unit = 2u;                  // Inches.
   ifd->sample_format = 1u;                    // Unsigned integer.
+  ifd->predictor = 1u;                        // No differencing.
   ifd->rows_per_strip = 0xFFFFFFFFu;          // "The whole image in one strip".
   ifd->photometric = 0xFFFFu;                 // No default; absence is an error.
 }
@@ -325,6 +326,9 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
       break;
     case GIMG_TIFF_TAG_ROWS_PER_STRIP:
       ifd->rows_per_strip = (uint32_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_PREDICTOR:
+      ifd->predictor = (uint16_t)tiff_value(st, &e, 0);
       break;
     case GIMG_TIFF_TAG_PLANAR_CONFIG:
       ifd->planar_config = (uint16_t)tiff_value(st, &e, 0);
@@ -505,9 +509,22 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
         "no PhotometricInterpretation, which has no default (TIFF 6.0 8)");
     return GIMG_ERR_CORRUPT;
   }
-  if (ifd->compression != GIMG_TIFF_COMPRESSION_NONE) {
+  if (!gimg_tiff_compression_known(ifd->compression)) {
     tiff_diag(diag, which,
-        "only uncompressed TIFF is read so far; this file is compressed");
+        "a compression method this codec does not undo yet");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (ifd->predictor != 1u && ifd->predictor != 2u) {
+    tiff_diag(diag, which, "a Predictor other than 1 or 2; not read yet");
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (ifd->predictor == 2u && ifd->bits_per_sample != 8u &&
+      ifd->bits_per_sample != 16u) {
+    // Horizontal differencing is defined for whole-byte samples. Leaving it
+    // undone at another depth would decode as a gradient of noise, which
+    // reads as a corrupt file rather than as a missing feature.
+    tiff_diag(diag, which,
+        "horizontal differencing at a depth it is not defined for");
     return GIMG_ERR_UNSUPPORTED;
   }
   if (ifd->planar_config != 1u && ifd->planar_config != 2u) {
@@ -600,7 +617,9 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
     return GIMG_ERR_CORRUPT;
   }
   // Every block has to lie inside the file.  Checked here, once, so that
-  // decode can copy without re-deciding whether the bytes are there.
+  // decode can read it without re-deciding whether the bytes are there. This
+  // is the *stored* extent, which for a compressed block is shorter than the
+  // pixels it expands to.
   for (size_t i = 0; i < ifd->block_count; i++) {
     size_t end = 0;
     if (!gcu_safe_add_size((size_t)ifd->block_offsets[i],

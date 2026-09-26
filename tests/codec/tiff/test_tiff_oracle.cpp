@@ -222,6 +222,9 @@ struct Reference {
   unsigned spp = 0u;
   unsigned planar = 1u;
   bool tiled = false;
+  /** ExtraSamples' first value plus one, so 0 means the field is absent.
+   * 2 is associated alpha, TIFF 6.0 section 18's word for premultiplied. */
+  unsigned extra = 0u;
 };
 
 std::string flatten(const std::string & name) {
@@ -290,6 +293,7 @@ std::map<std::string, Reference> ask_libtiff(const std::string & dir,
       else if (key == "spp") { ref.spp = (unsigned)std::stoul(val); }
       else if (key == "planar") { ref.planar = (unsigned)std::stoul(val); }
       else if (key == "tiled") { ref.tiled = (val != "0"); }
+      else if (key == "extra") { ref.extra = (unsigned)std::stoul(val); }
     }
     out[parts[0]] = ref;
   }
@@ -385,7 +389,7 @@ void sweep(const std::string & dir, const std::vector<std::string> & names,
     }
     size_t first_bad = (size_t)-1;
     long bad_samples = 0;
-    long rounding_samples = 0;
+    long clamped_samples = 0;
     const bool palette = ref.photometric == 3u;
     for (size_t i = 0; i < a.rgba.size(); i += 4u) {
       const unsigned alpha = a.rgba[i + 3u];
@@ -397,6 +401,35 @@ void sweep(const std::string & dir, const std::vector<std::string> & names,
             : ((unsigned)a.rgba[i + k] * alpha + 127u) / 255u;
         const unsigned theirs = b.rgba[i + k];
         if (mine == theirs) { continue; }
+        // The one place the comparison cannot see, and it is stated as a
+        // condition on the data rather than as a width.
+        //
+        // libtiff's raster is premultiplied and this library's is not, so
+        // ours() multiplies back to compare - and that round trip is lossy
+        // in exactly one case: a file storing a colour brighter than its own
+        // alpha allows. Unassociating it saturates at full scale, and the
+        // excess cannot be multiplied back. A sample is excused only when
+        // ours is *exactly* saturated and libtiff's is at or above the
+        // alpha, which is the signature of that clamp and of nothing else.
+        // Measured on strike.tif: 232 samples of 204,800, every one of that
+        // shape, and the 233rd - a zero-alpha pixel - was a defect this
+        // found, now fixed by keeping what the file stored.
+        if (k != 3u && a.rgba[i + k] == 255u && theirs >= alpha) {
+          clamped_samples++;
+          continue;
+        }
+        // The other end of the same conversion. At zero alpha there is
+        // nothing to divide by, so this codec hands back what the file
+        // stored and libtiff hands back the same bytes untouched - and the
+        // comparison's own multiply is what destroys them, not either
+        // decoder. Restricted to a file that declares associated alpha,
+        // because for an unassociated one libtiff really does multiply and
+        // a zero there really should be zero.
+        if (k != 3u && alpha == 0u && ref.extra == 2u &&
+            a.rgba[i + k] == theirs) {
+          clamped_samples++;
+          continue;
+        }
         // No tolerance, deliberately. There was one here for a palette
         // rounding difference, and measuring it turned it into a defect
         // instead: libtiff narrows a ColorMap with `v >> 8` and this codec
@@ -409,8 +442,8 @@ void sweep(const std::string & dir, const std::vector<std::string> & names,
         if (first_bad == (size_t)-1) { first_bad = i + k; }
       }
     }
-    t->rounding_samples += rounding_samples;
-    if (rounding_samples > 0) { t->rounding_files++; }
+    t->rounding_samples += clamped_samples;
+    if (clamped_samples > 0) { t->rounding_files++; }
     if (bad_samples == 0) {
       t->agreed++;
     }
@@ -446,8 +479,8 @@ void report(const char * label, const Tally & t) {
     std::printf("    neither reads: %s\n", n.c_str());
   }
   if (t.rounding_files > 0) {
-    std::printf("    %ld palette samples in %ld files differ by the "
-                "documented rounding of one\n",
+    std::printf("    %ld samples in %ld files are the associated-alpha "
+                "clamp, which the comparison cannot see past\n",
         t.rounding_samples, t.rounding_files);
   }
 }

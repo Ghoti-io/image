@@ -377,6 +377,41 @@ TEST(TiffDecode, ASeparatedImageComesBackAsInk) {
   }
 }
 
+TEST(TiffDecode, EveryCompressionIsTheSamePicture) {
+  // One picture, six spellings. A compression is a storage layout like the
+  // others this file tests - the byte orders, the tile grid, the planes - so
+  // every member of this family must decode to the same bytes as the stored
+  // one, and a subtly wrong decompressor fails rather than merely looking
+  // plausible.
+  //
+  // The LZW fixture is worth a word. Its encoder is written out in
+  // tests/data/tiff/generate.py from TIFF 6.0 section 13 rather than taken
+  // from a library, and the decoder is Ghoti.io Compress's, so the two ends
+  // are independent implementations of the same text. That matters most for
+  // the early code-width change - the width goes up at 511 rather than 512 -
+  // which every LZW-in-TIFF implementation has had to discover, and which
+  // shifts every code after the first 254 by one bit when it is missed.
+  const char * const files[] = {
+      "tiff_16x8_none.tif",
+      "tiff_16x8_packbits.tif",
+      "tiff_16x8_lzw.tif",
+      "tiff_16x8_deflate.tif",
+      "tiff_16x8_lzw_predictor.tif",
+      "tiff_16x8_deflate_predictor.tif",
+  };
+  Loaded stored;
+  ASSERT_EQ(stored.load(files[0]), GIMG_OK) << stored.reasons();
+  const std::vector<uint8_t> want = stored.pixels();
+  ASSERT_EQ(want, gray_ramp(16, 8));
+
+  for (const char * name : files) {
+    SCOPED_TRACE(name);
+    Loaded img;
+    ASSERT_EQ(img.load(name), GIMG_OK) << img.reasons();
+    EXPECT_EQ(img.pixels(), want);
+  }
+}
+
 TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   struct Case {
     const char * file;
@@ -385,7 +420,8 @@ TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   };
   const Case cases[] = {
       {"tiff_bad_magic.tif", GIMG_ERR_UNSUPPORTED, "BigTIFF"},
-      {"tiff_lzw_unsupported.tif", GIMG_ERR_UNSUPPORTED, "compressed"},
+      {"tiff_ccitt_unsupported.tif", GIMG_ERR_UNSUPPORTED,
+          "compression method this codec does not undo"},
       {"tiff_no_photometric.tif", GIMG_ERR_CORRUPT,
           "no PhotometricInterpretation"},
   };
