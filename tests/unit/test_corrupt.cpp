@@ -680,6 +680,119 @@ TEST(Corrupt, TheBmpV5ProfileFieldsAreCheckedBeforeTheyAreBelieved) {
   }
 }
 
+TEST(Corrupt, ABmpWrapperBelievesBiSizeImageOnlyWhenItShortens) {
+  // A BI_PNG wrapper's payload has no length the header can state reliably:
+  // it runs from bfOffBits to the end of the file. biSizeImage may shorten
+  // that and may never extend it, because it is attacker-controlled and often
+  // simply zero - and the shortening arm had no test, since every wrapper
+  // fixture in the tree ends exactly where its payload does.
+  Bytes png = png_signature();
+  append(png, png_ihdr(1u, 1u, 8u, 0u));
+  append(png, png_chunk("IDAT", zlib_stored(Bytes{0u, 0u})));
+  append(png, png_chunk("IEND", Bytes()));
+
+  struct Wrapper {
+    const char * name;
+    uint32_t size_image;  ///< 0 = say nothing and take the rest of the file.
+    size_t padding;       ///< Bytes of junk after the payload.
+  };
+  const Wrapper wrappers[] = {
+      {"a wrapper whose biSizeImage stops short of the file's end",
+          (uint32_t)png.size(), 64u},
+      {"a wrapper that states nothing and is read to the end", 0u, 0u},
+      // A biSizeImage past the end of the file may not extend the payload;
+      // the file's own length wins.
+      {"a wrapper whose biSizeImage overshoots the file", 0xFFFFu, 0u},
+  };
+
+  for (const Wrapper & w : wrappers) {
+    SCOPED_TRACE(w.name);
+    BmpSpec s;
+    s.width = 1;
+    s.height = 1;
+    s.bpp = 0u;          // Undefined for a wrapper, and legal there.
+    s.compression = 5u;  // BI_PNG.
+    s.size_image = w.size_image;
+    Bytes tail = png;
+    for (size_t i = 0; i < w.padding; i++) { u8(tail, 0xEEu); }
+    s.after_header = tail;
+    const Bytes bytes = make_bmp(s);
+
+    GIMG_Stream * st = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &st),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    EXPECT_EQ(gimg_doc_load(st, nullptr, nullptr, &doc), GIMG_OK);
+    if (doc) {
+      EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+      gimg_doc_destroy(doc);
+    }
+    gimg_stream_destroy(st);
+  }
+}
+
+/** A resolver that hands back a profile of whatever size it was told to. */
+GIMG_Result oversized_resolver(void * user, const char * path,
+    const void ** out_profile, size_t * out_size) {
+  (void)path;
+  Bytes * held = (Bytes *)user;
+  *out_profile = held->data();
+  *out_size = held->size();
+  return GIMG_OK;
+}
+
+TEST(Corrupt, ABmpResolverCannotHandBackMoreThanTheCodecAccepts) {
+  // PROFILE_LINKED names a file, and this library never opens it: the path is
+  // reported and a caller who wants the profile hands one back through
+  // icc_resolver. What comes back that way is held to the same ceiling an
+  // embedded profile is - a caller choosing to read a file is not a reason to
+  // stop bounding what gets attached to a raster - and that ceiling had no
+  // test, because no test had ever installed a resolver that overshot it.
+  const uint32_t kCsType = 56u, kProfileData = 112u, kProfileSize = 116u;
+  const char * path = "C:\\profiles\\nothing.icc";
+  const size_t path_len = strlen(path);
+
+  BmpSpec s;
+  s.header_size = 124u;
+  s.width = 2;
+  s.height = 2;
+  Bytes tail(2u * 3u * 2u, 0x20u);  // Two rows of pixels...
+  const size_t path_at = tail.size();
+  tail.insert(tail.end(), path, path + path_len);  // ...then the path.
+  s.after_header = tail;
+  s.dib_words = {{kCsType, 0x4C494E4Bu},  // 'LINK'
+      {kProfileData, (uint32_t)(124u + path_at)},
+      {kProfileSize, (uint32_t)path_len}};
+  const Bytes bytes = make_bmp(s);
+
+  // Past GIMG_BMP_ICC_MAX_SIZE, which is four megabytes.
+  Bytes huge(5u * 1024u * 1024u, 0u);
+
+  GIMG_Stream * st = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes.data(), bytes.size(), &st),
+      GIMG_OK);
+  GIMG_Load_Options opts = {};
+  opts.icc_resolver = oversized_resolver;
+  opts.icc_resolver_user = &huge;
+  GIMG_Diagnostics diag = {};
+  GIMG_Doc * doc = nullptr;
+  // The image is not wrong, so it loads; the profile is refused, and says so.
+  EXPECT_EQ(gimg_doc_load(st, &opts, &diag, &doc), GIMG_OK);
+  bool said = false;
+  for (size_t i = 0; i < diag.count; i++) {
+    const char * a = diag.items[i].recommended_action;
+    if (a &&
+        std::string(a).find("resolved ICC profile is larger") !=
+            std::string::npos) {
+      said = true;
+    }
+  }
+  EXPECT_TRUE(said) << "a profile dropped without a word is a profile lost";
+  gimg_diagnostics_destroy(&diag);
+  if (doc) { gimg_doc_destroy(doc); }
+  gimg_stream_destroy(st);
+}
+
 TEST(Corrupt, TheGifLoaderNamesTheBlockItRefused) {
   std::vector<Case> cases;
 
