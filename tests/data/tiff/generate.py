@@ -501,6 +501,19 @@ def main():
             fields.append((TAGS["Predictor"], SHORT, [predictor]))
         write(name, build("II", [(fields, payload)]))
 
+    # ---- What the fuzzer found ----
+    #
+    # A consistent-looking file - one strip, one offset, one byte count -
+    # that declares 536,870,920 rows per strip for an 8-row image. Nothing
+    # about it is contradictory, and sizing the decompression buffer by the
+    # tag rather than by the picture asked for 8.6 GB. It decodes now; the
+    # fixture is here so that it keeps doing so.
+    huge_rows = strip_fields(16, 8, gray_ramp(16, 8), 1)
+    huge_rows = [(t, ty, [0x20000008] if t == TAGS["RowsPerStrip"] else v)
+                 for (t, ty, v) in huge_rows]
+    write("tiff_16x8_absurd_rows_per_strip.tif",
+          build("II", [(huge_rows, gray_ramp(16, 8))]))
+
     # ---- Refusals ----
     write("tiff_bad_magic.tif", b"II\x2b\x00" + b"\x00" * 12)
     # CCITT Group 3, which this codec does not undo. It was LZW here until

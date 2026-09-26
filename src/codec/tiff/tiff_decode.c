@@ -434,11 +434,18 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
         (size_t)ifd->height - rect.y < rect.height
         ? (size_t)ifd->height - rect.y
         : rect.height;
-    // What the block's geometry says it holds once expanded. A stored block
-    // is handed back in place; a compressed one is expanded into exactly this
-    // much room, which is also what tells the decoder where its rows are.
+    // What the block holds once expanded, and it is `down` rows rather than
+    // `rect.height` on purpose.
+    //
+    // A strip cannot hold more rows than the image has left, whatever
+    // RowsPerStrip says, and a hostile file says something enormous: the
+    // fuzzer's first find here was an 8-row image declaring 536,870,920 rows
+    // per strip, which is a consistent-looking file - one strip, one offset,
+    // one byte count - that asked this decoder for an 8.6 GB buffer. Sizing
+    // the expansion by the picture rather than by the tag is what makes that
+    // a short read instead of an allocation.
     size_t want = 0;
-    if (!gcu_safe_mul_size(rect.height, rect.row_bytes, &want)) {
+    if (!gcu_safe_mul_size(down, rect.row_bytes, &want)) {
       gimg_raster_destroy(raster);
       return GIMG_ERR_LIMIT;
     }

@@ -483,10 +483,17 @@ static bool tiff_expected_block_count(
     }
   }
   else {
-    const uint32_t rows = ifd->rows_per_strip;
-    if (rows == 0u) {
+    if (ifd->rows_per_strip == 0u) {
       return false;
     }
+    // A strip cannot be taller than the image. The default is 2^32-1, which
+    // means "the whole thing in one strip", and a hostile file can say
+    // anything at all; clamping here means nothing downstream has to wonder
+    // whether RowsPerStrip or the height is the real bound.
+    if (ifd->rows_per_strip > ifd->height) {
+      ifd->rows_per_strip = ifd->height;
+    }
+    const uint32_t rows = ifd->rows_per_strip;
     per_plane = ((size_t)ifd->height + rows - 1u) / rows;
   }
   ifd->blocks_per_plane = per_plane;

@@ -412,6 +412,19 @@ TEST(TiffDecode, EveryCompressionIsTheSamePicture) {
   }
 }
 
+TEST(TiffDecode, AnAbsurdRowsPerStripIsBoundedByThePicture) {
+  // The fuzzer's first find. Nothing in this file contradicts anything else -
+  // one strip, one offset, one byte count - and it declares 536,870,920 rows
+  // per strip for an image eight rows tall. Sizing the decompression buffer
+  // by the tag rather than by the picture asked for 8.6 GB of memory.
+  //
+  // It is a perfectly ordinary picture and decodes to one.
+  Loaded img;
+  ASSERT_EQ(img.load("tiff_16x8_absurd_rows_per_strip.tif"), GIMG_OK)
+      << img.reasons();
+  EXPECT_EQ(img.pixels(), gray_ramp(16, 8));
+}
+
 TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   struct Case {
     const char * file;
