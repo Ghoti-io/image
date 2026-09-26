@@ -349,6 +349,93 @@ TEST(Limits, TwoOfTheSixCapsAreReadByNothing) {
                              "the claim it makes";
 }
 
+/**
+ * A cap set at load time still applies to a decode that carries none.
+ *
+ * A load only parses headers; the pixels come later, so a limit that did not
+ * survive to the decode would bound nothing that actually allocates. The
+ * library leans on this itself - gimg_*_save re-decodes its source item with
+ * no options of its own - and the arm that copies a caller's other decode
+ * options before substituting the remembered limits had never run, because
+ * every test either passed limits to both calls or to neither.
+ */
+TEST(Limits, ACapSetAtLoadTimeSurvivesADecodeThatSaysNothing) {
+  long with_null = 0, with_empty = 0;
+  for (const Fixture & f : corpus()) {
+    if (f.pixels < 2u) { continue; }
+    GIMG_Limits under = none();
+    under.max_decoded_pixels = f.pixels - 1u;
+
+    for (int shape = 0; shape < 2; shape++) {
+      GIMG_Stream * in = nullptr;
+      ASSERT_EQ(
+          gimg_stream_create_memory(f.bytes.data(), f.bytes.size(), &in),
+          GIMG_OK);
+      GIMG_Load_Options lo = {};
+      lo.limits = &under;
+      GIMG_Doc * doc = nullptr;
+      GIMG_Result r = gimg_doc_load(in, &lo, nullptr, &doc);
+      // Some codecs refuse at the header, which is the cap working one stage
+      // earlier and not what this test is about.
+      if (r == GIMG_OK && doc) {
+        const size_t n = gimg_doc_item_count(doc);
+        // shape 0: no options at all. shape 1: options that mention no
+        // limits, which is the arm that has to copy them before adding the
+        // remembered ones.
+        GIMG_Decode_Options empty = {};
+        for (size_t i = 0; i < n && r == GIMG_OK; i++) {
+          GIMG_Item * item = gimg_doc_item(doc, i);
+          GIMG_Raster * raster = nullptr;
+          r = gimg_item_decode(item, shape == 0 ? nullptr : &empty, &raster);
+          if (raster) { gimg_raster_destroy(raster); }
+        }
+        EXPECT_EQ(r, GIMG_ERR_LIMIT)
+            << f.name << ": a cap of " << (f.pixels - 1u)
+            << " set on the load did not reach a decode that "
+            << (shape == 0 ? "passed no options" : "passed empty options");
+        (shape == 0 ? with_null : with_empty)++;
+      }
+      if (doc) { gimg_doc_destroy(doc); }
+      gimg_stream_destroy(in);
+    }
+  }
+  std::printf("  the load's cap reached %ld decodes given no options and "
+              "%ld given empty ones\n", with_null, with_empty);
+  EXPECT_GT(with_null, 0);
+  EXPECT_GT(with_empty, 0);
+}
+
+/**
+ * The codec registry can be walked by index as well as by name.
+ *
+ * gimg_codec_by_index() is public and was called by nothing, so neither it
+ * nor its out-of-range arm had run. Walking it is also the only way to assert
+ * that the registry holds what this library says it ships.
+ */
+TEST(Limits, TheRegistryHoldsFourCodecsAndIsWalkableByIndex) {
+  const size_t n = gimg_codec_count();
+  ASSERT_EQ(n, 4u) << "the registry holds " << n
+                   << " codecs; this library ships png, jpeg, bmp and gif";
+  std::vector<std::string> names;
+  for (size_t i = 0; i < n; i++) {
+    GIMG_Codec * c = gimg_codec_by_index(i);
+    ASSERT_NE(c, nullptr) << "index " << i << " of " << n << " is null";
+    const char * name = gimg_codec_name(c);
+    ASSERT_NE(name, nullptr);
+    names.push_back(name);
+    // Both lookups have to agree, or one of them is indexing something else.
+    EXPECT_EQ(gimg_codec_by_name(name), c) << "by_name(" << name
+                                           << ") is not by_index(" << i << ")";
+  }
+  std::sort(names.begin(), names.end());
+  const std::vector<std::string> want = {"bmp", "gif", "jpeg", "png"};
+  EXPECT_EQ(names, want);
+  EXPECT_EQ(gimg_codec_by_index(n), nullptr) << "one past the end is not null";
+  EXPECT_EQ(gimg_codec_by_index((size_t)-1), nullptr);
+  EXPECT_EQ(gimg_codec_by_name("no such codec"), nullptr);
+  EXPECT_EQ(gimg_codec_by_name(nullptr), nullptr);
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
