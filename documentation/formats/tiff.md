@@ -53,6 +53,13 @@ carried. The Exif sub-IFD (34665) is not read: it is an offset to another
 directory, and preserving one by copying bytes would preserve offsets that no
 longer point anywhere.
 
+**YCbCr (section 21).** Any subsampling up to 4x4, converted to RGB on the
+way out. The multipliers are computed from the file's own `YCbCrCoefficients`
+rather than borrowed from JPEG's rounded constants, and the arithmetic is the
+scaled-integer form every implementation uses - which is what makes it agree
+with libtiff sample for sample rather than by one on the green channel. See
+the deviations table.
+
 **Colour.** PhotometricInterpretation 0 (WhiteIsZero), 1 (BlackIsZero), 2
 (RGB) and 3 (Palette), at eight bits per sample. Grayscale comes back as
 GRAY8 and everything else as RGBA8, which is what the BMP and GIF decoders
@@ -101,7 +108,7 @@ back is not available, because an output stream here is append-only.
 | Compression (read) | 1 (none), 5 (LZW, including the pre-1993 bit-reversed spelling), 8 and 32946 (Deflate), 32773 (PackBits) | 2, 3, 4 (CCITT), 6/7 (JPEG), 32809 (ThunderScan), 34676/34677 (LogLuv) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | Compression (write) | none, PackBits, LZW, Deflate, with or without Predictor 2 | - |
 | Predictor | 1 and 2, at 8 and 16 bits | 3 (floating point) and any other value &rarr; `GIMG_ERR_UNSUPPORTED` |
-| Photometric | 0, 1, 2, 3, 5 (separated, read as CMYK) | 4 (mask), 6 (YCbCr), 32844/32845 (LogLuv) and the rest &rarr; `GIMG_ERR_UNSUPPORTED` |
+| Photometric | 0, 1, 2, 3, 5 (separated, read as CMYK), 6 (YCbCr, any subsampling up to 4x4) | 4 (mask), 32844/32845 (LogLuv) and the rest &rarr; `GIMG_ERR_UNSUPPORTED` |
 | BitsPerSample | 1, 2, 4, 8 and 16 | 6, 10, 12, 14, 24, 32 &rarr; `GIMG_ERR_UNSUPPORTED`; samples that differ from each other are refused as that, separately |
 | SamplesPerPixel | 1 for grayscale and palette, 3 or 4 for RGB, 4 for separated | Anything else &rarr; `GIMG_ERR_UNSUPPORTED` |
 | PlanarConfiguration | 1 and 2 | Any other value &rarr; `GIMG_ERR_CORRUPT`; the writer always writes 1 |
@@ -121,6 +128,7 @@ sample agrees.** The three differences below are the whole of the rest.
 | A ColorMap storing 8-bit values in a 16-bit field | Read as 8-bit when *every* entry is under 256 | The same guess | **Changed to match.** This page previously said the opposite, and said so as a warning rather than a measurement. Measured: given a map of 0..255 libtiff answers 255 where this codec answered 1 - not subtly wrong but nearly black. The guess is safe in the one direction that matters: a map that is genuinely 16-bit *and* has every entry under 256 describes an image whose brightest colour is 0.39% of full scale, so misreading it costs a picture that was already black |
 | Alpha in the decoded raster | Unassociated, following PNG | **Associated.** Its own header names the table that does it: `UaToAa`, "Unassociated alpha to associated alpha conversion LUT" | Neither is wrong; they are different units. The comparison puts ours into libtiff's space by premultiplying, which is applied to every pixel of every file and is a change of units rather than a tolerance |
 | The Orientation tag (274) | Applied at decode, as `gimg_item_decode` applies a JPEG's or a PNG's Exif orientation for every codec here. The written file therefore declares none: the pixels *are* the display image, and re-declaring it would have the next reader rotate them twice | Its RGBA reader **flips rather than transposes** for orientations 5 to 8. Measured on `tiff_4x4_metadata.tif`, whose first pixel comes back as the source's top-right where a 90° rotation puts its bottom-left | The comparison sweep counts such files instead of comparing them: two transforms, one of them wrong, is not two decoders. The orientation is checked against the specification in `test_tiff_decode.cpp` |
+| YCbCr's green channel | The multipliers are computed from the file's `YCbCrCoefficients` at 16 fractional bits, which is what section 21's formula reduces to | The same | Agrees exactly. Worth recording because the first attempt did not: evaluating the formula in double precision and rounding at the end disagreed by one on 2 samples of 1,228,800 in `dscf0013.tif` and 94 of 325,000 in `ycbcr-cat.tif`, **every one of them green**, because green is the only channel whose multipliers are not exact in five decimal places. This library has met the same difference from the other side - its JPEG decoder uses libjpeg's five-place constants, and `tools/oracle/containers/IMAGES` records IJG v10 disagreeing with libjpeg-turbo for exactly that reason |
 | A file with no PhotometricInterpretation | Refused, `GIMG_ERR_CORRUPT`, named | Read; it supplies a default | Deliberately not matched. Section 8 gives that field no default, so a file without one has not said what its samples mean, and guessing is a worse answer than saying so |
 
 The only other asymmetry is the obvious one: libtiff reads the compressed
@@ -160,7 +168,7 @@ Listed so the absences are visible rather than discovered:
 
 - **CCITT Group 3 and Group 4**, JPEG-in-TIFF, ThunderScan and LogLuv - the
   compressions the sample set still names every run.
-- **YCbCr** (PhotometricInterpretation 6), and transparency masks.
+- **Transparency masks** (PhotometricInterpretation 4).
 - **Bit depths of 6, 10, 12, 14, 24 and 32**, which libtiff's own RGBA reader
   also refuses.
 - **Region decode.** A TIFF too large to hold is refused through

@@ -574,6 +574,34 @@ TEST(TiffDecode, APyramidLevelIsNotAnotherPage) {
   }
 }
 
+TEST(TiffDecode, YCbCrWithoutColourIsGreyAtEverySubsampling) {
+  // Cb and Cr held at 128 means no colour at all, so the conversion has to
+  // give R = G = B = Y exactly - whatever the coefficients are, and whatever
+  // the subsampling is. That is worth more than a comparison here: it is
+  // exact rather than approximate, it needs no reference decoder, and it
+  // fails loudly if the chroma is read from the wrong place, which is the
+  // mistake subsampling invites.
+  //
+  // The two files carry the same picture at 1x1 and 2x2, so they must also
+  // agree with each other - the same family as the byte-order, tiled and
+  // planar pairs.
+  Loaded one, four;
+  ASSERT_EQ(one.load("tiff_8x8_ycbcr_11.tif"), GIMG_OK) << one.reasons();
+  ASSERT_EQ(four.load("tiff_8x8_ycbcr_22.tif"), GIMG_OK) << four.reasons();
+  const std::vector<uint8_t> a = one.pixels();
+  const std::vector<uint8_t> b = four.pixels();
+  ASSERT_EQ(a.size(), 8u * 8u * 4u);
+  EXPECT_EQ(a, b) << "subsampling is a storage layout, not a picture";
+
+  const std::vector<uint8_t> want = gray_ramp(8, 8);
+  for (size_t i = 0; i < 64u; i++) {
+    EXPECT_EQ(a[i * 4 + 0], want[i]) << "red at " << i;
+    EXPECT_EQ(a[i * 4 + 1], want[i]) << "green at " << i;
+    EXPECT_EQ(a[i * 4 + 2], want[i]) << "blue at " << i;
+    EXPECT_EQ(a[i * 4 + 3], 255u) << "alpha at " << i;
+  }
+}
+
 TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   struct Case {
     const char * file;

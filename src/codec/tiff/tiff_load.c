@@ -258,6 +258,21 @@ static void tiff_ifd_defaults(gimg_tiff_ifd_t * ifd) {
   ifd->sample_format = 1u;                    // Unsigned integer.
   ifd->predictor = 1u;                        // No differencing.
   ifd->role = GIMG_ITEM_IMAGE;
+  // CCIR 601-1, which section 21 gives as the default and which is the same
+  // set JPEG uses.
+  ifd->luma_red = 0.299;
+  ifd->luma_green = 0.587;
+  ifd->luma_blue = 0.114;
+  ifd->ycbcr_h = 2u;
+  ifd->ycbcr_v = 2u;
+  // The default for YCbCr: luma over its full range, chroma centred on 128.
+  // With these the conversion below is the ordinary JPEG one.
+  ifd->reference_black_white[0] = 0.0;
+  ifd->reference_black_white[1] = 255.0;
+  ifd->reference_black_white[2] = 128.0;
+  ifd->reference_black_white[3] = 255.0;
+  ifd->reference_black_white[4] = 128.0;
+  ifd->reference_black_white[5] = 255.0;
   ifd->rows_per_strip = 0xFFFFFFFFu;          // "The whole image in one strip".
   ifd->photometric = 0xFFFFu;                 // No default; absence is an error.
 }
@@ -396,6 +411,38 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
       // both are read; this is the one that says "these belong to me".
       gimg_free(st->allocator, ifd->sub_ifds);
       r = tiff_value_array(st, &e, &ifd->sub_ifds, &ifd->sub_ifd_count);
+      break;
+    case GIMG_TIFF_TAG_YCBCR_SUBSAMPLING:
+      if (e.count >= 2u) {
+        ifd->ycbcr_h = (uint16_t)tiff_value(st, &e, 0);
+        ifd->ycbcr_v = (uint16_t)tiff_value(st, &e, 1);
+      }
+      break;
+    case GIMG_TIFF_TAG_YCBCR_COEFFICIENTS:
+      if (e.count >= 3u && e.value_bytes >= 24u) {
+        double * into[3] = {
+            &ifd->luma_red, &ifd->luma_green, &ifd->luma_blue};
+        for (size_t k = 0; k < 3u; k++) {
+          const uint32_t num = tiff_u32(e.values + (k * 8u), st->big_endian);
+          const uint32_t den =
+              tiff_u32(e.values + (k * 8u) + 4u, st->big_endian);
+          if (den != 0u) {
+            *into[k] = (double)num / (double)den;
+          }
+        }
+      }
+      break;
+    case GIMG_TIFF_TAG_REFERENCE_BLACK_WHITE:
+      if (e.count >= 6u && e.value_bytes >= 48u) {
+        for (size_t k = 0; k < 6u; k++) {
+          const uint32_t num = tiff_u32(e.values + (k * 8u), st->big_endian);
+          const uint32_t den =
+              tiff_u32(e.values + (k * 8u) + 4u, st->big_endian);
+          if (den != 0u) {
+            ifd->reference_black_white[k] = (double)num / (double)den;
+          }
+        }
+      }
       break;
     case GIMG_TIFF_TAG_ORIENTATION:
       ifd->orientation = (uint16_t)tiff_value(st, &e, 0);
@@ -659,6 +706,33 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
     if (ifd->samples_per_pixel != 3u && ifd->samples_per_pixel != 4u) {
       tiff_diag(diag, which, "an RGB image with neither three nor four samples");
       return GIMG_ERR_UNSUPPORTED;
+    }
+    break;
+  case GIMG_TIFF_PHOTOMETRIC_YCBCR:
+    if (ifd->samples_per_pixel != 3u) {
+      tiff_diag(diag, which, "a YCbCr image without three samples");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (ifd->bits_per_sample != 8u) {
+      tiff_diag(diag, which, "YCbCr at a depth other than eight bits");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (ifd->planar_config != 1u) {
+      tiff_diag(diag, which, "YCbCr with its channels stored apart");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (ifd->ycbcr_h == 0u || ifd->ycbcr_v == 0u || ifd->ycbcr_h > 4u ||
+        ifd->ycbcr_v > 4u) {
+      tiff_diag(diag, which, "a YCbCr subsampling the format does not define");
+      return GIMG_ERR_CORRUPT;
+    }
+    // A strip has to hold whole subsampling units, or the last row of one
+    // would be split across two strips with nothing to say so (section 21).
+    if (!ifd->tiled && (ifd->rows_per_strip % ifd->ycbcr_v) != 0u &&
+        ifd->rows_per_strip < ifd->height) {
+      tiff_diag(diag, which,
+          "RowsPerStrip does not hold whole YCbCr subsampling units");
+      return GIMG_ERR_CORRUPT;
     }
     break;
   case GIMG_TIFF_PHOTOMETRIC_CMYK:

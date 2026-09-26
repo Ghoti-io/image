@@ -92,6 +92,9 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TAG_XMP 700
 #define GIMG_TIFF_TAG_ICC_PROFILE 34675
 #define GIMG_TIFF_TAG_SUB_IFDS 330
+#define GIMG_TIFF_TAG_YCBCR_COEFFICIENTS 529
+#define GIMG_TIFF_TAG_YCBCR_SUBSAMPLING 530
+#define GIMG_TIFF_TAG_REFERENCE_BLACK_WHITE 532
 #define GIMG_TIFF_TAG_RESOLUTION_UNIT 296
 #define GIMG_TIFF_TAG_COLOR_MAP 320
 #define GIMG_TIFF_TAG_TILE_WIDTH 322
@@ -210,6 +213,12 @@ typedef struct {
   size_t role_subject;
   uint64_t * sub_ifds;    ///< Tag 330: offsets of this page's sub-directories.
   size_t sub_ifd_count;
+  /** YCbCr (section 21). The coefficients default to CCIR 601-1's
+   * 0.299/0.587/0.114, the subsampling to 2x2, and ReferenceBlackWhite to
+   * the range that makes the conversion the ordinary JPEG one. */
+  double luma_red, luma_green, luma_blue;
+  uint16_t ycbcr_h, ycbcr_v;
+  double reference_black_white[6];
   /** XMP (700), owned, kept only so a round trip does not lose it. */
   unsigned char * xmp;
   size_t xmp_size;

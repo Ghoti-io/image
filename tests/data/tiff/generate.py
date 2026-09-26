@@ -42,6 +42,7 @@ TAGS = {
     "TileByteCounts": 325,
     "NewSubfileType": 254,
     "SubIFDs": 330,
+    "YCbCrSubSampling": 530,
     "ImageDescription": 270,
     "Orientation": 274,
     "Predictor": 317,
@@ -531,6 +532,39 @@ def main():
     meta.append((TAGS["XMP"], BYTE, list(xmp)))
     meta.append((TAGS["ICCProfile"], UNDEFINED, list(profile)))
     write("tiff_4x4_metadata.tif", build("II", [(meta, rgb)]))
+
+    # ---- YCbCr, at both subsamplings, carrying a grey picture ----
+    #
+    # Cb and Cr held at 128 means no colour at all, and the conversion then
+    # has to give R = G = B = Y exactly, whatever the coefficients are and
+    # whatever the subsampling is. That is a property worth more than a
+    # comparison: it needs no reference decoder, it is exact rather than
+    # approximate, and it fails loudly if the chroma is read from the wrong
+    # place - which is the mistake subsampling invites.
+    ramp8 = gray_ramp(8, 8)
+    # 1x1: every pixel carries its own Cb and Cr, so the layout is plain
+    # interleaved YCbCr.
+    ycc11 = bytearray()
+    for v in ramp8:
+        ycc11 += bytes([v, 128, 128])
+    f11 = strip_fields(8, 8, bytes(ycc11), 6, spp=3)
+    f11.append((TAGS["YCbCrSubSampling"], SHORT, [1, 1]))
+    write("tiff_8x8_ycbcr_11.tif", build("II", [(f11, bytes(ycc11))]))
+
+    # 2x2: four luma samples then one Cb and one Cr, a unit row spanning two
+    # image rows.
+    ycc22 = bytearray()
+    for uy in range(4):
+        for ux in range(4):
+            for iy in range(2):
+                for ix in range(2):
+                    ycc22.append(ramp8[(uy * 2 + iy) * 8 + (ux * 2 + ix)])
+            ycc22 += bytes([128, 128])
+    f22 = strip_fields(8, 8, bytes(ycc22), 6, spp=3)
+    f22 = [(t, ty, [len(ycc22)] if t == TAGS["StripByteCounts"] else v)
+           for (t, ty, v) in f22]
+    f22.append((TAGS["YCbCrSubSampling"], SHORT, [2, 2]))
+    write("tiff_8x8_ycbcr_22.tif", build("II", [(f22, bytes(ycc22))]))
 
     # ---- A pyramid, in both of the format's spellings ----
     #

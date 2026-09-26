@@ -209,13 +209,22 @@ static bool tiff_plan_output(
   const bool gray = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO ||
       ifd->photometric == GIMG_TIFF_PHOTOMETRIC_BLACK_IS_ZERO;
   const bool cmyk = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_CMYK;
+  const bool ycbcr = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_YCBCR;
   // Sixteen bits stay sixteen bits: narrowing would be a decision about the
   // picture rather than about how it is stored, and GRAY16, RGBA16 and CMYK16
   // exist so the caller makes it. A palette is the exception, because its map
   // is narrowed on the way into an 8-bit raster whatever the indices are wide.
   out->wide = ifd->bits_per_sample == 16u &&
-      ifd->photometric != GIMG_TIFF_PHOTOMETRIC_PALETTE;
-  if (gray) {
+      ifd->photometric != GIMG_TIFF_PHOTOMETRIC_PALETTE && !ycbcr;
+  if (ycbcr) {
+    // Converted to RGB on the way out, because YCbCr is a way of storing
+    // colour rather than a colour model this library's rasters carry - the
+    // JPEG decoder does the same with the same numbers.
+    out->format = &GIMG_PIXEL_RGBA8;
+    out->channels = 4u;
+    out->has_alpha = true;
+  }
+  else if (gray) {
     out->format = out->wide ? &GIMG_PIXEL_GRAY16 : &GIMG_PIXEL_GRAY8;
     out->channels = 1u;
     out->has_alpha = false;
@@ -231,7 +240,8 @@ static bool tiff_plan_output(
     out->has_alpha = true;
   }
   out->bytes = out->channels * (out->wide ? 2u : 1u);
-  out->source_alpha = out->has_alpha && ifd->samples_per_pixel >= 4u;
+  out->source_alpha =
+      out->has_alpha && !ycbcr && ifd->samples_per_pixel >= 4u;
   return out->format != NULL;
 }
 
@@ -320,6 +330,147 @@ static void tiff_convert_row(const gimg_tiff_ifd_t * ifd,
         v = full - v;
       }
       tiff_put(out, pixel, k, v);
+    }
+  }
+}
+
+/**
+ * One YCbCr triple as RGB, by the formula section 21 states.
+ *
+ * Written in scaled integers rather than in floating point, and the
+ * difference is not performance.
+ *
+ * The section 21 formula reduces, for any set of coefficients, to
+ *
+ *     R = Y + (2 - 2*LumaRed) * Cr
+ *     B = Y + (2 - 2*LumaBlue) * Cb
+ *     G = Y - (LumaRed/LumaGreen)*(2 - 2*LumaRed)*Cr
+ *           - (LumaBlue/LumaGreen)*(2 - 2*LumaBlue)*Cb
+ *
+ * and every implementation evaluates it with the four multipliers fixed at
+ * 16 bits and a half added before the shift. Doing the same in double
+ * precision and rounding at the end is *not* the same function: the two
+ * disagree by one on the green channel for a handful of samples, because
+ * green is the only channel whose multipliers are not exact in five decimal
+ * places. Measured before this was written: 2 samples of 1,228,800 on
+ * dscf0013.tif and 94 of 325,000 on ycbcr-cat.tif, every one of them green.
+ *
+ * This library has met that difference before from the other side. Its JPEG
+ * decoder uses libjpeg's constants - 0.34414 and 0.71414, rounded to five
+ * places for bit-compatibility with every libjpeg since 6b - and the note in
+ * tools/oracle/containers/IMAGES records IJG v10 disagreeing with
+ * libjpeg-turbo by exactly one, on exactly green, for exactly that reason.
+ *
+ * TIFF is the case where the rounded constants would be wrong rather than
+ * merely different: a TIFF *states* its coefficients in tag 529, so the
+ * multipliers are the file's and have to be computed from it. A file that
+ * says something other than CCIR 601-1 - and a scanner's file often does -
+ * has no libjpeg constant to borrow.
+ */
+static void tiff_ycbcr_to_rgb(const gimg_tiff_ifd_t * ifd, unsigned y,
+    unsigned cb, unsigned cr, unsigned char * out) {
+  const double * ref = ifd->reference_black_white;
+  const double span_y = (ref[1] - ref[0]) != 0.0 ? (ref[1] - ref[0]) : 255.0;
+  const double span_cb = (ref[3] - ref[2]) != 0.0 ? (ref[3] - ref[2]) : 127.0;
+  const double span_cr = (ref[5] - ref[4]) != 0.0 ? (ref[5] - ref[4]) : 127.0;
+  const double green =
+      ifd->luma_green != 0.0 ? ifd->luma_green : 0.587;
+
+  // FIX(x) is x at sixteen fractional bits, rounded, and ONE_HALF is what is
+  // added before the arithmetic shift so that the shift rounds rather than
+  // floors.
+  const double d1 = 2.0 - (2.0 * ifd->luma_red);
+  const double d3 = 2.0 - (2.0 * ifd->luma_blue);
+  const int32_t fix_r = (int32_t)((d1 * 65536.0) + 0.5);
+  const int32_t fix_b = (int32_t)((d3 * 65536.0) + 0.5);
+  const int32_t fix_gr =
+      -(int32_t)(((ifd->luma_red / green) * d1 * 65536.0) + 0.5);
+  const int32_t fix_gb =
+      -(int32_t)(((ifd->luma_blue / green) * d3 * 65536.0) + 0.5);
+  const int32_t one_half = 1 << 15;
+
+  // The reference levels scale the samples before any of that; with the
+  // defaults this is the identity and Cb and Cr simply lose their 128.
+  const int32_t yy =
+      (int32_t)((((double)y - ref[0]) * 255.0 / span_y) + 0.5);
+  const int32_t cbb =
+      (int32_t)(((double)cb - ref[2]) * 127.0 / span_cb +
+          (((double)cb - ref[2]) < 0.0 ? -0.5 : 0.5));
+  const int32_t crr =
+      (int32_t)(((double)cr - ref[4]) * 127.0 / span_cr +
+          (((double)cr - ref[4]) < 0.0 ? -0.5 : 0.5));
+
+  const int32_t r = yy + (int32_t)(((fix_r * crr) + one_half) >> 16);
+  const int32_t b = yy + (int32_t)(((fix_b * cbb) + one_half) >> 16);
+  const int32_t g =
+      yy + (int32_t)((((fix_gr * crr) + (fix_gb * cbb)) + one_half) >> 16);
+  const int32_t v[3] = {r, g, b};
+  for (size_t k = 0; k < 3u; k++) {
+    // Clamped: the conversion can leave the cube for a chroma pair no
+    // encoder would produce from a real colour, and a file may carry one.
+    out[k] = v[k] <= 0 ? 0u : (v[k] >= 255 ? 255u : (unsigned char)v[k]);
+  }
+}
+
+/**
+ * Assemble one block of a YCbCr image.
+ *
+ * YCbCr is the one photometric here whose pixels are not stored a row at a
+ * time. The image is divided into *subsampling units* of h by v luma samples
+ * (section 21), and a unit is stored as its h*v luma values followed by one
+ * Cb and one Cr - so a unit row spans v image rows and the whole block has
+ * to be walked as a grid of units rather than as a sequence of rows.
+ *
+ * The 1x1 case falls out of the same loop: a unit is then one Y, one Cb and
+ * one Cr, which is plain interleaved YCbCr.
+ */
+static void tiff_convert_ycbcr_block(const gimg_tiff_ifd_t * ifd,
+    const tiff_output_t * out, const unsigned char * src, size_t have,
+    const tiff_block_t * rect, size_t across, size_t down,
+    unsigned char * pixels, size_t stride) {
+  const size_t h = ifd->ycbcr_h;
+  const size_t v = ifd->ycbcr_v;
+  const size_t units_across = ((size_t)rect->width + h - 1u) / h;
+  const size_t unit_bytes = (h * v) + 2u;
+  const size_t unit_row_bytes = units_across * unit_bytes;
+  if (unit_row_bytes == 0u) {
+    return;
+  }
+  const size_t unit_rows = (down + v - 1u) / v;
+
+  for (size_t uy = 0; uy < unit_rows; uy++) {
+    // A block shorter than its geometry says is truncated data, not a reason
+    // to refuse the picture: the unit rows that arrived are kept.
+    if ((uy + 1u) * unit_row_bytes > have) {
+      return;
+    }
+    const unsigned char * urow = src + (uy * unit_row_bytes);
+    for (size_t ux = 0; ux < units_across; ux++) {
+      const unsigned char * unit = urow + (ux * unit_bytes);
+      const unsigned cb = unit[h * v];
+      const unsigned cr = unit[(h * v) + 1u];
+      for (size_t iy = 0; iy < v; iy++) {
+        const size_t row = (uy * v) + iy;
+        if (row >= down) {
+          break;
+        }
+        unsigned char * dst_row = pixels +
+            ((size_t)(rect->y + row) * stride) +
+            ((size_t)rect->x * out->bytes);
+        for (size_t ix = 0; ix < h; ix++) {
+          const size_t col = (ux * h) + ix;
+          if (col >= across) {
+            break;
+          }
+          unsigned char rgb[3];
+          tiff_ycbcr_to_rgb(ifd, unit[(iy * h) + ix], cb, cr, rgb);
+          unsigned char * p = dst_row + (col * out->bytes);
+          p[0] = rgb[0];
+          p[1] = rgb[1];
+          p[2] = rgb[2];
+          p[3] = 255u;
+        }
+      }
     }
   }
 }
@@ -446,7 +597,20 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
     // the expansion by the picture rather than by the tag is what makes that
     // a short read instead of an allocation.
     size_t want = 0;
-    if (!gcu_safe_mul_size(down, rect.row_bytes, &want)) {
+    if (ifd->photometric == GIMG_TIFF_PHOTOMETRIC_YCBCR) {
+      // A unit row spans YCbCrSubSampling[1] image rows and holds one unit
+      // per YCbCrSubSampling[0] columns, each unit being its luma samples
+      // plus one Cb and one Cr.
+      const size_t h = ifd->ycbcr_h, v = ifd->ycbcr_v;
+      const size_t units = ((size_t)rect.width + h - 1u) / h;
+      const size_t unit_rows = (down + v - 1u) / v;
+      if (!gcu_safe_mul_size(units, (h * v) + 2u, &want) ||
+          !gcu_safe_mul_size(want, unit_rows, &want)) {
+        gimg_raster_destroy(raster);
+        return GIMG_ERR_LIMIT;
+      }
+    }
+    else if (!gcu_safe_mul_size(down, rect.row_bytes, &want)) {
       gimg_raster_destroy(raster);
       return GIMG_ERR_LIMIT;
     }
@@ -467,6 +631,14 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
           rect.plane >= 0 ? 1u : ifd->samples_per_pixel);
     }
 
+    if (ifd->photometric == GIMG_TIFF_PHOTOMETRIC_YCBCR) {
+      tiff_convert_ycbcr_block(
+          ifd, &out, src, have, &rect, across, down, dst_pixels, stride);
+      if (owned) {
+        gimg_free(alloc, (void *)(uintptr_t)src);
+      }
+      continue;
+    }
     for (size_t row = 0; row < down; row++) {
       size_t at = 0;
       if (!gcu_safe_mul_size(row, rect.row_bytes, &at)) {
