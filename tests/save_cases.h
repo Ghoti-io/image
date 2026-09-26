@@ -164,8 +164,8 @@ inline void attach_common(GIMG_Doc * doc) {
  * pattern is a gradient with a per-pixel perturbation: deterministic, but not
  * constant along either axis or within a block.
  */
-inline GIMG_Raster * make_raster(
-    const GIMG_Pixel_Format & fmt, uint32_t w, uint32_t h, unsigned levels) {
+inline GIMG_Raster * make_raster(const GIMG_Pixel_Format & fmt, uint32_t w,
+    uint32_t h, unsigned levels, unsigned run = 1u) {
   GIMG_Raster * r = nullptr;
   if (gimg_raster_create(w, h, &fmt, GIMG_RASTER_OWNED, nullptr, 0, &r)
       != GIMG_OK) {
@@ -186,9 +186,16 @@ inline GIMG_Raster * make_raster(
   for (uint32_t y = 0; y < h; y++) {
     for (uint32_t x = 0; x < w; x++) {
       for (unsigned c = 0; c < ch; c++) {
+        // `run` repeats each value along the row. Every run-length encoder
+        // in these writers must beat writing the pixels plainly before it is
+        // used, so a scattered pattern reaches none of them: a case that asks
+        // for RLE and gets BI_RGB sweeps the plain writer under another name.
+        // BmpEncode.EveryCompressionOptionReachesTheEncoderItNames is the
+        // check that each option still selects what it says.
+        const uint32_t bx = (run > 1u) ? (x / run) : x;
         const unsigned v = (opaque_alpha && c == 3u)
             ? max
-            : ((x * 7u + y * 13u + c * 29u) * 37u) % span;
+            : ((bx * 7u + y * 13u + c * 29u) * 37u) % span;
         if (bits <= 8u) {
           px[y * stride + (x * ch + c)] = (unsigned char)v;
         }
@@ -210,6 +217,17 @@ struct SaveCase {
   GIMG_Save_Options options;
   unsigned levels; ///< Distinct values per channel; 0 = the format's full range.
   Decorate decorate; ///< Metadata to hang on the document, or nullptr.
+  unsigned run;      ///< Repeat each value this many times along a row; 0 = 1.
+  /**
+   * Smallest image this case needs, or 0 for the sweep's own size.
+   *
+   * RLE24 is the reason this exists. It is only eligible for a plan of more
+   * than 256 colours, and only chosen when runs make it smaller than writing
+   * the pixels plainly - so it needs more *blocks* than 256, which at a run
+   * of four is more pixels than either sweep's default. A case that cannot
+   * say so is a case that silently sweeps the plain writer instead.
+   */
+  uint32_t min_side;
 };
 
 /**
@@ -243,46 +261,46 @@ inline std::vector<SaveCase> save_cases(void) {
   std::vector<SaveCase> cases;
   {
     GIMG_Save_Options o = opt();
-    cases.push_back({"jpeg baseline gray", "jpeg", &GIMG_PIXEL_GRAY8, o, 0u, nullptr});
+    cases.push_back({"jpeg baseline gray", "jpeg", &GIMG_PIXEL_GRAY8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
-    cases.push_back({"jpeg baseline rgb 4:2:0", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"jpeg baseline rgb 4:2:0", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
-    cases.push_back({"jpeg rgb 4:4:4", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"jpeg rgb 4:4:4", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_progressive = 1;
-    cases.push_back({"jpeg progressive rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"jpeg progressive rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_arithmetic = 1;
-    cases.push_back({"jpeg arithmetic rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"jpeg arithmetic rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_restart_interval = 2;
-    cases.push_back({"jpeg restarts rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"jpeg restarts rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_non_interleaved = 1;
-    cases.push_back({"jpeg non-interleaved rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"jpeg non-interleaved rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_lossless_predictor = 1;
-    cases.push_back({"jpeg lossless rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"jpeg lossless rgb", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_hierarchical_levels = 1;
-    cases.push_back({"jpeg hierarchical gray", "jpeg", &GIMG_PIXEL_GRAY8, o, 0u, nullptr});
+    cases.push_back({"jpeg hierarchical gray", "jpeg", &GIMG_PIXEL_GRAY8, o, 0u, nullptr, 0u, 0u});
   }
   // Each option above is set on its own, and the writer's header code is not
   // organised that way: a lossless or hierarchical frame writes its own DAC,
@@ -295,66 +313,213 @@ inline std::vector<SaveCase> save_cases(void) {
     o.jpeg_hierarchical_levels = 1;
     o.jpeg_arithmetic = 1;
     cases.push_back({"jpeg hierarchical arithmetic rgb", "jpeg",
-        &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+        &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_hierarchical_levels = 1;
     o.jpeg_restart_interval = 2;
     cases.push_back({"jpeg hierarchical restarts rgb", "jpeg",
-        &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+        &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_lossless_predictor = 1;
     o.jpeg_arithmetic = 1;
     cases.push_back({"jpeg lossless arithmetic rgb", "jpeg", &GIMG_PIXEL_RGBA8,
-        o, 0u, nullptr});
+        o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_lossless_predictor = 1;
     o.jpeg_restart_interval = 2;
     cases.push_back({"jpeg lossless restarts rgb", "jpeg", &GIMG_PIXEL_RGBA8, o,
-        0u, nullptr});
+        0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_precision = 12;
-    cases.push_back({"jpeg 12-bit gray", "jpeg", &GIMG_PIXEL_GRAY12, o, 0u, nullptr});
+    cases.push_back({"jpeg 12-bit gray", "jpeg", &GIMG_PIXEL_GRAY12, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_precision = 12;
-    cases.push_back({"jpeg 12-bit rgb", "jpeg", &GIMG_PIXEL_RGBA12, o, 0u, nullptr});
+    cases.push_back({"jpeg 12-bit rgb", "jpeg", &GIMG_PIXEL_RGBA12, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
-    cases.push_back({"jpeg cmyk", "jpeg", &GIMG_PIXEL_CMYK8, o, 0u, nullptr});
+    cases.push_back({"jpeg cmyk", "jpeg", &GIMG_PIXEL_CMYK8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_cmyk_transform = 2;
-    cases.push_back({"jpeg ycck", "jpeg", &GIMG_PIXEL_CMYK8, o, 0u, nullptr});
+    cases.push_back({"jpeg ycck", "jpeg", &GIMG_PIXEL_CMYK8, o, 0u, nullptr, 0u, 0u});
   }
+  // PNG, BMP and GIF used to contribute four cases between them against
+  // twenty-eight for JPEG, which is why the sweeps that walk this list reached
+  // so much less of those three writers. Each block below names an axis the
+  // writer branches on, not a variation for its own sake.
   {
     GIMG_Save_Options o = opt();
-    cases.push_back({"png rgba", "png", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"png rgba", "png", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     o.interlaced = 1;
-    cases.push_back({"png interlaced rgba", "png", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"png interlaced rgba", "png", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    // Grayscale and sixteen-bit are separate writers, not the truecolor one
+    // with a narrower pixel: PNG Table 11.1 gives each colour type its own
+    // permitted depths and each depth its own row packing.
+    GIMG_Save_Options o = opt();
+    cases.push_back({"png gray8", "png", &GIMG_PIXEL_GRAY8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
-    cases.push_back({"bmp rgba", "bmp", &GIMG_PIXEL_RGBA8, o, 0u, nullptr});
+    cases.push_back({"png gray16", "png", &GIMG_PIXEL_GRAY16, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    cases.push_back({"png rgba16", "png", &GIMG_PIXEL_RGBA16, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.interlaced = 1;
+    cases.push_back({"png interlaced gray16", "png", &GIMG_PIXEL_GRAY16, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  {
+    // Few enough colours to build a palette from, which is a different writer
+    // again - it quantizes nothing, it recognises that it does not have to.
+    GIMG_Save_Options o = opt();
+    cases.push_back({"png palette from few colours", "png", &GIMG_PIXEL_RGBA8,
+        o, 4u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.png_palette = GIMG_PNG_PALETTE_NEVER;
+    cases.push_back({"png truecolor forced", "png", &GIMG_PIXEL_RGBA8, o, 4u,
+        nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.interlaced = 1;
+    cases.push_back({"png interlaced palette", "png", &GIMG_PIXEL_RGBA8, o, 4u,
+        nullptr, 0u, 0u});
+  }
+  // The five fixed row filters and the adaptive default are six separate
+  // paths through the filter loop, and only the default was ever taken here.
+  {
+    GIMG_Save_Options o = opt();
+    o.png_filter = GIMG_PNG_FILTER_NONE;
+    cases.push_back({"png filter none", "png", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.png_filter = GIMG_PNG_FILTER_SUB;
+    cases.push_back({"png filter sub", "png", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.png_filter = GIMG_PNG_FILTER_UP;
+    cases.push_back({"png filter up", "png", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.png_filter = GIMG_PNG_FILTER_AVERAGE;
+    cases.push_back({"png filter average", "png", &GIMG_PIXEL_RGBA8, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.png_filter = GIMG_PNG_FILTER_PAETH;
+    cases.push_back({"png filter paeth", "png", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    cases.push_back({"bmp rgba", "bmp", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.bmp_top_down = 1;
+    cases.push_back({"bmp top-down", "bmp", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    cases.push_back({"bmp gray8", "bmp", &GIMG_PIXEL_GRAY8, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    // An indexed bitmap, and then the three compressed forms of one. Each is
+    // a separate encoder: BI_RLE8 and BI_RLE4 differ in how a run is packed,
+    // RLE24 is an OS/2 extension, and the Huffman form is CCITT G3 1-D.
+    GIMG_Save_Options o = opt();
+    cases.push_back({"bmp palette", "bmp", &GIMG_PIXEL_RGBA8, o, 4u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.bmp_rle = GIMG_BMP_RLE_AUTO;
+    cases.push_back({"bmp rle", "bmp", &GIMG_PIXEL_RGBA8, o, 4u, nullptr, 8u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.bmp_rle = GIMG_BMP_RLE_AUTO;
+    o.bmp_allow_rle24 = 1;
+    cases.push_back({"bmp rle24", "bmp", &GIMG_PIXEL_RGBA8, o, 16u, nullptr, 4u, 64u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.bmp_rle = GIMG_BMP_RLE_AUTO;
+    o.bmp_allow_huffman = 1;
+    cases.push_back({"bmp huffman", "bmp", &GIMG_PIXEL_GRAY8, o, 2u, nullptr, 8u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.bmp_rle = GIMG_BMP_RLE_AUTO;
+    o.bmp_allow_2bit = 1;
+    cases.push_back({"bmp 2-bit", "bmp", &GIMG_PIXEL_GRAY8, o, 4u, nullptr, 8u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.bmp_palette = GIMG_BMP_PALETTE_NEVER;
+    cases.push_back({"bmp truecolor forced", "bmp", &GIMG_PIXEL_RGBA8, o, 4u,
+        nullptr, 0u, 0u});
+  }
+  {
+    // The wrapper forms write another codec's whole stream into a BMP, so the
+    // BMP writer's own pixel path is not taken at all.
+    GIMG_Save_Options o = opt();
+    o.bmp_wrapper = GIMG_BMP_WRAPPER_PNG;
+    cases.push_back({"bmp png wrapper", "bmp", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.bmp_wrapper = GIMG_BMP_WRAPPER_JPEG;
+    cases.push_back({"bmp jpeg wrapper", "bmp", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     // GIF takes an RGBA8 raster and nothing else, and only one whose
     // colours already fit a table: 6 levels per channel is 216 of them.
-    cases.push_back({"gif rgba 216 colours", "gif", &GIMG_PIXEL_RGBA8, o, 6u, nullptr});
+    cases.push_back({"gif rgba 216 colours", "gif", &GIMG_PIXEL_RGBA8, o, 6u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.gif_interlace = 1;
+    cases.push_back({"gif interlaced", "gif", &GIMG_PIXEL_RGBA8, o, 6u, nullptr, 0u, 0u});
+  }
+  {
+    // A threshold above zero splits the table into opaque entries plus one
+    // transparent index, which is a different plan from the opaque case.
+    GIMG_Save_Options o = opt();
+    o.gif_alpha_threshold = 128;
+    cases.push_back({"gif transparency", "gif", &GIMG_PIXEL_RGBA8, o, 6u,
+        nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.gif_loop_count = 3;
+    cases.push_back({"gif loop count", "gif", &GIMG_PIXEL_RGBA8, o, 6u, nullptr, 0u, 0u});
   }
 
   {
@@ -362,7 +527,7 @@ inline std::vector<SaveCase> save_cases(void) {
     o.jpeg_progressive = 1;
     o.jpeg_progressive_config = simple_progression();
     cases.push_back({"jpeg successive approx", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u,
-        nullptr});
+        nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
@@ -370,7 +535,7 @@ inline std::vector<SaveCase> save_cases(void) {
     o.jpeg_progressive_config = simple_progression();
     o.jpeg_restart_interval = 4;
     cases.push_back({"jpeg successive + restarts", "jpeg", &GIMG_PIXEL_RGBA8, o,
-        0u, nullptr});
+        0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
@@ -378,7 +543,7 @@ inline std::vector<SaveCase> save_cases(void) {
     o.jpeg_progressive_config = simple_progression();
     o.jpeg_arithmetic = 1;
     cases.push_back({"jpeg successive arithmetic", "jpeg", &GIMG_PIXEL_RGBA8, o,
-        0u, nullptr});
+        0u, nullptr, 0u, 0u});
   }
   {
     // The twelve-bit scan writer is a separate function with its own
@@ -388,46 +553,46 @@ inline std::vector<SaveCase> save_cases(void) {
     o.jpeg_progressive_config = simple_progression();
     o.jpeg_precision = 12;
     cases.push_back({"jpeg successive 12-bit", "jpeg", &GIMG_PIXEL_RGBA12, o,
-        0u, nullptr});
+        0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     cases.push_back({"jpeg every app segment", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u,
-        attach_jpeg_app_segments});
+        attach_jpeg_app_segments, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     cases.push_back(
-        {"jpeg exif", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, attach_exif});
+        {"jpeg exif", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u, attach_exif, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     cases.push_back({"jpeg synthesized icc", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u,
-        tag_adobe_rgb});
+        tag_adobe_rgb, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     cases.push_back({"jpeg description and dpi", "jpeg", &GIMG_PIXEL_RGBA8, o,
-        0u, attach_common});
+        0u, attach_common, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
-    cases.push_back({"png exif", "png", &GIMG_PIXEL_RGBA8, o, 0u, attach_exif});
+    cases.push_back({"png exif", "png", &GIMG_PIXEL_RGBA8, o, 0u, attach_exif, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     cases.push_back({"png description and dpi", "png", &GIMG_PIXEL_RGBA8, o, 0u,
-        attach_common});
+        attach_common, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     cases.push_back({"png synthesized icc", "png", &GIMG_PIXEL_RGBA8, o, 0u,
-        tag_adobe_rgb});
+        tag_adobe_rgb, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
     cases.push_back({"gif description", "gif", &GIMG_PIXEL_RGBA8, o, 6u,
-        attach_common});
+        attach_common, 0u, 0u});
   }
   return cases;
 }

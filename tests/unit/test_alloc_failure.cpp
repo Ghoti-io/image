@@ -622,7 +622,9 @@ TEST(AllocFailure, ASaveThatSucceedsWroteThePictureItWasGiven) {
   long checked = 0, tolerated = 0;
   for (const SaveCase & c : cases) {
     SCOPED_TRACE(c.name);
-    GIMG_Raster * raster = make_raster(*c.format, 32u, 32u, c.levels);
+    GIMG_Raster * raster = make_raster(*c.format,
+        c.min_side ? c.min_side : 32u, c.min_side ? c.min_side : 32u,
+        c.levels, c.run);
     ASSERT_NE(raster, nullptr) << c.name << ": could not build a raster";
     GIMG_Doc * doc = nullptr;
     ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK) << c.name;
@@ -692,7 +694,9 @@ TEST(AllocFailure, EveryFailedSaveFreesEverythingItTook) {
 
   long injected = 0;
   for (const SaveCase & c : cases) {
-    GIMG_Raster * raster = make_raster(*c.format, 32u, 32u, c.levels);
+    GIMG_Raster * raster = make_raster(*c.format,
+        c.min_side ? c.min_side : 32u, c.min_side ? c.min_side : 32u,
+        c.levels, c.run);
     ASSERT_NE(raster, nullptr) << c.name << ": could not build a raster";
     GIMG_Doc * doc = nullptr;
     // The document is built with the default allocator so that the sweep

@@ -2067,3 +2067,185 @@ TEST(BmpEncode, ADocumentOfSeveralItemsIsSavedAsItsFirstOne) {
   EXPECT_EQ(again.at(0, 0), original.at(0, 0));
   EXPECT_EQ(again.at(1, 0), original.at(1, 0));
 }
+
+namespace {
+
+/** The DIB header's biCompression, and the depth it applies to. */
+struct Written {
+  uint32_t compression;
+  uint16_t bit_count;
+};
+
+Written written_form(const std::vector<uint8_t> & bmp) {
+  Written w = {0xFFFFFFFFu, 0u};
+  if (bmp.size() < 30u) {
+    return w;
+  }
+  // The DIB header's own size says which layout follows it: 12 is OS/2's
+  // BITMAPCOREHEADER, which has no compression field at all and puts the
+  // depth four bytes earlier than every later header does.
+  const uint32_t dib = (uint32_t)bmp[14] | ((uint32_t)bmp[15] << 8) |
+      ((uint32_t)bmp[16] << 16) | ((uint32_t)bmp[17] << 24);
+  if (dib == 12u) {
+    w.bit_count = (uint16_t)((uint32_t)bmp[24] | ((uint32_t)bmp[25] << 8));
+    w.compression = 0u;
+    return w;
+  }
+  if (bmp.size() < 38u) {
+    return w;
+  }
+  w.bit_count = (uint16_t)((uint32_t)bmp[28] | ((uint32_t)bmp[29] << 8));
+  w.compression = (uint32_t)bmp[30] | ((uint32_t)bmp[31] << 8) |
+      ((uint32_t)bmp[32] << 16) | ((uint32_t)bmp[33] << 24);
+  return w;
+}
+
+/**
+ * A raster with exactly @p distinct colours, laid out in runs of @p run.
+ *
+ * Both numbers matter and for different reasons. The colour count decides
+ * whether the writer can build a palette - at most 256 and it will - and the
+ * run length decides whether any run-length encoder can beat writing the
+ * pixels plainly, which every one of them is required to before it is used.
+ * A generator that controls only one of the two cannot ask for RLE24 at all:
+ * that needs more than 256 colours *and* runs, which is a larger image than
+ * either condition alone would suggest.
+ *
+ * Alpha is opaque throughout, because a varying alpha makes the plan 32-bit
+ * and the 24-bit encoders are then simply not eligible.
+ */
+GIMG_Raster * spanning(const GIMG_Pixel_Format * fmt, uint32_t w, uint32_t h,
+    unsigned distinct, unsigned run) {
+  GIMG_Raster * r = nullptr;
+  if (gimg_raster_create(w, h, fmt, GIMG_RASTER_OWNED, nullptr, 0, &r) !=
+      GIMG_OK) {
+    return nullptr;
+  }
+  unsigned char * px = (unsigned char *)gimg_raster_pixels(r);
+  const size_t stride = gimg_raster_stride_bytes(r);
+  const unsigned ch = fmt->channel_count;
+  if (run == 0u) { run = 1u; }
+  const unsigned per_row = (w + run - 1u) / run;
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      const unsigned block = (y * per_row) + (x / run);
+      const unsigned colour = distinct ? (block % distinct) : block;
+      for (unsigned c = 0; c < ch; c++) {
+        unsigned v;
+        if (ch == 4u && c == 3u) {
+          v = 255u;
+        }
+        else if (ch == 1u) {
+          // One channel: the colour index has to fit in it, so a grayscale
+          // subject is only ever asked for a handful of values.
+          v = (colour * (255u / (distinct > 1u ? distinct - 1u : 1u)));
+        }
+        else {
+          // Spread the index across two channels so distinct indices stay
+          // distinct colours up to 65536 of them.
+          v = (c == 0u) ? (colour & 0xFFu) : (c == 1u ? (colour >> 8) : 0u);
+        }
+        px[(size_t)y * stride + (size_t)x * ch + c] = (unsigned char)v;
+      }
+    }
+  }
+  return r;
+}
+
+} // namespace
+
+/**
+ * Every BMP compression option reaches the encoder it names.
+ *
+ * Six of these options select a whole separate encoder - BI_RLE8 and BI_RLE4
+ * pack a run differently, RLE24 and Huffman 1-D exist only in OS/2's
+ * vocabulary, and the two wrapper forms write another codec's entire stream
+ * instead of pixels - and each of them is chosen, not commanded. `bmp_rle` is
+ * spelled AUTO because the writer decides; `bmp_allow_rle24` only *permits*.
+ *
+ * So an option can be set and have no effect, and the file still saves, still
+ * loads, and still round-trips. That is precisely what happened when these
+ * configurations were added to tests/save_cases.h: the RLE24 case was handed
+ * an RGBA raster with a varying alpha, the plan came out 32-bit, and
+ * rle_true_color requires 24 - so the case swept the plain writer twice under
+ * two names and would have gone on doing so, because nothing looked at what
+ * came out.
+ *
+ * This looks. Each row below names the form the option must produce, and the
+ * test fails if the writer quietly chose another - which is a weaker claim
+ * than "the bytes are right" and a much stronger one than "it saved".
+ */
+TEST(BmpEncode, EveryCompressionOptionReachesTheEncoderItNames) {
+  // BI_* values from the Windows BITMAPINFOHEADER, plus OS/2's two.
+  static const uint32_t kRgb = 0u, kRle8 = 1u, kRle4 = 2u, kJpeg = 4u,
+                        kPng = 5u;
+  static const uint32_t kHuffman1D = 3u; // OS/2: BI_BITFIELDS' value reused
+  static const uint32_t kRle24 = 4u;     // OS/2: BI_JPEG's value reused
+
+  struct Case {
+    const char * name;
+    const GIMG_Pixel_Format * format;
+    unsigned distinct;
+    unsigned run;
+    uint32_t expect_compression;
+    uint16_t expect_bits;
+    void (*configure)(GIMG_Save_Options *);
+  };
+
+  static const Case cases[] = {
+      {"plain truecolor", &GIMG_PIXEL_RGBA8, 512u, 1u, kRgb, 24u,
+          [](GIMG_Save_Options *) {}},
+      {"indexed", &GIMG_PIXEL_RGBA8, 64u, 1u, kRgb, 8u,
+          [](GIMG_Save_Options *) {}},
+      {"indexed, RLE8", &GIMG_PIXEL_RGBA8, 64u, 8u, kRle8, 8u,
+          [](GIMG_Save_Options * o) { o->bmp_rle = GIMG_BMP_RLE_AUTO; }},
+      {"few colours, RLE4", &GIMG_PIXEL_RGBA8, 8u, 8u, kRle4, 4u,
+          [](GIMG_Save_Options * o) { o->bmp_rle = GIMG_BMP_RLE_AUTO; }},
+      {"truecolor, RLE24", &GIMG_PIXEL_RGBA8, 512u, 4u, kRle24, 24u,
+          [](GIMG_Save_Options * o) {
+            o->bmp_rle = GIMG_BMP_RLE_AUTO;
+            o->bmp_allow_rle24 = 1;
+          }},
+      {"one bit, Huffman 1-D", &GIMG_PIXEL_GRAY8, 2u, 8u, kHuffman1D, 1u,
+          [](GIMG_Save_Options * o) {
+            o->bmp_rle = GIMG_BMP_RLE_AUTO;
+            o->bmp_allow_huffman = 1;
+          }},
+      {"PNG wrapper", &GIMG_PIXEL_RGBA8, 512u, 1u, kPng, 0u,
+          [](GIMG_Save_Options * o) {
+            o->bmp_wrapper = GIMG_BMP_WRAPPER_PNG;
+          }},
+      {"JPEG wrapper", &GIMG_PIXEL_RGBA8, 512u, 1u, kJpeg, 0u,
+          [](GIMG_Save_Options * o) {
+            o->bmp_wrapper = GIMG_BMP_WRAPPER_JPEG;
+          }},
+      {"truecolor forced past a palette", &GIMG_PIXEL_RGBA8, 64u, 1u, kRgb,
+          24u,
+          [](GIMG_Save_Options * o) {
+            o->bmp_palette = GIMG_BMP_PALETTE_NEVER;
+          }},
+  };
+
+  size_t checked = 0;
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.name);
+    GIMG_Raster * raster = spanning(c.format, 64, 32, c.distinct, c.run);
+    ASSERT_NE(raster, nullptr);
+    GIMG_Save_Options opts = {};
+    opts.quality = 80;
+    c.configure(&opts);
+
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_raster_with_options(raster, &opts, bytes), GIMG_OK);
+    ASSERT_FALSE(bytes.empty());
+    const Written w = written_form(bytes);
+    EXPECT_EQ(w.compression, c.expect_compression)
+        << "the option selected a different encoder from the one it names";
+    if (c.expect_bits != 0u) {
+      EXPECT_EQ(w.bit_count, c.expect_bits)
+          << "and at a depth the chosen encoder does not apply to";
+    }
+    checked++;
+  }
+  ASSERT_EQ(checked, sizeof(cases) / sizeof(cases[0]));
+}

@@ -84,7 +84,9 @@ GIMG_Result save_into(const char * codec_name, const GIMG_Doc * doc,
 TEST(WriteFailure, EveryTruncationPointIsReported) {
   long budgets = 0;
   for (const SaveCase & c : gimg_test::save_cases()) {
-    GIMG_Raster * raster = make_raster(*c.format, 16u, 16u, c.levels);
+    GIMG_Raster * raster = make_raster(*c.format,
+        c.min_side ? c.min_side : 16u, c.min_side ? c.min_side : 16u,
+        c.levels, c.run);
     ASSERT_NE(raster, nullptr) << c.name << ": could not build a raster";
     GIMG_Doc * doc = nullptr;
     ASSERT_EQ(gimg_doc_from_raster(raster, &doc), GIMG_OK) << c.name;
