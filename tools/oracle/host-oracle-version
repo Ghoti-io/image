@@ -46,6 +46,7 @@ case "${1:-}" in
   pillow)   exec python3 -c 'from PIL import Image; print("Pillow", Image.__version__)' ;;
   libjpeg)  build_and_run probe_jpeg.c $(pkg-config --cflags --libs libjpeg 2>/dev/null || echo -ljpeg) ;;
   giflib)   build_and_run probe_gif.c -lgif ;;
+  libtiff)  build_and_run probe_tiff.c $(pkg-config --cflags --libs libtiff-4 2>/dev/null || echo -ltiff) ;;
   imagemagick)
             command -v magick >/dev/null 2>&1 || {
               printf 'ImageMagick is not installed on this machine\n' >&2; exit 2; }

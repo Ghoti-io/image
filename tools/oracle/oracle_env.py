@@ -74,6 +74,7 @@ PROBE = {
     "pillow": "Pillow ",
     "libjpeg": "libjpeg-turbo ",
     "giflib": "giflib ",
+    "libtiff": "libtiff ",
     "bmplib": "bmplib ",
     "bmpsuite": "bmpsuite ",
     "pixbuf": "GdkPixbuf ",

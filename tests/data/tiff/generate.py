@@ -240,6 +240,23 @@ def main():
     write("tiff_4x4_palette.tif",
           build("II", [(strip_fields(W, H, idx, 3, colormap=cmap), idx)]))
 
+    # ---- The same palette, written the way many real writers write it ----
+    # TIFF 6.0 says a ColorMap entry is 16-bit, and plenty of encoders store
+    # an 8-bit value in the field anyway. Both readings are defensible from
+    # the bytes alone and they disagree by a factor of 257, so this fixture
+    # exists to make whichever one this library picks visible and measured
+    # rather than assumed.
+    small_r = [0] * 256
+    small_g = [0] * 256
+    small_b = [0] * 256
+    for i, (r, g, b) in enumerate(
+            [(0, 0, 0), (255, 0, 0), (0, 255, 0), (128, 128, 255)]):
+        small_r[i], small_g[i], small_b[i] = r, g, b
+    write("tiff_4x4_palette_8bit_map.tif",
+          build("II", [(strip_fields(W, H, idx, 3,
+                                     colormap=small_r + small_g + small_b),
+                        idx)]))
+
     # ---- Several strips of one picture ----
     # Written by hand because the strips need their own offsets.
     big = gray_ramp(8, 8)

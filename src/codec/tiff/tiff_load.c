@@ -388,6 +388,30 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
         ifd->color_map[k] = (uint16_t)tiff_value(st, &e, k);
       }
       ifd->color_map_count = e.count;
+      // TIFF 6.0 section 8 says a ColorMap entry is sixteen bits, and a great
+      // many writers store an eight-bit value in the field anyway. Read
+      // strictly, such a map makes every colour 1/257th of what was meant and
+      // the picture comes back essentially black - not subtly wrong, grossly
+      // wrong, and wrong in a way the file gives no other clue about.
+      //
+      // libtiff guesses, and this codec now guesses the same way, because
+      // reading the specification and reading the files disagree here and the
+      // files are what a caller has. Measured 2026-09-26 against libtiff
+      // 4.7.0 in the pinned image: given a map of 0..255 it answers 255 where
+      // this codec answered 1.
+      //
+      // The guess is safe in the one direction that matters. A map that is
+      // genuinely sixteen-bit *and* has every entry below 256 describes an
+      // image whose brightest colour is 0.39% of full scale - black to any
+      // eye - so misreading it costs a picture that was already black and
+      // gains every picture written by the majority of encoders.
+      ifd->color_map_is_8bit = true;
+      for (size_t k = 0; k < ifd->color_map_count; k++) {
+        if (ifd->color_map[k] > 255u) {
+          ifd->color_map_is_8bit = false;
+          break;
+        }
+      }
       break;
     }
     default:

@@ -97,6 +97,7 @@ RUN apt-get update -qq \
       python3-pil=11.1.0-5+deb13u4 \
       libjpeg62-turbo-dev=1:2.1.5-4 \
       libgif-dev=5.2.2-1+deb13u1 \
+      libtiff-dev=4.7.0-3+deb13u3 \
       zlib1g-dev=1:1.3.dfsg+really1.3.1-1+b1 \
       python3-gi=3.50.0-4+b1 \
       gir1.2-gdkpixbuf-2.0=2.42.12+dfsg-4+deb13u1 \
@@ -275,13 +276,15 @@ ENV BMPLIB_ROOT=/opt/bmplib \
 # checks, and the first draft of `font`'s image had its \x27 escapes reach the
 # file literally.
 COPY containers/image-refs/image-oracle-version /usr/local/bin/image-oracle-version
-COPY containers/image-refs/probe_jpeg.c containers/image-refs/probe_gif.c /build/
+COPY containers/image-refs/probe_jpeg.c containers/image-refs/probe_gif.c \
+     containers/image-refs/probe_tiff.c /build/
 RUN set -eu; \
     chmod +x /usr/local/bin/image-oracle-version; \
     gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_jpeg /build/probe_jpeg.c; \
     gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_gif /build/probe_gif.c -lgif; \
+    gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/probe_tiff /build/probe_tiff.c -ltiff; \
     rm -rf /build; \
-    for ref in pillow libjpeg giflib bmplib bmpsuite pixbuf netpbm \
+    for ref in pillow libjpeg giflib libtiff bmplib bmpsuite pixbuf netpbm \
                    imagemagick piexif libjpeg12 ijg10; do \
         /usr/local/bin/image-oracle-version "$ref"; \
     done

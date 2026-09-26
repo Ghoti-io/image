@@ -78,9 +78,16 @@ static void tiff_block_rect(
   out->row_bytes = (size_t)ifd->width * spp;
 }
 
-/** One 16-bit ColorMap entry as an 8-bit sample, rounded the way PNG 13.12
- * states and this library converts everywhere else. */
-static uint8_t tiff_map8(uint16_t v) {
+/** One ColorMap entry as an 8-bit sample.
+ *
+ * A sixteen-bit entry is scaled the way PNG 13.12 states and this library
+ * converts everywhere else. A map the loader judged eight-bit - every entry
+ * below 256, which is what most writers produce - is taken at face value;
+ * tiff_load.c carries the argument for that. */
+static uint8_t tiff_map8(const gimg_tiff_ifd_t * ifd, uint16_t v) {
+  if (ifd->color_map_is_8bit) {
+    return (uint8_t)v;
+  }
   return (uint8_t)(((uint32_t)v * 255u + 32767u) / 65535u);
 }
 
@@ -119,9 +126,9 @@ static void tiff_convert_row(const gimg_tiff_ifd_t * ifd,
         p[0] = p[1] = p[2] = 0u;
       }
       else {
-        p[0] = tiff_map8(ifd->color_map[idx]);
-        p[1] = tiff_map8(ifd->color_map[third + idx]);
-        p[2] = tiff_map8(ifd->color_map[(third * 2u) + idx]);
+        p[0] = tiff_map8(ifd, ifd->color_map[idx]);
+        p[1] = tiff_map8(ifd, ifd->color_map[third + idx]);
+        p[2] = tiff_map8(ifd, ifd->color_map[(third * 2u) + idx]);
       }
       p[3] = 255u;
     }

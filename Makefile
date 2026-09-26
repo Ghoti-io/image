@@ -603,7 +603,7 @@ $(OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(FLAGS_STAMP)
 $(OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -DGIMG_TEST_OUT_TIFF=\"$(TEST_OUT_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Test in tests/codec/png/ (object name from basename for link)
 $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(FLAGS_STAMP)
@@ -645,6 +645,7 @@ TEST_DATA_TIFF := $(IMAGE_ROOT)/tests/data/tiff
 # Output directory for BMP encode test output.
 TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 TEST_OUT_GIF := $(IMAGE_ROOT)/tests/out/gif
+TEST_OUT_TIFF := $(IMAGE_ROOT)/tests/out/tiff
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
 	@mkdir -p $(@D)
@@ -787,7 +788,7 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep against the four
 # in the line every gate prints. It is not a fallback: nothing selects it
 # automatically, because a gate whose reference is not the one it names prints
 # the same green line as one whose is.
-ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-4
+ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-5
 ORACLE_EXEC := tools/oracle/oracle-exec
 ORACLE_ENGINE ?= docker
 
@@ -809,7 +810,7 @@ JPEG_ORACLE_TOOLS := dump_jpeg_pixels_ref dump_jpeg_coef_ref
 
 oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the image
 	@mkdir -p tests/tools/jpeg-oracle/build tests/tools/gif-oracle/build \
-		tests/tools/bmp-oracle/build
+		tests/tools/bmp-oracle/build tests/tools/tiff-oracle/build
 	@for t in $(JPEG_ORACLE_TOOLS); do \
 		printf '### Building oracle tool %s (in %s) ###\n' "$$t" "$(ORACLE_IMAGE)"; \
 		$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/jpeg-oracle/build" \
@@ -842,6 +843,11 @@ oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the im
 			-I"$$BMPLIB_ROOT" -L"$$BMPLIB_ROOT/build" -lbmp' sh \
 		"$(CURDIR)/tests/tools/bmp-oracle/build/dump_bmp_pixels_bmplib" \
 		"$(CURDIR)/tests/tools/bmp-oracle/dump_bmp_pixels_bmplib.c"
+	@printf '### Building oracle tool dump_tiff_pixels_libtiff (in %s) ###\n' "$(ORACLE_IMAGE)"
+	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/tiff-oracle/build" \
+		libtiff -- gcc -O2 -g -std=c17 -Wall -Wextra -Werror \
+		-o "$(CURDIR)/tests/tools/tiff-oracle/build/dump_tiff_pixels_libtiff" \
+		"$(CURDIR)/tests/tools/tiff-oracle/dump_tiff_pixels_libtiff.c" -ltiff
 	@printf '\033[0;32mOracle tools built against the pinned references.\033[0m\n'
 
 .PHONY: oracle-build oracle-verify oracle-tools
@@ -1463,7 +1469,7 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(ASAN_FLAGS_STAMP)
 $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -DGIMG_TEST_OUT_TIFF=\"$(TEST_OUT_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(ASAN_FLAGS_STAMP)
 	@mkdir -p $(@D)

@@ -166,6 +166,9 @@ typedef struct {
    * blues, each 16-bit (TIFF 6.0 section 8). */
   uint16_t * color_map;
   size_t color_map_count;
+  /** True when every entry is below 256 and the map is therefore read as
+   * eight-bit values stored in a sixteen-bit field. See tiff_load.c. */
+  bool color_map_is_8bit;
   uint32_t x_res_num, x_res_den;
   uint32_t y_res_num, y_res_den;
   bool has_x_res, has_y_res;

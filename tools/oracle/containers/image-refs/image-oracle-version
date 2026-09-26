@@ -11,6 +11,7 @@ case "${1:-}" in
   pillow)   exec python3 -c 'from PIL import Image; print("Pillow", Image.__version__)' ;;
   libjpeg)  exec /usr/local/bin/probe_jpeg ;;
   giflib)   exec /usr/local/bin/probe_gif ;;
+  libtiff)  exec /usr/local/bin/probe_tiff ;;
   bmplib)   printf 'bmplib %s\n' "$(cat /opt/bmplib.ref)" ;;
   bmpsuite) printf 'bmpsuite %s\n' "$(cat /opt/bmpsuite.ref)" ;;
   pixbuf)   exec python3 -c 'import gi; gi.require_version("GdkPixbuf", "2.0"); from gi.repository import GdkPixbuf; print("GdkPixbuf %d.%d.%d" % (GdkPixbuf.PIXBUF_MAJOR, GdkPixbuf.PIXBUF_MINOR, GdkPixbuf.PIXBUF_MICRO))' ;;
