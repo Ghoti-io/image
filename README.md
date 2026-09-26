@@ -83,10 +83,10 @@ make test
 sudo make install
 ```
 
-From the workspace, which installs cutil and compress first:
+From the parent of a suite checkout, which installs cutil and compress first:
 
 ```bash
-./bootstrap.sh
+./suite/install.sh
 export PKG_CONFIG_PATH="$PWD/.local/share/pkgconfig"
 make -C libs/image test PREFIX="$PWD/.local"
 ```

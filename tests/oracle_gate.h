@@ -19,14 +19,13 @@
  *     An oracle can be correctly pinned and still absent, and absence is the
  *     failure mode that reads as success.
  *
- * The shape here is `compress`'s, which notes/suite/CONTAINERS.md section 4a
- * found to be the best in the suite: **one sentinel test per reference per
+ * The shape here is `compress`'s: **one sentinel test per reference per
  * file**, which fails when that reference is unreachable. The individual
  * comparisons may still skip, because the sentinel guarantees the run goes red
  * either way, and one failure naming the missing reference reads better than
  * eleven failures naming its consequences.
  *
- * The trap the same section records is why it is *per reference* and not per
+ * The trap is why it is *per reference* and not per
  * file: `compress` had a file holding two references and one sentinel, which
  * asserted the wrong one, and sixteen tests could vanish with the suite green.
  * A sentinel's presence is not evidence it covers what the file claims.
@@ -180,8 +179,7 @@ inline std::string provenance(const char * reference) {
  * cannot be reached at the version tools/oracle/containers/IMAGES pins.
  *
  * The opt-out is printed at the point of failure rather than being a thing to
- * know, and it is per gate rather than a global boolean, which is the shape
- * notes/suite/CONTAINERS.md section 2.5 argues for: the decision to drop a
+ * know, and it is per gate rather than a global boolean: the decision to drop a
  * check should land in the command that was typed, so it shows up in shell
  * history and CI configuration rather than in an environment nobody prints.
  */

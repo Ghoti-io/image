@@ -1,10 +1,10 @@
 /* What libjpeg says it is, from the header the oracle tools compile against.
  *
- * A compiled probe rather than a dpkg query or a grep of jconfig.h, for the
- * reason notes/suite/CONTAINERS.md section 5.6 gives: the version reported has
- * to come from the same headers the driver will use, with nothing between the
- * check and the fact it checks. LIBJPEG_TURBO_VERSION is spelled unquoted, so
- * it needs stringifying twice - once to expand it, once to quote it.
+ * A compiled probe rather than a dpkg query or a grep of jconfig.h: the
+ * version reported has to come from the same headers the driver will use, with
+ * nothing between the check and the fact it checks. LIBJPEG_TURBO_VERSION is
+ * spelled unquoted, so it needs stringifying twice - once to expand it, once
+ * to quote it.
  */
 #include <stdio.h>
 #include <jconfig.h>

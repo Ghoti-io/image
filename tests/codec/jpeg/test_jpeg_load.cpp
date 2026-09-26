@@ -43,10 +43,9 @@
  * why the SKIPPED they would print reads exactly like a pass. See
  * tests/oracle_gate.h.
  *
- * One sentinel per reference, and not one for the file: notes/suite/
- * CONTAINERS.md section 4a records `compress` losing sixteen tests to a file
- * that had a sentinel for one of its two references and a comment that read as
- * covering both.
+ * One sentinel per reference, and not one for the file: `compress` lost
+ * sixteen tests to a file that had a sentinel for one of its two references
+ * and a comment that read as covering both.
  */
 ORACLE_SENTINEL(JpegLoad, pillow)
 ORACLE_SENTINEL(JpegLoad, libjpeg)

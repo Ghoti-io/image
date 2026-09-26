@@ -13,8 +13,7 @@
 bmpsuite_sweep.py runs this library's own dump_bmp_raster, so it cannot
 re-exec itself into the pinned image the way the verification scripts do. Its
 oracle half is asked here instead, as one process for the whole corpus, which
-is the protocol the rest of this suite's oracles already speak
-(notes/suite/CONTAINERS.md section 2.1).
+is the protocol the rest of this suite's oracles already speak.
 
 The four are Pillow, GdkPixbuf, netpbm's bmptopnm and bmplib. All four are
 pinned in tools/oracle/containers/IMAGES and live in the same image; before

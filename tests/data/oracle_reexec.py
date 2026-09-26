@@ -18,8 +18,7 @@ scripts do not skip, they simply measure a different reference and report
 agreement with it.
 
 They are converted by re-exec rather than by a batch protocol, which is what
-`regex` did to its in-process python gate (notes/suite/CONTAINERS.md section
-2.4). The difference is what each script is: regex's tool asked `re` one
+`regex` did to its in-process python gate. The difference is what each script is: regex's tool asked `re` one
 question per case and the process boundary had to be crossed per batch, so the
 protocol was the work. These read a directory of files and print a verdict, so
 the whole script can run inside the image with the tree mounted at its own

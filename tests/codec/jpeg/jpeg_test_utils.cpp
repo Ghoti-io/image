@@ -381,8 +381,7 @@ static bool run_pillow_decode_oracle_to_raw(const char * jpeg_path, const char *
  * otherwise.
  *
  * That ordering used to be a silent fallback between two *availabilities* -
- * "whichever of these this machine has" - which is the shape
- * notes/suite/CONTAINERS.md section 2.1 forbids, because a gate whose
+ * "whichever of these this machine has" - because a gate whose
  * reference is not the one it names prints the same green line as one whose
  * is. Two things changed it into something defensible.
  *

@@ -1,7 +1,6 @@
 # Every reference decoder this library is measured against, in one image.
 #
-# notes/suite/CONTAINERS.md is the specification; section 4a is the argument
-# for this particular image. The other libraries containerised their oracles to
+# The other libraries containerised their oracles to
 # pin a *moving* reference. Here the problem was a different one: four of the
 # five references below are a package install away, all four are present on the
 # machine this was written on, and so twenty-one tests that reach for one have
@@ -18,7 +17,7 @@
 #
 # ---------------------------------------------------------------------------
 #
-# Two kinds of pin (CONTAINERS.md section 2.6) and this image is the second
+# Two kinds of pin, and this image is the second
 # kind: built here, so there is no digest to trust and two builds of this file
 # are not two copies of one image. What is pinned instead is everything the
 # build reads - the base by digest, every apt package by full version, the two
@@ -36,11 +35,10 @@
 # written down.
 FROM docker.io/library/debian:13-slim@sha256:7792b1f7702a86946cd518db72b6a407302c3e9bc1635634368b878189e8221c
 
-# The locale, written down rather than inherited. CONTAINERS.md section 1.1 is
-# why: an unset LANG produced fifty false disagreements in the vim oracle, and
-# an oracle that reads its answers back through Python's default encoding is
-# exposed to exactly that. PYTHONHASHSEED because a dict order that varies is
-# a corpus order that varies.
+# The locale, written down rather than inherited. An unset LANG produced fifty
+# false disagreements in the vim oracle, and an oracle that reads its answers
+# back through Python's default encoding is exposed to exactly that.
+# PYTHONHASHSEED because a dict order that varies is a corpus order that varies.
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PYTHONHASHSEED=0
@@ -235,10 +233,10 @@ ENV BMPLIB_ROOT=/opt/bmplib \
     GIMG_CJPEG12=/opt/libjpeg-turbo/bin/cjpeg-static \
     GIMG_DJPEG12=/opt/libjpeg-turbo/bin/djpeg-static
 
-# The version probe, copied in rather than written with printf inside a RUN.
-# CONTAINERS.md section 7 records why: a printf'd script puts a quoting layer
-# between the check and the fact it checks, and the first draft of `font`'s
-# image had its \x27 escapes reach the file literally.
+# The version probe, copied in rather than written with printf inside a RUN. A
+# printf'd script puts a quoting layer between the check and the fact it
+# checks, and the first draft of `font`'s image had its \x27 escapes reach the
+# file literally.
 COPY containers/image-refs/image-oracle-version /usr/local/bin/image-oracle-version
 COPY containers/image-refs/probe_jpeg.c containers/image-refs/probe_gif.c /build/
 RUN set -eu; \

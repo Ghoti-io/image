@@ -15,8 +15,7 @@ itself into the pinned image, because it also runs *this library's*
 resample_tool, and a host-built binary is not something the oracle image should
 be asked to run. So the reference half is split out here and asked once, as a
 batch, which is the protocol every oracle in this suite already speaks:
-one process per batch, one case per line, nothing forked per case
-(notes/suite/CONTAINERS.md section 2.1).
+one process per batch, one case per line, nothing forked per case.
 
 Input, one case per line on stdin, tab-separated:
 

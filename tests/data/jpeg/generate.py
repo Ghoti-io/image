@@ -17,7 +17,7 @@ import sys
 # A fixture generator is pinned for the same reason a comparison oracle is:
 # a fixture's bytes are part of what it means, and "whatever Pillow this
 # machine has" is not a version anything records. `font` pins its fontTools
-# for exactly this (notes/suite/CONTAINERS.md section 7), and the fixtures
+# the same way, and the fixtures
 # under this directory are committed, so the version that wrote them outlives
 # the machine that ran it.
 #

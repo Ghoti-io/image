@@ -7,7 +7,7 @@ This document describes the image library layout, error-handling policy, testing
 **A container engine, and nothing else.** Every reference decoder this library
 is measured against is pinned into one image and reached through
 `tools/oracle/oracle-exec`; `tools/oracle/containers/IMAGES` lists them with
-the version each answers at, and `notes/suite/CONTAINERS.md` is the pattern.
+the version each answers at.
 
 ```bash
 make oracle-build     # build the image (podman or docker)

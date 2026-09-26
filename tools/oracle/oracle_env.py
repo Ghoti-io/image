@@ -11,9 +11,8 @@
 """How an oracle is spelled, so that no tool here spells one itself.
 
 **Copied from `libs/font/tools/oracle/oracle_env.py`**, which copied it from
-`libs/unicode`, which landed the pattern from `notes/suite/CONTAINERS.md`. That
-document is the specification; the copies are allowed to diverge and this one
-does, in three ways that are written down where they occur:
+`libs/unicode`, which landed the pattern. The copies are allowed to diverge
+and this one does, in three ways that are written down where they occur:
 
   1. **Five references share one image.** Elsewhere a name is an image. Here a
      single `make test` reaches for Pillow, libjpeg, giflib, bmplib and
@@ -64,8 +63,8 @@ class OracleUnavailable(Exception):
 
 # How to ask each reference for its version, and what the answer must start
 # with. The probe is a program *in the image* rather than a shell one-liner
-# here, for the reason CONTAINERS.md section 5.6 gives: a one-liner puts a
-# quoting layer between the check and the fact it checks. Two of these arms are
+# here: a one-liner puts a quoting layer between the check and the fact it
+# checks. Two of these arms are
 # compiled C programs, so that the version reported comes from the same headers
 # the oracle tools are compiled against and not from a package database.
 #
@@ -292,13 +291,13 @@ def version(name):
 def check_pin(name):
     """Raise unless the reference's version matches containers/IMAGES.
 
-    **In both modes**, as in `font` and unlike `unicode`. CONTAINERS.md section
-    2.6 is the rule: for an image built here the run-time version check is the
-    real guarantee, because two builds of one Containerfile are not two copies
-    of one image and there is no digest to trust. `unicode` could relax this in
-    host mode because every image it names is a stock one pinned by digest;
-    every line in this library's IMAGES names the same built-here image, so the
-    relaxation would leave nothing checking anything.
+    **In both modes**, as in `font` and unlike `unicode`. For an image built
+    here the run-time version check is the real guarantee, because two builds
+    of one Containerfile are not two copies of one image and there is no digest
+    to trust. `unicode` could relax this in host mode because every image it
+    names is a stock one pinned by digest; every line in this library's IMAGES
+    names the same built-here image, so the relaxation would leave nothing
+    checking anything.
 
     What that costs is worth stating plainly: host mode passes here only on a
     machine whose Pillow, libjpeg and giflib happen to match the pins. On the

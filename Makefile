@@ -763,10 +763,9 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep against the four
 #
 # Every reference decoder this library is measured against is pinned into one
 # container image and reached through tools/oracle/oracle-exec. See
-# tools/oracle/containers/IMAGES for the pins and notes/suite/CONTAINERS.md for
-# the pattern; section 4a is the argument for this library having an image at
-# all, and it is not the argument the other libraries had. Theirs was drift.
-# Ours was absence:
+# tools/oracle/containers/IMAGES for the pins. The argument for this library
+# having an image at all is not the argument the other libraries had. Theirs
+# was drift. Ours was absence:
 #
 #   An oracle can be correctly pinned and still absent, and absence is the
 #   failure mode that reads as success.

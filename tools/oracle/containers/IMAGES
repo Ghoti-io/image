@@ -7,14 +7,12 @@
 # All five names share one image, which is the shape this library needs and not
 # the shape `unicode` and `font` have: a single `make test` reaches for several
 # of these references, sometimes in one test binary, so five images would be
-# five things to keep in step for no gain. notes/suite/CONTAINERS.md section 4a
-# is the argument for having an image here at all - the problem it solves is
+# five things to keep in step for no gain. The problem an image here solves is
 # *absence*, not drift. Every reference below is present on the machine this
 # was written on, which is why twenty-one tests that reach for one have never
 # yet failed to find it, and why the skip they would print reads as success.
 #
-# Two kinds of pin and they are not the same guarantee (CONTAINERS.md section
-# 2.6). This image is **built here**, so there is no digest to trust: what is
+# Two kinds of pin and they are not the same guarantee. This image is **built here**, so there is no digest to trust: what is
 # pinned is everything its Containerfile reads, and the run-time version check
 # is the real guarantee. `oracle_env.check_pin()` therefore runs in **both**
 # modes, as in `font` and unlike `unicode`, because no line below names a stock
@@ -57,7 +55,7 @@ netpbm	localhost/ghoti-image-oracle-refs:deb13-3	netpbm 11.10.2	A fourth, throug
 # Deliberately an indirection rather than a copy. Those two commits were pinned
 # long before this image existed, VERSIONS says why in its own words, and
 # fetch.sh reads it with `awk '$1 == name { print $2; exit }'` - first match
-# wins. CONTAINERS.md section 2.2: a pin written in two files is a pin that can
+# wins. A pin written in two files is a pin that can
 # disagree with itself, and the disagreement is silent.
 #
 # What the image adds to them is the other half of the pin. A commit says which
@@ -78,7 +76,7 @@ imagemagick	localhost/ghoti-image-oracle-refs:deb13-3	ImageMagick 7.1.1-43	A who
 
 # Not a comparison oracle. tests/data/jpeg/generate.py writes an EXIF
 # orientation with it, so a fixture's bytes depend on it - pinned for the
-# reason `font` pins its fontTools (CONTAINERS.md section 7), which is that a
+# reason `font` pins its fontTools, which is that a
 # generator's version is part of what its output means.
 piexif	localhost/ghoti-image-oracle-refs:deb13-3	piexif 1.1.3	The EXIF writer tests/data/jpeg/generate.py builds its orientation fixture with
 
