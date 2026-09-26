@@ -653,7 +653,13 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (!page->raster) {
       GIMG_Result dr = gimg_item_decode(item, NULL, &page->raster);
       if (dr != GIMG_OK || !page->raster) {
-        r = (dr == GIMG_OK) ? GIMG_ERR_FORMAT : dr;
+        // An item with no raster and no codec behind it to make one is a
+        // document with no pixels, which is a fact about the input rather
+        // than about what this format can hold - GIMG_ERR_FORMAT, the same
+        // answer the BMP writer gives to the same document. Any other
+        // decode failure is passed through as itself.
+        r = (dr == GIMG_OK || dr == GIMG_ERR_UNSUPPORTED) ? GIMG_ERR_FORMAT
+                                                          : dr;
         break;
       }
       page->raster_owned = true;
