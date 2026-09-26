@@ -774,7 +774,7 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep against the four
 # in the line every gate prints. It is not a fallback: nothing selects it
 # automatically, because a gate whose reference is not the one it names prints
 # the same green line as one whose is.
-ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-3
+ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-4
 ORACLE_EXEC := tools/oracle/oracle-exec
 ORACLE_ENGINE ?= docker
 
@@ -804,6 +804,20 @@ oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the im
 			-o "$(CURDIR)/tests/tools/jpeg-oracle/build/$$t" \
 			"$(CURDIR)/tests/tools/jpeg-oracle/$$t.c" -ljpeg || exit 1; \
 	done
+	@# ljdec is the odd one: the two above link Debian's libjpeg-turbo 2.1.5,
+	@# which is what every eight-bit comparison here is measured against, and
+	@# this one links the 3.0.4 built in the image, because it reads
+	@# cinfo.data_precision and calls the 12- and 16-bit scanline entry points
+	@# that 2.1.5 does not have. Its headers and static library live at
+	@# GIMG_LJT_ROOT; before deb13-4 the image kept only the two binaries and
+	@# this tool could be built against nothing but the host's libjpeg.
+	@printf '### Building oracle tool ljdec (in %s) ###\n' "$(ORACLE_IMAGE)"
+	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/jpeg-oracle/build" \
+		libjpeg12 -- sh -c 'gcc -O2 -g -std=c17 -Wall -Wextra -Werror \
+			-o "$$1" "$$2" -I"$$GIMG_LJT_ROOT/include" \
+			"$$GIMG_LJT_ROOT/lib/libjpeg.a"' sh \
+		"$(CURDIR)/tests/tools/jpeg-oracle/build/ljdec" \
+		"$(CURDIR)/tests/tools/jpeg-oracle/ljdec.c"
 	@printf '### Building oracle tool dump_gif_pixels_giflib (in %s) ###\n' "$(ORACLE_IMAGE)"
 	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/gif-oracle/build" \
 		giflib -- gcc -O2 -g -std=c17 -Wall -Wextra \

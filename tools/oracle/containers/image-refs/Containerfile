@@ -27,7 +27,7 @@
 # below comes from a stock image whose digest could stand in for it.
 #
 # Build it with `make oracle-build`, which is:
-#   podman build -t ghoti-image-oracle-refs:deb13-3 \
+#   podman build -t ghoti-image-oracle-refs:deb13-4 \
 #       -f tools/oracle/containers/image-refs/Containerfile tools/oracle
 # The build context is tools/oracle/ rather than this directory, so that
 # VERSIONS - the file that already pinned bmplib and bmpsuite, and is read by
@@ -173,6 +173,28 @@ RUN set -eu; \
 # compiler invocation that had to be typed by hand, on a machine that still
 # had the tree lying around. The cmake flags are the README's, unchanged, so
 # that what is built here is what those fixtures were generated against.
+#
+# Its headers and static library are kept beside the two binaries, which they
+# were not before. djpeg cannot answer every question a reference is asked:
+# tests/tools/jpeg-oracle/ljdec.c exists because djpeg neither exposes
+# do_block_smoothing nor states the frame's precision in its output. Without
+# the headers here, that tool could only be built against whatever libjpeg the
+# machine had, which is the pin this image exists to remove - and it was the
+# last oracle in this library still named as a binary someone builds by hand.
+# `make oracle-tools` compiles it here, the same way it compiles the rest.
+#
+# The smoke test at the end of the block reads `data_precision`, which is not
+# decoration: it is the field ljdec.c wants and the one Debian's 2.1.5 headers
+# do not carry, so the check fails if the include path ever resolves to the
+# system libjpeg rather than to 3.0.4. It includes <stdio.h> first because
+# jpeglib.h needs FILE declared and does not include it itself - the first
+# draft omitted that and failed the build on its own probe.
+#
+# It is written with `printf '%s\n' line line line` rather than one format
+# string full of \n escapes. The escaped spelling reached printf as a literal
+# backslash-n, so the whole program arrived as a single #include line: it
+# compiled without complaint and linked with "undefined reference to main",
+# which reads like a broken toolchain rather than a quoting mistake.
 RUN set -eu; \
     ref="$(awk '$1 == "libjpeg-turbo" { print $2; exit }' /build/VERSIONS)"; \
     test -n "$ref" || { echo "VERSIONS has no libjpeg-turbo line" >&2; exit 1; }; \
@@ -183,11 +205,25 @@ RUN set -eu; \
         -DENABLE_SHARED=OFF -DWITH_TURBOJPEG=OFF -DWITH_SIMD=OFF >/dev/null; \
     cmake --build /tmp/ljt-build --target cjpeg-static djpeg-static \
         jpeg-static -j "$(nproc)" >/dev/null; \
-    mkdir -p /opt/libjpeg-turbo/bin; \
+    mkdir -p /opt/libjpeg-turbo/bin /opt/libjpeg-turbo/lib \
+        /opt/libjpeg-turbo/include; \
     cp /tmp/ljt-build/cjpeg-static /tmp/ljt-build/djpeg-static \
         /opt/libjpeg-turbo/bin/; \
+    cp /tmp/ljt-build/libjpeg.a /opt/libjpeg-turbo/lib/; \
+    cp /tmp/ljt/jpeglib.h /tmp/ljt/jmorecfg.h /tmp/ljt/jerror.h \
+        /tmp/ljt-build/jconfig.h /opt/libjpeg-turbo/include/; \
     printf '%s\n' "$ref" > /opt/libjpeg-turbo.ref; \
     /opt/libjpeg-turbo/bin/cjpeg-static -version >/dev/null 2>&1 || true; \
+    printf '%s\n' \
+        '#include <stdio.h>' \
+        '#include <jpeglib.h>' \
+        'int main(void){struct jpeg_decompress_struct c;' \
+        '(void)c.data_precision; return 0;}' > /tmp/ljt-link.c; \
+    gcc -O2 -I/opt/libjpeg-turbo/include -o /tmp/ljt-link /tmp/ljt-link.c \
+        /opt/libjpeg-turbo/lib/libjpeg.a || { \
+        echo "the 3.0.4 headers and static library do not compile together" >&2; \
+        exit 1; }; \
+    rm -f /tmp/ljt-link /tmp/ljt-link.c; \
     rm -rf /tmp/ljt /tmp/ljt-build
 
 # IJG v10, the Independent JPEG Group's own reference implementation.
@@ -231,7 +267,8 @@ ENV BMPLIB_ROOT=/opt/bmplib \
     LD_LIBRARY_PATH=/opt/bmplib/build \
     IJG10_ROOT=/opt/jpeg-10 \
     GIMG_CJPEG12=/opt/libjpeg-turbo/bin/cjpeg-static \
-    GIMG_DJPEG12=/opt/libjpeg-turbo/bin/djpeg-static
+    GIMG_DJPEG12=/opt/libjpeg-turbo/bin/djpeg-static \
+    GIMG_LJT_ROOT=/opt/libjpeg-turbo
 
 # The version probe, copied in rather than written with printf inside a RUN. A
 # printf'd script puts a quoting layer between the check and the fact it
