@@ -20,12 +20,27 @@ identical, splices their scans into one N-component frame, and keeps libjpeg's
 own decode of each grayscale file as the expected plane.  Both ends of the
 comparison are therefore libjpeg's.
 
-Usage:
-  mk_wide.py <path-to-cjpeg> <path-to-djpeg>
+Both cjpeg and djpeg come from the pinned oracle image, and this whole script
+runs inside it: it calls them 624 times over the six fixtures, so asking per
+call would be 624 container starts. Nothing else here is external, so the
+re-exec costs one.
 
-Writes wide_<N>comp.jpg and wide_<N>comp.raw into the working directory.
-The .raw format is: byte 0 = 4 (N channels, 8-bit), byte 1 = N, 4 bytes width
-LE, 4 bytes height LE, then w * h * N samples.
+Usage:
+  mk_wide.py [output-directory] [path-to-cjpeg] [path-to-djpeg]
+
+The directory defaults to the working directory and must already exist - it is
+declared writable to the image, and oracle-exec refuses a scratch path that is
+not there rather than creating it. The two paths still override, and
+GHOTI_ORACLE_MODE=host runs this machine's own.
+
+**The .raw files this writes are committed oracles**, so regenerating them is
+not the same as the bytes already in the tree: they were first written against
+a cjpeg nobody recorded, and these are libjpeg-turbo 3.0.4's. Diff before
+committing anything this produces.
+
+Writes wide_<N>comp.jpg and wide_<N>comp.raw. The .raw format is: byte 0 = 4
+(N channels, 8-bit), byte 1 = N, 4 bytes width LE, 4 bytes height LE, then
+w * h * N samples.
 
 Copyright 2026 by Corey Pennycuff
 """
@@ -34,6 +49,17 @@ import subprocess
 import sys
 import tempfile
 import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from oracle_reexec import inside_or_reexec  # noqa: E402
+
+OUTDIR = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
+inside_or_reexec("libjpeg12", scratch=[OUTDIR])
+
+# Set by the image; the arguments still win, and on a host run they are the
+# only thing that can answer.
+CJPEG = os.environ.get("GIMG_CJPEG12", "cjpeg")
+DJPEG = os.environ.get("GIMG_DJPEG12", "djpeg")
 
 W, H = 33, 17
 QUALITY = 90
@@ -160,16 +186,14 @@ def build(n, cjpeg, djpeg, tmp):
 
 
 def main():
-    if len(sys.argv) < 3:
-        print(__doc__)
-        return 2
-    cjpeg, djpeg = sys.argv[1], sys.argv[2]
+    cjpeg = sys.argv[2] if len(sys.argv) > 2 else CJPEG
+    djpeg = sys.argv[3] if len(sys.argv) > 3 else DJPEG
     with tempfile.TemporaryDirectory() as tmp:
         for n in (2, 5, 8, 10, 32, 255):
             jpg, raw = build(n, cjpeg, djpeg, tmp)
-            with open("wide_%dcomp.jpg" % n, "wb") as f:
+            with open(os.path.join(OUTDIR, "wide_%dcomp.jpg" % n), "wb") as f:
                 f.write(jpg)
-            with open("wide_%dcomp.raw" % n, "wb") as f:
+            with open(os.path.join(OUTDIR, "wide_%dcomp.raw" % n), "wb") as f:
                 f.write(raw)
             print("wide_%dcomp: %d bytes, %d components" % (n, len(jpg), n))
     return 0

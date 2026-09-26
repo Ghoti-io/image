@@ -156,13 +156,26 @@ list: sizes from 1x1 to 256x64 including 1xN, Nx1 and non-MCU-aligned shapes,
 grayscale and RGB, 4:4:4 / 4:2:2 / 4:2:0, baseline and progressive, noise /
 ramp / edges / flat content, qualities 10 / 50 / 90, and restart intervals of
 1, 2, 3, 5, 8 and 17 - 1188 files.  `compare_matrix_to_libjpeg.py <dir>/*.jpg`
-decodes each with our decoder and with Pillow and reports every file that is not
-byte-identical.
+decodes each with our decoder and with the pinned Pillow and reports every file
+that is not byte-identical.
 
-Current result: **1182 of 1188 byte-exact, 0 failures to decode.**  The six that
-differ are 17x1 4:2:2 noise, where scattered samples differ by at most 2 of 255;
-the cause is not identified and the geometry is degenerate (one pixel tall).
-Every other combination in the matrix is exact.
+Both run at the pin as of 2026-09-26.  The generator re-execs into the image,
+because Pillow is the *encoder* here and its version is part of what all 1188
+files are.  The comparator cannot: the other half of each comparison is our own
+host-built `dump_jpeg_raster`.  It asks the reference once for the whole corpus
+instead, through `decode_batch_pillow.py` - 1188 files in one container start,
+under seven seconds - and checks the count that comes back against the count it
+sent, so a reference that answered nothing cannot read as agreement.
+
+Current result: **1188 of 1188 byte-exact, 0 failures to decode.**
+
+This README previously recorded 1182 of 1188, the six being 17x1 4:2:2 noise
+differing by at most 2 of 255, with the cause unidentified.  They no longer
+differ.  What closed them is *not* established here: the machine this was
+re-measured on has Pillow 11.1.0 as its host Pillow too, so a host run and a
+pinned run give the same 18 of 18 on those files and cannot tell a version
+change apart from a decoder fix.  The figure is replaced because it was
+re-measured, not because the old one was explained.
 
 These files are not committed - they are generated on demand, and Pillow is the
 oracle.  Run them when changing the decoder; the hand-picked fixtures in this
@@ -382,16 +395,34 @@ Huffman scan always has at least one.
 `compare_to_libjpeg_native.py` compares our decode against libjpeg at the
 frame's own sample precision, for any frame this codec reads - baseline,
 progressive, arithmetic, lossless, 8-, 12- or 16-bit.  It drives `ljdec.c`
-(here) rather than `djpeg`, for two reasons: `djpeg` does not expose
+(in `tests/tools/jpeg-oracle/`) rather than `djpeg`, for two reasons: `djpeg` does not expose
 `do_block_smoothing`, which libjpeg applies to progressive frames and we
 deliberately do not implement, and above 8 bits libjpeg needs
 `jpeg12_read_scanlines` or `jpeg16_read_scanlines` according to
 `cinfo.data_precision` rather than the 8-bit entry point.
 
 ```sh
-cc -O2 -o ljdec ljdec.c -I libjpeg-turbo-3.0.4 -I ljt-build ljt-build/libjpeg.a
-GIMG_LJDEC=./ljdec python3 compare_to_libjpeg_native.py *.jpg
+make oracle-build oracle-tools
+python3 tests/data/jpeg/compare_to_libjpeg_native.py tests/data/jpeg/*.jpg
 ```
+
+`ljdec.c` lives in `tests/tools/jpeg-oracle/` with the other tools we wrote,
+and `make oracle-tools` compiles it inside the image against the libjpeg-turbo
+3.0.4 built there - the only one of the three that does not link Debian's
+2.1.5, because it reads `cinfo.data_precision` and calls the 12- and 16-bit
+scanline entry points 2.1.5 has not got.  Until 2026-09-26 this was the last
+oracle here still named as a binary someone builds by hand; the image now keeps
+that library's headers and static archive beside its two binaries so it can be
+built the same way as everything else.  `GIMG_LJDEC` still overrides.
+
+The script reaches the reference once before judging any file by it.  Without
+that the two failures print the same line: a file libjpeg refuses is recorded
+as `oracle-fail`, which is correct for the 53 hierarchical and abbreviated
+fixtures it genuinely will not read, and an engine that is not installed
+produces that label for every file and a count that still prints.
+
+Current result over `tests/data/jpeg/*.jpg`: **99 of 152 byte-exact**, the
+other 53 being the files libjpeg itself will not read.
 
 Note that it sets `GIMG_JPEG_FANCY_UPSAMPLE=1` for the dump tool.  That tool
 defaults to the box filter and libjpeg defaults to the triangle one, so
@@ -1012,8 +1043,17 @@ N-component frame, and keeps libjpeg's decode of each grayscale file as the
 expected plane.  Both ends of the comparison are libjpeg's.
 
 ```bash
-cd $D && python3 mk_wide.py <build>/cjpeg <build>/djpeg
+make oracle-build
+python3 tests/data/jpeg/mk_wide.py $D
 ```
+
+`cjpeg` and `djpeg` come from the pinned image, and the script runs inside it:
+it calls them 624 times across the six fixtures, so asking per call would be
+624 container starts.  Two explicit paths after the directory still override.
+Regenerated against libjpeg-turbo 3.0.4 on 2026-09-26, all twelve files came
+back byte-identical to the ones committed here, which were written against a
+`cjpeg` nobody had recorded - so the pin is retroactively the right one.  Diff
+before committing anything this produces regardless.
 
 The `.raw` files here use a header of their own (byte 0 = 4, byte 1 = the
 channel count, then width and height as little-endian 32-bit), because the

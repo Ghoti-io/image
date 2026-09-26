@@ -1,8 +1,31 @@
 #!/usr/bin/env python3
-"""Systematic JPEG corpus: the cross-product, not a hand-picked list."""
+"""Systematic JPEG corpus: the cross-product, not a hand-picked list.
+
+Pillow is the encoder, so its version is part of what every file here *is* -
+the same argument that pins piexif for one EXIF fixture, over a corpus of
+about twelve hundred. This ran against whatever Pillow the machine had until
+2026-09-26, which meant two people generating "the same" corpus got different
+bytes and nothing said so.
+
+  python3 tests/data/jpeg/generate_matrix.py <output-directory>
+
+The directory must already exist: it is declared to the image as writable, and
+oracle-exec refuses a scratch path that is not there rather than creating it.
+"""
 import os, sys, random
-from PIL import Image
-out = sys.argv[1]
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from oracle_reexec import inside_or_reexec  # noqa: E402
+
+out = sys.argv[1] if len(sys.argv) > 1 else None
+if not out:
+    sys.stderr.write("usage: generate_matrix.py <output-directory>\n")
+    raise SystemExit(2)
+# Before importing PIL, so that a machine without Pillow re-execs rather than
+# dying on the import.
+inside_or_reexec("pillow", scratch=[os.path.abspath(out)])
+
+from PIL import Image  # noqa: E402
 random.seed(20260916)
 
 def img(w, h, mode, kind):
