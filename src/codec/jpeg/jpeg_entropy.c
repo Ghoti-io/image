@@ -231,10 +231,6 @@ static GIMG_Result jpeg_decode_baseline_extended(
   // The interval in force for this scan, not the frame's latest (B.2.4.4).
   uint16_t restart_interval = scan0->restart_interval;
   size_t block_counter = 0;
-  const int trace_baseline_sync =
-      (GIMG_JPEG_TRACE_BASELINE_SYNC)
-      ? 1
-      : 0;
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
     for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
       uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
@@ -307,12 +303,6 @@ static GIMG_Result jpeg_decode_baseline_extended(
             }
             if (r != GIMG_OK) {
               goto ext_fail;
-            }
-            if (trace_baseline_sync) {
-              (void)fprintf(stderr,
-                  "DEC_BLOCK_AFTER block=%zu byte=%zu bit=%u\n", block_counter,
-                  (size_t)bs.byte_off, (unsigned)bs.bit_off);
-              (void)fflush(stderr);
             }
             block_counter++;
             jpeg_dezigzag(block_zig, block_rz);
@@ -865,29 +855,6 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   gimg_jpeg_bitstream_t bs;
   jpeg_bitstream_init(&bs, scan0->data, scan0->data_size);
 
-  // Step 2: log first 80 bytes of scan data as seen by decoder (compare to encoder buffer).
-  {
-#if GIMG_JPEG_DEBUG_SCAN_LOADED
-    const char * dbg_scan = "1";
-#else
-    const char * dbg_scan = NULL;
-#endif
-    if (dbg_scan && dbg_scan[0] == '1' && scan0->data && scan0->data_size > 0) {
-      (void)fprintf(stderr, "DECODER scan_data (first 80 bytes) size=%zu:\n",
-          (size_t)scan0->data_size);
-      for (size_t i = 0; i < 80u && i < scan0->data_size; i++) {
-        (void)fprintf(stderr, " %zu:0x%02x", i, (unsigned)scan0->data[i]);
-        if ((i + 1) % 16 == 0) {
-          (void)fprintf(stderr, "\n");
-        }
-      }
-      if (scan0->data_size < 80u) {
-        (void)fprintf(stderr, "\n");
-      }
-      (void)fflush(stderr);
-    }
-  }
-
   int16_t dc_pred[GIMG_JPEG_MAX_COMPONENTS];
   memset(dc_pred, 0, sizeof(dc_pred));
 
@@ -914,10 +881,6 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   // The interval in force for this scan, not the frame's latest (B.2.4.4).
   uint16_t restart_interval = scan0->restart_interval;
   size_t block_counter_8 = 0;
-  const int trace_baseline_sync_8 =
-      (GIMG_JPEG_TRACE_BASELINE_SYNC)
-      ? 1
-      : 0;
   for (uint32_t mcu_y = 0; mcu_y < mcu_per_col; mcu_y++) {
     for (uint32_t mcu_x = 0; mcu_x < mcu_per_row; mcu_x++) {
       uint32_t mcu_index = mcu_y * mcu_per_row + mcu_x;
@@ -986,33 +949,7 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
                   &dc_pred[comp_idx], is_last_8);
             }
             if (r != GIMG_OK) {
-              if (GIMG_JPEG_DEBUG_BIT_POS || GIMG_JPEG_DEBUG_BASELINE_FAIL) {
-                (void)fprintf(stderr,
-                    "BASELINE_FAIL mcu=(%u,%u) comp=%u (comp_idx=%u) dc_tbl=%u "
-                    "ac_tbl=%u byte_off=%zu bit_off=%u\n",
-                    (unsigned)mcu_x, (unsigned)mcu_y, (unsigned)s,
-                    (unsigned)comp_idx, (unsigned)scan0->dc_tbl[s],
-                    (unsigned)scan0->ac_tbl[s], (size_t)bs.byte_off,
-                    (unsigned)bs.bit_off);
-                if (bs.byte_off < scan0->data_size) {
-                  size_t n = (scan0->data_size - bs.byte_off) > 8u
-                      ? 8u
-                      : (scan0->data_size - bs.byte_off);
-                  (void)fprintf(stderr, " next %zu bytes:", n);
-                  for (size_t i = 0; i < n; i++)
-                    (void)fprintf(stderr, " %02x",
-                        (unsigned)scan0->data[bs.byte_off + i]);
-                  (void)fprintf(stderr, "\n");
-                }
-                (void)fflush(stderr);
-              }
               goto fail_decode;
-            }
-            if (trace_baseline_sync_8) {
-              (void)fprintf(stderr,
-                  "DEC_BLOCK_AFTER block=%zu byte=%zu bit=%u\n",
-                  block_counter_8, (size_t)bs.byte_off, (unsigned)bs.bit_off);
-              (void)fflush(stderr);
             }
             block_counter_8++;
             jpeg_dezigzag(block_zig, block_rz);
