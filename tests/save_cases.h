@@ -355,6 +355,105 @@ inline std::vector<SaveCase> save_cases(void) {
     o.jpeg_cmyk_transform = 2;
     cases.push_back({"jpeg ycck", "jpeg", &GIMG_PIXEL_CMYK8, o, 0u, nullptr, 0u, 0u});
   }
+  // The twelve-bit writer is a second copy of the sample walk, not a flag on
+  // the first, and it branches on the same axes: how many components the
+  // frame has, whether they are colour, and how the chroma is subsampled.
+  // One RGBA12 case at the default sampling reached one corner of it.
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_precision = 12;
+    o.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_422;
+    cases.push_back({"jpeg 12-bit rgb 4:2:2", "jpeg", &GIMG_PIXEL_RGBA12, o,
+        0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_precision = 12;
+    o.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
+    cases.push_back({"jpeg 12-bit rgb 4:4:4", "jpeg", &GIMG_PIXEL_RGBA12, o,
+        0u, nullptr, 0u, 0u});
+  }
+  {
+    // Four components at twelve bits: the only case that takes a plane past
+    // the third, and so the only one that walks the extra[] loop and the arm
+    // that hands those planes back when one of them cannot be had.
+    GIMG_Save_Options o = opt();
+    o.jpeg_precision = 12;
+    cases.push_back({"jpeg 12-bit cmyk", "jpeg", &GIMG_PIXEL_CMYK12, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_422;
+    cases.push_back({"jpeg rgb 4:2:2", "jpeg", &GIMG_PIXEL_RGBA8, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  // T.81 has no sixteen-bit DCT frame, so a sixteen-bit raster is converted to
+  // twelve before the frame writer sees it. That conversion is a path of its
+  // own, and no case took it.
+  {
+    GIMG_Save_Options o = opt();
+    cases.push_back({"jpeg 16-bit gray", "jpeg", &GIMG_PIXEL_GRAY16, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    cases.push_back({"jpeg 16-bit rgb", "jpeg", &GIMG_PIXEL_RGBA16, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    cases.push_back({"jpeg 16-bit cmyk", "jpeg", &GIMG_PIXEL_CMYK16, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  // A four-component frame through the scan writers that are not the plain
+  // baseline one: each decides its own scan script and its own DC predictors.
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_progressive = 1;
+    cases.push_back({"jpeg cmyk progressive", "jpeg", &GIMG_PIXEL_CMYK8, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_restart_interval = 2;
+    cases.push_back({"jpeg cmyk restarts", "jpeg", &GIMG_PIXEL_CMYK8, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_non_interleaved = 1;
+    cases.push_back({"jpeg cmyk non-interleaved", "jpeg", &GIMG_PIXEL_CMYK8, o,
+        0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_progressive = 1;
+    cases.push_back({"jpeg gray progressive", "jpeg", &GIMG_PIXEL_GRAY8, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_precision = 12;
+    o.jpeg_lossless_predictor = 1;
+    cases.push_back({"jpeg 12-bit lossless", "jpeg", &GIMG_PIXEL_RGBA12, o, 0u,
+        nullptr, 0u, 0u});
+  }
+  {
+    // quality is not range-checked at the API boundary; the writer clamps it,
+    // and that clamp is the only thing between a caller's 200 and a quant
+    // table scaled off the end of its own curve.
+    GIMG_Save_Options o = opt();
+    o.quality = 200;
+    cases.push_back({"jpeg quality above the top", "jpeg", &GIMG_PIXEL_RGBA8, o,
+        0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.quality = 1;
+    cases.push_back({"jpeg quality at the floor", "jpeg", &GIMG_PIXEL_RGBA8, o,
+        0u, nullptr, 0u, 0u});
+  }
   // PNG, BMP and GIF used to contribute four cases between them against
   // twenty-eight for JPEG, which is why the sweeps that walk this list reached
   // so much less of those three writers. Each block below names an axis the

@@ -477,6 +477,24 @@ static void jpeg_rgb12_to_ycbcr12(uint16_t r, uint16_t g, uint16_t b,
   *cr = (uint16_t)crv;
 }
 
+/**
+ * Hand back the planes a twelve-bit frame took for its fourth and later
+ * components.
+ *
+ * Every cleanup arm below has to call this, not only the one at the end of a
+ * successful walk: the arms that free comp_y, comp_cb and comp_cr by name
+ * were written when the path stopped at three components, and a wider frame
+ * leaked one plane per component past the third whenever it failed after
+ * taking them.
+ */
+static void jpeg_extra_planes_free(const GIMG_Allocator * alloc,
+    uint16_t * extra[GIMG_JPEG_MAX_COMPONENTS], int num_components) {
+  for (int c = 3; c < num_components; c++) {
+    gimg_free(alloc, extra[c]);
+    extra[c] = NULL;
+  }
+}
+
 /** 12-bit path: GRAY12/RGBA12 (0..4095). Progressive: fill coef and return;
  * baseline: fill coef then encode one scan (Ss=0,Se=63) via extended tables. */
 static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
@@ -581,6 +599,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     gimg_free(alloc, comp_y);
     gimg_free(alloc, comp_cb);
     gimg_free(alloc, comp_cr);
+    jpeg_extra_planes_free(alloc, extra, num_components);
     return GIMG_ERR_UNSUPPORTED;
   }
   if (num_components == 1) {
@@ -839,6 +858,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     if (comp_cr) {
       gimg_free(alloc, comp_cr);
     }
+    jpeg_extra_planes_free(alloc, extra, num_components);
     return GIMG_ERR_LIMIT;
   }
   int16_t * coef_buf =
@@ -857,6 +877,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
     if (comp_cr) {
       gimg_free(alloc, comp_cr);
     }
+    jpeg_extra_planes_free(alloc, extra, num_components);
     return GIMG_ERR_OOM;
   }
   size_t out_blocks = 0;
@@ -875,10 +896,7 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   GIMG_Result r = gimg_jpeg_progressive_fill_coef_buffer_12bit(width, height,
       num_components, comps12, strides12, h_ptr, v_ptr, out_tbl_sel,
       quant_luma, quant_chroma, fdct_method, coef_buf, &out_blocks);
-  for (int c = 3; c < num_components; c++) {
-    gimg_free(alloc, extra[c]);
-    extra[c] = NULL;
-  }
+  jpeg_extra_planes_free(alloc, extra, num_components);
   gimg_free(alloc, comp_y);
   if (use_cb != comp_cb) {
     gimg_free(alloc, use_cb);
