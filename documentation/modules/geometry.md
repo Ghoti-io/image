@@ -1,6 +1,6 @@
-@page module_geometry Geometry: cropping, resizing and compositing
+@page module_geometry Geometry
 
-# Geometry: cropping, resizing and compositing
+# Geometry
 
 Three operations that change where a picture's samples are rather than what
 they mean: `gimg_ops_crop()`, `gimg_ops_resize()` and `gimg_ops_composite()`,
@@ -243,4 +243,4 @@ integer centre and none anywhere else.
 
 ---
 
-Back to \ref modules "Modules".
+Back to \ref image_modules "Modules".

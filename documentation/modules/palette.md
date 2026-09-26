@@ -1,6 +1,6 @@
-@page module_palette Palettes and colour reduction
+@page module_palette Palettes
 
-# Palettes and colour reduction
+# Palettes
 
 Three formats in this library store an image through a colour table - GIF,
 palette PNG (ISO/IEC 15948 11.2.2, colour type 3) and palette BMP - and all

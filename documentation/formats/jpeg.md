@@ -4,7 +4,7 @@
 
 What this codec implements of ITU-T T.81, how each claim was checked, and what
 is bounded rather than absent. The library's format index is
-\ref format_references "Format and specification references".
+\ref image_format_references "Format and specification references".
 
 ## Normative references
 
@@ -235,4 +235,4 @@ Nothing of T.81 is known to be missing. What is bounded rather than absent, and 
 
 ---
 
-Back to \ref format_references "Format and specification references".
+Back to \ref image_format_references "Format and specification references".

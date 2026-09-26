@@ -5,7 +5,7 @@
 What this codec implements of ISO/IEC 15948 and of the APNG extension, where
 it is deliberately stricter than libpng, and how each claim was checked. The
 library's format index is the
-\ref format_references "format and specification references".
+\ref image_format_references "format and specification references".
 
 ## Normative references
 
@@ -280,4 +280,4 @@ which decodes to black here, is bounds-checked, and is what libpng does too.
 
 ---
 
-Back to \ref format_references "Format and specification references".
+Back to \ref image_format_references "Format and specification references".

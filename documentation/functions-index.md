@@ -1,6 +1,5 @@
-@page functions_index Function Index
+@page image_functions_index Function index
 
-# Function Index
 
 The complete API reference is generated from the header files. Below is a categorized index of the main public APIs; see the headers and \ref api_options "API Options and Types" for details.
 

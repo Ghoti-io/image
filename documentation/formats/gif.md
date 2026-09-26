@@ -5,7 +5,7 @@
 What this codec implements of the Graphics Interchange Format, where it
 deliberately differs from other decoders, and how each claim was checked. The
 library's format index is the
-\ref format_references "format and specification references".
+\ref image_format_references "format and specification references".
 
 GIF is one of the few formats here with a single, short, freely available
 specification that says what it means. Nearly everything below cites a section
@@ -984,4 +984,4 @@ and refused correctly.
 
 ---
 
-Back to the \ref format_references "format and specification references".
+Back to the \ref image_format_references "format and specification references".

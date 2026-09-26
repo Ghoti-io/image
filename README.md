@@ -1,109 +1,142 @@
-# Ghoti.io Image Library
+# Ghoti.io Image
 
-Raster image decoding/encoding, metadata, transformations, and colour handling for multi-image formats.
+Raster images in C, as a multi-image document with metadata, colour
+information, and a small set of operations.
 
-## Overview
+## Formats
 
-The `image` library provides:
+This is what the library implements.
 
-- Core types and stream abstraction for image I/O
-- **Configurable allocator** — Pluggable malloc/free/realloc (`GIMG_Allocator`) for embedding and custom memory management; all owned allocations use the allocator (default is stdlib when NULL is passed)
-- Multi-image container model (documents, items, frames/pages)
-- Pixel formats, colour representation, and metadata (common + raw preservation)
-- **Colour is carried, not converted.** An ICC profile is read, preserved,
-  reported and written back; a gamut a BMP states as endpoints comes out as a
-  PNG's `cHRM`; a JPEG gets a synthesized profile because APP2 is the only
-  place it can name a colour space at all. What the library does **not** have
-  is a colour engine: no pixel is ever transformed from one space into
-  another, and `gimg_ops_resize()`'s linear-light mode works because the
-  caller asserts sRGB, not because the library read a profile. A CMYK JPEG
-  converts to RGB by the naive ink model or not at all
-- Codec framework and format support: PNG (including APNG), JPEG, BMP and GIF. TIFF, WebP and the rest are not written yet and have no page under [Format and specification references](@ref format_references); a page is written with its codec rather than ahead of it
-- Transformations and image operations — orientation, pixel format and bit depth conversion, colour reduction, and geometry: cropping, resizing with a choice of resampling filter, and compositing
+- PNG, including APNG.
+- JPEG, BMP and GIF.
 
-## Dependencies
+TIFF, WebP and the rest are planned and have no codec yet. A page for a
+format is written with its codec.
 
-- [`ghoti.io-cutil`](https://github.com/coreyp1/cutil) and
-  [`ghoti.io-compress`](https://github.com/coreyp1/compress), both **required**
-  - the shared library carries a `NEEDED` entry for each
-- Google Test for the unit tests, Python 3 with Pillow for the output
-  verification `make test` runs
+## Before you call it
 
-**pkg-config is the only way this library finds its dependencies.** There is
-deliberately no sibling-checkout fallback: a second resolution path that only
-in-tree builds exercise is one that silently rots. A dependency pkg-config
-cannot find is a hard error naming the fix.
+- Colour is carried, not converted. An ICC profile is read, kept, reported and written back. No pixel is transformed from one colour space into another.
+- `gimg_ops_resize()` can work in linear light when the caller says the pixels are sRGB. That is the caller's assertion, not a profile the library applied.
+- A memory stream borrows its bytes. They stay alive for the life of the stream.
+- Load and save take a limits struct. `NULL` options are the defaults.
+- `NULL` for an allocator is cutil's default.
 
-## Building
-
-With the dependencies already installed somewhere pkg-config can see them:
-
-```bash
-make
-```
-
-Building the whole suite into a local prefix, which is what the development
-tree does:
-
-```bash
-./bootstrap.sh                       # from the workspace root
-export PKG_CONFIG_PATH="$PWD/.local/share/pkgconfig"
-make -C libs/image PREFIX="$PWD/.local"
-```
-
-## Testing
-
-```bash
-make test
-```
-
-`make test` runs the unit tests and then verifies the PNG, JPEG, BMP and GIF
-this library writes by reading them back with outside decoders, checks the
-structure of the bytes themselves, and compares the resampler against Pillow.
-`make test-asan` adds AddressSanitizer and UndefinedBehaviorSanitizer;
-`make test-tsan` runs the concurrency test under ThreadSanitizer;
-`make coverage` reports line coverage. `make help` lists the rest.
-
-## Installation
-
-```bash
-sudo make install                    # into /usr/local
-make install PREFIX=/some/prefix     # or wherever
-```
-
-## Usage
-
-See the examples directory for usage examples.
-
-## Documentation
-
-- [Modules](@ref modules) - Detailed documentation for library modules
-- [Examples](@ref examples) - Example programs demonstrating library usage
-- [Function Index](@ref functions_index) - Complete API reference
-- [Format and specification references](@ref format_references) - One page per format: the specification implemented, the parts covered, deviations, and tested scope
-  - [PNG and APNG](@ref format_png), [JPEG](@ref format_jpeg), [BMP](@ref format_bmp), [GIF](@ref format_gif)
-  - [Adding a format](@ref format_adding) - the checklist and page template for a new codec
-
-## Macros and Utilities
-
-The library provides cross-compiler macros in `include/ghoti.io/image/macros.h`:
-
-- `GIMG_MAYBE_UNUSED(X)` - Mark unused function parameters
-- `GIMG_DEPRECATED` - Mark deprecated functions
-- `GIMG_API` - Mark functions for library export
-- `GIMG_ARRAY_SIZE(a)` - Get compile-time array size
-- `GIMG_BIT(x)` - Create bitmask with bit x set
-
-Example:
+## Examples
 
 ```c
-#include <ghoti.io/image/macros.h>
+#include <ghoti.io/image/image.h>
+#include <stdio.h>
 
-void my_function(int GIMG_MAYBE_UNUSED(param)) {
-    // param is intentionally unused
+int dimensions(const void * bytes, size_t length) {
+  GIMG_Stream * stream = NULL;
+  GIMG_Doc * doc = NULL;
+  GIMG_Raster * raster = NULL;
+
+  if (gimg_stream_create_memory(bytes, length, &stream) != GIMG_OK) {
+    return 1;
+  }
+  if (gimg_doc_load(stream, NULL, NULL, &doc) != GIMG_OK) {
+    gimg_stream_destroy(stream);
+    return 1;
+  }
+
+  GIMG_Item * item = gimg_doc_item(doc, 0);
+  if (gimg_item_ensure_decoded(item, NULL) == GIMG_OK) {
+    raster = gimg_item_raster(item);
+    printf("%u x %u\n", gimg_raster_width(raster), gimg_raster_height(raster));
+  }
+
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(stream);
+  return 0;
 }
 ```
 
+It prints the width and height of the first item, in pixels.
+`gimg_doc_save()` writes a document back through a stream.
+`examples/apng_white_block.c` builds an animation from scratch.
+
+## Compile and link
+
+Once the library is installed, pkg-config carries the include path, the
+library, and its dependencies:
+
+```bash
+cc -o show show.c $(pkg-config --cflags --libs ghoti.io-image-0)
+```
+
+The module name ends in the major version, `-0` for this release, so two
+majors can be installed side by side. A build made with `make BRANCH=-dev`
+installs `ghoti.io-image-dev` instead.
+
+## Building the library
+
+[cutil](https://github.com/Ghoti-io/cutil) and
+[compress](https://github.com/coreyp1/compress) must already be installed
+where pkg-config can see them. A dependency it cannot find is a hard error
+naming the fix. Google Test builds the unit tests. Python 3 with Pillow is
+what `make test` uses to read this library's output back.
+
+```bash
+make
+make test
+sudo make install
+```
+
+From the workspace, which installs cutil and compress first:
+
+```bash
+./bootstrap.sh
+export PKG_CONFIG_PATH="$PWD/.local/share/pkgconfig"
+make -C libs/image test PREFIX="$PWD/.local"
+```
+
+`make test` is the suite. `make help` lists the rest, including
+`make test-asan` and `make test-valgrind`.
+
+| Target | What it does |
+| --- | --- |
+| `make coverage` | Line coverage, per file |
+| `make docs` | The Doxygen manual, into `./docs` |
+
+## The API
+
+Everything is prefixed `gimg_` / `GIMG_`, under `<ghoti.io/image/...>`.
+`<ghoti.io/image/image.h>` is the umbrella.
+
+- **`stream.h`** — a byte stream over memory. Codecs read and write through it.
+- **`codec.h`** — `gimg_probe()`, `gimg_doc_load()`, `gimg_doc_save()`, and `gimg_item_decode()`. The format is recognised from the bytes.
+- **`doc.h`** — a document of items (frames or pages), loop count, frame delay, dispose and blend.
+- **`raster.h`** — width, height, stride, pixel format, and the pixel buffer.
+- **`color.h`** — the colour information a file stated: profile, chromaticities, gamma. Reported and preserved.
+- **`meta.h`** — common metadata, plus the raw chunks a format carried so a round trip can put them back.
+- **`ops.h`** — orientation, pixel-format and bit-depth conversion, colour reduction, crop, resize, and composite.
+- **`allocator.h`** — `GIMG_Allocator`, which is cutil's `GCU_Allocator`.
+
+[Formats](#formats) is what is implemented.
+[Before you call it](#before-you-call-it) is what that changes about a call.
+
+## Dependencies
+
+Both are found through pkg-config, and the installed `.pc` file names them,
+so a program that links `ghoti.io-image-0` links these too.
+
+- [ghoti.io-cutil](https://github.com/Ghoti-io/cutil) — the allocator and the overflow-checked size arithmetic.
+- [ghoti.io-compress](https://github.com/coreyp1/compress) — deflate and CRC-32 for PNG.
+
+## Documentation
+
+| Page | What it settles |
+| --- | --- |
+| \ref image_format_references "formats/" | One page per format: the specification, what is covered, where this library differs |
+| \ref image_modules "modules/" | The API |
+| \ref image_examples "examples.md" | The example programs |
+
+`make docs` builds the manual those pages feed.
+
+## Status
+
+PNG, APNG, JPEG, BMP and GIF load and save.
 
 ## License
 

@@ -5,7 +5,7 @@
 What this codec implements of the Windows and OS/2 device-independent bitmap,
 where it deliberately differs from other decoders, and how each claim was
 checked. The library's format index is the
-\ref format_references "format and specification references".
+\ref image_format_references "format and specification references".
 
 BMP has no ISO or W3C standard. What exists is Microsoft's documentation of
 the GDI structures a `.bmp` file is a serialization of, plus the OS/2
@@ -500,4 +500,4 @@ Nothing the format defines is left unimplemented.
 
 ---
 
-Back to \ref format_references "Format and specification references".
+Back to \ref image_format_references "Format and specification references".

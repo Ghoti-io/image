@@ -1,6 +1,5 @@
-@page format_references Format and Specification References
+@page image_format_references Formats
 
-# Format and specification references
 
 One page per format. Each says which external specification the codec
 implements, which parts of it, where the implementation is deliberately
@@ -13,10 +12,10 @@ which point back here.
 
 | Format | Page | Capabilities | Read | Write |
 |---|---|---|---|---|
-| PNG, including APNG | \ref format_png "PNG and APNG" | read, write, animation, palette, ICC, 16 bpc | ISO/IEC 15948 and the APNG extension | all color types and depths; APNG |
-| JPEG | \ref format_jpeg "JPEG" | read, write, ICC, CMYK, 16 bpc | all fourteen frame headers of ITU-T T.81 | sequential, progressive, lossless and hierarchical, Huffman and arithmetic |
-| BMP | \ref format_bmp "BMP" | read, write, palette, ICC | the Windows and OS/2 DIB header versions, 1–32 and 64 bpp, RLE4/RLE8/RLE24, OS/2 Huffman 1D, bitfields, embedded JPEG and PNG, `BA` bitmap arrays as the several images they hold, V4/V5 colour with embedded or linked profiles | 1/2/4/8-bit indexed with optional RLE4/RLE8, 24-bit `BI_RGB`, 32-bit `BI_BITFIELDS` when alpha is present, OS/2 RLE24 and Huffman 1D, and `BI_JPEG`/`BI_PNG` wrappers on request |
-| GIF | \ref format_gif "GIF" | read, write, animation, palette | GIF87a and GIF89a: the logical screen, global and local colour tables, interlacing, LZW at every minimum code size, graphic control with delay, disposal and transparency, comment extensions, and the NETSCAPE2.0 loop count | one image block per frame, cropped to the rectangle that changed, 1–256 colours, transparency, optional interlacing, animation with delays and a loop count, and comments |
+| PNG, including APNG | @subpage format_png "PNG and APNG" | read, write, animation, palette, ICC, 16 bpc | ISO/IEC 15948 and the APNG extension | all color types and depths; APNG |
+| JPEG | @subpage format_jpeg "JPEG" | read, write, ICC, CMYK, 16 bpc | all fourteen frame headers of ITU-T T.81 | sequential, progressive, lossless and hierarchical, Huffman and arithmetic |
+| BMP | @subpage format_bmp "BMP" | read, write, palette, ICC | the Windows and OS/2 DIB header versions, 1–32 and 64 bpp, RLE4/RLE8/RLE24, OS/2 Huffman 1D, bitfields, embedded JPEG and PNG, `BA` bitmap arrays as the several images they hold, V4/V5 colour with embedded or linked profiles | 1/2/4/8-bit indexed with optional RLE4/RLE8, 24-bit `BI_RGB`, 32-bit `BI_BITFIELDS` when alpha is present, OS/2 RLE24 and Huffman 1D, and `BI_JPEG`/`BI_PNG` wrappers on request |
+| GIF | @subpage format_gif "GIF" | read, write, animation, palette | GIF87a and GIF89a: the logical screen, global and local colour tables, interlacing, LZW at every minimum code size, graphic control with delay, disposal and transparency, comment extensions, and the NETSCAPE2.0 loop count | one image block per frame, cropped to the rectangle that changed, 1–256 colours, transparency, optional interlacing, animation with delays and a loop count, and comments |
 
 Formats with no codec yet - TIFF, WebP and the rest of the roadmap - have
 no page here. A page is written with the codec, not after it.
@@ -52,6 +51,6 @@ given format does with them.
 
 ## Adding a format
 
-\ref format_adding "Adding a format" is the checklist and the page template:
+@subpage image_format_adding "Adding an image format" is the checklist and the page template:
 what a new codec's documentation has to answer before the codec is considered
 done, and the skeleton to copy.

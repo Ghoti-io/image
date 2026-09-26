@@ -1,4 +1,4 @@
-@page format_adding Adding a format
+@page image_format_adding Adding a format
 
 # Adding a format
 
@@ -18,7 +18,7 @@ tested for some time, was not mentioned in it at all.
 
 - [ ] `documentation/formats/<format>.md` exists, opens with
       `@page format_<format> <Title>`, and is linked from the table in
-      \ref format_references "Format and specification references".
+      \ref image_format_references "Format and specification references".
 - [ ] The specification is **named with its version** and linked. A format
       with no formal standard says so and links what documentation there is;
       where that documentation is silent, the page states what the codec does

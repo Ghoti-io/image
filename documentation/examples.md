@@ -1,6 +1,5 @@
-@page examples Examples
+@page image_examples Examples
 
-# Examples
 
 Example programs are built with the **examples** Makefile target and appear under the build directory (e.g. `build/linux/release/apps/examples/`).
 

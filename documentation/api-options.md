@@ -1,6 +1,5 @@
-@page api_options API Options and Types
+@page api_options API options
 
-# API Options and Types
 
 This page documents the main option structures and enumerations used by the codec load, save, and decode APIs. Header-level documentation is generated from the source; here we summarize behavior and cross-references.
 
