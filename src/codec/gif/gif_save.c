@@ -1204,10 +1204,13 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   GIMG_Raster * first = gimg_item_raster(gimg_doc_item((GIMG_Doc *)doc, 0));
   bool first_owned = false;
   if (!first) {
-    if (gimg_item_decode(gimg_doc_item((GIMG_Doc *)doc, 0), NULL, &first) !=
-            GIMG_OK ||
-        !first) {
-      return GIMG_ERR_UNSUPPORTED;
+    // The decode's own answer, not a flat UNSUPPORTED. An allocation that
+    // failed here is an out-of-memory, and a caller told the image is
+    // unsupported has no reason to free something and try again.
+    const GIMG_Result dr =
+        gimg_item_decode(gimg_doc_item((GIMG_Doc *)doc, 0), NULL, &first);
+    if (dr != GIMG_OK || !first) {
+      return dr != GIMG_OK ? dr : GIMG_ERR_UNSUPPORTED;
     }
     first_owned = true;
   }
@@ -1388,8 +1391,12 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       GIMG_Raster * raster = gimg_item_raster(item);
       bool owned = false;
       if (!raster) {
-        if (gimg_item_decode(item, NULL, &raster) != GIMG_OK || !raster) {
-          r = GIMG_ERR_UNSUPPORTED;
+        // As above: an allocation failure decoding a frame is an OOM, and
+        // saying UNSUPPORTED instead tells the caller the picture is at
+        // fault.
+        const GIMG_Result dr = gimg_item_decode(item, NULL, &raster);
+        if (dr != GIMG_OK || !raster) {
+          r = dr != GIMG_OK ? dr : GIMG_ERR_UNSUPPORTED;
           goto done;
         }
         owned = true;

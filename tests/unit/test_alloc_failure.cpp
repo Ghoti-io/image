@@ -1077,6 +1077,153 @@ TEST(AllocFailure, EveryFailedOpFreesEverythingItTook) {
          "be measuring their cleanup";
 }
 
+namespace {
+
+/**
+ * Load @p bytes and save the document straight back, with @p f standing in as
+ * the codec's allocator for the whole of it.
+ *
+ * The whole of it, deliberately: the state a loader hangs on a document is
+ * freed at gimg_doc_destroy through whatever allocator is in force then, so an
+ * allocator swapped in for the save alone makes the loader's blocks look like
+ * leaks. @p out_after_load is the count at the moment the load finished, which
+ * is what lets the sweep inject into the save and nothing before it.
+ */
+GIMG_Result reload_and_resave(const char * codec_name,
+    const std::vector<uint8_t> & bytes, Failing & f, long * out_after_load,
+    bool * out_loaded) {
+  *out_loaded = false;
+  GIMG_Codec * codec = gimg_codec_by_name(codec_name);
+  if (!codec) { return GIMG_ERR_UNSUPPORTED; }
+  const GIMG_Allocator * saved = codec->allocator;
+  codec->allocator = &f.a;
+
+  GIMG_Result r = GIMG_ERR_INTERNAL;
+  GIMG_Stream * in = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &in) == GIMG_OK) {
+    GIMG_Doc * doc = nullptr;
+    const GIMG_Result loaded = gimg_doc_load(in, nullptr, nullptr, &doc);
+    if (out_after_load) { *out_after_load = f.attempts; }
+    if (loaded == GIMG_OK && doc) {
+      *out_loaded = true;
+      GIMG_Save_Options opts = {};
+      opts.quality = 80;
+      GIMG_Stream * out = nullptr;
+      if (gimg_stream_create_memory_output(&out) == GIMG_OK) {
+        GIMG_Save_Report report = {};
+        r = gimg_doc_save(doc, out, codec_name, &opts, &report);
+        gimg_stream_destroy(out);
+      }
+    }
+    if (doc) { gimg_doc_destroy(doc); }
+    gimg_stream_destroy(in);
+  }
+  codec->allocator = saved;
+  return r;
+}
+
+} // namespace
+
+/**
+ * Every allocation failure during a re-save leaves nothing behind.
+ *
+ * The save sweep above builds its documents from a raster, so the writers'
+ * preservation paths - the ancillary chunks a PNG arrived with, the APP
+ * segments a JPEG carried, the palette a GIF came in with - allocate nothing
+ * on its path and free nothing on the way out of a failure. Those are the
+ * arms this reaches, by loading a fixture and asking the same codec to write
+ * it back.
+ *
+ * Injection starts after the load, because the load's own arms are what
+ * EveryFailedLoadFreesEverythingItTook is for, and because the sweep would
+ * otherwise be dominated by them.
+ */
+TEST(AllocFailure, EveryFailedResaveFreesEverythingItTook) {
+  const std::string root = std::string(GIMG_TEST_DATA_JPEG) + "/..";
+  const std::string bmp_dir = root + "/bmp";
+  const std::string gif_dir = root + "/gif";
+  struct Dir {
+    const char * codec;
+    const char * path;
+    const char * ext;
+  } dirs[] = {
+      {"jpeg", GIMG_TEST_DATA_JPEG, ".jpg"},
+      {"png", GIMG_TEST_DATA_PNG, ".png"},
+      {"bmp", bmp_dir.c_str(), ".bmp"},
+      {"gif", gif_dir.c_str(), ".gif"},
+  };
+
+  long swept = 0, skipped = 0, injections = 0;
+  for (const Dir & d : dirs) {
+    DIR * dp = opendir(d.path);
+    if (!dp) {
+      ADD_FAILURE() << "cannot read fixture directory " << d.path;
+      continue;
+    }
+    std::vector<std::string> names;
+    while (struct dirent * e = readdir(dp)) {
+      const std::string n = e->d_name;
+      if (n.size() > strlen(d.ext) &&
+          n.compare(n.size() - strlen(d.ext), strlen(d.ext), d.ext) == 0) {
+        names.push_back(n);
+      }
+    }
+    closedir(dp);
+    std::sort(names.begin(), names.end());
+
+    for (const std::string & name : names) {
+      std::vector<uint8_t> bytes;
+      if (!read_file(d.path, name.c_str(), bytes)) { continue; }
+
+      Failing probe;
+      init(probe);
+      long after_load = 0;
+      bool loaded = false;
+      const GIMG_Result clean =
+          reload_and_resave(d.codec, bytes, probe, &after_load, &loaded);
+      // A fixture that will not load, or that loads into something its own
+      // writer refuses, is not a subject here.
+      if (!loaded || clean != GIMG_OK) {
+        EXPECT_EQ(probe.outstanding, 0)
+            << name << " leaks when it does not round-trip";
+        skipped++;
+        continue;
+      }
+      ASSERT_EQ(probe.outstanding, 0)
+          << name << " leaks on the success path: " << probe.outstanding
+          << " blocks";
+      const long total = probe.attempts;
+      if (total <= after_load) { skipped++; continue; }
+      swept++;
+
+      for (long n = after_load + 1; n <= total; n++) {
+        Failing f;
+        init(f);
+        long again = 0;
+        bool loaded_again = false;
+        f.fail_at = n;
+        const GIMG_Result r =
+            reload_and_resave(d.codec, bytes, f, &again, &loaded_again);
+        injections++;
+        EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM || !loaded_again)
+            << name << ": allocation " << n << " of " << total
+            << " failed and the re-save returned " << (int)r;
+        EXPECT_EQ(f.outstanding, 0)
+            << name << ": " << f.outstanding
+            << " block(s) leaked when allocation " << n << " of " << total
+            << " failed";
+        if (f.outstanding != 0) { break; }
+      }
+    }
+  }
+
+  std::printf("  %ld fixtures re-saved, %ld skipped, %ld injected re-saves\n",
+      swept, skipped, injections);
+  ASSERT_GT(swept, 100)
+      << "only " << swept << " fixtures round-tripped, which is too few for "
+         "this sweep to be reaching the preservation paths it is here for";
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

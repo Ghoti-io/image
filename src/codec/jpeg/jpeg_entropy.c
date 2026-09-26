@@ -180,6 +180,12 @@ static GIMG_Result jpeg_decode_baseline_extended(
   size_t comp_size[GIMG_JPEG_MAX_COMPONENTS];
   size_t comp_stride_el[GIMG_JPEG_MAX_COMPONENTS];
   uint16_t * comp_buf[GIMG_JPEG_MAX_COMPONENTS];
+  // What ext_fail hands back. CORRUPT is right for the entropy-coded segment
+  // going wrong, which is what most of the jumps to it mean; it is wrong for
+  // a raster this decoder could not allocate, and every one of those used to
+  // arrive there and be restated as a claim about the file. A caller told
+  // CORRUPT stops, where one told OOM can free something and try again.
+  GIMG_Result fail_code = GIMG_ERR_CORRUPT;
   for (uint8_t i = 0; i < num_comp; i++) {
     comp_stride_el[i] = (size_t)comp_w[i];
     if (!gcu_safe_mul_size(
@@ -369,6 +375,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
         comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_4,
         out_raster);
     if (r != GIMG_OK) {
+      fail_code = r;
       goto ext_fail;
     }
   }
@@ -377,6 +384,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
         (uint32_t)height, &GIMG_PIXEL_GRAY16, GIMG_RASTER_OWNED, NULL, 0,
         out_raster);
     if (r != GIMG_OK) {
+      fail_code = r;
       goto ext_fail;
     }
     uint16_t * pixels = (uint16_t *)gimg_raster_pixels(*out_raster);
@@ -395,6 +403,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
         (uint32_t)height, &GIMG_PIXEL_RGBA16, GIMG_RASTER_OWNED, NULL, 0,
         out_raster);
     if (r != GIMG_OK) {
+      fail_code = r;
       goto ext_fail;
     }
     uint16_t * pixels = (uint16_t *)gimg_raster_pixels(*out_raster);
@@ -481,6 +490,7 @@ static GIMG_Result jpeg_decode_baseline_extended(
         comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_n,
         out_raster);
     if (r != GIMG_OK) {
+      fail_code = r;
       goto ext_fail;
     }
   }
@@ -499,7 +509,7 @@ ext_fail:
   for (uint8_t i = 0; i < num_comp; i++) {
     gimg_free(alloc, comp_buf[i]);
   }
-  return GIMG_ERR_CORRUPT;
+  return fail_code;
 }
 
 /**
@@ -1665,12 +1675,19 @@ static GIMG_Result jpeg_decode_progressive_extended(
     memset(coef_blocks[i], 0, coef_size);
   }
 
+  // What the two shared exits hand back. CORRUPT is right for the
+  // entropy-coded data going wrong and wrong for a buffer this decoder could
+  // not have; both used to arrive at the same `return GIMG_ERR_CORRUPT`, so
+  // an out-of-memory decode was reported as a statement about the file.
+  GIMG_Result fail_code = GIMG_ERR_CORRUPT;
+
   {
     GIMG_Result rr = jpeg_decode_progressive_scans(state, sof, state->scans,
         state->num_scans, state->is_arithmetic, 0,
         !state->is_progressive, mcu_per_row, mcu_per_col, blk_w, blk_h, grid_w,
         coef_blocks);
     if (rr != GIMG_OK) {
+      fail_code = rr;
       goto prog_ext_fail;
     }
   }
@@ -1698,12 +1715,14 @@ static GIMG_Result jpeg_decode_progressive_extended(
         !gcu_safe_mul_size(comp_size[i], sizeof(uint16_t), &comp_size[i])) {
       for (uint8_t j = 0; j < i; j++)
         gimg_free(alloc, comp_buf[j]);
+      fail_code = GIMG_ERR_LIMIT;
       goto prog_ext_fail;
     }
     comp_buf[i] = (uint16_t *)gimg_malloc(alloc, comp_size[i]);
     if (!comp_buf[i]) {
       for (uint8_t j = 0; j < i; j++)
         gimg_free(alloc, comp_buf[j]);
+      fail_code = GIMG_ERR_OOM;
       goto prog_ext_fail;
     }
     memset(comp_buf[i], 0, comp_size[i]);
@@ -1804,6 +1823,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
         (uint32_t)height, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, NULL, 0,
         out_raster);
     if (r != GIMG_OK) {
+      fail_code = r;
       goto prog_ext_fail_buf;
     }
     unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
@@ -1825,6 +1845,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
       if (!comp_buf_8[i]) {
         for (uint8_t j = 0; j < i; j++)
           gimg_free(alloc, comp_buf_8[j]);
+        fail_code = GIMG_ERR_OOM;
         goto prog_ext_fail_buf;
       }
       for (size_t k = 0; k < comp_size_8[i]; k++) {
@@ -1848,6 +1869,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
     if (r != GIMG_OK) {
       for (uint8_t i = 0; i < num_comp; i++)
         gimg_free(alloc, comp_buf_8[i]);
+      fail_code = r;
       goto prog_ext_fail_buf;
     }
     unsigned char * pixels = (unsigned char *)gimg_raster_pixels(*out_raster);
@@ -1912,6 +1934,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
         comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_4,
         out_raster);
     if (r != GIMG_OK) {
+      fail_code = r;
       goto prog_ext_fail_buf;
     }
   }
@@ -1920,6 +1943,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
         (uint32_t)height, &GIMG_PIXEL_GRAY16, GIMG_RASTER_OWNED, NULL, 0,
         out_raster);
     if (r != GIMG_OK) {
+      fail_code = r;
       goto prog_ext_fail_buf;
     }
     uint16_t * pixels = (uint16_t *)gimg_raster_pixels(*out_raster);
@@ -1938,6 +1962,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
         (uint32_t)height, &GIMG_PIXEL_RGBA16, GIMG_RASTER_OWNED, NULL, 0,
         out_raster);
     if (r != GIMG_OK) {
+      fail_code = r;
       goto prog_ext_fail_buf;
     }
     uint16_t * pixels = (uint16_t *)gimg_raster_pixels(*out_raster);
@@ -2020,6 +2045,7 @@ static GIMG_Result jpeg_decode_progressive_extended(
         comp_stride_el, comp_w, comp_h, sof->h_samp, sof->v_samp, use_fancy_n,
         out_raster);
     if (r != GIMG_OK) {
+      fail_code = r;
       goto prog_ext_fail_buf;
     }
   }
@@ -2038,7 +2064,7 @@ prog_ext_fail:
   for (uint8_t i = 0; i < num_comp; i++) {
     gimg_free(alloc, coef_blocks[i]);
   }
-  return GIMG_ERR_CORRUPT;
+  return fail_code;
 }
 
 /** Progressive decode entry: run all scans (DC, AC initial, AC/DC refinement)
