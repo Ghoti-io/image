@@ -632,13 +632,30 @@ def main():
 
     # ---- Refusals ----
     write("tiff_bad_magic.tif", b"II\x2b\x00" + b"\x00" * 12)
-    # CCITT Group 3, which this codec does not undo. It was LZW here until
-    # LZW landed; a refusal fixture has to name something still refused, or
-    # the test that asserts the refusal starts asserting nothing.
-    ccitt = strip_fields(W, H, gray, 1)
-    ccitt = [(t, ty, v) if t != TAGS["Compression"] else (t, ty, [3])
-             for (t, ty, v) in ccitt]
-    write("tiff_ccitt_unsupported.tif", build("II", [(ccitt, gray)]))
+    # JPEG-in-TIFF, which this codec does not undo. It was LZW here until LZW
+    # landed and CCITT Group 3 until Group 3 landed; a refusal fixture has to
+    # name something still refused, or the test that asserts the refusal
+    # starts asserting nothing.
+    unsup = strip_fields(W, H, gray, 1)
+    unsup = [(t, ty, v) if t != TAGS["Compression"] else (t, ty, [7])
+             for (t, ty, v) in unsup]
+    write("tiff_jpeg_unsupported.tif", build("II", [(unsup, gray)]))
+    # CCITT Group 4 over bytes that are not Group 4 at all. The compression
+    # is read now, so what this exercises is the other half: a block whose
+    # coding this codec knows and whose contents decode to nothing.
+    #
+    # The bytes are zeros rather than anything more interesting, and that is
+    # measured rather than chosen: 0xA5 filler was the first attempt and it
+    # decoded cleanly, because an arbitrary bit pattern is usually a legal
+    # sequence of mode codes. A run of zeros is not - it is a fragment of an
+    # end-of-line, in the middle of a page that has none.
+    blank = bytes(len(gray))
+    undec = strip_fields(W, H, blank, 1)
+    undec = [(t, ty, [4] if t == TAGS["Compression"] else v)
+             for (t, ty, v) in undec]
+    undec = [(t, ty, [1] if t == TAGS["BitsPerSample"] else v)
+             for (t, ty, v) in undec]
+    write("tiff_ccitt_undecodable.tif", build("II", [(undec, blank)]))
     no_photo = [f for f in strip_fields(W, H, gray, 1)
                 if f[0] != TAGS["Photometric"]]
     write("tiff_no_photometric.tif", build("II", [(no_photo, gray)]))

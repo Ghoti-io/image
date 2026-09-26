@@ -324,9 +324,18 @@ TEST(TiffCorrupt, TheGeometryTagsNameWhatDisagreesWithWhat) {
 
 TEST(TiffCorrupt, TheSampleTagsNameWhatTheyCannotDescribe) {
   std::vector<Case> cases;
-  cases.push_back({"CCITT Group 3, which this codec does not undo",
+  cases.push_back({"JPEG-in-TIFF, which this codec does not undo",
       "compression method this codec does not undo", GIMG_ERR_UNSUPPORTED,
+      make_tiff(with(good_tags(), {259u, T_SHORT, {7u}}), kPixels)});
+  cases.push_back({"CCITT Group 3 on eight-bit samples",
+      "one bit of one sample", GIMG_ERR_CORRUPT,
       make_tiff(with(good_tags(), {259u, T_SHORT, {3u}}), kPixels)});
+  cases.push_back({"CCITT Group 4 asking for uncompressed mode",
+      "uncompressed mode", GIMG_ERR_UNSUPPORTED,
+      make_tiff(with(with(with(good_tags(), {259u, T_SHORT, {4u}}),
+                        {258u, T_SHORT, {1u}}),
+                    {293u, T_LONG, {2u}}),
+          kPixels)});
   cases.push_back({"a Predictor the format does not define",
       "Predictor other than 1 or 2", GIMG_ERR_UNSUPPORTED,
       make_tiff(with(good_tags(), {317u, T_SHORT, {7u}}), kPixels)});

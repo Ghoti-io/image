@@ -360,6 +360,15 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
     case GIMG_TIFF_TAG_PLANAR_CONFIG:
       ifd->planar_config = (uint16_t)tiff_value(st, &e, 0);
       break;
+    case GIMG_TIFF_TAG_FILL_ORDER:
+      ifd->fill_order = (uint16_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_T4_OPTIONS:
+      ifd->t4_options = (uint32_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_T6_OPTIONS:
+      ifd->t6_options = (uint32_t)tiff_value(st, &e, 0);
+      break;
     case GIMG_TIFF_TAG_SAMPLE_FORMAT:
       ifd->sample_format = (uint16_t)tiff_value(st, &e, 0);
       break;
@@ -638,6 +647,34 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
     tiff_diag(diag, which,
         "a compression method this codec does not undo yet");
     return GIMG_ERR_UNSUPPORTED;
+  }
+  const bool ccitt = ifd->compression == GIMG_TIFF_COMPRESSION_CCITT_RLE ||
+      ifd->compression == GIMG_TIFF_COMPRESSION_CCITT_T4 ||
+      ifd->compression == GIMG_TIFF_COMPRESSION_CCITT_T6;
+  if (ccitt) {
+    // CCITT codes runs of black and white and nothing else, so a file that
+    // declares it beside anything but one bit of one sample is describing
+    // something that cannot exist. Saying so by name beats handing the fax
+    // decoder a geometry it would fill with the wrong number of rows.
+    if (ifd->bits_per_sample != 1u || ifd->samples_per_pixel != 1u) {
+      tiff_diag(diag, which,
+          "CCITT compression on something other than one bit of one sample, "
+          "which the coding cannot describe (TIFF 6.0 10)");
+      return GIMG_ERR_CORRUPT;
+    }
+    // Uncompressed mode is an escape inside the coded data that switches to
+    // literal bits. Nothing writes it - libtiff has never emitted it - and a
+    // decoder that skipped the escape would produce plausible-looking
+    // rubbish rather than stop, so it is refused where it is declared.
+    const uint32_t uncompressed =
+        ifd->compression == GIMG_TIFF_COMPRESSION_CCITT_T6
+        ? (ifd->t6_options & 2u)
+        : (ifd->t4_options & 2u);
+    if (uncompressed) {
+      tiff_diag(diag, which,
+          "CCITT uncompressed mode, which this codec does not undo");
+      return GIMG_ERR_UNSUPPORTED;
+    }
   }
   if (ifd->predictor != 1u && ifd->predictor != 2u) {
     tiff_diag(diag, which, "a Predictor other than 1 or 2; not read yet");

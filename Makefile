@@ -848,6 +848,21 @@ oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the im
 		libtiff -- gcc -O2 -g -std=c17 -Wall -Wextra -Werror \
 		-o "$(CURDIR)/tests/tools/tiff-oracle/build/dump_tiff_pixels_libtiff" \
 		"$(CURDIR)/tests/tools/tiff-oracle/dump_tiff_pixels_libtiff.c" -ltiff
+	@printf '### Building oracle tool make_fax_tiffs_libtiff (in %s) ###\n' "$(ORACLE_IMAGE)"
+	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/tiff-oracle/build" \
+		libtiff -- gcc -O2 -g -std=c17 -Wall -Wextra -Werror \
+		-o "$(CURDIR)/tests/tools/tiff-oracle/build/make_fax_tiffs_libtiff" \
+		"$(CURDIR)/tests/tools/tiff-oracle/make_fax_tiffs_libtiff.c" -ltiff
+	@# The sample set's only two fax files are both one-dimensional Group 3
+	@# with FillOrder 2, so Group 4, two-dimensional coding, byte-aligned
+	@# rows and the other fill order have nothing in the corpus at all.
+	@# libtiff writes them here instead: another encoder, which is the only
+	@# thing that can surprise a decoder.
+	@printf '### Writing the CCITT variants with libtiff ###\n'
+	@rm -rf tests/data/tiff-fax && mkdir -p tests/data/tiff-fax
+	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/data/tiff-fax" \
+		libtiff -- "$(CURDIR)/tests/tools/tiff-oracle/build/make_fax_tiffs_libtiff" \
+		"$(CURDIR)/tests/data/tiff-fax"
 	@# The libtiff sample corpus lives in the image, and the sweep that reads
 	@# it runs on the host, so it is copied out here rather than mounted: a
 	@# read-only mount of the image's own filesystem is not a thing the engine

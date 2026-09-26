@@ -106,6 +106,11 @@ std::vector<std::string> fixtures() {
   return names;
 }
 
+/** The CCITT variants libtiff writes, also by `make oracle-tools`. */
+std::string fax_dir() {
+  return std::string(GIMG_TEST_DATA_TIFF) + "/../tiff-fax";
+}
+
 std::vector<std::string> corpus() {
   std::vector<std::string> names;
   collect(corpus_dir(), "", &names, true);
@@ -585,6 +590,105 @@ TEST(TiffOracle, NothingInTheLibtiffSampleSetIsReadDifferently) {
   for (const std::string & line : t.disagreements) {
     ADD_FAILURE() << line;
   }
+}
+
+/**
+ * Every way libtiff can encode CCITT, read the same way.
+ *
+ * The sample set's only two fax files are both Group 3, both
+ * one-dimensional and both FillOrder 2. Group 4, two-dimensional coding,
+ * byte-aligned rows, the other fill order and a strip boundary in the middle
+ * of a page are therefore all *absent* from it - and a corpus that cannot
+ * vary an axis says nothing about it however green it is. So libtiff is
+ * asked to write the same adversarial bilevel raster fourteen ways, and all
+ * fourteen must come back the same.
+ *
+ * The raster is in tests/tools/tiff-oracle/make_fax_tiffs_libtiff.c and is
+ * chosen against the coding rather than against the picture: runs past 2560
+ * that need two makeup codes, single-pixel alternation, edges that move one,
+ * two and three pixels a row, and blocks that end above where the row below
+ * ends.
+ *
+ * Every other compression this codec reads also has hand-built fixtures in
+ * tests/data/tiff/, written by the generator there, and CCITT deliberately
+ * does not. Writing one would mean a third copy of the 208-code T.4 table -
+ * there is one in the codec and a five-code fragment in the BMP generator -
+ * and a Python encoder written by the same hand as the decoder can only
+ * confirm that hand. libtiff is a different hand, and an encoder is what a
+ * decoder needs to be checked against. What tests/data/tiff/ keeps is the
+ * one CCITT case that needs no encoder: a block that decodes to nothing.
+ */
+TEST(TiffOracle, EveryWayLibtiffEncodesCcittIsReadTheSameWay) {
+  if (!oracle_gate::reachable("libtiff")) {
+    GTEST_SKIP() << "the sentinel above has already failed the run";
+  }
+  std::vector<std::string> names;
+  collect(fax_dir(), "", &names, false);
+  std::sort(names.begin(), names.end());
+  ASSERT_FALSE(names.empty())
+      << "the CCITT variants are not in " << fax_dir()
+      << ".\nRun `make oracle-tools`, which writes them with the pinned "
+         "libtiff. They are gitignored on purpose: the pin is the image.";
+
+  Tally t;
+  sweep(fax_dir(), names, &t);
+  report("ccitt variants", t);
+
+  // The see-alarm, and a tight one: these files exist for this sweep, so
+  // every single one of them must have been compared.
+  EXPECT_EQ(t.agreed + t.differed, (long)names.size())
+      << "only " << (t.agreed + t.differed) << " of " << names.size()
+      << " CCITT variants were compared";
+  for (const std::string & line : t.disagreements) {
+    ADD_FAILURE() << line;
+  }
+}
+
+/**
+ * The same fourteen files, checked without asking libtiff anything.
+ *
+ * The sweep above compares each variant against libtiff's own reading of it,
+ * which is the strong check and the one that needs the container. This is
+ * the cheap half of the same question: every variant is the same picture, so
+ * every variant must decode to what the uncompressed one decodes to. It
+ * catches a decoder that is wrong the same way libtiff is - and it is the
+ * only one of the two that can, since there a comparison against libtiff
+ * agrees.
+ */
+TEST(TiffFax, EveryVariantDecodesToTheUncompressedOne) {
+  std::vector<std::string> names;
+  collect(fax_dir(), "", &names, false);
+  std::sort(names.begin(), names.end());
+  // Not a skip. These files are produced by the same `make oracle-tools`
+  // that every other sweep here depends on, and the sentinel at the top of
+  // this binary has already failed the run if the image is unreachable; a
+  // second, quieter way for CCITT coverage to vanish is not wanted.
+  ASSERT_FALSE(names.empty())
+      << "the CCITT variants are not in " << fax_dir()
+      << ".\nRun `make oracle-tools`, which writes them with the pinned "
+         "libtiff.";
+  const Image want = ours(fax_dir(), "fax_reference.tif");
+  ASSERT_TRUE(want.ok) << "the uncompressed reference did not decode";
+  ASSERT_GT(want.width, 0u);
+
+  long checked = 0;
+  for (const std::string & n : names) {
+    if (n == "fax_reference.tif") { continue; }
+    const Image got = ours(fax_dir(), n);
+    ASSERT_TRUE(got.ok) << n << " did not decode";
+    ASSERT_EQ(got.width, want.width) << n;
+    ASSERT_EQ(got.height, want.height) << n;
+    size_t first = SIZE_MAX;
+    for (size_t i = 0; i < want.rgba.size(); i++) {
+      if (got.rgba[i] != want.rgba[i]) { first = i; break; }
+    }
+    EXPECT_EQ(first, SIZE_MAX)
+        << n << " differs from the uncompressed reference, first at pixel ("
+        << ((first / 4u) % want.width) << ", " << ((first / 4u) / want.width)
+        << ") channel " << (first % 4u);
+    checked++;
+  }
+  EXPECT_GT(checked, 10) << "only " << checked << " variants were checked";
 }
 
 /**

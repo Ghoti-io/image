@@ -642,7 +642,7 @@ TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   };
   const Case cases[] = {
       {"tiff_bad_magic.tif", GIMG_ERR_UNSUPPORTED, "BigTIFF"},
-      {"tiff_ccitt_unsupported.tif", GIMG_ERR_UNSUPPORTED,
+      {"tiff_jpeg_unsupported.tif", GIMG_ERR_UNSUPPORTED,
           "compression method this codec does not undo"},
       {"tiff_no_photometric.tif", GIMG_ERR_CORRUPT,
           "no PhotometricInterpretation"},
@@ -655,6 +655,30 @@ TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
         << "expected a diagnostic naming \"" << c.reason << "\"; got "
         << img.reasons();
   }
+}
+
+/**
+ * A CCITT block whose bits decode to nothing at all.
+ *
+ * The positive CCITT coverage is fourteen files written by libtiff and swept
+ * against it, in test_tiff_oracle.cpp; this is the half that needs no
+ * encoder. A page of zero bytes is not a legal Group 4 stream - a run of
+ * zeros is the start of an end-of-line, in a coding that has none - so the
+ * decoder must say so rather than hand back a blank picture, which is what a
+ * fax that failed on its first row looks like from the outside.
+ *
+ * The bytes are zeros because the first attempt at this fixture was 0xA5
+ * filler and it decoded cleanly: an arbitrary bit pattern is usually a legal
+ * sequence of mode codes, so "not a fax" is a thing that has to be built on
+ * purpose rather than assumed.
+ */
+TEST(TiffDecode, ACcittBlockThatDecodesToNothingIsCorrupt) {
+  Loaded img;
+  ASSERT_EQ(img.load("tiff_ccitt_undecodable.tif"), GIMG_OK) << img.reasons();
+  GIMG_Raster * raster = nullptr;
+  EXPECT_EQ(gimg_item_decode(gimg_doc_item(img.doc(), 0), nullptr, &raster),
+      GIMG_ERR_CORRUPT);
+  if (raster) { gimg_raster_destroy(raster); }
 }
 
 TEST(TiffDecode, AStreamThatCannotSayHowLongItIsIsRefused) {

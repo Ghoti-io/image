@@ -55,6 +55,10 @@ tests/tools/tiff-oracle/build
 # these bytes are a cache of it and do not belong in the tree.
 tests/data/tiff-corpus
 
+# The CCITT variants libtiff writes for the fax sweep, also by
+# `make oracle-tools`. Same reason: the pin is the image, not these bytes.
+tests/data/tiff-fax
+
 # libFuzzer writes a crash-<hash> file beside the binary when it finds one.
 # The interesting ones become test fixtures; none of them belong in the tree.
 # slow-unit-* is the same idea for an input that took longer than -timeout:

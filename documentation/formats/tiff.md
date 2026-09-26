@@ -105,7 +105,9 @@ back is not available, because an output stream here is append-only.
 | Byte order | "II" and "MM" | - |
 | Version | 42 | 43 (BigTIFF) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | IFD chain | Any number up to 4096, refusing a chain that does not advance | A chain that points backwards or at itself &rarr; `GIMG_ERR_CORRUPT`; `max_frame_count` caps it lower |
-| Compression (read) | 1 (none), 5 (LZW, including the pre-1993 bit-reversed spelling), 8 and 32946 (Deflate), 32773 (PackBits) | 2, 3, 4 (CCITT), 6/7 (JPEG), 32809 (ThunderScan), 34676/34677 (LogLuv) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| Compression (read) | 1 (none), 2 (CCITT modified Huffman), 3 (Group 3, one- and two-dimensional), 4 (Group 4), 5 (LZW, including the pre-1993 bit-reversed spelling), 8 and 32946 (Deflate), 32773 (PackBits) | 6/7 (JPEG), 32809 (ThunderScan), 34676/34677 (LogLuv) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| FillOrder | 1 and 2, read by the CCITT decoder | Ignored for every other compression, which is defined on whole bytes; libtiff does the same |
+| T4Options / T6Options | Two-dimensional coding, end-of-line codes present or absent, fill bits | Uncompressed mode (bit 1 of either) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | Compression (write) | none, PackBits, LZW, Deflate, with or without Predictor 2 | - |
 | Predictor | 1 and 2, at 8 and 16 bits | 3 (floating point) and any other value &rarr; `GIMG_ERR_UNSUPPORTED` |
 | Photometric | 0, 1, 2, 3, 5 (separated, read as CMYK), 6 (YCbCr, any subsampling up to 4x4) | 4 (mask), 32844/32845 (LogLuv) and the rest &rarr; `GIMG_ERR_UNSUPPORTED` |
@@ -129,11 +131,13 @@ sample agrees.** The three differences below are the whole of the rest.
 | Alpha in the decoded raster | Unassociated, following PNG | **Associated.** Its own header names the table that does it: `UaToAa`, "Unassociated alpha to associated alpha conversion LUT" | Neither is wrong; they are different units. The comparison puts ours into libtiff's space by premultiplying, which is applied to every pixel of every file and is a change of units rather than a tolerance |
 | The Orientation tag (274) | Applied at decode, as `gimg_item_decode` applies a JPEG's or a PNG's Exif orientation for every codec here. The written file therefore declares none: the pixels *are* the display image, and re-declaring it would have the next reader rotate them twice | Its RGBA reader **flips rather than transposes** for orientations 5 to 8. Measured on `tiff_4x4_metadata.tif`, whose first pixel comes back as the source's top-right where a 90° rotation puts its bottom-left | The comparison sweep counts such files instead of comparing them: two transforms, one of them wrong, is not two decoders. The orientation is checked against the specification in `test_tiff_decode.cpp` |
 | YCbCr's green channel | The multipliers are computed from the file's `YCbCrCoefficients` at 16 fractional bits, which is what section 21's formula reduces to | The same | Agrees exactly. Worth recording because the first attempt did not: evaluating the formula in double precision and rounding at the end disagreed by one on 2 samples of 1,228,800 in `dscf0013.tif` and 94 of 325,000 in `ycbcr-cat.tif`, **every one of them green**, because green is the only channel whose multipliers are not exact in five decimal places. This library has met the same difference from the other side - its JPEG decoder uses libjpeg's five-place constants, and `tools/oracle/containers/IMAGES` records IJG v10 disagreeing with libjpeg-turbo for exactly that reason |
+| A CCITT block whose bits decode to nothing | Refused, `GIMG_ERR_CORRUPT` | Read; it reports the error and hands back the rows it managed, which for a block that failed on its first row is a blank page | Deliberately not matched. A fax that produced no rows at all has not been decoded, and a blank page is the one wrong answer a caller cannot tell from a right one. A block that fails *part way* is treated as libtiff treats it: the rows that arrived are kept |
 | A file with no PhotometricInterpretation | Refused, `GIMG_ERR_CORRUPT`, named | Read; it supplies a default | Deliberately not matched. Section 8 gives that field no default, so a file without one has not said what its samples mean, and guessing is a worse answer than saying so |
 
-The only other asymmetry is the obvious one: libtiff reads the compressed
-fixture and this codec does not, which is the to-do list rather than a
-divergence. The sweep prints that list every run.
+The only other asymmetry is the obvious one: libtiff reads a few files this
+codec does not, which is the to-do list rather than a divergence. The sweep
+prints that list every run, and it shortens as the codec grows - CCITT came
+off it, and what is left is in **Not implemented** below.
 
 ## Tested scope
 
@@ -158,16 +162,48 @@ divergence. The sweep prints that list every run.
   take their population from the codec registry: truncation at every cut point
   of every fixture, the refusal-reason sweep, the conversion matrix, and the
   item-role sweep.
-- **No round trip**, there being no writer, so the encoder half of the usual
-  evidence does not exist. What stands in its place is libtiff above and the
-  three properties before it.
+- **Fourteen CCITT files written by libtiff**, swept the same way, in the
+  same test file. The sample set's only two fax files are both Group 3, both
+  one-dimensional and both FillOrder 2, so Group 4, two-dimensional coding,
+  byte-aligned rows, the other fill order and a strip boundary mid-page are
+  *absent* from it - and a corpus that cannot vary an axis says nothing about
+  that axis however green it is. `make oracle-tools` writes the fourteen with
+  the pinned libtiff, against a raster chosen for the coding rather than for
+  the picture: runs past 2560 that need two makeup codes, single-pixel
+  alternation, edges that move one, two and three pixels a row, and blocks
+  that end above where the row below ends. They also all have to decode to
+  what the uncompressed copy of the same raster decodes to, which is the half
+  of the question a comparison against libtiff cannot answer.
+
+  This found the defect it was built to find: the two-dimensional vertical
+  modes were off by one, `00001x` having been read as V(3) rather than V(2).
+  Both sample-set files agreed before and after, because neither contains a
+  single two-dimensional row.
+
+- **Round trip**, every fixture written back out in five ways - stored,
+  PackBits, LZW, Deflate with the predictor, and big-endian - read back by
+  this library and by libtiff, and compared sample for sample against the
+  raster that went in. The writer offers no CCITT, so that compression is
+  checked in one direction only.
 
 ## Not implemented
 
 Listed so the absences are visible rather than discovered:
 
-- **CCITT Group 3 and Group 4**, JPEG-in-TIFF, ThunderScan and LogLuv - the
-  compressions the sample set still names every run.
+- **JPEG-in-TIFF, ThunderScan and LogLuv** - the compressions the sample set
+  still names every run.
+- **CCITT uncompressed mode**, the escape inside a Group 3 or Group 4 stream
+  that switches to literal bits. It is refused where a file declares it in
+  T4Options or T6Options rather than discovered mid-row: nothing is known to
+  write it, and a decoder that mistook the escape for a mode code would
+  produce plausible rubbish instead of stopping.
+- **Writing CCITT.** The decoder reads all three compressions and the writer
+  offers none of them. The reason is upstream of TIFF: the writer takes an
+  eight- or sixteen-bit raster, nothing in this library produces a one-bit
+  one, and CCITT codes nothing else. Writing it would mean thresholding a
+  grey page on the caller's behalf, which is a lossy choice the caller should
+  be making. A bilevel page written by this library is PackBits or Deflate,
+  both of which compress a thresholded page perfectly well.
 - **Transparency masks** (PhotometricInterpretation 4).
 - **Bit depths of 6, 10, 12, 14, 24 and 32**, which libtiff's own RGBA reader
   also refuses.

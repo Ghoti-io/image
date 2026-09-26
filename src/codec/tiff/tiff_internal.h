@@ -86,6 +86,9 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TAG_X_RESOLUTION 282
 #define GIMG_TIFF_TAG_Y_RESOLUTION 283
 #define GIMG_TIFF_TAG_PLANAR_CONFIG 284
+#define GIMG_TIFF_TAG_FILL_ORDER 266
+#define GIMG_TIFF_TAG_T4_OPTIONS 292
+#define GIMG_TIFF_TAG_T6_OPTIONS 293
 #define GIMG_TIFF_TAG_PREDICTOR 317
 #define GIMG_TIFF_TAG_IMAGE_DESCRIPTION 270
 #define GIMG_TIFF_TAG_ORIENTATION 274
@@ -171,6 +174,12 @@ typedef struct {
                           ///< has_extra_samples.
   uint16_t predictor;     ///< 1 = none, 2 = horizontal differencing (TIFF
                           ///< Technical Note 2 / section 14).
+  /** FillOrder (266): 1 = most significant bit of a byte first, 2 = least.
+   * Only the CCITT decoder reads it; every other compression here is defined
+   * on whole bytes, where the question does not arise. */
+  uint16_t fill_order;
+  uint32_t t4_options; ///< Tag 292. Bit 0 selects two-dimensional coding.
+  uint32_t t6_options; ///< Tag 293. Bit 1 allows uncompressed mode.
   bool has_extra_samples;
   bool tiled; ///< True when TileWidth and TileLength are present.
   /** The file's byte order, copied here so a row converter that reads 16-bit
@@ -261,6 +270,18 @@ GIMG_Result gimg_tiff_block_bytes(const gimg_tiff_doc_state_t * st,
 /** Undo horizontal differencing over one decompressed block, in place. */
 void gimg_tiff_undo_block_predictor(const gimg_tiff_ifd_t * ifd,
     unsigned char * data, size_t size, size_t row_bytes, size_t channels);
+
+/**
+ * Expand one CCITT Group 3 or Group 4 block into packed one-bit rows.
+ *
+ * @param out_size The block's uncompressed size, which also says how many
+ *   rows it holds. A short or damaged block fills what it can.
+ * @return GIMG_OK when at least one row decoded, GIMG_ERR_CORRUPT when none
+ *   did.
+ */
+GIMG_Result gimg_tiff_fax_decode(const GIMG_Allocator * allocator,
+    const gimg_tiff_ifd_t * ifd, const unsigned char * src, size_t src_size,
+    unsigned char * out, size_t out_size);
 
 /** Whether this codec can undo @p compression. */
 bool gimg_tiff_compression_known(uint16_t compression);

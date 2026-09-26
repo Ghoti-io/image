@@ -50,6 +50,9 @@ bool gimg_tiff_compression_known(uint16_t compression) {
   case GIMG_TIFF_COMPRESSION_DEFLATE:
   case GIMG_TIFF_COMPRESSION_DEFLATE_OLD:
   case GIMG_TIFF_COMPRESSION_PACKBITS:
+  case GIMG_TIFF_COMPRESSION_CCITT_RLE:
+  case GIMG_TIFF_COMPRESSION_CCITT_T4:
+  case GIMG_TIFF_COMPRESSION_CCITT_T6:
     return true;
   default:
     return false;
@@ -195,8 +198,34 @@ GIMG_Result gimg_tiff_block_bytes(const gimg_tiff_doc_state_t * st,
     *out_size = stored_size;
     return GIMG_OK;
   }
+  if (want == 0u) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  // CCITT is not in the compress library and should not be: it is a bilevel
+  // image coding that refers to the row above, not a byte-stream compressor,
+  // and it needs the picture's width to mean anything at all.
+  if (ifd->compression == GIMG_TIFF_COMPRESSION_CCITT_RLE ||
+      ifd->compression == GIMG_TIFF_COMPRESSION_CCITT_T4 ||
+      ifd->compression == GIMG_TIFF_COMPRESSION_CCITT_T6) {
+    unsigned char * fax = (unsigned char *)gimg_malloc(st->allocator, want);
+    if (!fax) {
+      return GIMG_ERR_OOM;
+    }
+    const GIMG_Result fr = gimg_tiff_fax_decode(
+        st->allocator, ifd, stored, stored_size, fax, want);
+    if (fr != GIMG_OK) {
+      gimg_free(st->allocator, fax);
+      return fr;
+    }
+    *out_bytes = fax;
+    *out_size = want;
+    *out_owned = true;
+    return GIMG_OK;
+  }
+
   const char * method = tiff_method_name(ifd->compression);
-  if (!method || want == 0u) {
+  if (!method) {
     return GIMG_ERR_UNSUPPORTED;
   }
 
