@@ -477,6 +477,71 @@ TEST(Corrupt, TheBmpRleDecoderRefusesAnIndexThePaletteLacks) {
   run_case(c);
 }
 
+TEST(Corrupt, TheBmpHuffmanDecoderSurvivesAStreamThatIsNotOne) {
+  // Huffman 1D is an OS/2 2.x compression: a 64-byte header, one bit per
+  // pixel, biCompression 3 in that header's vocabulary. Its bit stream has no
+  // length field and no structure a header can check, so everything about it
+  // is decided while decoding.
+  struct Huff {
+    const char * name;
+    Bytes stream;
+    GIMG_Result expect;
+  };
+  const Huff streams[] = {
+      // A white terminating code for a run of 63 (0x34, eight bits) on a line
+      // eight pixels wide. T.4 allows the run; the line has nowhere to put
+      // fifty-five of it, so it is clipped rather than refused - the same
+      // judgment the run-length decoder makes.
+      {"a run longer than the line it is on", Bytes{0x34u}, GIMG_OK},
+      // Sixty-five zero bits and then nothing. The end-of-line scanner gives
+      // up after sixty-four rather than reading to the end of the file, and
+      // what is left decodes as no code at all.
+      {"a stream of nothing but zero bits", Bytes(9u, 0x00u), GIMG_ERR_CORRUPT},
+  };
+
+  for (const Huff & h : streams) {
+    SCOPED_TRACE(h.name);
+    BmpSpec s;
+    s.header_size = 64u;  // BITMAPINFOHEADER2.
+    s.width = 8;
+    s.height = 1;
+    s.bpp = 1u;
+    s.compression = 3u;  // Huffman 1D, in the OS/2 2.x vocabulary.
+    s.clr_used = 2u;
+    Bytes tail;
+    for (int i = 0; i < 2; i++) {
+      u8(tail, (uint32_t)(i * 255)); u8(tail, (uint32_t)(i * 255));
+      u8(tail, (uint32_t)(i * 255)); u8(tail, 0u);
+    }
+    s.pixels_at = tail.size();
+    append(tail, h.stream);
+    s.after_header = tail;
+
+    // A Huffman stream is expanded during the load rather than on the far
+    // side of one, so a refusal arrives with a diagnostic naming it.
+    Case c{h.name, "the Huffman 1D stream could not be decoded", h.expect,
+        make_bmp(s)};
+    if (h.expect != GIMG_OK) { run_case(c); continue; }
+    // A case that decodes has to be asked for its pixels rather than only for
+    // its result code, or nothing distinguishes it from one that refused.
+    GIMG_Stream * st = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(c.bytes.data(), c.bytes.size(), &st),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_load(st, nullptr, nullptr, &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    EXPECT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+        GIMG_OK);
+    EXPECT_NE(raster, nullptr);
+    if (raster) {
+      EXPECT_EQ(gimg_raster_width(raster), 8u);
+      gimg_raster_destroy(raster);
+    }
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(st);
+  }
+}
+
 TEST(Corrupt, TheBmpArrayWalkerNamesWhatBrokeTheChain) {
   std::vector<Case> cases;
 

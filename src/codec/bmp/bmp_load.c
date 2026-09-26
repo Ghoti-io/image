@@ -298,10 +298,11 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     out->top_down = true;
     signed_height = -signed_height;
   }
-  if (signed_height > (int64_t)UINT32_MAX) {
-    bmp_load_diag(diagnostics, GIMG_BMP_FILE_HEADER_SIZE, "height out of range");
-    return GIMG_ERR_CORRUPT;
-  }
+  // The cast cannot lose anything and needs no guard.  biHeight is read as a
+  // 16-bit unsigned in a core header and a 32-bit signed in every other, so
+  // the largest magnitude any header can state is 2^31 - half of what a
+  // uint32_t holds.  There used to be a check for UINT32_MAX here, which no
+  // file could reach and which therefore read as a defence that was not one.
   out->height = (uint32_t)signed_height;
 
   if (out->width == 0 || out->height == 0) {
