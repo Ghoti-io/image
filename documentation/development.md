@@ -209,6 +209,36 @@ Tests under `tests/` include:
 
 1. **Stub and register:** Create a codec stub (e.g. `gimg_codec_create_stub()` or `gimg_codec_create_stub_with_allocator()`), implement probe (magic bytes / peek), and register with `gimg_codec_register()`. Probe result `format_name` is used by load/save; document that `format_name` lifetime is only until the next registry-mutating call (see @ref api_options "API Options and Types").
 
+   **A codec registers itself from a constructor, and a static link will
+   throw it away.** `gimg_<format>_register()` is marked
+   `__attribute__((constructor))` and nothing calls it by name, so no object
+   file references it - and a plain static link pulls in only the object files
+   something references. The codec then does not exist: `gimg_codec_count()`
+   is one short, `gimg_probe()` returns NULL for its files, and
+   `gimg_doc_load()` answers `GIMG_ERR_FORMAT` for a file that is perfectly
+   well formed. Nothing fails at link time and no diagnostic is printed.
+   Measured: a two-line program calling `gimg_codec_count()` against
+   `libghoti.io-image-0.a` prints `0` linked plainly and `4` linked inside
+   `--whole-archive`.
+
+   The fix is on the link line, not in the codec: link the archive inside
+   `-Wl,--whole-archive` / `-Wl,--no-whole-archive`, which is what the
+   `IMAGELIBRARY` variable in the Makefile already does for the test binaries,
+   and what any consumer linking `libghoti.io-image-0.a` has to do. Linking
+   the shared library instead has no such problem, which is what
+   `pkg-config --libs ghoti.io-image-0` gives you and why the README's build
+   line is safe; `pkg-config --static --libs` is not, and a caller using it
+   needs the wrapping.
+
+   Two further consequences worth knowing before they cost an afternoon:
+
+   - The constructor is **empty on a compiler that is neither GCC nor Clang**
+     - see the `#else` in any `*_register.c`. On MSVC every codec would
+       silently fail to register. MinGW is GCC and is unaffected.
+   - Registration order is link order, so `gimg_codec_by_index()` is in no
+     particular sequence. Sort by name if a caller needs a stable one; the
+     test sweeps in `tests/registry_sweep.h` do.
+
 2. **Load:** Implement load in the codec: parse container structure, create **GIMG_Doc** and **GIMG_Item**(s), fill frame timing and blend/dispose for animation if applicable. Enforce **GIMG_Limits** (chunk size, decoded pixels, frame count); return **GIMG_ERR_LIMIT** when exceeded. Use **GIMG_Diagnostics** when provided (e.g. CRC errors, unsupported features). Populate metadata common from format-specific metadata (e.g. Exif orientation) when present.
 
 3. **Decode:** Implement decode from **GIMG_Item** to **GIMG_Raster**: respect **GIMG_Decode_Options** limits, use safe pixel-count helpers (e.g. from `safe_math_internal.h`) to avoid overflow, return **GIMG_ERR_CORRUPT** or **GIMG_ERR_LIMIT** as appropriate.
