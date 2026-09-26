@@ -40,6 +40,8 @@ TAGS = {
     "TileLength": 323,
     "TileOffsets": 324,
     "TileByteCounts": 325,
+    "NewSubfileType": 254,
+    "SubIFDs": 330,
     "ImageDescription": 270,
     "Orientation": 274,
     "Predictor": 317,
@@ -530,6 +532,23 @@ def main():
     meta.append((TAGS["ICCProfile"], UNDEFINED, list(profile)))
     write("tiff_4x4_metadata.tif", build("II", [(meta, rgb)]))
 
+    # ---- A pyramid, in both of the format's spellings ----
+    #
+    # TIFF says a reduced-resolution version of an image two ways: a
+    # directory in the main chain whose NewSubfileType has bit 0 set, and a
+    # SubIFD hanging off the full-size page (Technical Note 1). Both are
+    # pyramids and neither is a second picture, which is what
+    # GIMG_ITEM_LEVEL exists to say.
+    full = gray_ramp(8, 8)
+    half = bytes(full[(y * 2) * 8 + (x * 2)] for y in range(4)
+                 for x in range(4))
+    chain_full = strip_fields(8, 8, full, 1)
+    chain_half = strip_fields(4, 4, half, 1)
+    chain_half.append((TAGS["NewSubfileType"], LONG, [1]))
+    write("tiff_pyramid_chain.tif",
+          build("II", [(chain_full, full), (chain_half, half)]))
+    write("tiff_pyramid_subifd.tif", build_subifd("II", full, half))
+
     # ---- What the fuzzer found ----
     #
     # A consistent-looking file - one strip, one offset, one byte count -
@@ -614,6 +633,71 @@ def build_planar(endian, w, h, data, spp, photometric, plane_len):
         (TAGS["StripByteCounts"], LONG, counts),
     ]
     return _finish(e, pool, [fields])
+
+
+def build_subifd(endian, full, half):
+    """A full-size page whose SubIFDs tag names one reduced-resolution one.
+
+    Laid out by hand because the SubIFD is a directory the main chain does
+    not contain: its offset lives in a tag, and the page that names it has to
+    know where it landed.
+    """
+    e = "<" if endian == "II" else ">"
+    pool = bytearray()
+    full_at = 8 + len(pool)
+    pool.extend(full)
+    if len(pool) % 2:
+        pool.append(0)
+    half_at = 8 + len(pool)
+    pool.extend(half)
+    if len(pool) % 2:
+        pool.append(0)
+
+    sub_fields = [
+        (TAGS["ImageWidth"], LONG, [4]),
+        (TAGS["ImageLength"], LONG, [4]),
+        (TAGS["BitsPerSample"], SHORT, [8]),
+        (TAGS["Compression"], SHORT, [1]),
+        (TAGS["Photometric"], SHORT, [1]),
+        (TAGS["SamplesPerPixel"], SHORT, [1]),
+        (TAGS["RowsPerStrip"], LONG, [4]),
+        (TAGS["PlanarConfig"], SHORT, [1]),
+        (TAGS["NewSubfileType"], LONG, [1]),
+        (TAGS["StripOffsets"], LONG, [half_at]),
+        (TAGS["StripByteCounts"], LONG, [len(half)]),
+    ]
+    main_fields = [
+        (TAGS["ImageWidth"], LONG, [8]),
+        (TAGS["ImageLength"], LONG, [8]),
+        (TAGS["BitsPerSample"], SHORT, [8]),
+        (TAGS["Compression"], SHORT, [1]),
+        (TAGS["Photometric"], SHORT, [1]),
+        (TAGS["SamplesPerPixel"], SHORT, [1]),
+        (TAGS["RowsPerStrip"], LONG, [8]),
+        (TAGS["PlanarConfig"], SHORT, [1]),
+        (TAGS["StripOffsets"], LONG, [full_at]),
+        (TAGS["StripByteCounts"], LONG, [len(full)]),
+        (TAGS["SubIFDs"], LONG, [0]),  # Patched once the layout is known.
+    ]
+    main_size = 2 + 12 * len(main_fields) + 4
+    main_at = 8 + len(pool)
+    sub_at = main_at + main_size
+    main_fields = [(t, ty, [sub_at] if t == TAGS["SubIFDs"] else v)
+                   for (t, ty, v) in main_fields]
+
+    def directory(fields, nxt):
+        out = bytearray(struct.pack(e + "H", len(fields)))
+        for tag, ftype, values in sorted(fields, key=lambda f: f[0]):
+            raw = pack_values(e, ftype, values)
+            out += struct.pack(e + "HHI", tag, ftype, len(values))
+            assert len(raw) <= 4, "this layout keeps every value inline"
+            out += raw + b"\x00" * (4 - len(raw))
+        out += struct.pack(e + "I", nxt)
+        return bytes(out)
+
+    header = endian.encode() + struct.pack(e + "H", 42)
+    return bytes(header + struct.pack(e + "I", main_at) + bytes(pool) +
+                 directory(main_fields, 0) + directory(sub_fields, 0))
 
 
 def build_tiled(endian, w, h, data, tw, th):

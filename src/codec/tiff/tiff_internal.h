@@ -91,6 +91,7 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TAG_ORIENTATION 274
 #define GIMG_TIFF_TAG_XMP 700
 #define GIMG_TIFF_TAG_ICC_PROFILE 34675
+#define GIMG_TIFF_TAG_SUB_IFDS 330
 #define GIMG_TIFF_TAG_RESOLUTION_UNIT 296
 #define GIMG_TIFF_TAG_COLOR_MAP 320
 #define GIMG_TIFF_TAG_TILE_WIDTH 322
@@ -199,6 +200,16 @@ typedef struct {
   /** ImageDescription (270), NUL-terminated and owned, or NULL. */
   char * description;
   uint16_t orientation;   ///< Tag 274; 0 when the file did not say.
+  /** NewSubfileType (254). Bit 0 set means this directory is a
+   * reduced-resolution version of another image in the file. */
+  uint32_t subfile_type;
+  /** What this directory is, as the document model spells it, and which
+   * item it is a version of. A page is GIMG_ITEM_IMAGE of itself; a pyramid
+   * level is GIMG_ITEM_LEVEL of the full-size picture it belongs to. */
+  int role;
+  size_t role_subject;
+  uint64_t * sub_ifds;    ///< Tag 330: offsets of this page's sub-directories.
+  size_t sub_ifd_count;
   /** XMP (700), owned, kept only so a round trip does not lose it. */
   unsigned char * xmp;
   size_t xmp_size;

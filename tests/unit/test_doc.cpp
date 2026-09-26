@@ -481,8 +481,17 @@ TEST(Doc, ARoleSurvivesACopy) {
 
 namespace {
 
-/** What role a codec's item at @p index of @p count should carry. */
-typedef GIMG_Item_Role (*RoleRule)(size_t index, size_t count);
+/**
+ * Whether the role a codec gave item @p index of @p count is the right one.
+ *
+ * A predicate rather than a function returning the expected role, because
+ * TIFF has two answers for the same position: a second directory is another
+ * page when it stands alone and a pyramid level when it says it is a
+ * reduced-resolution version of the first. Both are correct and the file
+ * decides, so the rule checks the answer instead of prescribing it.
+ */
+typedef bool (*RoleRule)(
+    size_t index, size_t count, GIMG_Item_Role role, size_t subject);
 
 struct RoleClaim {
   const char * codec;
@@ -491,33 +500,48 @@ struct RoleClaim {
 
 /** BMP: item 0 is the picture, and an array's later entries are renderings
  * of it for other display devices. */
-GIMG_Item_Role bmp_role(size_t index, size_t count) {
+bool bmp_role(
+    size_t index, size_t count, GIMG_Item_Role role, size_t subject) {
   (void)count;
-  return index == 0 ? GIMG_ITEM_IMAGE : GIMG_ITEM_ALTERNATE;
+  return role == (index == 0 ? GIMG_ITEM_IMAGE : GIMG_ITEM_ALTERNATE) &&
+      subject == (index == 0 ? index : 0u);
 }
 /** An animation container: more than one item means the items are moments of
  * one picture, and a single item is a picture. One function for both formats
  * on purpose - a caller counting GIMG_ITEM_IMAGE to find the pictures in a
  * document must get the same answer from a still GIF as from a still PNG,
  * and for a while it did not. */
-GIMG_Item_Role animated_role(size_t index, size_t count) {
-  (void)index;
-  return count > 1 ? GIMG_ITEM_FRAME : GIMG_ITEM_IMAGE;
+bool animated_role(
+    size_t index, size_t count, GIMG_Item_Role role, size_t subject) {
+  return role == (count > 1 ? GIMG_ITEM_FRAME : GIMG_ITEM_IMAGE) &&
+      subject == index;
 }
 /** JPEG: item 1, when there is one, is the Exif IFD1 thumbnail. */
-GIMG_Item_Role jpeg_role(size_t index, size_t count) {
+bool jpeg_role(
+    size_t index, size_t count, GIMG_Item_Role role, size_t subject) {
   (void)count;
-  return index == 0 ? GIMG_ITEM_IMAGE : GIMG_ITEM_THUMBNAIL;
+  return role == (index == 0 ? GIMG_ITEM_IMAGE : GIMG_ITEM_THUMBNAIL) &&
+      subject == (index == 0 ? index : 0u);
 }
 
 
-/** TIFF: every IFD is a page, and a page is a picture in its own right
- * however many of them there are - not a moment of one picture, which is what
- * separates a multi-page TIFF from an animation. */
-GIMG_Item_Role tiff_role(size_t index, size_t count) {
-  (void)index;
+/**
+ * TIFF: a directory is a page, or a reduced-resolution version of an earlier
+ * one.
+ *
+ * A page is a picture in its own right however many of them there are - not a
+ * moment of one picture, which is what separates a multi-page TIFF from an
+ * animation. A pyramid level is not a picture in its own right at all, and
+ * the file says which it is: NewSubfileType bit 0, or a SubIFD that hangs off
+ * the page it belongs to. A level always refers to something before it.
+ */
+bool tiff_role(
+    size_t index, size_t count, GIMG_Item_Role role, size_t subject) {
   (void)count;
-  return GIMG_ITEM_IMAGE;
+  if (role == GIMG_ITEM_IMAGE) {
+    return subject == index;
+  }
+  return role == GIMG_ITEM_LEVEL && subject < index;
 }
 
 /** The format the library says these bytes are, or "". */
@@ -611,11 +635,10 @@ TEST(Doc, EveryLoadedItemSaysWhatItIs) {
           // another format - the BMP wrapper fixtures' payloads live there -
           // so the claim is only applied when the document is this codec's.
           if (probed == c.name) {
-            const GIMG_Item_Role want = claim->rule(i, n);
-            EXPECT_EQ(role, want)
+            EXPECT_TRUE(claim->rule(i, n, role, subject))
                 << name << " item " << i << " of " << n << " is labelled "
-                << (int)role << ", and " << c.name << " says it should be "
-                << (int)want;
+                << (int)role << " of " << subject
+                << ", which is not a shape " << c.name << " produces";
           }
         }
       }

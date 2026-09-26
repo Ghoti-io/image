@@ -26,6 +26,13 @@ and directory entries of every type the specification defines, with a value
 read from the entry itself when it fits in four bytes and from the offset
 those bytes hold when it does not. Every IFD becomes one document item.
 
+**Pyramids.** A reduced-resolution copy is a `GIMG_ITEM_LEVEL` of the page it
+belongs to rather than a second picture, in both of the format's spellings:
+`NewSubfileType` bit 0 on a directory in the main chain, and a `SubIFDs` entry
+(330) hanging off the full-size page (Technical Note 1). A caller counting the
+pictures in a document must not count a smaller copy of one of them, and the
+role is how the model says so.
+
 **Tags read (sections 8 and 15).** ImageWidth, ImageLength, BitsPerSample,
 Compression, PhotometricInterpretation, StripOffsets, SamplesPerPixel,
 RowsPerStrip, StripByteCounts, XResolution, YResolution, PlanarConfiguration,
@@ -156,8 +163,6 @@ Listed so the absences are visible rather than discovered:
 - **YCbCr** (PhotometricInterpretation 6), and transparency masks.
 - **Bit depths of 6, 10, 12, 14, 24 and 32**, which libtiff's own RGBA reader
   also refuses.
-- **Pyramids and SubIFDs.** `GIMG_ITEM_LEVEL` exists for them and nothing
-  sets it yet; a reduced-resolution subfile currently loads as another page.
 - **Region decode.** A TIFF too large to hold is refused through
   `max_decoded_pixels` rather than decoded in pieces. The reasoning is in the
   workspace note on the decode model: that needs a lazy load contract, which

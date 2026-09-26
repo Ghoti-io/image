@@ -212,6 +212,9 @@ static void tiff_free_ifd(const GIMG_Allocator * a, gimg_tiff_ifd_t * ifd) {
   gimg_free(a, ifd->icc);
   gimg_free(a, ifd->description);
   gimg_free(a, ifd->xmp);
+  gimg_free(a, ifd->sub_ifds);
+  ifd->sub_ifds = NULL;
+  ifd->sub_ifd_count = 0;
   ifd->icc = NULL;
   ifd->icc_size = 0;
   ifd->description = NULL;
@@ -254,6 +257,7 @@ static void tiff_ifd_defaults(gimg_tiff_ifd_t * ifd) {
   ifd->resolution_unit = 2u;                  // Inches.
   ifd->sample_format = 1u;                    // Unsigned integer.
   ifd->predictor = 1u;                        // No differencing.
+  ifd->role = GIMG_ITEM_IMAGE;
   ifd->rows_per_strip = 0xFFFFFFFFu;          // "The whole image in one strip".
   ifd->photometric = 0xFFFFu;                 // No default; absence is an error.
 }
@@ -382,6 +386,16 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
         ifd->y_res_den = tiff_u32(e.values + 4, st->big_endian);
         ifd->has_y_res = ifd->y_res_den != 0u;
       }
+      break;
+    case GIMG_TIFF_TAG_NEW_SUBFILE_TYPE:
+      ifd->subfile_type = (uint32_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_SUB_IFDS:
+      // A pyramid's levels hang off the full-size image rather than sitting
+      // in the main chain (TIFF Technical Note 1). Both spellings exist and
+      // both are read; this is the one that says "these belong to me".
+      gimg_free(st->allocator, ifd->sub_ifds);
+      r = tiff_value_array(st, &e, &ifd->sub_ifds, &ifd->sub_ifd_count);
       break;
     case GIMG_TIFF_TAG_ORIENTATION:
       ifd->orientation = (uint16_t)tiff_value(st, &e, 0);
@@ -711,6 +725,55 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
 // Load
 // ---------------------------------------------------------------------------
 
+/**
+ * Read one directory into a new slot, check it, and say where it landed.
+ *
+ * Grows the array, reads, and validates - the three things that used to be
+ * spelled inline in the walk and had to be spelled a second time the moment
+ * a SubIFD could also be a directory. One function, so a check added to it
+ * cannot be added to only one kind of directory.
+ */
+static GIMG_Result tiff_append_ifd(GIMG_Codec * codec,
+    gimg_tiff_doc_state_t * st, uint32_t at, const GIMG_Limits * limits,
+    GIMG_Diagnostics * diagnostics, size_t * out_index, uint32_t * out_next) {
+  *out_index = 0;
+  *out_next = 0u;
+  if (st->ifd_count >= GIMG_TIFF_MAX_IFDS) {
+    tiff_diag(diagnostics, at, "more directories than this codec chains");
+    return GIMG_ERR_LIMIT;
+  }
+  if (limits && limits->max_frame_count &&
+      st->ifd_count >= limits->max_frame_count) {
+    tiff_diag(diagnostics, at, "increase max_frame_count");
+    return GIMG_ERR_LIMIT;
+  }
+  size_t bytes = 0;
+  if (!gcu_safe_mul_size(st->ifd_count + 1u, sizeof(gimg_tiff_ifd_t),
+          &bytes)) {
+    return GIMG_ERR_LIMIT;
+  }
+  gimg_tiff_ifd_t * grown =
+      (gimg_tiff_ifd_t *)gimg_realloc(st->allocator, st->ifds, bytes);
+  if (!grown) {
+    return GIMG_ERR_OOM;
+  }
+  st->ifds = grown;
+
+  GIMG_Result r =
+      tiff_read_ifd(st, at, diagnostics, &st->ifds[st->ifd_count], out_next);
+  if (r != GIMG_OK) {
+    // The slot owns nothing: tiff_read_ifd frees what it took before
+    // returning a failure, and ifd_count still excludes it.
+    return r;
+  }
+  st->ifd_count++;
+  *out_index = st->ifd_count - 1u;
+  r = tiff_check_supported(st, &st->ifds[*out_index], limits, diagnostics,
+      *out_index);
+  (void)codec;
+  return r;
+}
+
 GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc) {
@@ -767,50 +830,57 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   // Walk the chain, refusing one that does not move forward.  An offset that
   // pointed backwards or at itself would loop here for ever.
+  //
+  // Each directory in the chain is a page. Each SubIFD hanging off one is a
+  // reduced-resolution version of it, which the document model calls a
+  // GIMG_ITEM_LEVEL - the role that existed for this and had nothing setting
+  // it until now. A directory in the *chain* whose NewSubfileType says
+  // "reduced resolution" is the older spelling of the same thing and belongs
+  // to the last full-size page seen.
   uint32_t at = tiff_u32(st->file + 4, st->big_endian);
   uint32_t previous = 0u;
+  size_t last_full_size = 0;
   while (at != 0u) {
     if (st->ifd_count > 0u && at <= previous) {
       tiff_diag(diagnostics, at, "the directory chain does not advance");
       gimg_tiff_free_doc_state(codec, st);
       return GIMG_ERR_CORRUPT;
     }
-    if (st->ifd_count >= GIMG_TIFF_MAX_IFDS) {
-      tiff_diag(diagnostics, at, "more directories than this codec chains");
-      gimg_tiff_free_doc_state(codec, st);
-      return GIMG_ERR_LIMIT;
-    }
-    if (limits && limits->max_frame_count &&
-        st->ifd_count >= limits->max_frame_count) {
-      tiff_diag(diagnostics, at, "increase max_frame_count");
-      gimg_tiff_free_doc_state(codec, st);
-      return GIMG_ERR_LIMIT;
-    }
-    size_t bytes = 0;
-    if (!gcu_safe_mul_size(
-            st->ifd_count + 1u, sizeof(gimg_tiff_ifd_t), &bytes)) {
-      gimg_tiff_free_doc_state(codec, st);
-      return GIMG_ERR_LIMIT;
-    }
-    gimg_tiff_ifd_t * grown =
-        (gimg_tiff_ifd_t *)gimg_realloc(alloc, st->ifds, bytes);
-    if (!grown) {
-      gimg_tiff_free_doc_state(codec, st);
-      return GIMG_ERR_OOM;
-    }
-    st->ifds = grown;
-
+    size_t index = 0;
     uint32_t next = 0u;
-    r = tiff_read_ifd(st, at, diagnostics, &st->ifds[st->ifd_count], &next);
+    r = tiff_append_ifd(
+        codec, st, at, limits, diagnostics, &index, &next);
     if (r != GIMG_OK) {
-      // The entry just written owns nothing: tiff_read_ifd frees what it took
-      // before returning a failure, and ifd_count still excludes it.
       gimg_tiff_free_doc_state(codec, st);
       return r;
     }
-    st->ifd_count++;
-    r = tiff_check_supported(st, &st->ifds[st->ifd_count - 1u], limits,
-        diagnostics, st->ifd_count - 1u);
+    if ((st->ifds[index].subfile_type & 1u) != 0u && st->ifd_count > 1u) {
+      st->ifds[index].role = GIMG_ITEM_LEVEL;
+      st->ifds[index].role_subject = last_full_size;
+    }
+    else {
+      last_full_size = index;
+    }
+
+    // The levels this page names, if any. They are read after the page so
+    // that the page's own index is the subject they point at, and their own
+    // "next" offsets are ignored: a SubIFD chain is a list held by the tag,
+    // not a continuation of the file's main chain.
+    const size_t levels = st->ifds[index].sub_ifd_count;
+    for (size_t k = 0; k < levels && r == GIMG_OK; k++) {
+      const uint64_t where = st->ifds[index].sub_ifds[k];
+      if (where == 0u || where > 0xFFFFFFFFu) {
+        continue;
+      }
+      size_t level_index = 0;
+      uint32_t ignored = 0u;
+      r = tiff_append_ifd(codec, st, (uint32_t)where, limits, diagnostics,
+          &level_index, &ignored);
+      if (r == GIMG_OK) {
+        st->ifds[level_index].role = GIMG_ITEM_LEVEL;
+        st->ifds[level_index].role_subject = index;
+      }
+    }
     if (r != GIMG_OK) {
       gimg_tiff_free_doc_state(codec, st);
       return r;
@@ -837,9 +907,16 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
     gimg_tiff_free_doc_state(codec, st);
     return r;
   }
-  // Every IFD is a picture in its own right - a page, not a moment - so every
-  // item keeps the default GIMG_ITEM_IMAGE.  See notes on the decode model:
-  // one item is one picture, and a one-page TIFF is a picture like any other.
+  // A page is a picture in its own right and keeps the default
+  // GIMG_ITEM_IMAGE; a reduced-resolution subfile is a GIMG_ITEM_LEVEL of the
+  // page it belongs to. See the note on the decode model: one item is one
+  // picture, and a pyramid level is not another picture.
+  for (size_t i = 0; i < st->ifd_count; i++) {
+    if (st->ifds[i].role == GIMG_ITEM_LEVEL) {
+      gimg_item_set_role(gimg_doc_item(doc, i), GIMG_ITEM_LEVEL,
+          st->ifds[i].role_subject);
+    }
+  }
 
   const gimg_tiff_ifd_t * first = &st->ifds[0];
 

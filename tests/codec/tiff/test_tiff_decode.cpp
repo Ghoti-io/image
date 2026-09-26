@@ -537,6 +537,43 @@ TEST(TiffDecode, MetadataSurvivesALoadAndASave) {
   gimg_stream_destroy(out);
 }
 
+TEST(TiffDecode, APyramidLevelIsNotAnotherPage) {
+  // TIFF spells "a smaller copy of this image" two ways: a directory in the
+  // main chain whose NewSubfileType has bit 0 set, and a SubIFD hanging off
+  // the full-size page (Technical Note 1). Both are read, and both produce
+  // the same thing in the document model - a GIMG_ITEM_LEVEL of the page it
+  // belongs to, rather than a second picture.
+  //
+  // That distinction is the reason the role exists. A caller counting the
+  // pictures in a document must not count a thumbnail of one of them, and
+  // before this nothing in the API could tell it not to.
+  const char * const files[] = {
+      "tiff_pyramid_chain.tif", "tiff_pyramid_subifd.tif"};
+  for (const char * file : files) {
+    SCOPED_TRACE(file);
+    Loaded img;
+    ASSERT_EQ(img.load(file), GIMG_OK) << img.reasons();
+    ASSERT_EQ(gimg_doc_item_count(img.doc()), 2u);
+
+    EXPECT_EQ(gimg_item_role(gimg_doc_item(img.doc(), 0)), GIMG_ITEM_IMAGE);
+    EXPECT_EQ(gimg_item_role(gimg_doc_item(img.doc(), 1)), GIMG_ITEM_LEVEL);
+    EXPECT_EQ(gimg_item_role_subject(gimg_doc_item(img.doc(), 1)), 0u)
+        << "a level is a version of the page it belongs to";
+
+    // And it really is the smaller copy, not a second decode of the first.
+    EXPECT_EQ(img.pixels(0), gray_ramp(8, 8));
+    const std::vector<uint8_t> level = img.pixels(1);
+    ASSERT_EQ(level.size(), 4u * 4u);
+    for (uint32_t y = 0; y < 4u; y++) {
+      for (uint32_t x = 0; x < 4u; x++) {
+        // The generator takes every other pixel of the full-size image.
+        EXPECT_EQ(level[(y * 4u) + x], gray_ramp(8, 8)[(y * 2u * 8u) + (x * 2u)])
+            << "level pixel (" << x << "," << y << ")";
+      }
+    }
+  }
+}
+
 TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   struct Case {
     const char * file;
