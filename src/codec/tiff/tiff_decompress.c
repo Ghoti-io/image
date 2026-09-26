@@ -38,6 +38,7 @@
 
 #include <ghoti.io/compress/compress.h>
 #include <ghoti.io/cutil/safemath.h>
+#include <stdbool.h>
 
 #include "../../core/alloc_internal.h"
 #include "tiff_internal.h"
@@ -81,8 +82,28 @@ static const char * tiff_method_name(uint16_t compression) {
  * error, which is why this is set explicitly and not left to a default that
  * happens to be "gif".
  */
-static GIMG_Result tiff_method_options(
-    uint16_t compression, gcomp_options_t ** out_opts) {
+/**
+ * Whether a strip holds the old bit-reversed LZW.
+ *
+ * TIFF's first LZW encoders, before the 1993 correction, packed their code
+ * words least significant bit first - the way GIF does - and files written by
+ * them are still in circulation. libtiff reads them, choosing by the same
+ * two-byte test used here: a stream that begins with a zero byte whose
+ * successor has its low bit set cannot be a correctly packed one, because a
+ * correct stream opens with the Clear code 256 in nine bits, which is 0x80
+ * followed by a byte with its top bit clear.
+ *
+ * That the reversed spelling *is* Ghoti.io Compress's "gif" profile is
+ * measured rather than assumed: quad-lzw.tif's first strip decodes to
+ * exactly its 7,680 bytes under "gif" and to nothing at all under "tiff".
+ */
+static bool tiff_lzw_is_reversed(const unsigned char * stored, size_t size) {
+  return size >= 2u && stored[0] == 0u && (stored[1] & 1u) != 0u;
+}
+
+static GIMG_Result tiff_method_options(uint16_t compression,
+    const unsigned char * stored, size_t stored_size,
+    gcomp_options_t ** out_opts) {
   *out_opts = NULL;
   if (compression != GIMG_TIFF_COMPRESSION_LZW) {
     return GIMG_OK;
@@ -91,7 +112,9 @@ static GIMG_Result tiff_method_options(
   if (gcomp_options_create(&opts) != GCOMP_OK) {
     return GIMG_ERR_OOM;
   }
-  if (gcomp_options_set_string(opts, "lzw.format", "tiff") != GCOMP_OK ||
+  const char * format =
+      tiff_lzw_is_reversed(stored, stored_size) ? "gif" : "tiff";
+  if (gcomp_options_set_string(opts, "lzw.format", format) != GCOMP_OK ||
       gcomp_options_set_uint64(opts, "lzw.lit_width", 8u) != GCOMP_OK) {
     gcomp_options_destroy(opts);
     return GIMG_ERR_INTERNAL;
@@ -182,7 +205,8 @@ GIMG_Result gimg_tiff_block_bytes(const gimg_tiff_doc_state_t * st,
     return GIMG_ERR_OOM;
   }
   gcomp_options_t * opts = NULL;
-  GIMG_Result r = tiff_method_options(ifd->compression, &opts);
+  GIMG_Result r =
+      tiff_method_options(ifd->compression, stored, stored_size, &opts);
   if (r != GIMG_OK) {
     gimg_free(st->allocator, room);
     return r;
