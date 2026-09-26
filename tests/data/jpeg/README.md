@@ -46,9 +46,9 @@ variables - `DUMP_JPEG_COEF_AFTER_SCAN`, `GIMG_JPEG_TRACE_ALL`,
 the library.** They were removed from the decoder at some point and nothing
 updated the scripts or this file, so a script whose oracle is present still
 compares against nothing: our side emits no lines at all. The three trace
-variables the decoder does still read - `GIMG_JPEG_TRACE_BASELINE_BIT_POS`,
-`GIMG_JPEG_TRACE_ENTROPY`, `GIMG_JPEG_TRACE_FIRST_CB` - are named by no
-script and no document here.
+variables that outlived the rest - `GIMG_JPEG_TRACE_BASELINE_BIT_POS`,
+`GIMG_JPEG_TRACE_ENTROPY`, `GIMG_JPEG_TRACE_FIRST_CB` - were named by no
+script and no document here either, and are gone as of 2026-09-26.
 
 So fixing where these scripts look for their oracle, which was worth doing
 because the lookup was wrong in its own right, does not make them runnable.
@@ -66,6 +66,11 @@ literals, so no `-D` and no environment variable reached them. Reviving one of
 these scripts now means writing the decoder side again, against a decoder that
 is bit-identical to libjpeg on every progressive fixture here - which is the
 reason the instrumentation had stopped being worth its weight.
+
+The encoder's half went the same way on 2026-09-26: the baseline scan writer
+carried a bit-position tracer, a first-Cb probe and an entropy trace, none of
+which any build could turn on, and all three cost a branch per symbol written
+in the innermost loop of the encoder.
 
 ### What does still run: compare_progressive_pixels.py
 

@@ -877,22 +877,6 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
   uint16_t next_restart = 0;
   size_t mcu_index = 0;
 
-  // Optional: trace which symbol covers a given bit position (e.g. 247 for byte 30 LSB).
-  unsigned long trace_bit = 247;
-  const char * trace_env = NULL;
-#if GIMG_JPEG_TRACE_BASELINE_BIT_POS
-  trace_env = getenv("GIMG_JPEG_TRACE_BASELINE_BIT_POS");
-  if (trace_env && trace_env[0] != '\0') {
-    trace_bit = strtoul(trace_env, NULL, 0);
-    if (trace_bit > 10000)
-      trace_bit = 247;
-  }
-  else {
-    trace_env = "1";
-  }
-#endif
-  size_t total_bits = 0;
-
   for (;;) {
     // T.81 Annex F: RSTm (m = 0..7) at restart boundaries.
     if (restart_interval > 0 && mcu_index > 0 &&
@@ -923,68 +907,24 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
         const int16_t * block = coef_buffer + block_idx * 64;
         int dc_val = (int)block[0];
         int diff = dc_val - last_dc[c];
-        if (block_idx == 4 && getenv("GIMG_JPEG_TRACE_FIRST_CB")) {
-          (void)fprintf(
-              stderr, "BASELINE_ENC first Cb block_idx=4 dc_val=%d\n", dc_val);
-          (void)fflush(stderr);
-        }
         last_dc[c] = dc_val;
         int nbits = jpeg_nbits(diff);
         if (nbits > 11)
           nbits = 11;
-        FILE * entropy_trace_fp = NULL;
-#if GIMG_JPEG_TRACE_ENTROPY
-        {
-          const char * entropy_trace = getenv("GIMG_JPEG_TRACE_ENTROPY");
-          if (entropy_trace && entropy_trace[0] != '\0') {
-            entropy_trace_fp = fopen(entropy_trace, block_idx == 0 ? "w" : "a");
-            if (entropy_trace_fp) {
-              if (block_idx == 0 && ac_tbl->len[0] > 0) {
-                (void)fprintf(entropy_trace_fp,
-                    "table_ac_lum EOB code=0x%x len=%d sym03 code=0x%x "
-                    "len=%d\n",
-                    (unsigned)ac_tbl->code[0], ac_tbl->len[0],
-                    (unsigned)ac_tbl->code[3], ac_tbl->len[3]);
-              }
-              (void)fprintf(entropy_trace_fp,
-                  "block %zu DC cat=%d code=0x%x len=%d\n", block_idx, nbits,
-                  (unsigned)dc_tbl->code[nbits], dc_tbl->len[nbits]);
-            }
-          }
-        }
-#endif
         if (dc_tbl->len[nbits] > 0) {
           int len = dc_tbl->len[nbits];
-          if (trace_env && total_bits <= trace_bit &&
-              (size_t)trace_bit < total_bits + (size_t)len) {
-            (void)fprintf(stderr,
-                "BASELINE_BIT_POS %lu: comp=%d block=%zu DC_code len=%d "
-                "diff=%d\n",
-                trace_bit, c, b, len, diff);
-          }
-          total_bits += (size_t)len;
           bit_writer_put_bits(&w, alloc, dc_tbl->code[nbits], len);
         }
         if (nbits > 0) {
           int extra = diff;
           if (extra < 0)
             extra += (1 << nbits) - 1;
-          if (trace_env && total_bits <= trace_bit &&
-              (size_t)trace_bit < total_bits + (size_t)nbits) {
-            (void)fprintf(stderr,
-                "BASELINE_BIT_POS %lu: comp=%d block=%zu DC_extra nbits=%d "
-                "extra=%d\n",
-                trace_bit, c, b, nbits, extra);
-          }
-          total_bits += (size_t)nbits;
           bit_writer_put_bits(&w, alloc, (unsigned int)extra, nbits);
         }
         // AC coefficients: coef_buffer is already in zigzag order (quantizer writes out[z]).
         // T.81 F.1.2.2: EOB is sent when the remaining coefficients are zero;
         // omit EOB when the last coefficient (zigzag 63) is nonzero (no "remaining" to signal).
         int k = 1;
-        int ac_eob_emitted = 0;
-        int last_encoded_was_63 = 0;
         while (k < 64) {
           int run = 0;
           while (k < 64 && block[k] == 0) {
@@ -993,19 +933,7 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
           }
           if (k >= 64) {
             int len0 = ac_tbl->len[0];
-            if (entropy_trace_fp)
-              (void)fprintf(entropy_trace_fp,
-                  "block %zu EOB code=0x%x len=%d\n", block_idx,
-                  (unsigned)ac_tbl->code[0], len0);
-            if (trace_env && total_bits <= trace_bit &&
-                (size_t)trace_bit < total_bits + (size_t)len0) {
-              (void)fprintf(stderr,
-                  "BASELINE_BIT_POS %lu: comp=%d block=%zu AC_EOB\n", trace_bit,
-                  c, b);
-            }
-            total_bits += (size_t)len0;
             bit_writer_put_bits(&w, alloc, ac_tbl->code[0], len0);
-            ac_eob_emitted = 1;
             break;
           }
           // T.81 F.1.2.2: a run of zeros longer than 15 is sent as one or more
@@ -1021,17 +949,6 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
           // could tell, because the file says what the encoder meant to say.
           while (run >= 16) {
             int len_f0 = ac_tbl->len[0xF0];
-            if (entropy_trace_fp)
-              (void)fprintf(entropy_trace_fp,
-                  "block %zu AC run=15 size=0 ZRL sym=0xf0 code=0x%x len=%d\n",
-                  block_idx, (unsigned)ac_tbl->code[0xF0], len_f0);
-            if (trace_env && total_bits <= trace_bit &&
-                (size_t)trace_bit < total_bits + (size_t)len_f0) {
-              (void)fprintf(stderr,
-                  "BASELINE_BIT_POS %lu: comp=%d block=%zu AC_ZRL\n", trace_bit,
-                  c, b);
-            }
-            total_bits += (size_t)len_f0;
             bit_writer_put_bits(&w, alloc, ac_tbl->code[0xF0], len_f0);
             run -= 16;
           }
@@ -1051,52 +968,22 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer(uint32_t width,
           }
           int symbol = (run << 4) | size;
           int len_sym = ac_tbl->len[symbol];
-          if (entropy_trace_fp)
-            (void)fprintf(entropy_trace_fp,
-                "block %zu AC run=%d size=%d sym=0x%02x code=0x%x len=%d\n",
-                block_idx, run, size, symbol, (unsigned)ac_tbl->code[symbol],
-                len_sym);
-          if (trace_env && total_bits <= trace_bit &&
-              (size_t)trace_bit < total_bits + (size_t)len_sym) {
-            (void)fprintf(stderr,
-                "BASELINE_BIT_POS %lu: comp=%d block=%zu AC run=%d size=%d "
-                "zigzag_k=%d coeff=%d\n",
-                trace_bit, c, b, run, size, (int)k, coeff);
-          }
-          total_bits += (size_t)len_sym;
           bit_writer_put_bits(&w, alloc, ac_tbl->code[symbol], len_sym);
           if (size > 0) {
             int extra = coeff;
             if (extra < 0)
               extra += (1 << size) - 1;
-            if (trace_env && total_bits <= trace_bit &&
-                (size_t)trace_bit < total_bits + (size_t)size) {
-              (void)fprintf(stderr,
-                  "BASELINE_BIT_POS %lu: comp=%d block=%zu AC_extra size=%d "
-                  "extra=%d\n",
-                  trace_bit, c, b, size, extra);
-            }
-            total_bits += (size_t)size;
             bit_writer_put_bits(&w, alloc, (unsigned int)extra, size);
           }
-          last_encoded_was_63 = (k == 63);
           k++;
         }
-        // T.81 Annex F: EOB when remaining are zero. Omit EOB when the last coefficient
-        // (zigzag 63) was just encoded; emit EOB only when we exited via trailing zeros
-        // or when we skipped a coefficient.
-        if (k >= 64 && !ac_eob_emitted && !last_encoded_was_63) {
-          int len0 = ac_tbl->len[0];
-          if (entropy_trace_fp && len0 > 0)
-            (void)fprintf(entropy_trace_fp, "block %zu EOB code=0x%x len=%d\n",
-                block_idx, (unsigned)ac_tbl->code[0], len0);
-          if (len0 > 0) {
-            total_bits += (size_t)len0;
-            bit_writer_put_bits(&w, alloc, ac_tbl->code[0], len0);
-          }
-        }
-        if (entropy_trace_fp)
-          (void)fclose(entropy_trace_fp);
+        // T.81 Annex F: EOB when the remaining coefficients are zero, omitted
+        // when coefficient 63 was the last one written.  Both are decided
+        // inside the loop: it leaves either through the break above, having
+        // just sent EOB, or by k reaching 64 after writing coefficient 63.
+        // There used to be a third arm here for "exited some other way", with
+        // two flags feeding it; no input reaches it, because there is no other
+        // way out.
       }
       block_off += (size_t)h_samp[c] * (size_t)v_samp[c];
     }
@@ -1346,8 +1233,6 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
           bit_writer_put_bits(&w, alloc, (unsigned int)extra, nbits);
         }
         int k = 1;
-        int ac_eob_emitted = 0;
-        int last_encoded_was_63 = 0;
         while (k < 64) {
           int run = 0;
           while (k < 64 && block[k] == 0) {
@@ -1357,21 +1242,17 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
           if (k >= 64) {
             if (ac_tbl->len[0] > 0)
               bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
-            ac_eob_emitted = 1;
             break;
           }
+          // T.81 F.1.2.2: each ZRL stands for sixteen zeros; the leftover
+          // becomes the run of the symbol carrying the next coefficient.  The
+          // loop does not move k, so the k >= 64 test above covers this too -
+          // there used to be a second copy of it here, which no input reached.
           while (run >= 16) {
             if (ac_tbl->len[0xF0] > 0)
               bit_writer_put_bits(
                   &w, alloc, ac_tbl->code[0xF0], ac_tbl->len[0xF0]);
             run -= 16;
-          }
-          // T.81: do not encode past coefficient 63; EOB must be sent when rest are zero.
-          if (k >= 64) {
-            if (ac_tbl->len[0] > 0)
-              bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
-            ac_eob_emitted = 1;
-            break;
           }
           // T.81 F.1.2.2 Table F.2: at 12-bit precision an AC size category
           // runs 1..14.  Same reasoning as the DC case above.
@@ -1392,14 +1273,13 @@ GIMG_Result gimg_jpeg_encode_baseline_scan_from_coef_buffer_extended(
                 extra += (1 << size) - 1;
               bit_writer_put_bits(&w, alloc, (unsigned int)extra, size);
             }
-            last_encoded_was_63 = (k == 63);
           }
           k++;
         }
-        if (k >= 64 && !ac_eob_emitted && !last_encoded_was_63 &&
-            ac_tbl->len[0] > 0) {
-          bit_writer_put_bits(&w, alloc, ac_tbl->code[0], ac_tbl->len[0]);
-        }
+        // No trailing EOB arm: as in the eight-bit scan above, the loop leaves
+        // either through the break that has just sent one or by k reaching 64
+        // after coefficient 63, which is the case T.81 says not to send one
+        // for.
       }
       block_off += (size_t)h_samp[c] * (size_t)v_samp[c];
     }

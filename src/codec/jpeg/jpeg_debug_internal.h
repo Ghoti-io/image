@@ -38,9 +38,6 @@
 #ifndef GIMG_JPEG_DEBUG_LOAD
 #define GIMG_JPEG_DEBUG_LOAD 0
 #endif
-/** When GIMG_JPEG_DEBUG_PROG_SYNC=1, log encoder/decoder step sync (used by
- * jpeg_entropy.c and jpeg_block.c). */
-#define PROG_SYNC_DEBUG() (GIMG_JPEG_DEBUG_PROG_SYNC)
 #ifndef GIMG_JPEG_DEBUG_RST_DEC
 #define GIMG_JPEG_DEBUG_RST_DEC 0
 #endif
@@ -62,9 +59,6 @@
 #ifndef GIMG_JPEG_TRACE_BASELINE_SYNC
 #define GIMG_JPEG_TRACE_BASELINE_SYNC 0
 #endif
-#ifndef GIMG_JPEG_TRACE_FIRST_CB
-#define GIMG_JPEG_TRACE_FIRST_CB 0
-#endif
 #ifndef GIMG_JPEG_DUMP_JPEG_COMPONENTS
 #define GIMG_JPEG_DUMP_JPEG_COMPONENTS 0
 #endif
@@ -79,12 +73,6 @@
 #endif
 #ifndef GIMG_JPEG_DUMP_SCAN_BASELINE
 #define GIMG_JPEG_DUMP_SCAN_BASELINE 0
-#endif
-#ifndef GIMG_JPEG_TRACE_BASELINE_BIT_POS
-#define GIMG_JPEG_TRACE_BASELINE_BIT_POS 0
-#endif
-#ifndef GIMG_JPEG_TRACE_ENTROPY
-#define GIMG_JPEG_TRACE_ENTROPY 0
 #endif
 
 // recover_stuff_zero: kept as a runtime switch (GIMG_JPEG_RECOVER_STUFF_ZERO)
