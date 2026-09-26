@@ -210,6 +210,64 @@ inline GIMG_Raster * make_raster(const GIMG_Pixel_Format & fmt, uint32_t w,
 }
 
 /**
+ * Turn the one-item document into a three-frame animation.
+ *
+ * Both animation writers - APNG's fcTL/fdAT chain and GIF's graphic control
+ * extensions - run only for a document of more than one item, and every case
+ * in this list made exactly one. So the frame loop, the arms that free a
+ * frame's compressed buffer when a write fails partway through it, and the
+ * disposal and blending fields were on no sweep's path at all.
+ *
+ * Each frame gets a different disposal and blend so the writers choose
+ * different bytes rather than repeating one frame three times.
+ */
+inline void make_animation(GIMG_Doc * doc) {
+  GIMG_Item * first = gimg_doc_item(doc, 0);
+  if (!first) { return; }
+  if (gimg_doc_set_item_count(doc, 3u) != GIMG_OK) { return; }
+  first = gimg_doc_item(doc, 0);
+  if (!first) { return; }
+  gimg_item_set_frame_delay(first, 10u, 100u);
+  gimg_item_set_dispose_op(first, GIMG_DISPOSE_NONE);
+  gimg_item_set_blend_op(first, GIMG_BLEND_SOURCE);
+  const GIMG_Dispose_Op dispose[2] = {
+      GIMG_DISPOSE_BACKGROUND, GIMG_DISPOSE_PREVIOUS};
+  const GIMG_Blend_Op blend[2] = {GIMG_BLEND_OVER, GIMG_BLEND_SOURCE};
+  for (size_t i = 1; i < 3u; i++) {
+    GIMG_Item * item = gimg_doc_item(doc, i);
+    if (!item || gimg_item_copy(first, item) != GIMG_OK) { return; }
+    GIMG_Raster * raster = gimg_item_raster(item);
+    if (raster) {
+      // A frame identical to the one before it is a frame every writer can
+      // encode as nothing, so each row is rotated by i pixels. Rotating
+      // rather than adding a constant: adding one changes the set of colours
+      // and the alpha with it, and GIF refuses a partly transparent pixel
+      // outright - which is how this first came back UNSUPPORTED.
+      unsigned char * px = (unsigned char *)gimg_raster_pixels(raster);
+      const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+      const size_t stride = gimg_raster_stride_bytes(raster);
+      const size_t pixel = fmt->channel_count *
+          (fmt->bits_per_channel[0] > 8u ? 2u : 1u);
+      const uint32_t w = gimg_raster_width(raster);
+      const uint32_t h = gimg_raster_height(raster);
+      std::vector<unsigned char> row(stride);
+      for (uint32_t y = 0; y < h; y++) {
+        unsigned char * dst = px + (size_t)y * stride;
+        std::memcpy(row.data(), dst, stride);
+        for (uint32_t x = 0; x < w; x++) {
+          const size_t from = (size_t)((x + i) % w) * pixel;
+          std::memcpy(dst + (size_t)x * pixel, row.data() + from, pixel);
+        }
+      }
+    }
+    gimg_item_set_frame_delay(item, (uint16_t)(20u * i), 100u);
+    gimg_item_set_dispose_op(item, dispose[i - 1u]);
+    gimg_item_set_blend_op(item, blend[i - 1u]);
+  }
+  gimg_doc_set_loop_count(doc, 3u);
+}
+
+/**
  * A format of @p n channels with no colour convention, at 8 bits.
  *
  * T.81 B.2.2 gives Nf a range of 1 to 255 and says nothing about what the
@@ -481,6 +539,31 @@ inline std::vector<SaveCase> save_cases(void) {
   // Not hierarchical: gimg_jpeg_encode_hierarchical() refuses a frame of more
   // than four components on purpose - see the note above the gate in
   // jpeg_hierarchical_encode.c - so that combination has no case here.
+  // The animation writers, which no single-item case reaches.
+  {
+    GIMG_Save_Options o = opt();
+    cases.push_back({"png three frames", "png", &GIMG_PIXEL_RGBA8, o, 0u,
+        make_animation, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.interlaced = 1;
+    cases.push_back({"png three frames interlaced", "png", &GIMG_PIXEL_RGBA8,
+        o, 0u, make_animation, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    cases.push_back({"gif three frames", "gif", &GIMG_PIXEL_RGBA8, o, 64u,
+        make_animation, 0u, 0u});
+  }
+  {
+    // gif_interlace, not interlaced: the PNG field is ignored by the GIF
+    // writer, and setting it produced a second copy of the case above.
+    GIMG_Save_Options o = opt();
+    o.gif_interlace = 1;
+    cases.push_back({"gif three frames interlaced", "gif", &GIMG_PIXEL_RGBA8,
+        o, 64u, make_animation, 0u, 0u});
+  }
   {
     GIMG_Save_Options o = opt();
     o.jpeg_progressive = 1;
