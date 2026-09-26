@@ -57,6 +57,8 @@
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
+
+#include "../registry_sweep.h"
 #include <algorithm>
 #include <map>
 #include <string>
@@ -233,10 +235,17 @@ TEST(ConversionMatrix, RefusingACmykFrameFreesTheRasterItDecoded) {
 }
 
 TEST(ConversionMatrix, EveryFixtureSurvivesEveryFormatThatCanHoldIt) {
-  const std::string root = std::string(GIMG_TEST_DATA_JPEG) + "/..";
-  const std::string dirs[] = {
-      root + "/jpeg", root + "/png", root + "/bmp", root + "/gif"};
-  const char * targets[] = {"png", "bmp", "gif", "jpeg"};
+  // Sources and targets both come from the registry: a codec added without
+  // being converted to and from would leave this matrix passing over the four
+  // it was written against.
+  std::vector<std::string> dirs;
+  std::vector<std::string> targets;
+  for (const gimg_test::SweptCodec & c : gimg_test::swept_codecs()) {
+    dirs.push_back(c.data_dir);
+    if (c.writes()) { targets.push_back(c.name); }
+  }
+  ASSERT_FALSE(dirs.empty()) << "no codecs registered; nothing to sweep";
+  ASSERT_FALSE(targets.empty()) << "no codec can write; nothing to convert to";
 
   long fixtures = 0;
   std::map<std::string, Counts> counts;
@@ -267,10 +276,10 @@ TEST(ConversionMatrix, EveryFixtureSurvivesEveryFormatThatCanHoldIt) {
       }
       fixtures++;
 
-      for (const char * target : targets) {
+      for (const std::string & target : targets) {
         SCOPED_TRACE(name + " -> " + target);
         std::vector<uint8_t> converted;
-        const GIMG_Result r = convert(bytes, target, converted);
+        const GIMG_Result r = convert(bytes, target.c_str(), converted);
         if (r != GIMG_OK) {
           counts[target].refused++;
           EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED)
@@ -285,10 +294,10 @@ TEST(ConversionMatrix, EveryFixtureSurvivesEveryFormatThatCanHoldIt) {
         ASSERT_EQ(after.width, before.width);
         ASSERT_EQ(after.height, before.height);
 
-        if (strcmp(target, "jpeg") == 0) {
+        if (target == "jpeg") {
           continue; // Lossy: the geometry is all that is promised.
         }
-        if (strcmp(target, "png") == 0) {
+        if (target == "png") {
           ASSERT_EQ(after.channels, before.channels)
               << "PNG carries every shape this library decodes to";
           ASSERT_EQ(after.bits, before.bits);
@@ -301,7 +310,7 @@ TEST(ConversionMatrix, EveryFixtureSurvivesEveryFormatThatCanHoldIt) {
           // raster is widened or narrowed on the way in. Geometry only.
           continue;
         }
-        if (strcmp(target, "gif") == 0 && before.channels == 4 &&
+        if (target == "gif" && before.channels == 4 &&
             before.bits == 8) {
           // GIF carries the visible image: one palette index is transparent
           // and the colour stored behind it is the writer's, not the

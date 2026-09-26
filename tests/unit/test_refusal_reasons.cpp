@@ -49,6 +49,8 @@
 #include <map>
 #include <string>
 #include <vector>
+
+#include "../registry_sweep.h"
 #if defined(_WIN32)
 #include <sys/stat.h>
 #endif
@@ -145,17 +147,16 @@ void sweep(const std::string & dir, std::map<std::string, Tally> & by_format) {
 } // namespace
 
 TEST(RefusalReasons, EveryRefusedFileSaysWhichRuleItBroke) {
-  const std::string data_jpeg = GIMG_TEST_DATA_JPEG;
-  // The fuzz corpus and the fixture sets, located relative to the one data
-  // directory the build names.
-  const std::string root = data_jpeg + "/../..";
-  const std::string dirs[] = {
-      root + "/fuzz/corpus",
-      root + "/data/jpeg",
-      root + "/data/png",
-      root + "/data/bmp",
-      root + "/data/gif",
-  };
+  // The fuzz corpus, then every registered codec's fixture directory.  The
+  // list is not written out here: a codec added without being swept would
+  // leave this test passing over the four it was written against.
+  const std::string root = std::string(GIMG_TEST_DATA_ROOT) + "/..";
+  std::vector<std::string> dirs = {root + "/fuzz/corpus"};
+  for (const gimg_test::SweptCodec & c : gimg_test::swept_codecs()) {
+    dirs.push_back(c.data_dir);
+  }
+  ASSERT_GT(dirs.size(), 1u) << "no codecs registered; nothing to sweep";
+
   std::map<std::string, Tally> by_format;
   for (const std::string & dir : dirs) {
     sweep(dir, by_format);
@@ -181,9 +182,14 @@ TEST(RefusalReasons, EveryRefusedFileSaysWhichRuleItBroke) {
   ASSERT_GT(total_refused, 500)
       << "only " << total_refused << " refusals were seen, so this sweep is "
          "looking at the wrong place - check that tests/fuzz/corpus is where "
-         "it is expected relative to " << data_jpeg;
-  EXPECT_EQ(by_format.size(), 4u)
-      << "one of the four formats contributed no files at all";
+         "it is expected relative to " << GIMG_TEST_DATA_ROOT;
+  // signature_of() is deliberately not the library's own probe, so a new
+  // codec has to be taught its magic here before this sweep can see its
+  // files.  Asserting one bucket per registered codec is what makes that a
+  // failure rather than a silent skip.
+  EXPECT_EQ(by_format.size(), gimg_test::swept_codecs().size())
+      << "a registered codec contributed no files: either its fixtures are "
+         "missing, or signature_of() in this file does not know its magic";
 }
 
 namespace {
@@ -297,15 +303,13 @@ void sweep_decode(const std::string & dir, const GIMG_Limits & limits,
  * codec reads.
  */
 TEST(RefusalReasons, EveryItemThatLoadsDecodesOrSaysWhyNot) {
-  const std::string data_jpeg = GIMG_TEST_DATA_JPEG;
-  const std::string root = data_jpeg + "/../..";
-  const std::string dirs[] = {
-      root + "/fuzz/corpus",
-      root + "/data/jpeg",
-      root + "/data/png",
-      root + "/data/bmp",
-      root + "/data/gif",
-  };
+  const std::string root = std::string(GIMG_TEST_DATA_ROOT) + "/..";
+  std::vector<std::string> dirs = {root + "/fuzz/corpus"};
+  for (const gimg_test::SweptCodec & c : gimg_test::swept_codecs()) {
+    dirs.push_back(c.data_dir);
+  }
+  ASSERT_GT(dirs.size(), 1u) << "no codecs registered; nothing to sweep";
+
   GIMG_Limits limits;
   gimg_limits_default(&limits);
   limits.max_decoded_pixels = 4u * 1024u * 1024u;
@@ -337,12 +341,12 @@ TEST(RefusalReasons, EveryItemThatLoadsDecodesOrSaysWhyNot) {
   ASSERT_GT(total_items, 1000)
       << "only " << total_items << " items were decoded, so this sweep is "
          "looking at the wrong place - check that tests/fuzz/corpus is where "
-         "it is expected relative to " << data_jpeg;
+         "it is expected relative to " << GIMG_TEST_DATA_ROOT;
   EXPECT_GT(total_refused, 0)
       << "not one decode in the whole corpus was refused, which is not what a "
          "corpus of mutations looks like";
-  EXPECT_EQ(by_format.size(), 4u)
-      << "one of the four formats contributed no file that loads";
+  EXPECT_EQ(by_format.size(), gimg_test::swept_codecs().size())
+      << "a registered codec contributed no file that loads";
 }
 
 int main(int argc, char ** argv) {

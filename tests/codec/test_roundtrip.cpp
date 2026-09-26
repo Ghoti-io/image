@@ -56,30 +56,54 @@
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
 
+#include "../registry_sweep.h"
+
 namespace {
 
-/** Every format this library can write. */
-const char * const kFormats[] = {"png", "jpeg", "bmp", "gif"};
-
-/** Those of them that can hold more than one frame. */
-bool holds_frames(const char * fmt) {
-  return std::strcmp(fmt, "png") == 0 || std::strcmp(fmt, "gif") == 0;
+/** Every format this library can write, from the registry rather than a list. */
+std::vector<std::string> writable_formats() {
+  std::vector<std::string> out;
+  for (const gimg_test::SweptCodec & c : gimg_test::swept_codecs()) {
+    if (c.writes()) {
+      out.push_back(c.name);
+    }
+  }
+  return out;
 }
 
+/**
+ * Whether writing this format back preserves both the pixels and the frames.
+ *
+ * Deliberately a list and not a capability query. "Lossless" is not a static
+ * property of a codec here - JPEG writes lossless mode as well as lossy - and
+ * BMP keeps item 0 alone by design, which is its documented behaviour and is
+ * pinned by BmpEncode.ADocumentOfSeveralItemsIsSavedAsItsFirstOne. A new
+ * format belongs here only once somebody has decided which of those it is,
+ * so the list is the right shape: it has to be thought about rather than
+ * inherited.
+ */
+bool keeps_every_pixel_and_frame(const std::string & fmt) {
+  return fmt == "png" || fmt == "gif";
+}
+
+/** Whether a format can hold more than one frame, as the codec declares. */
+bool holds_frames(const std::string & fmt) {
+  GIMG_Codec * c = gimg_codec_by_name(fmt.c_str());
+  return c && (gimg_codec_capabilities(c) & GIMG_CAP_ANIMATION) != 0u;
+}
+
+/**
+ * Every fixture of every registered codec.
+ *
+ * A few files sit in a directory that is not their own - the PNG and JPEG
+ * payloads of BMP's wrapper fixtures - so what a file is gets settled by its
+ * bytes below rather than by where it lives or what it is called.
+ */
 std::vector<std::string> fixtures() {
   std::vector<std::string> out;
-  for (const char * dir : {GIMG_TEST_DATA_PNG, GIMG_TEST_DATA_JPEG,
-           GIMG_TEST_DATA_BMP, GIMG_TEST_DATA_GIF}) {
-    std::error_code ec;
-    for (const auto & e : std::filesystem::directory_iterator(dir, ec)) {
-      if (!e.is_regular_file()) {
-        continue;
-      }
-      const std::string ext = e.path().extension().string();
-      if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
-          ext == ".gif") {
-        out.push_back(e.path().string());
-      }
+  for (const gimg_test::SweptCodec & c : gimg_test::swept_codecs()) {
+    for (const std::string & name : gimg_test::sweep_image_files_in(c.data_dir)) {
+      out.push_back(c.data_dir + "/" + name);
     }
   }
   std::sort(out.begin(), out.end());
@@ -92,22 +116,27 @@ std::vector<uint8_t> slurp(const std::string & path) {
       (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
-/** The codec name a fixture's extension asks for, or nullptr. */
-const char * format_of(const std::string & path) {
-  const std::string ext = std::filesystem::path(path).extension().string();
-  if (ext == ".png") {
-    return "png";
+/**
+ * The codec whose bytes these are, or "" if none of them claims it.
+ *
+ * Asked of the library rather than of the file name. That is not circular
+ * here: what is under test is whether a document survives a save and a load,
+ * and the probe is neither half of that - it only says which writer to call
+ * "the same format" when the pass below compares like with like.
+ */
+std::string format_of(const std::vector<uint8_t> & bytes) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    return std::string();
   }
-  if (ext == ".jpg" || ext == ".jpeg") {
-    return "jpeg";
+  GIMG_Probe_Result probe = {};
+  const GIMG_Result r = gimg_probe(s, &probe);
+  std::string name;
+  if (r == GIMG_OK && probe.format_name) {
+    name = probe.format_name;
   }
-  if (ext == ".bmp") {
-    return "bmp";
-  }
-  if (ext == ".gif") {
-    return "gif";
-  }
-  return nullptr;
+  gimg_stream_destroy(s);
+  return name;
 }
 
 /**
@@ -288,7 +317,7 @@ TEST(CrossCodec, WhatTheCallerDecodedFirstDoesNotChangeTheFile) {
   // image has nothing to disagree with - a one-off sweep over all 256
   // fixtures in four output formats and six decode orders (5142 comparisons)
   // found the same nothing, at five seconds a run.
-  static const char * const formats[] = {"png", "jpeg", "bmp", "gif"};
+  const std::vector<std::string> formats = writable_formats();
   size_t compared = 0;
   for (const std::string & path : fixtures()) {
     const std::vector<uint8_t> src = slurp(path);
@@ -312,7 +341,7 @@ TEST(CrossCodec, WhatTheCallerDecodedFirstDoesNotChangeTheFile) {
         continue;
       }
     }
-    for (const char * fmt : formats) {
+    for (const std::string & fmt : formats) {
       std::vector<uint8_t> reference;
       int reference_order = -1;
       for (int order = 0; order < 5; order++) {
@@ -333,7 +362,7 @@ TEST(CrossCodec, WhatTheCallerDecodedFirstDoesNotChangeTheFile) {
         GIMG_Save_Report report;
         memset(&report, 0, sizeof(report));
         std::vector<uint8_t> bytes;
-        if (gimg_doc_save(doc, out, fmt, &opts, &report) == GIMG_OK) {
+        if (gimg_doc_save(doc, out, fmt.c_str(), &opts, &report) == GIMG_OK) {
           const void * p = nullptr;
           size_t n = 0;
           gimg_stream_output_buffer(out, &p, &n);
@@ -517,10 +546,10 @@ TEST(SelfRoundTrip, EveryFileWeWriteIsOneWeCanRead) {
     sources++;
     // What the source is, and what it looks like, for the same-format pass
     // below. Taken after the decode loop above, so every frame is in hand.
-    const char * own_format = format_of(path);
+    const std::string own_format = format_of(src);
     const std::vector<uint8_t> source_pixels = decoded_frames(doc);
 
-    for (const char * fmt : kFormats) {
+    for (const std::string & fmt : writable_formats()) {
       GIMG_Stream * out = nullptr;
       ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
       GIMG_Save_Options opts;
@@ -530,8 +559,8 @@ TEST(SelfRoundTrip, EveryFileWeWriteIsOneWeCanRead) {
       opts.gif_alpha_threshold = 128;
       GIMG_Save_Report report;
       memset(&report, 0, sizeof(report));
-      const GIMG_Result sr = gimg_doc_save(doc, out, fmt, &opts, &report);
-      const bool same_format = own_format && std::strcmp(fmt, own_format) == 0;
+      const GIMG_Result sr = gimg_doc_save(doc, out, fmt.c_str(), &opts, &report);
+      const bool same_format = !own_format.empty() && fmt == own_format;
       if (sr != GIMG_OK) {
         refused++;
         // A codec that cannot hold this says so, and that is an answer - but
@@ -593,8 +622,7 @@ TEST(SelfRoundTrip, EveryFileWeWriteIsOneWeCanRead) {
         // ones. JPEG is excluded because it is lossy and BMP because it keeps
         // item 0 alone, which is its documented behaviour and is pinned by
         // BmpEncode.ADocumentOfSeveralItemsIsSavedAsItsFirstOne.
-        if (same_format && (std::strcmp(fmt, "png") == 0 ||
-                               std::strcmp(fmt, "gif") == 0)) {
+        if (same_format && keeps_every_pixel_and_frame(fmt)) {
           ASSERT_FALSE(source_pixels.empty())
               << path << ": the source must decode for this to compare";
           EXPECT_EQ(decoded_frames(reloaded), source_pixels)

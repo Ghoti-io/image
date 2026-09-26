@@ -412,10 +412,20 @@ TEST(Limits, ACapSetAtLoadTimeSurvivesADecodeThatSaysNothing) {
  * nor its out-of-range arm had run. Walking it is also the only way to assert
  * that the registry holds what this library says it ships.
  */
-TEST(Limits, TheRegistryHoldsFourCodecsAndIsWalkableByIndex) {
+// This list is deliberately written out, and it is the only place in the tests
+// that names the codecs. It is the inventory assertion: its job is to state
+// what this library ships, which a version read back from the registry could
+// not do. Every sweep that should *cover* every codec takes its population
+// from the registry instead - see tests/registry_sweep.h. Adding a format
+// means editing this one list, on purpose.
+const std::vector<std::string> kShippedCodecs = {"bmp", "gif", "jpeg", "png"};
+
+TEST(Limits, TheRegistryHoldsEveryShippedCodecAndIsWalkableByIndex) {
   const size_t n = gimg_codec_count();
-  ASSERT_EQ(n, 4u) << "the registry holds " << n
-                   << " codecs; this library ships png, jpeg, bmp and gif";
+  ASSERT_EQ(n, kShippedCodecs.size())
+      << "the registry holds " << n << " codecs; this library ships "
+      << kShippedCodecs.size()
+      << ". If a codec was just added, add it to kShippedCodecs above";
   std::vector<std::string> names;
   for (size_t i = 0; i < n; i++) {
     GIMG_Codec * c = gimg_codec_by_index(i);
@@ -428,8 +438,7 @@ TEST(Limits, TheRegistryHoldsFourCodecsAndIsWalkableByIndex) {
                                            << ") is not by_index(" << i << ")";
   }
   std::sort(names.begin(), names.end());
-  const std::vector<std::string> want = {"bmp", "gif", "jpeg", "png"};
-  EXPECT_EQ(names, want);
+  EXPECT_EQ(names, kShippedCodecs);
   EXPECT_EQ(gimg_codec_by_index(n), nullptr) << "one past the end is not null";
   EXPECT_EQ(gimg_codec_by_index((size_t)-1), nullptr);
   EXPECT_EQ(gimg_codec_by_name("no such codec"), nullptr);

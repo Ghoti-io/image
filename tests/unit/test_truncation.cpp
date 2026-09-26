@@ -42,6 +42,7 @@
 
 #include "../failing_allocator.h"
 #include "../../src/codec/codec_internal.h"
+#include "../registry_sweep.h"
 
 namespace {
 
@@ -107,47 +108,30 @@ std::vector<size_t> cut_points(size_t len) {
 } // namespace
 
 TEST(Truncation, EveryFixtureCutShortIsAnsweredAndFreed) {
-  const std::string root = std::string(GIMG_TEST_DATA_JPEG) + "/..";
-  struct Dir {
-    const char * codec;
-    std::string path;
-    const char * ext;
-  } dirs[] = {
-      {"jpeg", std::string(GIMG_TEST_DATA_JPEG), ".jpg"},
-      {"png", std::string(GIMG_TEST_DATA_PNG), ".png"},
-      {"bmp", root + "/bmp", ".bmp"},
-      {"gif", root + "/gif", ".gif"},
-  };
+  const std::vector<gimg_test::SweptCodec> codecs = gimg_test::swept_codecs();
+  ASSERT_FALSE(codecs.empty()) << "no codecs registered; nothing to sweep";
 
   long fixtures = 0, cuts = 0, refused = 0, decoded = 0;
-  for (const Dir & d : dirs) {
-    DIR * dp = opendir(d.path.c_str());
-    if (!dp) {
-      ADD_FAILURE() << "cannot read fixture directory " << d.path;
+  for (const gimg_test::SweptCodec & d : codecs) {
+    const std::vector<std::string> names =
+        gimg_test::sweep_image_files_in(d.data_dir);
+    if (names.empty()) {
+      ADD_FAILURE() << "no fixtures under " << d.data_dir
+                    << "; a registered codec with nothing to cut short is a "
+                       "codec this sweep does not cover";
       continue;
     }
-    std::vector<std::string> names;
-    while (struct dirent * e = readdir(dp)) {
-      const std::string n = e->d_name;
-      const size_t extlen = strlen(d.ext);
-      if (n.size() > extlen &&
-          n.compare(n.size() - extlen, extlen, d.ext) == 0) {
-        names.push_back(n);
-      }
-    }
-    closedir(dp);
-    std::sort(names.begin(), names.end());
 
     for (const std::string & name : names) {
       std::vector<uint8_t> bytes;
-      if (!read_file(d.path + "/" + name, bytes) || bytes.empty()) {
+      if (!read_file(d.data_dir + "/" + name, bytes) || bytes.empty()) {
         continue;
       }
       fixtures++;
       for (size_t at : cut_points(bytes.size())) {
         Failing f;
         init(f);
-        const GIMG_Result r = decode_through(d.codec, bytes.data(), at, f);
+        const GIMG_Result r = decode_through(d.name.c_str(), bytes.data(), at, f);
         cuts++;
         if (r == GIMG_OK) { decoded++; } else { refused++; }
         // Any answer is allowed; inventing a new one is not.

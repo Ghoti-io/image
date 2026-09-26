@@ -579,13 +579,13 @@ $(OBJ_DIR)/tests/%.o: tests/%.cpp $(FLAGS_STAMP)
 $(OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_ROOT=\"$(TEST_DATA_ROOT)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/ itself: cross-codec, so every data directory.
 $(OBJ_DIR)/tests/%.o: tests/codec/%.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_ROOT=\"$(TEST_DATA_ROOT)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/bmp/ (object name from basename for link).
 $(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp $(FLAGS_STAMP)
@@ -627,6 +627,12 @@ TEST_OUT_PNG := $(IMAGE_ROOT)/tests/out/png
 # Output directory for JPEG encode test output; verifier reads this.
 TEST_OUT_JPEG := $(IMAGE_ROOT)/tests/out/jpeg
 # Test data path for BMP tests (fixtures from tests/data/bmp/generate.py).
+# The root of the fixture tree.  A codec's fixtures live in a directory named
+# after the codec, so a sweep that walks the registry finds them without any
+# list here; the per-format variables below are for the tests that name one
+# format on purpose.
+TEST_DATA_ROOT := $(IMAGE_ROOT)/tests/data
+TEST_OUT_ROOT := $(IMAGE_ROOT)/tests/out
 TEST_DATA_BMP := $(IMAGE_ROOT)/tests/data/bmp
 TEST_DATA_GIF := $(IMAGE_ROOT)/tests/data/gif
 # Output directory for BMP encode test output.

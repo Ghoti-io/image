@@ -62,8 +62,9 @@ typedef struct GIMG_Codec GIMG_Codec;
  * long-term; copy the string if you need to keep it.
  */
 typedef struct {
-  const char * format_name; ///< "png", "jpeg", "bmp" or "gif"; NULL if no
-                            ///< codec recognised the bytes.
+  const char * format_name; ///< The name of the codec that claimed the bytes,
+                            ///< as gimg_codec_name() reports it; NULL if none
+                            ///< did.
   unsigned int confidence;  ///< 0–100; 0 = no match.
   uint8_t _reserved[4];
 } GIMG_Probe_Result;
