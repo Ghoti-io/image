@@ -56,6 +56,7 @@
 typedef struct {
   uint32_t x, y, width, height;
   size_t row_bytes; ///< Bytes per stored row of the block, padding included.
+  int plane;        ///< Which channel, or -1 when the block carries them all.
 } tiff_block_t;
 
 /** Bytes one stored row of @p pixels pixels occupies.
@@ -65,13 +66,28 @@ typedef struct {
  * and not 36.5. Getting this wrong shears the picture one pixel further left
  * on every row, which looks like a decoder that cannot count rather than one
  * that cannot round. */
-static size_t tiff_row_bytes(const gimg_tiff_ifd_t * ifd, size_t pixels) {
-  const size_t bits = pixels * ifd->samples_per_pixel * ifd->bits_per_sample;
+static size_t tiff_row_bytes(
+    const gimg_tiff_ifd_t * ifd, size_t pixels, bool planar) {
+  const size_t per_pixel = planar ? 1u : ifd->samples_per_pixel;
+  const size_t bits = pixels * per_pixel * ifd->bits_per_sample;
   return (bits + 7u) / 8u;
 }
 
+/**
+ * The rectangle block @p index covers, and which channel it carries.
+ *
+ * With PlanarConfiguration 2 the file holds one whole set of strips or tiles
+ * per sample, laid out plane after plane, so the block index divides into a
+ * plane and a position within it. With configuration 1 there is one plane and
+ * every block carries every channel, which is spelled here as plane -1.
+ */
 static void tiff_block_rect(
     const gimg_tiff_ifd_t * ifd, size_t index, tiff_block_t * out) {
+  out->plane = -1;
+  if (ifd->planar_config == 2u && ifd->blocks_per_plane > 0u) {
+    out->plane = (int)(index / ifd->blocks_per_plane);
+    index %= ifd->blocks_per_plane;
+  }
   if (ifd->tiled) {
     const size_t across =
         ((size_t)ifd->width + ifd->tile_width - 1u) / ifd->tile_width;
@@ -79,14 +95,15 @@ static void tiff_block_rect(
     out->y = (uint32_t)((index / across) * ifd->tile_height);
     out->width = ifd->tile_width;
     out->height = ifd->tile_height;
-    out->row_bytes = tiff_row_bytes(ifd, ifd->tile_width);
+    out->row_bytes =
+        tiff_row_bytes(ifd, ifd->tile_width, out->plane >= 0);
     return;
   }
   out->x = 0u;
   out->y = (uint32_t)(index * ifd->rows_per_strip);
   out->width = ifd->width;
   out->height = ifd->rows_per_strip;
-  out->row_bytes = tiff_row_bytes(ifd, ifd->width);
+  out->row_bytes = tiff_row_bytes(ifd, ifd->width, out->plane >= 0);
 }
 
 /**
@@ -175,58 +192,92 @@ static uint8_t tiff_map8(const gimg_tiff_ifd_t * ifd, uint16_t v) {
   return (uint8_t)(v >> 8);
 }
 
+/** What the decoded raster looks like, decided once from the directory. */
+typedef struct {
+  const GIMG_Pixel_Format * format;
+  size_t channels;   ///< Channels in the output raster.
+  size_t bytes;      ///< Bytes per output pixel.
+  bool wide;         ///< 16-bit samples rather than 8.
+  bool has_alpha;    ///< The output carries an alpha channel.
+  bool source_alpha; ///< ...and the file supplies it.
+} tiff_output_t;
+
+static bool tiff_plan_output(
+    const gimg_tiff_ifd_t * ifd, tiff_output_t * out) {
+  const bool gray = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO ||
+      ifd->photometric == GIMG_TIFF_PHOTOMETRIC_BLACK_IS_ZERO;
+  const bool cmyk = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_CMYK;
+  // Sixteen bits stay sixteen bits: narrowing would be a decision about the
+  // picture rather than about how it is stored, and GRAY16, RGBA16 and CMYK16
+  // exist so the caller makes it. A palette is the exception, because its map
+  // is narrowed on the way into an 8-bit raster whatever the indices are wide.
+  out->wide = ifd->bits_per_sample == 16u &&
+      ifd->photometric != GIMG_TIFF_PHOTOMETRIC_PALETTE;
+  if (gray) {
+    out->format = out->wide ? &GIMG_PIXEL_GRAY16 : &GIMG_PIXEL_GRAY8;
+    out->channels = 1u;
+    out->has_alpha = false;
+  }
+  else if (cmyk) {
+    out->format = out->wide ? &GIMG_PIXEL_CMYK16 : &GIMG_PIXEL_CMYK8;
+    out->channels = 4u;
+    out->has_alpha = false;
+  }
+  else {
+    out->format = out->wide ? &GIMG_PIXEL_RGBA16 : &GIMG_PIXEL_RGBA8;
+    out->channels = 4u;
+    out->has_alpha = true;
+  }
+  out->bytes = out->channels * (out->wide ? 2u : 1u);
+  out->source_alpha = out->has_alpha && ifd->samples_per_pixel >= 4u;
+  return out->format != NULL;
+}
+
+/** Write one value into channel @p k of output pixel @p at. */
+static void tiff_put(const tiff_output_t * out, unsigned char * pixel,
+    size_t k, uint32_t v) {
+  if (out->wide) {
+    ((uint16_t *)(void *)pixel)[k] = (uint16_t)v;
+  }
+  else {
+    pixel[k] = (unsigned char)v;
+  }
+}
+
 /**
  * Copy one row of a block into the raster.
  *
  * @param src First sample of the row inside the block.
  * @param dst First byte of the destination row, at the block's x offset.
  * @param pixels How many pixels of this row lie inside the image.
+ * @param plane Which channel this block carries, or -1 for all of them.
  *
- * The destination is 16-bit when @p wide, and then every value written is a
- * 16-bit one in host order - which is what GIMG_PIXEL_GRAY16 and RGBA16 mean.
+ * Alpha is not touched here. A file with associated alpha needs every channel
+ * of a pixel in hand to divide it back out, and with PlanarConfiguration 2
+ * the channels arrive in separate blocks - so that runs once over the
+ * finished raster instead, which is also one implementation of it rather than
+ * two that can drift.
  */
 static void tiff_convert_row(const gimg_tiff_ifd_t * ifd,
-    const unsigned char * src, unsigned char * dst, size_t pixels,
-    bool wide) {
+    const tiff_output_t * out, const unsigned char * src, unsigned char * dst,
+    size_t pixels, int plane) {
   const unsigned bits = ifd->bits_per_sample;
   const bool be = ifd->file_big_endian;
   const size_t spp = ifd->samples_per_pixel;
-  uint16_t * dst16 = (uint16_t *)(void *)dst;
+  const uint32_t full = out->wide ? 65535u : 255u;
 
-  switch (ifd->photometric) {
-  case GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO:
-  case GIMG_TIFF_PHOTOMETRIC_BLACK_IS_ZERO: {
-    // Zero is white in one of these and black in the other (section 8), and
-    // the complement is taken in whatever width the output is, not in the
-    // file's - complementing a 4-bit sample and then widening it is a
-    // different picture from widening it and then complementing.
-    const bool invert =
-        ifd->photometric == GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO;
-    for (size_t i = 0; i < pixels; i++) {
-      const uint32_t v = tiff_sample(src, i * spp, bits, be);
-      if (wide) {
-        const uint16_t w16 = (uint16_t)v;
-        dst16[i] = invert ? (uint16_t)(65535u - w16) : w16;
-      }
-      else {
-        const uint8_t v8 = tiff_to_8(v, bits);
-        dst[i] = invert ? (uint8_t)(255u - v8) : v8;
-      }
-    }
-    return;
-  }
-  case GIMG_TIFF_PHOTOMETRIC_PALETTE: {
+  if (ifd->photometric == GIMG_TIFF_PHOTOMETRIC_PALETTE) {
     // The map is all reds, then all greens, then all blues (section 8), so
-    // each channel is one third of the way further in.
+    // each channel is one third of the way further in. Always interleaved:
+    // a palette image has one sample per pixel, so it has one plane.
     const size_t third = ifd->color_map_count / 3u;
     for (size_t i = 0; i < pixels; i++) {
       const size_t idx = tiff_sample(src, i, bits, be);
-      unsigned char * p = dst + (i * 4u);
+      unsigned char * p = dst + (i * out->bytes);
       if (idx >= third) {
         // An index the map does not reach. Opaque black rather than a read
         // past the end; the load already refused a map shorter than the bit
-        // depth needs, so this is reachable only from a map longer than three
-        // times its third, which no writer produces.
+        // depth needs.
         p[0] = p[1] = p[2] = 0u;
       }
       else {
@@ -238,49 +289,81 @@ static void tiff_convert_row(const gimg_tiff_ifd_t * ifd,
     }
     return;
   }
-  case GIMG_TIFF_PHOTOMETRIC_RGB:
-  default: {
-    const bool associated = ifd->has_extra_samples && spp >= 4u &&
-        ifd->extra_samples == GIMG_TIFF_EXTRA_ASSOCIATED_ALPHA;
-    const uint32_t full = wide ? 65535u : 255u;
-    for (size_t i = 0; i < pixels; i++) {
-      const size_t at = i * spp;
-      uint32_t ch[4];
+
+  // Zero is white in one photometric and black in the other (section 8). The
+  // complement is taken in the output's width, not the file's: complementing
+  // a 4-bit sample and then widening it is a different picture from widening
+  // it and then complementing.
+  const bool invert =
+      ifd->photometric == GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO;
+
+  for (size_t i = 0; i < pixels; i++) {
+    unsigned char * pixel = dst + (i * out->bytes);
+    for (size_t k = 0; k < out->channels; k++) {
+      if (plane >= 0 && (size_t)plane != k) {
+        continue; // Another block carries this channel.
+      }
+      if (k >= spp) {
+        // An output channel the file has no sample for: the alpha of a
+        // three-sample RGB image. Filled after the block loop, not here,
+        // because with separate planes no block would own it.
+        continue;
+      }
+      const size_t at = (plane >= 0) ? i : (i * spp) + k;
+      uint32_t v = tiff_sample(src, at, bits, be);
+      if (!out->wide) {
+        v = tiff_to_8(v, bits);
+      }
+      if (invert) {
+        v = full - v;
+      }
+      tiff_put(out, pixel, k, v);
+    }
+  }
+}
+
+/** Fill an alpha channel the file did not supply. */
+static void tiff_fill_alpha(const tiff_output_t * out, unsigned char * pixels,
+    size_t stride, uint32_t width, uint32_t height) {
+  const uint32_t full = out->wide ? 65535u : 255u;
+  for (uint32_t y = 0; y < height; y++) {
+    unsigned char * row = pixels + ((size_t)y * stride);
+    for (uint32_t x = 0; x < width; x++) {
+      tiff_put(out, row + ((size_t)x * out->bytes), 3u, full);
+    }
+  }
+}
+
+/**
+ * Divide out an associated alpha, over the finished raster.
+ *
+ * TIFF 6.0 section 18 calls it associated alpha and means premultiplied;
+ * this library's RGBA is not, so the colour has to be divided back out. Done
+ * here rather than in the row converter because with PlanarConfiguration 2
+ * the colour and the alpha arrive in different blocks, and doing it twice -
+ * once per layout - is one logic written twice.
+ */
+static void tiff_unpremultiply(const tiff_output_t * out,
+    unsigned char * pixels, size_t stride, uint32_t width, uint32_t height) {
+  const uint32_t full = out->wide ? 65535u : 255u;
+  for (uint32_t y = 0; y < height; y++) {
+    unsigned char * row = pixels + ((size_t)y * stride);
+    for (uint32_t x = 0; x < width; x++) {
+      unsigned char * p = row + ((size_t)x * out->bytes);
+      const uint32_t a = out->wide ? ((uint16_t *)(void *)p)[3] : p[3];
+      if (a == full) {
+        continue;
+      }
       for (size_t k = 0; k < 3u; k++) {
-        const uint32_t v = tiff_sample(src, at + k, bits, be);
-        ch[k] = wide ? v : tiff_to_8(v, bits);
-      }
-      ch[3] = (spp >= 4u)
-          ? (wide ? tiff_sample(src, at + 3u, bits, be)
-                  : tiff_to_8(tiff_sample(src, at + 3u, bits, be), bits))
-          : full;
-      if (associated && ch[3] != 0u && ch[3] != full) {
-        // Associated alpha is premultiplied (section 18) and this library's
-        // RGBA is not, so the colour is divided back out. Rounded, and
-        // clamped because a file may store a colour brighter than its own
-        // alpha allows, which unpremultiplying would otherwise overflow.
-        for (size_t k = 0; k < 3u; k++) {
-          const uint32_t v =
-              ((uint32_t)ch[k] * full + (ch[3] / 2u)) / ch[3];
-          ch[k] = v > full ? full : v;
-        }
-      }
-      else if (associated && ch[3] == 0u) {
-        ch[0] = ch[1] = ch[2] = 0u;
-      }
-      if (wide) {
-        for (size_t k = 0; k < 4u; k++) {
-          dst16[(i * 4u) + k] = (uint16_t)ch[k];
-        }
-      }
-      else {
-        for (size_t k = 0; k < 4u; k++) {
-          dst[(i * 4u) + k] = (uint8_t)ch[k];
-        }
+        const uint32_t v = out->wide ? ((uint16_t *)(void *)p)[k] : p[k];
+        // Zero alpha keeps no colour to recover, and a file may store a
+        // colour brighter than its own alpha allows, which the division
+        // would otherwise overflow.
+        const uint32_t scaled =
+            (a == 0u) ? 0u : ((v * full + (a / 2u)) / a);
+        tiff_put(out, p, k, scaled > full ? full : scaled);
       }
     }
-    return;
-  }
   }
 }
 
@@ -312,37 +395,28 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_LIMIT;
   }
 
-  // Grayscale keeps one channel; everything else becomes RGBA, which is what
-  // the BMP and GIF decoders also hand back for an indexed or colour image.
-  //
-  // Sixteen bits stay sixteen bits. Narrowing here would be a decision about
-  // the picture rather than about how it is stored, and this library has
-  // GRAY16 and RGBA16 precisely so a caller can make that decision itself; a
-  // palette image is the exception, because its map is narrowed to eight
-  // whatever the indices are wide.
-  const bool gray = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO ||
-      ifd->photometric == GIMG_TIFF_PHOTOMETRIC_BLACK_IS_ZERO;
-  const bool wide = ifd->bits_per_sample == 16u &&
-      ifd->photometric != GIMG_TIFF_PHOTOMETRIC_PALETTE;
-  const GIMG_Pixel_Format * format = gray
-      ? (wide ? &GIMG_PIXEL_GRAY16 : &GIMG_PIXEL_GRAY8)
-      : (wide ? &GIMG_PIXEL_RGBA16 : &GIMG_PIXEL_RGBA8);
-  const size_t out_bpp = (gray ? 1u : 4u) * (wide ? 2u : 1u);
+  tiff_output_t out;
+  if (!tiff_plan_output(ifd, &out)) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
 
   GIMG_Raster * raster = NULL;
   GIMG_Result r = gimg_raster_create_with_allocator(alloc, ifd->width,
-      ifd->height, format, GIMG_RASTER_OWNED, NULL, 0, &raster);
+      ifd->height, out.format, GIMG_RASTER_OWNED, NULL, 0, &raster);
   if (r != GIMG_OK) {
     return r;
   }
-  unsigned char * out = (unsigned char *)gimg_raster_pixels(raster);
-  const size_t out_stride = gimg_raster_stride_bytes(raster);
+  unsigned char * dst_pixels = (unsigned char *)gimg_raster_pixels(raster);
+  const size_t stride = gimg_raster_stride_bytes(raster);
 
   for (size_t b = 0; b < ifd->block_count; b++) {
     tiff_block_t rect;
     tiff_block_rect(ifd, b, &rect);
     if (rect.x >= ifd->width || rect.y >= ifd->height) {
       continue; // A block wholly outside the picture contributes nothing.
+    }
+    if (rect.plane >= 0 && (size_t)rect.plane >= out.channels) {
+      continue; // A plane the output has no channel for.
     }
     const size_t across =
         (size_t)ifd->width - rect.x < rect.width ? (size_t)ifd->width - rect.x
@@ -365,10 +439,21 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
       if (at + rect.row_bytes > have) {
         break;
       }
-      unsigned char * dst = out + ((size_t)(rect.y + row) * out_stride) +
-          ((size_t)rect.x * out_bpp);
-      tiff_convert_row(ifd, src + at, dst, across, wide);
+      unsigned char * dst = dst_pixels +
+          ((size_t)(rect.y + row) * stride) + ((size_t)rect.x * out.bytes);
+      tiff_convert_row(ifd, &out, src + at, dst, across, rect.plane);
     }
+  }
+
+  // Alpha last, and over the whole raster: a three-sample RGB image has none
+  // to read, and an associated one needs every channel of a pixel in hand.
+  if (out.has_alpha && !out.source_alpha &&
+      ifd->photometric != GIMG_TIFF_PHOTOMETRIC_PALETTE) {
+    tiff_fill_alpha(&out, dst_pixels, stride, ifd->width, ifd->height);
+  }
+  if (out.source_alpha && ifd->has_extra_samples &&
+      ifd->extra_samples == GIMG_TIFF_EXTRA_ASSOCIATED_ALPHA) {
+    tiff_unpremultiply(&out, dst_pixels, stride, ifd->width, ifd->height);
   }
 
   *out_raster = raster;

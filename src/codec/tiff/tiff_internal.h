@@ -172,6 +172,9 @@ typedef struct {
   /** True when every entry is below 256 and the map is therefore read as
    * eight-bit values stored in a sixteen-bit field. See tiff_load.c. */
   bool color_map_is_8bit;
+  /** Blocks per plane. Equal to block_count unless PlanarConfiguration is 2,
+   * where the file holds one set of strips or tiles per sample. */
+  size_t blocks_per_plane;
   uint32_t x_res_num, x_res_den;
   uint32_t y_res_num, y_res_den;
   bool has_x_res, has_y_res;

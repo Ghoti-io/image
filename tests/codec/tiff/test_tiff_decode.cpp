@@ -339,6 +339,44 @@ TEST(TiffDecode, APaletteIsTheSamePictureAtEveryIndexWidth) {
   EXPECT_EQ(a, four.pixels());
 }
 
+TEST(TiffDecode, PlanarAndInterleavedAreTheSamePicture) {
+  // PlanarConfiguration 2 is a storage layout and nothing else: the same
+  // picture with its channels written one plane after another. The third
+  // member of the family this codec's tests are built on - the byte-order
+  // pair and the tiled/stripped pair being the other two - and like them it
+  // needs no reference decoder to be worth running.
+  Loaded interleaved, planar;
+  ASSERT_EQ(interleaved.load("tiff_4x4_rgb.tif"), GIMG_OK)
+      << interleaved.reasons();
+  ASSERT_EQ(planar.load("tiff_4x4_rgb_planar.tif"), GIMG_OK)
+      << planar.reasons();
+  const std::vector<uint8_t> a = interleaved.pixels();
+  ASSERT_FALSE(a.empty());
+  EXPECT_EQ(a, planar.pixels());
+}
+
+TEST(TiffDecode, ASeparatedImageComesBackAsInk) {
+  // "Separated" is the specification's word (section 16) and CMYK is what
+  // every file that uses it means. It comes back as CMYK rather than
+  // converted to RGB, because converting is a colour decision the caller can
+  // make with gimg_ops_convert and the codec cannot unmake.
+  Loaded img;
+  ASSERT_EQ(img.load("tiff_4x4_cmyk.tif"), GIMG_OK) << img.reasons();
+  // pixels() is what decodes, so the raster only exists after it.
+  const std::vector<uint8_t> p = img.pixels();
+  ASSERT_EQ(p.size(), 4u * 4u * 4u);
+  const GIMG_Pixel_Format * fmt = gimg_raster_format(img.raster());
+  ASSERT_NE(fmt, nullptr);
+  EXPECT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK);
+  EXPECT_EQ(fmt->channel_count, 4u);
+  for (size_t i = 0; i < 16u; i++) {
+    const uint32_t x = (uint32_t)(i % 4), y = (uint32_t)(i / 4);
+    EXPECT_EQ(p[i * 4 + 0], (uint8_t)(x * 255 / 3)) << "cyan at " << i;
+    EXPECT_EQ(p[i * 4 + 1], (uint8_t)(y * 255 / 3)) << "magenta at " << i;
+    EXPECT_EQ(p[i * 4 + 3], 16u) << "black at " << i;
+  }
+}
+
 TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   struct Case {
     const char * file;

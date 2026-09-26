@@ -455,10 +455,17 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
 // which rule it broke.
 // ---------------------------------------------------------------------------
 
-/** How many blocks the image's geometry implies, so a file that names a
- * different number is saying something inconsistent about itself. */
+/**
+ * How many blocks the image's geometry implies, so a file that names a
+ * different number is saying something inconsistent about itself.
+ *
+ * PlanarConfiguration 2 stores one whole set of strips or tiles per sample
+ * (section 8), so the count multiplies by SamplesPerPixel - which is also
+ * what makes the block index enough to say which channel a block carries.
+ */
 static bool tiff_expected_block_count(
-    const gimg_tiff_ifd_t * ifd, size_t * out_count) {
+    gimg_tiff_ifd_t * ifd, size_t * out_count) {
+  size_t per_plane = 0;
   if (ifd->tiled) {
     if (ifd->tile_width == 0u || ifd->tile_height == 0u) {
       return false;
@@ -467,18 +474,27 @@ static bool tiff_expected_block_count(
         ((size_t)ifd->width + ifd->tile_width - 1u) / ifd->tile_width;
     const size_t down =
         ((size_t)ifd->height + ifd->tile_height - 1u) / ifd->tile_height;
-    return gcu_safe_mul_size(across, down, out_count);
+    if (!gcu_safe_mul_size(across, down, &per_plane)) {
+      return false;
+    }
   }
-  const uint32_t rows = ifd->rows_per_strip;
-  if (rows == 0u) {
-    return false;
+  else {
+    const uint32_t rows = ifd->rows_per_strip;
+    if (rows == 0u) {
+      return false;
+    }
+    per_plane = ((size_t)ifd->height + rows - 1u) / rows;
   }
-  *out_count = ((size_t)ifd->height + rows - 1u) / rows;
-  return true;
+  ifd->blocks_per_plane = per_plane;
+  if (ifd->planar_config != 2u) {
+    *out_count = per_plane;
+    return true;
+  }
+  return gcu_safe_mul_size(per_plane, ifd->samples_per_pixel, out_count);
 }
 
 static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
-    const gimg_tiff_ifd_t * ifd, const GIMG_Limits * limits,
+    gimg_tiff_ifd_t * ifd, const GIMG_Limits * limits,
     GIMG_Diagnostics * diag, size_t which) {
   if (ifd->width == 0u || ifd->height == 0u) {
     tiff_diag(diag, which, "an image of zero width or height");
@@ -494,10 +510,10 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
         "only uncompressed TIFF is read so far; this file is compressed");
     return GIMG_ERR_UNSUPPORTED;
   }
-  if (ifd->planar_config != 1u) {
+  if (ifd->planar_config != 1u && ifd->planar_config != 2u) {
     tiff_diag(diag, which,
-        "PlanarConfiguration 2 stores the channels apart; not read yet");
-    return GIMG_ERR_UNSUPPORTED;
+        "PlanarConfiguration is neither 1 nor 2 (TIFF 6.0 8)");
+    return GIMG_ERR_CORRUPT;
   }
   if (ifd->sample_format != 1u) {
     tiff_diag(diag, which,
@@ -547,6 +563,23 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
   case GIMG_TIFF_PHOTOMETRIC_RGB:
     if (ifd->samples_per_pixel != 3u && ifd->samples_per_pixel != 4u) {
       tiff_diag(diag, which, "an RGB image with neither three nor four samples");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    break;
+  case GIMG_TIFF_PHOTOMETRIC_CMYK:
+    // "Separated" in the specification's words (section 16), and CMYK in
+    // every file that uses it. More than four samples means inks this
+    // library's CMYK formats have no channel for - a fifth spot colour, or
+    // an alpha - and dropping one silently would be a worse answer than
+    // saying so.
+    if (ifd->samples_per_pixel != 4u) {
+      tiff_diag(diag, which,
+          "a separated image with other than four inks; not read yet");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (ifd->bits_per_sample != 8u && ifd->bits_per_sample != 16u) {
+      tiff_diag(diag, which,
+          "a separated image at a depth with no CMYK raster; not read yet");
       return GIMG_ERR_UNSUPPORTED;
     }
     break;

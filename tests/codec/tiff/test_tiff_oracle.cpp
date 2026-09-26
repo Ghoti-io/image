@@ -132,8 +132,13 @@ Image ours(const std::string & dir, const std::string & name,
         raster) {
       img.width = gimg_raster_width(raster);
       img.height = gimg_raster_height(raster);
-      const size_t bpp =
-          gimg_raster_bytes_per_pixel(gimg_raster_format(raster));
+      const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+      const size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+      // CMYK8 and RGBA8 are both four bytes, so the model rather than the
+      // width is what says which. libtiff's RGBA reader converts separated
+      // images to RGB; this codec hands back CMYK, so the comparison does
+      // the conversion - with libtiff's own formula, measured below.
+      const bool cmyk = fmt && fmt->channel_model == GIMG_CHANNEL_CMYK;
       const size_t stride = gimg_raster_stride_bytes(raster);
       const uint8_t * p = (const uint8_t *)gimg_raster_pixels(raster);
       img.rgba.resize((size_t)img.width * img.height * 4u);
@@ -162,6 +167,23 @@ Image ours(const std::string & dir, const std::string & name,
                 ? (uint8_t)(v >> 8)
                 : (uint8_t)(((uint32_t)v * 255u + 32767u) / 65535u);
           };
+          if (cmyk) {
+            // libtiff's tif_getimage.c: k = 255 - K, then each channel is
+            // (k * (255 - ink)) / 255, truncating. Reproduced rather than
+            // approximated, because an "about right" conversion here would
+            // absorb a real inversion or channel-order defect.
+            const unsigned kk = bpp == 4u
+                ? 255u - src[3]
+                : 255u - (unsigned)(wide[3] >> 8);
+            for (size_t c = 0; c < 3u; c++) {
+              const unsigned ink = bpp == 4u
+                  ? src[c]
+                  : (unsigned)(wide[c] >> 8);
+              dst[c] = (uint8_t)((kk * (255u - ink)) / 255u);
+            }
+            dst[3] = 255u;
+            continue;
+          }
           switch (bpp) {
           case 1u:
             dst[0] = dst[1] = dst[2] = src[0];

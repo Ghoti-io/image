@@ -349,6 +349,29 @@ def main():
           build("II", [(strip_fields(W, H, packed4, 3, bps=4,
                                      colormap=r4 + g4 + b4), packed4)]))
 
+    # ---- The same RGB picture, with the channels stored apart ----
+    # PlanarConfiguration 2 is a storage layout and nothing else, so this file
+    # and tiff_4x4_rgb.tif must decode to the same bytes - a property that
+    # needs no reference decoder, and the same shape as the byte-order pair
+    # and the tiled/stripped pair.
+    planes = bytearray()
+    for c in range(3):
+        for i in range(W * H):
+            planes.append(rgb[i * 3 + c])
+    plane_len = W * H
+    write("tiff_4x4_rgb_planar.tif",
+          build_planar("II", W, H, bytes(planes), 3, 2, plane_len))
+
+    # ---- Separated: four inks, which is CMYK in every file that uses it ----
+    cmyk = bytearray()
+    for y in range(H):
+        for x in range(W):
+            cmyk += bytes([x * 255 // (W - 1), y * 255 // (H - 1),
+                           (x + y) * 255 // (W + H - 2), 16])
+    cmyk = bytes(cmyk)
+    write("tiff_4x4_cmyk.tif",
+          build("II", [(strip_fields(W, H, cmyk, 5, spp=4), cmyk)]))
+
     # ---- Refusals ----
     write("tiff_bad_magic.tif", b"II\x2b\x00" + b"\x00" * 12)
     lzw = strip_fields(W, H, gray, 1)
@@ -385,6 +408,36 @@ def build_multi_strip(endian, w, h, data, rows):
         (TAGS["PlanarConfig"], SHORT, [1]),
         (TAGS["StripOffsets"], LONG, offsets),
         (TAGS["StripByteCounts"], LONG, [len(p) for p in pieces]),
+    ]
+    return _finish(e, pool, [fields])
+
+
+def build_planar(endian, w, h, data, spp, photometric, plane_len):
+    """A file whose channels are stored one plane after another.
+
+    Every plane gets its own strip, which is what PlanarConfiguration 2 means
+    in the simplest case: StripOffsets holds spp entries, plane after plane.
+    """
+    e = "<" if endian == "II" else ">"
+    pool = bytearray()
+    offsets, counts = [], []
+    for c in range(spp):
+        offsets.append(8 + len(pool))
+        counts.append(plane_len)
+        pool.extend(data[c * plane_len:(c + 1) * plane_len])
+        if len(pool) % 2:
+            pool.append(0)
+    fields = [
+        (TAGS["ImageWidth"], LONG, [w]),
+        (TAGS["ImageLength"], LONG, [h]),
+        (TAGS["BitsPerSample"], SHORT, [8] * spp),
+        (TAGS["Compression"], SHORT, [1]),
+        (TAGS["Photometric"], SHORT, [photometric]),
+        (TAGS["SamplesPerPixel"], SHORT, [spp]),
+        (TAGS["RowsPerStrip"], LONG, [h]),
+        (TAGS["PlanarConfig"], SHORT, [2]),
+        (TAGS["StripOffsets"], LONG, offsets),
+        (TAGS["StripByteCounts"], LONG, counts),
     ]
     return _finish(e, pool, [fields])
 
