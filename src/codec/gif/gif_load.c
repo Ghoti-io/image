@@ -697,7 +697,14 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
     // GIF counts delay in hundredths of a second (89a 23); the item model
     // carries a numerator over a denominator, so the denominator says so.
-    gimg_item_set_role(item, GIMG_ITEM_FRAME, i);
+    // A document of one item is one picture, whatever container it arrived
+    // in.  GIF has no way to declare "this is an animation" - every file is
+    // nominally one - so the count is the only thing that distinguishes a
+    // still image from a sequence, and a caller counting GIMG_ITEM_IMAGE to
+    // find the pictures in a document has to get the same answer here as it
+    // does for a still PNG.
+    gimg_item_set_role(
+        item, state->frame_count > 1u ? GIMG_ITEM_FRAME : GIMG_ITEM_IMAGE, i);
     gimg_item_set_frame_delay(item, f->delay_cs, 100u);
     gimg_item_set_dispose_op(item,
         f->disposal == GIMG_GIF_DISPOSAL_BACKGROUND ? GIMG_DISPOSE_BACKGROUND

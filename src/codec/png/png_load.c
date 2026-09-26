@@ -841,9 +841,15 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
                                                       : GIMG_DISPOSE_PREVIOUS;
       doc->items[i].blend_op =
           (f->blend_op == 0) ? GIMG_BLEND_SOURCE : GIMG_BLEND_OVER;
-      // An APNG's items are the moments of an animation.  A still PNG's one
-      // item keeps GIMG_ITEM_IMAGE.
-      gimg_item_set_role(&doc->items[i], GIMG_ITEM_FRAME, i);
+      // The same rule the GIF loader applies, and for the same reason: one
+      // item is one picture.  An acTL declaring a single frame is legal and
+      // this is the case it decides - the animation is not lost, because the
+      // document still carries num_plays, but the item is not one of several
+      // moments and saying it was would cost a caller counting pictures the
+      // only one this file has.
+      if (state->frame_count > 1u) {
+        gimg_item_set_role(&doc->items[i], GIMG_ITEM_FRAME, i);
+      }
     }
   }
 

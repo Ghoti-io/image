@@ -302,6 +302,20 @@ def main() -> None:
     )
     write_png("png_apng_2frame.png", apng_2frame)
 
+    # ---- 1-frame APNG: acTL says one frame, and it is the default image ----
+    # Legal APNG, and the case that decides whether "is this an animation"
+    # or "does it have more than one item" settles GIMG_ITEM_FRAME.  Nothing
+    # else in the tree carries an acTL with num_frames=1.
+    apng_1frame = (
+        signature
+        + png_chunk(b"IHDR", ihdr_1x1_gray)
+        + png_chunk(b"acTL", struct.pack(">II", 1, 0))
+        + png_chunk(b"fcTL", fctl0)
+        + png_chunk(b"IDAT", idat_frame0)
+        + iend
+    )
+    write_png("png_apng_1frame.png", apng_1frame)
+
     # ---- 2-frame APNG, 2x1 grayscale 16-bit ----
     # The only animated fixture whose canvas is GRAY16.  Every other grayscale
     # APNG here is 8-bit and every 16-bit one is RGBA, so the compositor's

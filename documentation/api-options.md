@@ -433,8 +433,8 @@ which is the thing a format-independent document model exists to avoid.
 
 | Role | What it is | Set by |
 |---|---|---|
-| `GIMG_ITEM_IMAGE` | A picture in its own right: a lone image, or one page of several. The default. | PNG (still), JPEG item 0, BMP item 0 |
-| `GIMG_ITEM_FRAME` | A moment in an animation; the delay, dispose and blend fields describe how it is played. | GIF (every item), APNG |
+| `GIMG_ITEM_IMAGE` | A picture in its own right: a lone image, or one page of several. The default. | JPEG item 0, BMP item 0, and any single-item document - a still PNG, a one-image GIF, or an APNG whose acTL declares one frame |
+| `GIMG_ITEM_FRAME` | A moment in an animation; the delay, dispose and blend fields describe how it is played. | GIF and APNG, when the document has more than one item |
 | `GIMG_ITEM_THUMBNAIL` | A small preview of another item. | JPEG item 1, the Exif IFD1 thumbnail |
 | `GIMG_ITEM_LEVEL` | A reduced-resolution version of another item — a pyramid level. | Nothing yet; reserved for TIFF |
 | `GIMG_ITEM_ALTERNATE` | Another rendering of the same picture, for the caller to choose between. | BMP `BA` array entries after the first |
@@ -446,3 +446,11 @@ so it can be read without testing the role first.
 Zero is `GIMG_ITEM_IMAGE`, so a document built with `gimg_doc_create()` or
 `gimg_doc_from_raster()` already says the true thing without the caller
 setting anything.
+
+**One item is one picture, whatever container it arrived in.** A still GIF and
+a still PNG both report a single `GIMG_ITEM_IMAGE`, so counting that role to
+find the pictures in a document gives the same answer for both. GIF cannot
+declare "this is an animation" - every file is nominally one - so the item
+count is the only thing that can settle it, and APNG follows the same rule
+rather than keeping a second one: an `acTL` declaring a single frame still
+sets the document's loop count, so nothing about the animation is lost.

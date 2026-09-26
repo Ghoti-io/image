@@ -495,23 +495,21 @@ GIMG_Item_Role bmp_role(size_t index, size_t count) {
   (void)count;
   return index == 0 ? GIMG_ITEM_IMAGE : GIMG_ITEM_ALTERNATE;
 }
-/** GIF: every item is a frame, including the only one of a still GIF - in
- * the format's own terms a single image is a one-frame animation. */
-GIMG_Item_Role gif_role(size_t index, size_t count) {
+/** An animation container: more than one item means the items are moments of
+ * one picture, and a single item is a picture. One function for both formats
+ * on purpose - a caller counting GIMG_ITEM_IMAGE to find the pictures in a
+ * document must get the same answer from a still GIF as from a still PNG,
+ * and for a while it did not. */
+GIMG_Item_Role animated_role(size_t index, size_t count) {
   (void)index;
-  (void)count;
-  return GIMG_ITEM_FRAME;
+  return count > 1 ? GIMG_ITEM_FRAME : GIMG_ITEM_IMAGE;
 }
 /** JPEG: item 1, when there is one, is the Exif IFD1 thumbnail. */
 GIMG_Item_Role jpeg_role(size_t index, size_t count) {
   (void)count;
   return index == 0 ? GIMG_ITEM_IMAGE : GIMG_ITEM_THUMBNAIL;
 }
-/** PNG: more than one item means APNG, and then every item is a frame. */
-GIMG_Item_Role png_role(size_t index, size_t count) {
-  (void)index;
-  return count > 1 ? GIMG_ITEM_FRAME : GIMG_ITEM_IMAGE;
-}
+
 
 /** The format the library says these bytes are, or "". */
 std::string probed_format(const std::vector<uint8_t> & bytes) {
@@ -536,9 +534,9 @@ std::string probed_format(const std::vector<uint8_t> & bytes) {
  */
 const RoleClaim kRoleClaims[] = {
     {"bmp", bmp_role},
-    {"gif", gif_role},
+    {"gif", animated_role},
     {"jpeg", jpeg_role},
-    {"png", png_role},
+    {"png", animated_role},
 };
 
 const RoleClaim * claim_for(const std::string & codec) {
