@@ -602,6 +602,38 @@ TEST(TiffDecode, YCbCrWithoutColourIsGreyAtEverySubsampling) {
   }
 }
 
+TEST(TiffDecode, SixteenBitDifferencingIsUndoneInTheFilesOwnOrder) {
+  // Horizontal differencing at sixteen bits is the one path where the
+  // differences are taken in the *file's* byte order: swapping first and
+  // adding afterwards gives a different number, so a decoder that reorders
+  // before summing produces noise on a big-endian file and the right picture
+  // on a little-endian one - which is exactly the kind of defect a
+  // single-byte-order fixture set cannot see.
+  //
+  // Four files, one picture. Coverage is what asked for this: the 16-bit arm
+  // of the predictor had never run, in either order.
+  const char * const files[] = {
+      "tiff_8x8_gray16_le_plain.tif",
+      "tiff_8x8_gray16_le_predictor.tif",
+      "tiff_8x8_gray16_be_plain.tif",
+      "tiff_8x8_gray16_be_predictor.tif",
+  };
+  Loaded first;
+  ASSERT_EQ(first.load(files[0]), GIMG_OK) << first.reasons();
+  const std::vector<uint8_t> want = first.pixels();
+  ASSERT_EQ(want.size(), 8u * 8u * 2u);
+  const uint16_t * v = (const uint16_t *)(const void *)want.data();
+  for (uint32_t i = 0; i < 64u; i++) {
+    EXPECT_EQ((unsigned)v[i], (i * 65535u) / 63u) << "sample " << i;
+  }
+  for (const char * name : files) {
+    SCOPED_TRACE(name);
+    Loaded img;
+    ASSERT_EQ(img.load(name), GIMG_OK) << img.reasons();
+    EXPECT_EQ(img.pixels(), want);
+  }
+}
+
 TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   struct Case {
     const char * file;

@@ -114,8 +114,7 @@ std::vector<std::string> corpus() {
 }
 
 /** What this library makes of a file, widened to RGBA8. */
-Image ours(const std::string & dir, const std::string & name,
-    bool narrow_by_high_byte) {
+Image ours(const std::string & dir, const std::string & name) {
   Image img;
   std::ifstream f(dir + "/" + name, std::ios::binary);
   const std::vector<uint8_t> bytes(
@@ -139,6 +138,15 @@ Image ours(const std::string & dir, const std::string & name,
       // images to RGB; this codec hands back CMYK, so the comparison does
       // the conversion - with libtiff's own formula, measured below.
       const bool cmyk = fmt && fmt->channel_model == GIMG_CHANNEL_CMYK;
+      // Which of libtiff's three narrowings applies is decided here, from
+      // the raster this codec produced, rather than passed in by whichever
+      // sweep is calling. It used to be a parameter, and the write sweep
+      // passed the wrong one: a 16-bit *grayscale* file went through the
+      // rounded rescale where libtiff keeps the high byte, and twenty
+      // written files disagreed for a reason that had nothing to do with the
+      // writer.
+      const bool narrow_by_high_byte =
+          fmt && fmt->channel_model == GIMG_CHANNEL_GRAY;
       const size_t stride = gimg_raster_stride_bytes(raster);
       const uint8_t * p = (const uint8_t *)gimg_raster_pixels(raster);
       img.rgba.resize((size_t)img.width * img.height * 4u);
@@ -160,7 +168,7 @@ Image ours(const std::string & dir, const std::string & name,
           // full precision everywhere else, so a 16-bit file comes back as
           // GRAY16 or RGBA16 and the caller decides. This comparison is
           // therefore where the three rules have to be reproduced, and the
-          // caller passes which one applies.
+          // raster itself says which one applies.
           const uint16_t * wide = (const uint16_t *)(const void *)src;
           auto narrow = [narrow_by_high_byte](uint16_t v) {
             return narrow_by_high_byte
@@ -365,9 +373,7 @@ void sweep(const std::string & dir, const std::vector<std::string> & names,
   for (const std::string & name : names) {
     const auto found = refs.find(name);
     const Reference ref = (found == refs.end()) ? Reference() : found->second;
-    // Greyscale is the path where libtiff keeps the high byte; see ours().
-    const bool gray = ref.photometric == 0u || ref.photometric == 1u;
-    const Image a = ours(dir, name, gray);
+    const Image a = ours(dir, name);
     const Image b = ref.ok ? reference_pixels(name) : Image();
     if (!a.ok && !b.ok) {
       t->both_refused++;
@@ -621,7 +627,7 @@ TEST(TiffOracle, EverythingWeWriteLibtiffReadsAndAgreesWith) {
   std::map<std::string, std::pair<uint32_t, uint32_t>> shape;
   long refused = 0;
   for (const std::string & fixture : fixtures()) {
-    const Image source = ours(data_dir(), fixture, false);
+    const Image source = ours(data_dir(), fixture);
     if (!source.ok) { continue; }
     std::vector<uint8_t> bytes;
     {

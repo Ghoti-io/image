@@ -533,6 +533,40 @@ def main():
     meta.append((TAGS["ICCProfile"], UNDEFINED, list(profile)))
     write("tiff_4x4_metadata.tif", build("II", [(meta, rgb)]))
 
+    # ---- Sixteen bits under the predictor, in both byte orders ----
+    #
+    # Horizontal differencing at sixteen bits is the one path where the
+    # differences are taken in the *file's* byte order: swapping first and
+    # adding afterwards gives a different number, so a decoder that reorders
+    # before summing produces noise on a big-endian file and the right
+    # picture on a little-endian one. Both are here for that reason.
+    def diff16(values, w, h, endian):
+        out = bytearray()
+        for y in range(h):
+            prev = 0
+            for x in range(w):
+                v = values[y * w + x]
+                out += struct.pack(endian + "H", (v - prev) & 0xFFFF)
+                prev = v
+        return bytes(out)
+
+    wide8 = [((y * 8 + x) * 65535) // 63 for y in range(8) for x in range(8)]
+    for endian, suffix in (("<", "le"), (">", "be")):
+        plain = b"".join(struct.pack(endian + "H", v) for v in wide8)
+        order = "II" if endian == "<" else "MM"
+        write("tiff_8x8_gray16_%s_plain.tif" % suffix,
+              build(order, [(strip_fields(8, 8, plain, 1, bps=16), plain)]))
+        packed = zlib.compress(diff16(wide8, 8, 8, endian), 6)
+        fields = strip_fields(8, 8, packed, 1, bps=16)
+        fields = [(t, ty, [8] if t == TAGS["Compression"] else v)
+                  for (t, ty, v) in fields]
+        fields = [(t, ty, [len(packed)]
+                   if t == TAGS["StripByteCounts"] else v)
+                  for (t, ty, v) in fields]
+        fields.append((TAGS["Predictor"], SHORT, [2]))
+        write("tiff_8x8_gray16_%s_predictor.tif" % suffix,
+              build(order, [(fields, packed)]))
+
     # ---- YCbCr, at both subsamplings, carrying a grey picture ----
     #
     # Cb and Cr held at 128 means no colour at all, and the conversion then
