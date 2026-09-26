@@ -87,6 +87,10 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TAG_Y_RESOLUTION 283
 #define GIMG_TIFF_TAG_PLANAR_CONFIG 284
 #define GIMG_TIFF_TAG_PREDICTOR 317
+#define GIMG_TIFF_TAG_IMAGE_DESCRIPTION 270
+#define GIMG_TIFF_TAG_ORIENTATION 274
+#define GIMG_TIFF_TAG_XMP 700
+#define GIMG_TIFF_TAG_ICC_PROFILE 34675
 #define GIMG_TIFF_TAG_RESOLUTION_UNIT 296
 #define GIMG_TIFF_TAG_COLOR_MAP 320
 #define GIMG_TIFF_TAG_TILE_WIDTH 322
@@ -140,6 +144,12 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
  * is its own ceiling rather than a policy. */
 #define GIMG_TIFF_MAX_ENTRIES 65535u
 
+/** Longest ICC profile or XMP packet this codec takes in. Past this the file
+ * is describing something other than its own colour, and the picture is
+ * handed back untagged rather than refused - the same judgment, and the same
+ * ceiling, the BMP loader applies. */
+#define GIMG_TIFF_ICC_MAX_SIZE (4u * 1024u * 1024u)
+
 /** One image file directory, normalized: every default resolved, every array
  * copied out of the file. */
 typedef struct {
@@ -180,6 +190,18 @@ typedef struct {
   /** Blocks per plane. Equal to block_count unless PlanarConfiguration is 2,
    * where the file holds one set of strips or tiles per sample. */
   size_t blocks_per_plane;
+  /** The ICC profile the file carried (tag 34675), owned here. A TIFF is the
+   * format professional colour work is stored in, so this is not optional
+   * furniture: a file whose profile was dropped is a file whose colours mean
+   * something else. */
+  unsigned char * icc;
+  size_t icc_size;
+  /** ImageDescription (270), NUL-terminated and owned, or NULL. */
+  char * description;
+  uint16_t orientation;   ///< Tag 274; 0 when the file did not say.
+  /** XMP (700), owned, kept only so a round trip does not lose it. */
+  unsigned char * xmp;
+  size_t xmp_size;
   uint32_t x_res_num, x_res_den;
   uint32_t y_res_num, y_res_den;
   bool has_x_res, has_y_res;

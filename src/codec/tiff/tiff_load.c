@@ -209,6 +209,14 @@ static void tiff_free_ifd(const GIMG_Allocator * a, gimg_tiff_ifd_t * ifd) {
   gimg_free(a, ifd->block_offsets);
   gimg_free(a, ifd->block_byte_counts);
   gimg_free(a, ifd->color_map);
+  gimg_free(a, ifd->icc);
+  gimg_free(a, ifd->description);
+  gimg_free(a, ifd->xmp);
+  ifd->icc = NULL;
+  ifd->icc_size = 0;
+  ifd->description = NULL;
+  ifd->xmp = NULL;
+  ifd->xmp_size = 0;
   ifd->block_offsets = NULL;
   ifd->block_byte_counts = NULL;
   ifd->color_map = NULL;
@@ -375,6 +383,55 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
         ifd->has_y_res = ifd->y_res_den != 0u;
       }
       break;
+    case GIMG_TIFF_TAG_ORIENTATION:
+      ifd->orientation = (uint16_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_IMAGE_DESCRIPTION: {
+      // ASCII, NUL-terminated in a well-formed file and not always in a real
+      // one, so it is copied with a terminator of our own rather than
+      // trusted to carry one.
+      gimg_free(st->allocator, ifd->description);
+      ifd->description = (char *)gimg_malloc(st->allocator, e.value_bytes + 1u);
+      if (!ifd->description) {
+        r = GIMG_ERR_OOM;
+        break;
+      }
+      memcpy(ifd->description, e.values, e.value_bytes);
+      ifd->description[e.value_bytes] = '\0';
+      break;
+    }
+    case GIMG_TIFF_TAG_ICC_PROFILE: {
+      if (e.value_bytes > GIMG_TIFF_ICC_MAX_SIZE) {
+        // Past what any real profile is, so the file is describing something
+        // other than its own colour. Untagged rather than refused, which is
+        // what the BMP loader does with the same case and for the same
+        // reason: the picture is not wrong.
+        break;
+      }
+      gimg_free(st->allocator, ifd->icc);
+      ifd->icc = (unsigned char *)gimg_malloc(st->allocator, e.value_bytes);
+      if (!ifd->icc) {
+        r = GIMG_ERR_OOM;
+        break;
+      }
+      memcpy(ifd->icc, e.values, e.value_bytes);
+      ifd->icc_size = e.value_bytes;
+      break;
+    }
+    case GIMG_TIFF_TAG_XMP: {
+      if (e.value_bytes > GIMG_TIFF_ICC_MAX_SIZE) {
+        break;
+      }
+      gimg_free(st->allocator, ifd->xmp);
+      ifd->xmp = (unsigned char *)gimg_malloc(st->allocator, e.value_bytes);
+      if (!ifd->xmp) {
+        r = GIMG_ERR_OOM;
+        break;
+      }
+      memcpy(ifd->xmp, e.values, e.value_bytes);
+      ifd->xmp_size = e.value_bytes;
+      break;
+    }
     case GIMG_TIFF_TAG_COLOR_MAP: {
       // Three runs of 2^BitsPerSample entries: all reds, then greens, then
       // blues, each a 16-bit value (section 8).
@@ -784,10 +841,38 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // item keeps the default GIMG_ITEM_IMAGE.  See notes on the decode model:
   // one item is one picture, and a one-page TIFF is a picture like any other.
 
-  // Resolution comes from the first directory, which is the one a caller
-  // showing a single image sees.  Only inches convert to DPI; centimetres and
-  // "no unit" say something this field cannot carry.
   const gimg_tiff_ifd_t * first = &st->ifds[0];
+
+  // Metadata comes from the first directory, which is the one a caller
+  // showing a single image sees.
+  //
+  // Orientation, the description and XMP reach the document; the ICC profile
+  // does not, because a profile describes one picture's colours and a
+  // multi-page TIFF's pages may each have their own. It is applied to the
+  // raster at decode instead, beside the colour info it belongs to.
+  if (first->orientation >= 1u && first->orientation <= 8u) {
+    GIMG_Meta_Common * common = NULL;
+    if (gimg_doc_ensure_meta_common(doc, &common) == GIMG_OK && common) {
+      gimg_meta_common_set_orientation(
+          common, (GIMG_Orientation)first->orientation);
+    }
+  }
+  if (first->description && first->description[0] != '\0') {
+    GIMG_Meta_Common * common = NULL;
+    if (gimg_doc_ensure_meta_common(doc, &common) == GIMG_OK && common) {
+      (void)gimg_meta_common_set_description(common, first->description);
+    }
+  }
+  if (first->xmp && first->xmp_size > 0u) {
+    GIMG_Meta_Raw * raw = NULL;
+    if (gimg_doc_ensure_meta_raw(doc, &raw) == GIMG_OK && raw) {
+      (void)gimg_meta_raw_attach(
+          raw, "tiff", GIMG_TIFF_TAG_XMP, first->xmp, first->xmp_size);
+    }
+  }
+
+  // Only inches convert to DPI; centimetres and "no unit" say something this
+  // field cannot carry.
   if (first->resolution_unit == 2u && first->has_x_res && first->has_y_res) {
     GIMG_Meta_Common * common = NULL;
     if (gimg_doc_ensure_meta_common(doc, &common) == GIMG_OK && common) {

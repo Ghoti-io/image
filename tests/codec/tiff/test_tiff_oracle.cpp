@@ -225,6 +225,7 @@ struct Reference {
   /** ExtraSamples' first value plus one, so 0 means the field is absent.
    * 2 is associated alpha, TIFF 6.0 section 18's word for premultiplied. */
   unsigned extra = 0u;
+  unsigned orientation = 1u; ///< Tag 274, defaulted to 1.
 };
 
 std::string flatten(const std::string & name) {
@@ -294,6 +295,9 @@ std::map<std::string, Reference> ask_libtiff(const std::string & dir,
       else if (key == "planar") { ref.planar = (unsigned)std::stoul(val); }
       else if (key == "tiled") { ref.tiled = (val != "0"); }
       else if (key == "extra") { ref.extra = (unsigned)std::stoul(val); }
+      else if (key == "orientation") {
+        ref.orientation = (unsigned)std::stoul(val);
+      }
     }
     out[parts[0]] = ref;
   }
@@ -351,6 +355,7 @@ struct Tally {
   std::vector<std::string> neither;
   long rounding_samples = 0;
   long rounding_files = 0;
+  long oriented = 0;
 };
 
 /** Compare one directory's files, sample for sample, in libtiff's space. */
@@ -377,6 +382,24 @@ void sweep(const std::string & dir, const std::vector<std::string> & names,
     if (!a.ok && b.ok) {
       t->only_they_read++;
       t->they_alone.push_back(name + " (" + describe(ref) + ")");
+      continue;
+    }
+    // **A file with an Orientation other than 1 is counted, not compared.**
+    //
+    // This library applies the tag at decode - gimg_item_decode does it for
+    // every codec, the same way it applies a JPEG's or a PNG's Exif
+    // orientation - so the raster it hands back is the display image.
+    // libtiff's RGBA reader does not do the same thing: asked for
+    // ORIENTATION_TOPLEFT on a file declaring 6, it *flips* rather than
+    // transposing. Measured on tiff_4x4_metadata.tif, whose first pixel
+    // comes back as the source's top-right rather than its bottom-left.
+    //
+    // Comparing them would be comparing two transforms, one of which is
+    // wrong, rather than two decoders. That the orientation is read, applied
+    // and written back is asserted in test_tiff_decode.cpp, where it can be
+    // checked against the specification instead of against libtiff.
+    if (ref.orientation != 1u) {
+      t->oriented++;
       continue;
     }
     if (a.width != b.width || a.height != b.height) {
@@ -477,6 +500,11 @@ void report(const char * label, const Tally & t) {
   }
   for (const std::string & n : t.neither) {
     std::printf("    neither reads: %s\n", n.c_str());
+  }
+  if (t.oriented > 0) {
+    std::printf("    %ld files declare an Orientation and are not compared: "
+                "this library applies it and libtiff does not transpose\n",
+        t.oriented);
   }
   if (t.rounding_files > 0) {
     std::printf("    %ld samples in %ld files are the associated-alpha "

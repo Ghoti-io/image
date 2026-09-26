@@ -37,6 +37,15 @@ so a tag's absence means what section 8 says it means rather than zero.
 stored data is the full tile size even where the tile overhangs the right or
 bottom edge; the padding is read and dropped.
 
+**Metadata.** The ICC profile (34675) reaches the raster's colour info and is
+written back unchanged - a TIFF is what professional colour work is stored in,
+and a profile dropped in passing makes a file's colours mean something else.
+ImageDescription (270) becomes the document's description, XMP (700) is kept
+whole for the round trip, and Orientation (274) is applied rather than
+carried. The Exif sub-IFD (34665) is not read: it is an offset to another
+directory, and preserving one by copying bytes would preserve offsets that no
+longer point anywhere.
+
 **Colour.** PhotometricInterpretation 0 (WhiteIsZero), 1 (BlackIsZero), 2
 (RGB) and 3 (Palette), at eight bits per sample. Grayscale comes back as
 GRAY8 and everything else as RGBA8, which is what the BMP and GIF decoders
@@ -104,6 +113,7 @@ sample agrees.** The three differences below are the whole of the rest.
 |---|---|---|---|
 | A ColorMap storing 8-bit values in a 16-bit field | Read as 8-bit when *every* entry is under 256 | The same guess | **Changed to match.** This page previously said the opposite, and said so as a warning rather than a measurement. Measured: given a map of 0..255 libtiff answers 255 where this codec answered 1 - not subtly wrong but nearly black. The guess is safe in the one direction that matters: a map that is genuinely 16-bit *and* has every entry under 256 describes an image whose brightest colour is 0.39% of full scale, so misreading it costs a picture that was already black |
 | Alpha in the decoded raster | Unassociated, following PNG | **Associated.** Its own header names the table that does it: `UaToAa`, "Unassociated alpha to associated alpha conversion LUT" | Neither is wrong; they are different units. The comparison puts ours into libtiff's space by premultiplying, which is applied to every pixel of every file and is a change of units rather than a tolerance |
+| The Orientation tag (274) | Applied at decode, as `gimg_item_decode` applies a JPEG's or a PNG's Exif orientation for every codec here. The written file therefore declares none: the pixels *are* the display image, and re-declaring it would have the next reader rotate them twice | Its RGBA reader **flips rather than transposes** for orientations 5 to 8. Measured on `tiff_4x4_metadata.tif`, whose first pixel comes back as the source's top-right where a 90° rotation puts its bottom-left | The comparison sweep counts such files instead of comparing them: two transforms, one of them wrong, is not two decoders. The orientation is checked against the specification in `test_tiff_decode.cpp` |
 | A file with no PhotometricInterpretation | Refused, `GIMG_ERR_CORRUPT`, named | Read; it supplies a default | Deliberately not matched. Section 8 gives that field no default, so a file without one has not said what its samples mean, and guessing is a worse answer than saying so |
 
 The only other asymmetry is the obvious one: libtiff reads the compressed

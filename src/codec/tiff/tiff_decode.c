@@ -43,6 +43,7 @@
 #include <ghoti.io/cutil/safemath.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/raster.h>
 #include <stdint.h>
 #include <string.h>
@@ -495,6 +496,23 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
   if (out.source_alpha && ifd->has_extra_samples &&
       ifd->extra_samples == GIMG_TIFF_EXTRA_ASSOCIATED_ALPHA) {
     tiff_unpremultiply(&out, dst_pixels, stride, ifd->width, ifd->height);
+  }
+
+  // The profile the file carried, applied to the raster it describes rather
+  // than to the document: a multi-page TIFF's pages may each have their own,
+  // and a profile is a statement about one picture's colours.
+  if (ifd->icc && ifd->icc_size > 0u) {
+    GIMG_Color_Info info;
+    gimg_color_info_default(&info);
+    const GIMG_Color_Info * existing = gimg_raster_color_info_const(raster);
+    if (existing) {
+      info = *existing;
+    }
+    info.icc_bytes = ifd->icc;
+    info.icc_size = ifd->icc_size;
+    // set_color_info copies the profile, which is why the IFD may keep
+    // owning these bytes and the raster may outlive nothing.
+    (void)gimg_raster_set_color_info(raster, &info);
   }
 
   *out_raster = raster;

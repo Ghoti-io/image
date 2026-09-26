@@ -27,7 +27,9 @@
 #include <fstream>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
@@ -423,6 +425,116 @@ TEST(TiffDecode, AnAbsurdRowsPerStripIsBoundedByThePicture) {
   ASSERT_EQ(img.load("tiff_16x8_absurd_rows_per_strip.tif"), GIMG_OK)
       << img.reasons();
   EXPECT_EQ(img.pixels(), gray_ramp(16, 8));
+}
+
+TEST(TiffDecode, MetadataSurvivesALoadAndASave) {
+  // A TIFF is what professional colour work is stored in, so a profile that
+  // arrived has to leave again: a file whose profile was dropped in passing
+  // is a file whose colours mean something else, and nothing says so. The
+  // same goes for the orientation a camera wrote and the XMP a cataloguing
+  // tool did.
+  //
+  // The round trip is the assertion rather than the read, because a reader
+  // that keeps a profile and a writer that drops it look identical from
+  // inside the reader.
+  Loaded img;
+  ASSERT_EQ(img.load("tiff_4x4_metadata.tif"), GIMG_OK) << img.reasons();
+  const std::vector<uint8_t> want_pixels = img.pixels();
+  ASSERT_FALSE(want_pixels.empty());
+
+  const GIMG_Color_Info * info = gimg_raster_color_info_const(img.raster());
+  ASSERT_NE(info, nullptr);
+  ASSERT_NE(info->icc_bytes, nullptr) << "the profile did not reach the raster";
+  const size_t icc_size = info->icc_size;
+  // Four bytes of size, sixteen of signatures, then 256 of filler: the
+  // number is the generator's, and a change there should fail here.
+  EXPECT_EQ(icc_size, 276u);
+  std::vector<uint8_t> want_icc(
+      (const uint8_t *)info->icc_bytes, (const uint8_t *)info->icc_bytes + icc_size);
+
+  GIMG_Meta_Common * common = gimg_doc_meta_common(img.doc());
+  ASSERT_NE(common, nullptr);
+  EXPECT_EQ((int)gimg_meta_common_orientation(common), 6);
+  ASSERT_NE(gimg_meta_common_description(common), nullptr);
+  EXPECT_STREQ(gimg_meta_common_description(common), "a fixture");
+
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(img.doc());
+  ASSERT_NE(raw, nullptr);
+  size_t xmp_size = 0;
+  ASSERT_EQ(gimg_meta_raw_get(raw, "tiff", 700u, nullptr, &xmp_size), GIMG_OK);
+  EXPECT_GT(xmp_size, 0u);
+
+  // Out and back.
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  GIMG_Save_Report rep = {};
+  ASSERT_EQ(gimg_doc_save(img.doc(), out, "tiff", &opts, &rep), GIMG_OK);
+  const void * bytes = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &bytes, &size);
+
+  GIMG_Stream * back = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, size, &back), GIMG_OK);
+  GIMG_Doc * again = nullptr;
+  ASSERT_EQ(gimg_doc_load(back, nullptr, nullptr, &again), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(again, 0), nullptr, &raster),
+      GIMG_OK);
+
+  const GIMG_Color_Info * back_info = gimg_raster_color_info_const(raster);
+  ASSERT_NE(back_info, nullptr);
+  ASSERT_NE(back_info->icc_bytes, nullptr) << "the profile was dropped on save";
+  ASSERT_EQ(back_info->icc_size, want_icc.size());
+  EXPECT_EQ(std::memcmp(back_info->icc_bytes, want_icc.data(),
+                want_icc.size()),
+      0)
+      << "the profile changed on the way out and back";
+
+  // **The orientation is applied, not carried.** gimg_item_decode rotates
+  // the raster for every codec here, so the pixels that reach a writer are
+  // the display image and the file it writes declares no orientation -
+  // absent means 1, which is what those pixels are. Writing the source's tag
+  // beside already-rotated pixels would have the next reader rotate them
+  // again, and the first draft of this writer did exactly that.
+  //
+  // So the assertion is that the picture survives, not that the tag does.
+  GIMG_Meta_Common * back_common = gimg_doc_meta_common(again);
+  if (back_common) {
+    const GIMG_Orientation back_orient =
+        gimg_meta_common_orientation(back_common);
+    EXPECT_TRUE(back_orient == GIMG_ORIENTATION_UNKNOWN ||
+        back_orient == GIMG_ORIENTATION_NORMAL)
+        << "the written file re-declared an orientation its pixels already "
+           "have, so reading it back rotates them twice";
+  }
+  {
+    const uint32_t w = gimg_raster_width(raster);
+    const uint32_t h = gimg_raster_height(raster);
+    const size_t stride = gimg_raster_stride_bytes(raster);
+    const size_t bpp = gimg_raster_bytes_per_pixel(
+        gimg_raster_format(raster));
+    std::vector<uint8_t> flat;
+    const uint8_t * p = (const uint8_t *)gimg_raster_pixels(raster);
+    for (uint32_t y = 0; y < h; y++) {
+      flat.insert(flat.end(), p + (y * stride), p + (y * stride) + (w * bpp));
+    }
+    EXPECT_EQ(flat, want_pixels)
+        << "the picture changed on the way out and back";
+  }
+  ASSERT_NE(gimg_meta_common_description(back_common), nullptr);
+  EXPECT_STREQ(gimg_meta_common_description(back_common), "a fixture");
+  GIMG_Meta_Raw * back_raw = gimg_doc_meta_raw(again);
+  ASSERT_NE(back_raw, nullptr);
+  size_t back_xmp = 0;
+  EXPECT_EQ(gimg_meta_raw_get(back_raw, "tiff", 700u, nullptr, &back_xmp),
+      GIMG_OK);
+  EXPECT_EQ(back_xmp, xmp_size);
+
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(again);
+  gimg_stream_destroy(back);
+  gimg_stream_destroy(out);
 }
 
 TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {

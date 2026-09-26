@@ -16,6 +16,9 @@ import zlib
 
 # Field types, TIFF 6.0 section 2.
 BYTE, ASCII, SHORT, LONG, RATIONAL = 1, 2, 3, 4, 5
+# UNDEFINED, which is how an ICC profile is stored: a byte string the format
+# has no opinion about.
+UNDEFINED = 7
 
 TAGS = {
     "NewSubfileType": 254,
@@ -37,17 +40,22 @@ TAGS = {
     "TileLength": 323,
     "TileOffsets": 324,
     "TileByteCounts": 325,
+    "ImageDescription": 270,
+    "Orientation": 274,
     "Predictor": 317,
+    "XMP": 700,
+    "ICCProfile": 34675,
     "ExtraSamples": 338,
     "SampleFormat": 339,
 }
 
-TYPE_SIZE = {BYTE: 1, ASCII: 1, SHORT: 2, LONG: 4, RATIONAL: 8}
+TYPE_SIZE = {BYTE: 1, ASCII: 1, UNDEFINED: 1, SHORT: 2, LONG: 4,
+             RATIONAL: 8}
 
 
 def pack_values(endian, ftype, values):
     """The bytes of one field's values, in file order."""
-    if ftype in (BYTE, ASCII):
+    if ftype in (BYTE, ASCII, UNDEFINED):
         return bytes(values)
     if ftype == SHORT:
         return b"".join(struct.pack(endian + "H", v) for v in values)
@@ -500,6 +508,27 @@ def main():
         if predictor != 1:
             fields.append((TAGS["Predictor"], SHORT, [predictor]))
         write(name, build("II", [(fields, payload)]))
+
+    # ---- Metadata: a profile, an orientation, a description, an XMP packet --
+    #
+    # The profile is opaque to this library - it is carried, never
+    # interpreted - so a blob with a plausible ICC header is enough to check
+    # that it survives a load and a save unchanged. That is the whole claim:
+    # a TIFF is what professional colour work is stored in, and a profile
+    # dropped in passing makes a file's colours mean something else.
+    profile = bytearray(b"\x00\x00\x01\x28")        # Size, as a profile has
+    profile += b"ADBEmntrRGB XYZ "                     # Signatures
+    profile += bytes(range(256)) * 1
+    profile = bytes(profile[:296])
+    xmp = (b'<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+           b'<x:xmpmeta xmlns:x="adobe:ns:meta/"></x:xmpmeta>'
+           b'<?xpacket end="w"?>')
+    meta = strip_fields(W, H, rgb, 2, spp=3)
+    meta.append((TAGS["ImageDescription"], ASCII, list(b"a fixture\x00")))
+    meta.append((TAGS["Orientation"], SHORT, [6]))
+    meta.append((TAGS["XMP"], BYTE, list(xmp)))
+    meta.append((TAGS["ICCProfile"], UNDEFINED, list(profile)))
+    write("tiff_4x4_metadata.tif", build("II", [(meta, rgb)]))
 
     # ---- What the fuzzer found ----
     #

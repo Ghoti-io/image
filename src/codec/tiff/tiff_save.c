@@ -44,6 +44,7 @@
 #include <ghoti.io/cutil/safemath.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/color.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
@@ -91,6 +92,12 @@ typedef struct {
   uint32_t * strip_offsets;
   uint32_t x_dpi, y_dpi;
   bool has_dpi;
+  const unsigned char * icc; ///< Borrowed from the raster's colour info.
+  size_t icc_size;
+  const char * description;  ///< Borrowed from the document's metadata.
+  const unsigned char * xmp; ///< Borrowed from the document's raw metadata.
+  size_t xmp_size;
+  unsigned char * xmp_copy;  ///< Owned; gimg_meta_raw_get copies into it.
   tiff_entry_out_t entries[16];
   size_t entry_count;
   unsigned char * pool;    ///< Values too long for an entry.
@@ -326,6 +333,7 @@ static void tiff_free_page(const GIMG_Allocator * alloc, tiff_page_t * page) {
   gimg_free(alloc, page->strip_sizes);
   gimg_free(alloc, page->strip_offsets);
   gimg_free(alloc, page->pool);
+  gimg_free(alloc, page->xmp_copy);
   if (page->raster_owned && page->raster) {
     gimg_raster_destroy(page->raster);
   }
@@ -459,6 +467,9 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
   need += (size_t)page->samples * 2u;  // BitsPerSample
   need += page->strip_count * 4u * 2u; // StripOffsets, StripByteCounts
   need += 8u * 2u;                     // Two RATIONAL resolutions
+  need += page->icc_size;              // The profile, if there is one
+  need += page->xmp_size;              // The XMP packet, if there is one
+  need += page->description ? strlen(page->description) + 1u : 0u;
   need += 16u;
   page->pool = (unsigned char *)gimg_calloc(alloc, need, 1u);
   if (!page->pool) {
@@ -553,6 +564,23 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
     tiff_add_entry(page, GIMG_TIFF_TAG_PREDICTOR, GIMG_TIFF_TYPE_SHORT, 1u,
         scratch, 2u);
   }
+  // Tags above 700 in number order, which is where the metadata lands.
+  if (page->description) {
+    const size_t n = strlen(page->description) + 1u;
+    tiff_add_entry(page, GIMG_TIFF_TAG_IMAGE_DESCRIPTION,
+        GIMG_TIFF_TYPE_ASCII, (uint32_t)n,
+        (const unsigned char *)page->description, n);
+  }
+  // **No Orientation tag, deliberately.**
+  //
+  // gimg_item_decode applies the orientation for every codec in this
+  // library - a raster that reaches a writer is the display image, already
+  // rotated - so writing the source's tag beside those pixels would have a
+  // reader rotate them a second time. The first draft did exactly that, and
+  // the round trip came back rotated twice.
+  //
+  // Absent means 1, which is what these pixels are, so nothing is lost: the
+  // orientation was not dropped, it was applied.
   if (page->has_alpha) {
     // Unassociated, which is what this library's RGBA means: the colour is
     // not premultiplied. Saying nothing would leave a reader to guess, and
@@ -561,6 +589,17 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
     tiff_put_u16(scratch, GIMG_TIFF_EXTRA_UNASSOCIATED_ALPHA, be);
     tiff_add_entry(page, GIMG_TIFF_TAG_EXTRA_SAMPLES, GIMG_TIFF_TYPE_SHORT,
         1u, scratch, 2u);
+  }
+  if (page->xmp && page->xmp_size > 0u) {
+    tiff_add_entry(page, GIMG_TIFF_TAG_XMP, GIMG_TIFF_TYPE_BYTE,
+        (uint32_t)page->xmp_size, page->xmp, page->xmp_size);
+  }
+  if (page->icc && page->icc_size > 0u) {
+    // A TIFF is what professional colour work is stored in, so a profile
+    // that arrived has to leave again: dropping it makes the file's colours
+    // mean something else without saying so.
+    tiff_add_entry(page, GIMG_TIFF_TAG_ICC_PROFILE, GIMG_TIFF_TYPE_UNDEFINED,
+        (uint32_t)page->icc_size, page->icc, page->icc_size);
   }
   return GIMG_OK;
 }
@@ -635,6 +674,12 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       r = GIMG_ERR_FORMAT;
       break;
     }
+    const GIMG_Color_Info * info =
+        gimg_raster_color_info_const(page->raster);
+    if (info && info->icc_bytes && info->icc_size > 0u) {
+      page->icc = (const unsigned char *)info->icc_bytes;
+      page->icc_size = info->icc_size;
+    }
     GIMG_Meta_Common * common = gimg_doc_meta_common(doc);
     if (common) {
       uint32_t x = 0, y = 0;
@@ -643,6 +688,25 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         page->x_dpi = x;
         page->y_dpi = y;
         page->has_dpi = true;
+      }
+      page->description = gimg_meta_common_description(common);
+      if (page->description && page->description[0] == '\0') {
+        page->description = NULL;
+      }
+    }
+    GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+    if (raw) {
+      size_t xmp_size = 0;
+      if (gimg_meta_raw_get(raw, "tiff", GIMG_TIFF_TAG_XMP, NULL,
+              &xmp_size) == GIMG_OK &&
+          xmp_size > 0u) {
+        page->xmp_copy = (unsigned char *)gimg_malloc(alloc, xmp_size);
+        if (page->xmp_copy &&
+            gimg_meta_raw_get(raw, "tiff", GIMG_TIFF_TAG_XMP, page->xmp_copy,
+                &xmp_size) == GIMG_OK) {
+          page->xmp = page->xmp_copy;
+          page->xmp_size = xmp_size;
+        }
       }
     }
     r = tiff_build_strips(alloc, page, options, be);

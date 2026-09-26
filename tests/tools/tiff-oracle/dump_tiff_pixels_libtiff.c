@@ -32,6 +32,22 @@
  * packing is little-endian-looking on a little-endian machine and is not a
  * byte layout the format defines.
  *
+ * **The raster is asked for in the file's own orientation**, which is what
+ * makes this a comparison of decoders rather than of policies.
+ *
+ * libtiff applies the Orientation tag: ask it for ORIENTATION_TOPLEFT and a
+ * file saying 6 comes back rotated. This library does not - it carries the
+ * orientation as metadata and leaves applying it to the caller, exactly as it
+ * does with a JPEG's or a PNG's Exif orientation. Neither is wrong. Passing
+ * the file's own tag as the orientation wanted makes libtiff's transform the
+ * identity, so both readers hand back the stored order and the comparison is
+ * about pixels. That the orientation survives a round trip is asserted
+ * separately, in test_tiff_decode.cpp.
+ *
+ * Overriding the tag with TIFFSetField was tried first and is not the same
+ * thing: it changed which transform libtiff applied rather than removing
+ * one, and the disagreement moved instead of going away.
+ *
  * Build with: make oracle-build oracle-tools
  *   cc -o dump_tiff_pixels_libtiff dump_tiff_pixels_libtiff.c -ltiff
  *
@@ -72,6 +88,8 @@ static int describe(TIFF * tif, uint32_t w, uint32_t h, char * out,
     size_t out_size) {
   uint16_t bps = 0, spp = 0, photo = 0xFFFFu, comp = 0, planar = 0;
   uint32_t tw = 0, tl = 0;
+  uint16_t orient = ORIENTATION_TOPLEFT;
+  TIFFGetFieldDefaulted(tif, TIFFTAG_ORIENTATION, &orient);
   uint16_t extra_count = 0, * extra = NULL;
   unsigned first_extra = 0u;
   if (TIFFGetField(tif, TIFFTAG_EXTRASAMPLES, &extra_count, &extra) &&
@@ -87,9 +105,9 @@ static int describe(TIFF * tif, uint32_t w, uint32_t h, char * out,
   TIFFGetField(tif, TIFFTAG_TILELENGTH, &tl);
   return snprintf(out, out_size,
       "width=%u\theight=%u\tbps=%u\tspp=%u\tphotometric=%u\t"
-      "compression=%u\tplanar=%u\ttiled=%d\textra=%u",
+      "compression=%u\tplanar=%u\ttiled=%d\textra=%u\torientation=%u",
       w, h, bps, spp, photo, comp, planar, TIFFIsTiled(tif) ? 1 : 0,
-      first_extra);
+      first_extra, (unsigned)orient);
 }
 
 /** Turn a corpus-relative path into one flat file name. */
@@ -136,10 +154,11 @@ static int batch(const char * base, const char * out_dir) {
       TIFFClose(tif);
       continue;
     }
+    uint16_t as_stored = ORIENTATION_TOPLEFT;
+    TIFFGetFieldDefaulted(tif, TIFFTAG_ORIENTATION, &as_stored);
     uint32_t * raster = (uint32_t *)_TIFFmalloc((tmsize_t)w * h * 4);
     if (!raster ||
-        !TIFFReadRGBAImageOriented(tif, w, h, raster, ORIENTATION_TOPLEFT,
-            0)) {
+        !TIFFReadRGBAImageOriented(tif, w, h, raster, as_stored, 0)) {
       printf("%s\tstatus=refused\t%s\n", line, info);
       if (raster) {
         _TIFFfree(raster);
@@ -266,12 +285,13 @@ int main(int argc, char ** argv) {
     TIFFClose(tif);
     return 1;
   }
-  // Top-left origin: see the note at the top. The final 0 is "stop on the
-  // first error" rather than "return what was read so far", because a partial
-  // raster silently compared against a whole one is a disagreement nobody can
-  // explain.
-  if (!TIFFReadRGBAImageOriented(
-          tif, w, h, raster, ORIENTATION_TOPLEFT, 0)) {
+  // The file's own orientation: see the note at the top. The final 0 is
+  // "stop on the first error" rather than "return what was read so far",
+  // because a partial raster silently compared against a whole one is a
+  // disagreement nobody can explain.
+  uint16_t as_stored = ORIENTATION_TOPLEFT;
+  TIFFGetFieldDefaulted(tif, TIFFTAG_ORIENTATION, &as_stored);
+  if (!TIFFReadRGBAImageOriented(tif, w, h, raster, as_stored, 0)) {
     fprintf(stderr, "%s: libtiff would not decode it\n", path);
     _TIFFfree(raster);
     TIFFClose(tif);
