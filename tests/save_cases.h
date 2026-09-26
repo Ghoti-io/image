@@ -209,6 +209,27 @@ inline GIMG_Raster * make_raster(const GIMG_Pixel_Format & fmt, uint32_t w,
   return r;
 }
 
+/**
+ * A format of @p n channels with no colour convention, at 8 bits.
+ *
+ * T.81 B.2.2 gives Nf a range of 1 to 255 and says nothing about what the
+ * components mean, so a frame of five is as legal as one of three; libjpeg
+ * calls this JCS_UNKNOWN. Five is the smallest count above
+ * GIMG_JPEG_MAX_SCAN_COMPONENTS, which is the threshold that decides whether
+ * a frame can be written as one interleaved scan or has to be split - and
+ * every case here had three or four components, so the split side had never
+ * been written.
+ */
+inline const GIMG_Pixel_Format & unnamed_channels(unsigned n) {
+  static GIMG_Pixel_Format cache[9];
+  static bool made[9] = {false};
+  if (n < 9u && !made[n]) {
+    made[n] = gimg_pixel_format_multichannel((uint8_t)n, 8u, &cache[n]) ==
+        GIMG_OK;
+  }
+  return cache[n < 9u ? n : 0u];
+}
+
 /** One save configuration, named so a failure says which. */
 struct SaveCase {
   const char * name;
@@ -453,6 +474,31 @@ inline std::vector<SaveCase> save_cases(void) {
     o.quality = 1;
     cases.push_back({"jpeg quality at the floor", "jpeg", &GIMG_PIXEL_RGBA8, o,
         0u, nullptr, 0u, 0u});
+  }
+  // Five components: above GIMG_JPEG_MAX_SCAN_COMPONENTS, so the writer can
+  // no longer put the frame in one interleaved scan. Each of these reaches a
+  // different half of that decision.
+  // Not hierarchical: gimg_jpeg_encode_hierarchical() refuses a frame of more
+  // than four components on purpose - see the note above the gate in
+  // jpeg_hierarchical_encode.c - so that combination has no case here.
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_progressive = 1;
+    cases.push_back({"jpeg progressive 5-channel", "jpeg",
+        &unnamed_channels(5u), o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_non_interleaved = 1;
+    cases.push_back({"jpeg non-interleaved 5-channel", "jpeg",
+        &unnamed_channels(5u), o, 0u, nullptr, 0u, 0u});
+  }
+  {
+    GIMG_Save_Options o = opt();
+    o.jpeg_precision = 12;
+    o.jpeg_progressive = 1;
+    cases.push_back({"jpeg 12-bit progressive 5-channel", "jpeg",
+        &unnamed_channels(5u), o, 0u, nullptr, 0u, 0u});
   }
   // PNG, BMP and GIF used to contribute four cases between them against
   // twenty-eight for JPEG, which is why the sweeps that walk this list reached
