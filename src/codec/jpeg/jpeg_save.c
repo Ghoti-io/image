@@ -3465,8 +3465,8 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
 
   unsigned quality = GIMG_JPEG_DEFAULT_QUALITY;
-  if (options && options->quality != 0) {
-    quality = options->quality;
+  if (options && options->jpeg_quality != 0) {
+    quality = options->jpeg_quality;
     if (quality > 100) {
       quality = 100;
     }

@@ -60,7 +60,7 @@
  * quantization. If any pixel has no match we fall back to unsupported (caller
  * would need to requantize or use RGB).
  *
- * Interlace (Adam7): When options->interlaced is set, we fill raw rows in
+ * Interlace (Adam7): When options->png_interlaced is set, we fill raw rows in
  * Adam7 pass order (seven passes per W3C §2.6), each row prefixed with filter
  * byte 0, then DEFLATE the entire interlaced buffer.
  */
@@ -2023,7 +2023,7 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
-  int do_interlaced = options && options->interlaced;
+  int do_interlaced = options && options->png_interlaced;
   size_t num_items = gimg_doc_item_count(doc);
   int is_apng = (num_items > 1);
 

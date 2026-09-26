@@ -249,6 +249,36 @@ Tests under `tests/` include:
 
 6. **Docs:** Add `documentation/formats/<format>.md` and link it from the table in \ref image_format_references "Format and specification references"; update option docs for format-specific behavior and limits. \ref image_format_adding "Adding a format" is the checklist and the page template.
 
+### Where a new format's options go
+
+**Flat struct, one prefix per format.** A field that only one codec reads is
+named after that codec - `png_interlaced`, `gif_loop_count`,
+`jpeg_lossless_predictor` - and a field more than one reads is not:
+`metadata_policy`, and the `exif_thumbnail_*` pair. TIFF's options go into
+`GIMG_Save_Options` as `tiff_*`, beside the rest.
+
+This was decided rather than inherited, because the alternative is real: a
+nested struct per format (`opts.tiff.predictor`) groups the fields, keeps the
+header navigable as the list grows, and makes it impossible to set one
+format's option while meaning another's. It was not taken because it renames
+every one of the 27 existing option fields at around 400 call sites for a
+gain that the prefix already delivers at the point of use, and because the
+flat struct zero-initializes in one line, which is the idiom every example
+and test uses.
+
+**What the prefix is protecting against is not hypothetical.** A save case in
+this library's own suite set `interlaced` - then unprefixed, and PNG's -
+intending the GIF writer to read it. The case produced a byte-for-byte copy
+of the plain one and passed. Both unprefixed format fields have since been
+renamed (`interlaced` to `png_interlaced`, `quality` to `jpeg_quality`), so
+the rule now holds without exception and a new format joins it by following
+it.
+
+Revisit the nesting decision when a format wants an option that is a struct
+rather than a scalar - a tile size, a strip layout, a scan script - because
+at that point the flat struct stops being flat anyway and the argument
+changes.
+
 ### Codec implementation checklist
 
 When implementing a new codec (or auditing an existing one), ensure:

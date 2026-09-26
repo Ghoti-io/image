@@ -333,7 +333,7 @@ inline const GIMG_JPEG_Progressive_Config * simple_progression(void) {
 inline std::vector<SaveCase> save_cases(void) {
   auto opt = [](void) {
     GIMG_Save_Options o = {};
-    o.quality = 80;
+    o.jpeg_quality = 80;
     return o;
   };
 
@@ -523,13 +523,13 @@ inline std::vector<SaveCase> save_cases(void) {
     // and that clamp is the only thing between a caller's 200 and a quant
     // table scaled off the end of its own curve.
     GIMG_Save_Options o = opt();
-    o.quality = 200;
+    o.jpeg_quality = 200;
     cases.push_back({"jpeg quality above the top", "jpeg", &GIMG_PIXEL_RGBA8, o,
         0u, nullptr, 0u, 0u});
   }
   {
     GIMG_Save_Options o = opt();
-    o.quality = 1;
+    o.jpeg_quality = 1;
     cases.push_back({"jpeg quality at the floor", "jpeg", &GIMG_PIXEL_RGBA8, o,
         0u, nullptr, 0u, 0u});
   }
@@ -547,7 +547,7 @@ inline std::vector<SaveCase> save_cases(void) {
   }
   {
     GIMG_Save_Options o = opt();
-    o.interlaced = 1;
+    o.png_interlaced = 1;
     cases.push_back({"png three frames interlaced", "png", &GIMG_PIXEL_RGBA8,
         o, 0u, make_animation, 0u, 0u});
   }
@@ -593,7 +593,7 @@ inline std::vector<SaveCase> save_cases(void) {
   }
   {
     GIMG_Save_Options o = opt();
-    o.interlaced = 1;
+    o.png_interlaced = 1;
     cases.push_back({"png interlaced rgba", "png", &GIMG_PIXEL_RGBA8, o, 0u, nullptr, 0u, 0u});
   }
   {
@@ -613,7 +613,7 @@ inline std::vector<SaveCase> save_cases(void) {
   }
   {
     GIMG_Save_Options o = opt();
-    o.interlaced = 1;
+    o.png_interlaced = 1;
     cases.push_back({"png interlaced gray16", "png", &GIMG_PIXEL_GRAY16, o, 0u,
         nullptr, 0u, 0u});
   }
@@ -632,7 +632,7 @@ inline std::vector<SaveCase> save_cases(void) {
   }
   {
     GIMG_Save_Options o = opt();
-    o.interlaced = 1;
+    o.png_interlaced = 1;
     cases.push_back({"png interlaced palette", "png", &GIMG_PIXEL_RGBA8, o, 4u,
         nullptr, 0u, 0u});
   }

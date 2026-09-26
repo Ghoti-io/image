@@ -321,11 +321,31 @@ typedef struct {
  * @brief Save options (metadata policy, interlace, quality, etc.).
  * @see api_options
  */
+/**
+ * @brief Save options.
+ *
+ * **Every field that only one format reads carries that format's name.** The
+ * struct is flat and shared, so `png_interlaced` and `gif_interlace` sit a
+ * few lines apart and mean different things; without the prefix there is
+ * nothing at the point of use to say which writer will read what you set. A
+ * save case in this library's own test suite set the unprefixed `interlaced`
+ * expecting the GIF writer to read it, produced a byte-for-byte copy of the
+ * plain case, and passed.
+ *
+ * A field that more than one codec reads has no prefix - `metadata_policy`,
+ * and the `exif_thumbnail_*` pair, which JPEG and PNG both honour.
+ *
+ * @see api_options
+ */
 typedef struct {
   GIMG_Meta_Policy metadata_policy;
-  unsigned int interlaced; ///< 0 = non-interlaced (default), 1 = Adam7 (PNG).
-  unsigned int quality; ///< JPEG quality 1–100 (100 = finest). 0 = unspecified,
-                        ///< codec default (e.g. 85).
+  /** PNG: 0 = non-interlaced (default), 1 = Adam7 (11.2.2). Ignored for
+   * non-PNG; GIF's four-pass order is gif_interlace, which is a different
+   * field for a different format. */
+  unsigned int png_interlaced;
+  /** JPEG quality 1–100 (100 = finest). 0 = unspecified, codec default
+   * (85). Ignored for non-JPEG. */
+  unsigned int jpeg_quality;
   uint8_t exif_thumbnail_format;  ///< IFD1 thumbnail: 0 = default (6), 1, 6, 7.
   uint8_t exif_thumbnail_quality; ///< Thumbnail JPEG quality 1–100 when
                                   ///< format 6 or 7; 0 = default (85).
@@ -687,6 +707,8 @@ typedef struct {
    * different instruction from a count of zero: browsers play such a file
    * once.  Ignored for non-GIF. */
   uint16_t gif_loop_count;
+  /** Zero; room to grow, and the room a new format's options go in first. */
+  uint8_t _reserved[8];
 } GIMG_Save_Options;
 
 /** @name PNG row filters (PNG 9.2, Table 9.1)

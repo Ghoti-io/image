@@ -1107,7 +1107,7 @@ GIMG_Result reload_and_resave(const char * codec_name,
     if (loaded == GIMG_OK && doc) {
       *out_loaded = true;
       GIMG_Save_Options opts = {};
-      opts.quality = 80;
+      opts.jpeg_quality = 80;
       GIMG_Stream * out = nullptr;
       if (gimg_stream_create_memory_output(&out) == GIMG_OK) {
         GIMG_Save_Report report = {};

@@ -69,8 +69,8 @@ say what a given option costs in a real file.
 | Field | Description |
 |-------|-------------|
 | `metadata_policy` | **GIMG_Meta_Policy** — which metadata to write (see @ref api_options_meta_policy). |
-| `interlaced` | For PNG: `0` = non-interlaced (default), `1` = Adam7 interlaced. |
-| `quality` | For JPEG: `1`–`100` (100 = finest). `0` = unspecified, codec default (85). Ignored by a lossless frame, which reconstructs exactly. Ignored by other codecs. |
+| `png_interlaced` | For PNG: `0` = non-interlaced (default), `1` = Adam7 interlaced. |
+| `jpeg_quality` | For JPEG: `1`–`100` (100 = finest). `0` = unspecified, codec default (85). Ignored by a lossless frame, which reconstructs exactly. Ignored by other codecs. |
 | `exif_thumbnail_format` | IFD1 thumbnail compression: `0` = default (6), or `1`, `6`, `7`. |
 | `exif_thumbnail_quality` | Thumbnail JPEG quality `1`–`100` when the format is 6 or 7; `0` = default (85). |
 
@@ -86,7 +86,7 @@ say what a given option costs in a real file.
 | `jpeg_restart_interval` | Restart interval in MCUs; `0` = none. Non-zero writes a DRI segment and injects RST0–RST7 every N MCUs. In a non-interleaved scan an MCU is a single block (A.2.3), so that is what N counts. |
 | `jpeg_precision` | Output precision. `0` = derive from the raster; `8` or `12` = write at that precision. Table B.2 allows no other value in a DCT frame, so `16` returns `GIMG_ERR_UNSUPPORTED` and a 16-bit raster is written at 12-bit when this is `0`. A differing raster depth is converted by the library (`gimg_ops_convert_bit_depth`). |
 | `jpeg_arithmetic` | `1` writes arithmetic entropy coding (Annex D) — SOF9/SOF10, a DAC segment and no DHT — instead of Huffman. Both are normative; arithmetic is a few per cent smaller and understood by far fewer decoders, so Huffman stays the default. |
-| `jpeg_lossless_predictor` | `0` (default) writes a DCT frame; `1`–`7` write a lossless frame (Annex H, SOF3) with that predictor from Table H.1. Reconstruction is exact, so `quality` and `jpeg_chroma_subsampling` have no meaning; colour is stored as RGB because the YCbCr conversion is not reversible. Precision follows the raster (8, 12 or 16). |
+| `jpeg_lossless_predictor` | `0` (default) writes a DCT frame; `1`–`7` write a lossless frame (Annex H, SOF3) with that predictor from Table H.1. Reconstruction is exact, so `jpeg_quality` and `jpeg_chroma_subsampling` have no meaning; colour is stored as RGB because the YCbCr conversion is not reversible. Precision follows the raster (8, 12 or 16). |
 | `jpeg_hierarchical_levels` | `0` (default) writes one frame; *n* writes a hierarchical sequence (Annex J) with *n* resolution doublings. Sampling is 4:4:4 throughout and the raster must be 8-bit. Combines with `jpeg_arithmetic`. |
 | `jpeg_non_interleaved` | `1` writes a sequential frame as one non-interleaved scan per component (A.2.3) rather than one interleaved scan (A.2.2). Same blocks, same picture, different order — a decoder wanting only luminance can stop after the first scan. Refused with `jpeg_progressive`, a lossless frame, or `jpeg_hierarchical_levels`. |
 | `jpeg_cmyk_transform` | Adobe APP14 transform for a four-component raster. `0` (default) writes CMYK unchanged, so a CMYK JPEG survives a load and save; `2` writes YCCK. Only 0 and 2 are accepted; anything else returns `GIMG_ERR_UNSUPPORTED`. Ignored unless the raster is `GIMG_PIXEL_CMYK8`. |
@@ -403,7 +403,7 @@ Write a lossless frame (ITU-T T.81 Annex H, SOF3) rather than a DCT-based one.
 combine them.  Which one compresses best depends on the image; 1 and 4 are the
 usual choices.
 
-The reconstruction is exact, so `quality` and `jpeg_chroma_subsampling` have no
+The reconstruction is exact, so `jpeg_quality` and `jpeg_chroma_subsampling` have no
 meaning here and are ignored, and color is stored as RGB rather than YCbCr
 because that conversion is not reversible.
 

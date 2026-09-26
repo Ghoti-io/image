@@ -127,7 +127,7 @@ TEST(Codec, SaveThroughADifferentCodecDoesNotTouchForeignState) {
       ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
       GIMG_Save_Options opts = {};
       opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-      opts.quality = 85;
+      opts.jpeg_quality = 85;
       GIMG_Save_Report report = {};
       // The return value is not the point - some pairs are legitimately
       // unsupported.  Reaching this line without a crash is.

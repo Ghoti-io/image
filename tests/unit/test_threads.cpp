@@ -91,7 +91,7 @@ std::string save_once(uint32_t seed, const char * format, uint8_t quality) {
   }
   GIMG_Save_Options options;
   memset(&options, 0, sizeof(options));
-  options.quality = quality;
+  options.jpeg_quality = quality;
   GIMG_Save_Report report;
   memset(&report, 0, sizeof(report));
   std::string bytes;
@@ -212,7 +212,7 @@ TEST(Threads, ConcurrentSavesMatchSolitaryOnes) {
   struct Work {
     uint32_t seed;
     const char * format;
-    uint8_t quality;
+    uint8_t jpeg_quality;
   };
   const Work work[] = {
       {1u, "jpeg", 95u},
@@ -229,7 +229,7 @@ TEST(Threads, ConcurrentSavesMatchSolitaryOnes) {
   // Alone first, so there is something to be right about.
   std::vector<std::string> alone(count);
   for (size_t i = 0; i < count; i++) {
-    alone[i] = save_once(work[i].seed, work[i].format, work[i].quality);
+    alone[i] = save_once(work[i].seed, work[i].format, work[i].jpeg_quality);
     ASSERT_FALSE(alone[i].empty())
         << "solitary save of " << work[i].format << " failed";
   }
@@ -242,7 +242,7 @@ TEST(Threads, ConcurrentSavesMatchSolitaryOnes) {
     for (size_t i = 0; i < count; i++) {
       threads.emplace_back([&together, &work, i]() {
         together[i] =
-            save_once(work[i].seed, work[i].format, work[i].quality);
+            save_once(work[i].seed, work[i].format, work[i].jpeg_quality);
       });
     }
     for (auto & t : threads) {
@@ -251,10 +251,10 @@ TEST(Threads, ConcurrentSavesMatchSolitaryOnes) {
     for (size_t i = 0; i < count; i++) {
       ASSERT_EQ(together[i].size(), alone[i].size())
           << "round " << round << ": " << work[i].format << " at quality "
-          << (int)work[i].quality << " changed size when run concurrently";
+          << (int)work[i].jpeg_quality << " changed size when run concurrently";
       ASSERT_TRUE(together[i] == alone[i])
           << "round " << round << ": " << work[i].format << " at quality "
-          << (int)work[i].quality
+          << (int)work[i].jpeg_quality
           << " produced different bytes when run concurrently";
     }
   }

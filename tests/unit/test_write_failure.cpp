@@ -271,7 +271,7 @@ TEST(WriteFailure, EveryTruncationPointIsReportedWhenRewritingAFile) {
       }
 
       GIMG_Save_Options opts = {};
-      opts.quality = 80;
+      opts.jpeg_quality = 80;
       GIMG_Save_Report report = {};
       size_t length = 0;
       GIMG_Stream * out = nullptr;

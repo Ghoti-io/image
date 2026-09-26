@@ -491,7 +491,7 @@ TEST(JpegEncode, QualityOptionUsedWhenNonZero) {
   gimg_item_set_raster(item, raster);
 
   GIMG_Save_Options save_opts = {
-      .metadata_policy = GIMG_META_PRESERVE_ALL, .quality = 50};
+      .metadata_policy = GIMG_META_PRESERVE_ALL, .jpeg_quality = 50};
   GIMG_Stream * out_stream = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
   GIMG_Save_Report report = {};
@@ -1016,7 +1016,7 @@ static bool save_cmyk_pattern(uint32_t w, uint32_t h, uint8_t transform,
   }
   GIMG_Save_Options opts = {};
   opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-  opts.quality = quality;
+  opts.jpeg_quality = quality;
   opts.jpeg_cmyk_transform = transform;
   opts.jpeg_chroma_subsampling = subsampling;
   opts.jpeg_progressive = progressive;
@@ -1198,7 +1198,7 @@ TEST(JpegEncode, FourComponentFrameAlwaysCarriesItsAdobeMarker) {
       ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
       GIMG_Save_Options opts = {};
       opts.metadata_policy = policy;
-      opts.quality = 90;
+      opts.jpeg_quality = 90;
       opts.jpeg_cmyk_transform = transform;
       GIMG_Save_Report report = {};
       ASSERT_EQ(gimg_doc_save(doc, out_stream, "jpeg", &opts, &report),
@@ -1314,7 +1314,7 @@ TEST(JpegEncode, SmallRestartIntervalsChangeNothingButWhereTheCoderResets) {
             ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
             GIMG_Save_Options so = {};
             so.metadata_policy = GIMG_META_DROP_ALL;
-            so.quality = 85;
+            so.jpeg_quality = 85;
             so.jpeg_restart_interval = intervals[k];
             so.jpeg_chroma_subsampling = (uint8_t)subsampling;
             so.jpeg_progressive = (uint8_t)progressive;
@@ -1443,7 +1443,7 @@ TEST(JpegEncode, FourComponentHierarchicalSequences) {
           GIMG_Stream * os = nullptr;
           ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
           GIMG_Save_Options so = {};
-          so.quality = 90;
+          so.jpeg_quality = 90;
           so.jpeg_hierarchical_levels = (uint8_t)levels;
           so.jpeg_progressive = (uint8_t)progressive;
           so.jpeg_arithmetic = (uint8_t)arithmetic;
@@ -1563,7 +1563,7 @@ TEST(JpegEncode, EveryHierarchicalWidthTheWriterAcceptsIsReadBack) {
         ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
         GIMG_Save_Options so = {};
         so.metadata_policy = GIMG_META_DROP_ALL;
-        so.quality = 95;
+        so.jpeg_quality = 95;
         so.jpeg_precision = 8;
         so.jpeg_hierarchical_levels = (uint8_t)levels;
         so.jpeg_lossless_predictor = (uint8_t)(lossless ? 1 : 0);
@@ -1651,7 +1651,7 @@ TEST(JpegEncode, HierarchicalRefusesASequenceWiderThanAScan) {
     GIMG_Stream * os = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
     GIMG_Save_Options so = {};
-    so.quality = 85;
+    so.jpeg_quality = 85;
     so.jpeg_hierarchical_levels = 1;
     GIMG_Save_Report rep = {};
     EXPECT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_ERR_UNSUPPORTED);
@@ -1853,7 +1853,7 @@ TEST(JpegEncode, TwelveBitFramesOfAnyComponentCount) {
       GIMG_Stream * os = nullptr;
       ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
       GIMG_Save_Options so = {};
-      so.quality = 100;
+      so.jpeg_quality = 100;
       so.jpeg_precision = 12;
       so.jpeg_progressive = (uint8_t)progressive;
       GIMG_Save_Report rep = {};
@@ -1939,7 +1939,7 @@ TEST(JpegEncode, AbbreviatedStreamsOfB4) {
         ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
         GIMG_Save_Options so = {};
         so.metadata_policy = GIMG_META_DROP_ALL;
-        so.quality = 88;
+        so.jpeg_quality = 88;
         so.jpeg_abbreviated = (uint8_t)mode;
         so.jpeg_progressive = (uint8_t)progressive;
         so.jpeg_arithmetic = (uint8_t)arithmetic;
@@ -2046,7 +2046,7 @@ TEST(JpegEncode, AbbreviatedRefusesWhatCannotBeSplit) {
     GIMG_Stream * os = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
     GIMG_Save_Options so = {};
-    so.quality = 85;
+    so.jpeg_quality = 85;
     so.jpeg_abbreviated = c.abbreviated;
     so.jpeg_hierarchical_levels = c.hierarchical;
     so.jpeg_lossless_predictor = c.lossless;
@@ -2100,7 +2100,7 @@ TEST(JpegEncode, FramesWiderThanOneScanCanNameAreWritten) {
     ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
     GIMG_Save_Options opts = {};
     opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-    opts.quality = 100;
+    opts.jpeg_quality = 100;
     GIMG_Save_Report report = {};
     ASSERT_EQ(gimg_doc_save(doc, out_stream, "jpeg", &opts, &report), GIMG_OK)
         << "a frame of " << n << " components is legal and must be writable";
@@ -2224,7 +2224,7 @@ TEST(JpegEncode, WideFramesProgressiveAndArithmetic) {
         ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
         GIMG_Save_Options opts = {};
         opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-        opts.quality = 100;
+        opts.jpeg_quality = 100;
         opts.jpeg_progressive = (uint8_t)progressive;
         opts.jpeg_arithmetic = (uint8_t)arithmetic;
         GIMG_Save_Report report = {};
@@ -2384,7 +2384,7 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat6) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_JPEG,
       .exif_thumbnail_quality = 85,
   };
@@ -2460,7 +2460,7 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat1) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED,
       .exif_thumbnail_quality = 85,
   };
@@ -2528,7 +2528,7 @@ TEST(JpegEncode, SaveTwoItemsExifThumbnailFormat7) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG,
       .exif_thumbnail_quality = 85,
   };
@@ -2593,7 +2593,7 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat1) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_UNCOMPRESSED,
       .exif_thumbnail_quality = 0,
   };
@@ -2680,7 +2680,7 @@ TEST(JpegEncode, RoundTripExifThumbnailFormat7) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .exif_thumbnail_format = GIMG_EXIF_THUMB_FORMAT_TIFF_JPEG,
       .exif_thumbnail_quality = 85,
   };
@@ -2934,7 +2934,7 @@ TEST(JpegEncode, ChromaSubsamplingOption) {
   auto save_and_size = [doc](unsigned chroma) {
     GIMG_Save_Options opts = {
         .metadata_policy = GIMG_META_PRESERVE_ALL,
-        .quality = 85,
+        .jpeg_quality = 85,
         .jpeg_chroma_subsampling = (uint8_t)chroma,
     };
     GIMG_Stream * out = nullptr;
@@ -2960,7 +2960,7 @@ TEST(JpegEncode, ChromaSubsamplingOption) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_420,
   };
   GIMG_Save_Report report = {};
@@ -3040,7 +3040,7 @@ TEST(JpegEncode, EncodeRestartIntervalThenLoadDecodeAndLibjpegOracle) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_restart_interval = 4,
   };
   GIMG_Save_Report report = {};
@@ -3127,7 +3127,7 @@ TEST(JpegEncode, Chroma422RoundTripAndLibjpegOracle) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_422,
   };
   GIMG_Save_Report report = {};
@@ -3208,7 +3208,7 @@ TEST(JpegEncode, Chroma444RoundTripAndLibjpegOracle) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
   };
   GIMG_Save_Report report = {};
@@ -3289,7 +3289,7 @@ TEST(JpegEncode, ProgressiveDefaultConfigDecodeMatchesBaseline) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out_baseline), GIMG_OK);
   GIMG_Save_Options opts_baseline = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_420,
   };
   GIMG_Save_Report report = {};
@@ -3308,7 +3308,7 @@ TEST(JpegEncode, ProgressiveDefaultConfigDecodeMatchesBaseline) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out_prog), GIMG_OK);
   GIMG_Save_Options opts_prog = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_420,
       .jpeg_progressive = 1,
   };
@@ -3426,7 +3426,7 @@ TEST(JpegEncode, ProgressiveCustomScanScriptDecodeMatches) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 90,
+      .jpeg_quality = 90,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
       .jpeg_progressive = 1,
       .jpeg_progressive_config = &custom_config,
@@ -3484,7 +3484,7 @@ TEST(JpegEncode, ProgressiveInvalidScriptReturnsError) {
   };
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
       .jpeg_progressive = 1,
       .jpeg_progressive_config = &bad_config,
@@ -3518,7 +3518,7 @@ TEST(JpegEncode, ProgressiveInvalidScriptSsSeOutOfRangeReturnsError) {
   };
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
       .jpeg_progressive = 1,
       .jpeg_progressive_config = &bad_config,
@@ -3551,7 +3551,7 @@ TEST(JpegEncode, ProgressiveInvalidScriptAhAlOutOfRangeReturnsError) {
   };
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
       .jpeg_progressive = 1,
       .jpeg_progressive_config = &bad_config,
@@ -3590,7 +3590,7 @@ TEST(JpegEncode, ProgressiveInvalidScriptOverlappingSpectralBandsReturnsError) {
   };
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
       .jpeg_progressive = 1,
       .jpeg_progressive_config = &bad_config,
@@ -3635,7 +3635,7 @@ TEST(JpegEncode, ProgressiveChromaSubsampling420_422_444) {
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {
         .metadata_policy = GIMG_META_PRESERVE_ALL,
-        .quality = 85,
+        .jpeg_quality = 85,
         .jpeg_chroma_subsampling = chroma,
         .jpeg_progressive = 1,
     };
@@ -3682,7 +3682,7 @@ TEST(JpegEncode, ProgressiveWithRestartIntervalRoundTrip) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
       .jpeg_progressive = 1,
       .jpeg_restart_interval = 8,
@@ -3731,7 +3731,7 @@ TEST(JpegEncode, ProgressiveMinimalDimensions8x8And16x16) {
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {
         .metadata_policy = GIMG_META_PRESERVE_ALL,
-        .quality = 85,
+        .jpeg_quality = 85,
         .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
         .jpeg_progressive = 1,
     };
@@ -3793,7 +3793,7 @@ TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out_baseline), GIMG_OK);
   GIMG_Save_Options opts_baseline = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
   };
   GIMG_Save_Report report = {};
@@ -3820,7 +3820,7 @@ TEST(JpegEncode, ProgressiveWithRefinementScanDecodeMatchesBaseline) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out_refine), GIMG_OK);
   GIMG_Save_Options opts_refine = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
       .jpeg_progressive = 1,
       .jpeg_progressive_config = &refine_config,
@@ -3910,7 +3910,7 @@ TEST(JpegEncode, SaveGray16ThenLoadDecode) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
   };
   GIMG_Save_Report report = {};
   ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
@@ -3981,7 +3981,7 @@ TEST(JpegEncode, SaveRgb16ThenLoadDecode) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 90,
+      .jpeg_quality = 90,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
   };
   GIMG_Save_Report report = {};
@@ -4053,7 +4053,7 @@ TEST(JpegEncode, SaveRgb16ProgressiveThenLoadDecode) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 90,
+      .jpeg_quality = 90,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
       .jpeg_progressive = 1,
   };
@@ -4122,7 +4122,7 @@ TEST(JpegEncode, SaveGray16ProgressiveThenLoadDecode) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_progressive = 1,
   };
   GIMG_Save_Report report = {};
@@ -4197,7 +4197,7 @@ TEST(JpegEncode, SaveGray16QualityVariation) {
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {
         .metadata_policy = GIMG_META_PRESERVE_ALL,
-        .quality = q,
+        .jpeg_quality = q,
         .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
     };
     GIMG_Save_Report report = {};
@@ -4290,7 +4290,7 @@ TEST(JpegEncode, Save12BitColorFlatFieldsKeepTheirValue) {
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {};
     opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-    opts.quality = 95;
+    opts.jpeg_quality = 95;
     opts.jpeg_precision = 12;
     GIMG_Save_Report report = {};
     ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK)
@@ -4366,7 +4366,7 @@ TEST(JpegEncode, Save12BitQuality100RoundTrips) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {};
   opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-  opts.quality = 100;
+  opts.jpeg_quality = 100;
   opts.jpeg_precision = 12;
   GIMG_Save_Report report = {};
   ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
@@ -4622,7 +4622,7 @@ TEST(JpegEncode, ArithmeticAndHuffmanEncodeTheSameImage) {
     ASSERT_EQ(gimg_stream_create_memory_output(&st), GIMG_OK);
     GIMG_Save_Options opts = {};
     opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-    opts.quality = quality;
+    opts.jpeg_quality = quality;
     opts.jpeg_arithmetic = arithmetic ? 1 : 0;
     opts.jpeg_progressive = progressive ? 1 : 0;
     GIMG_Save_Report report = {};
@@ -4715,7 +4715,7 @@ TEST(JpegEncode, ProgressiveArithmeticWritesSof10) {
   ASSERT_EQ(gimg_stream_create_memory_output(&st), GIMG_OK);
   GIMG_Save_Options opts = {};
   opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-  opts.quality = 80;
+  opts.jpeg_quality = 80;
   opts.jpeg_progressive = 1;
   opts.jpeg_arithmetic = 1;
   GIMG_Save_Report report = {};
@@ -4767,7 +4767,7 @@ TEST(JpegEncode, ProgressiveArithmeticWritesSof10) {
 TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
   struct Case {
     uint16_t sample;   // 12-bit input, 0..4095
-    unsigned quality;
+    unsigned jpeg_quality;
   };
   static const Case cases[] = {
       {0, 85}, {1024, 85}, {2048, 85}, {3072, 85}, {4095, 85},
@@ -4793,11 +4793,11 @@ TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {
         .metadata_policy = GIMG_META_PRESERVE_ALL,
-        .quality = c.quality,
+        .jpeg_quality = c.jpeg_quality,
     };
     GIMG_Save_Report report = {};
     ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK)
-        << "sample " << c.sample << " quality " << c.quality;
+        << "sample " << c.sample << " quality " << c.jpeg_quality;
     const void * data = nullptr;
     size_t n = 0;
     gimg_stream_output_buffer(out, &data, &n);
@@ -4809,7 +4809,7 @@ TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
     GIMG_Raster * decoded = nullptr;
     ASSERT_EQ(gimg_item_decode(gimg_doc_item(loaded, 0), nullptr, &decoded),
         GIMG_OK)
-        << "sample " << c.sample << " quality " << c.quality;
+        << "sample " << c.sample << " quality " << c.jpeg_quality;
     const uint16_t * dp = (const uint16_t *)gimg_raster_pixels_const(decoded);
     size_t dstride = gimg_raster_stride_bytes(decoded) / 2;
 
@@ -4821,7 +4821,7 @@ TEST(JpegEncode, Save12BitFlatFieldsKeepTheirValue) {
       for (uint32_t x = 0; x < 16; x += 5) {
         int got = (int)dp[y * dstride + x];
         EXPECT_NEAR(got, expect, tolerance)
-            << "sample " << c.sample << " quality " << c.quality << " at (" << x
+            << "sample " << c.sample << " quality " << c.jpeg_quality << " at (" << x
             << "," << y << ")";
       }
     }
@@ -4854,7 +4854,7 @@ TEST(JpegEncode, Save12BitRampKeepsItsContrast) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 90,
+      .jpeg_quality = 90,
   };
   GIMG_Save_Report report = {};
   ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
@@ -4913,7 +4913,7 @@ TEST(JpegEncode, SaveGray12ThenLoadDecode) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
   };
   GIMG_Save_Report report = {};
   ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
@@ -4986,7 +4986,7 @@ TEST(JpegEncode, SaveRgb12ThenLoadDecode) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 90,
+      .jpeg_quality = 90,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
   };
   GIMG_Save_Report report = {};
@@ -5056,7 +5056,7 @@ TEST(JpegEncode, SaveGray16WithPrecision12ThenLoadDecode) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_precision = 12,
   };
   GIMG_Save_Report report = {};
@@ -5125,7 +5125,7 @@ TEST(JpegEncode, SaveGray12ProgressiveThenLoadDecode) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_progressive = 1,
   };
   GIMG_Save_Report report = {};
@@ -5195,7 +5195,7 @@ TEST(JpegEncode, SaveRgb12ProgressiveThenLoadDecode) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 90,
+      .jpeg_quality = 90,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
       .jpeg_progressive = 1,
   };
@@ -5270,7 +5270,7 @@ TEST(JpegEncode, SaveGray12QualityVariation) {
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {
         .metadata_policy = GIMG_META_PRESERVE_ALL,
-        .quality = q,
+        .jpeg_quality = q,
         .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444,
     };
     GIMG_Save_Report report = {};
@@ -5343,7 +5343,7 @@ TEST(JpegEncode, SaveRgb16Chroma420_422_444) {
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {
         .metadata_policy = GIMG_META_PRESERVE_ALL,
-        .quality = 85,
+        .jpeg_quality = 85,
         .jpeg_chroma_subsampling = chroma,
     };
     GIMG_Save_Report report = {};
@@ -5395,7 +5395,7 @@ TEST(JpegEncode, SaveGray16WritesTwelveBitFrame) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
   };
   GIMG_Save_Report report = {};
   ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
@@ -5441,7 +5441,7 @@ TEST(JpegEncode, SavePrecision16Unsupported) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
   };
   opts.jpeg_precision = 16;
   GIMG_Save_Report report = {};
@@ -5475,7 +5475,7 @@ TEST(JpegEncode, Large640x480BaselineGrayscale) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
   };
   GIMG_Save_Report report = {};
   ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
@@ -5553,7 +5553,7 @@ TEST(JpegEncode, Large640x480BaselineRgb420) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_420,
   };
   GIMG_Save_Report report = {};
@@ -5629,7 +5629,7 @@ TEST(JpegEncode, Large640x480ProgressiveGrayscale) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_progressive = 1,
   };
   GIMG_Save_Report report = {};
@@ -5708,7 +5708,7 @@ TEST(JpegEncode, Large640x480ProgressiveRgb420) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_420,
       .jpeg_progressive = 1,
   };
@@ -5785,7 +5785,7 @@ TEST(JpegEncode, Large640x480BaselineWithRestart) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 85,
+      .jpeg_quality = 85,
       .jpeg_restart_interval = 16,
   };
   GIMG_Save_Report report = {};
@@ -5934,7 +5934,7 @@ TEST(JpegEncode, QualityZeroUsesDefault) {
 
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 0,
+      .jpeg_quality = 0,
   };
   GIMG_Stream * out_stream = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
@@ -5980,7 +5980,7 @@ TEST(JpegEncode, Quality100ProducesValidJpeg) {
 
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 100,
+      .jpeg_quality = 100,
   };
   GIMG_Stream * out_stream = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
@@ -6026,7 +6026,7 @@ TEST(JpegEncode, QualityOver100Clamped) {
 
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_PRESERVE_ALL,
-      .quality = 150,
+      .jpeg_quality = 150,
   };
   GIMG_Stream * out_stream = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out_stream), GIMG_OK);
@@ -6239,7 +6239,7 @@ TEST(JpegEncode, HierarchicalRoundTrip) {
       ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
       GIMG_Save_Options so = {};
       so.metadata_policy = GIMG_META_DROP_ALL;
-      so.quality = 85;
+      so.jpeg_quality = 85;
       so.jpeg_hierarchical_levels = (uint8_t)levels;
       so.jpeg_arithmetic = (uint8_t)arith;
       so.jpeg_restart_interval = ri;
@@ -6534,7 +6534,7 @@ TEST(JpegEncode, ProgressiveHierarchicalSequenceMatchesTheSequentialOne) {
         GIMG_Stream * out = nullptr;
         ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
         GIMG_Save_Options so = {};
-        so.quality = 85;
+        so.jpeg_quality = 85;
         so.jpeg_hierarchical_levels = (uint8_t)levels;
         so.jpeg_progressive = (uint8_t)progressive[k];
         so.jpeg_arithmetic = (uint8_t)arithmetic[k];
@@ -6645,7 +6645,7 @@ TEST(JpegEncode, HierarchicalRefusesACombinationItCannotWrite) {
     GIMG_Stream * out = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options so = {};
-    so.quality = 85;
+    so.jpeg_quality = 85;
     so.jpeg_hierarchical_levels = 1;
     so.jpeg_progressive = c.progressive;
     so.jpeg_lossless_predictor = c.lossless_predictor;
@@ -6840,7 +6840,7 @@ TEST(JpegEncode, NonInterleavedAndInterleavedDecodeToTheSamePixels) {
       GIMG_Stream * os = nullptr;
       ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
       GIMG_Save_Options o = {};
-      o.quality = 88;
+      o.jpeg_quality = 88;
       o.jpeg_chroma_subsampling = c.subsampling;
       o.jpeg_arithmetic = c.arithmetic;
       o.jpeg_restart_interval = c.restart;
@@ -7496,7 +7496,7 @@ TEST(JpegEncode, ACmykRasterLabelledTheOtherWayRoundIsWrittenRightWayUp) {
     GIMG_Stream * out = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {};
-    opts.quality = 100;
+    opts.jpeg_quality = 100;
     GIMG_Save_Report report = {};
     ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
     const void * bytes = nullptr;
@@ -7557,7 +7557,7 @@ TEST(JpegEncode, ACmykRasterThatStatesNoPolarityIsWrittenAsItStands) {
   GIMG_Stream * out = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {};
-  opts.quality = 100;
+  opts.jpeg_quality = 100;
   GIMG_Save_Report report = {};
   ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
   const void * bytes = nullptr;
@@ -7619,7 +7619,7 @@ TEST(JpegEncode, TheCmykPolarityFlipWorksAtTwelveBitsToo) {
     GIMG_Stream * out = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {};
-    opts.quality = 100;
+    opts.jpeg_quality = 100;
     GIMG_Save_Report report = {};
     ASSERT_EQ(gimg_doc_save(doc, out, "jpeg", &opts, &report), GIMG_OK);
     const void * bytes = nullptr;
@@ -7802,7 +7802,7 @@ GIMG_Doc * load_undecoded(const char * name, GIMG_Stream ** keep,
 TEST(JpegEncode, ARefusedOptionSetFreesTheRasterItDecoded) {
   auto base = [](void) {
     GIMG_Save_Options o = {};
-    o.quality = 80;
+    o.jpeg_quality = 80;
     return o;
   };
   std::vector<Refusal> refusals;
@@ -8010,7 +8010,7 @@ TEST(JpegEncode, ASuccessiveApproximationProgressionSaysWhatLibjpegReads) {
     GIMG_Stream * out = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {};
-    opts.quality = 90;
+    opts.jpeg_quality = 90;
     opts.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
     opts.jpeg_progressive = 1;
     opts.jpeg_progressive_config = &cfg;
@@ -8055,7 +8055,7 @@ TEST(JpegEncode, ASuccessiveApproximationProgressionSaysWhatLibjpegReads) {
     GIMG_Stream * out = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {};
-    opts.quality = 90;
+    opts.jpeg_quality = 90;
     opts.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
     opts.jpeg_progressive = 1;
     opts.jpeg_progressive_config = &cfg;
@@ -8181,7 +8181,7 @@ TEST(JpegEncode, AProgressionThatBreaksTheRefinementChainIsRefused) {
     GIMG_Stream * out = nullptr;
     ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
     GIMG_Save_Options opts = {};
-    opts.quality = 90;
+    opts.jpeg_quality = 90;
     opts.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
     opts.jpeg_progressive = 1;
     opts.jpeg_progressive_config = &cfg;
@@ -8263,7 +8263,7 @@ TEST(JpegEncode, ASuccessiveApproximationAtTwelveBitsIsTheSameAsOnePass) {
       return ::testing::AssertionFailure() << "stream";
     }
     GIMG_Save_Options opts = {};
-    opts.quality = 90;
+    opts.jpeg_quality = 90;
     opts.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
     opts.jpeg_progressive = 1;
     opts.jpeg_progressive_config = &cfg;
@@ -8519,7 +8519,7 @@ TEST(JpegEncode, AHierarchicalSequenceIsTheSamePictureHoweverItIsWritten) {
   for (const Case & c : cases) {
     SCOPED_TRACE(c.what);
     GIMG_Save_Options flat = {};
-    flat.quality = 95;
+    flat.jpeg_quality = 95;
     flat.jpeg_chroma_subsampling = GIMG_JPEG_CHROMA_444;
     flat.jpeg_progressive = c.progressive;
     flat.jpeg_arithmetic = c.arithmetic;
@@ -8708,7 +8708,7 @@ TEST(JpegEncode, AFrameCarriesAsManyComponentsAsItSays) {
       ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
       GIMG_Save_Options so = {};
       so.metadata_policy = GIMG_META_DROP_ALL;
-      so.quality = 95;
+      so.jpeg_quality = 95;
       so.jpeg_precision = (uint8_t)precision;
       GIMG_Save_Report rep = {};
       const GIMG_Result sr = gimg_doc_save(doc, os, "jpeg", &so, &rep);
@@ -9126,7 +9126,7 @@ TEST(JpegEncode, QuantizationMethodChangesNoOutputAndTheDctChoiceDoes) {
             std::to_string((int)sub));
         GIMG_Save_Options base = {};
         base.metadata_policy = GIMG_META_DROP_ALL;
-        base.quality = (unsigned)quality;
+        base.jpeg_quality = (unsigned)quality;
         base.jpeg_progressive = (uint8_t)progressive;
         base.jpeg_chroma_subsampling = sub;
 

@@ -2232,7 +2232,7 @@ TEST(BmpEncode, EveryCompressionOptionReachesTheEncoderItNames) {
     GIMG_Raster * raster = spanning(c.format, 64, 32, c.distinct, c.run);
     ASSERT_NE(raster, nullptr);
     GIMG_Save_Options opts = {};
-    opts.quality = 80;
+    opts.jpeg_quality = 80;
     c.configure(&opts);
 
     std::vector<uint8_t> bytes;

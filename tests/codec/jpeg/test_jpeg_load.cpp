@@ -2800,7 +2800,7 @@ TEST(JpegLoad, FillBytesBeforeARestartMarkerAreSteppedOver) {
   ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
   GIMG_Save_Options so = {};
   so.metadata_policy = GIMG_META_DROP_ALL;
-  so.quality = 90;
+  so.jpeg_quality = 90;
   so.jpeg_restart_interval = 2; // several markers in a small image
   GIMG_Save_Report rep = {};
   ASSERT_EQ(gimg_doc_save(doc, os, "jpeg", &so, &rep), GIMG_OK);

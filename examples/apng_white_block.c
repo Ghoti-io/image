@@ -172,7 +172,7 @@ int main(int argc, char ** argv) {
 
   GIMG_Save_Options save_opts = {
       .metadata_policy = GIMG_META_KEEP_COMMON_ONLY,
-      .interlaced = 0,
+      .png_interlaced = 0,
       .jpeg_chroma_subsampling = 0,
       .jpeg_progressive = 0,
   };

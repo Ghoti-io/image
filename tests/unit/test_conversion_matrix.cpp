@@ -148,7 +148,7 @@ GIMG_Result convert(const std::vector<uint8_t> & bytes, const char * format,
     return GIMG_ERR_INTERNAL;
   }
   GIMG_Save_Options opts = {};
-  opts.quality = 95;
+  opts.jpeg_quality = 95;
   GIMG_Save_Report report = {};
   r = gimg_doc_save(doc, sink, format, &opts, &report);
   if (r == GIMG_OK) {

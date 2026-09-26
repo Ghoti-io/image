@@ -1523,7 +1523,7 @@ TEST(PngEncode, SaveInterlacedRoundTrip) {
   r = gimg_stream_create_memory_output(&out_s);
   ASSERT_EQ(r, GIMG_OK);
   GIMG_Save_Options opts = {
-      .metadata_policy = GIMG_META_PRESERVE_ALL, .interlaced = 1};
+      .metadata_policy = GIMG_META_PRESERVE_ALL, .png_interlaced = 1};
   GIMG_Save_Report report = {};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   ASSERT_EQ(r, GIMG_OK);
@@ -3046,7 +3046,7 @@ void FillPattern(GIMG_Raster * raster, unsigned int colors) {
   }
   GIMG_Save_Options opts = {};
   opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-  opts.interlaced = (uint8_t)interlaced;
+  opts.png_interlaced = (uint8_t)interlaced;
   opts.png_filter = filter;
   opts.png_palette = palette;
   GIMG_Save_Report report = {};
@@ -3718,7 +3718,7 @@ void flatten(const GIMG_Raster * r, ResavedPng & out) {
   }
   GIMG_Save_Options opts = {};
   opts.metadata_policy = GIMG_META_PRESERVE_ALL;
-  opts.interlaced = (unsigned int)interlaced;
+  opts.png_interlaced = (unsigned int)interlaced;
   GIMG_Save_Report report = {};
   r = gimg_doc_save(doc, out_s, "png", &opts, &report);
   gimg_doc_destroy(doc);
@@ -4344,7 +4344,7 @@ NarrowResult save_after_editing(
   std::vector<uint8_t> out;
   if (gimg_stream_create_memory_output(&sink) == GIMG_OK) {
     GIMG_Save_Options opts = {};
-    opts.quality = 95;
+    opts.jpeg_quality = 95;
     GIMG_Save_Report report = {};
     if (gimg_doc_save(doc, sink, "png", &opts, &report) == GIMG_OK) {
       const void * p = nullptr;
@@ -5033,7 +5033,7 @@ TEST(PngEncode, APaletteThePictureHasLeftIsReplacedUnlessTheCallerKeepsIt) {
       ASSERT_EQ(gimg_stream_create_memory_output(&os), GIMG_OK);
       GIMG_Save_Options so = {};
       so.metadata_policy = GIMG_META_PRESERVE_ALL;
-      so.interlaced = interlaced ? 1 : 0;
+      so.png_interlaced = interlaced ? 1 : 0;
       so.png_palette = c.palette_option;
       GIMG_Save_Report rep = {};
       EXPECT_EQ(gimg_doc_save(doc, os, "png", &so, &rep), c.expect);
