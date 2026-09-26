@@ -181,6 +181,190 @@ TEST(Ops, ConvertBitDepthGray16To12) {
   gimg_raster_destroy(dst);
 }
 
+namespace {
+
+/** The sample at (x, y, c) of a raster, whatever its depth. */
+uint16_t sample_at(const GIMG_Raster * r, uint32_t x, uint32_t y, unsigned c) {
+  const GIMG_Pixel_Format * f = gimg_raster_format(r);
+  const unsigned char * base =
+      (const unsigned char *)gimg_raster_pixels_const(r);
+  const size_t stride = gimg_raster_stride_bytes(r);
+  const size_t i = (size_t)x * f->channel_count + c;
+  if (f->bits_per_channel[0] <= 8u) { return base[y * stride + i]; }
+  return ((const uint16_t *)(base + y * stride))[i];
+}
+
+void set_sample(GIMG_Raster * r, uint32_t x, uint32_t y, unsigned c,
+    uint16_t v) {
+  const GIMG_Pixel_Format * f = gimg_raster_format(r);
+  unsigned char * base = (unsigned char *)gimg_raster_pixels(r);
+  const size_t stride = gimg_raster_stride_bytes(r);
+  const size_t i = (size_t)x * f->channel_count + c;
+  if (f->bits_per_channel[0] <= 8u) { base[y * stride + i] = (unsigned char)v; }
+  else { ((uint16_t *)(base + y * stride))[i] = v; }
+}
+
+/** A 4x4 raster of @p fmt whose samples walk the whole range of its depth. */
+GIMG_Raster * ramp(const GIMG_Pixel_Format & fmt) {
+  GIMG_Raster * r = nullptr;
+  if (gimg_raster_create(4, 4, &fmt, GIMG_RASTER_OWNED, nullptr, 0, &r) !=
+          GIMG_OK ||
+      !r) {
+    return nullptr;
+  }
+  const unsigned bits = fmt.bits_per_channel[0];
+  const uint16_t max = (uint16_t)((1u << bits) - 1u);
+  for (uint32_t y = 0; y < 4; y++) {
+    for (uint32_t x = 0; x < 4; x++) {
+      for (unsigned c = 0; c < fmt.channel_count; c++) {
+        // The two ends matter more than the middle: 0 and max are the samples
+        // every widening and narrowing has to keep exactly.
+        const unsigned k = (y * 4u + x + c) % 4u;
+        const uint16_t v = (k == 0) ? 0u
+            : (k == 1)              ? max
+            : (k == 2)              ? (uint16_t)(max / 2u)
+                                    : (uint16_t)(max / 3u);
+        set_sample(r, x, y, c, v);
+      }
+    }
+  }
+  return r;
+}
+
+} // namespace
+
+/**
+ * Every bit-depth conversion format_for_bits() can name, in both directions.
+ *
+ * Two of the twelve source formats had a test each, both gray, and the CMYK
+ * and multi-channel rows were reached by nothing at all - so the arms that
+ * pick GIMG_PIXEL_CMYK12 and GIMG_PIXEL_CMYK16, and the one that builds a
+ * format for a channel count with no name, had never run.
+ *
+ * The assertion is a round trip rather than a table of expected samples. A
+ * widening is exact and reversible by construction (8 -> 16 replicates the
+ * byte, 12 -> 16 the nibble), so narrowing back has to give the sample that
+ * went in; a table of what each conversion should produce would be the same
+ * arithmetic written twice, and would agree with the code whatever it did.
+ */
+TEST(Ops, EveryBitDepthConversionTheFormatTableCanNameIsMade) {
+  GIMG_Pixel_Format five;
+  ASSERT_EQ(gimg_pixel_format_multichannel(5u, 8u, &five), GIMG_OK);
+  GIMG_Pixel_Format five12, five16;
+  ASSERT_EQ(gimg_pixel_format_multichannel(5u, 12u, &five12), GIMG_OK);
+  ASSERT_EQ(gimg_pixel_format_multichannel(5u, 16u, &five16), GIMG_OK);
+
+  struct Row {
+    const char * name;
+    const GIMG_Pixel_Format * at[3]; ///< The same channels at 8, 12 and 16.
+  } rows[] = {
+      {"gray", {&GIMG_PIXEL_GRAY8, &GIMG_PIXEL_GRAY12, &GIMG_PIXEL_GRAY16}},
+      {"rgba", {&GIMG_PIXEL_RGBA8, &GIMG_PIXEL_RGBA12, &GIMG_PIXEL_RGBA16}},
+      {"cmyk", {&GIMG_PIXEL_CMYK8, &GIMG_PIXEL_CMYK12, &GIMG_PIXEL_CMYK16}},
+      {"5-channel", {&five, &five12, &five16}},
+  };
+  const uint8_t depths[3] = {8u, 12u, 16u};
+
+  int made = 0, round_tripped = 0;
+  for (const Row & row : rows) {
+    for (int from = 0; from < 3; from++) {
+      GIMG_Raster * src = ramp(*row.at[from]);
+      ASSERT_NE(src, nullptr) << row.name << " at " << (int)depths[from];
+      for (int to = 0; to < 3; to++) {
+        GIMG_Raster * dst = nullptr;
+        ASSERT_EQ(gimg_ops_convert_bit_depth(src, depths[to], &dst), GIMG_OK)
+            << row.name << ": " << (int)depths[from] << " -> "
+            << (int)depths[to];
+        ASSERT_NE(dst, nullptr);
+        made++;
+        const GIMG_Pixel_Format * df = gimg_raster_format(dst);
+        EXPECT_EQ(df->bits_per_channel[0], depths[to]);
+        EXPECT_EQ(df->channel_count, row.at[from]->channel_count);
+        EXPECT_EQ(df->channel_model, row.at[from]->channel_model);
+        EXPECT_EQ(gimg_raster_width(dst), 4u);
+        EXPECT_EQ(gimg_raster_height(dst), 4u);
+
+        // Widening is lossless, so coming back must give what went in. The
+        // narrowing direction is not reversible and is not asked to be.
+        if (depths[to] >= depths[from]) {
+          GIMG_Raster * back = nullptr;
+          ASSERT_EQ(
+              gimg_ops_convert_bit_depth(dst, depths[from], &back), GIMG_OK);
+          ASSERT_NE(back, nullptr);
+          bool same = true;
+          for (uint32_t y = 0; y < 4 && same; y++) {
+            for (uint32_t x = 0; x < 4 && same; x++) {
+              for (unsigned c = 0; c < df->channel_count; c++) {
+                if (sample_at(back, x, y, c) != sample_at(src, x, y, c)) {
+                  same = false;
+                  ADD_FAILURE()
+                      << row.name << " " << (int)depths[from] << " -> "
+                      << (int)depths[to] << " -> " << (int)depths[from]
+                      << " changed (" << x << "," << y << "," << c
+                      << ") from " << sample_at(src, x, y, c) << " to "
+                      << sample_at(back, x, y, c);
+                  break;
+                }
+              }
+            }
+          }
+          if (same) { round_tripped++; }
+          gimg_raster_destroy(back);
+        }
+        gimg_raster_destroy(dst);
+      }
+      gimg_raster_destroy(src);
+    }
+  }
+  std::printf("  %d conversions made, %d widenings round-tripped\n", made,
+      round_tripped);
+  ASSERT_EQ(made, 4 * 3 * 3);
+  ASSERT_EQ(round_tripped, 4 * 6);
+}
+
+/**
+ * The shapes gimg_ops_convert_bit_depth() will not take.
+ *
+ * A destination depth that is not one of the three, a source depth that is
+ * not, a channel model it has no conversion for, and a format whose channels
+ * are not all the same width - which is the one that cannot be spelled with a
+ * named format and needed building by hand.
+ */
+TEST(Ops, ConvertBitDepthRefusesWhatItCannotName) {
+  GIMG_Raster * gray8 = nullptr;
+  ASSERT_EQ(gimg_raster_create(1, 1, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
+                nullptr, 0, &gray8),
+      GIMG_OK);
+  GIMG_Raster * out = nullptr;
+  for (uint8_t bits : {(uint8_t)0u, (uint8_t)1u, (uint8_t)7u, (uint8_t)10u,
+           (uint8_t)24u, (uint8_t)32u}) {
+    out = nullptr;
+    EXPECT_EQ(gimg_ops_convert_bit_depth(gray8, bits, &out),
+        GIMG_ERR_UNSUPPORTED)
+        << "accepted a destination depth of " << (int)bits;
+    EXPECT_EQ(out, nullptr);
+  }
+  gimg_raster_destroy(gray8);
+
+  // Channels of different widths: legal to describe, and not something any
+  // conversion here knows how to widen.
+  GIMG_Pixel_Format mixed;
+  ASSERT_EQ(gimg_pixel_format_multichannel(3u, 8u, &mixed), GIMG_OK);
+  mixed.bits_per_channel[1] = 16u;
+  GIMG_Raster * odd = nullptr;
+  // Asserted rather than guarded: a raster this test could not build is a
+  // test that checked nothing and said it passed.
+  ASSERT_EQ(
+      gimg_raster_create(1, 1, &mixed, GIMG_RASTER_OWNED, nullptr, 0, &odd),
+      GIMG_OK);
+  ASSERT_NE(odd, nullptr);
+  out = nullptr;
+  EXPECT_EQ(gimg_ops_convert_bit_depth(odd, 16u, &out), GIMG_ERR_UNSUPPORTED)
+      << "accepted a source whose channels are not all one width";
+  EXPECT_EQ(out, nullptr);
+  gimg_raster_destroy(odd);
+}
+
 TEST(Ops, ConvertBitDepthInvalidDstBitsReturnsError) {
   GIMG_Raster * src = nullptr;
   gimg_raster_create(

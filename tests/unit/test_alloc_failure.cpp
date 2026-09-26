@@ -25,6 +25,8 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
+#include <ghoti.io/image/color.h>
+#include <ghoti.io/image/ops.h>
 #include <gtest/gtest.h>
 #include <dirent.h>
 #include <algorithm>
@@ -741,6 +743,338 @@ TEST(AllocFailure, EveryFailedSaveFreesEverythingItTook) {
     gimg_doc_destroy(doc);
   }
   std::printf("  %ld injected save failures\n", injected);
+}
+
+namespace {
+
+/**
+ * One operation, driven entirely through a raster built on the test's own
+ * allocator.
+ *
+ * The ops layer takes no allocator argument: every buffer it makes comes from
+ * gimg_raster_allocator() of whatever it was given. So the source raster is
+ * what carries the failing allocator in, and the sweep has to rebuild it for
+ * every injection - which is also why `setup` and `run` are separate. The
+ * count after `setup` is the first allocation the operation itself makes, and
+ * injecting below that would only be testing gimg_raster_create.
+ */
+struct OpCase {
+  const char * name;
+  /** Build the inputs. Returns false if the shape could not be made. */
+  bool (*setup)(const GIMG_Allocator * a, GIMG_Raster ** src,
+      GIMG_Raster ** aux);
+  /** Do the work and hand back everything it produced. */
+  GIMG_Result (*run)(GIMG_Raster * src, GIMG_Raster * aux);
+  /**
+   * True for an operation that works in the buffers it was given.
+   *
+   * Compositing is the one here: it writes into the destination and takes
+   * nothing. Such a case is kept in the list rather than left out, so that
+   * the day it starts allocating this sweep picks it up instead of silently
+   * never having covered it - the printed count is what would move.
+   */
+  bool allocates_nothing = false;
+};
+
+GIMG_Raster * op_raster(const GIMG_Allocator * a, uint32_t w, uint32_t h,
+    const GIMG_Pixel_Format & fmt) {
+  GIMG_Raster * r = nullptr;
+  if (gimg_raster_create_with_allocator(
+          a, w, h, &fmt, GIMG_RASTER_OWNED, nullptr, 0, &r) != GIMG_OK) {
+    return nullptr;
+  }
+  unsigned char * px = (unsigned char *)gimg_raster_pixels(r);
+  const size_t stride = gimg_raster_stride_bytes(r);
+  const unsigned ch = fmt.channel_count;
+  const unsigned bits = fmt.bits_per_channel[0];
+  for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t x = 0; x < w; x++) {
+      for (unsigned c = 0; c < ch; c++) {
+        // Enough distinct colours that a quantizer has boxes to split, and a
+        // gradient rather than noise so a resampler's taps differ.
+        const unsigned v = (x * 11u + y * 7u + c * 23u) & 0xFFu;
+        if (bits <= 8u) { px[y * stride + (x * ch + c)] = (unsigned char)v; }
+        else {
+          ((uint16_t *)(px + y * stride))[x * ch + c] =
+              (uint16_t)(v * ((1u << bits) - 1u) / 255u);
+        }
+      }
+    }
+  }
+  return r;
+}
+
+bool setup_rgba(const GIMG_Allocator * a, GIMG_Raster ** src,
+    GIMG_Raster ** aux) {
+  *aux = nullptr;
+  *src = op_raster(a, 12, 9, GIMG_PIXEL_RGBA8);
+  return *src != nullptr;
+}
+bool setup_gray(const GIMG_Allocator * a, GIMG_Raster ** src,
+    GIMG_Raster ** aux) {
+  *aux = nullptr;
+  *src = op_raster(a, 12, 9, GIMG_PIXEL_GRAY8);
+  return *src != nullptr;
+}
+bool setup_rgba16(const GIMG_Allocator * a, GIMG_Raster ** src,
+    GIMG_Raster ** aux) {
+  *aux = nullptr;
+  *src = op_raster(a, 10, 7, GIMG_PIXEL_RGBA16);
+  return *src != nullptr;
+}
+bool setup_cmyk(const GIMG_Allocator * a, GIMG_Raster ** src,
+    GIMG_Raster ** aux) {
+  *aux = nullptr;
+  *src = op_raster(a, 10, 7, GIMG_PIXEL_CMYK8);
+  if (!*src) { return false; }
+  // The CMYK -> RGB conversion refuses a raster that does not say which way
+  // round its samples are, so the polarity is part of building this input
+  // rather than part of what is being swept.
+  GIMG_Color_Info info;
+  gimg_color_info_default(&info);
+  info.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
+  if (gimg_raster_set_color_info(*src, &info) != GIMG_OK) {
+    gimg_raster_destroy(*src);
+    *src = nullptr;
+    return false;
+  }
+  return true;
+}
+bool setup_pair(const GIMG_Allocator * a, GIMG_Raster ** src,
+    GIMG_Raster ** aux) {
+  *src = op_raster(a, 12, 9, GIMG_PIXEL_RGBA8);
+  *aux = op_raster(a, 5, 4, GIMG_PIXEL_RGBA8);
+  return *src && *aux;
+}
+
+GIMG_Result resize_with(GIMG_Raster * src, GIMG_Resample_Filter filter,
+    GIMG_Resample_Space space, uint32_t w, uint32_t h) {
+  GIMG_Resize_Options o;
+  gimg_resize_options_default(&o);
+  o.filter = filter;
+  o.space = space;
+  GIMG_Raster * out = nullptr;
+  const GIMG_Result r = gimg_ops_resize(src, w, h, &o, &out);
+  if (out) { gimg_raster_destroy(out); }
+  return r;
+}
+
+GIMG_Result quantize_with(GIMG_Raster * src, uint16_t colors,
+    GIMG_Dither dither) {
+  GIMG_Quantize_Options q = {};
+  q.max_colors = colors;
+  q.dither = dither;
+  GIMG_Raster * out = nullptr;
+  GIMG_Palette pal = {};
+  const GIMG_Result r = gimg_ops_quantize(src, &q, &out, &pal);
+  if (out) { gimg_raster_destroy(out); }
+  return r;
+}
+
+const OpCase & op_cases_at(size_t i);
+size_t op_case_count(void);
+
+const OpCase kOps[] = {
+    {"resize up, auto", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return resize_with(s, GIMG_FILTER_AUTO, GIMG_RESAMPLE_SPACE_ENCODED,
+              25, 19);
+        }},
+    {"resize down, box", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return resize_with(
+              s, GIMG_FILTER_BOX, GIMG_RESAMPLE_SPACE_ENCODED, 4, 3);
+        }},
+    {"resize, lanczos3", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return resize_with(
+              s, GIMG_FILTER_LANCZOS3, GIMG_RESAMPLE_SPACE_ENCODED, 7, 20);
+        }},
+    {"resize, nearest", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return resize_with(
+              s, GIMG_FILTER_NEAREST, GIMG_RESAMPLE_SPACE_ENCODED, 5, 5);
+        }},
+    {"resize, linear light", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return resize_with(s, GIMG_FILTER_TRIANGLE,
+              GIMG_RESAMPLE_SPACE_LINEAR, 6, 6);
+        }},
+    {"resize 16-bit", setup_rgba16,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return resize_with(s, GIMG_FILTER_CATMULL_ROM,
+              GIMG_RESAMPLE_SPACE_ENCODED, 20, 14);
+        }},
+    {"resize cmyk", setup_cmyk,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return resize_with(
+              s, GIMG_FILTER_TRIANGLE, GIMG_RESAMPLE_SPACE_ENCODED, 5, 4);
+        }},
+    {"resize gray", setup_gray,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return resize_with(
+              s, GIMG_FILTER_TRIANGLE, GIMG_RESAMPLE_SPACE_ENCODED, 30, 4);
+        }},
+    {"crop", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          GIMG_Raster * out = nullptr;
+          const GIMG_Result r = gimg_ops_crop(s, 2, 3, 6, 5, &out);
+          if (out) { gimg_raster_destroy(out); }
+          return r;
+        }},
+    {"convert cmyk to rgb", setup_cmyk,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          GIMG_Raster * out = nullptr;
+          const GIMG_Result r =
+              gimg_ops_convert_pixel_format(s, &GIMG_PIXEL_RGBA8, &out);
+          if (out) { gimg_raster_destroy(out); }
+          return r;
+        }},
+    {"widen to 16 bits", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          GIMG_Raster * out = nullptr;
+          const GIMG_Result r = gimg_ops_convert_bit_depth(s, 16, &out);
+          if (out) { gimg_raster_destroy(out); }
+          return r;
+        }},
+    {"quantize 256 colours", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return quantize_with(s, 0u, GIMG_DITHER_NONE);
+        }},
+    {"quantize to 8", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return quantize_with(s, 8u, GIMG_DITHER_NONE);
+        }},
+    {"quantize dithered", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return quantize_with(s, 8u, GIMG_DITHER_FLOYD_STEINBERG);
+        }},
+    {"quantize gray", setup_gray,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return quantize_with(s, 4u, GIMG_DITHER_FLOYD_STEINBERG);
+        }},
+    {"exact palette", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          GIMG_Palette pal = {};
+          return gimg_ops_palette_from_raster(s, 0u, &pal);
+        }},
+    {"count colours", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          size_t n = 0;
+          bool exact = false;
+          return gimg_ops_count_colors(s, 0u, &n, &exact);
+        }},
+    {"one palette for two rasters", setup_pair,
+        [](GIMG_Raster * s, GIMG_Raster * aux) {
+          const GIMG_Raster * pair[2] = {s, aux};
+          GIMG_Quantize_Options q = {};
+          q.max_colors = 16u;
+          GIMG_Palette pal = {};
+          return gimg_ops_palette_build(pair, 2u, &q, &pal);
+        }},
+    {"apply a palette", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          GIMG_Palette pal = {};
+          pal.count = 2u;
+          pal.entries[0][3] = 255u;
+          pal.entries[1][0] = 255u;
+          pal.entries[1][3] = 255u;
+          GIMG_Raster * out = nullptr;
+          const GIMG_Result r = gimg_ops_palette_apply(
+              s, &pal, GIMG_DITHER_FLOYD_STEINBERG, &out);
+          if (out) { gimg_raster_destroy(out); }
+          return r;
+        }},
+    {"quarter turn", setup_rgba,
+        [](GIMG_Raster * s, GIMG_Raster *) {
+          return gimg_ops_rotate_90_cw(s);
+        }},
+    {"composite over", setup_pair,
+        [](GIMG_Raster * s, GIMG_Raster * aux) {
+          return gimg_ops_composite(s, aux, 3, 2, GIMG_COMPOSITE_OVER);
+        },
+        true},
+};
+
+size_t op_case_count(void) { return sizeof(kOps) / sizeof(kOps[0]); }
+const OpCase & op_cases_at(size_t i) { return kOps[i]; }
+
+} // namespace
+
+/**
+ * Every allocation failure inside an operation leaves nothing behind.
+ *
+ * The three sweeps above cover the codecs; the ops layer had nothing like
+ * them, and its OOM arms - the resampler's coefficient tables, the
+ * quantizer's boxes and histogram, the intermediate raster a two-pass resize
+ * makes - were reached by no test. They are the same shape of arm and fail
+ * the same way: a partial structure and an early return.
+ */
+TEST(AllocFailure, EveryFailedOpFreesEverythingItTook) {
+  long injected = 0, silent = 0;
+  for (size_t i = 0; i < op_case_count(); i++) {
+    const OpCase & c = op_cases_at(i);
+
+    Failing probe;
+    init(probe);
+    GIMG_Raster * src = nullptr;
+    GIMG_Raster * aux = nullptr;
+    ASSERT_TRUE(c.setup(&probe.a, &src, &aux))
+        << c.name << ": could not build the inputs";
+    const long after_setup = probe.attempts;
+    const GIMG_Result clean = c.run(src, aux);
+    const long total = probe.attempts;
+    if (aux) { gimg_raster_destroy(aux); }
+    gimg_raster_destroy(src);
+    ASSERT_EQ(clean, GIMG_OK)
+        << c.name << " must succeed when nothing fails (returned "
+        << (int)clean << ")";
+    ASSERT_EQ(probe.outstanding, 0)
+        << c.name << " leaks on the success path: " << probe.outstanding
+        << " blocks";
+    if (total == after_setup) {
+      EXPECT_TRUE(c.allocates_nothing)
+          << c.name << " made no allocation of its own, so this sweep tests "
+                       "nothing for it";
+      silent++;
+      continue;
+    }
+    EXPECT_FALSE(c.allocates_nothing)
+        << c.name << " is listed as allocating nothing and allocated "
+        << (total - after_setup) << " times; sweep it properly";
+
+    for (long n = after_setup + 1; n <= total; n++) {
+      Failing f;
+      init(f);
+      GIMG_Raster * s2 = nullptr;
+      GIMG_Raster * a2 = nullptr;
+      ASSERT_TRUE(c.setup(&f.a, &s2, &a2)) << c.name << ": rebuild failed";
+      ASSERT_EQ(f.attempts, after_setup)
+          << c.name << ": the inputs cost a different number of allocations "
+                       "the second time, so n does not name the same call";
+      f.fail_at = n;
+      const GIMG_Result r = c.run(s2, a2);
+      injected++;
+      EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM)
+          << c.name << ": allocation " << n << " of " << total
+          << " failed and the operation returned " << (int)r
+          << "; an allocation failure is an OOM, not a claim about the image";
+      if (a2) { gimg_raster_destroy(a2); }
+      gimg_raster_destroy(s2);
+      EXPECT_EQ(f.outstanding, 0)
+          << c.name << ": " << f.outstanding
+          << " block(s) leaked when allocation " << n << " of " << total
+          << " failed";
+      if (f.outstanding != 0) { break; }
+    }
+  }
+  std::printf("  %zu operations swept, %ld injected failures, "
+              "%ld allocate nothing\n",
+      op_case_count(), injected, silent);
+  ASSERT_GT(injected, 40)
+      << "only " << injected
+      << " injections; the operations are not allocating enough for this to "
+         "be measuring their cleanup";
 }
 
 int main(int argc, char ** argv) {
