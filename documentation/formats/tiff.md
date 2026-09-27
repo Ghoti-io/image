@@ -105,7 +105,9 @@ back is not available, because an output stream here is append-only.
 | Byte order | "II" and "MM" | - |
 | Version | 42 | 43 (BigTIFF) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | IFD chain | Any number up to 4096, refusing a chain that does not advance | A chain that points backwards or at itself &rarr; `GIMG_ERR_CORRUPT`; `max_frame_count` caps it lower |
-| Compression (read) | 1 (none), 2 (CCITT modified Huffman), 3 (Group 3, one- and two-dimensional), 4 (Group 4), 5 (LZW, including the pre-1993 bit-reversed spelling), 8 and 32946 (Deflate), 32773 (PackBits) | 6/7 (JPEG), 32809 (ThunderScan), 34676/34677 (LogLuv) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| Compression (read) | 1 (none), 2 (CCITT modified Huffman), 3 (Group 3, one- and two-dimensional), 4 (Group 4), 5 (LZW, including the pre-1993 bit-reversed spelling), 6 (old-style JPEG, both shapes), 7 (JPEG), 8 and 32946 (Deflate), 32773 (PackBits), 32809 (ThunderScan) | 34676/34677 (LogLuv) and anything else &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| JPEG-in-TIFF | Compression 7 with JPEGTables (347), decoded by this library's own JPEG codec through T.81 B.4's abbreviated format - which is what the tag pair *is*. Compression 6 too: the 1992 tags, whose tables are bare arrays at file offsets and whose strips hold entropy data with no frame header, so the frame is assembled from the TIFF tags | 8-bit only, PlanarConfiguration 1 only, and JPEGProc other than baseline &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| ThunderScan | Compression 32809, four-bit greyscale | Any other depth or sample count &rarr; `GIMG_ERR_CORRUPT`, named |
 | FillOrder | 1 and 2, read by the CCITT decoder | Ignored for every other compression, which is defined on whole bytes; libtiff does the same |
 | T4Options / T6Options | Two-dimensional coding, end-of-line codes present or absent, fill bits | Uncompressed mode (bit 1 of either) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | Compression (write) | none, PackBits, LZW, Deflate, with or without Predictor 2 | - |
@@ -132,6 +134,8 @@ sample agrees.** The three differences below are the whole of the rest.
 | The Orientation tag (274) | Applied at decode, as `gimg_item_decode` applies a JPEG's or a PNG's Exif orientation for every codec here. The written file therefore declares none: the pixels *are* the display image, and re-declaring it would have the next reader rotate them twice | Its RGBA reader **flips rather than transposes** for orientations 5 to 8. Measured on `tiff_4x4_metadata.tif`, whose first pixel comes back as the source's top-right where a 90° rotation puts its bottom-left | The comparison sweep counts such files instead of comparing them: two transforms, one of them wrong, is not two decoders. The orientation is checked against the specification in `test_tiff_decode.cpp` |
 | YCbCr's green channel | The multipliers are computed from the file's `YCbCrCoefficients` at 16 fractional bits, which is what section 21's formula reduces to | The same | Agrees exactly. Worth recording because the first attempt did not: evaluating the formula in double precision and rounding at the end disagreed by one on 2 samples of 1,228,800 in `dscf0013.tif` and 94 of 325,000 in `ycbcr-cat.tif`, **every one of them green**, because green is the only channel whose multipliers are not exact in five decimal places. This library has met the same difference from the other side - its JPEG decoder uses libjpeg's five-place constants, and `tools/oracle/containers/IMAGES` records IJG v10 disagreeing with libjpeg-turbo for exactly that reason |
 | A CCITT block whose bits decode to nothing | Refused, `GIMG_ERR_CORRUPT` | Read; it reports the error and hands back the rows it managed, which for a block that failed on its first row is a blank page | Deliberately not matched. A fax that produced no rows at all has not been decoded, and a blank page is the one wrong answer a caller cannot tell from a right one. A block that fails *part way* is treated as libtiff treats it: the rows that arrived are kept |
+| Old-style JPEG in YCbCr | The JPEG's own colour conversion, as JFIF defines it, because the payload is a JPEG datastream written by a JPEG encoder | **Section 21's conversion, with ReferenceBlackWhite** - but only for compression 6. Measured with a minimal pair: rewriting that tag from the full-range default to CCIR 601's studio range changes libtiff's answer for a compression-6 file and does not change it at all for a compression-7 one | Deliberately not matched, and the asymmetry is libtiff's: it routes old-style JPEG through its generic YCbCr path and new-style through libjpeg. This codec agrees with libtiff exactly on every compression-7 file, YCbCr included. What stands in place of a comparison for the two old-style YCbCr files is three grayscale fixtures - the same JPEG cut three ways - where there is no colour model to disagree about and libtiff agrees with all three |
+| A block that ends before its geometry does | The rows that arrived are kept and the rest stay as the raster was created | **The previous strip's rows.** libtiff decodes into a reused buffer and leaves what a short strip did not reach. Measured on `text.tif`, whose last strip declares 39 rows and encodes 36: libtiff's rows 357 and 358 come back byte-identical to its own rows 293 and 294 | Deliberately not matched. The sweep states the condition rather than the file name - every differing row is, on libtiff's side, an exact copy of an earlier row of its own output - so it stops applying if libtiff stops doing it |
 | A file with no PhotometricInterpretation | Refused, `GIMG_ERR_CORRUPT`, named | Read; it supplies a default | Deliberately not matched. Section 8 gives that field no default, so a file without one has not said what its samples mean, and guessing is a worse answer than saying so |
 
 The only other asymmetry is the obvious one: libtiff reads a few files this
@@ -162,6 +166,17 @@ off it, and what is left is in **Not implemented** below.
   take their population from the codec registry: truncation at every cut point
   of every fixture, the refusal-reason sweep, the conversion matrix, and the
   item-role sweep.
+- **Three JPEG-in-TIFF fixtures cut from one grayscale JPEG**: the modern
+  spelling with JPEGTables, the 1992 spelling with its tables as bare arrays,
+  and the 1992 spelling carrying a whole datastream with the meaningless scan
+  header a 1992 encoder wrote. Grayscale on purpose - it is the one shape
+  where libtiff and this codec cannot disagree about a colour model, so the
+  sweep can demand an exact match, and it gets one on all three.
+
+- **Two ThunderScan fixtures**, the same picture compressed and stored, for
+  the same reason: the sample set's only ThunderScan file is truncated, so it
+  cannot be the whole evidence for that compression.
+
 - **Fourteen CCITT files written by libtiff**, swept the same way, in the
   same test file. The sample set's only two fax files are both Group 3, both
   one-dimensional and both FillOrder 2, so Group 4, two-dimensional coding,
@@ -190,8 +205,13 @@ off it, and what is left is in **Not implemented** below.
 
 Listed so the absences are visible rather than discovered:
 
-- **JPEG-in-TIFF, ThunderScan and LogLuv** - the compressions the sample set
-  still names every run.
+- **LogLuv** (compressions 34676 and 34677, photometric 32844 and 32845),
+  the only compression the sample set still names every run. It is a
+  logarithmic encoding of CIE Lu'v', which decodes to floating-point
+  luminance rather than to integer samples; this library has no float raster,
+  and libtiff's eight-bit answer for one is a tone mapping rather than a
+  decode. Both of those would have to be decided before it could be read, and
+  neither is a TIFF question.
 - **CCITT uncompressed mode**, the escape inside a Group 3 or Group 4 stream
   that switches to literal bits. It is refused where a file declares it in
   T4Options or T6Options rather than discovered mid-row: nothing is known to

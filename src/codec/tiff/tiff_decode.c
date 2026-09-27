@@ -209,7 +209,13 @@ static bool tiff_plan_output(
   const bool gray = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_WHITE_IS_ZERO ||
       ifd->photometric == GIMG_TIFF_PHOTOMETRIC_BLACK_IS_ZERO;
   const bool cmyk = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_CMYK;
-  const bool ycbcr = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_YCBCR;
+  // A compression-7 file declares PhotometricInterpretation 6 and means it
+  // about the *JPEG's* samples, which the JPEG decoder has already converted
+  // by the time this codec sees them. Treating it as YCbCr here would
+  // convert a second time.
+  const bool ycbcr = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_YCBCR &&
+      ifd->compression != GIMG_TIFF_COMPRESSION_JPEG &&
+      ifd->compression != GIMG_TIFF_COMPRESSION_JPEG_OLD;
   // Sixteen bits stay sixteen bits: narrowing would be a decision about the
   // picture rather than about how it is stored, and GRAY16, RGBA16 and CMYK16
   // exist so the caller makes it. A palette is the exception, because its map
@@ -613,6 +619,44 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
     else if (!gcu_safe_mul_size(down, rect.row_bytes, &want)) {
       gimg_raster_destroy(raster);
       return GIMG_ERR_LIMIT;
+    }
+    if (ifd->compression == GIMG_TIFF_COMPRESSION_JPEG ||
+        ifd->compression == GIMG_TIFF_COMPRESSION_JPEG_OLD) {
+      // A JPEG strip decodes to a picture rather than to rows of samples, so
+      // it is copied in whole here instead of going through the row
+      // converter. The formats line up by construction: this codec's JPEG
+      // decoder produces GRAY8, RGBA8 or CMYK8, and tiff_plan_output chose
+      // from the same three.
+      GIMG_Raster * part = NULL;
+      r = gimg_tiff_jpeg_block(st, ifd, b, limits, &part);
+      if (r != GIMG_OK) {
+        gimg_raster_destroy(raster);
+        return r;
+      }
+      const GIMG_Pixel_Format * pf = gimg_raster_format(part);
+      if (!pf || pf->channel_count != out.channels ||
+          gimg_pixel_format_channel_bits(pf, 0) != 8u) {
+        // The strip's frame header disagrees with the directory about how
+        // many components the picture has. Refused rather than copied
+        // channel by channel: the two halves of the file describe different
+        // images and there is no saying which is the picture.
+        gimg_raster_destroy(part);
+        gimg_raster_destroy(raster);
+        return GIMG_ERR_CORRUPT;
+      }
+      const size_t part_stride = gimg_raster_stride_bytes(part);
+      const unsigned char * part_px =
+          (const unsigned char *)gimg_raster_pixels(part);
+      const size_t part_w = gimg_raster_width(part);
+      const size_t part_h = gimg_raster_height(part);
+      const size_t copy_w = across < part_w ? across : part_w;
+      const size_t copy_h = down < part_h ? down : part_h;
+      for (size_t row = 0; row < copy_h; row++) {
+        memcpy(dst_pixels + ((rect.y + row) * stride) + (rect.x * out.bytes),
+            part_px + (row * part_stride), copy_w * out.bytes);
+      }
+      gimg_raster_destroy(part);
+      continue;
     }
     const unsigned char * src = NULL;
     size_t have = 0;

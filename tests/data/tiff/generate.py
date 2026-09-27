@@ -11,6 +11,7 @@ Every file here is uncompressed, because that is what the codec reads so far.
 The compressed ones will arrive with the code that decompresses them.
 """
 
+import os
 import struct
 import zlib
 
@@ -50,6 +51,13 @@ TAGS = {
     "ICCProfile": 34675,
     "ExtraSamples": 338,
     "SampleFormat": 339,
+    "JPEGProc": 512,
+    "JPEGInterchangeFormat": 513,
+    "JPEGInterchangeFormatLength": 514,
+    "JPEGQTables": 519,
+    "JPEGDCTables": 520,
+    "JPEGACTables": 521,
+    "JPEGTables": 347,
 }
 
 TYPE_SIZE = {BYTE: 1, ASCII: 1, UNDEFINED: 1, SHORT: 2, LONG: 4,
@@ -630,16 +638,193 @@ def main():
     write("tiff_16x8_absurd_rows_per_strip.tif",
           build("II", [(huge_rows, gray_ramp(16, 8))]))
 
+    # ---- JPEG in a TIFF ----
+    #
+    # Grayscale on purpose. Both corpus files that use the 1992 spelling are
+    # YCbCr, and there libtiff and this codec disagree about the colour model
+    # for a reason that has nothing to do with the JPEG: libtiff applies
+    # ReferenceBlackWhite for compression 6 and ignores it for compression 7,
+    # which a minimal pair in notes/image/status.md pins down. A grayscale
+    # file has no such question, so it is the one shape where the sweep can
+    # demand an exact match and get one.
+    #
+    # The JPEG is a fixture of the JPEG codec, re-cut rather than re-encoded:
+    # what these files test is the cutting.
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "jpeg", "baseline_640x480_gray.jpg"),
+               "rb").read()
+    dqt, dht, qbody, dcbody, acbody, sof, sos, entropy = split_jpeg(src)
+    jh, jw = struct.unpack(">HH", sof[5:9])
+
+    # Compression 7: the tables in one tag as whole segments, the frame in
+    # the strip. This is what Technical Note 2 defines and what everything
+    # written since 1995 uses.
+    tables = b"\xff\xd8" + b"".join(dqt) + b"".join(dht) + b"\xff\xd9"
+    frame = b"\xff\xd8" + sof + sos + entropy + b"\xff\xd9"
+    write("tiff_jpeg_gray.tif", build_flat("II", [
+        (TAGS["ImageWidth"], LONG, [jw]),
+        (TAGS["ImageLength"], LONG, [jh]),
+        (TAGS["BitsPerSample"], SHORT, [8]),
+        (TAGS["Compression"], SHORT, [7]),
+        (TAGS["Photometric"], SHORT, [1]),
+        (TAGS["SamplesPerPixel"], SHORT, [1]),
+        (TAGS["RowsPerStrip"], LONG, [jh]),
+        (TAGS["PlanarConfig"], SHORT, [1]),
+        (TAGS["StripOffsets"], LONG, ("@blob", 0)),
+        (TAGS["StripByteCounts"], LONG, [len(frame)]),
+        (TAGS["JPEGTables"], UNDEFINED, tables),
+    ], [frame]))
+
+    # Compression 6, the 1992 spelling, in the shape that carries no JPEG at
+    # all: the tables are bare arrays at file offsets and the strip holds
+    # entropy-coded data with no frame header in front of it, so a decoder
+    # has to write the JPEG the file did not.
+    write("tiff_ojpeg_gray.tif", build_flat("II", [
+        (TAGS["ImageWidth"], LONG, [jw]),
+        (TAGS["ImageLength"], LONG, [jh]),
+        (TAGS["BitsPerSample"], SHORT, [8]),
+        (TAGS["Compression"], SHORT, [6]),
+        (TAGS["Photometric"], SHORT, [1]),
+        (TAGS["SamplesPerPixel"], SHORT, [1]),
+        (TAGS["RowsPerStrip"], LONG, [jh]),
+        (TAGS["PlanarConfig"], SHORT, [1]),
+        (TAGS["StripOffsets"], LONG, ("@blob", 0)),
+        (TAGS["StripByteCounts"], LONG, [len(entropy)]),
+        (TAGS["JPEGProc"], SHORT, [1]),
+        (TAGS["JPEGQTables"], LONG, ("@blob", 1)),
+        (TAGS["JPEGDCTables"], LONG, ("@blob", 2)),
+        (TAGS["JPEGACTables"], LONG, ("@blob", 3)),
+    ], [entropy, qbody[0], dcbody[0], acbody[0]]))
+
+    # The other shape of compression 6: tags 513 and 514 point at a complete
+    # JPEG datastream and the strips are beside the point. Its scan header
+    # gets the zeros a 1992 encoder wrote, because that is the thing the
+    # reader has to survive - T.81 B.2.3 reads Ss=0 Se=0 as a progressive DC
+    # scan, and this frame is baseline.
+    sos_1992 = sos[:-3] + b"\x00\x00\x00"
+    whole = b"\xff\xd8" + b"".join(dqt) + b"".join(dht) + sof + sos_1992 + \
+        entropy + b"\xff\xd9"
+    write("tiff_ojpeg_gray_interchange.tif", build_flat("II", [
+        (TAGS["ImageWidth"], LONG, [jw]),
+        (TAGS["ImageLength"], LONG, [jh]),
+        (TAGS["BitsPerSample"], SHORT, [8]),
+        (TAGS["Compression"], SHORT, [6]),
+        (TAGS["Photometric"], SHORT, [1]),
+        (TAGS["SamplesPerPixel"], SHORT, [1]),
+        (TAGS["RowsPerStrip"], LONG, [jh]),
+        (TAGS["PlanarConfig"], SHORT, [1]),
+        (TAGS["StripOffsets"], LONG, ("@blob", 0)),
+        (TAGS["StripByteCounts"], LONG, [len(whole)]),
+        (TAGS["JPEGProc"], SHORT, [1]),
+        (TAGS["JPEGInterchangeFormat"], LONG, ("@blob", 0)),
+        (TAGS["JPEGInterchangeFormatLength"], LONG, [len(whole)]),
+    ], [whole]))
+
+    # ---- ThunderScan ----
+    #
+    # The sample set's only ThunderScan file has a short last strip, where
+    # libtiff hands back two rows of its previous strip's buffer rather than
+    # an error (measured: they are byte-identical to rows 293 and 294). So it
+    # cannot be the whole evidence for this compression, and this fixture is
+    # the rest of it: a file that is not truncated, which libtiff and this
+    # codec must agree about exactly.
+    #
+    # The encoder below is deliberately unoptimised - it just has to use all
+    # four of the codes, because those are what the decoder chooses between.
+    def thunderscan(rows_of_pixels, w):
+        """Encode 4-bit rows, each a list of w values in 0..15."""
+        out = bytearray()
+        for row in rows_of_pixels:
+            last = 0
+            i = 0
+            while i < w:
+                run = 0
+                while i + run < w and row[i + run] == last and run < 63:
+                    run += 1
+                if run >= 2:
+                    out.append(run)      # 00nnnnnn: repeat the last pixel.
+                    i += run
+                    continue
+                # 10aaabbb: two three-bit deltas. 1..3 are 1,2,3 and -1..-3
+                # are 7,6,5; 4 is the filler that emits nothing.
+                three = [4, 4]
+                ok = True
+                probe = last
+                taken = 0
+                for k in range(2):
+                    if i + k >= w:
+                        break
+                    d = row[i + k] - probe
+                    if d == 0:
+                        three[k] = 0
+                    elif 1 <= d <= 3:
+                        three[k] = d
+                    elif -3 <= d <= -1:
+                        three[k] = 8 + d
+                    else:
+                        ok = k > 0
+                        break
+                    probe = row[i + k]
+                    taken += 1
+                if ok and taken > 0:
+                    out.append(0x80 | (three[0] << 3) | three[1])
+                    i += taken
+                    last = row[i - 1]
+                    continue
+                out.append(0xC0 | row[i])  # 11xxxxxx: stored outright.
+                last = row[i]
+                i += 1
+        return bytes(out)
+
+    TW, TH = 37, 11
+    # A picture with runs, small steps and jumps, so every code gets used.
+    trows = [[(x * 3 + y) % 16 if (x // 5) % 2 else (y % 16)
+              for x in range(TW)] for y in range(TH)]
+    tdata = thunderscan(trows, TW)
+    tpixels = bytearray()
+    for row in trows:
+        packed = bytearray((TW + 1) // 2)
+        for x, v in enumerate(row):
+            if x % 2 == 0:
+                packed[x // 2] = v << 4
+            else:
+                packed[x // 2] |= v
+        tpixels += packed
+
+    def four_bit_fields(compression, blob):
+        return [
+            (TAGS["ImageWidth"], LONG, [TW]),
+            (TAGS["ImageLength"], LONG, [TH]),
+            (TAGS["BitsPerSample"], SHORT, [4]),
+            (TAGS["Compression"], SHORT, [compression]),
+            (TAGS["Photometric"], SHORT, [0]),
+            (TAGS["SamplesPerPixel"], SHORT, [1]),
+            (TAGS["RowsPerStrip"], LONG, [TH]),
+            (TAGS["PlanarConfig"], SHORT, [1]),
+            (TAGS["StripOffsets"], LONG, ("@blob", 0)),
+            (TAGS["StripByteCounts"], LONG, [len(blob)]),
+        ]
+
+    write("tiff_thunderscan.tif",
+          build_flat("II", four_bit_fields(32809, tdata), [tdata]))
+    # The same picture stored plainly, so the fixture set can check the
+    # compression without asking libtiff anything.
+    write("tiff_thunderscan_plain.tif",
+          build_flat("II", four_bit_fields(1, bytes(tpixels)),
+                     [bytes(tpixels)]))
+
     # ---- Refusals ----
     write("tiff_bad_magic.tif", b"II\x2b\x00" + b"\x00" * 12)
-    # JPEG-in-TIFF, which this codec does not undo. It was LZW here until LZW
-    # landed and CCITT Group 3 until Group 3 landed; a refusal fixture has to
-    # name something still refused, or the test that asserts the refusal
-    # starts asserting nothing.
+    # A compression this codec does not undo. It was LZW here until LZW
+    # landed, CCITT Group 3 until Group 3 landed, and JPEG until JPEG landed;
+    # a refusal fixture has to name something still refused, or the test that
+    # asserts the refusal starts asserting nothing. 34712 is JPEG 2000, which
+    # is a different image format wearing a TIFF wrapper and is not on the
+    # list - so this one should outlast the others.
     unsup = strip_fields(W, H, gray, 1)
-    unsup = [(t, ty, v) if t != TAGS["Compression"] else (t, ty, [7])
+    unsup = [(t, ty, v) if t != TAGS["Compression"] else (t, ty, [34712])
              for (t, ty, v) in unsup]
-    write("tiff_jpeg_unsupported.tif", build("II", [(unsup, gray)]))
+    write("tiff_unknown_compression.tif", build("II", [(unsup, gray)]))
     # CCITT Group 4 over bytes that are not Group 4 at all. The compression
     # is read now, so what this exercises is the other half: a block whose
     # coding this codec knows and whose contents decode to nothing.
@@ -659,6 +844,107 @@ def main():
     no_photo = [f for f in strip_fields(W, H, gray, 1)
                 if f[0] != TAGS["Photometric"]]
     write("tiff_no_photometric.tif", build("II", [(no_photo, gray)]))
+
+
+def split_jpeg(blob):
+    """Take a baseline JPEG apart into the pieces the TIFF tags want.
+
+    Both ways of putting JPEG in a TIFF store the same bytes cut differently:
+    compression 7 keeps whole table *segments* in one tag and the frame in the
+    strips, compression 6 keeps the table *contents* at six file offsets and
+    the strips hold nothing but entropy-coded data. So one parse serves both.
+
+    @return (dqt_segments, dht_segments, qtable_bodies, dc_bodies,
+             ac_bodies, sof_segment, sos_segment, entropy)
+    """
+    assert blob[:2] == b"\xff\xd8", "not a JPEG"
+    dqt, dht, qbody, dcbody, acbody = [], [], [], [], []
+    sof = sos = None
+    i = 2
+    while i + 3 < len(blob):
+        assert blob[i] == 0xFF, f"marker expected at {i}"
+        m = blob[i + 1]
+        if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7:
+            i += 2
+            continue
+        ln = struct.unpack(">H", blob[i + 2:i + 4])[0]
+        seg = blob[i:i + 2 + ln]
+        payload = blob[i + 4:i + 2 + ln]
+        if m == 0xDB:
+            dqt.append(seg)
+            # Pq|Tq, then 64 bytes; more than one table may share a segment.
+            at = 0
+            while at < len(payload):
+                assert payload[at] >> 4 == 0, "16-bit quantization"
+                qbody.append(payload[at + 1:at + 65])
+                at += 65
+        elif m == 0xC4:
+            dht.append(seg)
+            at = 0
+            while at < len(payload):
+                counts = payload[at + 1:at + 17]
+                n = sum(counts)
+                body = payload[at + 1:at + 17 + n]
+                (dcbody if payload[at] >> 4 == 0 else acbody).append(body)
+                at += 17 + n
+        elif m == 0xC0:
+            sof = seg
+        elif m == 0xDA:
+            sos = seg
+            i += 2 + ln
+            break
+        i += 2 + ln
+    end = blob.rfind(b"\xff\xd9")
+    entropy = blob[i:end if end > i else len(blob)]
+    assert sof and sos and qbody and dcbody and acbody, "not baseline"
+    return dqt, dht, qbody, dcbody, acbody, sof, sos, entropy
+
+
+def build_flat(endian, fields, blobs):
+    """A one-IFD file whose data blobs go at known offsets.
+
+    build() places a strip for you and nothing else; these JPEG fixtures need
+    several independent runs of bytes whose offsets appear in different tags,
+    so they are laid out here instead. A field's values may be ("@blob", i),
+    which becomes the offset of blobs[i] once the layout is known.
+    """
+    e = "<" if endian == "II" else ">"
+    # Header, then the blobs, then the directory and its value pool.
+    at = 8
+    offsets = []
+    data = bytearray()
+    for b in blobs:
+        offsets.append(at + len(data))
+        data += b
+        if len(data) % 2:
+            data += b"\x00"  # Keep every offset even, as TIFF 6.0 asks.
+    dir_at = 8 + len(data)
+
+    resolved = []
+    for (tag, ftype, values) in fields:
+        if isinstance(values, tuple) and values and values[0] == "@blob":
+            values = [offsets[i] for i in values[1:]]
+        resolved.append((tag, ftype, values))
+    resolved.sort(key=lambda f: f[0])
+
+    pool_at = dir_at + 2 + (12 * len(resolved)) + 4
+    entries = bytearray()
+    pool = bytearray()
+    for (tag, ftype, values) in resolved:
+        raw = pack_values(e, ftype, values)
+        entries += struct.pack(e + "HHI", tag, ftype, len(values))
+        if len(raw) <= 4:
+            entries += raw + bytes(4 - len(raw))
+        else:
+            entries += struct.pack(e + "I", pool_at + len(pool))
+            pool += raw
+            if len(pool) % 2:
+                pool += b"\x00"
+    header = endian.encode() + struct.pack(e + "H", 42) + \
+        struct.pack(e + "I", dir_at)
+    directory = struct.pack(e + "H", len(resolved)) + bytes(entries) + \
+        struct.pack(e + "I", 0)
+    return bytes(header + bytes(data) + directory + bytes(pool))
 
 
 def build_multi_strip(endian, w, h, data, rows):

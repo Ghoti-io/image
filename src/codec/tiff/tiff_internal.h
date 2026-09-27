@@ -95,6 +95,21 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TAG_XMP 700
 #define GIMG_TIFF_TAG_ICC_PROFILE 34675
 #define GIMG_TIFF_TAG_SUB_IFDS 330
+#define GIMG_TIFF_TAG_JPEG_TABLES 347
+/** @name The 1992 JPEG tags, which compression 6 uses and 7 does not @{ */
+#define GIMG_TIFF_TAG_JPEG_PROC 512
+#define GIMG_TIFF_TAG_JPEG_INTERCHANGE_FORMAT 513
+#define GIMG_TIFF_TAG_JPEG_INTERCHANGE_LENGTH 514
+#define GIMG_TIFF_TAG_JPEG_RESTART_INTERVAL 515
+#define GIMG_TIFF_TAG_JPEG_Q_TABLES 519
+#define GIMG_TIFF_TAG_JPEG_DC_TABLES 520
+#define GIMG_TIFF_TAG_JPEG_AC_TABLES 521
+/** @} */
+
+/** How many per-component table pointers the 1992 tags may name. A frame
+ * this codec reads has at most four components, and T.81 B.2.4.1 allows four
+ * tables of each class in any case. */
+#define GIMG_TIFF_JPEG_MAX_TABLES 4u
 #define GIMG_TIFF_TAG_YCBCR_COEFFICIENTS 529
 #define GIMG_TIFF_TAG_YCBCR_SUBSAMPLING 530
 #define GIMG_TIFF_TAG_REFERENCE_BLACK_WHITE 532
@@ -118,6 +133,7 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_COMPRESSION_JPEG 7
 #define GIMG_TIFF_COMPRESSION_DEFLATE 8
 #define GIMG_TIFF_COMPRESSION_PACKBITS 32773
+#define GIMG_TIFF_COMPRESSION_THUNDERSCAN 32809
 /** Deflate again, under the number that predates Adobe's registration. */
 #define GIMG_TIFF_COMPRESSION_DEFLATE_OLD 32946
 /** @} */
@@ -209,6 +225,24 @@ typedef struct {
    * something else. */
   unsigned char * icc;
   size_t icc_size;
+  /** JPEGTables (347), owned: the table-specification stream every strip of
+   * a compression-7 file is read with. See tiff_jpeg.c. */
+  unsigned char * jpeg_tables;
+  size_t jpeg_tables_size;
+  /** The 1992 JPEG tags. Only compression 6 uses them, and it is the whole
+   * reason tiff_ojpeg.c exists: where compression 7 stores a table stream a
+   * JPEG decoder can read as it stands, this stores the tables as bare
+   * arrays at file offsets, with no frame header anywhere. */
+  uint32_t jpeg_proc;
+  uint64_t jpeg_interchange_offset;
+  uint64_t jpeg_interchange_size;
+  uint32_t jpeg_restart_interval;
+  uint64_t jpeg_q_tables[GIMG_TIFF_JPEG_MAX_TABLES];
+  uint64_t jpeg_dc_tables[GIMG_TIFF_JPEG_MAX_TABLES];
+  uint64_t jpeg_ac_tables[GIMG_TIFF_JPEG_MAX_TABLES];
+  uint8_t jpeg_q_count;
+  uint8_t jpeg_dc_count;
+  uint8_t jpeg_ac_count;
   /** ImageDescription (270), NUL-terminated and owned, or NULL. */
   char * description;
   uint16_t orientation;   ///< Tag 274; 0 when the file did not say.
@@ -282,6 +316,42 @@ void gimg_tiff_undo_block_predictor(const gimg_tiff_ifd_t * ifd,
 GIMG_Result gimg_tiff_fax_decode(const GIMG_Allocator * allocator,
     const gimg_tiff_ifd_t * ifd, const unsigned char * src, size_t src_size,
     unsigned char * out, size_t out_size);
+
+/**
+ * Decode one strip or tile of a compression-7 file, through this library's
+ * own JPEG codec. In tiff_jpeg.c.
+ */
+GIMG_Result gimg_tiff_jpeg_block(const gimg_tiff_doc_state_t * st,
+    const gimg_tiff_ifd_t * ifd, size_t block, const GIMG_Limits * limits,
+    GIMG_Raster ** out_raster);
+
+/**
+ * Build a complete JPEG datastream for one block of a compression-6 file.
+ *
+ * @param rows How many image rows the block covers, which is what its frame
+ *   header must declare.
+ * @param out_stream Owned by the caller, freed with the allocator.
+ * @return GIMG_OK, or GIMG_ERR_UNSUPPORTED for a file whose 1992 tags do not
+ *   describe a frame this can assemble.
+ */
+/**
+ * Copy a compression-6 interchange stream, correcting the scan header the
+ * 1992 spelling left meaningless. In tiff_ojpeg.c.
+ */
+GIMG_Result gimg_tiff_ojpeg_fix_interchange(const gimg_tiff_doc_state_t * st,
+    const unsigned char * bytes, size_t size, unsigned char ** out_stream,
+    size_t * out_size);
+
+GIMG_Result gimg_tiff_ojpeg_assemble(const gimg_tiff_doc_state_t * st,
+    const gimg_tiff_ifd_t * ifd, size_t block, uint32_t rows,
+    unsigned char ** out_stream, size_t * out_size);
+
+/**
+ * Expand one ThunderScan block into packed four-bit rows. In tiff_thunder.c.
+ */
+GIMG_Result gimg_tiff_thunder_decode(const gimg_tiff_ifd_t * ifd,
+    const unsigned char * src, size_t src_size, unsigned char * out,
+    size_t out_size);
 
 /** Whether this codec can undo @p compression. */
 bool gimg_tiff_compression_known(uint16_t compression);

@@ -210,6 +210,9 @@ static void tiff_free_ifd(const GIMG_Allocator * a, gimg_tiff_ifd_t * ifd) {
   gimg_free(a, ifd->block_byte_counts);
   gimg_free(a, ifd->color_map);
   gimg_free(a, ifd->icc);
+  gimg_free(a, ifd->jpeg_tables);
+  ifd->jpeg_tables = NULL;
+  ifd->jpeg_tables_size = 0;
   gimg_free(a, ifd->description);
   gimg_free(a, ifd->xmp);
   gimg_free(a, ifd->sub_ifds);
@@ -488,6 +491,53 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
       ifd->icc_size = e.value_bytes;
       break;
     }
+    case GIMG_TIFF_TAG_JPEG_TABLES: {
+      if (e.value_bytes > GIMG_TIFF_ICC_MAX_SIZE) {
+        break; // Larger than any table stream is; treated as absent.
+      }
+      gimg_free(st->allocator, ifd->jpeg_tables);
+      ifd->jpeg_tables =
+          (unsigned char *)gimg_malloc(st->allocator, e.value_bytes);
+      if (!ifd->jpeg_tables) {
+        r = GIMG_ERR_OOM;
+        break;
+      }
+      memcpy(ifd->jpeg_tables, e.values, e.value_bytes);
+      ifd->jpeg_tables_size = e.value_bytes;
+      break;
+    }
+    case GIMG_TIFF_TAG_JPEG_PROC:
+      ifd->jpeg_proc = (uint32_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_JPEG_INTERCHANGE_FORMAT:
+      ifd->jpeg_interchange_offset = tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_JPEG_INTERCHANGE_LENGTH:
+      ifd->jpeg_interchange_size = tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_JPEG_RESTART_INTERVAL:
+      ifd->jpeg_restart_interval = (uint32_t)tiff_value(st, &e, 0);
+      break;
+    case GIMG_TIFF_TAG_JPEG_Q_TABLES:
+    case GIMG_TIFF_TAG_JPEG_DC_TABLES:
+    case GIMG_TIFF_TAG_JPEG_AC_TABLES: {
+      uint64_t * slot = e.tag == GIMG_TIFF_TAG_JPEG_Q_TABLES
+          ? ifd->jpeg_q_tables
+          : (e.tag == GIMG_TIFF_TAG_JPEG_DC_TABLES ? ifd->jpeg_dc_tables
+                                                   : ifd->jpeg_ac_tables);
+      uint8_t * count = e.tag == GIMG_TIFF_TAG_JPEG_Q_TABLES
+          ? &ifd->jpeg_q_count
+          : (e.tag == GIMG_TIFF_TAG_JPEG_DC_TABLES ? &ifd->jpeg_dc_count
+                                                   : &ifd->jpeg_ac_count);
+      const size_t n = e.count < GIMG_TIFF_JPEG_MAX_TABLES
+          ? e.count
+          : GIMG_TIFF_JPEG_MAX_TABLES;
+      for (size_t k = 0; k < n; k++) {
+        slot[k] = tiff_value(st, &e, k);
+      }
+      *count = (uint8_t)n;
+      break;
+    }
     case GIMG_TIFF_TAG_XMP: {
       if (e.value_bytes > GIMG_TIFF_ICC_MAX_SIZE) {
         break;
@@ -647,6 +697,44 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
     tiff_diag(diag, which,
         "a compression method this codec does not undo yet");
     return GIMG_ERR_UNSUPPORTED;
+  }
+  if (ifd->compression == GIMG_TIFF_COMPRESSION_JPEG ||
+      ifd->compression == GIMG_TIFF_COMPRESSION_JPEG_OLD) {
+    if (ifd->compression == GIMG_TIFF_COMPRESSION_JPEG_OLD &&
+        ifd->jpeg_proc != 0u && ifd->jpeg_proc != 1u) {
+      // JPEGProc 14 is lossless, which the 1992 tags describe differently
+      // again - a different scan header, no quantization, a predictor
+      // selector. Nothing in the sample set uses it and this does not guess.
+      tiff_diag(diag, which,
+          "old-style JPEG with a JPEGProc other than baseline");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    // The frame header inside each strip carries the depth, the component
+    // count and the subsampling, and the JPEG decoder reads all three. What
+    // the TIFF tags have to do is agree about the shape of the result, since
+    // that is what the raster was sized from.
+    if (ifd->bits_per_sample != 8u) {
+      tiff_diag(diag, which,
+          "JPEG-in-TIFF at a depth other than eight bits; the technical note "
+          "that defines compression 7 gives it eight");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (ifd->planar_config != 1u) {
+      // PlanarConfiguration 2 with JPEG means one frame per plane, which the
+      // technical note allows and nothing writes.
+      tiff_diag(diag, which,
+          "JPEG-in-TIFF with PlanarConfiguration 2, which this codec does "
+          "not undo");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+  }
+  if (ifd->compression == GIMG_TIFF_COMPRESSION_THUNDERSCAN &&
+      (ifd->bits_per_sample != 4u || ifd->samples_per_pixel != 1u)) {
+    // ThunderScan is four-bit greyscale and nothing else; the coding has no
+    // way to say anything wider.
+    tiff_diag(diag, which,
+        "ThunderScan on something other than four bits of one sample");
+    return GIMG_ERR_CORRUPT;
   }
   const bool ccitt = ifd->compression == GIMG_TIFF_COMPRESSION_CCITT_RLE ||
       ifd->compression == GIMG_TIFF_COMPRESSION_CCITT_T4 ||

@@ -38,6 +38,7 @@
  */
 
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -117,6 +118,17 @@ std::vector<std::string> corpus() {
   std::sort(names.begin(), names.end());
   return names;
 }
+
+/**
+ * Whether every row in which the two rasters differ is one libtiff filled
+ * from its own earlier output and this library left untouched.
+ *
+ * See the call site for the measurement. Both halves are required: a row
+ * that merely repeats an earlier one is ordinary picture content, and a row
+ * of ours that is uniform is ordinary too. Together they are the signature
+ * of a short block and of nothing else.
+ */
+bool only_stale_rows_differ(const Image & mine, const Image & theirs);
 
 /** What this library makes of a file, widened to RGBA8. */
 Image ours(const std::string & dir, const std::string & name) {
@@ -356,6 +368,39 @@ std::string describe(const Reference & r) {
       (r.planar == 2u ? ", planar" : "") + (r.tiled ? ", tiled" : "");
 }
 
+bool only_stale_rows_differ(const Image & mine, const Image & theirs) {
+  if (mine.width == 0u || mine.height == 0u) {
+    return false;
+  }
+  const size_t row = (size_t)mine.width * 4u;
+  bool any = false;
+  for (uint32_t y = 0; y < mine.height; y++) {
+    const uint8_t * a = mine.rgba.data() + ((size_t)y * row);
+    const uint8_t * b = theirs.rgba.data() + ((size_t)y * row);
+    if (std::memcmp(a, b, row) == 0) {
+      continue;
+    }
+    any = true;
+    // Ours must be one colour across the row: a block that decoded nothing
+    // leaves the raster as it was created.
+    for (size_t i = 4; i < row; i += 4u) {
+      if (std::memcmp(a, a + i, 4u) != 0) {
+        return false;
+      }
+    }
+    // Theirs must be an exact copy of a row it produced earlier.
+    bool copied = false;
+    for (uint32_t k = 0; k < y && !copied; k++) {
+      copied =
+          std::memcmp(b, theirs.rgba.data() + ((size_t)k * row), row) == 0;
+    }
+    if (!copied) {
+      return false;
+    }
+  }
+  return any;
+}
+
 struct Tally {
   long agreed = 0;
   long differed = 0;
@@ -369,6 +414,8 @@ struct Tally {
   long rounding_samples = 0;
   long rounding_files = 0;
   long oriented = 0;
+  long ojpeg_ycbcr = 0;
+  long stale_rows = 0;
 };
 
 /** Compare one directory's files, sample for sample, in libtiff's space. */
@@ -411,6 +458,57 @@ void sweep(const std::string & dir, const std::vector<std::string> & names,
     // checked against the specification instead of against libtiff.
     if (ref.orientation != 1u) {
       t->oriented++;
+      continue;
+    }
+    // **An old-style JPEG in YCbCr is counted, not compared**, because
+    // libtiff converts its colour by a rule it does not apply to the modern
+    // spelling of the same data.
+    //
+    // Measured, with a minimal pair: rewriting ReferenceBlackWhite from the
+    // full-range default to CCIR 601's studio range changes libtiff's answer
+    // for a compression-6 file and *does not change it at all* for a
+    // compression-7 one. So libtiff routes old-style JPEG through
+    // tif_getimage's generic YCbCr path, which applies section 21's
+    // conversion with that tag, and routes new-style JPEG through libjpeg,
+    // which applies JFIF's. This codec applies JFIF's for both, because for
+    // both the payload is a JPEG datastream written by a JPEG encoder - and
+    // it agrees with libtiff exactly on every compression-7 file, YCbCr
+    // included.
+    //
+    // What stands in place of a comparison here is three fixtures:
+    // tiff_jpeg_gray.tif, tiff_ojpeg_gray.tif and
+    // tiff_ojpeg_gray_interchange.tif are the same grayscale JPEG cut three
+    // ways, where there is no colour model to disagree about, and libtiff
+    // agrees with all three sample for sample. Everything this file does to
+    // an old-style JPEG - assembling a frame header, finding the tables,
+    // correcting a 1992 scan header - is checked there.
+    if (ref.compression == 6u && ref.photometric == 6u) {
+      t->ojpeg_ycbcr++;
+      continue;
+    }
+    // **A file whose last block is short, where libtiff hands back its
+    // previous buffer.**
+    //
+    // libtiff decodes a strip into a reused scanline buffer, and when a
+    // codec reports the strip short it leaves the rows it did not reach as
+    // they were - which is the *previous* strip's pixels, not an error and
+    // not a blank. Measured on text.tif, the sample set's only ThunderScan
+    // file: its last strip declares 39 rows and encodes 36, and libtiff's
+    // rows 357 and 358 come back byte-identical to its own rows 293 and 294.
+    //
+    // So the condition is stated as what that looks like rather than as a
+    // file name: every row where the two readers differ is, on libtiff's
+    // side, an exact copy of an earlier row of libtiff's own raster, and on
+    // ours a row that decoded to nothing. Reproducing a stale buffer is not
+    // something a decoder should be asked to do, and if libtiff stops doing
+    // it this stops firing and the comparison resumes.
+    //
+    // What stands in place of it is tiff_thunderscan.tif, the same
+    // compression on a file that is not truncated, which libtiff and this
+    // codec agree about sample for sample.
+    if (a.width == b.width && a.height == b.height &&
+        only_stale_rows_differ(a, b)) {
+      t->stale_rows++;
       continue;
     }
     if (a.width != b.width || a.height != b.height) {
@@ -516,6 +614,17 @@ void report(const char * label, const Tally & t) {
     std::printf("    %ld files declare an Orientation and are not compared: "
                 "this library applies it and libtiff does not transpose\n",
         t.oriented);
+  }
+  if (t.stale_rows > 0) {
+    std::printf("    %ld files have a short last block, where libtiff hands "
+                "back its previous strip's rows rather than an error\n",
+        t.stale_rows);
+  }
+  if (t.ojpeg_ycbcr > 0) {
+    std::printf("    %ld old-style JPEG files are YCbCr and are not "
+                "compared: libtiff applies ReferenceBlackWhite to "
+                "compression 6 and not to compression 7\n",
+        t.ojpeg_ycbcr);
   }
   if (t.rounding_files > 0) {
     std::printf("    %ld samples in %ld files are the associated-alpha "

@@ -53,6 +53,9 @@ bool gimg_tiff_compression_known(uint16_t compression) {
   case GIMG_TIFF_COMPRESSION_CCITT_RLE:
   case GIMG_TIFF_COMPRESSION_CCITT_T4:
   case GIMG_TIFF_COMPRESSION_CCITT_T6:
+  case GIMG_TIFF_COMPRESSION_JPEG:
+  case GIMG_TIFF_COMPRESSION_JPEG_OLD:
+  case GIMG_TIFF_COMPRESSION_THUNDERSCAN:
     return true;
   default:
     return false;
@@ -200,6 +203,31 @@ GIMG_Result gimg_tiff_block_bytes(const gimg_tiff_doc_state_t * st,
   }
   if (want == 0u) {
     return GIMG_ERR_UNSUPPORTED;
+  }
+
+  if (ifd->compression == GIMG_TIFF_COMPRESSION_JPEG ||
+      ifd->compression == GIMG_TIFF_COMPRESSION_JPEG_OLD) {
+    // Handled a whole block at a time in tiff_jpeg.c, because a JPEG strip
+    // does not expand to rows of samples this codec then converts - it
+    // expands to a picture, colour conversion and all.
+    return GIMG_ERR_INTERNAL;
+  }
+
+  if (ifd->compression == GIMG_TIFF_COMPRESSION_THUNDERSCAN) {
+    unsigned char * room = (unsigned char *)gimg_malloc(st->allocator, want);
+    if (!room) {
+      return GIMG_ERR_OOM;
+    }
+    const GIMG_Result tr =
+        gimg_tiff_thunder_decode(ifd, stored, stored_size, room, want);
+    if (tr != GIMG_OK) {
+      gimg_free(st->allocator, room);
+      return tr;
+    }
+    *out_bytes = room;
+    *out_size = want;
+    *out_owned = true;
+    return GIMG_OK;
   }
 
   // CCITT is not in the compress library and should not be: it is a bilevel

@@ -324,9 +324,9 @@ TEST(TiffCorrupt, TheGeometryTagsNameWhatDisagreesWithWhat) {
 
 TEST(TiffCorrupt, TheSampleTagsNameWhatTheyCannotDescribe) {
   std::vector<Case> cases;
-  cases.push_back({"JPEG-in-TIFF, which this codec does not undo",
+  cases.push_back({"a compression this codec does not undo",
       "compression method this codec does not undo", GIMG_ERR_UNSUPPORTED,
-      make_tiff(with(good_tags(), {259u, T_SHORT, {7u}}), kPixels)});
+      make_tiff(with(good_tags(), {259u, T_LONG, {34712u}}), kPixels)});
   cases.push_back({"CCITT Group 3 on eight-bit samples",
       "one bit of one sample", GIMG_ERR_CORRUPT,
       make_tiff(with(good_tags(), {259u, T_SHORT, {3u}}), kPixels)});

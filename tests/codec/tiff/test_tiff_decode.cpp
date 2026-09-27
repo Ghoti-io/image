@@ -642,7 +642,7 @@ TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   };
   const Case cases[] = {
       {"tiff_bad_magic.tif", GIMG_ERR_UNSUPPORTED, "BigTIFF"},
-      {"tiff_jpeg_unsupported.tif", GIMG_ERR_UNSUPPORTED,
+      {"tiff_unknown_compression.tif", GIMG_ERR_UNSUPPORTED,
           "compression method this codec does not undo"},
       {"tiff_no_photometric.tif", GIMG_ERR_CORRUPT,
           "no PhotometricInterpretation"},
