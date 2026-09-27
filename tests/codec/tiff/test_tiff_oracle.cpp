@@ -107,6 +107,11 @@ std::vector<std::string> fixtures() {
   return names;
 }
 
+/** The depth series as ImageMagick reads it, by `make oracle-tools`. */
+std::string depth_dir() {
+  return std::string(GIMG_TEST_DATA_TIFF) + "/../tiff-depth";
+}
+
 /** The CCITT variants libtiff writes, also by `make oracle-tools`. */
 std::string fax_dir() {
   return std::string(GIMG_TEST_DATA_TIFF) + "/../tiff-fax";
@@ -354,6 +359,7 @@ Image reference_pixels(const std::string & name) {
 } // namespace
 
 ORACLE_SENTINEL(TiffOracle, libtiff)
+ORACLE_SENTINEL(TiffOracle, imagemagick)
 
 namespace {
 
@@ -699,6 +705,139 @@ TEST(TiffOracle, NothingInTheLibtiffSampleSetIsReadDifferently) {
   for (const std::string & line : t.disagreements) {
     ADD_FAILURE() << line;
   }
+}
+
+/** One decoded image widened to RGBA16, the shape ImageMagick was asked for. */
+std::vector<uint16_t> ours_rgba16(const std::string & dir,
+    const std::string & name, uint32_t * out_w, uint32_t * out_h) {
+  std::vector<uint16_t> out;
+  *out_w = *out_h = 0;
+  std::ifstream f(dir + "/" + name, std::ios::binary);
+  const std::vector<uint8_t> bytes(
+      (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  if (bytes.empty()) { return out; }
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
+    return out;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Raster * raster = nullptr;
+  if (gimg_doc_load(s, nullptr, nullptr, &doc) == GIMG_OK && doc &&
+      gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster) == GIMG_OK &&
+      raster) {
+    const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+    const uint32_t w = gimg_raster_width(raster);
+    const uint32_t h = gimg_raster_height(raster);
+    const size_t stride = gimg_raster_stride_bytes(raster);
+    const size_t ch = fmt->channel_count;
+    const unsigned bits = gimg_pixel_format_channel_bits(fmt, 0);
+    const uint8_t * p = (const uint8_t *)gimg_raster_pixels_const(raster);
+    out.resize((size_t)w * h * 4u);
+    for (uint32_t y = 0; y < h; y++) {
+      for (uint32_t x = 0; x < w; x++) {
+        uint16_t v[4] = {0, 0, 0, 65535u};
+        for (size_t k = 0; k < ch && k < 4u; k++) {
+          const size_t at = (y * stride) + (x * ch * (bits / 8u));
+          // An eight-bit raster is widened by 257, which is the exact
+          // full-range map from eight bits to sixteen and is what makes one
+          // comparison serve every depth.
+          v[k] = bits == 16u
+              ? ((const uint16_t *)(const void *)(p + at))[k]
+              : (uint16_t)(p[at + k] * 257u);
+        }
+        if (ch == 1u) { v[1] = v[2] = v[0]; }
+        std::memcpy(&out[(((size_t)y * w) + x) * 4u], v, sizeof(v));
+      }
+    }
+    *out_w = w;
+    *out_h = h;
+  }
+  if (raster) { gimg_raster_destroy(raster); }
+  if (doc) { gimg_doc_destroy(doc); }
+  gimg_stream_destroy(s);
+  return out;
+}
+
+/**
+ * Every bit depth, against the only reference that reads them.
+ *
+ * libtiff's RGBA reader refuses 6, 10, 12, 14, 24 and 32 bits outright, so
+ * the sweep that corroborates this codec everywhere else is blind to exactly
+ * the depths where a sample straddles byte boundaries and the arithmetic is
+ * hardest to get right. ImageMagick reads them through libtiff's *scanline*
+ * API, which does not refuse them, and is asked here for 16-bit RGBA so that
+ * one comparison serves every depth.
+ *
+ * Palette and separated files are left out of this one: they are covered by
+ * the libtiff sweep at the depths libtiff reads, and comparing them here
+ * would be comparing two colour-map narrowings and a CMYK-to-RGB conversion
+ * rather than two sample readers.
+ *
+ * Three things were settled by running it, and none of them by argument:
+ * the widening rounds and the narrowing truncates; a depth that does not
+ * divide eight exactly belongs in a 16-bit raster; and at six bits an
+ * eight-bit raster disagreed on 3,071 samples of 3,139.
+ */
+TEST(TiffOracle, EveryBitDepthImageMagickReadsIsReadTheSameWay) {
+  if (!oracle_gate::reachable("imagemagick")) {
+    GTEST_SKIP() << "the sentinel above has already failed the run";
+  }
+  std::vector<std::string> names;
+  collect(depth_dir(), "", &names, false);
+  std::vector<std::string> dumps;
+  {
+    DIR * d = opendir(depth_dir().c_str());
+    if (d) {
+      while (struct dirent * e = readdir(d)) {
+        const std::string n = e->d_name;
+        if (n.size() > 5u && n.compare(n.size() - 5u, 5u, ".rgba") == 0) {
+          dumps.push_back(n);
+        }
+      }
+      closedir(d);
+    }
+  }
+  std::sort(dumps.begin(), dumps.end());
+  ASSERT_FALSE(dumps.empty())
+      << "the depth series has not been dumped into " << depth_dir()
+      << ".\nRun `make oracle-tools`, which reads it with the pinned "
+         "ImageMagick.";
+  std::printf("  %s\n", oracle_gate::provenance("imagemagick").c_str());
+
+  long agreed = 0, differed = 0;
+  for (const std::string & dump : dumps) {
+    const std::string name = dump.substr(0, dump.size() - 5u);
+    uint32_t w = 0, h = 0;
+    const std::vector<uint16_t> mine =
+        ours_rgba16(corpus_dir() + "/depth", name, &w, &h);
+    ASSERT_FALSE(mine.empty()) << name << " did not decode";
+    std::ifstream f(depth_dir() + "/" + dump, std::ios::binary);
+    const std::vector<uint8_t> raw(
+        (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    ASSERT_EQ(raw.size(), mine.size() * 2u)
+        << name << ": ImageMagick's dump is " << raw.size()
+        << " bytes and ours is " << (mine.size() * 2u);
+    size_t bad = 0, first = (size_t)-1;
+    for (size_t i = 0; i < mine.size(); i++) {
+      const uint16_t theirs =
+          (uint16_t)(raw[i * 2u] | ((uint16_t)raw[(i * 2u) + 1u] << 8));
+      if (theirs != mine[i]) {
+        if (first == (size_t)-1) { first = i; }
+        bad++;
+      }
+    }
+    if (bad == 0u) {
+      agreed++;
+      continue;
+    }
+    differed++;
+    ADD_FAILURE() << name << ": " << bad << " of " << mine.size()
+                  << " samples, first at pixel " << (first / 4u) << " channel "
+                  << (first % 4u) << ", ours " << mine[first];
+  }
+  std::printf("  depth series: %ld agreed, %ld differed\n", agreed, differed);
+  EXPECT_GT(agreed + differed, 15)
+      << "only " << (agreed + differed) << " depth files were compared";
 }
 
 /**

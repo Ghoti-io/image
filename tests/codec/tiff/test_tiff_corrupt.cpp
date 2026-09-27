@@ -356,9 +356,9 @@ TEST(TiffCorrupt, TheSampleTagsNameWhatTheyCannotDescribe) {
       make_tiff(with(with(good_tags(), {277u, T_SHORT, {3u}}),
                     {258u, T_SHORT, {8u, 4u, 8u}}),
           kPixels)});
-  cases.push_back({"twelve bits per sample",
-      "bit depth other than 1, 2, 4, 8 or 16", GIMG_ERR_UNSUPPORTED,
-      make_tiff(with(good_tags(), {258u, T_SHORT, {12u}}), kPixels)});
+  cases.push_back({"forty bits per sample",
+      "bit depth above thirty-two", GIMG_ERR_UNSUPPORTED,
+      make_tiff(with(good_tags(), {258u, T_SHORT, {40u}}), kPixels)});
   cases.push_back({"grayscale with three samples",
       "grayscale image with more than one sample", GIMG_ERR_UNSUPPORTED,
       make_tiff(with(good_tags(), {277u, T_SHORT, {3u}}), kPixels)});

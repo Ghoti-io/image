@@ -59,6 +59,9 @@ tests/data/tiff-corpus
 # `make oracle-tools`. Same reason: the pin is the image, not these bytes.
 tests/data/tiff-fax
 
+# The depth series as ImageMagick reads it, also by `make oracle-tools`.
+tests/data/tiff-depth
+
 # libFuzzer writes a crash-<hash> file beside the binary when it finds one.
 # The interesting ones become test fixtures; none of them belong in the tree.
 # slow-unit-* is the same idea for an input that took longer than -timeout:

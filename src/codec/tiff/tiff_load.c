@@ -787,21 +787,20 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
         "SampleFormat names something other than an unsigned integer");
     return GIMG_ERR_UNSUPPORTED;
   }
-  switch (ifd->bits_per_sample) {
-  case 1u:
-  case 2u:
-  case 4u:
-  case 8u:
-  case 16u:
-    break;
-  default:
+  // Any depth from one to thirty-two. TIFF 6.0 puts no list in section 8 -
+  // BitsPerSample is a number - and the reader is a bit-packed one, so six,
+  // ten, twelve and fourteen cost nothing beside two and four. Thirty-two is
+  // where it stops because that is what one sample fits in here; a file
+  // above it is saying something this codec would have to widen its
+  // arithmetic for rather than something it is declining to read.
+  if (ifd->bits_per_sample == 0u || ifd->bits_per_sample > 32u) {
     // Zero is what the parser leaves when the samples disagree with each
     // other, which is a different statement from "a depth this codec does not
     // read", and the caller is told which.
     tiff_diag(diag, which,
         ifd->bits_per_sample == 0u
             ? "BitsPerSample differs between samples; not read yet"
-            : "a bit depth other than 1, 2, 4, 8 or 16; not read yet");
+            : "a bit depth above thirty-two; not read yet");
     return GIMG_ERR_UNSUPPORTED;
   }
   switch (ifd->photometric) {
@@ -815,6 +814,14 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
   case GIMG_TIFF_PHOTOMETRIC_PALETTE: {
     if (ifd->samples_per_pixel != 1u) {
       tiff_diag(diag, which, "a palette image with more than one sample");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (ifd->bits_per_sample > 16u) {
+      // 3 * 2**BitsPerSample entries, which above sixteen bits is a colour
+      // map larger than any file holds - and the index would be wider than
+      // the map this codec can build.
+      tiff_diag(diag, which,
+          "a palette deeper than sixteen bits; not read yet");
       return GIMG_ERR_UNSUPPORTED;
     }
     // 3 * 2**BitsPerSample entries (section 8). At 16 bits that is 196,608
@@ -872,6 +879,9 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
       return GIMG_ERR_UNSUPPORTED;
     }
     if (ifd->bits_per_sample != 8u && ifd->bits_per_sample != 16u) {
+      // CMYK8 and CMYK16 are the only separated rasters this library has, and
+      // unlike grey and RGB there is no widening here that would be exact -
+      // an ink at twelve bits is not a CMYK16 sample with the low bits zero.
       tiff_diag(diag, which,
           "a separated image at a depth with no CMYK raster; not read yet");
       return GIMG_ERR_UNSUPPORTED;

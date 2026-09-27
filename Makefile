@@ -874,6 +874,25 @@ oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the im
 	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/data/tiff-corpus" \
 		libtiffpic -- sh -c 'cp -R /opt/libtiffpic/. "$$1"' sh \
 		"$(CURDIR)/tests/data/tiff-corpus"
+	@# The depth series, read by ImageMagick rather than by libtiff.
+	@#
+	@# libtiff's RGBA reader refuses every depth outside 1, 2, 4, 8 and 16,
+	@# so the sweep that corroborates this codec everywhere else is blind to
+	@# exactly the depths that are hardest to get right - 6, 10, 12, 14, 24
+	@# and 32, where a sample straddles byte boundaries. ImageMagick reads
+	@# them through libtiff's scanline API and is the only reference here
+	@# that can see them. Dumped as 16-bit RGBA so one comparison serves
+	@# every depth.
+	@printf '### Dumping the depth series with ImageMagick ###\n'
+	@rm -rf tests/data/tiff-depth && mkdir -p tests/data/tiff-depth
+	@if [ -d tests/data/tiff-corpus/depth ]; then \
+		$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/data/tiff-depth" \
+			imagemagick -- sh -c 'cd "$$1" && for f in *.tif; do \
+				case "$$f" in *palette*|*separated*) continue;; esac; \
+				magick "$$f" -depth 16 "$$2/$$f.rgba" || exit 1; \
+			done' sh "$(CURDIR)/tests/data/tiff-corpus/depth" \
+			"$(CURDIR)/tests/data/tiff-depth"; \
+	fi
 	@printf '\033[0;32mOracle tools built against the pinned references.\033[0m\n'
 
 .PHONY: oracle-build oracle-verify oracle-tools

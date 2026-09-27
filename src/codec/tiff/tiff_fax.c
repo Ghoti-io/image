@@ -65,6 +65,18 @@
  * sentinels every reference line ends with. */
 #define GIMG_TIFF_FAX_SENTINELS 2u
 
+/**
+ * How many zero bits may precede an end-of-line before this stops looking.
+ *
+ * T.4 lets an encoder put fill bits in front of an end-of-line so that the
+ * line begins at a chosen place - byte-aligned, or at a fixed minimum
+ * transmission time, which on a slow modem could be a great many bits. There
+ * is no upper bound in the recommendation, so this is a bound on the work
+ * rather than on the format; a run of zeros this long is not data in any
+ * case, since no code is more than fourteen bits.
+ */
+#define GIMG_TIFF_FAX_MAX_FILL 4096u
+
 /** One line's changing elements: the positions where its colour changes.
  *
  * Position `changes[i]` is where the colour changes for the i'th time. A
@@ -149,7 +161,7 @@ static bool fax_skip_eol(gimg_ccitt_bits_t * b) {
     if (bit) {
       break;
     }
-    if (++zeros > 64u) {
+    if (++zeros > GIMG_TIFF_FAX_MAX_FILL) {
       b->bit = start;
       return false;
     }

@@ -113,7 +113,7 @@ back is not available, because an output stream here is append-only.
 | Compression (write) | none, PackBits, LZW, Deflate, with or without Predictor 2 | - |
 | Predictor | 1 and 2, at 8 and 16 bits | 3 (floating point) and any other value &rarr; `GIMG_ERR_UNSUPPORTED` |
 | Photometric | 0, 1, 2, 3, 5 (separated, read as CMYK), 6 (YCbCr, any subsampling up to 4x4) | 4 (mask), 32844/32845 (LogLuv) and the rest &rarr; `GIMG_ERR_UNSUPPORTED` |
-| BitsPerSample | 1, 2, 4, 8 and 16 | 6, 10, 12, 14, 24, 32 &rarr; `GIMG_ERR_UNSUPPORTED`; samples that differ from each other are refused as that, separately |
+| BitsPerSample | Any depth from 1 to 32. A depth that divides eight exactly - 1, 2, 4, 8 - comes back in an 8-bit raster, where the full-range map is exact; every other depth comes back in a 16-bit one, for the same reason | Above 32 &rarr; `GIMG_ERR_UNSUPPORTED`; samples that differ from each other are refused as that, separately; a palette above 16 bits, and a separated image at a depth with no CMYK raster, are each refused by name |
 | SamplesPerPixel | 1 for grayscale and palette, 3 or 4 for RGB, 4 for separated | Anything else &rarr; `GIMG_ERR_UNSUPPORTED` |
 | PlanarConfiguration | 1 and 2 | Any other value &rarr; `GIMG_ERR_CORRUPT`; the writer always writes 1 |
 | SampleFormat | 1 (unsigned integer) | 2 (signed), 3 (float) &rarr; `GIMG_ERR_UNSUPPORTED` |
@@ -136,6 +136,7 @@ sample agrees.** The three differences below are the whole of the rest.
 | A CCITT block whose bits decode to nothing | Refused, `GIMG_ERR_CORRUPT` | Read; it reports the error and hands back the rows it managed, which for a block that failed on its first row is a blank page | Deliberately not matched. A fax that produced no rows at all has not been decoded, and a blank page is the one wrong answer a caller cannot tell from a right one. A block that fails *part way* is treated as libtiff treats it: the rows that arrived are kept |
 | Old-style JPEG in YCbCr | The JPEG's own colour conversion, as JFIF defines it, because the payload is a JPEG datastream written by a JPEG encoder | **Section 21's conversion, with ReferenceBlackWhite** - but only for compression 6. Measured with a minimal pair: rewriting that tag from the full-range default to CCIR 601's studio range changes libtiff's answer for a compression-6 file and does not change it at all for a compression-7 one | Deliberately not matched, and the asymmetry is libtiff's: it routes old-style JPEG through its generic YCbCr path and new-style through libjpeg. This codec agrees with libtiff exactly on every compression-7 file, YCbCr included. What stands in place of a comparison for the two old-style YCbCr files is three grayscale fixtures - the same JPEG cut three ways - where there is no colour model to disagree about and libtiff agrees with all three |
 | A block that ends before its geometry does | The rows that arrived are kept and the rest stay as the raster was created | **The previous strip's rows.** libtiff decodes into a reused buffer and leaves what a short strip did not reach. Measured on `text.tif`, whose last strip declares 39 rows and encodes 36: libtiff's rows 357 and 358 come back byte-identical to its own rows 293 and 294 | Deliberately not matched. The sweep states the condition rather than the file name - every differing row is, on libtiff's side, an exact copy of an earlier row of its own output - so it stops applying if libtiff stops doing it |
+| Widening a sample to sixteen bits | `v * 65535 / max`, **rounded** below sixteen bits and **truncated** above | The same, and this is ImageMagick rather than libtiff - libtiff's RGBA reader refuses those depths. Measured over all 3,139 samples of one picture at each depth: rounding agrees on 3,139 at 10, 12 and 14 bits where truncating agrees on 1,587; truncating agrees on 3,139 at 24 and 32 where rounding agrees on 535 | **Match**, inconsistency and all. The alternative is disagreeing with the only reference that reads these depths |
 | A file with no PhotometricInterpretation | Refused, `GIMG_ERR_CORRUPT`, named | Read; it supplies a default | Deliberately not matched. Section 8 gives that field no default, so a file without one has not said what its samples mean, and guessing is a worse answer than saying so |
 
 The only other asymmetry is the obvious one: libtiff reads a few files this
@@ -172,6 +173,20 @@ off it, and what is left is in **Not implemented** below.
   header a 1992 encoder wrote. Grayscale on purpose - it is the one shape
   where libtiff and this codec cannot disagree about a colour model, so the
   sweep can demand an exact match, and it gets one on all three.
+
+- **ImageMagick 7.1.1**, pinned in the same image, over the sample set's
+  depth series - the same picture at 2, 4, 6, 8, 10, 12, 14, 16, 24 and 32
+  bits, contiguous and planar, 28 files. It is here because libtiff's RGBA
+  reader refuses six of those depths outright, so the sweep that corroborates
+  this codec everywhere else is blind to exactly the depths where a sample
+  straddles byte boundaries. ImageMagick reads them through libtiff's
+  *scanline* API and is asked for 16-bit RGBA, so one comparison serves every
+  depth. All 28 agree.
+
+  It settled three things that would otherwise have been asserted: which way
+  each widening rounds, that a depth not dividing eight belongs in a 16-bit
+  raster, and - by disagreeing on 3,071 samples of 3,139 - that six bits in
+  an eight-bit raster was wrong.
 
 - **Two ThunderScan fixtures**, the same picture compressed and stored, for
   the same reason: the sample set's only ThunderScan file is truncated, so it
@@ -225,8 +240,6 @@ Listed so the absences are visible rather than discovered:
   be making. A bilevel page written by this library is PackBits or Deflate,
   both of which compress a thresholded page perfectly well.
 - **Transparency masks** (PhotometricInterpretation 4).
-- **Bit depths of 6, 10, 12, 14, 24 and 32**, which libtiff's own RGBA reader
-  also refuses.
 - **Region decode.** A TIFF too large to hold is refused through
   `max_decoded_pixels` rather than decoded in pieces. The reasoning is in the
   workspace note on the decode model: that needs a lazy load contract, which
