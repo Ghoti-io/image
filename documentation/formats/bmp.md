@@ -123,7 +123,7 @@ document state, and the encoder's row and encoding buffers.
   `CIEXYZ` and written by every writer in reach as xyY chromaticities
   normalized to sum to one, and are read into `GIMG_Color_Info.gamut`
   exactly. A V4 header carries three endpoints and nowhere to state a white
-  point, so `gamut.white` is left `{0, 0}` rather than filled with D65, and
+  point, so `white_stated` stays false rather than D65 being filled in, and
   `gimg_gamut_identify()` names such a gamut from its primaries alone. Three
   per-channel gammas that agree
   become one transfer function; three that disagree describe a space this

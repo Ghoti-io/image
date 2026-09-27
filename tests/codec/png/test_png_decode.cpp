@@ -1423,9 +1423,11 @@ TEST(PngDecode, CicpOutranksTheOlderColorChunks) {
   gimg_stream_destroy(s);
 }
 
-TEST(PngDecode, ACicpThisColorModelCannotHoldLeavesItUnknown) {
-  // BT.2020 primaries with the PQ transfer: a legal file, and nothing in
-  // GIMG_Color_Info can say what it means. Reporting sRGB would be a lie.
+TEST(PngDecode, ACicpNamingBt2020AndPqIsTranslated) {
+  // This asserted that BT.2020 with PQ was left unknown, because nothing in
+  // GIMG_Color_Info could say what it meant.  Both halves can be said now, so
+  // the assertion expired: it was a statement about the model's reach rather
+  // than about the file.
   GIMG_Stream * s = nullptr;
   GIMG_Doc * doc = nullptr;
   GIMG_Raster * raster = nullptr;
@@ -1433,8 +1435,15 @@ TEST(PngDecode, ACicpThisColorModelCannotHoldLeavesItUnknown) {
   const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
   ASSERT_NE(info, nullptr);
   EXPECT_EQ(gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_UNKNOWN);
-  EXPECT_EQ(info->transfer, GIMG_TRANSFER_UNKNOWN);
+      GIMG_PRIMARIES_BT2020);
+  EXPECT_EQ(info->transfer, GIMG_TRANSFER_PQ);
+  // PQ is the one transfer here that fixes an absolute level, and these three
+  // fields are why the reference axis was split: PQ is display-referred *and*
+  // absolute, which the single enum could not have said.
+  EXPECT_EQ(info->reference, GIMG_REFERENCE_DISPLAY);
+  EXPECT_EQ(info->sample_scale, GIMG_SAMPLE_SCALE_ABSOLUTE);
+  EXPECT_DOUBLE_EQ(info->white_luminance, 10000.0)
+      << "ST 2084 is specified to a 10000 cd/m^2 peak";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
   gimg_stream_destroy(s);
@@ -2386,7 +2395,7 @@ TEST(PngChrm, AGamutWithNoNameIsStillCarriedExactly) {
       {31270u, 32900u, 64000u, 33000u, 25000u, 65000u, 15000u, 6000u}, &ci));
   EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
       GIMG_PRIMARIES_UNKNOWN);
-  ASSERT_TRUE(ci.gamut_stated) << "unnameable is not unstated";
+  ASSERT_TRUE(ci.primaries_stated) << "unnameable is not unstated";
   EXPECT_NEAR(ci.gamut.white.x, 0.31270, 1e-9);
   EXPECT_NEAR(ci.gamut.white.y, 0.32900, 1e-9);
   EXPECT_NEAR(ci.gamut.red.x, 0.64000, 1e-9);
@@ -3128,10 +3137,11 @@ bool replace_chunk_payload(std::vector<uint8_t> & png, const char * type,
 // Every cICP code-point combination this color model can hold, and one it
 // cannot.
 //
-// The reader distinguishes exactly two: H.273 primaries 1 with transfer 13 is
-// the sRGB pair, and primaries 1 with transfer 8 is the same gamut read
-// linearly.  Anything else is left unknown on purpose - rounding BT.2020 with
-// PQ to sRGB would be a claim about the pixels the file never made.
+// The reader translates every primaries and transfer code point the colour
+// model can state, which since the gamut became coordinates is most of what
+// H.273 names.  What is refused outright is a matrix other than identity or
+// a limited range: PNG 3rd ed. requires both of an RGB image, and a file
+// saying otherwise is not one this decoder is reading.
 //
 // The linear arm had never run.  The two committed fixtures cover the sRGB
 // pair and one unrepresentable combination, and a cICP payload is four bytes,
@@ -3154,16 +3164,33 @@ TEST(PngDecode, EachCicpCombinationThisModelCanHoldIsTranslated) {
           GIMG_TRANSFER_SRGB},
       {"sRGB primaries, linear transfer", 1, 8, 0, 1, GIMG_PRIMARIES_SRGB,
           GIMG_TRANSFER_LINEAR},
-      // Each of these changes exactly one code point away from a pair the
-      // model holds, so between them they say the reader is reading all four
-      // bytes rather than matching on one of them.
-      {"BT.2020 primaries, sRGB transfer", 9, 13, 0, 1,
-          GIMG_PRIMARIES_UNKNOWN, GIMG_TRANSFER_UNKNOWN},
-      {"sRGB pair, PQ transfer", 1, 16, 0, 1, GIMG_PRIMARIES_UNKNOWN,
+      // The gamut axis swept alone: the transfer stays at 13, so a failure
+      // here is about the primaries table and nothing else.
+      {"BT.2020 primaries", 9, 13, 0, 1, GIMG_PRIMARIES_BT2020,
+          GIMG_TRANSFER_SRGB},
+      {"Display P3 primaries", 12, 13, 0, 1, GIMG_PRIMARIES_DISPLAY_P3,
+          GIMG_TRANSFER_SRGB},
+      // And the transfer axis alone, at primaries 1.
+      {"PQ transfer", 1, 16, 0, 1, GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_PQ},
+      {"HLG transfer", 1, 18, 0, 1, GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_HLG},
+      {"BT.709 transfer as a parametric curve", 1, 1, 0, 1,
+          GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_PARAMETRIC},
+      {"BT.470 System M, gamma 2.2", 1, 4, 0, 1, GIMG_PRIMARIES_SRGB,
+          GIMG_TRANSFER_GAMMA},
+      // Theatrical DCI-P3 shares Display P3's primaries under a different
+      // white, so naming it would break the invariant gimg_gamut_identify()
+      // rests on.  The gamut goes unstated and the transfer still lands,
+      // which is the point of reading the two code points separately.
+      {"DCI-P3 primaries are not named", 11, 13, 0, 1, GIMG_PRIMARIES_UNKNOWN,
+          GIMG_TRANSFER_SRGB},
+      // Unspecified on both axes says nothing, which is not the same as the
+      // chunk being refused: it was read and held no claim.
+      {"both unspecified", 2, 2, 0, 1, GIMG_PRIMARIES_UNKNOWN,
           GIMG_TRANSFER_UNKNOWN},
-      {"sRGB pair, a matrix other than identity", 1, 13, 1, 1,
-          GIMG_PRIMARIES_UNKNOWN, GIMG_TRANSFER_UNKNOWN},
-      {"sRGB pair, limited range", 1, 13, 0, 0, GIMG_PRIMARIES_UNKNOWN,
+      // Still refused outright, whatever the other two bytes say.
+      {"a matrix other than identity", 1, 13, 1, 1, GIMG_PRIMARIES_UNKNOWN,
+          GIMG_TRANSFER_UNKNOWN},
+      {"limited range", 1, 13, 0, 0, GIMG_PRIMARIES_UNKNOWN,
           GIMG_TRANSFER_UNKNOWN},
       {"linear pair, limited range", 1, 8, 0, 0, GIMG_PRIMARIES_UNKNOWN,
           GIMG_TRANSFER_UNKNOWN},
@@ -3180,7 +3207,7 @@ TEST(PngDecode, EachCicpCombinationThisModelCanHoldIsTranslated) {
     EXPECT_EQ(gimg_gamut_identify(&info.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
         c.want_primaries);
     EXPECT_EQ(info.transfer, c.want_transfer);
-    EXPECT_EQ(info.gamut_stated, c.want_primaries != GIMG_PRIMARIES_UNKNOWN)
+    EXPECT_EQ(info.primaries_stated, c.want_primaries != GIMG_PRIMARIES_UNKNOWN)
         << "a cICP this reader does not translate states no gamut at all, "
            "which is not the same as one it cannot name";
   }
@@ -3190,7 +3217,10 @@ TEST(PngDecode, EachCicpCombinationThisModelCanHoldIsTranslated) {
   // unrepresentable cICP must not fall through to the gAMA either.
   {
     std::vector<uint8_t> png = base;
-    ASSERT_TRUE(replace_chunk_payload(png, "cICP", {9, 16, 0, 1}));
+    // Unspecified on both axes: a pair the reader understands and which
+    // states nothing.  This used to be BT.2020 with PQ, which is translated
+    // now and so no longer exercises the fall-through.
+    ASSERT_TRUE(replace_chunk_payload(png, "cICP", {2, 2, 0, 1}));
     GIMG_Color_Info info = {};
     ASSERT_TRUE(ColorInfoOf(png, &info));
     EXPECT_EQ(info.transfer, GIMG_TRANSFER_UNKNOWN)

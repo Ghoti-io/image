@@ -55,12 +55,13 @@ typedef struct {
  * All-zero means "not stated"; see GIMG_Color_Info.gamut_stated, which is the
  * field to test rather than comparing against zero here.
  *
- * @a white may be {0, 0} while the primaries are set, because a BMP V4 header
- * carries three endpoints and no white point at all.  A reader that needs one
- * must say where it got it; this struct will not invent D65.
+ * Either half may be absent, so read GIMG_Color_Info.primaries_stated and
+ * .white_stated rather than comparing against zero.  A reader that needs a
+ * point this struct does not hold must say where it got it; nothing here
+ * invents D65.
  */
 typedef struct {
-  GIMG_Chromaticity white; ///< White point, or {0, 0} when the file omits it.
+  GIMG_Chromaticity white; ///< White point; see GIMG_Color_Info.white_stated.
   GIMG_Chromaticity red;
   GIMG_Chromaticity green;
   GIMG_Chromaticity blue;
@@ -115,25 +116,44 @@ typedef enum {
 } GIMG_Transfer;
 
 /**
- * @brief What a sample value is measured against.
+ * @brief Which light a sample describes.
  *
- * GIMG_TRANSFER_LINEAR alone is ambiguous, and the ambiguity is not academic:
- * a linear sRGB raster and a LogLuv raster are both "linear" and mean
- * completely different things.  A display-referred sample is a fraction of a
- * diffuse white that the file does not quantify; a scene-referred sample is a
- * measurement of light, and GIMG_Color_Info.white_luminance says in what.
+ * Display-referred samples describe light a display emits, already rendered
+ * for it.  Scene-referred samples describe light as it was in front of the
+ * camera, with no rendering applied.
  *
- * Nothing in this library produces GIMG_REFERENCE_SCENE yet - it exists
- * because the formats that need it (LogLuv, PQ, floating-point TIFF) would
- * otherwise have to be given somewhere to say this after rasters already
- * existed that could not.
+ * This is **not** the same question as whether the sample is an absolute
+ * measurement - see GIMG_Sample_Scale.  The two are independent and the four
+ * combinations all occur: sRGB is display-referred and relative, PQ is
+ * display-referred and absolute, HLG is scene-referred and relative, and
+ * LogLuv is scene-referred and absolute.  They were one enum when this was
+ * first written, which could not have described PQ.
  */
 typedef enum {
   GIMG_REFERENCE_UNKNOWN = 0,
-  GIMG_REFERENCE_DISPLAY, ///< Relative to an unstated diffuse white.
-  GIMG_REFERENCE_SCENE,   ///< Absolute light; see white_luminance.
+  GIMG_REFERENCE_DISPLAY, ///< Light a display emits.
+  GIMG_REFERENCE_SCENE,   ///< Light as it was in the scene.
   GIMG_REFERENCE_COUNT
 } GIMG_Reference;
+
+/**
+ * @brief Whether a sample is a measurement or a fraction.
+ *
+ * A relative sample is a fraction of a diffuse white the file does not
+ * quantify; doubling every sample means "brighter" and nothing more.  An
+ * absolute sample is a measurement, and GIMG_Color_Info.white_luminance says
+ * of what.
+ *
+ * GIMG_TRANSFER_LINEAR alone cannot tell these apart, and the difference is
+ * not academic: a linear sRGB raster and a LogLuv raster are both "linear"
+ * and mean entirely different things.
+ */
+typedef enum {
+  GIMG_SAMPLE_SCALE_UNKNOWN = 0,
+  GIMG_SAMPLE_SCALE_RELATIVE, ///< A fraction of an unstated white.
+  GIMG_SAMPLE_SCALE_ABSOLUTE, ///< A measurement; see white_luminance.
+  GIMG_SAMPLE_SCALE_COUNT
+} GIMG_Sample_Scale;
 
 /**
  * @brief Rendering intent (when ICC present).
@@ -173,25 +193,40 @@ typedef enum {
  */
 typedef struct {
   /**
-   * The gamut, stated exactly.  Valid only when @a gamut_stated is true.
+   * The gamut, stated exactly.  Which halves are valid is said by the two
+   * flags below, because the formats state them separately and one flag for
+   * both produced a real bug: a TIFF carrying WhitePoint (318) with no
+   * PrimaryChromaticities (319) was written out as a PNG whose cHRM named
+   * three primaries at (0, 0), which is not a gamut in any sense.
    *
    * Use gimg_gamut_identify() to ask which named space this is, rather than
    * storing a name beside it: a name and coordinates that disagree is a state
    * this struct deliberately cannot reach.
    */
   GIMG_Gamut gamut;
-  bool gamut_stated; ///< True when @a gamut holds something the file said.
+  /** True when @a gamut.red, .green and .blue are what the file said.
+   *
+   * This is the flag meaning "there is a gamut here", because three
+   * primaries are what make one.  A writer that needs a gamut tests this. */
+  bool primaries_stated;
+  /** True when @a gamut.white is what the file said.
+   *
+   * Independent of @a primaries_stated in both directions: a BMP V4 header
+   * carries three endpoints and nowhere to put a white point, and a TIFF may
+   * carry WhitePoint without PrimaryChromaticities. */
+  bool white_stated;
   GIMG_Transfer transfer;
   /** parametricCurveType terms; see GIMG_TRANSFER_PARAMETRIC. */
   double transfer_params[GIMG_TRANSFER_PARAM_COUNT];
   double gamma_value; ///< Used when transfer == GIMG_TRANSFER_GAMMA.
   GIMG_Reference reference;
+  GIMG_Sample_Scale sample_scale;
   /**
    * Luminance in cd/m^2 of a full-scale sample, or 0 when unstated.
    *
-   * Meaningful for GIMG_REFERENCE_SCENE, where it is the scale that turns a
-   * stored value into a measurement.  Zero is unambiguous as "unstated": a
-   * file does not describe a display of no luminance.
+   * Meaningful when @a sample_scale is GIMG_SAMPLE_SCALE_ABSOLUTE, where it
+   * is what turns a stored value into a measurement.  Zero is unambiguous as
+   * "unstated": a file does not describe a display of no luminance.
    */
   double white_luminance;
   GIMG_Rendering_Intent intent;
@@ -215,7 +250,7 @@ typedef struct {
   const char * icc_linked_path;
   GIMG_CMYK_Polarity cmyk_polarity; ///< Interpretation of CMYK channels; use
                                     ///< when raster format is GIMG_PIXEL_CMYK8.
-  uint8_t _reserved[16];
+  uint8_t _reserved[12];
 } GIMG_Color_Info;
 
 /**
@@ -233,7 +268,8 @@ typedef struct {
  *
  * Compares the three primaries, and the white point too when @p gamut states
  * one.  A gamut whose white point is {0, 0} - a BMP V4 header, which has
- * nowhere to put one - is matched on its primaries alone.
+ * nowhere to put one - is matched on its primaries alone.  A gamut with no
+ * primaries matches nothing, so a lone white point never names a space.
  *
  * That is unambiguous for the spaces named here, because no two of them share
  * primaries.  It would stop being unambiguous the moment a space is added
@@ -264,8 +300,9 @@ GIMG_API bool gimg_gamut_named(GIMG_Primaries named, GIMG_Gamut * out_gamut);
  * @brief Set @p info's gamut from a named space.
  *
  * The convenience that keeps a codec from having to hold a coordinate table
- * of its own just to say "this file said sRGB".  Clears @a gamut_stated when
- * @p named has no coordinates here.
+ * of its own just to say "this file said sRGB".  Sets both flags, a named
+ * space stating all four points; clears both when @p named has no
+ * coordinates here.
  *
  * @param info The colour info to modify.  NULL is ignored.
  * @param named The space to store.
@@ -273,6 +310,30 @@ GIMG_API bool gimg_gamut_named(GIMG_Primaries named, GIMG_Gamut * out_gamut);
  */
 GIMG_API bool gimg_color_info_set_gamut(
     GIMG_Color_Info * info, GIMG_Primaries named);
+
+/**
+ * @brief The reference, scale and peak luminance a named transfer implies.
+ *
+ * PQ is defined against absolute luminance and HLG against scene light, so
+ * for those the transfer function settles all three; sRGB and its kin are
+ * display-referred and relative by convention.  Keeping that in one place
+ * stops each codec deciding it again, which is how the gamut tables drifted.
+ *
+ * LINEAR, GAMMA and PARAMETRIC are **not** answered here: a linear raster can
+ * be scene- or display-referred and the curve does not say which, so a codec
+ * that knows must set the fields itself.
+ *
+ * @param transfer The transfer function.
+ * @param out_reference Receives the reference, or UNKNOWN. May be NULL.
+ * @param out_scale Receives the scale, or UNKNOWN. May be NULL.
+ * @param out_white_luminance Receives cd/m^2 at full scale, or 0 when the
+ *   transfer does not fix one. May be NULL.
+ * @return true when @p transfer settles the question, false otherwise (in
+ *   which case the outputs are set to unknown and 0).
+ */
+GIMG_API bool gimg_transfer_conventions(GIMG_Transfer transfer,
+    GIMG_Reference * out_reference, GIMG_Sample_Scale * out_scale,
+    double * out_white_luminance);
 
 /**
  * @brief Initialize color info to unknown/default.

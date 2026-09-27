@@ -93,6 +93,8 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TAG_IMAGE_DESCRIPTION 270
 #define GIMG_TIFF_TAG_ORIENTATION 274
 #define GIMG_TIFF_TAG_XMP 700
+#define GIMG_TIFF_TAG_WHITE_POINT 318
+#define GIMG_TIFF_TAG_PRIMARY_CHROMATICITIES 319
 #define GIMG_TIFF_TAG_ICC_PROFILE 34675
 #define GIMG_TIFF_TAG_SUB_IFDS 330
 #define GIMG_TIFF_TAG_JPEG_TABLES 347
@@ -225,6 +227,22 @@ typedef struct {
    * something else. */
   unsigned char * icc;
   size_t icc_size;
+  /** WhitePoint (318) and PrimaryChromaticities (319), as CIE 1931 x,y.
+   *
+   * TIFF 6.0 states both as RATIONALs, so they are exact and need no table;
+   * gimg_gamut_identify() puts a name to the result if it has one.  A file
+   * may carry either alone, so the two flags are separate: a white point
+   * with no primaries is not a gamut and is kept only so that a reader is
+   * told what the file said.
+   *
+   * TransferFunction (301) is deliberately not read.  It is a sampled lookup
+   * table of 2^BitsPerSample entries, and GIMG_Transfer holds named and
+   * parametric curves; fitting a curve to those samples would be inventing a
+   * function the file did not state. */
+  GIMG_Chromaticity white_point;
+  GIMG_Chromaticity primaries[3];
+  bool has_white_point;
+  bool has_primaries;
   /** JPEGTables (347), owned: the table-specification stream every strip of
    * a compression-7 file is read with. See tiff_jpeg.c. */
   unsigned char * jpeg_tables;

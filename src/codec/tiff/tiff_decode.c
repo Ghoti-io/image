@@ -802,15 +802,33 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
   // The profile the file carried, applied to the raster it describes rather
   // than to the document: a multi-page TIFF's pages may each have their own,
   // and a profile is a statement about one picture's colours.
-  if (ifd->icc && ifd->icc_size > 0u) {
+  const bool has_icc = ifd->icc && ifd->icc_size > 0u;
+  // TIFF states the white point in its own tag, so a file may carry one
+  // without the other.  The two flags are set independently: the primaries
+  // are what make a gamut, and a lone white point is carried without
+  // claiming to be one - which is what stops the PNG writer emitting a cHRM
+  // whose three primaries are (0, 0).
+  if (has_icc || ifd->has_primaries || ifd->has_white_point) {
     GIMG_Color_Info info;
     gimg_color_info_default(&info);
     const GIMG_Color_Info * existing = gimg_raster_color_info_const(raster);
     if (existing) {
       info = *existing;
     }
-    info.icc_bytes = ifd->icc;
-    info.icc_size = ifd->icc_size;
+    if (ifd->has_primaries) {
+      info.gamut.red = ifd->primaries[0];
+      info.gamut.green = ifd->primaries[1];
+      info.gamut.blue = ifd->primaries[2];
+      info.primaries_stated = true;
+    }
+    if (ifd->has_white_point) {
+      info.gamut.white = ifd->white_point;
+      info.white_stated = true;
+    }
+    if (has_icc) {
+      info.icc_bytes = ifd->icc;
+      info.icc_size = ifd->icc_size;
+    }
     // set_color_info copies the profile, which is why the IFD may keep
     // owning these bytes and the raster may outlive nothing.
     (void)gimg_raster_set_color_info(raster, &info);

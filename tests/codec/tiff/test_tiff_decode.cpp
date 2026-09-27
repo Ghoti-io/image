@@ -707,6 +707,56 @@ TEST(TiffDecode, AStreamThatCannotSayHowLongItIsIsRefused) {
   gimg_stream_destroy(s);
 }
 
+TEST(TiffDecode, WhitePointAndPrimaryChromaticitiesBecomeTheGamut) {
+  // 318 and 319 were parsed by nothing until GIMG_Color_Info could hold what
+  // they say.  TIFF states both as RATIONALs, so the gamut is exact and the
+  // naming is a separate question that gimg_gamut_identify() answers.
+  Loaded l;
+  ASSERT_EQ(l.load("tiff_chromaticities.tif"), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(l.doc(), 0), nullptr, &raster),
+      GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  ASSERT_NE(ci, nullptr);
+  ASSERT_TRUE(ci->primaries_stated);
+  EXPECT_TRUE(ci->white_stated) << "this file carries 318 as well as 319";
+  EXPECT_EQ(gimg_gamut_identify(&ci->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_ADOBE_RGB);
+  // The coordinates themselves, not only the name: a reader that dropped the
+  // white point would still be named Adobe RGB from the primaries alone.
+  EXPECT_NEAR(ci->gamut.white.x, 0.3127, 1e-9);
+  EXPECT_NEAR(ci->gamut.white.y, 0.3290, 1e-9);
+  EXPECT_NEAR(ci->gamut.green.x, 0.2100, 1e-9);
+  EXPECT_NEAR(ci->gamut.green.y, 0.7100, 1e-9);
+  gimg_raster_destroy(raster);
+}
+
+TEST(TiffDecode, AWhitePointWithNoPrimariesIsCarriedButNamesNoGamut) {
+  // The two tags are separate in TIFF and a file may carry either alone.
+  // Three primaries are what make a gamut, so this one names none - and the
+  // white point is still what the file said, so it is not dropped.
+  Loaded l;
+  ASSERT_EQ(l.load("tiff_white_point_only.tif"), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(l.doc(), 0), nullptr, &raster),
+      GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  ASSERT_NE(ci, nullptr);
+  EXPECT_TRUE(ci->white_stated);
+  EXPECT_FALSE(ci->primaries_stated)
+      << "three primaries are what make a gamut; one flag for both let the "
+         "PNG writer emit a cHRM naming three primaries at (0, 0)";
+  EXPECT_NEAR(ci->gamut.white.x, 0.3127, 1e-9);
+  EXPECT_NEAR(ci->gamut.white.y, 0.3290, 1e-9);
+  EXPECT_EQ(ci->gamut.red.x, 0.0) << "no primaries were stated";
+  EXPECT_EQ(gimg_gamut_identify(&ci->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_UNKNOWN)
+      << "a white point alone is not a gamut and must not be matched as one";
+  gimg_raster_destroy(raster);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

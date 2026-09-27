@@ -1,48 +1,48 @@
-tests/data/bmp/bmp_1x1_24bit.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x1_oversize_palette.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x1_rgba64.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_16bit_555.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_16bit_565.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_24bit.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_24bit_topdown.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_32bit_alpha.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_32bit_dirty_high_byte.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_32bit_zero_high_byte.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_8bit_palette.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_alphabitfields.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_embedded_jpeg.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_embedded_jpeg_payload.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_embedded_png.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_embedded_png_bpp0.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_embedded_png_bpp32.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_embedded_png_bpp64.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_embedded_png_payload.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_v4_adobe.bmp | gamut=yes named=AdobeRGB transfer=gamma gamma=2.2000 reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_v4_calibrated.bmp | gamut=yes named=sRGB transfer=gamma gamma=2.2000 reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_v4_huge_gamma.bmp | gamut=yes named=sRGB transfer=gamma gamma=65535.9000 reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_v4_split_gamma.bmp | gamut=yes named=sRGB transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_v5_icc.bmp | gamut=no named=- transfer=- reference=0 icc=128 linked=no
-tests/data/bmp/bmp_4x4_v5_icc_past_eof.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_4x4_v5_linked_profile.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=yes
-tests/data/bmp/bmp_4x4_v5_srgb.bmp | gamut=yes named=sRGB transfer=sRGB reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_2bit.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_4bit.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_8bit.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_core.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_huffman1d.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_os2v2_16.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_os2v2_64.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/bmp/bmp_1x1_24bit.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x1_oversize_palette.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x1_rgba64.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_16bit_555.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_16bit_565.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_24bit.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_24bit_topdown.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_32bit_alpha.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_32bit_dirty_high_byte.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_32bit_zero_high_byte.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_8bit_palette.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_alphabitfields.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_embedded_jpeg.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_embedded_jpeg_payload.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_embedded_png.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_embedded_png_bpp0.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_embedded_png_bpp32.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_embedded_png_bpp64.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_embedded_png_payload.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_v4_adobe.bmp | gamut=yes white=no named=AdobeRGB transfer=gamma gamma=2.2000 reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_v4_calibrated.bmp | gamut=yes white=no named=sRGB transfer=gamma gamma=2.2000 reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_v4_huge_gamma.bmp | gamut=yes white=no named=sRGB transfer=gamma gamma=65535.9000 reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_v4_split_gamma.bmp | gamut=yes white=no named=sRGB transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_v5_icc.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=128 linked=no
+tests/data/bmp/bmp_4x4_v5_icc_past_eof.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_4x4_v5_linked_profile.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=yes
+tests/data/bmp/bmp_4x4_v5_srgb.bmp | gamut=yes white=yes named=sRGB transfer=sRGB reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_2bit.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_4bit.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_8bit.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_core.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_huffman1d.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_os2v2_16.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_os2v2_64.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/bmp/bmp_8x2_os2v2_huffman.bmp | load-refused
-tests/data/bmp/bmp_8x2_os2v2_rle4.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_os2v2_rle8.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_rle24.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_rle4.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_rle8.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_rle8_delta.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_win_rle4.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x2_win_rle8.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_8x4_1bit.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/bmp/bmp_array_2_entries.bmp | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/bmp/bmp_8x2_os2v2_rle4.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_os2v2_rle8.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_rle24.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_rle4.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_rle8.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_rle8_delta.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_win_rle4.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x2_win_rle8.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_8x4_1bit.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/bmp/bmp_array_2_entries.bmp | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/bmp/bmp_bad_magic.bmp | load-refused
 tests/data/bmp/bmp_bad_palette_index.bmp | decode-refused
 tests/data/bmp/bmp_bitfields_at_24bpp.bmp | load-refused
@@ -56,299 +56,301 @@ tests/data/bmp/bmp_rle8_topdown.bmp | load-refused
 tests/data/bmp/bmp_truncated_pixels.bmp | load-refused
 tests/data/bmp/bmp_unknown_header_size.bmp | load-refused
 tests/data/bmp/bmp_zero_width.bmp | load-refused
-tests/data/gif/gif_10x6_disposal_cycle.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_12x8_background_index.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_12x8_offset_frame.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/gif/gif_10x6_disposal_cycle.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_12x8_background_index.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_12x8_offset_frame.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/gif/gif_16x16_truncated.gif | load-refused
-tests/data/gif/gif_16x8_interlaced.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_16x8_plain.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_4x2_netscape_loop.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_4x4_87a.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_4x4_background_masked_first.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_4x4_background_masked_later.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_6x3_extensions.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_6x4_transparent_over_previous.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_8x2_index_past_palette.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_8x4_no_global_table.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_8x8_disposal_previous.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/gif/gif_8x8_pixel_aspect.gif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/abbrev_ljt_full.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/gif/gif_16x8_interlaced.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_16x8_plain.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_4x2_netscape_loop.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_4x4_87a.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_4x4_background_masked_first.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_4x4_background_masked_later.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_6x3_extensions.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_6x4_transparent_over_previous.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_8x2_index_past_palette.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_8x4_no_global_table.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_8x8_disposal_previous.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/gif/gif_8x8_pixel_aspect.gif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/abbrev_ljt_full.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/jpeg/abbrev_ljt_image.jpg | decode-refused
 tests/data/jpeg/abbrev_ljt_tables.jpg | load-refused
-tests/data/jpeg/arith_gray12_64x64.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/arith_gray_1x1_empty_scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/arith_gray_64x64.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/arith_progressive_33x33_422.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/arith_progressive_restart_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/arith_rgb_17x9_422_restart.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/arith_rgb_64x64_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_16x16_ycbcr.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_640x480_gray.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_640x480_ycbcr.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_8x16_gray.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_8x8_gray.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_8x8_gray_q100.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_8x8_gray_q50.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_9x9_gray.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_gray12.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_rgb12_422_16x1.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_rgb12_444.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/baseline_rgb_reference.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/cmyk12_ljt_prog.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/cmyk12_ljt_seq.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/cmyk_ljt_sub.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/cmyk_ours_arith.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/cmyk_ours_ni.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/cmyk_ours_prog.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/cmyk_ours_seq.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/cmyk_progressive.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/cmyk_sample.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/dnl_stated_height.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/dnl_zero_height.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/jpeg/arith_gray12_64x64.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/arith_gray_1x1_empty_scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/arith_gray_64x64.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/arith_progressive_33x33_422.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/arith_progressive_restart_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/arith_rgb_17x9_422_restart.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/arith_rgb_64x64_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_16x16_ycbcr.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_640x480_gray.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_640x480_ycbcr.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_8x16_gray.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_8x8_gray.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_8x8_gray_q100.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_8x8_gray_q50.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_9x9_gray.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_gray12.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_rgb12_422_16x1.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_rgb12_444.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/baseline_rgb_reference.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/cmyk12_ljt_prog.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/cmyk12_ljt_seq.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/cmyk_ljt_sub.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/cmyk_ours_arith.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/cmyk_ours_ni.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/cmyk_ours_prog.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/cmyk_ours_seq.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/cmyk_progressive.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/cmyk_sample.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/dnl_stated_height.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/dnl_zero_height.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/jpeg/exif_u32_high_bit.jpg | decode-refused
-tests/data/jpeg/hier_gray_2level.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_gray_2level_arith.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_gray_lossless.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_gray_lossless_ar.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_gray_noexp.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_gray_noexp_arith.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_lossless_noninterleaved.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_lossless_noninterleaved_psv.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_lossless_noninterleaved_restart.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_noninterleaved_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_noninterleaved_444.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_noninterleaved_arith_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_ours_l1.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_ours_l1_arith.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_ours_l2.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_ours_l3_arith.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_rgb_2level.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_rgb_2level_arith.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_rgb_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_rgb_422.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_rgb_lossless.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_rgb_prog_arith.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_rgb_prog_lossless.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_rgb_progressive.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hier_truncated_sequence.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/hierarchical_2level.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/jfif_aspect_2_1.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/jpeg_exif_orientation.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/jpeg_exif_thumbnail.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/jpeg_with_icc.jpg | gamut=no named=- transfer=- reference=0 icc=128 linked=no
-tests/data/jpeg/libjpeg_restart_gray.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/libjpeg_restart_rgb.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_arith_gray.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_arith_gray12.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_arith_gray16.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/jpeg/hier_gray_2level.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_gray_2level_arith.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_gray_lossless.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_gray_lossless_ar.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_gray_noexp.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_gray_noexp_arith.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_lossless_noninterleaved.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_lossless_noninterleaved_psv.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_lossless_noninterleaved_restart.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_noninterleaved_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_noninterleaved_444.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_noninterleaved_arith_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_ours_l1.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_ours_l1_arith.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_ours_l2.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_ours_l3_arith.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_rgb_2level.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_rgb_2level_arith.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_rgb_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_rgb_422.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_rgb_lossless.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_rgb_prog_arith.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_rgb_prog_lossless.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_rgb_progressive.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hier_truncated_sequence.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/hierarchical_2level.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/jfif_aspect_2_1.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/jpeg_exif_orientation.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/jpeg_exif_thumbnail.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/jpeg_with_icc.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=128 linked=no
+tests/data/jpeg/libjpeg_restart_gray.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/libjpeg_restart_rgb.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_arith_gray.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_arith_gray12.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_arith_gray16.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/jpeg/lossless_arith_h2v4.jpg | decode-refused
-tests/data/jpeg/lossless_arith_midrow.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_arith_restart.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_arith_rgb.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_arith_subsampled.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_gray16_psv1.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_gray_psv1.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_huff_midrow.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_huff_subsampled.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_noninterleaved.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_noninterleaved_psv.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_noninterleaved_restart.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_rgb12_psv4.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_rgb_psv4.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_rgb_psv4_restart.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/lossless_rgb_psv7_pt1.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/marker_fill_before_eoi.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/marker_fill_before_sof.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/marker_fill_before_sos.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/marker_fill_first_segment.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/marker_fill_single_byte.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/marker_tem.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ni_ours_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ni_ours_422_restart.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ni_ours_444.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ni_ours_arith_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ni_ours_gray.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/noninterleaved_12bit.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/noninterleaved_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/noninterleaved_422.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/noninterleaved_444.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/noninterleaved_arith.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/noninterleaved_mixed.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/noninterleaved_restart.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/plain_gray.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/plain_rgb_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/plain_rgb_422.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/plain_rgb_444.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/plain_rgb_progressive.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_32x32.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_640x480_ycbcr.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_8x8_gray.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_8x8_gray_2scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_8x8_gray_3scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_8x8_gray_4scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_8x8_gray_4scan_3scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_8x8_gray_5scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_8x8_libjpeg.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_restart_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample_10scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample_2scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample_3scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample_4scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample_5scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample_6scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample_7scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample_8scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/progressive_sample_9scan.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/rgb_adobe0.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/rgb_by_comp_id.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/rgb_jfif_wins.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/rgb_no_marker.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/sampling_s1x2.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/sampling_s1x4.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/sampling_s2x4.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/sampling_s3x1.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/sampling_s4x1.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/wide_10comp.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/wide_255comp.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/wide_2comp.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/wide_32comp.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/wide_5comp.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/wide_8comp.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ycck12_ljt_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ycck_baseline.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ycck_ljt_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ycck_ljt_422.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ycck_ours_420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ycck_ours_422.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ycck_ours_444.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ycck_ours_prog420.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/jpeg/ycck_progressive.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/frame_0.png | gamut=yes named=sRGB transfer=gamma gamma=0.4546 reference=0 icc=0 linked=no
-tests/data/png/jpeg_300dpi_8x8.jpg | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_16bit_gray.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_16bit_grayalpha.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_16bit_rgb.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_16bit_rgba.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_1x1_gray.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_1x1_grayalpha.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_1x1_palette.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_1x1_rgb.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_1x1_rgba.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_2x2_gray.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_1frame.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_2frame.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_2frame_16bit_rgba.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_2frame_gray16.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_3frame.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_3plays.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_blend_over_partial.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_blend_over_partial16.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_ct2_trns.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_ct2_trns_rgba.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_ct3_trns.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_ct3_trns_rgba.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_ct4.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_ct4_rgba.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_apng_frame_inside_canvas.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/jpeg/lossless_arith_midrow.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_arith_restart.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_arith_rgb.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_arith_subsampled.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_gray16_psv1.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_gray_psv1.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_huff_midrow.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_huff_subsampled.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_noninterleaved.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_noninterleaved_psv.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_noninterleaved_restart.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_rgb12_psv4.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_rgb_psv4.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_rgb_psv4_restart.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/lossless_rgb_psv7_pt1.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/marker_fill_before_eoi.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/marker_fill_before_sof.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/marker_fill_before_sos.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/marker_fill_first_segment.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/marker_fill_single_byte.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/marker_tem.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ni_ours_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ni_ours_422_restart.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ni_ours_444.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ni_ours_arith_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ni_ours_gray.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/noninterleaved_12bit.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/noninterleaved_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/noninterleaved_422.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/noninterleaved_444.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/noninterleaved_arith.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/noninterleaved_mixed.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/noninterleaved_restart.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/plain_gray.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/plain_rgb_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/plain_rgb_422.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/plain_rgb_444.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/plain_rgb_progressive.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_32x32.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_640x480_ycbcr.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_8x8_gray.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_8x8_gray_2scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_8x8_gray_3scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_8x8_gray_4scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_8x8_gray_4scan_3scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_8x8_gray_5scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_8x8_libjpeg.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_restart_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample_10scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample_2scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample_3scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample_4scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample_5scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample_6scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample_7scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample_8scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/progressive_sample_9scan.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/rgb_adobe0.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/rgb_by_comp_id.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/rgb_jfif_wins.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/rgb_no_marker.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/sampling_s1x2.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/sampling_s1x4.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/sampling_s2x4.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/sampling_s3x1.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/sampling_s4x1.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/wide_10comp.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/wide_255comp.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/wide_2comp.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/wide_32comp.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/wide_5comp.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/wide_8comp.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ycck12_ljt_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ycck_baseline.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ycck_ljt_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ycck_ljt_422.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ycck_ours_420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ycck_ours_422.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ycck_ours_444.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ycck_ours_prog420.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/jpeg/ycck_progressive.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/frame_0.png | gamut=yes white=yes named=sRGB transfer=gamma gamma=0.4546 reference=- scale=- icc=0 linked=no
+tests/data/png/jpeg_300dpi_8x8.jpg | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_16bit_gray.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_16bit_grayalpha.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_16bit_rgb.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_16bit_rgba.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_1x1_gray.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_1x1_grayalpha.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_1x1_palette.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_1x1_rgb.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_1x1_rgba.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_2x2_gray.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_1frame.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_2frame.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_2frame_16bit_rgba.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_2frame_gray16.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_3frame.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_3plays.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_blend_over_partial.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_blend_over_partial16.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_ct2_trns.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_ct2_trns_rgba.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_ct3_trns.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_ct3_trns_rgba.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_ct4.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_ct4_rgba.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_apng_frame_inside_canvas.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/png/png_apng_frame_outside_canvas.png | load-refused
 tests/data/png/png_apng_frame_zero_size.png | load-refused
 tests/data/png/png_bad_filter_type.png | decode-refused
 tests/data/png/png_bad_filter_type_interlaced.png | decode-refused
-tests/data/png/png_cicp_bt2020_pq.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_cicp_srgb.png | gamut=yes named=sRGB transfer=sRGB reference=0 icc=0 linked=no
-tests/data/png/png_exif.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_exif_orientation.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_good_filter_type.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gradient_64x64_rgb.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray16_trns_4x2.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray1_32x8.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray1_32x8_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray1_33x9.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray1_33x9_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray2_32x8.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray2_32x8_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray2_33x9.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray2_33x9_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray4_32x8.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray4_32x8_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray4_33x9.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray4_33x9_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray4_trns_bkgd_sbit.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray8_bad_bkgd.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_gray8_bkgd_sbit.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/png/png_cicp_bt2020_pq.png | gamut=yes white=yes named=BT2020 transfer=PQ reference=display scale=absolute white_cdm2=10000.0 icc=0 linked=no
+tests/data/png/png_cicp_srgb.png | gamut=yes white=yes named=sRGB transfer=sRGB reference=display scale=relative icc=0 linked=no
+tests/data/png/png_exif.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_exif_orientation.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_good_filter_type.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gradient_64x64_rgb.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray16_trns_4x2.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray1_32x8.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray1_32x8_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray1_33x9.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray1_33x9_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray2_32x8.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray2_32x8_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray2_33x9.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray2_33x9_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray4_32x8.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray4_32x8_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray4_33x9.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray4_33x9_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray4_trns_bkgd_sbit.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray8_bad_bkgd.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_gray8_bkgd_sbit.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/png/png_gray_forbidden_palette.png | load-refused
-tests/data/png/png_grayalpha16_16x16.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_grayalpha8_16x16.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_iccp.png | gamut=no named=- transfer=- reference=0 icc=11 linked=no
-tests/data/png/png_mdcv_clli.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal1_32x8.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal1_32x8_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal1_33x9.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal1_33x9_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal2_32x8.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal2_32x8_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal2_33x9.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal2_33x9_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal4_32x8.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal4_32x8_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal4_33x9.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_pal4_33x9_interlaced.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_palette_trns_bkgd_hist.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_phys_aspect_4_3.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_rgb16_bkgd.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_rgb16_trns_4x2.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_rgb_no_palette.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_rgb_suggested_palette.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_rgba_suggested_palette.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/png/png_srgb.png | gamut=yes named=sRGB transfer=sRGB reference=0 icc=0 linked=no
+tests/data/png/png_grayalpha16_16x16.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_grayalpha8_16x16.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_iccp.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=11 linked=no
+tests/data/png/png_mdcv_clli.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal1_32x8.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal1_32x8_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal1_33x9.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal1_33x9_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal2_32x8.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal2_32x8_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal2_33x9.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal2_33x9_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal4_32x8.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal4_32x8_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal4_33x9.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_pal4_33x9_interlaced.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_palette_trns_bkgd_hist.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_phys_aspect_4_3.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_rgb16_bkgd.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_rgb16_trns_4x2.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_rgb_no_palette.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_rgb_suggested_palette.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_rgba_suggested_palette.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/png/png_srgb.png | gamut=yes white=yes named=sRGB transfer=sRGB reference=- scale=- icc=0 linked=no
 tests/data/png/png_zlib_bad_adler.png | decode-refused
 tests/data/png/png_zlib_bad_header.png | decode-refused
-tests/data/png/png_zlib_ok.png | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/png/png_zlib_ok.png | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/png/png_zlib_preset_dict.png | decode-refused
-tests/data/tiff/tiff_16x8_absurd_rows_per_strip.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_16x8_deflate.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_16x8_deflate_predictor.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_16x8_lzw.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_16x8_lzw_predictor.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_16x8_none.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_16x8_packbits.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_cmyk.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_gray16_be.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_gray16_le.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_gray8_be.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_gray8_le.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_metadata.tif | gamut=no named=- transfer=- reference=0 icc=276 linked=no
-tests/data/tiff/tiff_4x4_palette.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_palette4.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_palette_8bit_map.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_rgb.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_rgb16.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_rgb_planar.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_rgba.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_rgba_associated.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_4x4_whitezero.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_6x5_gray1.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_6x5_gray2.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_6x5_gray4.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_6x6_stripped.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_6x6_tiled.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_8x8_four_strips.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_8x8_gray16_be_plain.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_8x8_gray16_be_predictor.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_8x8_gray16_le_plain.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_8x8_gray16_le_predictor.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_8x8_ycbcr_11.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_8x8_ycbcr_22.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/tiff/tiff_16x8_absurd_rows_per_strip.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_16x8_deflate.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_16x8_deflate_predictor.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_16x8_lzw.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_16x8_lzw_predictor.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_16x8_none.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_16x8_packbits.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_cmyk.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_gray16_be.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_gray16_le.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_gray8_be.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_gray8_le.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_metadata.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=276 linked=no
+tests/data/tiff/tiff_4x4_palette.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_palette4.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_palette_8bit_map.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_rgb.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_rgb16.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_rgb_planar.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_rgba.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_rgba_associated.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_4x4_whitezero.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_6x5_gray1.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_6x5_gray2.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_6x5_gray4.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_6x6_stripped.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_6x6_tiled.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_8x8_four_strips.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_8x8_gray16_be_plain.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_8x8_gray16_be_predictor.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_8x8_gray16_le_plain.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_8x8_gray16_le_predictor.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_8x8_ycbcr_11.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_8x8_ycbcr_22.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/tiff/tiff_bad_magic.tif | load-refused
 tests/data/tiff/tiff_ccitt_undecodable.tif | decode-refused
-tests/data/tiff/tiff_jpeg_gray.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/tiff/tiff_chromaticities.tif | gamut=yes white=yes named=AdobeRGB transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_jpeg_gray.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/tiff/tiff_no_photometric.tif | load-refused
-tests/data/tiff/tiff_ojpeg_gray.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_ojpeg_gray_interchange.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_pyramid_chain.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_pyramid_subifd.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_thunderscan.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_thunderscan_plain.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
-tests/data/tiff/tiff_two_pages.tif | gamut=no named=- transfer=- reference=0 icc=0 linked=no
+tests/data/tiff/tiff_ojpeg_gray.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_ojpeg_gray_interchange.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_pyramid_chain.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_pyramid_subifd.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_thunderscan.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_thunderscan_plain.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_two_pages.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/tiff/tiff_unknown_compression.tif | load-refused
+tests/data/tiff/tiff_white_point_only.tif | gamut=no white=yes named=- transfer=- reference=- scale=- icc=0 linked=no

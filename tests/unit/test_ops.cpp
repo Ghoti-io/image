@@ -816,9 +816,9 @@ TEST(Ops, AnUntaggedRasterStaysUntaggedThroughAConversion) {
   const GIMG_Color_Info * ci = gimg_raster_color_info_const(dst);
   ASSERT_NE(ci, nullptr);
   EXPECT_EQ(ci->icc_size, 0u);
-  // gamut_stated, not identify(): an unnameable gamut also identifies as
+  // primaries_stated, not identify(): an unnameable gamut also identifies as
   // UNKNOWN, and this test is about nothing having been stated at all.
-  EXPECT_FALSE(ci->gamut_stated);
+  EXPECT_FALSE(ci->primaries_stated);
   EXPECT_EQ(ci->transfer, GIMG_TRANSFER_UNKNOWN);
   gimg_raster_destroy(src);
   gimg_raster_destroy(dst);

@@ -125,6 +125,13 @@ GIMG_API GIMG_Primaries gimg_gamut_identify(
     // Covers a NaN as well as zero and negatives.
     tolerance = GIMG_GAMUT_TOLERANCE_DEFAULT;
   }
+  if (gimg_chroma_unset(&gamut->red) && gimg_chroma_unset(&gamut->green) &&
+      gimg_chroma_unset(&gamut->blue)) {
+    // No primaries is not a gamut.  The coordinates would not have matched
+    // anything anyway; saying so here means a caller reading this function
+    // does not have to work that out from the table.
+    return GIMG_PRIMARIES_UNKNOWN;
+  }
   const bool have_white = !gimg_chroma_unset(&gamut->white);
   for (size_t i = 0; i < GIMG_ARRAY_SIZE(gimg_named_gamuts); i++) {
     const GIMG_Gamut * known = &gimg_named_gamuts[i].gamut;
@@ -165,11 +172,75 @@ GIMG_API bool gimg_color_info_set_gamut(
   }
   if (!gimg_gamut_named(named, &info->gamut)) {
     memset(&info->gamut, 0, sizeof(info->gamut));
-    info->gamut_stated = false;
+    info->primaries_stated = false;
+    info->white_stated = false;
     return false;
   }
-  info->gamut_stated = true;
+  info->primaries_stated = true;
+  info->white_stated = true;
   return true;
+}
+
+/**
+ * What each named transfer settles about the samples it encodes.
+ *
+ * ST 2084 (PQ) is defined as an absolute EOTF: a code value names a display
+ * luminance in cd/m^2, and 10000 is the peak the curve is specified to.
+ * BT.2100's HLG is an OETF over scene light and is relative - its system
+ * gamma depends on the display's own peak, so no figure here would be right.
+ * sRGB and BT.1886 describe a display and carry no absolute level.
+ *
+ * LINEAR, GAMMA and PARAMETRIC are absent on purpose: those curves say
+ * nothing about what the samples are measured against, and guessing would be
+ * the rounding this model exists to avoid.
+ */
+typedef struct {
+  GIMG_Transfer transfer;
+  GIMG_Reference reference;
+  GIMG_Sample_Scale scale;
+  double white_luminance;
+} gimg_transfer_convention_t;
+
+static const gimg_transfer_convention_t gimg_transfer_conventions_table[] = {
+    {GIMG_TRANSFER_SRGB, GIMG_REFERENCE_DISPLAY, GIMG_SAMPLE_SCALE_RELATIVE,
+        0.0},
+    {GIMG_TRANSFER_BT1886, GIMG_REFERENCE_DISPLAY, GIMG_SAMPLE_SCALE_RELATIVE,
+        0.0},
+    {GIMG_TRANSFER_PQ, GIMG_REFERENCE_DISPLAY, GIMG_SAMPLE_SCALE_ABSOLUTE,
+        10000.0},
+    {GIMG_TRANSFER_HLG, GIMG_REFERENCE_SCENE, GIMG_SAMPLE_SCALE_RELATIVE, 0.0},
+};
+
+GIMG_API bool gimg_transfer_conventions(GIMG_Transfer transfer,
+    GIMG_Reference * out_reference, GIMG_Sample_Scale * out_scale,
+    double * out_white_luminance) {
+  if (out_reference) {
+    *out_reference = GIMG_REFERENCE_UNKNOWN;
+  }
+  if (out_scale) {
+    *out_scale = GIMG_SAMPLE_SCALE_UNKNOWN;
+  }
+  if (out_white_luminance) {
+    *out_white_luminance = 0.0;
+  }
+  for (size_t i = 0; i < GIMG_ARRAY_SIZE(gimg_transfer_conventions_table);
+      i++) {
+    const gimg_transfer_convention_t * c = &gimg_transfer_conventions_table[i];
+    if (c->transfer != transfer) {
+      continue;
+    }
+    if (out_reference) {
+      *out_reference = c->reference;
+    }
+    if (out_scale) {
+      *out_scale = c->scale;
+    }
+    if (out_white_luminance) {
+      *out_white_luminance = c->white_luminance;
+    }
+    return true;
+  }
+  return false;
 }
 
 GIMG_API void gimg_color_info_default(GIMG_Color_Info * info) {
@@ -181,6 +252,7 @@ GIMG_API void gimg_color_info_default(GIMG_Color_Info * info) {
   memset(info, 0, sizeof(*info));
   info->transfer = GIMG_TRANSFER_UNKNOWN;
   info->reference = GIMG_REFERENCE_UNKNOWN;
+  info->sample_scale = GIMG_SAMPLE_SCALE_UNKNOWN;
   info->intent = GIMG_INTENT_PERCEPTUAL;
   info->cmyk_polarity = GIMG_CMYK_POLARITY_UNKNOWN;
 }

@@ -1603,7 +1603,7 @@ static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
   //
   // Not written beside iCCP: the profile is the more specific statement and
   // supersedes it, and 11.3.3.3 does not want the two disagreeing.
-  if (info->gamut_stated &&
+  if (info->primaries_stated &&
       gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT) !=
           GIMG_PRIMARIES_SRGB &&
       !(info->icc_bytes && info->icc_size > 0)) {

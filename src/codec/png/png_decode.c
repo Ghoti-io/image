@@ -136,6 +136,93 @@ static bool gimg_png_gamut_from_chrm(
 }
 /** @} */
 
+/** @name H.273 code points
+ *
+ * cICP carries ITU-T H.273 code points.  Only PNG uses them here, so the
+ * mapping lives beside the reader rather than in the colour module; what it
+ * maps *to* is shared, which is the part that matters.
+ * @{
+ */
+
+/** H.273 Table 2 (ColourPrimaries) to a gamut this library names.
+ *
+ * Code point 11 is theatrical DCI-P3, which shares Display P3's primaries
+ * under a different white.  It is deliberately absent: naming it would need a
+ * table entry that breaks the "no two named gamuts share their primaries"
+ * invariant gimg_gamut_identify() relies on, and that is a decision for the
+ * colour module rather than a side effect of reading a PNG chunk.
+ */
+static GIMG_Primaries gimg_png_primaries_from_h273(unsigned int code) {
+  switch (code) {
+  case 1u: // BT.709, which sRGB shares.
+    return GIMG_PRIMARIES_SRGB;
+  case 9u: // BT.2020 / BT.2100.
+    return GIMG_PRIMARIES_BT2020;
+  case 12u: // SMPTE EG 432-1, P3-D65 - Display P3.
+    return GIMG_PRIMARIES_DISPLAY_P3;
+  default:
+    return GIMG_PRIMARIES_UNKNOWN;
+  }
+}
+
+/** H.273 Table 3 (TransferCharacteristics) into @p out_info.
+ *
+ * Sets the transfer, and with it the reference, scale and peak luminance that
+ * transfer implies - gimg_transfer_conventions() owns that part, so PQ's
+ * 10000 cd/m^2 is stated once rather than here.
+ *
+ * Code points 1, 6, 14 and 15 are all BT.709's curve at different bit depths.
+ * It is written as a parametric curve rather than given a name of its own:
+ * the inverse OETF is exactly an ICC parametricCurveType type 3, so the terms
+ * say it precisely and nothing has to approximate.
+ *
+ * @return true when the code point said something.
+ */
+static bool gimg_png_transfer_from_h273(
+    unsigned int code, GIMG_Color_Info * out_info) {
+  switch (code) {
+  case 1u:
+  case 6u:
+  case 14u:
+  case 15u: {
+    // L = ((V + 0.099) / 1.099)^(1/0.45) for V >= 0.081, else V / 4.5.
+    out_info->transfer = GIMG_TRANSFER_PARAMETRIC;
+    out_info->transfer_params[0] = 1.0 / 0.45;   // g
+    out_info->transfer_params[1] = 1.0 / 1.099;  // a
+    out_info->transfer_params[2] = 0.099 / 1.099; // b
+    out_info->transfer_params[3] = 1.0 / 4.5;    // c
+    out_info->transfer_params[4] = 0.081;        // d
+    break;
+  }
+  case 4u: // BT.470 System M, gamma 2.2.
+    out_info->transfer = GIMG_TRANSFER_GAMMA;
+    out_info->gamma_value = 2.2;
+    break;
+  case 5u: // BT.470 System B/G, gamma 2.8.
+    out_info->transfer = GIMG_TRANSFER_GAMMA;
+    out_info->gamma_value = 2.8;
+    break;
+  case 8u:
+    out_info->transfer = GIMG_TRANSFER_LINEAR;
+    break;
+  case 13u:
+    out_info->transfer = GIMG_TRANSFER_SRGB;
+    break;
+  case 16u:
+    out_info->transfer = GIMG_TRANSFER_PQ;
+    break;
+  case 18u:
+    out_info->transfer = GIMG_TRANSFER_HLG;
+    break;
+  default:
+    return false;
+  }
+  (void)gimg_transfer_conventions(out_info->transfer, &out_info->reference,
+      &out_info->sample_scale, &out_info->white_luminance);
+  return true;
+}
+/** @} */
+
 static bool gimg_png_fill_color_info_from_ancillary(
     const gimg_png_doc_state_t * state, const GIMG_Allocator * alloc,
     GIMG_Color_Info * out_info, void ** out_icc_owned, size_t * out_icc_size) {
@@ -169,13 +256,10 @@ static bool gimg_png_fill_color_info_from_ancillary(
   // frame carries coding-independent code points, they say what the samples
   // mean and the other color chunks do not get a say.
   //
-  // GIMG_Color_Info describes sRGB, Adobe RGB, linear and a plain gamma, and
-  // CICP names a great deal more than that - BT.2020 primaries, PQ and HLG
-  // transfer, limited-range signaling. Only the combination this model can
-  // actually hold is translated; any other is left unknown rather than
-  // rounded to the nearest thing we can say, which would be a claim about the
-  // pixels that the file did not make. The chunk itself is kept either way,
-  // so nothing is lost on the way through.
+  // What is translated is whatever GIMG_Color_Info can now state, which since
+  // the gamut became coordinates is most of what H.273 names. A code point
+  // outside the tables above is still left unsaid rather than rounded to a
+  // neighbour, and the chunk is kept either way, so nothing is lost.
   if (first_cicp != (size_t)-1) {
     const unsigned char * p = state->ancillary[first_cicp].payload;
     size_t len = state->ancillary[first_cicp].payload_size;
@@ -184,23 +268,20 @@ static bool gimg_png_fill_color_info_from_ancillary(
       unsigned int transfer = p[1];
       unsigned int matrix = p[2];
       unsigned int full_range = p[3];
-      // H.273 code points: primaries 1 and transfer 13 are the sRGB pair;
-      // matrix 0 (identity) and full range are what PNG 3rd ed. requires of
-      // an RGB image.
-      if (primaries == 1u && transfer == 13u && matrix == 0u &&
-          full_range == 1u) {
-        (void)gimg_color_info_set_gamut(out_info, GIMG_PRIMARIES_SRGB);
-        out_info->transfer = GIMG_TRANSFER_SRGB;
-        return true;
+      // PNG 3rd ed. requires matrix 0 (identity) and full range of an RGB
+      // image; anything else describes a file this decoder is not reading.
+      if (matrix != 0u || full_range != 1u) {
+        return false;
       }
-      // Transfer 8 is linear, and primaries 1 still names the sRGB gamut.
-      if (primaries == 1u && transfer == 8u && matrix == 0u &&
-          full_range == 1u) {
-        (void)gimg_color_info_set_gamut(out_info, GIMG_PRIMARIES_SRGB);
-        out_info->transfer = GIMG_TRANSFER_LINEAR;
-        return true;
+      bool said = false;
+      GIMG_Primaries named = gimg_png_primaries_from_h273(primaries);
+      if (named != GIMG_PRIMARIES_UNKNOWN) {
+        said = gimg_color_info_set_gamut(out_info, named);
       }
-      return false; // Understood, representable by nothing here.
+      if (gimg_png_transfer_from_h273(transfer, out_info)) {
+        said = true;
+      }
+      return said;
     }
   }
 
@@ -243,7 +324,8 @@ static bool gimg_png_fill_color_info_from_ancillary(
           gimg_free(alloc, decoded);
           return false;
         }
-        out_info->gamut_stated = false;
+        out_info->primaries_stated = false;
+        out_info->white_stated = false;
         out_info->transfer = GIMG_TRANSFER_UNKNOWN;
         out_info->icc_bytes = decoded;
         out_info->icc_size = out_len;
@@ -280,8 +362,10 @@ static bool gimg_png_fill_color_info_from_ancillary(
     }
   }
   if (have_gamut) {
+    // cHRM states all four points, so both halves are present.
     out_info->gamut = gamut;
-    out_info->gamut_stated = true;
+    out_info->primaries_stated = true;
+    out_info->white_stated = true;
     said_something = true;
   }
   return said_something;

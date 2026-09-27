@@ -148,17 +148,17 @@ TEST(ColorGamut, NaNCoordinatesMatchNothing) {
 TEST(ColorGamut, SetGamutStoresCoordinates) {
   GIMG_Color_Info ci;
   gimg_color_info_default(&ci);
-  ASSERT_FALSE(ci.gamut_stated);
+  ASSERT_FALSE(ci.primaries_stated);
 
   ASSERT_TRUE(gimg_color_info_set_gamut(&ci, GIMG_PRIMARIES_BT2020));
-  EXPECT_TRUE(ci.gamut_stated);
+  EXPECT_TRUE(ci.primaries_stated);
   EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
       GIMG_PRIMARIES_BT2020);
 
   // Setting an unnameable space clears rather than leaving the previous one
   // standing, which would be the worst of both.
   EXPECT_FALSE(gimg_color_info_set_gamut(&ci, GIMG_PRIMARIES_UNKNOWN));
-  EXPECT_FALSE(ci.gamut_stated);
+  EXPECT_FALSE(ci.primaries_stated);
   EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
       GIMG_PRIMARIES_UNKNOWN);
 
@@ -173,9 +173,10 @@ TEST(ColorGamut, DefaultStatesNothing) {
   GIMG_Color_Info ci;
   std::memset(&ci, 0xA5, sizeof(ci));
   gimg_color_info_default(&ci);
-  EXPECT_FALSE(ci.gamut_stated);
+  EXPECT_FALSE(ci.primaries_stated);
   EXPECT_EQ(ci.transfer, GIMG_TRANSFER_UNKNOWN);
   EXPECT_EQ(ci.reference, GIMG_REFERENCE_UNKNOWN);
+  EXPECT_EQ(ci.sample_scale, GIMG_SAMPLE_SCALE_UNKNOWN);
   EXPECT_EQ(ci.white_luminance, 0.0);
   EXPECT_EQ(ci.gamma_value, 0.0);
   EXPECT_EQ(ci.icc_bytes, nullptr);
@@ -185,6 +186,69 @@ TEST(ColorGamut, DefaultStatesNothing) {
   for (int i = 0; i < GIMG_TRANSFER_PARAM_COUNT; i++) {
     EXPECT_EQ(ci.transfer_params[i], 0.0) << "term " << i;
   }
+}
+
+// The reference and the scale are independent axes, which is the whole
+// reason they are two enums.  If any future edit collapses them again, this
+// is the case that cannot be expressed: PQ is display-referred *and*
+// absolute, where LogLuv will be scene-referred and absolute and HLG is
+// scene-referred and relative.
+TEST(ColorTransfer, PqIsDisplayReferredAndAbsolute) {
+  GIMG_Reference ref = GIMG_REFERENCE_UNKNOWN;
+  GIMG_Sample_Scale scale = GIMG_SAMPLE_SCALE_UNKNOWN;
+  double white = 0.0;
+  ASSERT_TRUE(
+      gimg_transfer_conventions(GIMG_TRANSFER_PQ, &ref, &scale, &white));
+  EXPECT_EQ(ref, GIMG_REFERENCE_DISPLAY);
+  EXPECT_EQ(scale, GIMG_SAMPLE_SCALE_ABSOLUTE);
+  EXPECT_DOUBLE_EQ(white, 10000.0);
+}
+
+TEST(ColorTransfer, HlgIsSceneReferredAndRelative) {
+  GIMG_Reference ref = GIMG_REFERENCE_UNKNOWN;
+  GIMG_Sample_Scale scale = GIMG_SAMPLE_SCALE_UNKNOWN;
+  double white = 0.0;
+  ASSERT_TRUE(
+      gimg_transfer_conventions(GIMG_TRANSFER_HLG, &ref, &scale, &white));
+  EXPECT_EQ(ref, GIMG_REFERENCE_SCENE);
+  EXPECT_EQ(scale, GIMG_SAMPLE_SCALE_RELATIVE);
+  EXPECT_EQ(white, 0.0) << "HLG's system gamma depends on the display, so no "
+                           "peak here would be right";
+}
+
+TEST(ColorTransfer, SrgbIsDisplayReferredAndRelative) {
+  GIMG_Reference ref = GIMG_REFERENCE_UNKNOWN;
+  GIMG_Sample_Scale scale = GIMG_SAMPLE_SCALE_UNKNOWN;
+  double white = 0.0;
+  ASSERT_TRUE(
+      gimg_transfer_conventions(GIMG_TRANSFER_SRGB, &ref, &scale, &white));
+  EXPECT_EQ(ref, GIMG_REFERENCE_DISPLAY);
+  EXPECT_EQ(scale, GIMG_SAMPLE_SCALE_RELATIVE);
+  EXPECT_EQ(white, 0.0);
+}
+
+// The curves that genuinely do not settle it must say so rather than
+// defaulting to display-referred, which is the assumption a float raster
+// would then inherit silently.
+TEST(ColorTransfer, CurvesThatSettleNothingSayNothing) {
+  for (GIMG_Transfer t : {GIMG_TRANSFER_UNKNOWN, GIMG_TRANSFER_LINEAR,
+           GIMG_TRANSFER_GAMMA, GIMG_TRANSFER_PARAMETRIC}) {
+    GIMG_Reference ref = GIMG_REFERENCE_DISPLAY;
+    GIMG_Sample_Scale scale = GIMG_SAMPLE_SCALE_RELATIVE;
+    double white = 1.0;
+    EXPECT_FALSE(gimg_transfer_conventions(t, &ref, &scale, &white))
+        << "transfer " << t;
+    EXPECT_EQ(ref, GIMG_REFERENCE_UNKNOWN) << "transfer " << t;
+    EXPECT_EQ(scale, GIMG_SAMPLE_SCALE_UNKNOWN) << "transfer " << t;
+    EXPECT_EQ(white, 0.0) << "transfer " << t;
+  }
+}
+
+TEST(ColorTransfer, NullOutputsAreAccepted) {
+  EXPECT_TRUE(gimg_transfer_conventions(GIMG_TRANSFER_PQ, nullptr, nullptr,
+      nullptr));
+  EXPECT_FALSE(gimg_transfer_conventions(GIMG_TRANSFER_LINEAR, nullptr,
+      nullptr, nullptr));
 }
 
 int main(int argc, char ** argv) {

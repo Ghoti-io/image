@@ -55,6 +55,24 @@ const char * primaries_name(GIMG_Primaries p) {
   }
 }
 
+const char * reference_name(GIMG_Reference r) {
+  switch (r) {
+    case GIMG_REFERENCE_DISPLAY: return "display";
+    case GIMG_REFERENCE_SCENE: return "scene";
+    case GIMG_REFERENCE_UNKNOWN: return "-";
+    default: return "?";
+  }
+}
+
+const char * scale_name(GIMG_Sample_Scale s) {
+  switch (s) {
+    case GIMG_SAMPLE_SCALE_RELATIVE: return "relative";
+    case GIMG_SAMPLE_SCALE_ABSOLUTE: return "absolute";
+    case GIMG_SAMPLE_SCALE_UNKNOWN: return "-";
+    default: return "?";
+  }
+}
+
 const char * transfer_name(GIMG_Transfer t) {
   switch (t) {
   case GIMG_TRANSFER_LINEAR:
@@ -106,7 +124,8 @@ std::string describe(const std::string & rel, const std::vector<uint8_t> & b) {
     o << "no-color-info";
   }
   else {
-    o << "gamut=" << (ci->gamut_stated ? "yes" : "no") << " named="
+    o << "gamut=" << (ci->primaries_stated ? "yes" : "no")
+      << " white=" << (ci->white_stated ? "yes" : "no") << " named="
       << primaries_name(
              gimg_gamut_identify(&ci->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT))
       << " transfer=" << transfer_name(ci->transfer);
@@ -115,7 +134,15 @@ std::string describe(const std::string & rel, const std::vector<uint8_t> & b) {
       (void)std::snprintf(g, sizeof(g), " gamma=%.4f", ci->gamma_value);
       o << g;
     }
-    o << " reference=" << (int)ci->reference << " icc=" << ci->icc_size
+    o << " reference=" << reference_name(ci->reference)
+      << " scale=" << scale_name(ci->sample_scale);
+    if (ci->white_luminance != 0.0) {
+      char n[40];
+      (void)std::snprintf(
+          n, sizeof(n), " white_cdm2=%.1f", ci->white_luminance);
+      o << n;
+    }
+    o << " icc=" << ci->icc_size
       << " linked=" << (ci->icc_linked_path ? "yes" : "no");
   }
   gimg_raster_destroy(raster);

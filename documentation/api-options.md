@@ -346,12 +346,14 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 
 | Field | Description |
 |-------|-------------|
-| `gamut` / `gamut_stated` | **GIMG_Gamut** — the white point and three primaries as CIE 1931 *x,y*, exactly as the file stated them. Read `gamut_stated` rather than comparing against zero. `white` may be `{0, 0}` while the primaries are set: a BMP V4 header carries three endpoints and nowhere to put a white point. |
+| `gamut` | **GIMG_Gamut** — the white point and three primaries as CIE 1931 *x,y*, exactly as the file stated them. |
+| `primaries_stated` / `white_stated` | Which halves of `gamut` the file actually stated. Independent in both directions: a BMP V4 header carries three endpoints and nowhere to put a white point, and a TIFF may carry WhitePoint (318) without PrimaryChromaticities (319). **`primaries_stated` is the flag meaning "there is a gamut here"** — three primaries are what make one, and a writer needing a gamut tests that one. Read these rather than comparing coordinates against zero. |
 | `transfer` | **GIMG_Transfer** — linear, sRGB, gamma, a parametric curve, BT.1886, PQ or HLG, or unknown. |
 | `transfer_params` | The seven ICC `parametricCurveType` terms `{g, a, b, c, d, e, f}` when `transfer` is **GIMG_TRANSFER_PARAMETRIC**. |
 | `gamma_value` | Used when `transfer` is **GIMG_TRANSFER_GAMMA**. |
-| `reference` | **GIMG_Reference** — whether a sample is display-referred (a fraction of an unstated diffuse white) or scene-referred (a measurement of light). Nothing in this library produces **GIMG_REFERENCE_SCENE** yet. |
-| `white_luminance` | cd/m² of a full-scale sample, or 0 when unstated. |
+| `reference` | **GIMG_Reference** — whether the sample describes light a display emits or light as it was in the scene. |
+| `sample_scale` | **GIMG_Sample_Scale** — whether the sample is a fraction of an unstated white or an absolute measurement. Independent of `reference`: PQ is display-referred *and* absolute, HLG is scene-referred and relative. |
+| `white_luminance` | cd/m² of a full-scale sample, or 0 when unstated. Meaningful when `sample_scale` is absolute. |
 | `intent` | **GIMG_Rendering_Intent** — written into an ICC profile's header and into a BMP V5 header. A value outside the four ICC names is written as perceptual. |
 | `icc_bytes` / `icc_size` | Optional ICC profile; library does not take ownership. It is carried opaquely: nothing here parses a profile, so an embedded one does not fill in `gamut` or `transfer`. |
 | `cmyk_polarity` | **GIMG_CMYK_Polarity** — interpretation of CMYK channel values. Only relevant when the raster format is a CMYK one (**GIMG_PIXEL_CMYK8**, **CMYK12**, **CMYK16**). |
@@ -366,6 +368,13 @@ cannot disagree. Ask for the name instead:
 | `gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT)` | Which named space these coordinates are, or **GIMG_PRIMARIES_UNKNOWN** |
 | `gimg_gamut_named(named, &gamut)` | The coordinates of a named space |
 | `gimg_color_info_set_gamut(&info, named)` | Stores a named space's coordinates |
+
+`gimg_transfer_conventions()` answers the other half: the reference, scale and
+peak luminance a named transfer implies. PQ is defined against an absolute
+10000 cd/m² and HLG against scene light, so for those the curve settles all
+three. **LINEAR, GAMMA and PARAMETRIC settle none of it** — a linear raster
+can be scene- or display-referred and the curve does not say which — so the
+function returns false and a codec that knows must fill the fields itself.
 
 **GIMG_PRIMARIES_UNKNOWN from `gimg_gamut_identify()` does not mean the colour
 was lost.** It means this library has no name for it; every coordinate the

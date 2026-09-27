@@ -414,6 +414,47 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
         ifd->has_y_res = ifd->y_res_den != 0u;
       }
       break;
+    case GIMG_TIFF_TAG_WHITE_POINT:
+      // Two RATIONALs: x then y.  A zero denominator is a division this will
+      // not do, and a file that writes one has said nothing.
+      if (e.count >= 2u && e.value_bytes >= 16u) {
+        uint32_t xn = tiff_u32(e.values, st->big_endian);
+        uint32_t xd = tiff_u32(e.values + 4, st->big_endian);
+        uint32_t yn = tiff_u32(e.values + 8, st->big_endian);
+        uint32_t yd = tiff_u32(e.values + 12, st->big_endian);
+        if (xd != 0u && yd != 0u) {
+          ifd->white_point.x = (double)xn / (double)xd;
+          ifd->white_point.y = (double)yn / (double)yd;
+          ifd->has_white_point = true;
+        }
+      }
+      break;
+    case GIMG_TIFF_TAG_PRIMARY_CHROMATICITIES:
+      // Six RATIONALs: red x,y then green then blue.
+      if (e.count >= 6u && e.value_bytes >= 48u) {
+        bool ok = true;
+        GIMG_Chromaticity got[3];
+        for (unsigned int i = 0; i < 3u && ok; i++) {
+          const unsigned char * v = e.values + ((size_t)i * 16u);
+          uint32_t xn = tiff_u32(v, st->big_endian);
+          uint32_t xd = tiff_u32(v + 4, st->big_endian);
+          uint32_t yn = tiff_u32(v + 8, st->big_endian);
+          uint32_t yd = tiff_u32(v + 12, st->big_endian);
+          if (xd == 0u || yd == 0u) {
+            ok = false;
+            break;
+          }
+          got[i].x = (double)xn / (double)xd;
+          got[i].y = (double)yn / (double)yd;
+        }
+        if (ok) {
+          ifd->primaries[0] = got[0];
+          ifd->primaries[1] = got[1];
+          ifd->primaries[2] = got[2];
+          ifd->has_primaries = true;
+        }
+      }
+      break;
     case GIMG_TIFF_TAG_NEW_SUBFILE_TYPE:
       ifd->subfile_type = (uint32_t)tiff_value(st, &e, 0);
       break;

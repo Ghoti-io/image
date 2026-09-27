@@ -534,7 +534,7 @@ GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
   // What a V4 or V5 header said about color, when it said anything this model
   // can hold.  gimg_raster_set_color_info copies the ICC bytes, so the
   // raster outlives the document that read them.
-  if (state->color.gamut_stated ||
+  if (state->color.primaries_stated || state->color.white_stated ||
       state->color.transfer != GIMG_TRANSFER_UNKNOWN || state->color.icc_size ||
       state->color.icc_linked_path) {
     r = gimg_raster_set_color_info(raster, &state->color);

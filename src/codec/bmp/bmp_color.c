@@ -174,8 +174,10 @@ void gimg_bmp_color_from_header(
     case GIMG_BMP_LCS_CALIBRATED_RGB: {
       GIMG_Gamut gamut;
       if (bmp_gamut_from_endpoints(header->endpoints, &gamut)) {
+        // Three endpoints and no white point: the format has nowhere to
+        // state one, so white_stated stays false.
         out_info->gamut = gamut;
-        out_info->gamut_stated = true;
+        out_info->primaries_stated = true;
       }
       // One transfer function, so three disagreeing gammas describe a space
       // this cannot hold and are left unsaid rather than averaged.
@@ -332,7 +334,7 @@ uint32_t gimg_bmp_color_to_header(
     // The gamut goes out as the file spells it, with no table in between:
     // a space this library has no name for round-trips exactly like one it
     // does, which is the point of storing coordinates rather than a name.
-    if (info->gamut_stated) {
+    if (info->primaries_stated) {
       bmp_endpoints_from_gamut(&info->gamut, tail + GIMG_BMP_V4_ENDPOINTS_AT);
       said_something = true;
     }

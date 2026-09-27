@@ -36,6 +36,8 @@ TAGS = {
     "YResolution": 283,
     "PlanarConfig": 284,
     "ResolutionUnit": 296,
+    "WhitePoint": 318,
+    "PrimaryChromaticities": 319,
     "ColorMap": 320,
     "TileWidth": 322,
     "TileLength": 323,
@@ -540,6 +542,34 @@ def main():
     meta.append((TAGS["XMP"], BYTE, list(xmp)))
     meta.append((TAGS["ICCProfile"], UNDEFINED, list(profile)))
     write("tiff_4x4_metadata.tif", build("II", [(meta, rgb)]))
+
+    # ---- WhitePoint (318) and PrimaryChromaticities (319) ----
+    #
+    # TIFF 6.0 states both as RATIONALs, so a gamut written this way is exact
+    # and needs no matching against a table. These are Adobe RGB's, which
+    # gimg_gamut_identify() has a name for; the point of the fixture is that
+    # the two tags are read at all, which they were not until the colour model
+    # could hold what they say.
+    #
+    # The second file carries a white point and no primaries. A gamut needs
+    # all three primaries, so that file states no gamut - but the white point
+    # is still what the file said, and dropping it would be a loss no error
+    # reports.
+    def rat(x, den=10000):
+        return (int(round(x * den)), den)
+
+    adobe = [rat(0.6400), rat(0.3300), rat(0.2100), rat(0.7100),
+             rat(0.1500), rat(0.0600)]
+    d65 = [rat(0.3127), rat(0.3290)]
+
+    chroma = strip_fields(W, H, rgb, 2, spp=3)
+    chroma.append((TAGS["WhitePoint"], RATIONAL, d65))
+    chroma.append((TAGS["PrimaryChromaticities"], RATIONAL, adobe))
+    write("tiff_chromaticities.tif", build("II", [(chroma, rgb)]))
+
+    white_only = strip_fields(W, H, rgb, 2, spp=3)
+    white_only.append((TAGS["WhitePoint"], RATIONAL, d65))
+    write("tiff_white_point_only.tif", build("II", [(white_only, rgb)]))
 
     # ---- Sixteen bits under the predictor, in both byte orders ----
     #

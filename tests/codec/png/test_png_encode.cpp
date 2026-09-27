@@ -3610,6 +3610,28 @@ TEST(PngEncode, TheGamutAReaderAlreadyAssumesIsNotWritten) {
   EXPECT_EQ(color_chunks_of(png), "gAMA");
 }
 
+TEST(PngEncode, AWhitePointWithNoPrimariesWritesNoChrm) {
+  // A regression, and the reason GIMG_Color_Info has two flags rather than
+  // one.  A TIFF may carry WhitePoint (318) without PrimaryChromaticities
+  // (319); with a single "gamut_stated" flag that file set it, and saving as
+  // PNG wrote a cHRM whose three primaries were all (0, 0) - a chunk stating
+  // a gamut no colour is inside.  Three primaries are what make a gamut, so
+  // that is what the writer tests.
+  GIMG_Color_Info color;
+  gimg_color_info_default(&color);
+  color.gamut.white.x = 0.3127;
+  color.gamut.white.y = 0.3290;
+  color.white_stated = true;
+  color.transfer = GIMG_TRANSFER_GAMMA;
+  color.gamma_value = 2.2;
+
+  std::vector<uint8_t> png;
+  ASSERT_EQ(save_png(raster_with_color(color), GIMG_META_PRESERVE_ALL, png),
+      GIMG_OK);
+  EXPECT_EQ(color_chunks_of(png), "gAMA")
+      << "the curve is still written; only the half-gamut is not";
+}
+
 TEST(PngEncode, ChrmIsNotWrittenBesideAProfile) {
   // The profile is the more specific statement and supersedes it; 11.3.3.3
   // does not want the two of them disagreeing in one file.
