@@ -161,6 +161,16 @@
     "has_icc": true
   },
   {
+    "file": "jpeg_icc_swap_rg.jpg",
+    "width": 8,
+    "height": 8,
+    "mode": "RGB",
+    "progressive": false,
+    "quality": 85,
+    "has_exif": false,
+    "has_icc": true
+  },
+  {
     "file": "cmyk_sample.jpg",
     "width": 8,
     "height": 8,

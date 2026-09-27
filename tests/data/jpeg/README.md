@@ -1077,3 +1077,10 @@ would then prove nothing.
 cc -O1 -o mk_abbrev $D/mk_abbrev.c -I<libjpeg-turbo-src> -I<build> <build>/libjpeg.a
 cd $D && ./mk_abbrev
 ```
+
+## A real ICC profile
+
+`jpeg_icc_swap_rg.jpg` carries `tests/data/icc/swap_rg.icc` in APP2 — a
+profile littleCMS parses and transforms with, as distinct from
+`jpeg_with_icc.jpg`, whose 128-byte header has no tag table and is the test
+that an opaque blob survives segmentation. See `tests/data/icc/README.md`.

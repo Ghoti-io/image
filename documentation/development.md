@@ -196,6 +196,32 @@ LibFuzzer harnesses under `tests/fuzz/` cover PNG/APNG, JPEG and BMP, each with 
 
 **New codecs:** Add at least (1) a load (and decode) fuzz harness so that arbitrary or truncated input does not crash and returns appropriate errors (`GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, or `GIMG_ERR_LIMIT`), and (2) if the codec supports save, a round-trip fuzz harness (load→save→load). PNG and JPEG are the reference; see `tests/fuzz/README.md` for harness layout.
 
+### The ICC corpus
+
+`tests/data/icc/` holds six real ICC profiles and the fixtures across PNG,
+JPEG, TIFF and BMP that carry them. `tests/data/icc/README.md` is the full
+account; the short version is that the three fixtures which used to claim an
+ICC profile carried placeholders (one of them the eleven bytes
+`minimal_icc`), so a scan of the corpus found **zero** parseable profiles and
+nothing could have told a colour transform from one that does nothing.
+
+- `make test-verify-icc` (also part of `make test`) re-execs into the pinned
+  Pillow image and checks every profile against **littleCMS**: it parses, its
+  colorants sum to the media white point, and the colorants computed by
+  `generate.py` agree with the published figures transcribed in
+  `src/color/icc_synth.c`. Two sources, neither grading itself.
+- **`swap_rg.icc` is the discriminating fixture.** It names sRGB's green as
+  its red, so littleCMS turns a red pixel into `(0, 255, 0)`. Every other
+  profile is close enough to sRGB that a missing transform would look like
+  rounding; this one cannot be ignored quietly.
+- `tests/unit/test_icc_corpus.cpp` asserts what this library can be held to
+  today, which is carriage rather than correction: each fixture decodes to
+  the profile on disk byte for byte, and a save into a different container
+  preserves it across eight crossings.
+
+The placeholder fixtures stay. A real profile is never 11 bytes, so they are
+the only test of the carrying path at an awkward size.
+
 ### Limits and failure-path tests
 
 Tests under `tests/` include:

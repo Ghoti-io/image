@@ -20,7 +20,7 @@ Generated files:
 | `png_srgb.png` | 1×1 gray + sRGB chunk (rendering intent 0) |
 | `png_exif.png` | 1×1 gray + eXIf chunk (minimal payload) |
 | `png_exif_orientation.png` | 1×1 gray + eXIf with Orientation tag 6 (90° CW); used for meta_common test |
-| `png_iccp.png` | 1×1 gray + iCCP chunk (tiny zlib-compressed profile) |
+| `png_iccp.png` | 1×1 gray + iCCP carrying the eleven bytes `minimal_icc`. Kept at that size on purpose: it is the test that an opaque blob of a size no real profile has survives a round trip. The real ones are below. |
 | `png_apng_2frame.png` | 2-frame APNG: default image is first frame (1×1 gray 0, then 0x80); frame 0 delay 50/100, dispose NONE, blend SOURCE; frame 1 delay 25/100, dispose BACKGROUND, blend OVER |
 | `png_phys_aspect_4_3.png` | `pHYs` with unit specifier 0: a 4:3 pixel aspect ratio and no physical size, which is the case a DPI cannot represent and which the loader used to drop |
 | `png_apng_3plays.png` | The 2-frame APNG with `acTL` num_plays=3 instead of 0: the only fixture here whose play count differs from what a zeroed structure holds, so it is the one that can tell a count that was read from one that was never set |
@@ -51,7 +51,7 @@ Tests in `tests/codec/png/test_png_decode.cpp` load these files when built with 
 | `png_gray_forbidden_palette.png` | PLTE on color type 0, which the spec forbids outright. Some decoders read it anyway; this one does not. |
 | `png_gradient_64x64_rgb.png` | A smooth gradient, which is where row filtering pays most, so choosing per row can be shown to beat forcing any single filter. |
 | `png_cicp_srgb.png` | cICP naming the sRGB pair beside a gAMA that disagrees, so the Third Edition's precedence is testable. |
-| `png_cicp_bt2020_pq.png` | cICP naming BT.2020 primaries with the PQ transfer - legal, and beyond what `GIMG_Color_Info` can describe. A gAMA rides along so that "left unknown" is an assertion and not an accident. |
+| `png_cicp_bt2020_pq.png` | cICP naming BT.2020 primaries with the PQ transfer. It was beyond what `GIMG_Color_Info` could describe and is now translated in full, PQ's absolute 10000 cd/m² included; the gAMA still rides along so that cICP's precedence over it stays an assertion. |
 | `png_mdcv_clli.png` | The HDR mastering chunks, which are preserved and not interpreted. |
 
 Every one of these was checked against Pillow and libpng before any test was
@@ -87,3 +87,15 @@ whenever a tRNS has to become an alpha channel.
 | `png_gray8_bkgd_sbit.png` | The control. Nothing forces a change of color type, so both chunks must come back byte for byte. A writer that rewrote them unconditionally passes the fixture above and fails this one |
 | `png_palette_trns_bkgd_hist.png` | A palette image, written back as one, so bKGD and hIST are kept. libpng warns "hIST: out of place" on this file - and on PngSuite's own `ch1n3p04.png` and `ch2n3p08.png`, whose chunk order is identical, so the warning is that build's and not the fixture's |
 | `png_gray8_bad_bkgd.png` | A three-byte bKGD where color type 0 calls for two. Already malformed; the point is that it is not carried into a new file. libpng agrees: "bKGD: invalid" |
+
+## iCCP carrying real profiles
+
+Built from `tests/data/icc/`, whose README explains why they exist and what
+checks them. These carry profiles littleCMS parses and transforms with, as
+distinct from `png_iccp.png` above.
+
+| File | Profile |
+|------|---------|
+| `png_icc_swap_rg.png` | `swap_rg.icc` — names sRGB's green as its red, so a colour-managed reader shows the channels exchanged and a reader that only carries the profile does not. The fixture an engine doing nothing cannot pass. |
+| `png_icc_adobergb.png` | `adobergb_g22.icc` — an ordinary wide gamut. |
+| `png_icc_sampled_trc.png` | `srgb_sampled_trc.icc` — a 1024-point sampled curve, and at 6668 bytes long enough that a re-save as JPEG has to split it across APP2 segments and put it back together. |

@@ -271,6 +271,40 @@ def main() -> None:
     )
     write_png("png_iccp.png", png_iccp)
 
+    # ---- iCCP carrying real profiles ----
+    #
+    # png_iccp.png above keeps its eleven-byte placeholder on purpose: it is
+    # the test that an opaque blob of an awkward size survives, which is a
+    # different claim from these.  These carry profiles a CMM parses and
+    # transforms pixels with, built by tests/data/icc/generate.py and checked
+    # against littleCMS by the verifier beside it.
+    #
+    # png_icc_swap_rg.png is the one that matters.  Its profile names sRGB's
+    # green as its red, so a colour-managed reader shows the two channels
+    # exchanged; a reader that carries the profile and never applies it shows
+    # the pixels unchanged.  Nothing else in this corpus can tell those two
+    # apart, which is why a corpus of plausible profiles was not enough.
+    icc_dir = os.path.join(os.path.dirname(SCRIPT_DIR), "icc")
+    for fixture, profile_name in (
+            ("png_icc_swap_rg.png", "swap_rg.icc"),
+            ("png_icc_adobergb.png", "adobergb_g22.icc"),
+            ("png_icc_sampled_trc.png", "srgb_sampled_trc.icc")):
+        path = os.path.join(icc_dir, profile_name)
+        if not os.path.exists(path):
+            raise SystemExit(
+                "missing %s; run tests/data/icc/generate.py first" % path)
+        with open(path, "rb") as f:
+            profile = f.read()
+        payload = (profile_name.encode("ascii").replace(b".icc", b"") + b"\0"
+                   + bytes([0x00]) + zlib.compress(profile, 9))
+        write_png(fixture, (
+            signature
+            + png_chunk(b"IHDR", ihdr_rgba)
+            + png_chunk(b"iCCP", payload)
+            + png_chunk(b"IDAT", idat_rgba)
+            + iend
+        ))
+
     # ---- 2-frame APNG (default image is first frame): 1x1 gray frame 0 (black), frame 1 (gray 0x80) ----
     # acTL: num_frames=2, num_plays=0 (infinite)
     actl = struct.pack(">II", 2, 0)

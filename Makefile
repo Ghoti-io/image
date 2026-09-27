@@ -1210,7 +1210,10 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	printf "\033[0;32mOutput structure verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying the resampler ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_resample.py $(APP_DIR)/resample_tool$(EXE_EXTENSION) && \
-	printf "\033[0;32mResampler verification passed.\033[0m\n"
+	printf "\033[0;32mResampler verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying the ICC corpus ###\033[0m\n\n" && \
+	python3 $(CURDIR)/tests/data/icc/verify_icc.py && \
+	printf "\033[0;32mICC corpus verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
 test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
@@ -1306,6 +1309,11 @@ test-verify-resample: $(APP_DIR)/resample_tool$(EXE_EXTENSION)
 	@printf "\033[0;30;43m\n############################\n### Verifying the resampler (PIL) ###\n############################\033[0m\n\n"
 	@python3 $(CURDIR)/tests/data/verify_resample.py $(APP_DIR)/resample_tool$(EXE_EXTENSION) && \
 	printf "\033[0;32mResampler verification passed.\033[0m\n"
+
+test-verify-icc: ## Run only the ICC corpus check against littleCMS
+	@printf "\033[0;30;43m\n############################\n### Verifying the ICC corpus (littleCMS) ###\n############################\033[0m\n\n"
+	@python3 $(CURDIR)/tests/data/icc/verify_icc.py && \
+	printf "\033[0;32mICC corpus verification passed.\033[0m\n"
 
 test-verify-structure: ## Run only the structural check of written output
 	@python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \

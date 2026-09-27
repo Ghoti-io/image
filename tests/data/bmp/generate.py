@@ -556,6 +556,28 @@ def color_fixtures() -> None:
     write("bmp_4x4_v5_icc.bmp",
           assemble(dib, b"", pixels + bytes(profile)))
 
+    # The same V5 shape carrying a profile littleCMS parses and transforms
+    # with, rather than the placeholder above.  The swap-red-and-green one:
+    # a reader that applies it differs visibly from one that only carries it,
+    # which is the distinction a corpus of plausible profiles cannot make.
+    # See tests/data/icc/generate.py.
+    import os as _os
+    real_path = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+        "icc", "swap_rg.icc")
+    if not _os.path.exists(real_path):
+        raise SystemExit(
+            "missing %s; run tests/data/icc/generate.py first" % real_path)
+    with open(real_path, "rb") as f:
+        real_profile = f.read()
+    dib = info_header(4, 4, 24,
+                      extra=v4_tail(0x4D424544, [0.0] * 9, [0.0] * 3)
+                      + v5_tail(4, 0, 0))
+    offset = len(dib) + len(pixels)
+    dib = dib[:108] + struct.pack("<4I", 4, offset, len(real_profile), 0)
+    write("bmp_4x4_v5_icc_swap_rg.bmp",
+          assemble(dib, b"", pixels + real_profile))
+
     # PROFILE_LINKED: the "profile" is a file path.  It must not be followed -
     # opening a path an image names is acting on data.
     path = b"C:\\does\\not\\exist.icc\x00"

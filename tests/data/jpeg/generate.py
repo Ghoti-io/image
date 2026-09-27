@@ -300,6 +300,29 @@ def main() -> None:
         "progressive": False, "quality": 85, "has_exif": False, "has_icc": True,
     })
 
+    # ---- With a real ICC profile ----
+    #
+    # jpeg_with_icc.jpg above keeps its stub: a 128-byte header with no tags
+    # is the right fixture for "an opaque profile survives APP2 segmentation
+    # and comes back byte for byte".  This one carries a profile littleCMS
+    # parses and transforms with - the swap-red-and-green one, so a reader
+    # that applies it differs visibly from one that merely carries it.
+    # See tests/data/icc/generate.py.
+    real_icc_path = os.path.join(
+        os.path.dirname(SCRIPT_DIR), "icc", "swap_rg.icc")
+    if not os.path.exists(real_icc_path):
+        raise SystemExit(
+            "missing %s; run tests/data/icc/generate.py first" % real_icc_path)
+    with open(real_icc_path, "rb") as f:
+        real_icc = f.read()
+    real_img = Image.new("RGB", (8, 8), color=(200, 60, 40))
+    write_jpeg("jpeg_icc_swap_rg.jpg", real_img, icc_profile=real_icc)
+    manifest.append({
+        "file": "jpeg_icc_swap_rg.jpg",
+        "width": 8, "height": 8, "mode": "RGB",
+        "progressive": False, "quality": 85, "has_exif": False, "has_icc": True,
+    })
+
     # ---- CMYK sample (8×8) ----
     cmyk = Image.new("CMYK", (8, 8), color=(0, 0, 0, 0))
     write_jpeg("cmyk_sample.jpg", cmyk)

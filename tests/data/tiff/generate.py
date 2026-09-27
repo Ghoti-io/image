@@ -571,6 +571,25 @@ def main():
     white_only.append((TAGS["WhitePoint"], RATIONAL, d65))
     write("tiff_white_point_only.tif", build("II", [(white_only, rgb)]))
 
+    # ---- A real ICC profile in tag 34675 ----
+    #
+    # tiff_4x4_metadata.tif above carries a plausible-looking blob, which is
+    # the right fixture for "an opaque profile survives a round trip". This
+    # one carries a profile littleCMS parses and transforms with, and it is
+    # the swap-red-and-green one: a reader that applies it shows the two
+    # channels exchanged, and a reader that only carries it shows the pixels
+    # unchanged. See tests/data/icc/generate.py.
+    here = os.path.dirname(os.path.abspath(__file__))
+    icc_path = os.path.join(os.path.dirname(here), "icc", "swap_rg.icc")
+    if not os.path.exists(icc_path):
+        raise SystemExit(
+            "missing %s; run tests/data/icc/generate.py first" % icc_path)
+    with open(icc_path, "rb") as f:
+        real_icc = f.read()
+    icc_fields = strip_fields(W, H, rgb, 2, spp=3)
+    icc_fields.append((TAGS["ICCProfile"], UNDEFINED, list(real_icc)))
+    write("tiff_icc_swap_rg.tif", build("II", [(icc_fields, rgb)]))
+
     # ---- Sixteen bits under the predictor, in both byte orders ----
     #
     # Horizontal differencing at sixteen bits is the one path where the
