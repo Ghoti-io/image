@@ -9,10 +9,14 @@ This is what the library implements.
 
 - PNG, including APNG.
 - JPEG, BMP and GIF.
-- TIFF, **read only and a baseline subset**: both byte orders, strips and
-  tiles, uncompressed 8-bit grayscale, RGB, RGBA and palette, every directory
-  as a page. No compression method and no writer yet. What is absent is
-  listed on the format's own page rather than left to be discovered.
+- TIFF. It reads every bit depth from 1 to 32, both byte orders, strips and
+  tiles, grayscale, palette, RGB, RGBA, separated and YCbCr, separate and
+  contiguous planes, every compression the format defines except LogLuv -
+  PackBits, LZW, Deflate, CCITT Group 3 and 4, JPEG in both spellings,
+  ThunderScan - with multi-page documents and pyramids. It writes 8- and
+  16-bit grayscale, RGB, RGBA and CMYK, uncompressed or with PackBits, LZW or
+  Deflate. What is absent is listed on the format's own page rather than left
+  to be discovered.
 
 WebP and the rest are planned and have no codec yet. A page for a format is
 written with its codec.

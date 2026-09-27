@@ -185,27 +185,19 @@ static uint32_t tiff_sample_max(unsigned bits) {
 /**
  * A sample of @p bits bits as an 8-bit one.
  *
- * For 1, 2 and 4 bits this is exact and there is nothing to choose: 255 is
- * divisible by 1, 3 and 15, so `v * 255 / max` has no remainder and every
- * reader agrees. Sixteen bits is the case with a choice in it, and this
- * takes the high byte for the reason tiff_map8 does - measured against
- * libtiff rather than assumed.
+ * **Only ever called with 1, 2, 4 or 8**, because tiff_plan_output sends
+ * every other depth to a 16-bit raster - see the note there for why. That is
+ * what makes this exact and leaves nothing to choose: 255 is divisible by 1,
+ * 3 and 15, so `v * 255 / max` has no remainder and every reader agrees.
+ *
+ * It is written as the general map rather than as a table of four so that a
+ * depth arriving here later is widened correctly rather than quietly; the
+ * rounding term costs nothing and never fires at those four depths.
  */
 static uint8_t tiff_to_8(uint32_t v, unsigned bits) {
-  if (bits == 8u) {
-    return (uint8_t)v;
+  if (bits >= 8u) {
+    return (uint8_t)(bits == 8u ? v : (v >> (bits - 8u)));
   }
-  if (bits > 8u) {
-    // Keep the high bits, which is what libtiff does and what this codec was
-    // measured against for sixteen. Dividing would be a different narrowing;
-    // the measurement is on the format page.
-    return (uint8_t)(v >> (bits - 8u));
-  }
-  // Rounded, not truncated. Measured against ImageMagick on the libtiff
-  // sample set's depth series: at two and four bits the two agree either
-  // way, because 3 and 15 divide 255 exactly, and at six bits they do not -
-  // 63 does not, and truncating is the wrong one. Nothing else in this codec
-  // was affected, so this is the more accurate answer at no cost.
   const uint32_t max = tiff_sample_max(bits);
   return (uint8_t)(((v * 255u) + (max / 2u)) / max);
 }
