@@ -97,35 +97,25 @@
  * file carrying gAMA alone leaves its gamut to the reader's assumption -
  * which is sRGB's, and is what the writer here relies on when it omits cHRM.
  *
- * Only the two gamuts GIMG_Color_Info can name are matched.  Anything else is
- * left unknown rather than rounded to the nearer of them, for the same reason
- * a cICP this model cannot state is.
+ * The payload is carried through exactly.  GIMG_Color_Info stores
+ * coordinates rather than a name, so a gamut this library has no name for is
+ * still the gamut the file stated; gimg_gamut_identify() is what puts a name
+ * to the ones it recognises, and answering "no name" there costs the caller
+ * nothing it was given.
  * @{
  */
-#define GIMG_PNG_cHRM_LEN 32u         ///< Eight 4-byte values.
-#define GIMG_PNG_cHRM_SCALE 100000.0  ///< Each is the chromaticity x 100000.
-#define GIMG_PNG_cHRM_TOLERANCE 0.001 ///< Finer than any table is quoted to.
 
-/** A gamut this model can name, as cHRM would spell it. */
-typedef struct {
-  GIMG_Primaries primaries;
-  double xy[8]; ///< White x,y then red, green, blue x,y.
-} gimg_png_gamut_t;
-
-static const gimg_png_gamut_t gimg_png_known_gamuts[] = {
-    // ITU-R BT.709 primaries with the D65 white point, which sRGB shares.
-    {GIMG_PRIMARIES_SRGB,
-        {0.3127, 0.3290, 0.6400, 0.3300, 0.3000, 0.6000, 0.1500, 0.0600}},
-    // Adobe RGB (1998): the same white and the same red and blue, wider green.
-    {GIMG_PRIMARIES_ADOBE_RGB,
-        {0.3127, 0.3290, 0.6400, 0.3300, 0.2100, 0.7100, 0.1500, 0.0600}},
-};
-
-/** Name the gamut a cHRM payload describes, or leave it unknown. */
-static GIMG_Primaries gimg_png_gamut_from_chrm(
-    const unsigned char * p, size_t len) {
+/**
+ * Read a cHRM payload into a gamut.
+ *
+ * cHRM states all four points, so the result is exact and needs no table.
+ * Naming it is gimg_gamut_identify()'s job and is a separate question from
+ * carrying it: a gamut with no name here still reaches the caller intact.
+ */
+static bool gimg_png_gamut_from_chrm(
+    const unsigned char * p, size_t len, GIMG_Gamut * out_gamut) {
   if (!p || len < GIMG_PNG_cHRM_LEN) {
-    return GIMG_PRIMARIES_UNKNOWN;
+    return false;
   }
   double value[8];
   for (unsigned int i = 0; i < 8; i++) {
@@ -134,22 +124,15 @@ static GIMG_Primaries gimg_png_gamut_from_chrm(
         (uint32_t)p[(i * 4) + 3];
     value[i] = (double)raw / GIMG_PNG_cHRM_SCALE;
   }
-  for (size_t g = 0;
-      g < sizeof(gimg_png_known_gamuts) / sizeof(gimg_png_known_gamuts[0]);
-      g++) {
-    bool all = true;
-    for (unsigned int i = 0; i < 8 && all; i++) {
-      double d = value[i] - gimg_png_known_gamuts[g].xy[i];
-      if (d < 0) {
-        d = -d;
-      }
-      all = d <= GIMG_PNG_cHRM_TOLERANCE;
-    }
-    if (all) {
-      return gimg_png_known_gamuts[g].primaries;
-    }
-  }
-  return GIMG_PRIMARIES_UNKNOWN;
+  out_gamut->white.x = value[0];
+  out_gamut->white.y = value[1];
+  out_gamut->red.x = value[2];
+  out_gamut->red.y = value[3];
+  out_gamut->green.x = value[4];
+  out_gamut->green.y = value[5];
+  out_gamut->blue.x = value[6];
+  out_gamut->blue.y = value[7];
+  return true;
 }
 /** @} */
 
@@ -206,16 +189,14 @@ static bool gimg_png_fill_color_info_from_ancillary(
       // an RGB image.
       if (primaries == 1u && transfer == 13u && matrix == 0u &&
           full_range == 1u) {
-        out_info->primaries = GIMG_PRIMARIES_SRGB;
-        out_info->white_point = GIMG_PRIMARIES_SRGB;
+        (void)gimg_color_info_set_gamut(out_info, GIMG_PRIMARIES_SRGB);
         out_info->transfer = GIMG_TRANSFER_SRGB;
         return true;
       }
       // Transfer 8 is linear, and primaries 1 still names the sRGB gamut.
       if (primaries == 1u && transfer == 8u && matrix == 0u &&
           full_range == 1u) {
-        out_info->primaries = GIMG_PRIMARIES_SRGB;
-        out_info->white_point = GIMG_PRIMARIES_SRGB;
+        (void)gimg_color_info_set_gamut(out_info, GIMG_PRIMARIES_SRGB);
         out_info->transfer = GIMG_TRANSFER_LINEAR;
         return true;
       }
@@ -232,8 +213,7 @@ static bool gimg_png_fill_color_info_from_ancillary(
       if (intent > 3) {
         intent = 0;
       }
-      out_info->primaries = GIMG_PRIMARIES_SRGB;
-      out_info->white_point = GIMG_PRIMARIES_SRGB;
+      (void)gimg_color_info_set_gamut(out_info, GIMG_PRIMARIES_SRGB);
       out_info->transfer = GIMG_TRANSFER_SRGB;
       out_info->intent = (GIMG_Rendering_Intent)intent;
       return true;
@@ -263,8 +243,7 @@ static bool gimg_png_fill_color_info_from_ancillary(
           gimg_free(alloc, decoded);
           return false;
         }
-        out_info->primaries = GIMG_PRIMARIES_UNKNOWN;
-        out_info->white_point = GIMG_PRIMARIES_UNKNOWN;
+        out_info->gamut_stated = false;
         out_info->transfer = GIMG_TRANSFER_UNKNOWN;
         out_info->icc_bytes = decoded;
         out_info->icc_size = out_len;
@@ -279,10 +258,11 @@ static bool gimg_png_fill_color_info_from_ancillary(
   // Read whichever is there and say nothing about the half that is absent - a
   // gamma with no cHRM leaves the gamut to the reader's assumption, which is
   // what the writer here relies on when it omits cHRM for an sRGB gamut.
-  GIMG_Primaries gamut = GIMG_PRIMARIES_UNKNOWN;
+  GIMG_Gamut gamut;
+  bool have_gamut = false;
   if (first_chrm != (size_t)-1) {
-    gamut = gimg_png_gamut_from_chrm(state->ancillary[first_chrm].payload,
-        state->ancillary[first_chrm].payload_size);
+    have_gamut = gimg_png_gamut_from_chrm(state->ancillary[first_chrm].payload,
+        state->ancillary[first_chrm].payload_size, &gamut);
   }
   bool said_something = false;
   if (first_gama != (size_t)-1) {
@@ -299,9 +279,9 @@ static bool gimg_png_fill_color_info_from_ancillary(
       }
     }
   }
-  if (gamut != GIMG_PRIMARIES_UNKNOWN) {
-    out_info->primaries = gamut;
-    out_info->white_point = gamut;
+  if (have_gamut) {
+    out_info->gamut = gamut;
+    out_info->gamut_stated = true;
     said_something = true;
   }
   return said_something;

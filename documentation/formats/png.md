@@ -60,7 +60,7 @@ order:
 | Raster's `GIMG_Color_Info` | Written |
 |---|---|
 | `transfer` is sRGB | `sRGB`, with the rendering intent |
-| `primaries` are Adobe RGB, and no profile | `cHRM`, beside whichever of the next two applies |
+| a stated gamut that is not sRGB's, and no profile | `cHRM`, beside whichever of the next two applies |
 | `transfer` is a gamma, or linear | `gAMA`; linear is a gamma of 1 |
 | An ICC profile is attached | `iCCP`, deflated, keyword "ICC Profile" |
 | None of the above | nothing |
@@ -75,10 +75,11 @@ Adobe RGB came out of a save as PNG carrying its gamma and not its gamut. It
 is not written beside `iCCP`, where the profile is the more specific
 statement.
 
-On the way in, `cHRM` is read the same way: the white point and three
-primaries are matched against the two gamuts `GIMG_Color_Info` can name, and
-anything else - BT.2020, say - is left unknown rather than rounded to the
-nearer of them, which is the rule `cICP` already followed. A `cHRM` of the
+On the way in, `cHRM` is read into `GIMG_Color_Info.gamut` exactly: the white
+point and the three primaries as the file stated them, with no table in
+between. `gimg_gamut_identify()` is what puts a name to the result, and a
+gamut it has no name for is unlabelled rather than lost - the coordinates are
+still there, and a save writes them back out. A `cHRM` of the
 wrong length never reaches this: the loader enforces the fixed length of every
 chunk whose shape the specification fixes, and refuses the file.
 
@@ -229,7 +230,7 @@ Short reference for chunks, depths, filters, and limitations. Update when adding
 | **Ancillary the document owns** | bKGD (11.3.4.1) is reported through `gimg_doc_background_color()`, and the chunk written comes from the document rather than from the file - see "The background colour". A unit 0 pHYs (11.3.4.3) is the same arrangement for `gimg_doc_pixel_aspect_ratio()` | Otherwise the setter would be a no-op that reported success: the accessor would give the new value and the file would keep the old one, which only a round trip reveals. The file's own bytes still go back verbatim when they state what the document states, so an untouched round trip is byte for byte |
 | **Ancillary whose shape follows the color type** | bKGD (11.3.4.1), sBIT (11.3.2.4) and hIST (11.3.4.2) are laid out according to the color type, and the one being written is not always the one the frame arrived as. A background color translates wherever the destination can hold it - gray becomes R=G=B, a palette index becomes the color it names, a color becomes gray only when its samples already agree - rescaling between depths by 13.12 | sBIT does not survive a change of depth: rescaling spreads the value over the whole of the new sample, so a count taken before it would misdescribe what is stored. hIST has no meaning without the palette it counts. Those are dropped, as is any of the three whose length was already wrong for the file it came from: an absent advisory chunk is a smaller lie than a wrong one |
 | **pHYs (11.3.4.3)** | Read into the document's common metadata as dots per inch, and written from it when the file did not bring a pHYs of its own. An inch is exactly 0.0254 m, so the conversion is integer arithmetic - 5000/127 and back - and every resolution from 1 to 1200 dpi survives the round trip exactly | Only unit specifier 1 states a physical size. Unit 0 gives an aspect ratio, which says how a pixel is shaped and not how big it is, so it yields no dpi. A pHYs the file came with is the one written back; the metadata copy is a fallback for a document that arrived from somewhere else, such as a JPEG's JFIF density |
-| **Color precedence** | cICP > sRGB > iCCP > gAMA/cHRM, which is the order the Third Edition sets | A cICP naming code points `GIMG_Color_Info` cannot hold (BT.2020, PQ, HLG, limited range) leaves the color **unknown** rather than being approximated; the chunk is preserved for a caller that can read it |
+| **Color precedence** | cICP > sRGB > iCCP > gAMA/cHRM, which is the order the Third Edition sets | A cICP naming code points this reader does not translate (PQ, HLG, limited range) leaves the color **unknown** rather than being approximated; the chunk is preserved for a caller that can read it |
 | **APNG** | acTL, fcTL, fdAT; dispose None/Background/Previous, blend Source/Over; 8- and 16-bit compositing | acTL after IDAT, duplicate acTL, out-of-order sequence numbers, more fcTL than acTL declared &rarr; `GIMG_ERR_FORMAT`. A frame must lie inside the canvas the IHDR describes - width and height above zero, `x_offset + width` at most the image width and likewise for the height - or `GIMG_ERR_FORMAT`. That is a memory-safety constraint and not a formality: compositing writes the frame into the canvas at that offset. The compositing clips as well, so no path can write past the canvas even if one reached it with bad values |
 | **Orientation** | All eight of CIPA DC-008 Table 6, applied to the decoded raster | — |
 

@@ -724,8 +724,7 @@ static GIMG_Raster * tagged_raster(const GIMG_Pixel_Format * fmt,
   std::memcpy(profile_out.data() + 36, "acsp", 4);
   GIMG_Color_Info ci;
   gimg_color_info_default(&ci);
-  ci.primaries = GIMG_PRIMARIES_ADOBE_RGB;
-  ci.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  (void)gimg_color_info_set_gamut(&ci, GIMG_PRIMARIES_ADOBE_RGB);
   ci.transfer = GIMG_TRANSFER_GAMMA;
   ci.gamma_value = 2.2;
   ci.intent = GIMG_INTENT_SATURATION;
@@ -742,8 +741,8 @@ static GIMG_Raster * tagged_raster(const GIMG_Pixel_Format * fmt,
 static void expect_same_color(const GIMG_Color_Info * got,
     const std::vector<uint8_t> & profile) {
   ASSERT_NE(got, nullptr);
-  EXPECT_EQ(got->primaries, GIMG_PRIMARIES_ADOBE_RGB);
-  EXPECT_EQ(got->white_point, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(gimg_gamut_identify(&got->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_ADOBE_RGB);
   EXPECT_EQ(got->transfer, GIMG_TRANSFER_GAMMA);
   EXPECT_DOUBLE_EQ(got->gamma_value, 2.2);
   EXPECT_EQ(got->intent, GIMG_INTENT_SATURATION);
@@ -817,7 +816,9 @@ TEST(Ops, AnUntaggedRasterStaysUntaggedThroughAConversion) {
   const GIMG_Color_Info * ci = gimg_raster_color_info_const(dst);
   ASSERT_NE(ci, nullptr);
   EXPECT_EQ(ci->icc_size, 0u);
-  EXPECT_EQ(ci->primaries, GIMG_PRIMARIES_UNKNOWN);
+  // gamut_stated, not identify(): an unnameable gamut also identifies as
+  // UNKNOWN, and this test is about nothing having been stated at all.
+  EXPECT_FALSE(ci->gamut_stated);
   EXPECT_EQ(ci->transfer, GIMG_TRANSFER_UNKNOWN);
   gimg_raster_destroy(src);
   gimg_raster_destroy(dst);

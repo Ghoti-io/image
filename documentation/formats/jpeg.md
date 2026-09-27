@@ -113,10 +113,15 @@ stating:
 - **A profile the source carried always wins.** Synthesis happens only where
   there is nothing to repeat. A raster that carries a profile has that
   profile written byte for byte, whatever else its color info says.
-- **Half a model is written as nothing.** Primaries without a transfer
-  function, or a transfer function without primaries, cannot become a
+- **Half a model is written as nothing.** A gamut without a transfer
+  function, or a transfer function without a gamut, cannot become a
   matrix/TRC profile without inventing the missing half, so nothing is
   written. That is what such a raster got before this existed.
+- **A gamut with no tabulated colorants gets no profile either.** The writer
+  holds published D50-adapted colorants for sRGB and Adobe RGB, which cannot
+  be derived from *x,y* without a Bradford adaptation, so a raster whose
+  gamut is named but absent from that table - Display P3, say - is written
+  without one rather than with the wrong colorants.
 - **Only a three-component frame.** What is built describes an RGB image.
   A gray or CMYK frame would need a different kind of profile and gets none.
 

@@ -1592,23 +1592,37 @@ static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
   // than instead of it (PNG 11.3.2.1; the two are a pair).  It is written
   // only for a gamut a reader would not otherwise assume: sRGB's primaries
   // are what a PNG with no such chunk means, so stating them costs 44 bytes
-  // and says nothing new, while leaving Adobe RGB unstated loses it - which
-  // it did, so a BMP with a calibrated V4 header naming Adobe RGB came out
-  // of a save as PNG carrying its gamma and not its gamut.
+  // and says nothing new, while leaving any other gamut unstated loses it -
+  // which it did, so a BMP with a calibrated V4 header naming Adobe RGB came
+  // out of a save as PNG carrying its gamma and not its gamut.
+  //
+  // The coordinates come from the colour info rather than a table, so a
+  // space this library has no name for is written out as faithfully as one
+  // it does.  This used to be a hard-coded Adobe RGB payload, which was the
+  // only other gamut the model could hold.
   //
   // Not written beside iCCP: the profile is the more specific statement and
   // supersedes it, and 11.3.3.3 does not want the two disagreeing.
-  if (info->primaries == GIMG_PRIMARIES_ADOBE_RGB &&
+  if (info->gamut_stated &&
+      gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT) !=
+          GIMG_PRIMARIES_SRGB &&
       !(info->icc_bytes && info->icc_size > 0)) {
-    // White point D65, then red, green and blue, each x and y times 100000.
-    static const uint32_t adobe_rgb_chrm[8] = {
-        31270u, 32900u, 64000u, 33000u, 21000u, 71000u, 15000u, 6000u};
+    // White point, then red, green and blue, each x and y times 100000.
+    const double coord[8] = {info->gamut.white.x, info->gamut.white.y,
+        info->gamut.red.x, info->gamut.red.y, info->gamut.green.x,
+        info->gamut.green.y, info->gamut.blue.x, info->gamut.blue.y};
     unsigned char chrm[32];
     for (unsigned int i = 0; i < 8; i++) {
-      chrm[i * 4] = (unsigned char)(adobe_rgb_chrm[i] >> 24);
-      chrm[(i * 4) + 1] = (unsigned char)(adobe_rgb_chrm[i] >> 16);
-      chrm[(i * 4) + 2] = (unsigned char)(adobe_rgb_chrm[i] >> 8);
-      chrm[(i * 4) + 3] = (unsigned char)(adobe_rgb_chrm[i] & 0xFFu);
+      double scaled = (coord[i] * GIMG_PNG_cHRM_SCALE) + 0.5;
+      // cHRM is unsigned, so a coordinate outside 0..1 has nowhere to go; it
+      // is clamped rather than wrapped, and a gamut carrying one is not
+      // something any writer in reach produces.
+      uint32_t v =
+          (scaled > 0.0 && scaled <= 4294967295.0) ? (uint32_t)scaled : 0u;
+      chrm[i * 4] = (unsigned char)(v >> 24);
+      chrm[(i * 4) + 1] = (unsigned char)(v >> 16);
+      chrm[(i * 4) + 2] = (unsigned char)(v >> 8);
+      chrm[(i * 4) + 3] = (unsigned char)(v & 0xFFu);
     }
     r = gimg_png_write_chunk(stream, GIMG_PNG_cHRM, chrm, sizeof(chrm));
     if (r != GIMG_OK) {

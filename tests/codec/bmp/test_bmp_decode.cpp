@@ -955,8 +955,8 @@ TEST(BmpDecode, V4CalibratedEndpointsNameTheGamut) {
 
   const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
-  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_SRGB);
-  EXPECT_EQ(color->white_point, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_SRGB);
   EXPECT_EQ(color->transfer, GIMG_TRANSFER_GAMMA);
   EXPECT_NEAR(color->gamma_value, 2.2, 0.001);
 }
@@ -970,7 +970,8 @@ TEST(BmpDecode, V4EndpointsDistinguishAdobeRgbFromSrgb) {
 
   const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
-  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_ADOBE_RGB);
 }
 
 TEST(BmpDecode, V4GammasThatDisagreeLeaveTheTransferUnsaid) {
@@ -984,7 +985,9 @@ TEST(BmpDecode, V4GammasThatDisagreeLeaveTheTransferUnsaid) {
   const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
   EXPECT_EQ(color->transfer, GIMG_TRANSFER_UNKNOWN);
-  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_SRGB) << "the gamut is still known";
+  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_SRGB)
+      << "the gamut is still known";
 }
 
 TEST(BmpDecode, V5NamesSrgbAndItsRenderingIntent) {
@@ -994,7 +997,8 @@ TEST(BmpDecode, V5NamesSrgbAndItsRenderingIntent) {
 
   const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
-  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_SRGB);
   EXPECT_EQ(color->transfer, GIMG_TRANSFER_SRGB);
   // LCS_GM_GRAPHICS is the relative colorimetric intent.
   EXPECT_EQ(color->intent, GIMG_INTENT_RELATIVE_COLORIMETRIC);
@@ -1035,7 +1039,8 @@ TEST(BmpDecode, V5LinkedProfileIsNotFollowed) {
   const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
   EXPECT_EQ(color->icc_size, 0u);
-  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_UNKNOWN);
   expect_pattern(img);
 }
 
@@ -1172,7 +1177,8 @@ TEST(BmpDecode, APlainInfoHeaderSaysNothingAboutColor) {
 
   const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
-  EXPECT_EQ(color->primaries, GIMG_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_UNKNOWN);
   EXPECT_EQ(color->transfer, GIMG_TRANSFER_UNKNOWN);
   EXPECT_EQ(color->icc_size, 0u);
 }

@@ -121,9 +121,11 @@ document state, and the encoder's row and encoding buffers.
 - **Color (V4 and V5):** `LCS_sRGB` and `LCS_WINDOWS_COLOR_SPACE` name sRGB.
   `LCS_CALIBRATED_RGB` describes the space instead: its endpoints are declared
   `CIEXYZ` and written by every writer in reach as xyY chromaticities
-  normalized to sum to one, and are matched against the two gamuts
-  `GIMG_Color_Info` names - sRGB and Adobe RGB, which share their red and blue
-  primaries and differ only in green. Three per-channel gammas that agree
+  normalized to sum to one, and are read into `GIMG_Color_Info.gamut`
+  exactly. A V4 header carries three endpoints and nowhere to state a white
+  point, so `gamut.white` is left `{0, 0}` rather than filled with D65, and
+  `gimg_gamut_identify()` names such a gamut from its primaries alone. Three
+  per-channel gammas that agree
   become one transfer function; three that disagree describe a space this
   model cannot hold and leave the transfer unsaid rather than averaged.
   `bV5Intent` maps onto the four rendering intents. `PROFILE_EMBEDDED` reads
@@ -260,7 +262,7 @@ produces no color header at all rather than the nearest thing it can say.
 |---|---|---|
 | An ICC profile is attached | `BITMAPV5HEADER` (124) | `bV5CSType` = `PROFILE_EMBEDDED`, the profile after the pixel data, `bV5ProfileData` and `bV5ProfileSize` locating it |
 | `transfer` is sRGB | `BITMAPV4HEADER` (108) | `bV4CSType` = `LCS_sRGB` |
-| Known primaries, or a gamma, or linear | `BITMAPV4HEADER` (108) | `LCS_CALIBRATED_RGB`, the endpoints as xyY chromaticities, the gamma in 16.16 on all three channels |
+| A stated gamut, or a gamma, or linear | `BITMAPV4HEADER` (108) | `LCS_CALIBRATED_RGB`, the endpoints as xyY chromaticities, the gamma in 16.16 on all three channels |
 | Any of the above with an intent other than perceptual | `BITMAPV5HEADER` (124) | as above plus `bV5Intent`; that field exists only in a V5 header |
 | None of the above | `BITMAPINFOHEADER` (40), or `BITMAPV3INFOHEADER` (56) when alpha needs masks | nothing about color |
 

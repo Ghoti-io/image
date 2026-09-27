@@ -65,7 +65,7 @@ GIMG_Raster * stating(GIMG_Primaries primaries, GIMG_Transfer transfer,
       gimg_raster_stride_bytes(raster) * 16u);
   GIMG_Color_Info ci;
   gimg_color_info_default(&ci);
-  ci.primaries = primaries;
+  (void)gimg_color_info_set_gamut(&ci, primaries);
   ci.transfer = transfer;
   ci.gamma_value = gamma;
   ci.intent = intent;
@@ -626,7 +626,8 @@ TEST(JpegSynthesizedIcc, ACalibratedBmpReachesAJpegStillSayingSo) {
   ASSERT_NE(raster, nullptr);
   const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
   ASSERT_NE(ci, nullptr);
-  EXPECT_EQ(ci->primaries, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(gimg_gamut_identify(&ci->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_ADOBE_RGB);
   EXPECT_EQ(ci->transfer, GIMG_TRANSFER_GAMMA);
   EXPECT_NEAR(ci->gamma_value, 2.2, 0.01);
   EXPECT_EQ(ci->icc_size, 0u) << "a V4 header states a model without a profile";
@@ -886,7 +887,7 @@ std::vector<uint8_t> synth(const GIMG_Color_Info & info) {
 GIMG_Color_Info gamma_info(double g) {
   GIMG_Color_Info info;
   std::memset(&info, 0, sizeof(info));
-  info.primaries = GIMG_PRIMARIES_SRGB;
+  (void)gimg_color_info_set_gamut(&info, GIMG_PRIMARIES_SRGB);
   info.transfer = GIMG_TRANSFER_GAMMA;
   info.gamma_value = g;
   return info;

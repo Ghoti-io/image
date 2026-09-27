@@ -3342,8 +3342,7 @@ TEST(PngEncode, EmbeddedProfileOnTheRasterIsWrittenAsICCP) {
 TEST(PngEncode, SrgbTransferOnTheRasterIsWrittenAsSrgb) {
   GIMG_Color_Info color;
   gimg_color_info_default(&color);
-  color.primaries = GIMG_PRIMARIES_SRGB;
-  color.white_point = GIMG_PRIMARIES_SRGB;
+  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
   color.transfer = GIMG_TRANSFER_SRGB;
 
   GIMG_Raster * raster = raster_with_color(color);
@@ -3362,8 +3361,7 @@ TEST(PngEncode, SrgbPrimariesWithAGammaAreWrittenAsGamaNotSrgb) {
   // never stated.  bmpsuite's g/pal8v4.bmp is exactly that file.
   GIMG_Color_Info color;
   gimg_color_info_default(&color);
-  color.primaries = GIMG_PRIMARIES_SRGB;
-  color.white_point = GIMG_PRIMARIES_SRGB;
+  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
   color.transfer = GIMG_TRANSFER_GAMMA;
   color.gamma_value = 2.2;
 
@@ -3571,8 +3569,7 @@ TEST(PngEncode, AGamutAReaderWouldNotAssumeIsWrittenAsChrm) {
   // beside gAMA rather than instead of it.
   GIMG_Color_Info color;
   gimg_color_info_default(&color);
-  color.primaries = GIMG_PRIMARIES_ADOBE_RGB;
-  color.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_ADOBE_RGB);
   color.transfer = GIMG_TRANSFER_GAMMA;
   color.gamma_value = 2.2;
 
@@ -3589,8 +3586,8 @@ TEST(PngEncode, AGamutAReaderWouldNotAssumeIsWrittenAsChrm) {
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
   const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
-  EXPECT_EQ(read->primaries, GIMG_PRIMARIES_ADOBE_RGB);
-  EXPECT_EQ(read->white_point, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(gimg_gamut_identify(&read->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_ADOBE_RGB);
   EXPECT_EQ(read->transfer, GIMG_TRANSFER_GAMMA);
   EXPECT_NEAR(read->gamma_value, 2.2, 0.0001);
   gimg_raster_destroy(back);
@@ -3603,8 +3600,7 @@ TEST(PngEncode, TheGamutAReaderAlreadyAssumesIsNotWritten) {
   // 44 bytes and says nothing new.
   GIMG_Color_Info color;
   gimg_color_info_default(&color);
-  color.primaries = GIMG_PRIMARIES_SRGB;
-  color.white_point = GIMG_PRIMARIES_SRGB;
+  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
   color.transfer = GIMG_TRANSFER_GAMMA;
   color.gamma_value = 1.8;
 
@@ -3621,8 +3617,7 @@ TEST(PngEncode, ChrmIsNotWrittenBesideAProfile) {
   std::memcpy(&profile[36], "acsp", 4);
   GIMG_Color_Info color;
   gimg_color_info_default(&color);
-  color.primaries = GIMG_PRIMARIES_ADOBE_RGB;
-  color.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_ADOBE_RGB);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
 
@@ -3638,8 +3633,7 @@ TEST(PngEncode, AGamutWithNoTransferIsStillWritten) {
   // zero when nothing stated one.
   GIMG_Color_Info color;
   gimg_color_info_default(&color);
-  color.primaries = GIMG_PRIMARIES_ADOBE_RGB;
-  color.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_ADOBE_RGB);
 
   std::vector<uint8_t> png;
   ASSERT_EQ(save_png(raster_with_color(color), GIMG_META_PRESERVE_ALL, png),
@@ -3654,7 +3648,8 @@ TEST(PngEncode, AGamutWithNoTransferIsStillWritten) {
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
   const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
-  EXPECT_EQ(read->primaries, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(gimg_gamut_identify(&read->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_ADOBE_RGB);
   EXPECT_EQ(read->transfer, GIMG_TRANSFER_UNKNOWN)
       << "the file stated no curve, so neither does the raster";
   gimg_raster_destroy(back);

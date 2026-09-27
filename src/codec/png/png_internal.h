@@ -73,6 +73,17 @@
 extern "C" {
 #endif
 
+/** @name cHRM
+ *
+ * cHRM (PNG 11.3.2.1) states the white point and the three primaries as x,y
+ * chromaticities, each stored as the value times 100000.  Both the reader and
+ * the writer need the scale, which is why it lives here.
+ * @{
+ */
+#define GIMG_PNG_cHRM_LEN 32u        ///< Eight 4-byte values.
+#define GIMG_PNG_cHRM_SCALE 100000.0 ///< Each is the chromaticity x 100000.
+/** @} */
+
 /** PNG signature length (bytes). §5.2 PNG signature. */
 #define GIMG_PNG_SIGNATURE_LEN 8
 

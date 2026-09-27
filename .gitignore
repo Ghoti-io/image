@@ -5,6 +5,13 @@ build
 *.gdb
 *.txt
 
+# ...but the colour characterisation table is a committed fixture, not
+# debug output.  The blanket *.txt above swallowed it silently: `git status`
+# stayed clean, so the table would never have been committed and the sweep
+# that reads it would have failed on every fresh clone.  A negation works
+# here only because no rule above excludes tests/data itself.
+!tests/data/color_interpretation.txt
+
 # IDE / CTest run output (not used by project Makefile)
 Testing
 

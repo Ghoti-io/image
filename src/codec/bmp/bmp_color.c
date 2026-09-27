@@ -67,49 +67,35 @@
 /** @} */
 
 /**
- * @name Chromaticity comparison
+ * @name Chromaticity encoding
  *
  * A chromaticity is an FXPT2DOT30 - a signed fixed-point value with 30
- * fractional bits - compared at a thousandth, which is finer than any of
- * these tables is quoted to and coarser than the rounding of writing one out.
+ * fractional bits.  The tolerance is no longer used to compare a gamut
+ * against a table: the endpoints are carried through exactly and
+ * gimg_gamut_identify() does any naming.  What is left of it here is the
+ * sanity check that a triple of endpoints sums to something near one, which
+ * is what says they are chromaticities at all rather than the CIEXYZ the
+ * field is nominally declared as.
  * @{
  */
 #define GIMG_BMP_FXPT2DOT30_ONE (INT32_C(1) << 30) ///< 1.0 in FXPT2DOT30.
 #define GIMG_BMP_CHROMA_TOLERANCE (GIMG_BMP_FXPT2DOT30_ONE / 1000) ///< 0.001.
 /** @} */
 
-/** A gamut this model can name, as the nine endpoint values would spell it. */
-typedef struct {
-  GIMG_Primaries primaries; ///< What GIMG_Color_Info calls this gamut.
-  double xy[6]; ///< Red x, red y, green x, green y, blue x, blue y.
-} bmp_gamut_t;
-
-static const bmp_gamut_t bmp_known_gamuts[] = {
-    // ITU-R BT.709, which sRGB shares.
-    {GIMG_PRIMARIES_SRGB, {0.6400, 0.3300, 0.3000, 0.6000, 0.1500, 0.0600}},
-    // Adobe RGB (1998): the same red and blue, a wider green.
-    {GIMG_PRIMARIES_ADOBE_RGB,
-        {0.6400, 0.3300, 0.2100, 0.7100, 0.1500, 0.0600}},
-};
-
-static bool bmp_chroma_matches(int32_t value, double expected) {
-  double scaled = expected * (double)GIMG_BMP_FXPT2DOT30_ONE;
-  double delta = (double)value - scaled;
-  if (delta < 0) {
-    delta = -delta;
-  }
-  return delta <= (double)GIMG_BMP_CHROMA_TOLERANCE;
-}
-
 /**
- * Name the gamut the nine endpoint values describe.
+ * Read the nine endpoint values into a gamut.
  *
- * The fields are declared CIEXYZ and written as xyY chromaticities, so only
- * the first two of each triple say anything; the third is what is left after
- * the other two, and is checked only to the extent that a triple summing to
+ * The fields are declared CIEXYZ and every writer in reach puts xyY
+ * chromaticities there instead, normalized so each triple sums to one, so
+ * only the first two of each triple say anything.  A triple summing to
  * something far from one is not chromaticities at all and is refused.
+ *
+ * There is no white point here: a V4 header carries three endpoints and
+ * nowhere to state one.  GIMG_Gamut.white is left {0, 0} rather than filled
+ * with D65, which would be this library asserting something the file did not.
  */
-static GIMG_Primaries bmp_gamut_from_endpoints(const int32_t endpoints[9]) {
+static bool bmp_gamut_from_endpoints(
+    const int32_t endpoints[9], GIMG_Gamut * out_gamut) {
   for (unsigned int channel = 0; channel < 3; channel++) {
     int64_t sum = (int64_t)endpoints[channel * 3] +
         (int64_t)endpoints[(channel * 3) + 1] +
@@ -119,21 +105,19 @@ static GIMG_Primaries bmp_gamut_from_endpoints(const int32_t endpoints[9]) {
       off = -off;
     }
     if (off > (int64_t)GIMG_BMP_CHROMA_TOLERANCE * 10) {
-      return GIMG_PRIMARIES_UNKNOWN;
+      return false;
     }
   }
-  for (size_t i = 0; i < GIMG_ARRAY_SIZE(bmp_known_gamuts); i++) {
-    const bmp_gamut_t * gamut = &bmp_known_gamuts[i];
-    if (bmp_chroma_matches(endpoints[0], gamut->xy[0]) &&
-        bmp_chroma_matches(endpoints[1], gamut->xy[1]) &&
-        bmp_chroma_matches(endpoints[3], gamut->xy[2]) &&
-        bmp_chroma_matches(endpoints[4], gamut->xy[3]) &&
-        bmp_chroma_matches(endpoints[6], gamut->xy[4]) &&
-        bmp_chroma_matches(endpoints[7], gamut->xy[5])) {
-      return gamut->primaries;
-    }
-  }
-  return GIMG_PRIMARIES_UNKNOWN;
+  const double one = (double)GIMG_BMP_FXPT2DOT30_ONE;
+  out_gamut->white.x = 0.0;
+  out_gamut->white.y = 0.0;
+  out_gamut->red.x = (double)endpoints[0] / one;
+  out_gamut->red.y = (double)endpoints[1] / one;
+  out_gamut->green.x = (double)endpoints[3] / one;
+  out_gamut->green.y = (double)endpoints[4] / one;
+  out_gamut->blue.x = (double)endpoints[6] / one;
+  out_gamut->blue.y = (double)endpoints[7] / one;
+  return true;
 }
 
 /** Map a rendering intent back onto bV5Intent. */
@@ -183,16 +167,15 @@ void gimg_bmp_color_from_header(
   switch (header->cs_type) {
     case GIMG_BMP_LCS_sRGB:
     case GIMG_BMP_LCS_WINDOWS_COLOR_SPACE:
-      out_info->primaries = GIMG_PRIMARIES_SRGB;
-      out_info->white_point = GIMG_PRIMARIES_SRGB;
+      (void)gimg_color_info_set_gamut(out_info, GIMG_PRIMARIES_SRGB);
       out_info->transfer = GIMG_TRANSFER_SRGB;
       break;
 
     case GIMG_BMP_LCS_CALIBRATED_RGB: {
-      GIMG_Primaries gamut = bmp_gamut_from_endpoints(header->endpoints);
-      if (gamut != GIMG_PRIMARIES_UNKNOWN) {
-        out_info->primaries = gamut;
-        out_info->white_point = gamut;
+      GIMG_Gamut gamut;
+      if (bmp_gamut_from_endpoints(header->endpoints, &gamut)) {
+        out_info->gamut = gamut;
+        out_info->gamut_stated = true;
       }
       // One transfer function, so three disagreeing gammas describe a space
       // this cannot hold and are left unsaid rather than averaged.
@@ -295,10 +278,12 @@ GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
  * of them.
  */
 static void bmp_endpoints_from_gamut(
-    const bmp_gamut_t * gamut, unsigned char * out) {
+    const GIMG_Gamut * gamut, unsigned char * out) {
+  const GIMG_Chromaticity * point[3] = {
+      &gamut->red, &gamut->green, &gamut->blue};
   for (unsigned int channel = 0; channel < 3; channel++) {
-    double x = gamut->xy[channel * 2];
-    double y = gamut->xy[(channel * 2) + 1];
+    double x = point[channel]->x;
+    double y = point[channel]->y;
     double triple[3] = {x, y, 1.0 - x - y};
     for (unsigned int i = 0; i < 3; i++) {
       int32_t fixed =
@@ -344,13 +329,12 @@ uint32_t gimg_bmp_color_to_header(
     // sum to one and so reads back as an unnamed gamut, and a gamma of zero
     // reads back as no transfer stated.  Saying only the half that is known
     // beats inventing the other.
-    for (size_t i = 0; i < GIMG_ARRAY_SIZE(bmp_known_gamuts); i++) {
-      if (bmp_known_gamuts[i].primaries == info->primaries) {
-        bmp_endpoints_from_gamut(
-            &bmp_known_gamuts[i], tail + GIMG_BMP_V4_ENDPOINTS_AT);
-        said_something = true;
-        break;
-      }
+    // The gamut goes out as the file spells it, with no table in between:
+    // a space this library has no name for round-trips exactly like one it
+    // does, which is the point of storing coordinates rather than a name.
+    if (info->gamut_stated) {
+      bmp_endpoints_from_gamut(&info->gamut, tail + GIMG_BMP_V4_ENDPOINTS_AT);
+      said_something = true;
     }
     double gamma = 0.0;
     if (info->transfer == GIMG_TRANSFER_LINEAR) {

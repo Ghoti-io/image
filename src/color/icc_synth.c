@@ -63,8 +63,8 @@
  * property that makes a set of matrix colorants well formed.  Checking the
  * digits against a copy of themselves would assert nothing.
  *
- * GIMG_Color_Info.white_point is not read.  An ICC matrix profile states its
- * colorants already adapted to the PCS illuminant, so the white point it
+ * The gamut's native white point is not written.  An ICC matrix profile states
+ * its colorants already adapted to the PCS illuminant, so the white point it
  * carries is D50 whatever the gamut's native white was - here D65 for both,
  * which is what the tabulated colorants are adapted from.  A gamut with some
  * other native white would need its own adapted colorants in the table above,
@@ -301,7 +301,15 @@ GIMG_Result gimg_icc_synthesize(const GIMG_Allocator * alloc,
   if (!info) {
     return GIMG_OK;
   }
-  const gimg_icc_gamut_t * gamut = gimg_icc_gamut_for(info->primaries);
+  // The gamut is identified from its coordinates, then looked up here for
+  // its D50-adapted colorants.  Those two tables are not duplicates: this one
+  // holds published XYZ values that cannot be derived from xy without a
+  // Bradford adaptation (see the note at the top), so it names fewer spaces
+  // than gimg_gamut_identify() can.  A space it does not name gets no
+  // profile, which is the honest answer - a matrix profile with the wrong
+  // colorants is worse than none.
+  const gimg_icc_gamut_t * gamut = gimg_icc_gamut_for(
+      gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT));
   if (!gamut || info->transfer == GIMG_TRANSFER_UNKNOWN) {
     // Half a color model cannot be written without inventing the other half.
     return GIMG_OK;

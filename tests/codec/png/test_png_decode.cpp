@@ -268,7 +268,8 @@ TEST(PngDecode, DecodeSrgbSetsColorInfo) {
 
   const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_SRGB);
   EXPECT_EQ(info->transfer, GIMG_TRANSFER_SRGB);
   EXPECT_EQ(info->intent, GIMG_INTENT_PERCEPTUAL) << "sRGB chunk intent 0 = Perceptual";
 
@@ -1413,7 +1414,8 @@ TEST(PngDecode, CicpOutranksTheOlderColorChunks) {
   ASSERT_TRUE(DecodeFixture("png_cicp_srgb.png", &s, &doc, &raster));
   const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_SRGB);
   EXPECT_EQ(info->transfer, GIMG_TRANSFER_SRGB)
       << "cICP names the sRGB transfer; the gAMA of 1.0 must not win";
   gimg_raster_destroy(raster);
@@ -1430,7 +1432,8 @@ TEST(PngDecode, ACicpThisColorModelCannotHoldLeavesItUnknown) {
   ASSERT_TRUE(DecodeFixture("png_cicp_bt2020_pq.png", &s, &doc, &raster));
   const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->primaries, GIMG_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_UNKNOWN);
   EXPECT_EQ(info->transfer, GIMG_TRANSFER_UNKNOWN);
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
@@ -2340,8 +2343,8 @@ TEST(PngChrm, AdobeRgbChromaticitiesNameTheGamut) {
   gimg_color_info_default(&ci);
   ASSERT_TRUE(color_from_chrm(
       {31270u, 32900u, 64000u, 33000u, 21000u, 71000u, 15000u, 6000u}, &ci));
-  EXPECT_EQ(ci.primaries, GIMG_PRIMARIES_ADOBE_RGB);
-  EXPECT_EQ(ci.white_point, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_ADOBE_RGB);
   EXPECT_EQ(ci.transfer, GIMG_TRANSFER_UNKNOWN)
       << "cHRM states the gamut and nothing about the curve";
 }
@@ -2351,20 +2354,47 @@ TEST(PngChrm, SrgbChromaticitiesNameTheGamutToo) {
   gimg_color_info_default(&ci);
   ASSERT_TRUE(color_from_chrm(
       {31270u, 32900u, 64000u, 33000u, 30000u, 60000u, 15000u, 6000u}, &ci));
-  EXPECT_EQ(ci.primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_SRGB);
   EXPECT_EQ(ci.transfer, GIMG_TRANSFER_UNKNOWN)
       << "the primaries sRGB shares are not a claim that the curve is sRGB's";
 }
 
-TEST(PngChrm, AGamutThisModelCannotNameIsLeftUnknown) {
-  // BT.2020's primaries. GIMG_Color_Info names sRGB and Adobe RGB and nothing
-  // else, so this is left unknown rather than rounded to the nearer of them -
-  // the same rule the cICP reader above applies.
+TEST(PngChrm, Bt2020ChromaticitiesNameTheGamut) {
+  // This used to assert that BT.2020 was left unknown, because the model
+  // named sRGB and Adobe RGB and nothing else.  It is named now.  The
+  // assertion was correct when written and expired when the table grew,
+  // which is the shape of every absence-assertion: what it really says is
+  // "not yet".
   GIMG_Color_Info ci;
   gimg_color_info_default(&ci);
   ASSERT_TRUE(color_from_chrm(
       {31270u, 32900u, 70800u, 29200u, 17000u, 79700u, 13100u, 4600u}, &ci));
-  EXPECT_EQ(ci.primaries, GIMG_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_BT2020);
+}
+
+TEST(PngChrm, AGamutWithNoNameIsStillCarriedExactly) {
+  // The replacement for the assertion above, and a stronger claim than it
+  // made: a gamut with no name here is not lost, it is simply unlabelled.
+  // These coordinates are no published space - Adobe RGB's green moved far
+  // enough to match nothing - so identify() says UNKNOWN while every number
+  // the file stated survives.
+  GIMG_Color_Info ci;
+  gimg_color_info_default(&ci);
+  ASSERT_TRUE(color_from_chrm(
+      {31270u, 32900u, 64000u, 33000u, 25000u, 65000u, 15000u, 6000u}, &ci));
+  EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_UNKNOWN);
+  ASSERT_TRUE(ci.gamut_stated) << "unnameable is not unstated";
+  EXPECT_NEAR(ci.gamut.white.x, 0.31270, 1e-9);
+  EXPECT_NEAR(ci.gamut.white.y, 0.32900, 1e-9);
+  EXPECT_NEAR(ci.gamut.red.x, 0.64000, 1e-9);
+  EXPECT_NEAR(ci.gamut.red.y, 0.33000, 1e-9);
+  EXPECT_NEAR(ci.gamut.green.x, 0.25000, 1e-9);
+  EXPECT_NEAR(ci.gamut.green.y, 0.65000, 1e-9);
+  EXPECT_NEAR(ci.gamut.blue.x, 0.15000, 1e-9);
+  EXPECT_NEAR(ci.gamut.blue.y, 0.06000, 1e-9);
 }
 
 TEST(PngChrm, AChrmOfTheWrongLengthIsRefusedBeforeTheColorIsRead) {
@@ -3147,11 +3177,12 @@ TEST(PngDecode, EachCicpCombinationThisModelCanHoldIsTranslated) {
         << "the fixture must carry a four-byte cICP to rewrite";
     GIMG_Color_Info info = {};
     ASSERT_TRUE(ColorInfoOf(png, &info));
-    EXPECT_EQ(info.primaries, c.want_primaries);
+    EXPECT_EQ(gimg_gamut_identify(&info.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+        c.want_primaries);
     EXPECT_EQ(info.transfer, c.want_transfer);
-    if (c.want_primaries == GIMG_PRIMARIES_SRGB) {
-      EXPECT_EQ(info.white_point, GIMG_PRIMARIES_SRGB);
-    }
+    EXPECT_EQ(info.gamut_stated, c.want_primaries != GIMG_PRIMARIES_UNKNOWN)
+        << "a cICP this reader does not translate states no gamut at all, "
+           "which is not the same as one it cannot name";
   }
 
   // The fixture also carries a gAMA of 1.0, and the point of cICP outranking

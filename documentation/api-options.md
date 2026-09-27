@@ -342,26 +342,46 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 
 @section api_options_color_info Color info (GIMG_Color_Info)
 
-**GIMG_Color_Info** (see `ghoti.io/image/color.h`) is attached to a raster and describes how to interpret color: primaries, transfer, rendering intent, optional ICC profile, and (for CMYK rasters) channel polarity.
+**GIMG_Color_Info** (see `ghoti.io/image/color.h`) is attached to a raster and describes how to interpret color: the gamut, transfer, rendering intent, optional ICC profile, and (for CMYK rasters) channel polarity. It **describes** colour and converts none of it.
 
 | Field | Description |
 |-------|-------------|
-| `primaries` / `white_point` | **GIMG_Primaries** — sRGB, Adobe RGB, or unknown. `white_point` is **not read by any writer**: both named gamuts are D65, and an ICC profile states colorants already adapted to D50 regardless. |
-| `transfer` | **GIMG_Transfer** — linear, sRGB, gamma, or unknown. |
+| `gamut` / `gamut_stated` | **GIMG_Gamut** — the white point and three primaries as CIE 1931 *x,y*, exactly as the file stated them. Read `gamut_stated` rather than comparing against zero. `white` may be `{0, 0}` while the primaries are set: a BMP V4 header carries three endpoints and nowhere to put a white point. |
+| `transfer` | **GIMG_Transfer** — linear, sRGB, gamma, a parametric curve, BT.1886, PQ or HLG, or unknown. |
+| `transfer_params` | The seven ICC `parametricCurveType` terms `{g, a, b, c, d, e, f}` when `transfer` is **GIMG_TRANSFER_PARAMETRIC**. |
 | `gamma_value` | Used when `transfer` is **GIMG_TRANSFER_GAMMA**. |
+| `reference` | **GIMG_Reference** — whether a sample is display-referred (a fraction of an unstated diffuse white) or scene-referred (a measurement of light). Nothing in this library produces **GIMG_REFERENCE_SCENE** yet. |
+| `white_luminance` | cd/m² of a full-scale sample, or 0 when unstated. |
 | `intent` | **GIMG_Rendering_Intent** — written into an ICC profile's header and into a BMP V5 header. A value outside the four ICC names is written as perceptual. |
-| `icc_bytes` / `icc_size` | Optional ICC profile; library does not take ownership. |
+| `icc_bytes` / `icc_size` | Optional ICC profile; library does not take ownership. It is carried opaquely: nothing here parses a profile, so an embedded one does not fill in `gamut` or `transfer`. |
 | `cmyk_polarity` | **GIMG_CMYK_Polarity** — interpretation of CMYK channel values. Only relevant when the raster format is a CMYK one (**GIMG_PIXEL_CMYK8**, **CMYK12**, **CMYK16**). |
+
+### Naming a gamut
+
+The struct stores coordinates and never a name, so a name and coordinates
+cannot disagree. Ask for the name instead:
+
+| Function | Answers |
+|----------|---------|
+| `gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT)` | Which named space these coordinates are, or **GIMG_PRIMARIES_UNKNOWN** |
+| `gimg_gamut_named(named, &gamut)` | The coordinates of a named space |
+| `gimg_color_info_set_gamut(&info, named)` | Stores a named space's coordinates |
+
+**GIMG_PRIMARIES_UNKNOWN from `gimg_gamut_identify()` does not mean the colour
+was lost.** It means this library has no name for it; every coordinate the
+file stated is still in `gamut`, and a writer that can express it writes it
+out unchanged. The named spaces are sRGB, Adobe RGB, Display P3, BT.2020 and
+ProPhoto.
 
 ### Where the model goes on save
 
-`primaries` and `transfer` reach each format differently, because each format
+`gamut` and `transfer` reach each format differently, because each format
 offers something different to say them with.
 
-| Format | With an ICC profile on the raster | With only `primaries` and `transfer` |
+| Format | With an ICC profile on the raster | With only `gamut` and `transfer` |
 |--------|-----------------------------------|--------------------------------------|
 | BMP | `BITMAPV5HEADER` with `PROFILE_EMBEDDED` | V4 header: endpoints and per-channel gamma |
-| PNG | `iCCP` | `sRGB` when the transfer is exactly sRGB; otherwise `gAMA` for the curve, plus `cHRM` for a gamut a reader would not otherwise assume (Adobe RGB, not sRGB's own primaries) |
+| PNG | `iCCP` | `sRGB` when the transfer is exactly sRGB; otherwise `gAMA` for the curve, plus `cHRM` for any stated gamut a reader would not otherwise assume (that is, anything but sRGB's own primaries) - written from the stored coordinates, so a space this library cannot name round-trips too |
 | JPEG | APP2 `ICC_PROFILE`, split across segments when needed | APP2 carrying an ICC profile **synthesized** to say it |
 
 JPEG is the one that manufactures rather than repeats, because APP2 is the

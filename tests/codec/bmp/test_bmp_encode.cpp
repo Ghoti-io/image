@@ -1457,8 +1457,7 @@ TEST(BmpEncode, AProfileOnTheRasterIsWrittenIntoAV5Header) {
 TEST(BmpEncode, AnSrgbRasterIsWrittenAsAV4HeaderNamingSrgb) {
   GIMG_Color_Info color;
   gimg_color_info_default(&color);
-  color.primaries = GIMG_PRIMARIES_SRGB;
-  color.white_point = GIMG_PRIMARIES_SRGB;
+  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
   color.transfer = GIMG_TRANSFER_SRGB;
   GIMG_Raster * raster = colored_raster(color);
   ASSERT_NE(raster, nullptr);
@@ -1474,7 +1473,8 @@ TEST(BmpEncode, AnSrgbRasterIsWrittenAsAV4HeaderNamingSrgb) {
   const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(back, nullptr);
   EXPECT_EQ(back->transfer, GIMG_TRANSFER_SRGB);
-  EXPECT_EQ(back->primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(gimg_gamut_identify(&back->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_SRGB);
 }
 
 TEST(BmpEncode, CalibratedPrimariesAndGammaSurviveTheHeader) {
@@ -1483,8 +1483,7 @@ TEST(BmpEncode, CalibratedPrimariesAndGammaSurviveTheHeader) {
   // were.
   GIMG_Color_Info color;
   gimg_color_info_default(&color);
-  color.primaries = GIMG_PRIMARIES_ADOBE_RGB;
-  color.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_ADOBE_RGB);
   color.transfer = GIMG_TRANSFER_GAMMA;
   color.gamma_value = 2.2;
   GIMG_Raster * raster = colored_raster(color);
@@ -1504,7 +1503,8 @@ TEST(BmpEncode, CalibratedPrimariesAndGammaSurviveTheHeader) {
   ASSERT_EQ(img.decode(), GIMG_OK);
   const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(back, nullptr);
-  EXPECT_EQ(back->primaries, GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(gimg_gamut_identify(&back->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_ADOBE_RGB);
   EXPECT_EQ(back->transfer, GIMG_TRANSFER_GAMMA);
   EXPECT_NEAR(back->gamma_value, 2.2, 0.0001);
 }
@@ -1731,8 +1731,7 @@ TEST(BmpEncode, EveryRenderingIntentSurvivesTheRoundTrip) {
     // A stated color space as well, so the header is V5 for every case and
     // not only for the one intent that forces it on its own.
     color.transfer = GIMG_TRANSFER_SRGB;
-    color.primaries = GIMG_PRIMARIES_SRGB;
-    color.white_point = GIMG_PRIMARIES_SRGB;
+    (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
     color.intent = c.intent;
     GIMG_Raster * raster = colored_raster(color);
     ASSERT_NE(raster, nullptr);
@@ -1817,8 +1816,7 @@ TEST(BmpEncode, KnownPrimariesWithNoTransferWriteEndpointsAndNoGamma) {
   // beats inventing the other.
   GIMG_Color_Info color;
   gimg_color_info_default(&color);
-  color.primaries = GIMG_PRIMARIES_SRGB;
-  color.white_point = GIMG_PRIMARIES_SRGB;
+  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
   GIMG_Raster * raster = colored_raster(color);
   ASSERT_NE(raster, nullptr);
 
@@ -1838,7 +1836,8 @@ TEST(BmpEncode, KnownPrimariesWithNoTransferWriteEndpointsAndNoGamma) {
   ASSERT_EQ(img.decode(), GIMG_OK);
   const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(back, nullptr);
-  EXPECT_EQ(back->primaries, GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(gimg_gamut_identify(&back->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_SRGB);
   EXPECT_EQ(back->transfer, GIMG_TRANSFER_UNKNOWN)
       << "the file stated no curve, so neither does the raster";
 }

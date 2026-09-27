@@ -140,8 +140,7 @@ inline void tag_adobe_rgb(GIMG_Doc * doc) {
   if (!raster) { return; }
   GIMG_Color_Info info;
   gimg_color_info_default(&info);
-  info.primaries = GIMG_PRIMARIES_ADOBE_RGB;
-  info.white_point = GIMG_PRIMARIES_ADOBE_RGB;
+  (void)gimg_color_info_set_gamut(&info, GIMG_PRIMARIES_ADOBE_RGB);
   info.transfer = GIMG_TRANSFER_GAMMA;
   info.gamma_value = 2.19921875;
   info.intent = GIMG_INTENT_RELATIVE_COLORIMETRIC;
