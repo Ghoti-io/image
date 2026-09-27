@@ -95,9 +95,32 @@ GIMG_Result gimg_tiff_jpeg_block(const gimg_tiff_doc_state_t * st,
       byte_count = assembled_size;
     }
     else {
+      // How many image rows *this* block covers, which is what its frame
+      // header has to declare.
+      //
+      // A tile always covers its full height - tiles are padded, which is
+      // the whole point of them - but the last strip of a page covers
+      // whatever is left, and declaring a strip taller than it is would ask
+      // the JPEG decoder for rows the entropy data does not hold. Neither
+      // file in the libtiff sample set has more than one block, so this is
+      // reasoning about the format rather than about a file: the two shapes
+      // that exist are one strip and one tile, and both come out the same
+      // either way.
       uint32_t rows = ifd->tiled ? ifd->tile_height : ifd->rows_per_strip;
       if (rows == 0u || rows > ifd->height) {
         rows = ifd->height;
+      }
+      if (!ifd->tiled) {
+        const uint64_t top = (uint64_t)block * rows;
+        if (top >= ifd->height) {
+          rows = 0u;
+        }
+        else if ((uint64_t)rows > ifd->height - top) {
+          rows = (uint32_t)(ifd->height - top);
+        }
+      }
+      if (rows == 0u) {
+        return GIMG_ERR_CORRUPT; // A strip that begins past the last row.
       }
       const GIMG_Result ar = gimg_tiff_ojpeg_assemble(
           st, ifd, block, rows, &assembled, &assembled_size);
