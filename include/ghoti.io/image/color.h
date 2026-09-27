@@ -52,9 +52,6 @@ typedef struct {
 /**
  * @brief A gamut stated exactly: a white point and three primaries.
  *
- * All-zero means "not stated"; see GIMG_Color_Info.gamut_stated, which is the
- * field to test rather than comparing against zero here.
- *
  * Either half may be absent, so read GIMG_Color_Info.primaries_stated and
  * .white_stated rather than comparing against zero.  A reader that needs a
  * point this struct does not hold must say where it got it; nothing here
