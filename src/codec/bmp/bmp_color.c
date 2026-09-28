@@ -56,6 +56,7 @@
 #include <string.h>
 
 #include "../../core/alloc_internal.h"
+#include "../../core/limits_internal.h"
 #include "bmp_internal.h"
 
 /** @name bV5Intent values (wingdi.h LCS_GM_*).
@@ -237,14 +238,23 @@ GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
     // fatal to the image, which decodes perfectly well untagged.
     return GIMG_OK;
   }
-  if (size > GIMG_BMP_ICC_MAX_SIZE) {
+  {
     // Past what any real profile is, so the file is describing something
     // other than its own color.  Untagged, for the same reason a profile
-    // running off the end of the file is: the picture is not wrong.
-    return GIMG_OK;
+    // running off the end of the file is: the picture is not wrong.  A cap the
+    // caller set is different: they asked to be told.  Both readings are
+    // gimg_metadata_verdict()'s now, so that every codec's answer to "how big
+    // is too big for a thing that is not pixels" is one decision.
+    const gimg_metadata_verdict_t v = gimg_metadata_verdict(limits, size);
+    if (v == GIMG_METADATA_REFUSED) {
+      return GIMG_ERR_LIMIT;
+    }
+    if (v == GIMG_METADATA_IMPLAUSIBLE) {
+      return GIMG_OK;
+    }
   }
   if (limits && limits->max_memory && size > limits->max_memory) {
-    // A limit the caller set is different: they asked to be told.
+    // max_memory is BMP's own cap on the whole decode and still applies.
     return GIMG_ERR_LIMIT;
   }
 
@@ -309,7 +319,7 @@ uint32_t gimg_bmp_color_to_header(
   // because where the profile lands depends on how much pixel data precedes
   // it.
   if (info->icc_bytes && info->icc_size > 0 &&
-      info->icc_size <= GIMG_BMP_ICC_MAX_SIZE) {
+      info->icc_size <= GIMG_METADATA_SIZE_DEFAULT) {
     gimg_bmp_write_u32(tail + GIMG_BMP_V4_CS_TYPE_AT, GIMG_BMP_PROFILE_EMBEDDED);
     gimg_bmp_write_u32(
         tail + GIMG_BMP_V5_INTENT_AT, bmp_intent_to_v5(info->intent));

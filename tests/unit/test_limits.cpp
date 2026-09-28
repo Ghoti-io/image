@@ -19,16 +19,17 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
-#include <dirent.h>
-#include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -121,6 +122,10 @@ const std::vector<Fixture> & corpus(void) {
       {"png", std::string(GIMG_TEST_DATA_PNG), ".png"},
       {"bmp", root + "/bmp", ".bmp"},
       {"gif", root + "/gif", ".gif"},
+      // TIFF was missing from this list until 2026-09-28. The codec landed
+      // after the sweep was written and nothing widened the population, so
+      // every claim this file made about "every codec" was made over four.
+      {"tiff", root + "/tiff", ".tif"},
   };
   for (const Dir & d : dirs) {
     DIR * dp = opendir(d.path.c_str());
@@ -254,7 +259,8 @@ TEST(Limits, AFrameCapRefusesTheFileItIsOneShortOf) {
  * What it can say is that the cap is read at all, and by which codecs.
  */
 TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
-  long jpeg = 0, png = 0, gif = 0, bmp_through = 0, bmp_embedded = 0;
+  long jpeg = 0, png = 0, gif = 0, bmp_through = 0, bmp_embedded = 0,
+       tiff_through = 0, tiff_embedded = 0;
   for (const Fixture & f : corpus()) {
     GIMG_Limits tiny = none();
     tiny.max_chunk_size = 1u;
@@ -269,6 +275,16 @@ TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
       (r == GIMG_OK ? bmp_through : bmp_embedded)++;
       continue;
     }
+    if (c == "tiff") {
+      // TIFF is not built out of length-prefixed segments: a tag names an
+      // offset into the file and the strips are located the same way, so there
+      // is no chunk for this cap to be a cap on. The exception is the same one
+      // BMP has - a TIFF whose strips are JPEG hands them to the JPEG codec,
+      // which reads the cap the caller set. Counted in two buckets for the
+      // same reason BMP's are, so a change on either side is a moved number.
+      (r == GIMG_OK ? tiff_through : tiff_embedded)++;
+      continue;
+    }
     EXPECT_EQ(r, GIMG_ERR_LIMIT)
         << f.name << ": a one-byte chunk cap let the file through with "
         << (int)r;
@@ -276,8 +292,9 @@ TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
   }
   std::printf("  one-byte chunk cap refused jpeg %ld, png %ld, gif %ld; "
               "%ld bmp fixtures read it as no cap at all and %ld passed it "
-              "down to an embedded codec\n",
-      jpeg, png, gif, bmp_through, bmp_embedded);
+              "down to an embedded codec; %ld tiff have no chunks to cap and "
+              "%ld passed it down to an embedded JPEG\n",
+      jpeg, png, gif, bmp_through, bmp_embedded, tiff_through, tiff_embedded);
   EXPECT_GT(jpeg, 0);
   EXPECT_GT(png, 0);
   EXPECT_GT(gif, 0);
@@ -287,6 +304,12 @@ TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
   EXPECT_GT(bmp_embedded, 0)
       << "no BMP fixture passed the chunk cap down to an embedded codec, so "
          "the wrapped-PNG and wrapped-JPEG fixtures are not in this corpus";
+  EXPECT_GT(tiff_through, 0)
+      << "no TIFF fixture reached this, so the claim that TIFF has no chunk "
+         "to cap is being made over an empty set";
+  EXPECT_GT(tiff_embedded, 0)
+      << "no TIFF fixture passed the chunk cap down to an embedded JPEG, so "
+         "the JPEG-in-TIFF fixtures are not in this corpus";
 }
 
 /**
@@ -322,31 +345,83 @@ TEST(Limits, AMemoryCapIsReadByBmpAndByNoOtherCodec) {
 }
 
 /**
- * The two caps no code reads.
+ * max_metadata_size bounds what is kept that is not pixels, in every codec.
  *
- * max_metadata_size and max_recursion are declared in GIMG_Limits and
- * described in the manual, and `grep -rn 'limits->' src/` finds no reader for
- * either. This is the record of that, written as an assertion so that the day
- * one of them is implemented this test fails and has to be replaced by the
- * bound assertions above rather than quietly continuing to pass.
+ * This replaces an assertion that it was read by nothing. That earlier test
+ * was right when it was written and is the reason this one exists: it failed
+ * the moment a reader appeared, which is what an absence-assertion is for.
+ *
+ * The cap is set to one byte, which no real profile, comment or description
+ * fits in. A fixture that carries none is unaffected and still loads, so the
+ * sweep asserts the two outcomes separately rather than accepting either: a
+ * cap that refused everything would pass a test that only looked for refusals,
+ * and a cap that bounded nothing would pass a test that only looked for
+ * successes.
  */
-TEST(Limits, TwoOfTheSixCapsAreReadByNothing) {
-  long swept = 0;
+TEST(Limits, MetadataSizeBoundsWhatIsKeptThatIsNotPixels) {
+  long swept = 0, refused = 0, unaffected = 0;
+  std::map<std::string, long> by_codec;
   for (const Fixture & f : corpus()) {
     GIMG_Limits tiny = none();
     tiny.max_metadata_size = 1u;
-    tiny.max_recursion = 1u;
-    EXPECT_EQ(run_with(f.bytes, &tiny).result, GIMG_OK)
-        << f.name << ": something now reads max_metadata_size or "
-                     "max_recursion - replace this test with a bound "
-                     "assertion and drop the warning from stream.h";
+    const GIMG_Result r = run_with(f.bytes, &tiny).result;
+    EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_LIMIT)
+        << f.name << ": max_metadata_size produced " << r
+        << ", which is neither keeping the file nor naming the cap";
+    if (r == GIMG_ERR_LIMIT) {
+      refused++;
+      by_codec[f.codec]++;
+    }
+    else {
+      unaffected++;
+    }
     swept++;
   }
-  std::printf("  %ld fixtures unaffected by max_metadata_size "
-              "and max_recursion\n", swept);
+  std::printf("  %ld fixtures: %ld refused on max_metadata_size, %ld carry "
+              "none and are unaffected\n",
+      swept, refused, unaffected);
   ASSERT_GT(swept, 100)
       << "only " << swept << " fixtures reached this, which is too few for "
                              "the claim it makes";
+  EXPECT_GT(unaffected, 0)
+      << "every fixture was refused, so the cap is not distinguishing a file "
+         "that carries metadata from one that does not";
+
+  // Per codec, not in total. A total above zero is satisfied by one format,
+  // and the claim being made is that every codec reads this cap - which is
+  // exactly the claim the old table got wrong about max_frame_count by
+  // naming two codecs when three read it.
+  for (const char * c : {"png", "jpeg", "bmp", "gif", "tiff"}) {
+    EXPECT_GT(by_codec[c], 0)
+        << c
+        << " refused nothing on max_metadata_size, so either its "
+           "fixtures carry none or it does not read the cap";
+    std::printf("    %-5s %ld\n", c, by_codec[c]);
+  }
+}
+
+/**
+ * The struct has no cap that nothing reads.
+ *
+ * max_recursion was the last one and it is gone. It was declared for a TIFF
+ * codec that did not exist yet; that codec exists now, and it walks SubIFDs
+ * with an iterative loop one level deep whose total is bounded by
+ * max_frame_count, so there is still no recursion depth to cap. A field
+ * nothing reads is not a promise, which is the rule the rest of the suite
+ * holds to - see libs/security's core.h and libs/archive's GARC_Limits.
+ *
+ * Written as a sweep over the struct's own size rather than a list of names,
+ * so that a field added without a reader has to come past this.
+ */
+TEST(Limits, EveryDeclaredCapHasAReader) {
+  GIMG_Limits l;
+  gimg_limits_default(&l);
+  // The five that remain, each asserted readable through a codec elsewhere in
+  // this file. The sizeof is the guard: a sixth field added here changes it,
+  // and whoever adds one has to say which codec reads it.
+  EXPECT_EQ(sizeof(GIMG_Limits), sizeof(size_t) * 5u + sizeof(l._reserved))
+      << "GIMG_Limits gained or lost a field; name its reader in this file "
+         "and in stream.h, or it is a cap that promises nothing";
 }
 
 /**

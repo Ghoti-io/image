@@ -220,9 +220,9 @@ GIMG_API void gimg_stream_destroy(GIMG_Stream * stream);
 typedef struct GIMG_Limits {
   /**
    * 0 = no limit. Read by every codec, at whichever stage knows the size:
-   * BMP and JPEG while parsing the frame header, PNG and GIF while decoding.
-   * A cap equal to the image's own pixel count passes and one below it is
-   * refused, so it bounds what it names rather than something near it.
+   * BMP and JPEG while parsing the frame header, PNG, GIF and TIFF while
+   * decoding. A cap equal to the image's own pixel count passes and one below
+   * it is refused, so it bounds what it names rather than something near it.
    */
   size_t max_decoded_pixels;
   /**
@@ -234,19 +234,30 @@ typedef struct GIMG_Limits {
    */
   size_t max_memory;
   /**
-   * 0 = no limit.
-   * @warning **Not honoured.** No code reads this field; it is declared so
-   * the shape of the struct is settled. Metadata is not capped by anything
-   * today - an Exif blob, an ICC profile or a text chunk is taken at whatever
-   * size the file gives, subject only to max_chunk_size where the format has
-   * chunks.
+   * 0 = a built-in four-mebibyte guard. Read by every codec, and the only cap
+   * that bounds a metadata *total*: PNG's decompressed iCCP, JPEG's combined
+   * COM segments, GIF's combined comments, BMP's embedded or resolved profile,
+   * and TIFF's ICC, XMP, JPEGTables and ImageDescription.
+   *
+   * max_chunk_size bounds one segment as it sits in the file, which is a
+   * different question - a file of many comment segments, each within that
+   * cap, accumulated without bound before this was honoured, and a zlib bomb
+   * in an iCCP chunk is small in the file and large after it.
+   *
+   * Two over-size cases, and they are not the same event. Past a cap **you**
+   * set is GIMG_ERR_LIMIT, because you asked to be told. Past the built-in
+   * guard, with no cap set, the object is dropped and the image still loads
+   * untagged, because a profile larger than any real profile says the file is
+   * describing something other than its own colour and the picture is not
+   * wrong.
    */
   size_t max_metadata_size;
   /**
    * 0 = no limit.
-   * @warning **Read by PNG and GIF only.** Those are the two formats whose
-   * multi-image form (APNG, and GIF's own frames) this was written for. A
-   * BMP bitmap array also loads as several items and is not capped.
+   * @warning **Read by PNG, GIF and TIFF.** The formats whose multi-image form
+   * this was written for - APNG, GIF's own frames, and TIFF's IFD chain, where
+   * it bounds SubIFD pages too because they are appended through the same
+   * call. A BMP bitmap array also loads as several items and is not capped.
    */
   size_t max_frame_count;
   /**
@@ -256,15 +267,7 @@ typedef struct GIMG_Limits {
    * structure, so a plain BMP is unaffected.
    */
   size_t max_chunk_size;
-  /**
-   * 0 = default.
-   * @warning **Not honoured.** No code reads this field. It was declared for
-   * a TIFF codec that does not exist; the one nesting this library does have,
-   * a BMP that wraps a PNG or a JPEG, is one level deep by construction and
-   * needs no depth counter.
-   */
-  unsigned int max_recursion;
-  uint8_t _reserved[4];
+  uint8_t _reserved[8];
 } GIMG_Limits;
 
 /**

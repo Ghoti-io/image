@@ -765,7 +765,7 @@ TEST(Corrupt, ABmpResolverCannotHandBackMoreThanTheCodecAccepts) {
       {kProfileSize, (uint32_t)path_len}};
   const Bytes bytes = make_bmp(s);
 
-  // Past GIMG_BMP_ICC_MAX_SIZE, which is four megabytes.
+  // Past GIMG_METADATA_SIZE_DEFAULT, which is four megabytes.
   Bytes huge(5u * 1024u * 1024u, 0u);
 
   GIMG_Stream * st = nullptr;

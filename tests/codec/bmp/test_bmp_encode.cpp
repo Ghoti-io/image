@@ -22,6 +22,7 @@
 #include "bmp_test_utils.h"
 
 extern "C" {
+#include "../../../src/core/limits_internal.h"
 #include "bmp_internal.h"
 }
 
@@ -1643,7 +1644,7 @@ TEST(BmpEncode, AProfilePastWhatThisCodecReadsIsNotEmbedded) {
   // does, so it never produces a file this codec would refuse to read whole -
   // and a raster whose only colour is an over-large profile gets the smallest
   // header, not a V5 one pointing at nothing.
-  std::vector<uint8_t> profile(GIMG_BMP_ICC_MAX_SIZE + 1u, 0);
+  std::vector<uint8_t> profile(GIMG_METADATA_SIZE_DEFAULT + 1u, 0);
   profile[3] = 0;
   std::memcpy(profile.data() + 36, "acsp", 4);
   GIMG_Color_Info color;
@@ -1661,7 +1662,7 @@ TEST(BmpEncode, AProfilePastWhatThisCodecReadsIsNotEmbedded) {
 TEST(BmpEncode, AnOverLargeProfileDoesNotSuppressTheRestOfTheColor) {
   // The rendering intent is what pushes a header to V5 when there is no
   // profile, and it used to drag an over-large profile along with it.
-  std::vector<uint8_t> profile(GIMG_BMP_ICC_MAX_SIZE + 1u, 0);
+  std::vector<uint8_t> profile(GIMG_METADATA_SIZE_DEFAULT + 1u, 0);
   std::memcpy(profile.data() + 36, "acsp", 4);
   GIMG_Color_Info color;
   gimg_color_info_default(&color);

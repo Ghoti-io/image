@@ -43,6 +43,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/limits_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../codec_internal.h"
 #include "gif_internal.h"
@@ -423,7 +424,8 @@ static GIMG_Result gif_read_application(GIMG_Stream * stream,
  * Takes ownership of neither argument; the caller frees `text`.
  */
 static GIMG_Result gif_append_comment(gimg_gif_doc_state_t * state,
-    const GIMG_Allocator * alloc, const unsigned char * text, size_t len) {
+    const GIMG_Allocator * alloc, const GIMG_Limits * limits,
+    const unsigned char * text, size_t len) {
   size_t framed = 0;
   size_t need = 0;
   if (!gcu_safe_add_size(len, GIMG_GIF_RAW_COMMENT_PREFIX, &framed) ||
@@ -435,6 +437,20 @@ static GIMG_Result gif_append_comment(gimg_gif_doc_state_t * state,
   // check is here so the framing cannot be violated by a limit set higher.
   if (len > 0xFFFFFFFFu) {
     return GIMG_ERR_LIMIT;
+  }
+  // Each comment is bounded by max_chunk_size as it is read and the *sum* was
+  // bounded by nothing, so a file of many comment extensions grew this without
+  // limit.  A per-chunk cap cannot see an accumulated total.
+  {
+    const gimg_metadata_verdict_t v = gimg_metadata_verdict(limits, need);
+    if (v == GIMG_METADATA_REFUSED) {
+      return GIMG_ERR_LIMIT;
+    }
+    if (v == GIMG_METADATA_IMPLAUSIBLE) {
+      // The picture is not wrong, so this comment is dropped rather than the
+      // file refused.
+      return GIMG_OK;
+    }
   }
   unsigned char * grown =
       (unsigned char *)gimg_realloc(alloc, state->comments, need);
@@ -631,7 +647,7 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
         r = gif_read_sub_blocks(
             stream, diagnostics, alloc, limits, &text, &len);
         if (r == GIMG_OK) {
-          r = gif_append_comment(state, alloc, text, len);
+          r = gif_append_comment(state, alloc, limits, text, len);
         }
         gimg_free(alloc, text);
       }

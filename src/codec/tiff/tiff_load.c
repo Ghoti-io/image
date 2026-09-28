@@ -48,6 +48,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/limits_internal.h"
 #include "../../core/resolution_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../codec_internal.h"
@@ -286,7 +287,8 @@ static void tiff_ifd_defaults(gimg_tiff_ifd_t * ifd) {
  * @param out_next Offset of the following IFD, or 0 at the end of the chain.
  */
 static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
-    GIMG_Diagnostics * diag, gimg_tiff_ifd_t * ifd, uint32_t * out_next) {
+    const GIMG_Limits * limits, GIMG_Diagnostics * diag, gimg_tiff_ifd_t * ifd,
+    uint32_t * out_next) {
   tiff_ifd_defaults(ifd);
   ifd->file_big_endian = st->big_endian;
   *out_next = 0u;
@@ -504,6 +506,21 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
       // ASCII, NUL-terminated in a well-formed file and not always in a real
       // one, so it is copied with a terminator of our own rather than
       // trusted to carry one.
+      {
+        // Dropped rather than refused when it is merely implausible, which is
+        // what the three tags below do and for the same reason: an oversized
+        // description says nothing about whether the picture decodes. Before
+        // this check it was the one metadata tag here with no bound at all.
+        const gimg_metadata_verdict_t v =
+            gimg_metadata_verdict(limits, e.value_bytes);
+        if (v == GIMG_METADATA_REFUSED) {
+          r = GIMG_ERR_LIMIT;
+          break;
+        }
+        if (v == GIMG_METADATA_IMPLAUSIBLE) {
+          break;
+        }
+      }
       gimg_free(st->allocator, ifd->description);
       ifd->description = (char *)gimg_malloc(st->allocator, e.value_bytes + 1u);
       if (!ifd->description) {
@@ -515,12 +532,21 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
       break;
     }
     case GIMG_TIFF_TAG_ICC_PROFILE: {
-      if (e.value_bytes > GIMG_TIFF_ICC_MAX_SIZE) {
+      {
         // Past what any real profile is, so the file is describing something
         // other than its own colour. Untagged rather than refused, which is
         // what the BMP loader does with the same case and for the same
-        // reason: the picture is not wrong.
-        break;
+        // reason: the picture is not wrong. A cap the caller set is different:
+        // they asked to be told.
+        const gimg_metadata_verdict_t v =
+            gimg_metadata_verdict(limits, e.value_bytes);
+        if (v == GIMG_METADATA_REFUSED) {
+          r = GIMG_ERR_LIMIT;
+          break;
+        }
+        if (v == GIMG_METADATA_IMPLAUSIBLE) {
+          break;
+        }
       }
       gimg_free(st->allocator, ifd->icc);
       ifd->icc = (unsigned char *)gimg_malloc(st->allocator, e.value_bytes);
@@ -533,8 +559,17 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
       break;
     }
     case GIMG_TIFF_TAG_JPEG_TABLES: {
-      if (e.value_bytes > GIMG_TIFF_ICC_MAX_SIZE) {
-        break; // Larger than any table stream is; treated as absent.
+      {
+        // Larger than any table stream is; treated as absent.
+        const gimg_metadata_verdict_t v =
+            gimg_metadata_verdict(limits, e.value_bytes);
+        if (v == GIMG_METADATA_REFUSED) {
+          r = GIMG_ERR_LIMIT;
+          break;
+        }
+        if (v == GIMG_METADATA_IMPLAUSIBLE) {
+          break;
+        }
       }
       gimg_free(st->allocator, ifd->jpeg_tables);
       ifd->jpeg_tables =
@@ -580,8 +615,16 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
       break;
     }
     case GIMG_TIFF_TAG_XMP: {
-      if (e.value_bytes > GIMG_TIFF_ICC_MAX_SIZE) {
-        break;
+      {
+        const gimg_metadata_verdict_t v =
+            gimg_metadata_verdict(limits, e.value_bytes);
+        if (v == GIMG_METADATA_REFUSED) {
+          r = GIMG_ERR_LIMIT;
+          break;
+        }
+        if (v == GIMG_METADATA_IMPLAUSIBLE) {
+          break;
+        }
       }
       gimg_free(st->allocator, ifd->xmp);
       ifd->xmp = (unsigned char *)gimg_malloc(st->allocator, e.value_bytes);
@@ -1009,8 +1052,8 @@ static GIMG_Result tiff_append_ifd(GIMG_Codec * codec,
   }
   st->ifds = grown;
 
-  GIMG_Result r =
-      tiff_read_ifd(st, at, diagnostics, &st->ifds[st->ifd_count], out_next);
+  GIMG_Result r = tiff_read_ifd(
+      st, at, limits, diagnostics, &st->ifds[st->ifd_count], out_next);
   if (r != GIMG_OK) {
     // The slot owns nothing: tiff_read_ifd frees what it took before
     // returning a failure, and ifd_count still excludes it.

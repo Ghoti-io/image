@@ -79,18 +79,6 @@ extern const unsigned char gimg_bmp_array_signature[GIMG_BMP_SIGNATURE_LEN];
 #define GIMG_BMP_PROFILE_EMBEDDED UINT32_C(0x4D424544) ///< 'MBED': a profile.
 /** @} */
 
-/**
- * Largest embedded ICC profile this codec reads or writes.
- *
- * bV5ProfileSize is 32 bits, so without a ceiling a file could name a profile
- * of four gigabytes and the loader would try to allocate it.  Four mebibytes
- * is what the PNG and JPEG codecs allow (GIMG_PNG_ICC_MAX_DECODED,
- * GIMG_JPEG_MAX_ICC_PROFILE_SIZE) and is far above any real profile - a press
- * profile runs to a few hundred kilobytes.  The writer obeys the same
- * ceiling, so it never produces a file this loader would refuse to read
- * whole.
- */
-#define GIMG_BMP_ICC_MAX_SIZE (4u * 1024u * 1024u)
 
 /** Longest PROFILE_LINKED path this codec will read.
  *

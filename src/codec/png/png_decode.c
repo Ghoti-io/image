@@ -78,6 +78,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/limits_internal.h"
 #include "../../raster/raster_internal.h"
 #include "../codec_internal.h"
 #include "png_internal.h"
@@ -225,7 +226,11 @@ static bool gimg_png_transfer_from_h273(
 
 static bool gimg_png_fill_color_info_from_ancillary(
     const gimg_png_doc_state_t * state, const GIMG_Allocator * alloc,
-    GIMG_Color_Info * out_info, void ** out_icc_owned, size_t * out_icc_size) {
+    const GIMG_Limits * limits, GIMG_Color_Info * out_info,
+    void ** out_icc_owned, size_t * out_icc_size, bool * out_refused) {
+  if (out_refused) {
+    *out_refused = false;
+  }
   gimg_color_info_default(out_info);
   *out_icc_owned = NULL;
   *out_icc_size = 0;
@@ -311,7 +316,18 @@ static bool gimg_png_fill_color_info_from_ancillary(
       const unsigned char * zlib_start = payload + name_len + 2;
       size_t zlib_len = payload_len - name_len - 2;
       if (comp == 0 && zlib_len > 6) {
-        size_t max_out = GIMG_PNG_ICC_MAX_DECODED;
+        // The cap on the *decompressed* profile, which is what a zlib bomb in
+        // an iCCP chunk would grow into: max_chunk_size bounds the chunk as it
+        // sits in the file and says nothing about what it expands to.
+        //
+        // A caller's cap and the built-in guard part company here as they do
+        // everywhere else. The decode simply fails against either, so which
+        // one was in force is what decides whether the file is refused or the
+        // image comes back untagged, and out_refused is how that reaches the
+        // caller.
+        const bool caller_capped = (limits && limits->max_metadata_size != 0u);
+        size_t max_out = caller_capped ? limits->max_metadata_size
+                                       : GIMG_METADATA_SIZE_DEFAULT;
         void * decoded = gimg_malloc(alloc, max_out);
         if (!decoded) {
           return false;
@@ -322,6 +338,9 @@ static bool gimg_png_fill_color_info_from_ancillary(
         if (gimg_png_zlib_decode(zlib_start, zlib_len,
                 (unsigned char *)decoded, max_out, &out_len) != GIMG_OK) {
           gimg_free(alloc, decoded);
+          if (caller_capped && out_refused) {
+            *out_refused = true;
+          }
           return false;
         }
         out_info->primaries_stated = false;
@@ -715,12 +734,18 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         GIMG_Color_Info color_info;
         void * icc_owned = NULL;
         size_t icc_size = 0;
-        if (gimg_png_fill_color_info_from_ancillary(
-                state, a, &color_info, &icc_owned, &icc_size)) {
+        bool icc_refused = false;
+        if (gimg_png_fill_color_info_from_ancillary(state, a,
+                options ? options->limits : NULL, &color_info, &icc_owned,
+                &icc_size, &icc_refused)) {
           gimg_raster_set_color_info(*out_raster, &color_info);
           if (icc_owned) {
             gimg_free(a, icc_owned);
           }
+        }
+        else if (icc_refused) {
+          gimg_free(a, canvas);
+          return GIMG_ERR_LIMIT;
         }
       }
       return GIMG_OK;
@@ -792,8 +817,9 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     GIMG_Color_Info color_info;
     void * icc_owned = NULL;
     size_t icc_size = 0;
-    if (gimg_png_fill_color_info_from_ancillary(
-            state, alloc, &color_info, &icc_owned, &icc_size)) {
+    bool icc_refused = false;
+    if (gimg_png_fill_color_info_from_ancillary(state, alloc, limits,
+            &color_info, &icc_owned, &icc_size, &icc_refused)) {
       r = gimg_raster_set_color_info(*out_raster, &color_info);
       if (icc_owned) {
         gimg_free(alloc, icc_owned);
@@ -803,6 +829,11 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         *out_raster = NULL;
         return r;
       }
+    }
+    else if (icc_refused) {
+      gimg_raster_destroy(*out_raster);
+      *out_raster = NULL;
+      return GIMG_ERR_LIMIT;
     }
   }
 

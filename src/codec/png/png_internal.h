@@ -166,8 +166,6 @@ typedef uint32_t gimg_png_chunk_type_t;
  * alloc for typical case. */
 #define GIMG_PNG_CHUNK_READ_STACK_BUF 4096
 
-/** Max decoded ICC profile size (iCCP decompression). Bomb protection. */
-#define GIMG_PNG_ICC_MAX_DECODED (4u * 1024u * 1024u)
 
 /** Max IDAT/fdAT chunk size when writing (split zlib payload into chunks of
  * this size for decoder compatibility). */

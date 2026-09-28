@@ -157,17 +157,33 @@ Used by `gimg_item_decode()`.
 
 | Field                  | Read by | Use |
 |------------------------|---------|-----|
-| `max_decoded_pixels`   | PNG, JPEG, BMP, GIF | Reject if width×height (or the sum over frames) exceeds this. |
+| `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF | Reject if width×height (or the sum over frames) exceeds this. |
 | `max_memory`           | **BMP only** | A cap on what one image's pixel data may take. No other codec reads it. |
-| `max_metadata_size`    | **nothing** | Declared, not honoured. Metadata is taken at whatever size the file gives. |
-| `max_frame_count`      | PNG, GIF | Max frames (APNG, GIF). A BMP bitmap array is several items and is not capped. |
+| `max_metadata_size`    | PNG, JPEG, BMP, GIF, TIFF | Cap what is kept that is not pixels, including a *total* across segments. `0` is a four-mebibyte guard, not "no limit". |
+| `max_frame_count`      | PNG, GIF, TIFF | Max frames (APNG, GIF frames, TIFF's IFD chain and its SubIFD pages). A BMP bitmap array is several items and is not capped. |
 | `max_chunk_size`       | PNG, JPEG, GIF | Reject a segment larger than this (bomb protection). A BMP wrapping a PNG or JPEG passes it down. |
-| `max_recursion`        | **nothing** | Declared, not honoured. Written for a TIFF codec that does not exist. |
 
-Two of the six are read by no code at all, and `max_memory` is read by one
-codec of four. That is a gap rather than a design: the intent is that each is
-either honoured everywhere or removed. Until then, **`max_decoded_pixels` is
-the only cap that bounds every format**, and it is the one to set.
+Every declared field is read by something. `max_memory` is the ragged one: it
+is read by BMP alone, and the cap that bounds every format is
+**`max_decoded_pixels`**, which is the one to set for pixel data.
+
+`max_metadata_size` is the exception to "`0` means no limit". Left at zero it
+is a four-mebibyte guard, because the alternative is that a caller who never
+thought about metadata has no bound on it at all. It is also the only cap that
+can see an accumulated *total*: `max_chunk_size` bounds one segment as it sits
+in the file, and a file of many comment segments - each within that cap -
+accumulated without bound before this was honoured.
+
+The two over-size cases are answered differently on purpose. Past a cap the
+caller set is `GIMG_ERR_LIMIT`, because they asked to be told. Past the
+built-in guard, with no cap set, the object is dropped and the image loads
+untagged: a profile larger than any real profile means the file is describing
+something other than its own colour, and the picture is not wrong.
+
+`max_recursion` was removed. It was declared for a TIFF codec that did not
+exist; that codec exists now and walks SubIFDs with an iterative loop one
+level deep, bounded in total by `max_frame_count`, so there is no recursion
+depth to cap. A field nothing reads is not a promise.
 
 The compress library’s DEFLATE decoder may use a separate limit (e.g. `limits.max_output_bytes`) for decompression; the image library passes limits where applicable.
 

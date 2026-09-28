@@ -59,6 +59,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/limits_internal.h"
 #include "../../core/resolution_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../codec_internal.h"
@@ -1157,7 +1158,7 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
       // Whatever a resolver hands back is held to the ceiling an embedded
       // profile is held to.  A caller choosing to read a file is not a reason
       // to stop bounding what gets attached to a raster.
-      if (supplied_size > GIMG_BMP_ICC_MAX_SIZE ||
+      if (gimg_metadata_verdict(limits, supplied_size) != GIMG_METADATA_KEEP ||
           (limits && limits->max_memory &&
               supplied_size > limits->max_memory)) {
         bmp_load_diag(diagnostics, 0u,

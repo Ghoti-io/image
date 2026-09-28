@@ -169,12 +169,6 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
  * is its own ceiling rather than a policy. */
 #define GIMG_TIFF_MAX_ENTRIES 65535u
 
-/** Longest ICC profile or XMP packet this codec takes in. Past this the file
- * is describing something other than its own colour, and the picture is
- * handed back untagged rather than refused - the same judgment, and the same
- * ceiling, the BMP loader applies. */
-#define GIMG_TIFF_ICC_MAX_SIZE (4u * 1024u * 1024u)
-
 /** One image file directory, normalized: every default resolved, every array
  * copied out of the file. */
 typedef struct {

@@ -50,6 +50,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/limits_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../../meta/exif_internal.h"
 #include "../codec_internal.h"
@@ -1502,13 +1503,28 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         }
         if (total_chunks == 1) {
           // Single-segment: keep full payload for round-trip; decode uses +14.
-          if (state->app2_icc) {
-            gimg_free(alloc, state->app2_icc);
+          // Capped here as well as in the multi-segment branch below, because
+          // a profile that arrives whole is the common case and skipping it
+          // would leave the cap reachable only by a file that split one.
+          const gimg_metadata_verdict_t v =
+              gimg_metadata_verdict(limits, payload_size);
+          if (v == GIMG_METADATA_REFUSED) {
+            jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_LIMIT,
+                "the ICC profile exceeds max_metadata_size");
+            gimg_free(alloc, payload_buf);
+            gimg_jpeg_free_doc_state(codec, state);
+            return GIMG_ERR_LIMIT;
           }
-          state->app2_icc = payload_buf;
-          state->app2_icc_len = payload_size;
-          state->app2_icc_num_chunks = 0;
-          payload_buf = NULL;
+          if (v == GIMG_METADATA_KEEP) {
+            if (state->app2_icc) {
+              gimg_free(alloc, state->app2_icc);
+            }
+            state->app2_icc = payload_buf;
+            state->app2_icc_len = payload_size;
+            state->app2_icc_num_chunks = 0;
+            payload_buf = NULL;
+          }
+          // Implausible: dropped, and the image comes back untagged.
         }
         else {
           // Multi-segment: accumulate chunks by index.
@@ -1547,6 +1563,24 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
                 return GIMG_ERR_LIMIT;
               }
               total_profile += data_len;
+            }
+            // The assembled profile is the sum of up to 255 APP2 chunks, so
+            // the per-segment cap bounds each part and not the whole.
+            {
+              const gimg_metadata_verdict_t v =
+                  gimg_metadata_verdict(limits, total_profile);
+              if (v != GIMG_METADATA_KEEP) {
+                if (v == GIMG_METADATA_REFUSED) {
+                  jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_LIMIT,
+                      "the assembled ICC profile exceeds max_metadata_size");
+                  gimg_jpeg_free_doc_state(codec, state);
+                  return GIMG_ERR_LIMIT;
+                }
+                // Implausible rather than refused: the image is handed back
+                // untagged, which is what every other codec does here.
+                total_profile = 0;
+                total_chunks = 0;
+              }
             }
             unsigned char * assembled =
                 (unsigned char *)gimg_malloc(alloc, total_profile);
@@ -1664,6 +1698,27 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         break;
       }
       size_t need = state->com_combined_size + 2 + payload_size;
+      // Each COM is bounded above at 65535 and the *sum* was bounded by
+      // nothing, so a file of many comment segments grew this without limit.
+      // A per-segment cap cannot see an accumulated total; this is the cap
+      // that can.
+      {
+        const gimg_metadata_verdict_t v = gimg_metadata_verdict(limits, need);
+        if (v == GIMG_METADATA_REFUSED) {
+          if (payload_buf)
+            gimg_free(alloc, payload_buf);
+          jpeg_load_diag(diagnostics, 0u, 0xFEu, GIMG_ERR_LIMIT,
+              "the comment segments together exceed max_metadata_size");
+          return GIMG_ERR_LIMIT;
+        }
+        if (v == GIMG_METADATA_IMPLAUSIBLE) {
+          // The picture is not wrong, so the rest of the comments are dropped
+          // rather than the file refused.
+          if (payload_buf)
+            gimg_free(alloc, payload_buf);
+          break;
+        }
+      }
       unsigned char * new_buf =
           (unsigned char *)gimg_realloc(alloc, state->com_combined, need);
       if (!new_buf && need > 0) {
