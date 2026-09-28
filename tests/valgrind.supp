@@ -1,0 +1,32 @@
+# Valgrind suppressions for the Ghoti.io Image test suite.
+#
+# Nothing here suppresses an allocation this library makes. Each entry names a
+# leak in a system library, reached from test scaffolding, with the measurement
+# that established it.
+
+# glibc leaks the locale name when a locale is loaded from a LOCPATH directory
+# rather than the system archive. freelocale() releases the locale object and
+# not the argz vector newlocale() built for its name.
+#
+# Established with a five-line program containing no library code at all:
+# newlocale(LC_NUMERIC_MASK, "de_DE.UTF-8", 0) followed by freelocale(). With
+# the locale resolved from the system archive it is clean - 37 allocs, 37
+# frees. With LOCPATH pointing at a localedef-generated directory it leaks 119
+# bytes from one block, in that same two-call program.
+#
+# That second path is the one tests/unit/test_icc_synthesis.cpp takes here,
+# because Debian on this machine installs no locale that writes a decimal
+# comma, so CommaLocale falls through to generating one with localedef. A
+# machine whose archive holds de_DE would never reach it, which is why this
+# appeared as a leak on one host and not as a defect in the code.
+#
+# Scoped to newlocale so it cannot hide an allocation of ours: the frame below
+# it is glibc's and the frame above it is whichever test asked for a locale.
+{
+   glibc-newlocale-keeps-the-locale-name-from-LOCPATH
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect,possible
+   ...
+   fun:newlocale
+   ...
+}

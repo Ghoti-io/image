@@ -409,7 +409,7 @@ TEST_GATES ?= check-symbols check-aliasing
 
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
-VALGRIND_FLAGS := --leak-check=full --show-leak-kinds=definite,indirect,possible --track-origins=yes --error-exitcode=1
+VALGRIND_FLAGS := --leak-check=full --show-leak-kinds=definite,indirect,possible --track-origins=yes --error-exitcode=1 --suppressions=tests/valgrind.supp
 
 ####################################################################
 # Test discovery
@@ -1342,15 +1342,22 @@ test-verify-gif: ## Run only GIF output verification (run 'make test' for full t
 test-valgrind: ## Run all tests under valgrind (Linux only)
 test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 ifeq ($(OS_NAME), Linux)
-	@for test_exe in $(TEST_EXECUTABLES); do \
+	@failed=""; \
+	for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
 		printf "\033[0;30;43m\n"; \
 		printf "############################\n"; \
 		printf "### Running %s tests under Valgrind ###\n" "$$test_name"; \
 		printf "############################"; \
 		printf "\033[0m\n\n"; \
-		LD_LIBRARY_PATH="$(TEST_LD_PATH)" valgrind $(VALGRIND_FLAGS) $$test_exe --gtest_brief=1; \
-	done
+		if ! LD_LIBRARY_PATH="$(TEST_LD_PATH)" valgrind $(VALGRIND_FLAGS) $$test_exe --gtest_brief=1; then \
+			failed="$$failed $$test_name"; \
+		fi; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		printf "\033[0;31m\n### Valgrind found errors in:%s ###\033[0m\n" "$$failed" >&2; \
+		exit 1; \
+	fi
 else
 	@printf "\033[0;31m\n"
 	@printf "Valgrind is only available on Linux\n"
