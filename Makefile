@@ -792,7 +792,7 @@ ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-6
 ORACLE_EXEC := tools/oracle/oracle-exec
 ORACLE_ENGINE ?= docker
 
-oracle-build: ## Build the pinned oracle image (all five references)
+oracle-build: ## Build the pinned oracle image (every reference and corpus 'make oracle-verify' names)
 	@printf '### Building %s ###\n' "$(ORACLE_IMAGE)"
 	$(ORACLE_ENGINE) build -t $(ORACLE_IMAGE) \
 		-f tools/oracle/containers/image-refs/Containerfile tools/oracle
@@ -808,7 +808,7 @@ oracle-verify: ## Print which reference answers for each name, and at what versi
 # read-write for the compile; everything else the container sees is read-only.
 JPEG_ORACLE_TOOLS := dump_jpeg_pixels_ref dump_jpeg_coef_ref
 
-oracle-tools: ## Build the libjpeg, giflib and bmplib oracle tools inside the image
+oracle-tools: ## Build the JPEG, GIF, BMP and TIFF oracle tools inside the image
 	@mkdir -p tests/tools/jpeg-oracle/build tests/tools/gif-oracle/build \
 		tests/tools/bmp-oracle/build tests/tools/tiff-oracle/build
 	@for t in $(JPEG_ORACLE_TOOLS); do \
@@ -1173,7 +1173,7 @@ else
 	@printf "check-symbols: skipped (Linux only)\n"
 endif
 
-test: ## Make and run the Unit tests, then verify PNG, JPEG and BMP output with outside decoders
+test: ## Make and run the Unit tests, then verify written output against outside decoders
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF)
 	@for test_exe in $(TEST_EXECUTABLES); do \
