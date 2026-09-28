@@ -97,6 +97,7 @@ GIMG_API GIMG_Result gimg_codec_create_stub_with_allocator(
   c->save_cb = NULL;
   c->decode_cb = NULL;
   c->free_doc_private = NULL;
+  c->probe_cb = NULL;
   *out_codec = c;
   return GIMG_OK;
 }
@@ -150,6 +151,12 @@ void gimg_codec_set_save_cb(GIMG_Codec * codec, gimg_codec_save_fn fn) {
 void gimg_codec_set_decode_cb(GIMG_Codec * codec, gimg_codec_decode_fn fn) {
   if (codec) {
     codec->decode_cb = fn;
+  }
+}
+
+void gimg_codec_set_probe_cb(GIMG_Codec * codec, gimg_codec_probe_fn fn) {
+  if (codec) {
+    codec->probe_cb = fn;
   }
 }
 
@@ -242,6 +249,13 @@ GIMG_API GIMG_Result gimg_probe(
         continue;
       }
       if (memcmp(peek_buf + mag->offset, mag->bytes, mag->length) == 0) {
+        // A weak magic needs a second look: decline and keep searching so a
+        // four-byte pattern cannot claim a file that is not actually its
+        // format. Strong magics leave probe_cb NULL and claim here.
+        if (codec->probe_cb &&
+            !codec->probe_cb(stream, peek_buf, peeked)) {
+          continue;
+        }
         result->format_name = codec->name;
         result->confidence = 100;
         return GIMG_OK;

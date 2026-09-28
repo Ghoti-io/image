@@ -34,6 +34,10 @@
 #include <ghoti.io/image/stream.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Magic signature for probing.
  */
@@ -71,6 +75,20 @@ typedef void (*gimg_codec_free_doc_private_fn)(GIMG_Codec * codec,
     void * codec_private);
 
 /**
+ * @brief Optional post-magic probe check.
+ *
+ * Called after a magic matches. Return non-zero to claim the file, or zero to
+ * decline so `gimg_probe` keeps looking. Weak signatures (four zero-heavy
+ * bytes with no string) need this so they do not claim unrelated data.
+ *
+ * @param stream The stream being probed (position unchanged; peek was used).
+ * @param peek The bytes already peeked (up to 32).
+ * @param peeked How many of those bytes are valid.
+ */
+typedef int (*gimg_codec_probe_fn)(GIMG_Stream * stream,
+    const unsigned char * peek, size_t peeked);
+
+/**
  * @brief Codec descriptor (registry entry).
  */
 struct GIMG_Codec {
@@ -83,6 +101,7 @@ struct GIMG_Codec {
   gimg_codec_save_fn save_cb;
   gimg_codec_decode_fn decode_cb;
   gimg_codec_free_doc_private_fn free_doc_private;
+  gimg_codec_probe_fn probe_cb; ///< NULL = magic alone is enough.
 };
 
 /**
@@ -120,5 +139,14 @@ void gimg_codec_set_decode_cb(GIMG_Codec * codec, gimg_codec_decode_fn fn);
  */
 void gimg_codec_set_free_doc_private(GIMG_Codec * codec,
     gimg_codec_free_doc_private_fn fn);
+
+/**
+ * @brief Set optional post-magic probe callback.
+ */
+void gimg_codec_set_probe_cb(GIMG_Codec * codec, gimg_codec_probe_fn fn);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // GHOTI_IO_GIMG_SRC_CODEC_CODEC_INTERNAL_H

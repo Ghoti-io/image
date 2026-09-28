@@ -14,6 +14,8 @@
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
 
+#include "../../src/codec/codec_internal.h"
+
 TEST(Codec, RegisterAndList) {
   GIMG_Codec * stub = nullptr;
   GIMG_Result r = gimg_codec_create_stub("stub", nullptr, 0, &stub);
@@ -34,6 +36,36 @@ TEST(Codec, ProbeEmptyStream) {
   GIMG_Result r = gimg_probe(s, &result);
   ASSERT_EQ(r, GIMG_OK);
   EXPECT_EQ(result.confidence, 0u);
+  gimg_stream_destroy(s);
+}
+
+namespace {
+
+/** Declines every claim so a weak magic cannot steal a probe. */
+int probe_always_decline(GIMG_Stream *, const unsigned char *, size_t) {
+  return 0;
+}
+
+} // namespace
+
+TEST(Codec, ProbeCallbackCanDeclineAMagicMatch) {
+  // A magic that would otherwise claim every file starting with 0xFE, which
+  // no real codec uses. With probe_cb declining, gimg_probe must keep looking
+  // and leave confidence at zero.
+  static const unsigned char weak[] = {0xFE};
+  GIMG_Codec * stub = nullptr;
+  ASSERT_EQ(gimg_codec_create_stub("weak-probe", weak, sizeof(weak), &stub),
+      GIMG_OK);
+  gimg_codec_set_probe_cb(stub, probe_always_decline);
+  ASSERT_EQ(gimg_codec_register(stub), GIMG_OK);
+
+  unsigned char buf[] = {0xFE, 0x00, 0x00, 0x00};
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(buf, sizeof(buf), &s), GIMG_OK);
+  GIMG_Probe_Result result = {};
+  ASSERT_EQ(gimg_probe(s, &result), GIMG_OK);
+  EXPECT_EQ(result.confidence, 0u);
+  EXPECT_EQ(result.format_name, nullptr);
   gimg_stream_destroy(s);
 }
 
