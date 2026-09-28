@@ -161,14 +161,14 @@ TEST(ArgumentGuards, TheVoidReturningStreamCallsSurviveANullArgument) {
 // ------------------------------------------------------------------ colour
 
 TEST(ArgumentGuards, ColorInfoDefaultSurvivesANullArgument) {
-  gimg_color_info_default(nullptr);
+  gcol_color_info_default(nullptr);
 
   // And fills the struct when given one, so the guard is not the only path
   // this test can reach.
-  GIMG_Color_Info info;
+  GCOL_Color_Info info;
   std::memset(&info, 0xA5, sizeof(info));
-  gimg_color_info_default(&info);
-  EXPECT_EQ(info.cmyk_polarity, GIMG_CMYK_POLARITY_UNKNOWN);
+  gcol_color_info_default(&info);
+  EXPECT_EQ(info.cmyk_polarity, GCOL_CMYK_POLARITY_UNKNOWN);
 }
 
 // --------------------------------------------------------------- documents
@@ -292,8 +292,8 @@ TEST(ArgumentGuards, RasterAccessorsRefuseANullSubject) {
   ASSERT_NE(src, nullptr);
   EXPECT_EQ(gimg_raster_copy(src, nullptr), GIMG_ERR_INTERNAL);
 
-  GIMG_Color_Info info;
-  gimg_color_info_default(&info);
+  GCOL_Color_Info info;
+  gcol_color_info_default(&info);
   EXPECT_EQ(gimg_raster_set_color_info(nullptr, &info), GIMG_ERR_INTERNAL);
 
   GIMG_Pixel_Format fmt;

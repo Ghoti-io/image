@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
@@ -266,12 +266,12 @@ TEST(PngDecode, DecodeSrgbSetsColorInfo) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(raster, nullptr);
 
-  const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * info = gimg_raster_color_info_const(raster);
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_SRGB);
-  EXPECT_EQ(info->transfer, GIMG_TRANSFER_SRGB);
-  EXPECT_EQ(info->intent, GIMG_INTENT_PERCEPTUAL) << "sRGB chunk intent 0 = Perceptual";
+  EXPECT_EQ(gcol_gamut_identify(&info->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_SRGB);
+  EXPECT_EQ(info->transfer, GCOL_TRANSFER_SRGB);
+  EXPECT_EQ(info->intent, GCOL_INTENT_PERCEPTUAL) << "sRGB chunk intent 0 = Perceptual";
 
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
@@ -349,7 +349,7 @@ TEST(PngDecode, DecodeIccpSetsColorInfo) {
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(raster, nullptr);
 
-  const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * info = gimg_raster_color_info_const(raster);
   ASSERT_NE(info, nullptr);
   EXPECT_GT(info->icc_size, 0u) << "iCCP decompressed profile attached to raster";
   EXPECT_NE(info->icc_bytes, nullptr);
@@ -1397,7 +1397,7 @@ TEST(PngDecode, PaletteOnGrayscaleIsRejected) {
 // Edition puts it ahead of sRGB, iCCP and gAMA+cHRM: where it appears, it says
 // what the samples mean and the others do not get a say.
 //
-// GIMG_Color_Info can describe sRGB, Adobe RGB, linear and a plain gamma.
+// GCOL_Color_Info can describe sRGB, Adobe RGB, linear and a plain gamma.
 // CICP names far more - BT.2020, PQ, HLG, limited range - so only the
 // combinations this model holds are translated. The rest leave the color
 // unknown rather than being rounded to the nearest thing expressible, which
@@ -1412,11 +1412,11 @@ TEST(PngDecode, CicpOutranksTheOlderColorChunks) {
   GIMG_Doc * doc = nullptr;
   GIMG_Raster * raster = nullptr;
   ASSERT_TRUE(DecodeFixture("png_cicp_srgb.png", &s, &doc, &raster));
-  const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * info = gimg_raster_color_info_const(raster);
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_SRGB);
-  EXPECT_EQ(info->transfer, GIMG_TRANSFER_SRGB)
+  EXPECT_EQ(gcol_gamut_identify(&info->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_SRGB);
+  EXPECT_EQ(info->transfer, GCOL_TRANSFER_SRGB)
       << "cICP names the sRGB transfer; the gAMA of 1.0 must not win";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);
@@ -1425,23 +1425,23 @@ TEST(PngDecode, CicpOutranksTheOlderColorChunks) {
 
 TEST(PngDecode, ACicpNamingBt2020AndPqIsTranslated) {
   // This asserted that BT.2020 with PQ was left unknown, because nothing in
-  // GIMG_Color_Info could say what it meant.  Both halves can be said now, so
+  // GCOL_Color_Info could say what it meant.  Both halves can be said now, so
   // the assertion expired: it was a statement about the model's reach rather
   // than about the file.
   GIMG_Stream * s = nullptr;
   GIMG_Doc * doc = nullptr;
   GIMG_Raster * raster = nullptr;
   ASSERT_TRUE(DecodeFixture("png_cicp_bt2020_pq.png", &s, &doc, &raster));
-  const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * info = gimg_raster_color_info_const(raster);
   ASSERT_NE(info, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_BT2020);
-  EXPECT_EQ(info->transfer, GIMG_TRANSFER_PQ);
+  EXPECT_EQ(gcol_gamut_identify(&info->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_BT2020);
+  EXPECT_EQ(info->transfer, GCOL_TRANSFER_PQ);
   // PQ is the one transfer here that fixes an absolute level, and these three
   // fields are why the reference axis was split: PQ is display-referred *and*
   // absolute, which the single enum could not have said.
-  EXPECT_EQ(info->reference, GIMG_REFERENCE_DISPLAY);
-  EXPECT_EQ(info->sample_scale, GIMG_SAMPLE_SCALE_ABSOLUTE);
+  EXPECT_EQ(info->reference, GCOL_REFERENCE_DISPLAY);
+  EXPECT_EQ(info->sample_scale, GCOL_SAMPLE_SCALE_ABSOLUTE);
   EXPECT_DOUBLE_EQ(info->white_luminance, 10000.0)
       << "ST 2084 is specified to a 10000 cd/m^2 peak";
   gimg_raster_destroy(raster);
@@ -2306,7 +2306,7 @@ namespace {
 
 /** Wrap a cHRM payload around a minimal PNG and decode its color. */
 ::testing::AssertionResult color_from_chrm(
-    const std::vector<uint32_t> & values, GIMG_Color_Info * out) {
+    const std::vector<uint32_t> & values, GCOL_Color_Info * out) {
   std::vector<uint8_t> chrm;
   for (uint32_t v : values) {
     chrm.push_back((uint8_t)(v >> 24));
@@ -2335,7 +2335,7 @@ namespace {
     gimg_stream_destroy(s);
     return ::testing::AssertionFailure() << "decode: " << r;
   }
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
   if (ci) {
     *out = *ci;
   }
@@ -2348,24 +2348,24 @@ namespace {
 } // namespace
 
 TEST(PngChrm, AdobeRgbChromaticitiesNameTheGamut) {
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
   ASSERT_TRUE(color_from_chrm(
       {31270u, 32900u, 64000u, 33000u, 21000u, 71000u, 15000u, 6000u}, &ci));
-  EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_ADOBE_RGB);
-  EXPECT_EQ(ci.transfer, GIMG_TRANSFER_UNKNOWN)
+  EXPECT_EQ(gcol_gamut_identify(&ci.gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(ci.transfer, GCOL_TRANSFER_UNKNOWN)
       << "cHRM states the gamut and nothing about the curve";
 }
 
 TEST(PngChrm, SrgbChromaticitiesNameTheGamutToo) {
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
   ASSERT_TRUE(color_from_chrm(
       {31270u, 32900u, 64000u, 33000u, 30000u, 60000u, 15000u, 6000u}, &ci));
-  EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_SRGB);
-  EXPECT_EQ(ci.transfer, GIMG_TRANSFER_UNKNOWN)
+  EXPECT_EQ(gcol_gamut_identify(&ci.gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_SRGB);
+  EXPECT_EQ(ci.transfer, GCOL_TRANSFER_UNKNOWN)
       << "the primaries sRGB shares are not a claim that the curve is sRGB's";
 }
 
@@ -2375,12 +2375,12 @@ TEST(PngChrm, Bt2020ChromaticitiesNameTheGamut) {
   // assertion was correct when written and expired when the table grew,
   // which is the shape of every absence-assertion: what it really says is
   // "not yet".
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
   ASSERT_TRUE(color_from_chrm(
       {31270u, 32900u, 70800u, 29200u, 17000u, 79700u, 13100u, 4600u}, &ci));
-  EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_BT2020);
+  EXPECT_EQ(gcol_gamut_identify(&ci.gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_BT2020);
 }
 
 TEST(PngChrm, AGamutWithNoNameIsStillCarriedExactly) {
@@ -2389,12 +2389,12 @@ TEST(PngChrm, AGamutWithNoNameIsStillCarriedExactly) {
   // These coordinates are no published space - Adobe RGB's green moved far
   // enough to match nothing - so identify() says UNKNOWN while every number
   // the file stated survives.
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
   ASSERT_TRUE(color_from_chrm(
       {31270u, 32900u, 64000u, 33000u, 25000u, 65000u, 15000u, 6000u}, &ci));
-  EXPECT_EQ(gimg_gamut_identify(&ci.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(gcol_gamut_identify(&ci.gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_UNKNOWN);
   ASSERT_TRUE(ci.primaries_stated) << "unnameable is not unstated";
   EXPECT_NEAR(ci.gamut.white.x, 0.31270, 1e-9);
   EXPECT_NEAR(ci.gamut.white.y, 0.32900, 1e-9);
@@ -3108,7 +3108,7 @@ bool replace_chunk_payload(std::vector<uint8_t> & png, const char * type,
 
 /** Load and decode @p bytes, handing back the color info or nothing. */
 ::testing::AssertionResult ColorInfoOf(
-    const std::vector<uint8_t> & bytes, GIMG_Color_Info * out) {
+    const std::vector<uint8_t> & bytes, GCOL_Color_Info * out) {
   GIMG_Stream * s = nullptr;
   if (gimg_stream_create_memory(bytes.data(), bytes.size(), &s) != GIMG_OK) {
     return ::testing::AssertionFailure() << "stream";
@@ -3122,7 +3122,7 @@ bool replace_chunk_payload(std::vector<uint8_t> & png, const char * type,
   GIMG_Raster * raster = nullptr;
   r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
   if (r == GIMG_OK && raster) {
-    const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+    const GCOL_Color_Info * info = gimg_raster_color_info_const(raster);
     if (info) { *out = *info; }
   }
   if (raster) { gimg_raster_destroy(raster); }
@@ -3156,44 +3156,44 @@ TEST(PngDecode, EachCicpCombinationThisModelCanHoldIsTranslated) {
   struct Case {
     const char * what;
     uint8_t primaries, transfer, matrix, full_range;
-    GIMG_Primaries want_primaries;
-    GIMG_Transfer want_transfer;
+    GCOL_Primaries want_primaries;
+    GCOL_Transfer want_transfer;
   };
   const Case cases[] = {
-      {"sRGB primaries, sRGB transfer", 1, 13, 0, 1, GIMG_PRIMARIES_SRGB,
-          GIMG_TRANSFER_SRGB},
-      {"sRGB primaries, linear transfer", 1, 8, 0, 1, GIMG_PRIMARIES_SRGB,
-          GIMG_TRANSFER_LINEAR},
+      {"sRGB primaries, sRGB transfer", 1, 13, 0, 1, GCOL_PRIMARIES_SRGB,
+          GCOL_TRANSFER_SRGB},
+      {"sRGB primaries, linear transfer", 1, 8, 0, 1, GCOL_PRIMARIES_SRGB,
+          GCOL_TRANSFER_LINEAR},
       // The gamut axis swept alone: the transfer stays at 13, so a failure
       // here is about the primaries table and nothing else.
-      {"BT.2020 primaries", 9, 13, 0, 1, GIMG_PRIMARIES_BT2020,
-          GIMG_TRANSFER_SRGB},
-      {"Display P3 primaries", 12, 13, 0, 1, GIMG_PRIMARIES_DISPLAY_P3,
-          GIMG_TRANSFER_SRGB},
+      {"BT.2020 primaries", 9, 13, 0, 1, GCOL_PRIMARIES_BT2020,
+          GCOL_TRANSFER_SRGB},
+      {"Display P3 primaries", 12, 13, 0, 1, GCOL_PRIMARIES_DISPLAY_P3,
+          GCOL_TRANSFER_SRGB},
       // And the transfer axis alone, at primaries 1.
-      {"PQ transfer", 1, 16, 0, 1, GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_PQ},
-      {"HLG transfer", 1, 18, 0, 1, GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_HLG},
+      {"PQ transfer", 1, 16, 0, 1, GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_PQ},
+      {"HLG transfer", 1, 18, 0, 1, GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_HLG},
       {"BT.709 transfer as a parametric curve", 1, 1, 0, 1,
-          GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_PARAMETRIC},
-      {"BT.470 System M, gamma 2.2", 1, 4, 0, 1, GIMG_PRIMARIES_SRGB,
-          GIMG_TRANSFER_GAMMA},
+          GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_PARAMETRIC},
+      {"BT.470 System M, gamma 2.2", 1, 4, 0, 1, GCOL_PRIMARIES_SRGB,
+          GCOL_TRANSFER_GAMMA},
       // Theatrical DCI-P3 shares Display P3's primaries under a different
-      // white, so naming it would break the invariant gimg_gamut_identify()
+      // white, so naming it would break the invariant gcol_gamut_identify()
       // rests on.  The gamut goes unstated and the transfer still lands,
       // which is the point of reading the two code points separately.
-      {"DCI-P3 primaries are not named", 11, 13, 0, 1, GIMG_PRIMARIES_UNKNOWN,
-          GIMG_TRANSFER_SRGB},
+      {"DCI-P3 primaries are not named", 11, 13, 0, 1, GCOL_PRIMARIES_UNKNOWN,
+          GCOL_TRANSFER_SRGB},
       // Unspecified on both axes says nothing, which is not the same as the
       // chunk being refused: it was read and held no claim.
-      {"both unspecified", 2, 2, 0, 1, GIMG_PRIMARIES_UNKNOWN,
-          GIMG_TRANSFER_UNKNOWN},
+      {"both unspecified", 2, 2, 0, 1, GCOL_PRIMARIES_UNKNOWN,
+          GCOL_TRANSFER_UNKNOWN},
       // Still refused outright, whatever the other two bytes say.
-      {"a matrix other than identity", 1, 13, 1, 1, GIMG_PRIMARIES_UNKNOWN,
-          GIMG_TRANSFER_UNKNOWN},
-      {"limited range", 1, 13, 0, 0, GIMG_PRIMARIES_UNKNOWN,
-          GIMG_TRANSFER_UNKNOWN},
-      {"linear pair, limited range", 1, 8, 0, 0, GIMG_PRIMARIES_UNKNOWN,
-          GIMG_TRANSFER_UNKNOWN},
+      {"a matrix other than identity", 1, 13, 1, 1, GCOL_PRIMARIES_UNKNOWN,
+          GCOL_TRANSFER_UNKNOWN},
+      {"limited range", 1, 13, 0, 0, GCOL_PRIMARIES_UNKNOWN,
+          GCOL_TRANSFER_UNKNOWN},
+      {"linear pair, limited range", 1, 8, 0, 0, GCOL_PRIMARIES_UNKNOWN,
+          GCOL_TRANSFER_UNKNOWN},
   };
 
   for (const Case & c : cases) {
@@ -3202,12 +3202,12 @@ TEST(PngDecode, EachCicpCombinationThisModelCanHoldIsTranslated) {
     ASSERT_TRUE(replace_chunk_payload(png, "cICP",
         {c.primaries, c.transfer, c.matrix, c.full_range}))
         << "the fixture must carry a four-byte cICP to rewrite";
-    GIMG_Color_Info info = {};
+    GCOL_Color_Info info = {};
     ASSERT_TRUE(ColorInfoOf(png, &info));
-    EXPECT_EQ(gimg_gamut_identify(&info.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+    EXPECT_EQ(gcol_gamut_identify(&info.gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
         c.want_primaries);
     EXPECT_EQ(info.transfer, c.want_transfer);
-    EXPECT_EQ(info.primaries_stated, c.want_primaries != GIMG_PRIMARIES_UNKNOWN)
+    EXPECT_EQ(info.primaries_stated, c.want_primaries != GCOL_PRIMARIES_UNKNOWN)
         << "a cICP this reader does not translate states no gamut at all, "
            "which is not the same as one it cannot name";
   }
@@ -3221,9 +3221,9 @@ TEST(PngDecode, EachCicpCombinationThisModelCanHoldIsTranslated) {
     // states nothing.  This used to be BT.2020 with PQ, which is translated
     // now and so no longer exercises the fall-through.
     ASSERT_TRUE(replace_chunk_payload(png, "cICP", {2, 2, 0, 1}));
-    GIMG_Color_Info info = {};
+    GCOL_Color_Info info = {};
     ASSERT_TRUE(ColorInfoOf(png, &info));
-    EXPECT_EQ(info.transfer, GIMG_TRANSFER_UNKNOWN)
+    EXPECT_EQ(info.transfer, GCOL_TRANSFER_UNKNOWN)
         << "cICP outranks gAMA whether or not it could be translated; falling "
            "back would report a gamma the file did not mean";
   }
@@ -3246,7 +3246,7 @@ TEST(PngDecode, AnUnreadableIccProfileLosesTheProfileAndNotThePicture) {
       << "Run tests/data/png/generate.py";
 
   // Control: intact, the profile arrives.
-  GIMG_Color_Info good = {};
+  GCOL_Color_Info good = {};
   ASSERT_TRUE(ColorInfoOf(base, &good));
   ASSERT_GT(good.icc_size, 0u)
       << "the fixture must carry a profile the reader accepts, or the "
@@ -3285,7 +3285,7 @@ TEST(PngDecode, AnUnreadableIccProfileLosesTheProfileAndNotThePicture) {
   ASSERT_TRUE(found) << "no iCCP chunk in the fixture";
   ASSERT_NE(broken, base) << "nothing was actually changed";
 
-  GIMG_Color_Info bad = {};
+  GCOL_Color_Info bad = {};
   ASSERT_TRUE(ColorInfoOf(broken, &bad))
       << "the picture is intact; an ancillary chunk the decoder cannot read "
          "is one PNG 13.2 lets it ignore";

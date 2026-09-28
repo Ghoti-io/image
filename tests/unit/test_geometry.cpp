@@ -6,7 +6,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
@@ -190,20 +190,20 @@ TEST(Crop, TheColourDescriptionSurvives) {
   GIMG_Raster * src = make_positional_rgba8(6, 6);
   ASSERT_NE(src, nullptr);
   const unsigned char profile[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02};
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
-  ci.transfer = GIMG_TRANSFER_SRGB;
-  ci.intent = GIMG_INTENT_SATURATION;
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
+  ci.transfer = GCOL_TRANSFER_SRGB;
+  ci.intent = GCOL_INTENT_SATURATION;
   ci.icc_bytes = profile;
   ci.icc_size = sizeof(profile);
   ASSERT_EQ(gimg_raster_set_color_info(src, &ci), GIMG_OK);
 
   GIMG_Raster * dst = nullptr;
   ASSERT_EQ(gimg_ops_crop(src, 1, 1, 2, 2, &dst), GIMG_OK);
-  const GIMG_Color_Info * got = gimg_raster_color_info_const(dst);
+  const GCOL_Color_Info * got = gimg_raster_color_info_const(dst);
   ASSERT_NE(got, nullptr);
-  EXPECT_EQ(got->transfer, GIMG_TRANSFER_SRGB);
-  EXPECT_EQ(got->intent, GIMG_INTENT_SATURATION);
+  EXPECT_EQ(got->transfer, GCOL_TRANSFER_SRGB);
+  EXPECT_EQ(got->intent, GCOL_INTENT_SATURATION);
   ASSERT_EQ(got->icc_size, sizeof(profile));
   ASSERT_NE(got->icc_bytes, nullptr);
   EXPECT_EQ(memcmp(got->icc_bytes, profile, sizeof(profile)), 0);

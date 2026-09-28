@@ -51,7 +51,7 @@ Tests in `tests/codec/png/test_png_decode.cpp` load these files when built with 
 | `png_gray_forbidden_palette.png` | PLTE on color type 0, which the spec forbids outright. Some decoders read it anyway; this one does not. |
 | `png_gradient_64x64_rgb.png` | A smooth gradient, which is where row filtering pays most, so choosing per row can be shown to beat forcing any single filter. |
 | `png_cicp_srgb.png` | cICP naming the sRGB pair beside a gAMA that disagrees, so the Third Edition's precedence is testable. |
-| `png_cicp_bt2020_pq.png` | cICP naming BT.2020 primaries with the PQ transfer. It was beyond what `GIMG_Color_Info` could describe and is now translated in full, PQ's absolute 10000 cd/m² included; the gAMA still rides along so that cICP's precedence over it stays an assertion. |
+| `png_cicp_bt2020_pq.png` | cICP naming BT.2020 primaries with the PQ transfer. It was beyond what `GCOL_Color_Info` could describe and is now translated in full, PQ's absolute 10000 cd/m² included; the gAMA still rides along so that cICP's precedence over it stays an assertion. |
 | `png_mdcv_clli.png` | The HDR mastering chunks, which are preserved and not interpreted. |
 
 Every one of these was checked against Pillow and libpng before any test was

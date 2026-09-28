@@ -27,7 +27,7 @@
  */
 
 #include <ghoti.io/image/macros.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/raster.h>
 #include <stddef.h>
 #include <stdint.h>

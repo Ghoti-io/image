@@ -116,7 +116,7 @@ Everything is prefixed `gimg_` / `GIMG_`, under `<ghoti.io/image/...>`.
 - **`codec.h`** — `gimg_probe()`, `gimg_doc_load()`, `gimg_doc_save()`, and `gimg_item_decode()`. The format is recognised from the bytes.
 - **`doc.h`** — a document of items (frames or pages), loop count, frame delay, dispose and blend.
 - **`raster.h`** — width, height, stride, pixel format, and the pixel buffer.
-- **`color.h`** — the colour information a file stated: profile, chromaticities, gamma. Reported and preserved.
+- **`color.h`** — includes `ghoti.io/color/color.h`. Colour information a file stated (`GCOL_Color_Info`: profile, chromaticities, transfer) is reported and preserved; this library never transforms it.
 - **`meta.h`** — common metadata, plus the raw chunks a format carried so a round trip can put them back.
 - **`ops.h`** — orientation, pixel-format and bit-depth conversion, colour reduction, crop, resize, and composite.
 - **`allocator.h`** — `GIMG_Allocator`, which is cutil's `GCU_Allocator`.

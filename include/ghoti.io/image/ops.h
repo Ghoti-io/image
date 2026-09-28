@@ -184,10 +184,10 @@ typedef enum {
    * Linearize, average, re-encode. More nearly correct - averaging non-linear
    * values darkens - and **opt-in precisely because the library cannot know
    * the transfer function**. Passing this is the caller asserting an sRGB
-   * transfer; GIMG_Color_Info is not consulted to *infer* one, for the same
+   * transfer; GCOL_Color_Info is not consulted to *infer* one, for the same
    * reason the CMYK conversion refuses to guess a polarity.
    *
-   * It is consulted to *contradict* one. A raster whose GIMG_Color_Info states
+   * It is consulted to *contradict* one. A raster whose GCOL_Color_Info states
    * a transfer that is neither sRGB nor unknown - gamma 2.2, BT.1886, PQ, HLG,
    * a parametric curve - is refused with GIMG_ERR_UNSUPPORTED, because the
    * file and the caller have said different things and applying sRGB's curve
@@ -231,7 +231,7 @@ GIMG_API void gimg_resize_options_default(GIMG_Resize_Options * options);
  * The source is not modified; the premultiplication happens on the way into
  * the filter and is undone on the way out.
  *
- * The result carries the source's GIMG_Color_Info, embedded profile included.
+ * The result carries the source's GCOL_Color_Info, embedded profile included.
  *
  * @param src Source raster.
  * @param dst_width Target width; must be above zero.
@@ -262,7 +262,7 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
  * depth, planar or interleaved. That is wider than gimg_ops_resize() reaches,
  * which has to know what a sample means in order to average two of them.
  *
- * The result carries the source's GIMG_Color_Info, embedded profile included:
+ * The result carries the source's GCOL_Color_Info, embedded profile included:
  * showing less of a picture does not change what its samples mean.
  *
  * To mirror or rotate instead, use gimg_ops_apply_orientation(), which
@@ -287,7 +287,7 @@ GIMG_API GIMG_Result gimg_ops_crop(const GIMG_Raster * src, uint32_t x,
  * @brief Convert pixel format: a same-format copy, or CMYK to RGBA.
  *
  * A **same-format** conversion copies the samples, and the result carries the
- * source's GIMG_Color_Info, profile included: copying samples does not change
+ * source's GCOL_Color_Info, profile included: copying samples does not change
  * what they mean.
  *
  * **CMYK to RGBA** at the same sample width (CMYK8 to RGBA8, CMYK12 to
@@ -304,12 +304,12 @@ GIMG_API GIMG_Result gimg_ops_crop(const GIMG_Raster * src, uint32_t x,
  * pixel of every CMYK and YCCK fixture in tests/data/jpeg.
  *
  * The source's `cmyk_polarity` must say which way round the samples are:
- * GIMG_CMYK_POLARITY_UNKNOWN returns GIMG_ERR_UNSUPPORTED rather than a
+ * GCOL_CMYK_POLARITY_UNKNOWN returns GIMG_ERR_UNSUPPORTED rather than a
  * guess, because the two readings are negatives of each other and the wrong
  * one gives a plausible but inverted picture. The JPEG decoder always states
  * it.
  *
- * The result is **opaque** and carries **no** GIMG_Color_Info: what the source
+ * The result is **opaque** and carries **no** GCOL_Color_Info: what the source
  * said described four ink amounts, and none of it - an embedded profile least
  * of all - is true of the three-channel result.
  *
@@ -336,7 +336,7 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
  * channels are not all the same width, and any depth but 8, 12 or 16 return
  * GIMG_ERR_UNSUPPORTED.
  *
- * The result carries the source's GIMG_Color_Info, profile included: a sample
+ * The result carries the source's GCOL_Color_Info, profile included: a sample
  * restated at a different precision still means what it meant.
  *
  * @param src Source raster (8-, 12-, or 16-bit per channel).
@@ -551,7 +551,7 @@ GIMG_API GIMG_Result gimg_ops_palette_build(const GIMG_Raster * const * src,
  * @param palette Table to map onto; `count` must be at least 1.
  * @param dither What to do with the rounding error.
  * @param out_raster On success, a new raster in @a src's format and size;
- *   caller owns it.  It carries @a src's GIMG_Color_Info: rounding a sample to
+ *   caller owns it.  It carries @a src's GCOL_Color_Info: rounding a sample to
  *   a nearby one does not change what the samples mean.
  * @return GIMG_OK, GIMG_ERR_UNSUPPORTED, GIMG_ERR_INTERNAL, or GIMG_ERR_OOM.
  */

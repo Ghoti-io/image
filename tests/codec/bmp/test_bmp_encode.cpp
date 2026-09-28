@@ -1320,8 +1320,8 @@ TEST(BmpEncode, NarrowingKeepsTheProfileTheDeepRasterCarried) {
   std::vector<uint8_t> profile(128, 0);
   profile[3] = 128;
   std::memcpy(profile.data() + 36, "acsp", 4);
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
   ci.icc_bytes = profile.data();
   ci.icc_size = profile.size();
   ASSERT_EQ(gimg_raster_set_color_info(raster, &ci), GIMG_OK);
@@ -1329,7 +1329,7 @@ TEST(BmpEncode, NarrowingKeepsTheProfileTheDeepRasterCarried) {
   GIMG_Raster * narrowed = nullptr;
   ASSERT_EQ(gimg_ops_convert_bit_depth(raster, 8, &narrowed), GIMG_OK);
   ASSERT_NE(narrowed, nullptr);
-  const GIMG_Color_Info * got = gimg_raster_color_info_const(narrowed);
+  const GCOL_Color_Info * got = gimg_raster_color_info_const(narrowed);
   ASSERT_NE(got, nullptr);
   EXPECT_EQ(got->icc_size, profile.size());
   gimg_raster_destroy(narrowed);
@@ -1374,7 +1374,7 @@ GIMG_Result save_raster_with_policy(GIMG_Raster * raster,
 }
 
 /** An opaque 4x2 raster tagged with the given color. */
-GIMG_Raster * colored_raster(const GIMG_Color_Info & color) {
+GIMG_Raster * colored_raster(const GCOL_Color_Info & color) {
   GIMG_Raster * raster = make_raster(4, 2, opaque_gradient);
   if (!raster) {
     return nullptr;
@@ -1424,8 +1424,8 @@ TEST(BmpEncode, AProfileOnTheRasterIsWrittenIntoAV5Header) {
   // gets that header and the profile follows the pixels.  Without this a BMP
   // loaded and saved as a BMP lost the profile it arrived with.
   std::vector<uint8_t> profile = small_profile();
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
   GIMG_Raster * raster = colored_raster(color);
@@ -1449,17 +1449,17 @@ TEST(BmpEncode, AProfileOnTheRasterIsWrittenIntoAV5Header) {
   Loaded img;
   ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
-  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * back = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(back, nullptr);
   ASSERT_EQ(back->icc_size, profile.size());
   EXPECT_EQ(std::memcmp(back->icc_bytes, profile.data(), profile.size()), 0);
 }
 
 TEST(BmpEncode, AnSrgbRasterIsWrittenAsAV4HeaderNamingSrgb) {
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
-  color.transfer = GIMG_TRANSFER_SRGB;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_SRGB);
+  color.transfer = GCOL_TRANSFER_SRGB;
   GIMG_Raster * raster = colored_raster(color);
   ASSERT_NE(raster, nullptr);
 
@@ -1471,21 +1471,21 @@ TEST(BmpEncode, AnSrgbRasterIsWrittenAsAV4HeaderNamingSrgb) {
   Loaded img;
   ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
-  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * back = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(back, nullptr);
-  EXPECT_EQ(back->transfer, GIMG_TRANSFER_SRGB);
-  EXPECT_EQ(gimg_gamut_identify(&back->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_SRGB);
+  EXPECT_EQ(back->transfer, GCOL_TRANSFER_SRGB);
+  EXPECT_EQ(gcol_gamut_identify(&back->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_SRGB);
 }
 
 TEST(BmpEncode, CalibratedPrimariesAndGammaSurviveTheHeader) {
   // bmpsuite's g/pal8v4.bmp is exactly this shape: sRGB's primaries with a
   // gamma of 2.2, which is not sRGB and must not be written as though it
   // were.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_ADOBE_RGB);
-  color.transfer = GIMG_TRANSFER_GAMMA;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_ADOBE_RGB);
+  color.transfer = GCOL_TRANSFER_GAMMA;
   color.gamma_value = 2.2;
   GIMG_Raster * raster = colored_raster(color);
   ASSERT_NE(raster, nullptr);
@@ -1502,18 +1502,18 @@ TEST(BmpEncode, CalibratedPrimariesAndGammaSurviveTheHeader) {
   Loaded img;
   ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
-  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * back = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(back, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&back->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_ADOBE_RGB);
-  EXPECT_EQ(back->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_EQ(gcol_gamut_identify(&back->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(back->transfer, GCOL_TRANSFER_GAMMA);
   EXPECT_NEAR(back->gamma_value, 2.2, 0.0001);
 }
 
 TEST(BmpEncode, LinearIsWrittenAsAGammaOfOne) {
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  color.transfer = GIMG_TRANSFER_LINEAR;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  color.transfer = GCOL_TRANSFER_LINEAR;
   GIMG_Raster * raster = colored_raster(color);
   ASSERT_NE(raster, nullptr);
 
@@ -1526,17 +1526,17 @@ TEST(BmpEncode, LinearIsWrittenAsAGammaOfOne) {
   ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
   EXPECT_EQ(gimg_raster_color_info_const(img.raster())->transfer,
-      GIMG_TRANSFER_LINEAR);
+      GCOL_TRANSFER_LINEAR);
 }
 
 TEST(BmpEncode, AnIntentOtherThanPerceptualNeedsAV5Header) {
   // bV5Intent is the only V5-only field this writer has anything to put in,
   // so it is what decides between the two header versions when there is no
   // profile.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  color.transfer = GIMG_TRANSFER_SRGB;
-  color.intent = GIMG_INTENT_SATURATION;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  color.transfer = GCOL_TRANSFER_SRGB;
+  color.intent = GCOL_INTENT_SATURATION;
   GIMG_Raster * raster = colored_raster(color);
   ASSERT_NE(raster, nullptr);
 
@@ -1550,15 +1550,15 @@ TEST(BmpEncode, AnIntentOtherThanPerceptualNeedsAV5Header) {
   ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
   EXPECT_EQ(gimg_raster_color_info_const(img.raster())->intent,
-      GIMG_INTENT_SATURATION);
+      GCOL_INTENT_SATURATION);
 }
 
 TEST(BmpEncode, AlphaMasksAndAProfileAreWrittenTogether) {
   // A V4 header carries the four channel masks at the same offsets a V3 does,
   // so stating a color space must not cost the alpha mask.
   std::vector<uint8_t> profile = small_profile();
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
   GIMG_Raster * raster = make_raster(4, 2, alpha_gradient);
@@ -1593,8 +1593,8 @@ TEST(BmpEncode, DropAllAndKeepRawOnlyStateNoColorSpace) {
   std::vector<uint8_t> profile = small_profile();
   for (GIMG_Meta_Policy policy :
       {GIMG_META_DROP_ALL, GIMG_META_KEEP_RAW_ONLY}) {
-    GIMG_Color_Info color;
-    gimg_color_info_default(&color);
+    GCOL_Color_Info color;
+    gcol_color_info_default(&color);
     color.icc_bytes = profile.data();
     color.icc_size = profile.size();
     GIMG_Raster * raster = colored_raster(color);
@@ -1609,9 +1609,9 @@ TEST(BmpEncode, AGammaTheFieldCannotHoldGoesUnsaid) {
   // bV4Gamma is 16.16 fixed point, so it states nothing above 65535.  A value
   // past that is left out rather than converted, which for the same reason as
   // PNG's gAMA would be undefined behaviour and not a large number.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  color.transfer = GIMG_TRANSFER_GAMMA;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  color.transfer = GCOL_TRANSFER_GAMMA;
   color.gamma_value = 1e9;
   GIMG_Raster * raster = colored_raster(color);
   ASSERT_NE(raster, nullptr);
@@ -1626,8 +1626,8 @@ TEST(BmpEncode, ProfileBearingFilesStillReadBackFromOutside) {
   // any this writer used to emit, and a decoder that stops reading at 40
   // bytes would find the pixels in the wrong place.
   std::vector<uint8_t> profile = small_profile();
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
   GIMG_Raster * raster = make_raster(5, 3, opaque_gradient);
@@ -1647,8 +1647,8 @@ TEST(BmpEncode, AProfilePastWhatThisCodecReadsIsNotEmbedded) {
   std::vector<uint8_t> profile(GIMG_METADATA_SIZE_DEFAULT + 1u, 0);
   profile[3] = 0;
   std::memcpy(profile.data() + 36, "acsp", 4);
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
   GIMG_Raster * raster = colored_raster(color);
@@ -1664,10 +1664,10 @@ TEST(BmpEncode, AnOverLargeProfileDoesNotSuppressTheRestOfTheColor) {
   // profile, and it used to drag an over-large profile along with it.
   std::vector<uint8_t> profile(GIMG_METADATA_SIZE_DEFAULT + 1u, 0);
   std::memcpy(profile.data() + 36, "acsp", 4);
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  color.transfer = GIMG_TRANSFER_SRGB;
-  color.intent = GIMG_INTENT_SATURATION;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  color.transfer = GCOL_TRANSFER_SRGB;
+  color.intent = GCOL_INTENT_SATURATION;
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
   GIMG_Raster * raster = colored_raster(color);
@@ -1683,10 +1683,10 @@ TEST(BmpEncode, AnOverLargeProfileDoesNotSuppressTheRestOfTheColor) {
   Loaded img;
   ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
-  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * back = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(back, nullptr);
-  EXPECT_EQ(back->transfer, GIMG_TRANSFER_SRGB);
-  EXPECT_EQ(back->intent, GIMG_INTENT_SATURATION);
+  EXPECT_EQ(back->transfer, GCOL_TRANSFER_SRGB);
+  EXPECT_EQ(back->intent, GCOL_INTENT_SATURATION);
   EXPECT_EQ(back->icc_size, 0u);
 }
 
@@ -1694,7 +1694,7 @@ TEST(BmpEncode, AnOverLargeProfileDoesNotSuppressTheRestOfTheColor) {
 //
 // BMP V5 names the four intents with its own constants - LCS_GM_BUSINESS,
 // GRAPHICS, IMAGES, ABS_COLORIMETRIC - and this writer maps between them and
-// GIMG_Rendering_Intent in two switch statements, one each way.  Only
+// GCOL_Rendering_Intent in two switch statements, one each way.  Only
 // saturation had ever been written or read: it is the one that pushes a
 // header to V5 on its own, so it is the one the V5 tests reach for, and the
 // other three arms of both switches had never run.
@@ -1705,7 +1705,7 @@ TEST(BmpEncode, AnOverLargeProfileDoesNotSuppressTheRestOfTheColor) {
 // constants actually live.
 TEST(BmpEncode, EveryRenderingIntentSurvivesTheRoundTrip) {
   struct Case {
-    GIMG_Rendering_Intent intent;
+    GCOL_Rendering_Intent intent;
     uint32_t v5;
     /** Whether stating this intent is enough to need a V5 header. */
     bool needs_v5;
@@ -1715,24 +1715,24 @@ TEST(BmpEncode, EveryRenderingIntentSurvivesTheRoundTrip) {
       // The bV5Intent constants, which live in bmp_color.c: LCS_GM_BUSINESS
       // 1, GRAPHICS 2, IMAGES 4, ABS_COLORIMETRIC 8.  Spelled out here so a
       // change to either end of the map has to change this file too.
-      // Perceptual is GIMG_Rendering_Intent's zero and is also what an
+      // Perceptual is GCOL_Rendering_Intent's zero and is also what an
       // absent bV5Intent means, so stating it says nothing the file does not
       // already say and the header stays at V4.  It still round-trips, and
       // that is the whole reason nothing is lost by the two being the same
       // value here.
-      {GIMG_INTENT_PERCEPTUAL, 4u, false, "perceptual"},
-      {GIMG_INTENT_RELATIVE_COLORIMETRIC, 2u, true, "relative colorimetric"},
-      {GIMG_INTENT_SATURATION, 1u, true, "saturation"},
-      {GIMG_INTENT_ABSOLUTE_COLORIMETRIC, 8u, true, "absolute colorimetric"},
+      {GCOL_INTENT_PERCEPTUAL, 4u, false, "perceptual"},
+      {GCOL_INTENT_RELATIVE_COLORIMETRIC, 2u, true, "relative colorimetric"},
+      {GCOL_INTENT_SATURATION, 1u, true, "saturation"},
+      {GCOL_INTENT_ABSOLUTE_COLORIMETRIC, 8u, true, "absolute colorimetric"},
   };
   for (const Case & c : cases) {
     SCOPED_TRACE(c.name);
-    GIMG_Color_Info color;
-    gimg_color_info_default(&color);
+    GCOL_Color_Info color;
+    gcol_color_info_default(&color);
     // A stated color space as well, so the header is V5 for every case and
     // not only for the one intent that forces it on its own.
-    color.transfer = GIMG_TRANSFER_SRGB;
-    (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
+    color.transfer = GCOL_TRANSFER_SRGB;
+    (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_SRGB);
     color.intent = c.intent;
     GIMG_Raster * raster = colored_raster(color);
     ASSERT_NE(raster, nullptr);
@@ -1754,7 +1754,7 @@ TEST(BmpEncode, EveryRenderingIntentSurvivesTheRoundTrip) {
     Loaded img;
     ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
     ASSERT_EQ(img.decode(), GIMG_OK);
-    const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+    const GCOL_Color_Info * back = gimg_raster_color_info_const(img.raster());
     ASSERT_NE(back, nullptr);
     EXPECT_EQ(back->intent, c.intent)
         << "the two maps must agree, and agree with the file";
@@ -1767,8 +1767,8 @@ TEST(BmpEncode, SavingFromADocumentWhoseRasterTheSaveOwnsWritesTheRightProfile) 
   // file.  This writer holds the raster to the end and so is not in that
   // state - which is worth an assertion rather than an argument.
   std::vector<uint8_t> profile = small_profile();
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
   GIMG_Raster * raster = colored_raster(color);
@@ -1815,9 +1815,9 @@ TEST(BmpEncode, KnownPrimariesWithNoTransferWriteEndpointsAndNoGamma) {
   // Either half of a calibrated header may be left at zero.  A gamma of zero
   // reads back as no transfer stated, so saying only the half that is known
   // beats inventing the other.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_SRGB);
   GIMG_Raster * raster = colored_raster(color);
   ASSERT_NE(raster, nullptr);
 
@@ -1835,11 +1835,11 @@ TEST(BmpEncode, KnownPrimariesWithNoTransferWriteEndpointsAndNoGamma) {
   Loaded img;
   ASSERT_EQ(img.load_bytes(bytes), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
-  const GIMG_Color_Info * back = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * back = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(back, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&back->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_SRGB);
-  EXPECT_EQ(back->transfer, GIMG_TRANSFER_UNKNOWN)
+  EXPECT_EQ(gcol_gamut_identify(&back->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_SRGB);
+  EXPECT_EQ(back->transfer, GCOL_TRANSFER_UNKNOWN)
       << "the file stated no curve, so neither does the raster";
 }
 

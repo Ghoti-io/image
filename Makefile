@@ -360,7 +360,7 @@ INCLUDE += $(COMPRESS_CFLAGS)
 #
 # Compress's .pc already pulls it in, so the include flags below duplicate an
 # -I that is there anyway.  It is asked for by name regardless, for two
-# reasons: $(CUTIL_LIBS) is needed on every link line - image's .so has a
+# reasons: $(CUTIL_LIBS) $(COLOR_LIBS) is needed on every link line - image's .so has a
 # NEEDED entry for cutil and the linker has to resolve it - and image uses
 # cutil's headers directly, so it should name its own dependency rather than
 # rely on compress's .pc continuing to list it.
@@ -373,6 +373,18 @@ $(error ghoti.io-cutil was not found by pkg-config. Run ./bootstrap.sh in the pa
 endif
 endif
 INCLUDE += $(CUTIL_CFLAGS)
+
+# ghoti.io-color: colour description types and ICC synthesis. Image fills
+# GCOL_Color_Info from file bytes and never transforms; the engine is color.
+COLOR_PC ?= ghoti.io-color$(BRANCH)
+COLOR_CFLAGS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --cflags $(COLOR_PC) 2>/dev/null)
+COLOR_LIBS := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs $(COLOR_PC) 2>/dev/null)
+ifeq ($(strip $(COLOR_CFLAGS)),)
+ifndef SKIP_DEP_CHECK
+$(error ghoti.io-color was not found by pkg-config. Run ./bootstrap.sh in the parent folder to build and install the suite into a local prefix, then pass the same PREFIX here - or point PKG_CONFIG_PATH at the directory holding its .pc file. There is deliberately no sibling-checkout fallback: a second resolution path that only in-tree builds exercise is one that silently rots.)
+endif
+endif
+INCLUDE += $(COLOR_CFLAGS)
 
 # Automatically collect all .c source files under the src directory.
 SOURCES := $(shell find src -type f -name '*.c')
@@ -425,7 +437,7 @@ TEST_HELPER_OBJ := $(patsubst tests/%.cpp,$(OBJ_DIR)/tests/%.o,$(TEST_HELPER_SRC
 # --whole-archive because anything registering itself from a constructor is
 # otherwise dropped - a plain archive link only pulls in object files that
 # something references by name.
-IMAGELIBRARY := -Wl,--whole-archive $(APP_DIR)/$(STATIC_TARGET) -Wl,--no-whole-archive $(COMPRESS_LIBS) $(CUTIL_LIBS)
+IMAGELIBRARY := -Wl,--whole-archive $(APP_DIR)/$(STATIC_TARGET) -Wl,--no-whole-archive $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 # Single shell: discover test sources and compute executable name for each (path|name per line).
 # test.cpp -> testImage; test_foo.cpp -> testFoo. Avoids hundreds of $(call test-name) / CreateProcess on Windows.
@@ -542,7 +554,7 @@ $(APP_DIR)/$(TARGET): \
 		$(LIBOBJECTS)
 	@printf "\n### Compiling Image Library ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -shared -o $@ $^ $(LDFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(OS_SPECIFIC_LIBRARY_NAME_FLAG)
+	$(CXX) $(CXXFLAGS) -shared -o $@ $^ $(LDFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS) $(OS_SPECIFIC_LIBRARY_NAME_FLAG)
 
 ifeq ($(OS_NAME), Linux)
 	@ln -f -s $(TARGET) $(APP_DIR)/$(SO_NAME)
@@ -677,10 +689,10 @@ $(APP_DIR)/$2$(EXE_EXTENSION): \
 		$(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking %s Test ###\n" "$2"
 	@mkdir -p $$(@D)
-	$$(CXX) $$(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $$(TEST_HELPER_OBJ) $$(LDFLAGS) $$(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$$(CXX) $$(CXXFLAGS) -o $$@ $$(TEST_OBJ_$1) $$(TEST_HELPER_OBJ) $$(LDFLAGS) $$(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 endef
 
-# Test binaries need $(COMPRESS_LIBS) and $(CUTIL_LIBS) as well as the image
+# Test binaries need $(COMPRESS_LIBS) and $(CUTIL_LIBS) $(COLOR_LIBS) as well as the image
 # library: image's .so has NEEDED entries for both, and the linker has to be
 # able to resolve them. The sibling fallback used to hide this by adding
 # -rpath-link to LDFLAGS; with the libraries installed there is no such hint,
@@ -695,13 +707,13 @@ $(foreach pair,$(TEST_PAIRS_OTHER),$(eval $(call test-executable-rule,$(word 1,$
 $(APP_DIR)/testJpeg_load$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testJpeg_load Test ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_load.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 # JPEG encode test links jpeg_test_utils (load_jpeg_file, raster_pixel_hash for round-trip test).
 $(APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking testJpeg_encode Test ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 # Dump JPEG raster to stdout (for compare_pillow_ours.py).
 $(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp $(FLAGS_STAMP)
@@ -711,7 +723,7 @@ $(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp $(FLA
 $(APP_DIR)/dump_jpeg_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_raster.o $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking dump_jpeg_raster ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 # Dump JPEG file structure: segments in order with offset, size, hex dump (no library dependency).
 $(OBJ_DIR)/tests/dump_jpeg_structure.o: tests/codec/jpeg/dump_jpeg_structure.cpp $(FLAGS_STAMP)
@@ -733,7 +745,7 @@ $(OBJ_DIR)/tests/dump_bmp_raster.o: tests/codec/bmp/dump_bmp_raster.cpp $(FLAGS_
 $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_bmp_raster.o $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking dump_bmp_raster ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_bmp_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_bmp_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 $(OBJ_DIR)/tests/resample_tool.o: tests/tools/resample/resample_tool.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling resample_tool ###\n"
@@ -743,7 +755,7 @@ $(OBJ_DIR)/tests/resample_tool.o: tests/tools/resample/resample_tool.cpp $(FLAGS
 $(APP_DIR)/resample_tool$(EXE_EXTENSION): $(OBJ_DIR)/tests/resample_tool.o $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
 	@printf "\n### Linking resample_tool ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/resample_tool.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/resample_tool.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 resample-tool: $(APP_DIR)/resample_tool$(EXE_EXTENSION) ## Build resample_tool; used by tests/data/verify_resample.py
 
@@ -1296,7 +1308,7 @@ test-tsan: $(LIBVER_GEN)
 	@$(CXX) $(TSAN_FLAGS) -std=c++20 $(INCLUDE) -c tests/unit/test_threads.cpp \
 		-o $(TSAN_DIR)/test_threads.o
 	@$(CXX) $(TSAN_FLAGS) -o $(TSAN_DIR)/testThreads $(TSAN_DIR)/*.o \
-		$(LDFLAGS) $(TESTFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS) -lpthread
+		$(LDFLAGS) $(TESTFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS) -lpthread
 	@env -u LD_PRELOAD $(TSAN_DIR)/testThreads
 	@printf "\033[0;32mThreadSanitizer found no data races.\033[0m\n"
 else
@@ -1488,7 +1500,7 @@ $(ASAN_OBJ_DIR)/%.o: src/%.c $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 $(ASAN_APP_DIR)/$(ASAN_TARGET): $(ASAN_LIBOBJECTS)
 	@printf "\n### Linking ASan+UBSan Image Library ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -shared -o $@ $^ $(ASAN_LDFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(ASAN_CXXFLAGS) -shared -o $@ $^ $(ASAN_LDFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 # ASan test helper (optional)
 ASAN_TEST_HELPER_OBJ := $(patsubst $(OBJ_DIR)/%,$(ASAN_OBJ_DIR)/%,$(TEST_HELPER_OBJ))
@@ -1556,7 +1568,7 @@ $(ASAN_APP_DIR)/$2$(EXE_EXTENSION): \
 		| $(ASAN_APP_DIR)/$(ASAN_TARGET)
 	@printf "\n### Linking ASan %s Test ###\n" "$2"
 	@mkdir -p $$(@D)
-	$$(CXX) $$(ASAN_CXXFLAGS) -o $$@ $$(ASAN_TEST_OBJ_$1) $$(ASAN_TEST_HELPER_OBJ) $$(ASAN_LDFLAGS) $$(TESTFLAGS) $$(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$$(CXX) $$(ASAN_CXXFLAGS) -o $$@ $$(ASAN_TEST_OBJ_$1) $$(ASAN_TEST_HELPER_OBJ) $$(ASAN_LDFLAGS) $$(TESTFLAGS) $$(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 endef
 
 $(foreach pair,$(TEST_PAIRS_OTHER),$(eval $(call asan-test-executable-rule,$(word 1,$(subst |, ,$(pair))),$(word 2,$(subst |, ,$(pair))))))
@@ -1564,12 +1576,12 @@ $(foreach pair,$(TEST_PAIRS_OTHER),$(eval $(call asan-test-executable-rule,$(wor
 $(ASAN_APP_DIR)/testPng_decode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_png_decode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o | $(ASAN_APP_DIR)/$(ASAN_TARGET)
 	@printf "\n### Linking ASan testPng_decode ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_png_decode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_png_decode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 $(ASAN_APP_DIR)/testPng_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_png_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o | $(ASAN_APP_DIR)/$(ASAN_TARGET)
 	@printf "\n### Linking ASan testPng_encode ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_png_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_png_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 $(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling ASan Test: test_jpeg_encode ###\n"
@@ -1584,7 +1596,7 @@ $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o: tests/codec/jpeg/jpeg_test_utils.cpp $(
 $(ASAN_APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o | $(ASAN_APP_DIR)/$(ASAN_TARGET)
 	@printf "\n### Linking ASan testJpeg_encode ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 $(ASAN_OBJ_DIR)/tests/test_jpeg_load.o: tests/codec/jpeg/test_jpeg_load.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling ASan Test: test_jpeg_load ###\n"
@@ -1594,7 +1606,7 @@ $(ASAN_OBJ_DIR)/tests/test_jpeg_load.o: tests/codec/jpeg/test_jpeg_load.cpp $(AS
 $(ASAN_APP_DIR)/testJpeg_load$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_jpeg_load.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o | $(ASAN_APP_DIR)/$(ASAN_TARGET)
 	@printf "\n### Linking ASan testJpeg_load ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_jpeg_load.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_jpeg_load.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 ASAN_TEST_EXECUTABLES := $(addprefix $(ASAN_APP_DIR)/,$(addsuffix $(EXE_EXTENSION),$(TEST_NAMES)))
 
@@ -1653,7 +1665,7 @@ LDCONF_INSTALL_PATH ?= /etc/ld.so.conf.d
 # What goes in the .pc Requires: field. Built from the same variables the
 # compile uses, so a dependency on another branch cannot be named one way for
 # the build and another way for consumers.
-PC_REQUIRES := $(COMPRESS_PC) $(CUTIL_PC)
+PC_REQUIRES := $(COMPRESS_PC) $(CUTIL_PC) $(COLOR_PC)
 
 # Where this project's own .pc file is installed. Defaults to the directory
 # pkg-config is already being told to search, but separate from it so a
@@ -1809,7 +1821,7 @@ $(FUZZ_OBJ_DIR)/%.o: src/%.c $(FUZZ_FLAGS_STAMP) | $(LIBVER_GEN)
 FUZZ_DEPFILES := $(FUZZ_LIBOBJECTS:.o=.d)
 -include $(FUZZ_DEPFILES)
 
-FUZZ_LIBS := $(FUZZ_LIBOBJECTS) $(COMPRESS_LIBS) $(CUTIL_LIBS)
+FUZZ_LIBS := $(FUZZ_LIBOBJECTS) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 fuzz-png: $(FUZZ_LIBOBJECTS) ## Build libFuzzer harness for PNG/APNG (requires clang++)
 	@if [ -z "$(FUZZ_CXX_OK)" ]; then \

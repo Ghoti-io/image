@@ -25,7 +25,7 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/ops.h>
 #include <gtest/gtest.h>
 #include <dirent.h>
@@ -830,9 +830,9 @@ bool setup_cmyk(const GIMG_Allocator * a, GIMG_Raster ** src,
   // The CMYK -> RGB conversion refuses a raster that does not say which way
   // round its samples are, so the polarity is part of building this input
   // rather than part of what is being swept.
-  GIMG_Color_Info info;
-  gimg_color_info_default(&info);
-  info.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
+  GCOL_Color_Info info;
+  gcol_color_info_default(&info);
+  info.cmyk_polarity = GCOL_CMYK_POLARITY_INK;
   if (gimg_raster_set_color_info(*src, &info) != GIMG_OK) {
     gimg_raster_destroy(*src);
     *src = nullptr;

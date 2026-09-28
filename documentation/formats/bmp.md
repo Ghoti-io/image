@@ -121,10 +121,10 @@ document state, and the encoder's row and encoding buffers.
 - **Color (V4 and V5):** `LCS_sRGB` and `LCS_WINDOWS_COLOR_SPACE` name sRGB.
   `LCS_CALIBRATED_RGB` describes the space instead: its endpoints are declared
   `CIEXYZ` and written by every writer in reach as xyY chromaticities
-  normalized to sum to one, and are read into `GIMG_Color_Info.gamut`
+  normalized to sum to one, and are read into `GCOL_Color_Info.gamut`
   exactly. A V4 header carries three endpoints and nowhere to state a white
   point, so `white_stated` stays false rather than D65 being filled in, and
-  `gimg_gamut_identify()` names such a gamut from its primaries alone. Three
+  `gcol_gamut_identify()` names such a gamut from its primaries alone. Three
   per-channel gammas that agree
   become one transfer function; three that disagree describe a space this
   model cannot hold and leave the transfer unsaid rather than averaged.
@@ -255,10 +255,10 @@ The form follows the raster and the caller's options, in this order:
 A BMP says what its samples mean only in the header, so stating a color space
 means writing a longer one. The version is chosen by what there is to say -
 the inverse of the read above, and bounded the same way: only what
-`GIMG_Color_Info` holds is written, and a color this model cannot state
+`GCOL_Color_Info` holds is written, and a color this model cannot state
 produces no color header at all rather than the nearest thing it can say.
 
-| Raster's `GIMG_Color_Info` | Header | What it carries |
+| Raster's `GCOL_Color_Info` | Header | What it carries |
 |---|---|---|
 | An ICC profile is attached | `BITMAPV5HEADER` (124) | `bV5CSType` = `PROFILE_EMBEDDED`, the profile after the pixel data, `bV5ProfileData` and `bV5ProfileSize` locating it |
 | `transfer` is sRGB | `BITMAPV4HEADER` (108) | `bV4CSType` = `LCS_sRGB` |
@@ -489,7 +489,7 @@ reconstruct one.
   rather than carrying a profile, and this codec never opens it: following a
   path that arrived inside an image is acting on data, and is the shape of a
   directory traversal. The path is *reported* instead, as
-  `GIMG_Color_Info.icc_linked_path`, and a caller who wants the profile
+  `GCOL_Color_Info.icc_linked_path`, and a caller who wants the profile
   supplies `GIMG_Load_Options.icc_resolver` and hands the bytes back. That
   keeps every path decision with the code that knows where the image came
   from - which directories are its own, and whether a Windows path out of a

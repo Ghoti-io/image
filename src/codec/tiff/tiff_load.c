@@ -435,7 +435,7 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
       // Six RATIONALs: red x,y then green then blue.
       if (e.count >= 6u && e.value_bytes >= 48u) {
         bool ok = true;
-        GIMG_Chromaticity got[3];
+        GCOL_Chromaticity got[3];
         for (unsigned int i = 0; i < 3u && ok; i++) {
           const unsigned char * v = e.values + ((size_t)i * 16u);
           uint32_t xn = tiff_u32(v, st->big_endian);

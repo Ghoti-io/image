@@ -25,7 +25,7 @@
  */
 
 #include <ghoti.io/image/macros.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/raster.h>
 #include <string.h>
 
@@ -263,7 +263,7 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
   r->stride_bytes = stride_bytes;
   r->format = *format;
   r->ownership = ownership;
-  gimg_color_info_default(&r->color_info);
+  gcol_color_info_default(&r->color_info);
   r->color_icc_owned = NULL;
   r->color_icc_linked_path_owned = NULL;
 
@@ -343,13 +343,13 @@ GIMG_API const GIMG_Allocator * gimg_raster_allocator(
   return raster ? raster->allocator : NULL;
 }
 
-GIMG_API const GIMG_Color_Info * gimg_raster_color_info_const(
+GIMG_API const GCOL_Color_Info * gimg_raster_color_info_const(
     const GIMG_Raster * raster) {
   return raster ? &raster->color_info : NULL;
 }
 
 GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
-    const GIMG_Color_Info * info) {
+    const GCOL_Color_Info * info) {
   if (!raster || !info) {
     return GIMG_ERR_INTERNAL;
   }
@@ -366,7 +366,7 @@ GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
   if (info->icc_size > 0 && info->icc_bytes) {
     void * copy = gimg_malloc(alloc, info->icc_size);
     if (!copy) {
-      gimg_color_info_default(&raster->color_info);
+      gcol_color_info_default(&raster->color_info);
       return GIMG_ERR_OOM;
     }
     memcpy(copy, info->icc_bytes, info->icc_size);
@@ -382,7 +382,7 @@ GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
     if (!copy) {
       gimg_free(alloc, raster->color_icc_owned);
       raster->color_icc_owned = NULL;
-      gimg_color_info_default(&raster->color_info);
+      gcol_color_info_default(&raster->color_info);
       return GIMG_ERR_OOM;
     }
     memcpy(copy, info->icc_linked_path, len + 1u);
@@ -432,7 +432,7 @@ GIMG_API GIMG_Result gimg_raster_copy_with_allocator(
     sp += src_stride;
     dp += dst_stride;
   }
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(src);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(src);
   if (ci) {
     r = gimg_raster_set_color_info(*out_raster, ci);
     if (r != GIMG_OK) {

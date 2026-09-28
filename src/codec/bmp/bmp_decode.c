@@ -55,7 +55,7 @@
 
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
@@ -535,7 +535,7 @@ GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
   // can hold.  gimg_raster_set_color_info copies the ICC bytes, so the
   // raster outlives the document that read them.
   if (state->color.primaries_stated || state->color.white_stated ||
-      state->color.transfer != GIMG_TRANSFER_UNKNOWN || state->color.icc_size ||
+      state->color.transfer != GCOL_TRANSFER_UNKNOWN || state->color.icc_size ||
       state->color.icc_linked_path) {
     r = gimg_raster_set_color_info(raster, &state->color);
     if (r != GIMG_OK) {

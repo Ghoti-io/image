@@ -76,12 +76,12 @@ All fourteen frame headers of T.81 Table B.1 are read: sequential (SOF0, SOF1), 
 ## CMYK polarity
 
 A JPEG's four components are the Adobe convention - 0 is full ink - which is
-what `GIMG_CMYK_POLARITY_INK` names. The decoder states it on **every**
+what `GCOL_CMYK_POLARITY_INK` names. The decoder states it on **every**
 four-component frame, whatever the coding process; it used to be set by the
 baseline path alone, so the same image came back saying 0 is full ink when it
 was baseline and saying nothing at all when it was progressive or twelve-bit.
 
-The writer reads it too. A raster that says `GIMG_CMYK_POLARITY_REFLECTION`
+The writer reads it too. A raster that says `GCOL_CMYK_POLARITY_REFLECTION`
 holds the complement, and writing those samples as they stand produced a
 photographic negative of the picture the caller had labelled; such a raster is
 complemented on the way out. An **unstated** polarity is written as it stands
@@ -103,7 +103,7 @@ of its own to go - only an ICC profile survives a save.
 and a gamma of 2.2 carries no profile at all; saved as a JPEG it used to keep
 neither half, because there was nowhere in the format to put them. Such a
 raster now gets an ICC v2.1 RGB matrix/TRC profile synthesized from what
-`GIMG_Color_Info` states: `rXYZ`, `gXYZ`, `bXYZ` and `wtpt` for the gamut,
+`GCOL_Color_Info` states: `rXYZ`, `gXYZ`, `bXYZ` and `wtpt` for the gamut,
 and a shared tone curve for the transfer function.
 
 This is the only place in the library that manufactures a color statement
@@ -140,7 +140,7 @@ multi-part, and nothing is synthesized on top of them.
 
 **A document that brought none gets one from its raster.** That is the case
 for anything that did not arrive as a JPEG. The profile on the raster's
-`GIMG_Color_Info` is written as APP2, split when it does not fit in one
+`GCOL_Color_Info` is written as APP2, split when it does not fit in one
 segment: each carries `ICC_PROFILE\0`, its own 1-based number and the count,
 which is how a reader reassembles it. One segment holds 65519 bytes of
 profile, so a 121908-byte press profile takes two.

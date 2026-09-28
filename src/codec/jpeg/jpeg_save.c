@@ -43,7 +43,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
-#include "../../color/color_internal.h"
+#include <ghoti.io/color/icc.h>
 #include "../../core/safe_math_internal.h"
 #include "../../meta/exif_internal.h"
 #include "../../raster/raster_internal.h"
@@ -252,7 +252,7 @@ static GIMG_Result jpeg_write_app_segment(GIMG_Stream * stream, uint8_t marker,
  *   annotation could not be carried.
  */
 static GIMG_Result jpeg_write_icc_from_info(GIMG_Stream * stream,
-    const GIMG_Color_Info * info, int num_components,
+    const GCOL_Color_Info * info, int num_components,
     const GIMG_Allocator * alloc, GIMG_Save_Report * report) {
   if (!info) {
     return GIMG_OK;
@@ -264,9 +264,9 @@ static GIMG_Result jpeg_write_icc_from_info(GIMG_Stream * stream,
     if (num_components != 3) {
       return GIMG_OK;
     }
-    GIMG_Result sr = gimg_icc_synthesize(alloc, info, &synthesized, &icc_size);
-    if (sr != GIMG_OK) {
-      return sr;
+    GCOL_Result sr = gcol_icc_write(alloc, info, &synthesized, &icc_size);
+    if (sr != GCOL_OK) {
+      return sr == GCOL_ERR_OOM ? GIMG_ERR_OOM : GIMG_ERR_INTERNAL;
     }
     if (!synthesized) {
       return GIMG_OK;
@@ -3237,7 +3237,7 @@ after_prog_tables:
 static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report,
-    GIMG_Color_Info * out_color, void ** out_icc_copy) {
+    GCOL_Color_Info * out_color, void ** out_icc_copy) {
   (void)format_name;
   if (!codec || !doc || !stream || !report) {
     return GIMG_ERR_INTERNAL;
@@ -3438,12 +3438,12 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   // writer read a raster's colour, on a lossless file whose raster the save
   // had decoded for itself.
   //
-  // Only the profile needs copying; the rest of GIMG_Color_Info is values.
+  // Only the profile needs copying; the rest of GCOL_Color_Info is values.
   // The copy belongs to gimg_jpeg_save, which frees it however this returns -
   // this function has thirty-nine exits and is no place for a second thing to
   // remember.
   {
-    const GIMG_Color_Info * raster_color = gimg_raster_color_info_const(raster);
+    const GCOL_Color_Info * raster_color = gimg_raster_color_info_const(raster);
     if (raster_color) {
       *out_color = *raster_color;
       out_color->icc_bytes = NULL;
@@ -4455,8 +4455,8 @@ done:
 GIMG_Result gimg_jpeg_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report) {
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   void * icc_copy = NULL;
   GIMG_Result r = jpeg_save_body(
       codec, doc, stream, format_name, options, report, &color, &icc_copy);

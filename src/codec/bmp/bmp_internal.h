@@ -32,7 +32,7 @@
 
 #include <ghoti.io/image/allocator.h>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
@@ -224,7 +224,7 @@ typedef struct {
   /** The color the header described, if it described one this model can
    * hold.  Built at load and attached to the raster at decode, so that a
    * caller who only wants the dimensions never pays for it. */
-  GIMG_Color_Info color;
+  GCOL_Color_Info color;
   void * icc;      ///< An embedded ICC profile, owned here; NULL when none.
   size_t icc_size;
   /** The path a PROFILE_LINKED file named, owned here, NUL-terminated; NULL
@@ -252,7 +252,7 @@ typedef struct {
 
 /**
  * @brief Fill in what a V4 or V5 header's color fields say, as far as
- *   GIMG_Color_Info can hold it.
+ *   GCOL_Color_Info can hold it.
  *
  * Anything the model cannot state is left unknown rather than approximated.
  * The ICC profile, which lives outside the header, is not touched here.
@@ -262,7 +262,7 @@ typedef struct {
  *   nothing this can hold.
  */
 void gimg_bmp_color_from_header(
-    const gimg_bmp_header_t * header, GIMG_Color_Info * out_info);
+    const gimg_bmp_header_t * header, GCOL_Color_Info * out_info);
 
 /**
  * @brief Write a little-endian 32-bit field.
@@ -282,7 +282,7 @@ static inline void gimg_bmp_write_u32(unsigned char * p, uint32_t value) {
  *   build the part of the header that states it.
  *
  * The inverse of gimg_bmp_color_from_header, and bounded the same way: only
- * what GIMG_Color_Info holds is written, and a color this model cannot state
+ * what GCOL_Color_Info holds is written, and a color this model cannot state
  * produces no header at all rather than the nearest thing it can say.
  *
  * @param info Color to state; NULL or an empty one says nothing.
@@ -297,7 +297,7 @@ static inline void gimg_bmp_write_u32(unsigned char * p, uint32_t value) {
  *   there was nothing to say and the smallest header will do.
  */
 uint32_t gimg_bmp_color_to_header(
-    const GIMG_Color_Info * info, unsigned char * tail);
+    const GCOL_Color_Info * info, unsigned char * tail);
 
 /**
  * @brief Read an embedded ICC profile out of a PROFILE_EMBEDDED V5 file.

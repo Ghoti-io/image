@@ -785,9 +785,9 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
   // and depends on the transfer curve alone, so a Display P3 raster - whose
   // transfer *is* sRGB's - linearises correctly here and is not refused.
   if (options->space == GIMG_RESAMPLE_SPACE_LINEAR) {
-    const GIMG_Color_Info * info = gimg_raster_color_info_const(src);
-    if (info && info->transfer != GIMG_TRANSFER_UNKNOWN &&
-        info->transfer != GIMG_TRANSFER_SRGB) {
+    const GCOL_Color_Info * info = gimg_raster_color_info_const(src);
+    if (info && info->transfer != GCOL_TRANSFER_UNKNOWN &&
+        info->transfer != GCOL_TRANSFER_SRGB) {
       return GIMG_ERR_UNSUPPORTED;
     }
   }

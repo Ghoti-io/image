@@ -25,7 +25,7 @@
 #include <cstring>
 #include <vector>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
@@ -138,12 +138,12 @@ inline void attach_exif(GIMG_Doc * doc) {
 inline void tag_adobe_rgb(GIMG_Doc * doc) {
   GIMG_Raster * raster = gimg_item_raster(gimg_doc_item(doc, 0));
   if (!raster) { return; }
-  GIMG_Color_Info info;
-  gimg_color_info_default(&info);
-  (void)gimg_color_info_set_gamut(&info, GIMG_PRIMARIES_ADOBE_RGB);
-  info.transfer = GIMG_TRANSFER_GAMMA;
+  GCOL_Color_Info info;
+  gcol_color_info_default(&info);
+  (void)gcol_color_info_set_gamut(&info, GCOL_PRIMARIES_ADOBE_RGB);
+  info.transfer = GCOL_TRANSFER_GAMMA;
   info.gamma_value = 2.19921875;
-  info.intent = GIMG_INTENT_RELATIVE_COLORIMETRIC;
+  info.intent = GCOL_INTENT_RELATIVE_COLORIMETRIC;
   gimg_raster_set_color_info(raster, &info);
 }
 

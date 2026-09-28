@@ -66,7 +66,7 @@
 
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <stddef.h>
@@ -98,9 +98,9 @@
  * file carrying gAMA alone leaves its gamut to the reader's assumption -
  * which is sRGB's, and is what the writer here relies on when it omits cHRM.
  *
- * The payload is carried through exactly.  GIMG_Color_Info stores
+ * The payload is carried through exactly.  GCOL_Color_Info stores
  * coordinates rather than a name, so a gamut this library has no name for is
- * still the gamut the file stated; gimg_gamut_identify() is what puts a name
+ * still the gamut the file stated; gcol_gamut_identify() is what puts a name
  * to the ones it recognises, and answering "no name" there costs the caller
  * nothing it was given.
  * @{
@@ -110,11 +110,11 @@
  * Read a cHRM payload into a gamut.
  *
  * cHRM states all four points, so the result is exact and needs no table.
- * Naming it is gimg_gamut_identify()'s job and is a separate question from
+ * Naming it is gcol_gamut_identify()'s job and is a separate question from
  * carrying it: a gamut with no name here still reaches the caller intact.
  */
 static bool gimg_png_gamut_from_chrm(
-    const unsigned char * p, size_t len, GIMG_Gamut * out_gamut) {
+    const unsigned char * p, size_t len, GCOL_Gamut * out_gamut) {
   if (!p || len < GIMG_PNG_cHRM_LEN) {
     return false;
   }
@@ -150,26 +150,26 @@ static bool gimg_png_gamut_from_chrm(
  * Code point 11 is theatrical DCI-P3, which shares Display P3's primaries
  * under a different white.  It is deliberately absent: naming it would need a
  * table entry that breaks the "no two named gamuts share their primaries"
- * invariant gimg_gamut_identify() relies on, and that is a decision for the
+ * invariant gcol_gamut_identify() relies on, and that is a decision for the
  * colour module rather than a side effect of reading a PNG chunk.
  */
-static GIMG_Primaries gimg_png_primaries_from_h273(unsigned int code) {
+static GCOL_Primaries gimg_png_primaries_from_h273(unsigned int code) {
   switch (code) {
   case 1u: // BT.709, which sRGB shares.
-    return GIMG_PRIMARIES_SRGB;
+    return GCOL_PRIMARIES_SRGB;
   case 9u: // BT.2020 / BT.2100.
-    return GIMG_PRIMARIES_BT2020;
+    return GCOL_PRIMARIES_BT2020;
   case 12u: // SMPTE EG 432-1, P3-D65 - Display P3.
-    return GIMG_PRIMARIES_DISPLAY_P3;
+    return GCOL_PRIMARIES_DISPLAY_P3;
   default:
-    return GIMG_PRIMARIES_UNKNOWN;
+    return GCOL_PRIMARIES_UNKNOWN;
   }
 }
 
 /** H.273 Table 3 (TransferCharacteristics) into @p out_info.
  *
  * Sets the transfer, and with it the reference, scale and peak luminance that
- * transfer implies - gimg_transfer_conventions() owns that part, so PQ's
+ * transfer implies - gcol_transfer_conventions() owns that part, so PQ's
  * 10000 cd/m^2 is stated once rather than here.
  *
  * Code points 1, 6, 14 and 15 are all BT.709's curve at different bit depths.
@@ -180,14 +180,14 @@ static GIMG_Primaries gimg_png_primaries_from_h273(unsigned int code) {
  * @return true when the code point said something.
  */
 static bool gimg_png_transfer_from_h273(
-    unsigned int code, GIMG_Color_Info * out_info) {
+    unsigned int code, GCOL_Color_Info * out_info) {
   switch (code) {
   case 1u:
   case 6u:
   case 14u:
   case 15u: {
     // L = ((V + 0.099) / 1.099)^(1/0.45) for V >= 0.081, else V / 4.5.
-    out_info->transfer = GIMG_TRANSFER_PARAMETRIC;
+    out_info->transfer = GCOL_TRANSFER_PARAMETRIC;
     out_info->transfer_params[0] = 1.0 / 0.45;   // g
     out_info->transfer_params[1] = 1.0 / 1.099;  // a
     out_info->transfer_params[2] = 0.099 / 1.099; // b
@@ -196,29 +196,29 @@ static bool gimg_png_transfer_from_h273(
     break;
   }
   case 4u: // BT.470 System M, gamma 2.2.
-    out_info->transfer = GIMG_TRANSFER_GAMMA;
+    out_info->transfer = GCOL_TRANSFER_GAMMA;
     out_info->gamma_value = 2.2;
     break;
   case 5u: // BT.470 System B/G, gamma 2.8.
-    out_info->transfer = GIMG_TRANSFER_GAMMA;
+    out_info->transfer = GCOL_TRANSFER_GAMMA;
     out_info->gamma_value = 2.8;
     break;
   case 8u:
-    out_info->transfer = GIMG_TRANSFER_LINEAR;
+    out_info->transfer = GCOL_TRANSFER_LINEAR;
     break;
   case 13u:
-    out_info->transfer = GIMG_TRANSFER_SRGB;
+    out_info->transfer = GCOL_TRANSFER_SRGB;
     break;
   case 16u:
-    out_info->transfer = GIMG_TRANSFER_PQ;
+    out_info->transfer = GCOL_TRANSFER_PQ;
     break;
   case 18u:
-    out_info->transfer = GIMG_TRANSFER_HLG;
+    out_info->transfer = GCOL_TRANSFER_HLG;
     break;
   default:
     return false;
   }
-  (void)gimg_transfer_conventions(out_info->transfer, &out_info->reference,
+  (void)gcol_transfer_conventions(out_info->transfer, &out_info->reference,
       &out_info->sample_scale, &out_info->white_luminance);
   return true;
 }
@@ -226,12 +226,12 @@ static bool gimg_png_transfer_from_h273(
 
 static bool gimg_png_fill_color_info_from_ancillary(
     const gimg_png_doc_state_t * state, const GIMG_Allocator * alloc,
-    const GIMG_Limits * limits, GIMG_Color_Info * out_info,
+    const GIMG_Limits * limits, GCOL_Color_Info * out_info,
     void ** out_icc_owned, size_t * out_icc_size, bool * out_refused) {
   if (out_refused) {
     *out_refused = false;
   }
-  gimg_color_info_default(out_info);
+  gcol_color_info_default(out_info);
   *out_icc_owned = NULL;
   *out_icc_size = 0;
 
@@ -261,7 +261,7 @@ static bool gimg_png_fill_color_info_from_ancillary(
   // frame carries coding-independent code points, they say what the samples
   // mean and the other color chunks do not get a say.
   //
-  // What is translated is whatever GIMG_Color_Info can now state, which since
+  // What is translated is whatever GCOL_Color_Info can now state, which since
   // the gamut became coordinates is most of what H.273 names. A code point
   // outside the tables above is still left unsaid rather than rounded to a
   // neighbour, and the chunk is kept either way, so nothing is lost.
@@ -279,9 +279,9 @@ static bool gimg_png_fill_color_info_from_ancillary(
         return false;
       }
       bool said = false;
-      GIMG_Primaries named = gimg_png_primaries_from_h273(primaries);
-      if (named != GIMG_PRIMARIES_UNKNOWN) {
-        said = gimg_color_info_set_gamut(out_info, named);
+      GCOL_Primaries named = gimg_png_primaries_from_h273(primaries);
+      if (named != GCOL_PRIMARIES_UNKNOWN) {
+        said = gcol_color_info_set_gamut(out_info, named);
       }
       if (gimg_png_transfer_from_h273(transfer, out_info)) {
         said = true;
@@ -299,9 +299,9 @@ static bool gimg_png_fill_color_info_from_ancillary(
       if (intent > 3) {
         intent = 0;
       }
-      (void)gimg_color_info_set_gamut(out_info, GIMG_PRIMARIES_SRGB);
-      out_info->transfer = GIMG_TRANSFER_SRGB;
-      out_info->intent = (GIMG_Rendering_Intent)intent;
+      (void)gcol_color_info_set_gamut(out_info, GCOL_PRIMARIES_SRGB);
+      out_info->transfer = GCOL_TRANSFER_SRGB;
+      out_info->intent = (GCOL_Rendering_Intent)intent;
       return true;
     }
   }
@@ -345,7 +345,7 @@ static bool gimg_png_fill_color_info_from_ancillary(
         }
         out_info->primaries_stated = false;
         out_info->white_stated = false;
-        out_info->transfer = GIMG_TRANSFER_UNKNOWN;
+        out_info->transfer = GCOL_TRANSFER_UNKNOWN;
         out_info->icc_bytes = decoded;
         out_info->icc_size = out_len;
         *out_icc_owned = decoded;
@@ -359,7 +359,7 @@ static bool gimg_png_fill_color_info_from_ancillary(
   // Read whichever is there and say nothing about the half that is absent - a
   // gamma with no cHRM leaves the gamut to the reader's assumption, which is
   // what the writer here relies on when it omits cHRM for an sRGB gamut.
-  GIMG_Gamut gamut;
+  GCOL_Gamut gamut;
   bool have_gamut = false;
   if (first_chrm != (size_t)-1) {
     have_gamut = gimg_png_gamut_from_chrm(state->ancillary[first_chrm].payload,
@@ -373,7 +373,7 @@ static bool gimg_png_fill_color_info_from_ancillary(
       uint32_t gama_val = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 |
           (uint32_t)p[2] << 8 | (uint32_t)p[3];
       if (gama_val > 0) {
-        out_info->transfer = GIMG_TRANSFER_GAMMA;
+        out_info->transfer = GCOL_TRANSFER_GAMMA;
         out_info->gamma_value =
             (double)gama_val / (double)GIMG_PNG_GAMA_SCALE;
         said_something = true;
@@ -731,7 +731,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         return rr;
       }
       {
-        GIMG_Color_Info color_info;
+        GCOL_Color_Info color_info;
         void * icc_owned = NULL;
         size_t icc_size = 0;
         bool icc_refused = false;
@@ -814,7 +814,7 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
 
   // Apply color chunks (sRGB > iCCP > gAMA/cHRM); store in raster color_info.
   {
-    GIMG_Color_Info color_info;
+    GCOL_Color_Info color_info;
     void * icc_owned = NULL;
     size_t icc_size = 0;
     bool icc_refused = false;

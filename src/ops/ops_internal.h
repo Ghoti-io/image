@@ -32,7 +32,7 @@
 #include <ghoti.io/image/raster.h>
 
 /**
- * Copy the source raster's GIMG_Color_Info, embedded profile included, onto
+ * Copy the source raster's GCOL_Color_Info, embedded profile included, onto
  * the destination.  An operation that rearranges samples without
  * reinterpreting them carries the source's colour description; one that
  * changes what a sample means, such as the CMYK to RGBA conversion,

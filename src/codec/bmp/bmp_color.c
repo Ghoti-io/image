@@ -30,7 +30,7 @@
  * ICC profile stored elsewhere in the file.  All of it used to be skipped, so
  * a V5 file with a real profile decoded as untagged and lost it.
  *
- * What is translated is only what GIMG_Color_Info can hold, which is the same
+ * What is translated is only what GCOL_Color_Info can hold, which is the same
  * rule the PNG codec applies to cICP: a color space this model cannot state
  * is left unknown rather than rounded to the nearest thing it can say, since
  * that would be a claim about the pixels the file did not make.
@@ -50,7 +50,7 @@
 
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/stream.h>
 #include <string.h>
@@ -73,7 +73,7 @@
  * A chromaticity is an FXPT2DOT30 - a signed fixed-point value with 30
  * fractional bits.  The tolerance is no longer used to compare a gamut
  * against a table: the endpoints are carried through exactly and
- * gimg_gamut_identify() does any naming.  What is left of it here is the
+ * gcol_gamut_identify() does any naming.  What is left of it here is the
  * sanity check that a triple of endpoints sums to something near one, which
  * is what says they are chromaticities at all rather than the CIEXYZ the
  * field is nominally declared as.
@@ -92,11 +92,11 @@
  * something far from one is not chromaticities at all and is refused.
  *
  * There is no white point here: a V4 header carries three endpoints and
- * nowhere to state one.  GIMG_Gamut.white is left {0, 0} rather than filled
+ * nowhere to state one.  GCOL_Gamut.white is left {0, 0} rather than filled
  * with D65, which would be this library asserting something the file did not.
  */
 static bool bmp_gamut_from_endpoints(
-    const int32_t endpoints[9], GIMG_Gamut * out_gamut) {
+    const int32_t endpoints[9], GCOL_Gamut * out_gamut) {
   for (unsigned int channel = 0; channel < 3; channel++) {
     int64_t sum = (int64_t)endpoints[channel * 3] +
         (int64_t)endpoints[(channel * 3) + 1] +
@@ -122,42 +122,42 @@ static bool bmp_gamut_from_endpoints(
 }
 
 /** Map a rendering intent back onto bV5Intent. */
-static uint32_t bmp_intent_to_v5(GIMG_Rendering_Intent intent) {
+static uint32_t bmp_intent_to_v5(GCOL_Rendering_Intent intent) {
   switch (intent) {
-    case GIMG_INTENT_SATURATION:
+    case GCOL_INTENT_SATURATION:
       return GIMG_BMP_LCS_GM_BUSINESS;
-    case GIMG_INTENT_RELATIVE_COLORIMETRIC:
+    case GCOL_INTENT_RELATIVE_COLORIMETRIC:
       return GIMG_BMP_LCS_GM_GRAPHICS;
-    case GIMG_INTENT_ABSOLUTE_COLORIMETRIC:
+    case GCOL_INTENT_ABSOLUTE_COLORIMETRIC:
       return GIMG_BMP_LCS_GM_ABS_COLORIMETRIC;
-    case GIMG_INTENT_PERCEPTUAL:
+    case GCOL_INTENT_PERCEPTUAL:
     default:
       return GIMG_BMP_LCS_GM_IMAGES;
   }
 }
 
 /** Map bV5Intent onto the rendering intents this model names. */
-static GIMG_Rendering_Intent bmp_intent_from_v5(uint32_t intent) {
+static GCOL_Rendering_Intent bmp_intent_from_v5(uint32_t intent) {
   switch (intent) {
     case GIMG_BMP_LCS_GM_BUSINESS:
-      return GIMG_INTENT_SATURATION;
+      return GCOL_INTENT_SATURATION;
     case GIMG_BMP_LCS_GM_GRAPHICS:
-      return GIMG_INTENT_RELATIVE_COLORIMETRIC;
+      return GCOL_INTENT_RELATIVE_COLORIMETRIC;
     case GIMG_BMP_LCS_GM_ABS_COLORIMETRIC:
-      return GIMG_INTENT_ABSOLUTE_COLORIMETRIC;
+      return GCOL_INTENT_ABSOLUTE_COLORIMETRIC;
     case GIMG_BMP_LCS_GM_IMAGES:
     default:
       // Perceptual is the enum's zero, so an intent the header did not state
       // and one it stated as LCS_GM_IMAGES are the same value here.  ICC
       // treats perceptual as the default too, so nothing is lost by it, but
       // the two cannot be told apart through this struct.
-      return GIMG_INTENT_PERCEPTUAL;
+      return GCOL_INTENT_PERCEPTUAL;
   }
 }
 
 void gimg_bmp_color_from_header(
-    const gimg_bmp_header_t * header, GIMG_Color_Info * out_info) {
-  gimg_color_info_default(out_info);
+    const gimg_bmp_header_t * header, GCOL_Color_Info * out_info) {
+  gcol_color_info_default(out_info);
   if (header->header_size < GIMG_BMP_V4HEADER_SIZE || header->os2_v2) {
     // Before V4 there is nothing in the header about color at all.  An
     // untagged BMP is overwhelmingly an sRGB one, but the file does not say
@@ -168,12 +168,12 @@ void gimg_bmp_color_from_header(
   switch (header->cs_type) {
     case GIMG_BMP_LCS_sRGB:
     case GIMG_BMP_LCS_WINDOWS_COLOR_SPACE:
-      (void)gimg_color_info_set_gamut(out_info, GIMG_PRIMARIES_SRGB);
-      out_info->transfer = GIMG_TRANSFER_SRGB;
+      (void)gcol_color_info_set_gamut(out_info, GCOL_PRIMARIES_SRGB);
+      out_info->transfer = GCOL_TRANSFER_SRGB;
       break;
 
     case GIMG_BMP_LCS_CALIBRATED_RGB: {
-      GIMG_Gamut gamut;
+      GCOL_Gamut gamut;
       if (bmp_gamut_from_endpoints(header->endpoints, &gamut)) {
         // Three endpoints and no white point: the format has nowhere to
         // state one, so white_stated stays false.
@@ -186,10 +186,10 @@ void gimg_bmp_color_from_header(
           header->gamma[1] == header->gamma[2]) {
         double gamma = (double)header->gamma[0] / 65536.0;
         if (gamma > 0.999 && gamma < 1.001) {
-          out_info->transfer = GIMG_TRANSFER_LINEAR;
+          out_info->transfer = GCOL_TRANSFER_LINEAR;
         }
         else {
-          out_info->transfer = GIMG_TRANSFER_GAMMA;
+          out_info->transfer = GCOL_TRANSFER_GAMMA;
           out_info->gamma_value = gamma;
         }
       }
@@ -290,8 +290,8 @@ GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
  * of them.
  */
 static void bmp_endpoints_from_gamut(
-    const GIMG_Gamut * gamut, unsigned char * out) {
-  const GIMG_Chromaticity * point[3] = {
+    const GCOL_Gamut * gamut, unsigned char * out) {
+  const GCOL_Chromaticity * point[3] = {
       &gamut->red, &gamut->green, &gamut->blue};
   for (unsigned int channel = 0; channel < 3; channel++) {
     double x = point[channel]->x;
@@ -307,7 +307,7 @@ static void bmp_endpoints_from_gamut(
 }
 
 uint32_t gimg_bmp_color_to_header(
-    const GIMG_Color_Info * info, unsigned char * tail) {
+    const GCOL_Color_Info * info, unsigned char * tail) {
   memset(tail, 0, GIMG_BMP_V5HEADER_SIZE - GIMG_BMP_V4_TAIL_AT);
 
   if (!info) {
@@ -327,7 +327,7 @@ uint32_t gimg_bmp_color_to_header(
   }
 
   bool said_something = false;
-  if (info->transfer == GIMG_TRANSFER_SRGB) {
+  if (info->transfer == GCOL_TRANSFER_SRGB) {
     // LCS_sRGB asserts the whole of sRGB, its transfer curve included, so it
     // takes the transfer actually saying so - the same rule the PNG writer
     // applies to its sRGB chunk, and for the same reason: a file naming
@@ -349,10 +349,10 @@ uint32_t gimg_bmp_color_to_header(
       said_something = true;
     }
     double gamma = 0.0;
-    if (info->transfer == GIMG_TRANSFER_LINEAR) {
+    if (info->transfer == GCOL_TRANSFER_LINEAR) {
       gamma = 1.0;
     }
-    else if (info->transfer == GIMG_TRANSFER_GAMMA && info->gamma_value > 0.0) {
+    else if (info->transfer == GCOL_TRANSFER_GAMMA && info->gamma_value > 0.0) {
       gamma = info->gamma_value;
     }
     // The field is 16.16 fixed point, so it holds a gamma below 65536 and
@@ -371,7 +371,7 @@ uint32_t gimg_bmp_color_to_header(
   if (!said_something) {
     return 0;
   }
-  if (info->intent != GIMG_INTENT_PERCEPTUAL) {
+  if (info->intent != GCOL_INTENT_PERCEPTUAL) {
     // Only a V5 header has bV5Intent, so an intent other than the one both
     // this model and ICC treat as the default is what makes the difference
     // between the two header versions here.

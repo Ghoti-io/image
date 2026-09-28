@@ -7053,7 +7053,7 @@ namespace {
  * color info can tell the writer what color space to state - which is the
  * case these tests are about.
  */
-static GIMG_Result save_raster_as_jpeg(const GIMG_Color_Info & color,
+static GIMG_Result save_raster_as_jpeg(const GCOL_Color_Info & color,
     GIMG_Meta_Policy policy, std::vector<uint8_t> & out) {
   GIMG_Doc * doc = nullptr;
   if (gimg_doc_create(&doc) != GIMG_OK || !doc) {
@@ -7167,8 +7167,8 @@ TEST(JpegEncode, EmbeddedProfileOnTheRasterIsWrittenAsApp2) {
   // embedded profile, saved as a JPEG, came out untagged and the profile was
   // read only to be dropped.
   std::vector<uint8_t> profile = synthetic_profile(512);
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
 
@@ -7188,7 +7188,7 @@ TEST(JpegEncode, EmbeddedProfileOnTheRasterIsWrittenAsApp2) {
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
   GIMG_Raster * back = nullptr;
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
-  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  const GCOL_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
   ASSERT_EQ(read->icc_size, profile.size());
   EXPECT_EQ(memcmp(read->icc_bytes, profile.data(), profile.size()), 0);
@@ -7204,8 +7204,8 @@ TEST(JpegEncode, AProfileTooBigForOneSegmentIsSplitAndNumbered) {
   // oversized segment would produce a file no decoder could read.
   const size_t per_chunk = 65533u - 14u;
   std::vector<uint8_t> profile = synthetic_profile(per_chunk * 2 + 100);
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
 
@@ -7228,7 +7228,7 @@ TEST(JpegEncode, AProfileTooBigForOneSegmentIsSplitAndNumbered) {
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
   GIMG_Raster * back = nullptr;
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
-  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  const GCOL_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
   ASSERT_EQ(read->icc_size, profile.size());
   EXPECT_EQ(memcmp(read->icc_bytes, profile.data(), profile.size()), 0);
@@ -7243,8 +7243,8 @@ TEST(JpegEncode, AProfilePastTheFormatsCeilingIsLeftOutRatherThanTruncated) {
   // worse than none, since a reader has no way to tell it is incomplete.
   const size_t per_chunk = 65533u - 14u;
   std::vector<uint8_t> profile = synthetic_profile(per_chunk * 255 + 1);
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
 
@@ -7257,8 +7257,8 @@ TEST(JpegEncode, KeepCommonOnlyStillStatesTheColorSpace) {
   // Dropping the segments a file arrived with does not mean dropping what its
   // samples mean.  The PNG writer keeps color under this policy too.
   std::vector<uint8_t> profile = synthetic_profile(256);
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
 
@@ -7273,8 +7273,8 @@ TEST(JpegEncode, DropAllAndKeepRawOnlyWriteNoProfile) {
   // asked for the segments the file arrived with and no others, so a profile
   // that reached the raster from somewhere else is not synthesized into one.
   std::vector<uint8_t> profile = synthetic_profile(256);
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
 
@@ -7288,8 +7288,8 @@ TEST(JpegEncode, DropAllAndKeepRawOnlyWriteNoProfile) {
 }
 
 TEST(JpegEncode, ARasterWithNoProfileGetsNoApp2) {
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   std::vector<uint8_t> jpeg;
   ASSERT_EQ(save_raster_as_jpeg(color, GIMG_META_PRESERVE_ALL, jpeg), GIMG_OK);
   EXPECT_TRUE(app2_icc_segments(jpeg).empty());
@@ -7302,9 +7302,9 @@ TEST(JpegEncode, ADocumentAnotherCodecLoadedCanBeSavedAsJpeg) {
   // The PNG and BMP writers both decode unconditionally here; this one used to
   // refuse unless it had loaded the document itself, which made every
   // conversion into a JPEG fail with GIMG_ERR_UNSUPPORTED.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  color.transfer = GIMG_TRANSFER_SRGB;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  color.transfer = GCOL_TRANSFER_SRGB;
 
   // Round-trip through PNG so the document really is one another codec loaded,
   // with no raster attached to its item.
@@ -7405,8 +7405,8 @@ TEST(JpegEncode, AProfileSurvivesASaveThatOwnsItsRaster) {
   // it still reaches the file, so the fix carries the colour rather than
   // merely dropping it.
   std::vector<uint8_t> profile = synthetic_profile(300);
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
 
@@ -7460,7 +7460,7 @@ TEST(JpegEncode, AProfileSurvivesASaveThatOwnsItsRaster) {
 
 TEST(JpegEncode, ACmykRasterLabelledTheOtherWayRoundIsWrittenRightWayUp) {
   // A JPEG's four components are the Adobe convention - 0 is full ink - so a
-  // raster that says GIMG_CMYK_POLARITY_REFLECTION holds the complement.
+  // raster that says GCOL_CMYK_POLARITY_REFLECTION holds the complement.
   // Writing those samples as they stand produced a photographic negative of
   // the picture the caller had correctly labelled.  The encoder read the
   // field nowhere, while the conversion in ops reads it as authoritative.
@@ -7486,10 +7486,10 @@ TEST(JpegEncode, ACmykRasterLabelledTheOtherWayRoundIsWrittenRightWayUp) {
         px[(x * 4) + c] = reflection ? (uint8_t)(255u - v) : v;
       }
     }
-    GIMG_Color_Info ci;
-    gimg_color_info_default(&ci);
-    ci.cmyk_polarity = reflection ? GIMG_CMYK_POLARITY_REFLECTION
-                                  : GIMG_CMYK_POLARITY_INK;
+    GCOL_Color_Info ci;
+    gcol_color_info_default(&ci);
+    ci.cmyk_polarity = reflection ? GCOL_CMYK_POLARITY_REFLECTION
+                                  : GCOL_CMYK_POLARITY_INK;
     ASSERT_EQ(gimg_raster_set_color_info(raster, &ci), GIMG_OK);
     gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
 
@@ -7522,9 +7522,9 @@ TEST(JpegEncode, ACmykRasterLabelledTheOtherWayRoundIsWrittenRightWayUp) {
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
   GIMG_Raster * back = nullptr;
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
-  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  const GCOL_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
-  EXPECT_EQ(read->cmyk_polarity, GIMG_CMYK_POLARITY_INK);
+  EXPECT_EQ(read->cmyk_polarity, GCOL_CMYK_POLARITY_INK);
   const uint8_t * got =
       static_cast<const uint8_t *>(gimg_raster_pixels_const(back));
   for (int x = 0; x < 4; x++) {
@@ -7609,10 +7609,10 @@ TEST(JpegEncode, TheCmykPolarityFlipWorksAtTwelveBitsToo) {
         px[(x * 4) + c] = reflection ? (uint16_t)(4095u - v) : v;
       }
     }
-    GIMG_Color_Info ci;
-    gimg_color_info_default(&ci);
-    ci.cmyk_polarity = reflection ? GIMG_CMYK_POLARITY_REFLECTION
-                                  : GIMG_CMYK_POLARITY_INK;
+    GCOL_Color_Info ci;
+    gcol_color_info_default(&ci);
+    ci.cmyk_polarity = reflection ? GCOL_CMYK_POLARITY_REFLECTION
+                                  : GCOL_CMYK_POLARITY_INK;
     ASSERT_EQ(gimg_raster_set_color_info(raster, &ci), GIMG_OK);
     gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
 

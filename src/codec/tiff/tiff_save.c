@@ -44,7 +44,7 @@
 #include <ghoti.io/cutil/safemath.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
@@ -680,7 +680,7 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       r = GIMG_ERR_FORMAT;
       break;
     }
-    const GIMG_Color_Info * info =
+    const GCOL_Color_Info * info =
         gimg_raster_color_info_const(page->raster);
     if (info && info->icc_bytes && info->icc_size > 0u) {
       page->icc = (const unsigned char *)info->icc_bytes;

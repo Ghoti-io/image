@@ -25,7 +25,7 @@
  *
  * --- Internal algorithms and design ---
  *
- * Two things a JPEG can say end up on GIMG_Color_Info: the ICC profile its
+ * Two things a JPEG can say end up on GCOL_Color_Info: the ICC profile its
  * APP2 segments carry, and - for a four-component frame - the polarity of its
  * ink amounts.  Both are properties of the file, not of the coding process
  * that produced it, but each decode path used to attach them for itself and
@@ -36,14 +36,14 @@
  * twelve-bit, which is a difference a consumer would render as an inverted
  * picture.
  *
- * The polarity is GIMG_CMYK_POLARITY_INK for every four-component frame this
+ * The polarity is GCOL_CMYK_POLARITY_INK for every four-component frame this
  * decoder emits.  That is the Adobe convention the format is written in and
  * what libjpeg assumes (jdapimin.c); a file that meant the other one has no
  * way to say so, so this is a statement about JPEG rather than a guess about
  * the image.
  */
 
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/raster.h>
@@ -61,10 +61,10 @@ void gimg_jpeg_attach_color(const gimg_jpeg_doc_state_t * state,
     return;
   }
 
-  GIMG_Color_Info color_info;
-  gimg_color_info_default(&color_info);
+  GCOL_Color_Info color_info;
+  gcol_color_info_default(&color_info);
   if (num_comp == 4u) {
-    color_info.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
+    color_info.cmyk_polarity = GCOL_CMYK_POLARITY_INK;
   }
   if (have_icc) {
     // A profile assembled from several APP2 segments is stored bare; one that
@@ -90,8 +90,8 @@ GIMG_Result gimg_jpeg_cmyk_to_file_polarity(
       fmt->channel_count != 4 || fmt->layout != GIMG_LAYOUT_INTERLEAVED) {
     return GIMG_OK;
   }
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
-  if (!ci || ci->cmyk_polarity != GIMG_CMYK_POLARITY_REFLECTION) {
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
+  if (!ci || ci->cmyk_polarity != GCOL_CMYK_POLARITY_REFLECTION) {
     // INK is what a JPEG means, and an unstated polarity is taken to be the
     // file's own convention rather than refused: a caller building CMYK
     // samples for a JPEG is building them the way a JPEG holds them.  Only
@@ -138,8 +138,8 @@ GIMG_Result gimg_jpeg_cmyk_to_file_polarity(
   // The samples now mean what the file will mean, so say so.  Everything else
   // the raster said about its colour still holds - the profile above all,
   // which describes the same ink amounts either way round.
-  GIMG_Color_Info flipped = *ci;
-  flipped.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
+  GCOL_Color_Info flipped = *ci;
+  flipped.cmyk_polarity = GCOL_CMYK_POLARITY_INK;
   r = gimg_raster_set_color_info(*out_raster, &flipped);
   if (r != GIMG_OK) {
     gimg_raster_destroy(*out_raster);

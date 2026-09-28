@@ -556,7 +556,7 @@ static GIMG_Result pal_make_output(
     return r;
   }
   // Rounding a sample to a nearby one does not change what the samples mean.
-  const GIMG_Color_Info * info = gimg_raster_color_info_const(src);
+  const GCOL_Color_Info * info = gimg_raster_color_info_const(src);
   if (info) {
     (void)gimg_raster_set_color_info(*out, info);
   }

@@ -894,7 +894,7 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         uint32_t cs_type = (uint32_t)cs[0] | ((uint32_t)cs[1] << 8) |
             ((uint32_t)cs[2] << 16) | ((uint32_t)cs[3] << 24);
         if (cs_type == GIMG_BMP_PROFILE_EMBEDDED) {
-          const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+          const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
           plan.profile = ci->icc_bytes;
           plan.profile_bytes = ci->icc_size;
         }

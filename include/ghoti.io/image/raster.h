@@ -28,7 +28,7 @@
 #define GHOTI_IO_GIMG_RASTER_H
 
 #include <ghoti.io/image/allocator.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/macros.h>
 #include <stddef.h>
@@ -243,7 +243,7 @@ GIMG_API const GIMG_Allocator * gimg_raster_allocator(const GIMG_Raster * raster
 /**
  * @brief Get color info (primaries, transfer, ICC). Returns default (unknown) if never set.
  */
-GIMG_API const GIMG_Color_Info * gimg_raster_color_info_const(
+GIMG_API const GCOL_Color_Info * gimg_raster_color_info_const(
     const GIMG_Raster * raster);
 
 /**
@@ -251,7 +251,7 @@ GIMG_API const GIMG_Color_Info * gimg_raster_color_info_const(
  * copies the ICC bytes and owns them (freed with the raster).
  */
 GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
-    const GIMG_Color_Info * info);
+    const GCOL_Color_Info * info);
 
 /**
  * @brief Copy a raster: same dimensions and format, new owned buffer (library

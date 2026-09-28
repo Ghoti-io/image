@@ -27,7 +27,7 @@
  */
 
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
@@ -64,7 +64,7 @@ std::vector<uint8_t> profile_of(const std::vector<uint8_t> & bytes) {
     GIMG_Raster * raster = nullptr;
     if (gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster) == GIMG_OK &&
         raster) {
-      const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+      const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
       if (ci && ci->icc_bytes && ci->icc_size > 0) {
         const uint8_t * p = (const uint8_t *)ci->icc_bytes;
         out.assign(p, p + ci->icc_size);

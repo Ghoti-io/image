@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
@@ -1490,10 +1490,10 @@ TEST(PngEncode, SaveWithKeepCommonOnlyRoundTripsColorOnly) {
   r = gimg_item_decode(gimg_doc_item((GIMG_Doc *)doc2, 0), nullptr, &raster);
   ASSERT_EQ(r, GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  const GIMG_Color_Info * info = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * info = gimg_raster_color_info_const(raster);
   EXPECT_NE(info, nullptr);
   if (info) {
-    EXPECT_EQ(info->transfer, GIMG_TRANSFER_SRGB)
+    EXPECT_EQ(info->transfer, GCOL_TRANSFER_SRGB)
         << "KEEP_COMMON_ONLY should preserve sRGB from raster";
   }
   gimg_raster_destroy(raster);
@@ -3238,7 +3238,7 @@ std::string color_chunks_of(const std::vector<uint8_t> & png) {
 }
 
 /** A 2x2 opaque raster carrying the given color info. */
-GIMG_Raster * raster_with_color(const GIMG_Color_Info & color) {
+GIMG_Raster * raster_with_color(const GCOL_Color_Info & color) {
   GIMG_Raster * raster = nullptr;
   if (gimg_raster_create(2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0,
           &raster) != GIMG_OK) {
@@ -3311,8 +3311,8 @@ TEST(PngEncode, EmbeddedProfileOnTheRasterIsWrittenAsICCP) {
     profile[i] = (uint8_t)((i * 7u) & 0xFFu);
   }
 
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
 
@@ -3330,7 +3330,7 @@ TEST(PngEncode, EmbeddedProfileOnTheRasterIsWrittenAsICCP) {
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
   GIMG_Raster * back = nullptr;
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
-  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  const GCOL_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
   ASSERT_EQ(read->icc_size, profile.size());
   EXPECT_EQ(std::memcmp(read->icc_bytes, profile.data(), profile.size()), 0);
@@ -3340,10 +3340,10 @@ TEST(PngEncode, EmbeddedProfileOnTheRasterIsWrittenAsICCP) {
 }
 
 TEST(PngEncode, SrgbTransferOnTheRasterIsWrittenAsSrgb) {
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
-  color.transfer = GIMG_TRANSFER_SRGB;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_SRGB);
+  color.transfer = GCOL_TRANSFER_SRGB;
 
   GIMG_Raster * raster = raster_with_color(color);
   ASSERT_NE(raster, nullptr);
@@ -3359,10 +3359,10 @@ TEST(PngEncode, SrgbPrimariesWithAGammaAreWrittenAsGamaNotSrgb) {
   // header naming sRGB's primaries and a gamma of 2.2 is not an sRGB image,
   // and writing sRGB for it threw the gamma away and claimed a curve the file
   // never stated.  bmpsuite's g/pal8v4.bmp is exactly that file.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
-  color.transfer = GIMG_TRANSFER_GAMMA;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_SRGB);
+  color.transfer = GCOL_TRANSFER_GAMMA;
   color.gamma_value = 2.2;
 
   GIMG_Raster * raster = raster_with_color(color);
@@ -3374,8 +3374,8 @@ TEST(PngEncode, SrgbPrimariesWithAGammaAreWrittenAsGamaNotSrgb) {
 }
 
 TEST(PngEncode, ColorInfoWithNothingToSayWritesNoColorChunk) {
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
 
   GIMG_Raster * raster = raster_with_color(color);
   ASSERT_NE(raster, nullptr);
@@ -3386,9 +3386,9 @@ TEST(PngEncode, ColorInfoWithNothingToSayWritesNoColorChunk) {
 }
 
 TEST(PngEncode, DropAllDropsTheColorFromTheRasterToo) {
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  color.transfer = GIMG_TRANSFER_SRGB;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  color.transfer = GCOL_TRANSFER_SRGB;
 
   GIMG_Raster * raster = raster_with_color(color);
   ASSERT_NE(raster, nullptr);
@@ -3437,9 +3437,9 @@ TEST(PngEncode, AGammaGamaCannotHoldGoesUnsaid) {
   // than a large number - UBSan caught it at 4.98588e+09 while fuzzing the
   // PNG round trip.  Such a gamma is now left unsaid, which is what this
   // writer does with everything else it cannot state.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  color.transfer = GIMG_TRANSFER_GAMMA;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  color.transfer = GCOL_TRANSFER_GAMMA;
   color.gamma_value = 65535.9;
 
   GIMG_Raster * raster = raster_with_color(color);
@@ -3451,9 +3451,9 @@ TEST(PngEncode, AGammaGamaCannotHoldGoesUnsaid) {
 }
 
 TEST(PngEncode, LinearTransferIsWrittenAsAGammaOfOne) {
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  color.transfer = GIMG_TRANSFER_LINEAR;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  color.transfer = GCOL_TRANSFER_LINEAR;
 
   GIMG_Raster * raster = raster_with_color(color);
   ASSERT_NE(raster, nullptr);
@@ -3468,7 +3468,7 @@ TEST(PngEncode, LinearTransferIsWrittenAsAGammaOfOne) {
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
   GIMG_Raster * back = nullptr;
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
-  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  const GCOL_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
   EXPECT_NEAR(read->gamma_value, 1.0, 0.0001);
   gimg_raster_destroy(back);
@@ -3496,8 +3496,8 @@ TEST(PngEncode, SavingFromADocumentWhoseRasterTheSaveOwnsReadsNoFreedColor) {
 
   // A BMP carries the profile in a V5 header, so loading one gives a document
   // with a profile and no raster on its item.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
   GIMG_Raster * raster = raster_with_color(color);
@@ -3548,7 +3548,7 @@ TEST(PngEncode, SavingFromADocumentWhoseRasterTheSaveOwnsReadsNoFreedColor) {
   GIMG_Raster * back = nullptr;
   ASSERT_EQ(
       gimg_item_decode(gimg_doc_item(back_doc, 0), nullptr, &back), GIMG_OK);
-  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  const GCOL_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
   ASSERT_EQ(read->icc_size, profile.size());
   EXPECT_EQ(std::memcmp(read->icc_bytes, profile.data(), profile.size()), 0)
@@ -3567,10 +3567,10 @@ TEST(PngEncode, AGamutAReaderWouldNotAssumeIsWrittenAsChrm) {
   // V4 header naming Adobe RGB came out of a save as PNG with its gamma and
   // not its gamut. cHRM (11.3.2.1) is the chunk that says it, and it goes
   // beside gAMA rather than instead of it.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_ADOBE_RGB);
-  color.transfer = GIMG_TRANSFER_GAMMA;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_ADOBE_RGB);
+  color.transfer = GCOL_TRANSFER_GAMMA;
   color.gamma_value = 2.2;
 
   std::vector<uint8_t> png;
@@ -3584,11 +3584,11 @@ TEST(PngEncode, AGamutAReaderWouldNotAssumeIsWrittenAsChrm) {
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
   GIMG_Raster * back = nullptr;
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
-  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  const GCOL_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&read->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_ADOBE_RGB);
-  EXPECT_EQ(read->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_EQ(gcol_gamut_identify(&read->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(read->transfer, GCOL_TRANSFER_GAMMA);
   EXPECT_NEAR(read->gamma_value, 2.2, 0.0001);
   gimg_raster_destroy(back);
   gimg_doc_destroy(doc);
@@ -3598,10 +3598,10 @@ TEST(PngEncode, AGamutAReaderWouldNotAssumeIsWrittenAsChrm) {
 TEST(PngEncode, TheGamutAReaderAlreadyAssumesIsNotWritten) {
   // sRGB's primaries are what a PNG with no cHRM means, so stating them costs
   // 44 bytes and says nothing new.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_SRGB);
-  color.transfer = GIMG_TRANSFER_GAMMA;
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_SRGB);
+  color.transfer = GCOL_TRANSFER_GAMMA;
   color.gamma_value = 1.8;
 
   std::vector<uint8_t> png;
@@ -3611,18 +3611,18 @@ TEST(PngEncode, TheGamutAReaderAlreadyAssumesIsNotWritten) {
 }
 
 TEST(PngEncode, AWhitePointWithNoPrimariesWritesNoChrm) {
-  // A regression, and the reason GIMG_Color_Info has two flags rather than
+  // A regression, and the reason GCOL_Color_Info has two flags rather than
   // one.  A TIFF may carry WhitePoint (318) without PrimaryChromaticities
   // (319); with a single "gamut_stated" flag that file set it, and saving as
   // PNG wrote a cHRM whose three primaries were all (0, 0) - a chunk stating
   // a gamut no colour is inside.  Three primaries are what make a gamut, so
   // that is what the writer tests.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
   color.gamut.white.x = 0.3127;
   color.gamut.white.y = 0.3290;
   color.white_stated = true;
-  color.transfer = GIMG_TRANSFER_GAMMA;
+  color.transfer = GCOL_TRANSFER_GAMMA;
   color.gamma_value = 2.2;
 
   std::vector<uint8_t> png;
@@ -3637,9 +3637,9 @@ TEST(PngEncode, ChrmIsNotWrittenBesideAProfile) {
   // does not want the two of them disagreeing in one file.
   std::vector<uint8_t> profile(128, 0);
   std::memcpy(&profile[36], "acsp", 4);
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_ADOBE_RGB);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_ADOBE_RGB);
   color.icc_bytes = profile.data();
   color.icc_size = profile.size();
 
@@ -3653,9 +3653,9 @@ TEST(PngEncode, AGamutWithNoTransferIsStillWritten) {
   // Either half of the pair may be absent. A gamut with no curve is written
   // as cHRM alone, the same way a BMP's calibrated header leaves its gamma at
   // zero when nothing stated one.
-  GIMG_Color_Info color;
-  gimg_color_info_default(&color);
-  (void)gimg_color_info_set_gamut(&color, GIMG_PRIMARIES_ADOBE_RGB);
+  GCOL_Color_Info color;
+  gcol_color_info_default(&color);
+  (void)gcol_color_info_set_gamut(&color, GCOL_PRIMARIES_ADOBE_RGB);
 
   std::vector<uint8_t> png;
   ASSERT_EQ(save_png(raster_with_color(color), GIMG_META_PRESERVE_ALL, png),
@@ -3668,11 +3668,11 @@ TEST(PngEncode, AGamutWithNoTransferIsStillWritten) {
   ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
   GIMG_Raster * back = nullptr;
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &back), GIMG_OK);
-  const GIMG_Color_Info * read = gimg_raster_color_info_const(back);
+  const GCOL_Color_Info * read = gimg_raster_color_info_const(back);
   ASSERT_NE(read, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&read->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_ADOBE_RGB);
-  EXPECT_EQ(read->transfer, GIMG_TRANSFER_UNKNOWN)
+  EXPECT_EQ(gcol_gamut_identify(&read->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(read->transfer, GCOL_TRANSFER_UNKNOWN)
       << "the file stated no curve, so neither does the raster";
   gimg_raster_destroy(back);
   gimg_doc_destroy(doc);

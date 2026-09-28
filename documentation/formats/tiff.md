@@ -49,13 +49,13 @@ written back unchanged - a TIFF is what professional colour work is stored in,
 and a profile dropped in passing makes a file's colours mean something else.
 WhitePoint (318) and PrimaryChromaticities (319) reach the same place as the
 raster's gamut: TIFF states both as RATIONALs, so what arrives is exact and
-`gimg_gamut_identify()` names it if it has a name. The two tags are separate
+`gcol_gamut_identify()` names it if it has a name. The two tags are separate
 in the format, so a file may carry either alone, and `primaries_stated` and
 `white_stated` say which arrived. Three primaries are what make a gamut, so a
 white point by itself is carried without claiming to be one - which is what
 stops a save as PNG writing a `cHRM` whose primaries are all `(0, 0)`.
 **TransferFunction (301) is not read**: it is a sampled lookup table of
-2^BitsPerSample entries, and `GIMG_Transfer` holds named and parametric
+2^BitsPerSample entries, and `GCOL_Transfer` holds named and parametric
 curves, so fitting one to those samples would be inventing a function the
 file never stated.
 ImageDescription (270) becomes the document's description, XMP (700) is kept
@@ -128,7 +128,7 @@ back is not available, because an output stream here is append-only.
 | SamplesPerPixel | 1 for grayscale and palette, 3 or 4 for RGB, 4 for separated | Anything else &rarr; `GIMG_ERR_UNSUPPORTED` |
 | PlanarConfiguration | 1 and 2 | Any other value &rarr; `GIMG_ERR_CORRUPT`; the writer always writes 1 |
 | SampleFormat | 1 (unsigned integer) | 2 (signed), 3 (float) &rarr; `GIMG_ERR_UNSUPPORTED` |
-| Colour tags | ICCProfile (34675) carried opaquely; WhitePoint (318) and PrimaryChromaticities (319) read into the raster's gamut | TransferFunction (301) is a sampled LUT with no home in `GIMG_Transfer` and is not read; a RATIONAL with a zero denominator is treated as unstated |
+| Colour tags | ICCProfile (34675) carried opaquely; WhitePoint (318) and PrimaryChromaticities (319) read into the raster's gamut | TransferFunction (301) is a sampled LUT with no home in `GCOL_Transfer` and is not read; a RATIONAL with a zero denominator is treated as unstated |
 | Geometry | Strips and tiles | A block list whose length disagrees with the geometry &rarr; `GIMG_ERR_CORRUPT`; a block outside the file &rarr; `GIMG_ERR_CORRUPT` |
 | Source | A stream that knows its length | A non-seekable stream &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | Limits | `max_decoded_pixels`, `max_frame_count` | `max_chunk_size` has no analogue; a TIFF has no chunk structure |

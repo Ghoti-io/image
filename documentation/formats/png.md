@@ -25,7 +25,7 @@ large payload.
 - **Chunk ordering:** Critical and ancillary chunk order per spec (5.6, Table 5.3): IHDR first; PLTE (and tRNS if present) before IDAT for palette images; IDAT contiguous; IEND last. On save, preserved ancillary chunks are written before PLTE, which is where Table 5.3 requires cHRM, gAMA, iCCP, sBIT, sRGB, cICP, mDCv and cLLi and where it permits pHYs, sPLT, eXIf and the text and time chunks - except bKGD and hIST, which Table 5.3 places *after* PLTE and which are therefore held back until it has been written.
 - **Critical chunks:** IHDR (11.2.1), PLTE (11.2.2), IDAT (11.2.4), IEND (11.2.5). For palette images, PLTE (and optional tRNS) must appear before IDAT.
 - **Ancillary chunks:** tEXt, zTXt, iTXt, iCCP, sRGB, gAMA, cHRM, eXIf, and others as raw or typed per spec (11.3).
-- **Color chunk policy:** PNG allows at most one of sRGB, iCCP, or gAMA+cHRM for color interpretation. If multiple are present, this implementation uses the first in priority order: **sRGB > iCCP > gAMA/cHRM**. The chosen chunk is applied to `GIMG_Color_Info`; iCCP bytes are stored for round-trip in ancillary and (when chosen) the decompressed profile is attached to the decoded raster.
+- **Color chunk policy:** PNG allows at most one of sRGB, iCCP, or gAMA+cHRM for color interpretation. If multiple are present, this implementation uses the first in priority order: **sRGB > iCCP > gAMA/cHRM**. The chosen chunk is applied to `GCOL_Color_Info`; iCCP bytes are stored for round-trip in ancillary and (when chosen) the decompressed profile is attached to the decoded raster.
 - **Filtering and interlace:** Filter types (None, Sub, Up, Average, Paeth) per [PNG-Filters](https://www.w3.org/TR/PNG-Filters.html); Adam7 interlace (seven passes) per [Interlaced data order](https://www.w3.org/TR/PNG-DataRep.html#DR.Interlaced-data-order).
 - **pHYs** (11.3.4.3): a density in pixels per meter arrives as a DPI through `gimg_meta_common_dpi()`; unit specifier 0, which states a pixel aspect ratio and no physical size, arrives through `gimg_doc_pixel_aspect_ratio()`. That second case used to be dropped, which lost the only thing such a chunk says.
 - **bKGD** (11.3.4.1): the colour a viewer is told to put behind the image, reported through `gimg_doc_background_color()` - the same accessor GIF's Background Color Index arrives through. See "The background colour" below; it is reported, never painted.
@@ -40,7 +40,7 @@ On PNG save, `GIMG_Save_Options.metadata_policy` controls which ancillary chunks
 - **GIMG_META_STRIP_GPS:** Only actual GPS data is stripped. eXIf is parsed; the GPS IFD (and GPS-related tags) are removed; the remaining Exif is re-serialized and written as the eXIf chunk. Non-GPS Exif (orientation, datetime, etc.) is preserved. tEXt, zTXt, and iTXt chunks whose keyword is "GPS", "GPS " (with trailing space), or "EXIF:GPS" (case-insensitive) are omitted. Other ancillary is preserved.
 - **GIMG_META_NORMALIZE_EXIF:** eXIf is normalized (e.g. orientation set to 1 / applied, duplicate tags removed) and written as a single eXIf chunk. Other ancillary is preserved. Implemented in Phase 1.5: Exif module sets orientation tag to 1 (normal) when present.
 - **GIMG_META_KEEP_RAW_ONLY:** Emit only ancillary chunks that are *not* known semantic metadata. Omitted: iCCP, sRGB, gAMA, cHRM, eXIf, tEXt, zTXt, iTXt. Emitted: any other ancillary chunk type (e.g. unknown or private chunks) in read order. eXIf from doc meta_raw is not written. PLTE/tRNS are emitted when required for the image.
-- **GIMG_META_KEEP_COMMON_ONLY:** Emit only metadata that maps to common metadata. Exactly one color chunk is written from the decoded raster's `GIMG_Color_Info` (see **Color on save** below). No eXIf, no text chunks, no other ancillary. PLTE/tRNS are emitted when required for the image.
+- **GIMG_META_KEEP_COMMON_ONLY:** Emit only metadata that maps to common metadata. Exactly one color chunk is written from the decoded raster's `GCOL_Color_Info` (see **Color on save** below). No eXIf, no text chunks, no other ancillary. PLTE/tRNS are emitted when required for the image.
 
 ## Color on save
 
@@ -49,7 +49,7 @@ and iCCP in the same file and gAMA is redundant beside either.
 
 **The chunk the file came with wins.** A document loaded from a PNG that
 carried sRGB, iCCP, gAMA, cHRM or cICP has that chunk preserved verbatim, and
-nothing is added from the raster's `GIMG_Color_Info` on top of it - preserving
+nothing is added from the raster's `GCOL_Color_Info` on top of it - preserving
 what was actually there and then restating it would put two color chunks in
 one file.
 
@@ -57,7 +57,7 @@ one file.
 the case for anything that did not arrive as a PNG. It is chosen in this
 order:
 
-| Raster's `GIMG_Color_Info` | Written |
+| Raster's `GCOL_Color_Info` | Written |
 |---|---|
 | `transfer` is sRGB | `sRGB`, with the rendering intent |
 | a stated gamut that is not sRGB's, and no profile | `cHRM`, beside whichever of the next two applies |
@@ -75,9 +75,9 @@ Adobe RGB came out of a save as PNG carrying its gamma and not its gamut. It
 is not written beside `iCCP`, where the profile is the more specific
 statement.
 
-On the way in, `cHRM` is read into `GIMG_Color_Info.gamut` exactly: the white
+On the way in, `cHRM` is read into `GCOL_Color_Info.gamut` exactly: the white
 point and the three primaries as the file stated them, with no table in
-between. `gimg_gamut_identify()` is what puts a name to the result, and a
+between. `gcol_gamut_identify()` is what puts a name to the result, and a
 gamut it has no name for is unlabelled rather than lost - the coordinates are
 still there, and a save writes them back out. A `cHRM` of the
 wrong length never reaches this: the loader enforces the fixed length of every

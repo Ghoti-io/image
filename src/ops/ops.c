@@ -26,7 +26,7 @@
 
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/bitdepth.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <string.h>
@@ -234,14 +234,14 @@ GIMG_API GIMG_Result gimg_ops_apply_orientation(
 /**
  * The stored value of a channel, whichever way round the raster holds it.
  *
- * GIMG_CMYK_POLARITY_INK is the JPEG and Adobe convention, where the samples
+ * GCOL_CMYK_POLARITY_INK is the JPEG and Adobe convention, where the samples
  * are already the complement of the ink - 0 is full ink - and the arithmetic
- * below wants them exactly that way.  GIMG_CMYK_POLARITY_REFLECTION is the
+ * below wants them exactly that way.  GCOL_CMYK_POLARITY_REFLECTION is the
  * other way round and is complemented here.
  */
 static inline uint32_t ops_cmyk_stored(
-    uint32_t v, uint32_t max, GIMG_CMYK_Polarity polarity) {
-  return polarity == GIMG_CMYK_POLARITY_REFLECTION ? max - v : v;
+    uint32_t v, uint32_t max, GCOL_CMYK_Polarity polarity) {
+  return polarity == GCOL_CMYK_POLARITY_REFLECTION ? max - v : v;
 }
 
 /**
@@ -277,11 +277,11 @@ static GIMG_Result ops_cmyk_to_rgba(const GIMG_Raster * src,
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(src);
-  GIMG_CMYK_Polarity polarity =
-      ci ? ci->cmyk_polarity : GIMG_CMYK_POLARITY_UNKNOWN;
-  if (polarity != GIMG_CMYK_POLARITY_INK &&
-      polarity != GIMG_CMYK_POLARITY_REFLECTION) {
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(src);
+  GCOL_CMYK_Polarity polarity =
+      ci ? ci->cmyk_polarity : GCOL_CMYK_POLARITY_UNKNOWN;
+  if (polarity != GCOL_CMYK_POLARITY_INK &&
+      polarity != GCOL_CMYK_POLARITY_REFLECTION) {
     // Nothing says which way round the samples are, and the two readings are
     // photographic negatives of each other.  Guessing would produce a
     // plausible picture that might be inverted, which is worse than refusing.
@@ -377,7 +377,7 @@ static GIMG_Result ops_cmyk_to_rgba(const GIMG_Raster * src,
  */
 GIMG_Result gimg_ops_carry_color(
     const GIMG_Raster * src, GIMG_Raster * dst) {
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(src);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(src);
   if (!ci) {
     return GIMG_OK;
   }

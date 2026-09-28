@@ -38,7 +38,7 @@
  * cHRM, eXIf, or unknown 4-byte type) is appended to state->ancillary with a
  * copy of its payload. Color interpretation (sRGB/iCCP/gAMA) is not applied
  * during load; it is applied at decode time in png_decode.c so that the
- * raster gets the correct GIMG_Color_Info. eXIf is also attached to doc
+ * raster gets the correct GCOL_Color_Info. eXIf is also attached to doc
  * meta_raw for round-trip (first eXIf only).
  *
  * Limits: GIMG_Load_Options.limits (e.g. max_chunk_size) is passed to

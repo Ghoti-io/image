@@ -7,7 +7,7 @@ they mean: `gimg_ops_crop()`, `gimg_ops_resize()` and `gimg_ops_composite()`,
 plus named spellings of the mirrors and quarter turns that
 `gimg_ops_apply_orientation()` has always performed.
 
-All of them carry the source's `GIMG_Color_Info`, embedded profile included.
+All of them carry the source's `GCOL_Color_Info`, embedded profile included.
 Moving a sample about the picture does not change what it describes.
 
 ## What reaches which formats
@@ -129,7 +129,7 @@ near 188, where averaging the encoded values gives 128 - the encoding of about
 It is **opt-in precisely because the library cannot know the transfer
 function**, and this is the important part of the contract: *a caller passing
 `LINEAR` is asserting sRGB. The library is not inferring it.*
-`GIMG_Color_Info` is not consulted to guess one, for the same reason the CMYK
+`GCOL_Color_Info` is not consulted to guess one, for the same reason the CMYK
 conversion refuses to guess a polarity - a plausible wrong answer is worse than
 a refusal, and the code that knows where the image came from is the code that
 should decide.

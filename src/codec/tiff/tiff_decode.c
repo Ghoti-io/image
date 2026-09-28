@@ -43,7 +43,7 @@
 #include <ghoti.io/cutil/safemath.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/raster.h>
 #include <stdint.h>
 #include <string.h>
@@ -809,9 +809,9 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
   // claiming to be one - which is what stops the PNG writer emitting a cHRM
   // whose three primaries are (0, 0).
   if (has_icc || ifd->has_primaries || ifd->has_white_point) {
-    GIMG_Color_Info info;
-    gimg_color_info_default(&info);
-    const GIMG_Color_Info * existing = gimg_raster_color_info_const(raster);
+    GCOL_Color_Info info;
+    gcol_color_info_default(&info);
+    const GCOL_Color_Info * existing = gimg_raster_color_info_const(raster);
     if (existing) {
       info = *existing;
     }

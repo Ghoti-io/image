@@ -52,7 +52,7 @@ T.81 describes none.
 | `strictness`| **GIMG_Strictness** — how to handle recoverable issues (see below). |
 | `jpeg_tables` | For JPEG: tables to install before reading an abbreviated stream (T.81 B.4). Ignored by other codecs. |
 | `bmp_rgb32_alpha` | For BMP: what the undefined fourth byte of a 32-bit `BI_RGB` pixel means. `GIMG_BMP_RGB32_ALPHA_IGNORE` (0, default) decodes such an image opaque; `GIMG_BMP_RGB32_ALPHA_HEURISTIC` reads the byte as alpha when any pixel sets it. A file that *declares* its alpha is unaffected either way. Ignored by other codecs. |
-| `icc_resolver` | Called when a file names an ICC profile rather than carrying one - BMP's `PROFILE_LINKED` is the case. The library never opens the path itself; it hands the path over and takes bytes back, so the decision sits with the code that knows where the image came from. Return `GIMG_OK` with the bytes to attach them, or anything else to leave the image untagged, which is not an error. The bytes are copied before the call returns. Unset (the default) means no profile is resolved and the path is reported as `GIMG_Color_Info.icc_linked_path`. |
+| `icc_resolver` | Called when a file names an ICC profile rather than carrying one - BMP's `PROFILE_LINKED` is the case. The library never opens the path itself; it hands the path over and takes bytes back, so the decision sits with the code that knows where the image came from. Return `GIMG_OK` with the bytes to attach them, or anything else to leave the image untagged, which is not an error. The bytes are copied before the call returns. Unset (the default) means no profile is resolved and the path is reported as `GCOL_Color_Info.icc_linked_path`. |
 | `icc_resolver_user` | Passed to `icc_resolver` untouched. |
 | `_reserved` | Reserved; set to zero. |
 
@@ -356,23 +356,23 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 
 **GIMG_PIXEL_GRAY12** and **GIMG_PIXEL_RGBA12** (see `ghoti.io/image/raster.h`): 12 bits per channel, stored as **uint16_t per sample** with value in **0..4095** (clamped; no left-shift in the raster). Used for codecs that support 12-bit precision (e.g. JPEG 12-bit). Conversion to/from 8- or 16-bit uses the library bit-depth API (`gimg_bitdepth_*`, `gimg_ops_convert_bit_depth`).
 
-@section api_options_color_info Color info (GIMG_Color_Info)
+@section api_options_color_info Color info (GCOL_Color_Info)
 
-**GIMG_Color_Info** (see `ghoti.io/image/color.h`) is attached to a raster and describes how to interpret color: the gamut, transfer, rendering intent, optional ICC profile, and (for CMYK rasters) channel polarity. It **describes** colour and converts none of it.
+**GCOL_Color_Info** (see `ghoti.io/image/color.h`) is attached to a raster and describes how to interpret color: the gamut, transfer, rendering intent, optional ICC profile, and (for CMYK rasters) channel polarity. It **describes** colour and converts none of it.
 
 | Field | Description |
 |-------|-------------|
-| `gamut` | **GIMG_Gamut** — the white point and three primaries as CIE 1931 *x,y*, exactly as the file stated them. |
+| `gamut` | **GCOL_Gamut** — the white point and three primaries as CIE 1931 *x,y*, exactly as the file stated them. |
 | `primaries_stated` / `white_stated` | Which halves of `gamut` the file actually stated. Independent in both directions: a BMP V4 header carries three endpoints and nowhere to put a white point, and a TIFF may carry WhitePoint (318) without PrimaryChromaticities (319). **`primaries_stated` is the flag meaning "there is a gamut here"** — three primaries are what make one, and a writer needing a gamut tests that one. Read these rather than comparing coordinates against zero. |
-| `transfer` | **GIMG_Transfer** — linear, sRGB, gamma, a parametric curve, BT.1886, PQ or HLG, or unknown. |
-| `transfer_params` | The seven ICC `parametricCurveType` terms `{g, a, b, c, d, e, f}` when `transfer` is **GIMG_TRANSFER_PARAMETRIC**. |
-| `gamma_value` | Used when `transfer` is **GIMG_TRANSFER_GAMMA**. |
-| `reference` | **GIMG_Reference** — whether the sample describes light a display emits or light as it was in the scene. |
-| `sample_scale` | **GIMG_Sample_Scale** — whether the sample is a fraction of an unstated white or an absolute measurement. Independent of `reference`: PQ is display-referred *and* absolute, HLG is scene-referred and relative. |
+| `transfer` | **GCOL_Transfer** — linear, sRGB, gamma, a parametric curve, BT.1886, PQ or HLG, or unknown. |
+| `transfer_params` | The seven ICC `parametricCurveType` terms `{g, a, b, c, d, e, f}` when `transfer` is **GCOL_TRANSFER_PARAMETRIC**. |
+| `gamma_value` | Used when `transfer` is **GCOL_TRANSFER_GAMMA**. |
+| `reference` | **GCOL_Reference** — whether the sample describes light a display emits or light as it was in the scene. |
+| `sample_scale` | **GCOL_Sample_Scale** — whether the sample is a fraction of an unstated white or an absolute measurement. Independent of `reference`: PQ is display-referred *and* absolute, HLG is scene-referred and relative. |
 | `white_luminance` | cd/m² of a full-scale sample, or 0 when unstated. Meaningful when `sample_scale` is absolute. |
-| `intent` | **GIMG_Rendering_Intent** — written into an ICC profile's header and into a BMP V5 header. A value outside the four ICC names is written as perceptual. |
+| `intent` | **GCOL_Rendering_Intent** — written into an ICC profile's header and into a BMP V5 header. A value outside the four ICC names is written as perceptual. |
 | `icc_bytes` / `icc_size` | Optional ICC profile; library does not take ownership. It is carried opaquely: nothing here parses a profile, so an embedded one does not fill in `gamut` or `transfer`. |
-| `cmyk_polarity` | **GIMG_CMYK_Polarity** — interpretation of CMYK channel values. Only relevant when the raster format is a CMYK one (**GIMG_PIXEL_CMYK8**, **CMYK12**, **CMYK16**). |
+| `cmyk_polarity` | **GCOL_CMYK_Polarity** — interpretation of CMYK channel values. Only relevant when the raster format is a CMYK one (**GIMG_PIXEL_CMYK8**, **CMYK12**, **CMYK16**). |
 
 ### Naming a gamut
 
@@ -381,18 +381,18 @@ cannot disagree. Ask for the name instead:
 
 | Function | Answers |
 |----------|---------|
-| `gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT)` | Which named space these coordinates are, or **GIMG_PRIMARIES_UNKNOWN** |
-| `gimg_gamut_named(named, &gamut)` | The coordinates of a named space |
-| `gimg_color_info_set_gamut(&info, named)` | Stores a named space's coordinates |
+| `gcol_gamut_identify(&info->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT)` | Which named space these coordinates are, or **GCOL_PRIMARIES_UNKNOWN** |
+| `gcol_gamut_named(named, &gamut)` | The coordinates of a named space |
+| `gcol_color_info_set_gamut(&info, named)` | Stores a named space's coordinates |
 
-`gimg_transfer_conventions()` answers the other half: the reference, scale and
+`gcol_transfer_conventions()` answers the other half: the reference, scale and
 peak luminance a named transfer implies. PQ is defined against an absolute
 10000 cd/m² and HLG against scene light, so for those the curve settles all
 three. **LINEAR, GAMMA and PARAMETRIC settle none of it** — a linear raster
 can be scene- or display-referred and the curve does not say which — so the
 function returns false and a codec that knows must fill the fields itself.
 
-**GIMG_PRIMARIES_UNKNOWN from `gimg_gamut_identify()` does not mean the colour
+**GCOL_PRIMARIES_UNKNOWN from `gcol_gamut_identify()` does not mean the colour
 was lost.** It means this library has no name for it; every coordinate the
 file stated is still in `gamut`, and a writer that can express it writes it
 out unchanged. The named spaces are sRGB, Adobe RGB, Display P3, BT.2020 and
@@ -416,17 +416,17 @@ in preference to a built one; a model missing either half is written as
 nothing; and only a three-component frame gets one. See
 \ref format_jpeg "JPEG"'s *Color on save*.
 
-**GIMG_CMYK_Polarity** (see `ghoti.io/image/color.h`):
+**GCOL_CMYK_Polarity** (see `ghoti.io/image/color.h`):
 
 | Value | Meaning |
 |-------|---------|
-| **GIMG_CMYK_POLARITY_UNKNOWN** | Polarity not specified (default for newly created color info). |
-| **GIMG_CMYK_POLARITY_INK** | 0 = full ink, 255 = no ink (Adobe / JPEG file convention). Set by the JPEG decoder for CMYK output. |
-| **GIMG_CMYK_POLARITY_REFLECTION** | 0 = no ink, 255 = full ink (reflection; e.g. many design-tool APIs). |
+| **GCOL_CMYK_POLARITY_UNKNOWN** | Polarity not specified (default for newly created color info). |
+| **GCOL_CMYK_POLARITY_INK** | 0 = full ink, 255 = no ink (Adobe / JPEG file convention). Set by the JPEG decoder for CMYK output. |
+| **GCOL_CMYK_POLARITY_REFLECTION** | 0 = no ink, 255 = full ink (reflection; e.g. many design-tool APIs). |
 
 Raster pixels are stored as raw values; `cmyk_polarity` tells consumers (e.g. display or CMYK→RGB conversion) whether to treat 0 as “no ink” or “full ink” when interpreting the channels. The JPEG decoder states it on every four-component frame, whatever the coding process.
 
-`gimg_ops_convert_pixel_format` reads it to convert a CMYK raster to RGBA, which is the only route from a four-component JPEG into a PNG or a BMP — neither has CMYK. The conversion is the naive one (each ink an independent multiplicative filter over white) and is **not colorimetric**: this library has no colour engine, so what it offers is that conversion or none. It agrees with Pillow exactly on every pixel of every CMYK and YCCK fixture in `tests/data/jpeg`. A polarity of **GIMG_CMYK_POLARITY_UNKNOWN** is refused rather than guessed — the two readings are negatives of each other, and the wrong one gives a plausible but inverted picture. No writer performs the conversion on your behalf.
+`gimg_ops_convert_pixel_format` reads it to convert a CMYK raster to RGBA, which is the only route from a four-component JPEG into a PNG or a BMP — neither has CMYK. The conversion is the naive one (each ink an independent multiplicative filter over white) and is **not colorimetric**: this library has no colour engine, so what it offers is that conversion or none. It agrees with Pillow exactly on every pixel of every CMYK and YCCK fixture in `tests/data/jpeg`. A polarity of **GCOL_CMYK_POLARITY_UNKNOWN** is refused rather than guessed — the two readings are negatives of each other, and the wrong one gives a plausible but inverted picture. No writer performs the conversion on your behalf.
 
 ## `jpeg_arithmetic` (save)
 

@@ -27,7 +27,7 @@
 #include <fstream>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
@@ -442,7 +442,7 @@ TEST(TiffDecode, MetadataSurvivesALoadAndASave) {
   const std::vector<uint8_t> want_pixels = img.pixels();
   ASSERT_FALSE(want_pixels.empty());
 
-  const GIMG_Color_Info * info = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * info = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(info, nullptr);
   ASSERT_NE(info->icc_bytes, nullptr) << "the profile did not reach the raster";
   const size_t icc_size = info->icc_size;
@@ -482,7 +482,7 @@ TEST(TiffDecode, MetadataSurvivesALoadAndASave) {
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(again, 0), nullptr, &raster),
       GIMG_OK);
 
-  const GIMG_Color_Info * back_info = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * back_info = gimg_raster_color_info_const(raster);
   ASSERT_NE(back_info, nullptr);
   ASSERT_NE(back_info->icc_bytes, nullptr) << "the profile was dropped on save";
   ASSERT_EQ(back_info->icc_size, want_icc.size());
@@ -708,21 +708,21 @@ TEST(TiffDecode, AStreamThatCannotSayHowLongItIsIsRefused) {
 }
 
 TEST(TiffDecode, WhitePointAndPrimaryChromaticitiesBecomeTheGamut) {
-  // 318 and 319 were parsed by nothing until GIMG_Color_Info could hold what
+  // 318 and 319 were parsed by nothing until GCOL_Color_Info could hold what
   // they say.  TIFF states both as RATIONALs, so the gamut is exact and the
-  // naming is a separate question that gimg_gamut_identify() answers.
+  // naming is a separate question that gcol_gamut_identify() answers.
   Loaded l;
   ASSERT_EQ(l.load("tiff_chromaticities.tif"), GIMG_OK);
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(l.doc(), 0), nullptr, &raster),
       GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
   ASSERT_NE(ci, nullptr);
   ASSERT_TRUE(ci->primaries_stated);
   EXPECT_TRUE(ci->white_stated) << "this file carries 318 as well as 319";
-  EXPECT_EQ(gimg_gamut_identify(&ci->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(gcol_gamut_identify(&ci->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_ADOBE_RGB);
   // The coordinates themselves, not only the name: a reader that dropped the
   // white point would still be named Adobe RGB from the primaries alone.
   EXPECT_NEAR(ci->gamut.white.x, 0.3127, 1e-9);
@@ -742,7 +742,7 @@ TEST(TiffDecode, AWhitePointWithNoPrimariesIsCarriedButNamesNoGamut) {
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(l.doc(), 0), nullptr, &raster),
       GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
   ASSERT_NE(ci, nullptr);
   EXPECT_TRUE(ci->white_stated);
   EXPECT_FALSE(ci->primaries_stated)
@@ -751,8 +751,8 @@ TEST(TiffDecode, AWhitePointWithNoPrimariesIsCarriedButNamesNoGamut) {
   EXPECT_NEAR(ci->gamut.white.x, 0.3127, 1e-9);
   EXPECT_NEAR(ci->gamut.white.y, 0.3290, 1e-9);
   EXPECT_EQ(ci->gamut.red.x, 0.0) << "no primaries were stated";
-  EXPECT_EQ(gimg_gamut_identify(&ci->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_UNKNOWN)
+  EXPECT_EQ(gcol_gamut_identify(&ci->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_UNKNOWN)
       << "a white point alone is not a gamut and must not be matched as one";
   gimg_raster_destroy(raster);
 }

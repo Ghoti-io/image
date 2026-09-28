@@ -25,7 +25,8 @@
 #include <cstring>
 #include <limits>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
+#include <ghoti.io/color/icc.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
@@ -52,9 +53,9 @@ uint32_t be32(const uint8_t * p) {
 }
 
 /** A raster whose color model is stated but whose profile is absent. */
-GIMG_Raster * stating(GIMG_Primaries primaries, GIMG_Transfer transfer,
+GIMG_Raster * stating(GCOL_Primaries primaries, GCOL_Transfer transfer,
     double gamma, const GIMG_Pixel_Format * format = &GIMG_PIXEL_RGBA8,
-    GIMG_Rendering_Intent intent = GIMG_INTENT_PERCEPTUAL) {
+    GCOL_Rendering_Intent intent = GCOL_INTENT_PERCEPTUAL) {
   GIMG_Raster * raster = nullptr;
   if (gimg_raster_create(
           16, 16, format, GIMG_RASTER_OWNED, nullptr, 0, &raster) != GIMG_OK ||
@@ -63,9 +64,9 @@ GIMG_Raster * stating(GIMG_Primaries primaries, GIMG_Transfer transfer,
   }
   std::memset(gimg_raster_pixels(raster), 0x60,
       gimg_raster_stride_bytes(raster) * 16u);
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
-  (void)gimg_color_info_set_gamut(&ci, primaries);
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
+  (void)gcol_color_info_set_gamut(&ci, primaries);
   ci.transfer = transfer;
   ci.gamma_value = gamma;
   ci.intent = intent;
@@ -182,7 +183,7 @@ Xyz xyz_tag(const std::vector<uint8_t> & profile, const char * sig) {
 TEST(JpegSynthesizedIcc, AStatedColorModelBecomesAProfile) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_GAMMA, 2.2), "jpeg",
+      stating(GCOL_PRIMARIES_ADOBE_RGB, GCOL_TRANSFER_GAMMA, 2.2), "jpeg",
       jpeg));
 
   std::vector<uint8_t> profile = profile_in(jpeg);
@@ -207,10 +208,10 @@ TEST(JpegSynthesizedIcc, AStatedColorModelBecomesAProfile) {
 TEST(JpegSynthesizedIcc, TheProfileNamesTheGamutTheRasterNamed) {
   std::vector<uint8_t> adobe_jpeg, srgb_jpeg;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_GAMMA, 2.2), "jpeg",
+      stating(GCOL_PRIMARIES_ADOBE_RGB, GCOL_TRANSFER_GAMMA, 2.2), "jpeg",
       adobe_jpeg));
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_SRGB, 0.0), "jpeg",
+      stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_SRGB, 0.0), "jpeg",
       srgb_jpeg));
 
   Xyz adobe_green = xyz_tag(profile_in(adobe_jpeg), "gXYZ");
@@ -233,10 +234,10 @@ TEST(JpegSynthesizedIcc, TheProfileNamesTheGamutTheRasterNamed) {
  * copy of themselves would not.
  */
 TEST(JpegSynthesizedIcc, ColorantsSumToTheMediaWhitePoint) {
-  for (auto primaries : {GIMG_PRIMARIES_SRGB, GIMG_PRIMARIES_ADOBE_RGB}) {
+  for (auto primaries : {GCOL_PRIMARIES_SRGB, GCOL_PRIMARIES_ADOBE_RGB}) {
     std::vector<uint8_t> jpeg;
     ASSERT_TRUE(
-        save_as(stating(primaries, GIMG_TRANSFER_GAMMA, 2.2), "jpeg", jpeg));
+        save_as(stating(primaries, GCOL_TRANSFER_GAMMA, 2.2), "jpeg", jpeg));
     std::vector<uint8_t> profile = profile_in(jpeg);
 
     Xyz white = xyz_tag(profile, "wtpt");
@@ -257,12 +258,12 @@ TEST(JpegSynthesizedIcc, ColorantsSumToTheMediaWhitePoint) {
  * A stated gamma must reach the profile as that gamma.
  *
  * A curveType of one sample point holds a u8Fixed8Number exponent, which is
- * the whole of what GIMG_TRANSFER_GAMMA says.
+ * the whole of what GCOL_TRANSFER_GAMMA says.
  */
 TEST(JpegSynthesizedIcc, AStatedGammaReachesTheToneCurve) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 1.8), "jpeg", jpeg));
+      stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_GAMMA, 1.8), "jpeg", jpeg));
   std::vector<uint8_t> profile = profile_in(jpeg);
 
   auto [off, size] = tag_in(profile, "rTRC");
@@ -291,7 +292,7 @@ TEST(JpegSynthesizedIcc, AStatedGammaReachesTheToneCurve) {
 TEST(JpegSynthesizedIcc, ALinearTransferIsWrittenAsTheIdentityCurve) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_LINEAR, 0.0), "jpeg", jpeg));
+      stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_LINEAR, 0.0), "jpeg", jpeg));
   const std::vector<uint8_t> profile = profile_in(jpeg);
 
   auto [off, size] = tag_in(profile, "rTRC");
@@ -313,7 +314,7 @@ TEST(JpegSynthesizedIcc, ALinearTransferIsWrittenAsTheIdentityCurve) {
   // Control: a gamma of 1.0 is linear in effect but is not the same
   // statement, and comes out as a one-point curve rather than none.
   std::vector<uint8_t> gamma_jpeg;
-  ASSERT_TRUE(save_as(stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 1.0),
+  ASSERT_TRUE(save_as(stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_GAMMA, 1.0),
       "jpeg", gamma_jpeg));
   auto [goff, gsize] = tag_in(profile_in(gamma_jpeg), "rTRC");
   (void)goff;
@@ -331,7 +332,7 @@ TEST(JpegSynthesizedIcc, ALinearTransferIsWrittenAsTheIdentityCurve) {
 TEST(JpegSynthesizedIcc, EveryChannelGetsTheSameToneCurve) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_SRGB, 0.0), "jpeg", jpeg));
+      stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_SRGB, 0.0), "jpeg", jpeg));
   std::vector<uint8_t> profile = profile_in(jpeg);
 
   auto r = tag_in(profile, "rTRC");
@@ -369,7 +370,7 @@ TEST(JpegSynthesizedIcc, EveryChannelGetsTheSameToneCurve) {
 TEST(JpegSynthesizedIcc, AnUnstatableTransferLeavesTheDescriptionBare) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_SRGB, 0.0), "jpeg",
+      stating(GCOL_PRIMARIES_ADOBE_RGB, GCOL_TRANSFER_SRGB, 0.0), "jpeg",
       jpeg));
   std::string desc = desc_of(profile_in(jpeg));
   EXPECT_EQ(desc, "Adobe RGB (1998)")
@@ -381,7 +382,7 @@ TEST(JpegSynthesizedIcc, AnUnstatableTransferLeavesTheDescriptionBare) {
   // so the assertion above is about this arm and not about the gamut.
   std::vector<uint8_t> linear;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_LINEAR, 0.0), "jpeg",
+      stating(GCOL_PRIMARIES_ADOBE_RGB, GCOL_TRANSFER_LINEAR, 0.0), "jpeg",
       linear));
   EXPECT_EQ(desc_of(profile_in(linear)), "Adobe RGB (1998), linear");
 }
@@ -390,13 +391,13 @@ TEST(JpegSynthesizedIcc, AnUnstatableTransferLeavesTheDescriptionBare) {
  * A gamma the curve type cannot hold produces no profile at all.
  *
  * ICC v2's single-point curveType stores the exponent as a u8Fixed8Number, so
- * only (0, 256) is representable. gimg_icc_synthesize refuses the rest, and
+ * only (0, 256) is representable. gcol_icc_write refuses the rest, and
  * refuses by writing *nothing* rather than by returning an error: half a
  * colour model is not worth stating, and a profile carrying a wrong exponent
  * is worse than no profile.
  *
  * That gate had never been tested, and testing it settled two other
- * questions. GIMG_Color_Info carries a plain double that nothing polices, so
+ * questions. GCOL_Color_Info carries a plain double that nothing polices, so
  * infinity and NaN reach here as easily as 300 does; all of them take this
  * path. And the gate is what makes two guards further down unreachable - the
  * negative clamp in gimg_icc_write_trc and the non-finite early return in
@@ -422,7 +423,7 @@ TEST(JpegSynthesizedIcc, AGammaTheCurveTypeCannotHoldProducesNoProfile) {
     SCOPED_TRACE(c.what);
     std::vector<uint8_t> jpeg;
     ASSERT_TRUE(save_as(
-        stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, c.gamma), "jpeg",
+        stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_GAMMA, c.gamma), "jpeg",
         jpeg));
     EXPECT_TRUE(profile_in(jpeg).empty())
         << "a gamma outside (0, 256) must produce no profile, not a wrong one";
@@ -432,7 +433,7 @@ TEST(JpegSynthesizedIcc, AGammaTheCurveTypeCannotHoldProducesNoProfile) {
   // synthesis had simply stopped working.
   std::vector<uint8_t> good;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 2.2), "jpeg", good));
+      stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_GAMMA, 2.2), "jpeg", good));
   EXPECT_FALSE(profile_in(good).empty())
       << "a gamma inside the range still produces one";
 }
@@ -449,7 +450,7 @@ TEST(JpegSynthesizedIcc, AGammaTheCurveTypeCannotHoldProducesNoProfile) {
 TEST(JpegSynthesizedIcc, AGammaAtTheTopOfTheRangeIsClamped) {
   std::vector<uint8_t> jpeg;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 255.999), "jpeg",
+      stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_GAMMA, 255.999), "jpeg",
       jpeg));
   std::vector<uint8_t> profile = profile_in(jpeg);
   ASSERT_FALSE(profile.empty()) << "255.999 is inside the range the gate admits";
@@ -474,9 +475,9 @@ TEST(JpegSynthesizedIcc, ACarriedProfileIsNotReplaced) {
   }
 
   GIMG_Raster * raster =
-      stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_GAMMA, 2.2);
+      stating(GCOL_PRIMARIES_ADOBE_RGB, GCOL_TRANSFER_GAMMA, 2.2);
   ASSERT_NE(raster, nullptr);
-  GIMG_Color_Info ci = *gimg_raster_color_info_const(raster);
+  GCOL_Color_Info ci = *gimg_raster_color_info_const(raster);
   ci.icc_bytes = carried.data();
   ci.icc_size = carried.size();
   ASSERT_EQ(gimg_raster_set_color_info(raster, &ci), GIMG_OK);
@@ -498,13 +499,13 @@ TEST(JpegSynthesizedIcc, ACarriedProfileIsNotReplaced) {
 TEST(JpegSynthesizedIcc, HalfAColorModelSaysNothing) {
   struct {
     const char * what;
-    GIMG_Primaries primaries;
-    GIMG_Transfer transfer;
+    GCOL_Primaries primaries;
+    GCOL_Transfer transfer;
   } const cases[] = {
-      {"a gamut with no curve", GIMG_PRIMARIES_ADOBE_RGB,
-          GIMG_TRANSFER_UNKNOWN},
-      {"a curve with no gamut", GIMG_PRIMARIES_UNKNOWN, GIMG_TRANSFER_SRGB},
-      {"neither", GIMG_PRIMARIES_UNKNOWN, GIMG_TRANSFER_UNKNOWN},
+      {"a gamut with no curve", GCOL_PRIMARIES_ADOBE_RGB,
+          GCOL_TRANSFER_UNKNOWN},
+      {"a curve with no gamut", GCOL_PRIMARIES_UNKNOWN, GCOL_TRANSFER_SRGB},
+      {"neither", GCOL_PRIMARIES_UNKNOWN, GCOL_TRANSFER_UNKNOWN},
   };
   for (const auto & c : cases) {
     std::vector<uint8_t> jpeg;
@@ -523,7 +524,7 @@ TEST(JpegSynthesizedIcc, HalfAColorModelSaysNothing) {
  */
 TEST(JpegSynthesizedIcc, AGrayFrameGetsNoRgbProfile) {
   std::vector<uint8_t> jpeg;
-  ASSERT_TRUE(save_as(stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_SRGB, 0.0,
+  ASSERT_TRUE(save_as(stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_SRGB, 0.0,
                           &GIMG_PIXEL_GRAY8),
       "jpeg", jpeg));
   EXPECT_TRUE(profile_in(jpeg).empty())
@@ -538,12 +539,12 @@ TEST(JpegSynthesizedIcc, AGrayFrameGetsNoRgbProfile) {
  * default without anyone noticing.
  */
 TEST(JpegSynthesizedIcc, TheStatedRenderingIntentReachesTheHeader) {
-  const GIMG_Rendering_Intent intents[] = {GIMG_INTENT_PERCEPTUAL,
-      GIMG_INTENT_RELATIVE_COLORIMETRIC, GIMG_INTENT_SATURATION,
-      GIMG_INTENT_ABSOLUTE_COLORIMETRIC};
+  const GCOL_Rendering_Intent intents[] = {GCOL_INTENT_PERCEPTUAL,
+      GCOL_INTENT_RELATIVE_COLORIMETRIC, GCOL_INTENT_SATURATION,
+      GCOL_INTENT_ABSOLUTE_COLORIMETRIC};
   for (auto intent : intents) {
     std::vector<uint8_t> jpeg;
-    ASSERT_TRUE(save_as(stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 2.2,
+    ASSERT_TRUE(save_as(stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_GAMMA, 2.2,
                             &GIMG_PIXEL_RGBA8, intent),
         "jpeg", jpeg));
     std::vector<uint8_t> profile = profile_in(jpeg);
@@ -552,18 +553,18 @@ TEST(JpegSynthesizedIcc, TheStatedRenderingIntentReachesTheHeader) {
         << "ICC.1:2001-04 section 6.1.11 puts the intent at byte 64";
   }
 
-  // An intent outside the four ICC defines.  GIMG_Rendering_Intent is an enum
+  // An intent outside the four ICC defines.  GCOL_Rendering_Intent is an enum
   // and a caller can hold any integer in one, so the writer folds an unknown
   // value to perceptual rather than writing it through - a header field ICC
   // gives four legal values must not carry a fifth.  That fold had never run.
-  for (uint32_t bad : {(uint32_t)GIMG_INTENT_COUNT, 7u, 0xFFFFFFFFu}) {
+  for (uint32_t bad : {(uint32_t)GCOL_INTENT_COUNT, 7u, 0xFFFFFFFFu}) {
     std::vector<uint8_t> jpeg;
-    ASSERT_TRUE(save_as(stating(GIMG_PRIMARIES_SRGB, GIMG_TRANSFER_GAMMA, 2.2,
-                            &GIMG_PIXEL_RGBA8, (GIMG_Rendering_Intent)bad),
+    ASSERT_TRUE(save_as(stating(GCOL_PRIMARIES_SRGB, GCOL_TRANSFER_GAMMA, 2.2,
+                            &GIMG_PIXEL_RGBA8, (GCOL_Rendering_Intent)bad),
         "jpeg", jpeg));
     std::vector<uint8_t> profile = profile_in(jpeg);
     ASSERT_GE(profile.size(), 128u);
-    EXPECT_EQ(be32(profile.data() + 64), (uint32_t)GIMG_INTENT_PERCEPTUAL)
+    EXPECT_EQ(be32(profile.data() + 64), (uint32_t)GCOL_INTENT_PERCEPTUAL)
         << "intent " << bad << " is not one ICC defines, so the header must "
            "say perceptual rather than repeat it";
   }
@@ -594,7 +595,7 @@ TEST(JpegSynthesizedIcc, ThePolicyDecidesWhetherOneIsBuilt) {
   for (const auto & c : cases) {
     std::vector<uint8_t> jpeg;
     ASSERT_TRUE(save_as(
-        stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_GAMMA, 2.2), "jpeg",
+        stating(GCOL_PRIMARIES_ADOBE_RGB, GCOL_TRANSFER_GAMMA, 2.2), "jpeg",
         jpeg, c.policy))
         << c.name;
     EXPECT_EQ(!profile_in(jpeg).empty(), c.expect_profile) << c.name;
@@ -613,7 +614,7 @@ TEST(JpegSynthesizedIcc, ThePolicyDecidesWhetherOneIsBuilt) {
 TEST(JpegSynthesizedIcc, ACalibratedBmpReachesAJpegStillSayingSo) {
   std::vector<uint8_t> bmp;
   ASSERT_TRUE(save_as(
-      stating(GIMG_PRIMARIES_ADOBE_RGB, GIMG_TRANSFER_GAMMA, 2.2), "bmp",
+      stating(GCOL_PRIMARIES_ADOBE_RGB, GCOL_TRANSFER_GAMMA, 2.2), "bmp",
       bmp));
 
   // What the BMP kept: the model, and deliberately no profile.
@@ -624,11 +625,11 @@ TEST(JpegSynthesizedIcc, ACalibratedBmpReachesAJpegStillSayingSo) {
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
   ASSERT_NE(ci, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&ci->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_ADOBE_RGB);
-  EXPECT_EQ(ci->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_EQ(gcol_gamut_identify(&ci->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(ci->transfer, GCOL_TRANSFER_GAMMA);
   EXPECT_NEAR(ci->gamma_value, 2.2, 0.01);
   EXPECT_EQ(ci->icc_size, 0u) << "a V4 header states a model without a profile";
   gimg_raster_destroy(raster);
@@ -667,7 +668,7 @@ int main(int argc, char ** argv) {
 // LC_NUMERIC and the profile description
 // ---------------------------------------------------------------------------
 
-#include "../../src/color/color_internal.h"
+#include <ghoti.io/color/icc.h>
 
 #include <clocale>
 #include <cstdio>
@@ -873,10 +874,10 @@ std::string desc_of(const std::vector<uint8_t> & icc) {
   return std::string();
 }
 
-std::vector<uint8_t> synth(const GIMG_Color_Info & info) {
+std::vector<uint8_t> synth(const GCOL_Color_Info & info) {
   void * bytes = nullptr;
   size_t n = 0;
-  if (gimg_icc_synthesize(nullptr, &info, &bytes, &n) != GIMG_OK || !bytes) {
+  if (gcol_icc_write(nullptr, &info, &bytes, &n) != GCOL_OK || !bytes) {
     return std::vector<uint8_t>();
   }
   std::vector<uint8_t> out((uint8_t *)bytes, (uint8_t *)bytes + n);
@@ -884,11 +885,11 @@ std::vector<uint8_t> synth(const GIMG_Color_Info & info) {
   return out;
 }
 
-GIMG_Color_Info gamma_info(double g) {
-  GIMG_Color_Info info;
+GCOL_Color_Info gamma_info(double g) {
+  GCOL_Color_Info info;
   std::memset(&info, 0, sizeof(info));
-  (void)gimg_color_info_set_gamut(&info, GIMG_PRIMARIES_SRGB);
-  info.transfer = GIMG_TRANSFER_GAMMA;
+  (void)gcol_color_info_set_gamut(&info, GCOL_PRIMARIES_SRGB);
+  info.transfer = GCOL_TRANSFER_GAMMA;
   info.gamma_value = g;
   return info;
 }
@@ -916,7 +917,7 @@ TEST(IccSynthesis, TheProfileDoesNotDependOnLcNumeric) {
          "cannot see the defect it guards; install one or make localedef work";
 
   for (const double g : {2.2, 1.8, 2.4, 1.0, 0.45455}) {
-    const GIMG_Color_Info info = gamma_info(g);
+    const GCOL_Color_Info info = gamma_info(g);
 
     const std::vector<uint8_t> in_c = synth(info);
     ASSERT_FALSE(in_c.empty()) << "synthesis failed for gamma " << g;

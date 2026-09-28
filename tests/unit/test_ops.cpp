@@ -7,7 +7,7 @@
  */
 
 #include <ghoti.io/image/bitdepth.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <cstring>
@@ -722,12 +722,12 @@ static GIMG_Raster * tagged_raster(const GIMG_Pixel_Format * fmt,
   profile_out.assign(128, 0);
   profile_out[3] = 128;
   std::memcpy(profile_out.data() + 36, "acsp", 4);
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
-  (void)gimg_color_info_set_gamut(&ci, GIMG_PRIMARIES_ADOBE_RGB);
-  ci.transfer = GIMG_TRANSFER_GAMMA;
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
+  (void)gcol_color_info_set_gamut(&ci, GCOL_PRIMARIES_ADOBE_RGB);
+  ci.transfer = GCOL_TRANSFER_GAMMA;
   ci.gamma_value = 2.2;
-  ci.intent = GIMG_INTENT_SATURATION;
+  ci.intent = GCOL_INTENT_SATURATION;
   ci.icc_bytes = profile_out.data();
   ci.icc_size = profile_out.size();
   if (gimg_raster_set_color_info(r, &ci) != GIMG_OK) {
@@ -737,15 +737,15 @@ static GIMG_Raster * tagged_raster(const GIMG_Pixel_Format * fmt,
   return r;
 }
 
-/** Everything GIMG_Color_Info says, compared field by field. */
-static void expect_same_color(const GIMG_Color_Info * got,
+/** Everything GCOL_Color_Info says, compared field by field. */
+static void expect_same_color(const GCOL_Color_Info * got,
     const std::vector<uint8_t> & profile) {
   ASSERT_NE(got, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&got->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_ADOBE_RGB);
-  EXPECT_EQ(got->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_EQ(gcol_gamut_identify(&got->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(got->transfer, GCOL_TRANSFER_GAMMA);
   EXPECT_DOUBLE_EQ(got->gamma_value, 2.2);
-  EXPECT_EQ(got->intent, GIMG_INTENT_SATURATION);
+  EXPECT_EQ(got->intent, GCOL_INTENT_SATURATION);
   ASSERT_EQ(got->icc_size, profile.size());
   ASSERT_NE(got->icc_bytes, nullptr);
   EXPECT_EQ(std::memcmp(got->icc_bytes, profile.data(), profile.size()), 0);
@@ -813,13 +813,13 @@ TEST(Ops, AnUntaggedRasterStaysUntaggedThroughAConversion) {
   GIMG_Raster * dst = nullptr;
   ASSERT_EQ(gimg_ops_convert_bit_depth(src, 16, &dst), GIMG_OK);
   ASSERT_NE(dst, nullptr);
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(dst);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(dst);
   ASSERT_NE(ci, nullptr);
   EXPECT_EQ(ci->icc_size, 0u);
   // primaries_stated, not identify(): an unnameable gamut also identifies as
   // UNKNOWN, and this test is about nothing having been stated at all.
   EXPECT_FALSE(ci->primaries_stated);
-  EXPECT_EQ(ci->transfer, GIMG_TRANSFER_UNKNOWN);
+  EXPECT_EQ(ci->transfer, GCOL_TRANSFER_UNKNOWN);
   gimg_raster_destroy(src);
   gimg_raster_destroy(dst);
 }
@@ -828,7 +828,7 @@ namespace {
 
 /** A 1x1 CMYK8 raster holding one sample set, with the given polarity. */
 static GIMG_Raster * one_cmyk_pixel(uint8_t c, uint8_t m, uint8_t y, uint8_t k,
-    GIMG_CMYK_Polarity polarity) {
+    GCOL_CMYK_Polarity polarity) {
   GIMG_Raster * r = nullptr;
   if (gimg_raster_create(
           1, 1, &GIMG_PIXEL_CMYK8, GIMG_RASTER_OWNED, nullptr, 0, &r) !=
@@ -841,8 +841,8 @@ static GIMG_Raster * one_cmyk_pixel(uint8_t c, uint8_t m, uint8_t y, uint8_t k,
   px[1] = m;
   px[2] = y;
   px[3] = k;
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
   ci.cmyk_polarity = polarity;
   if (gimg_raster_set_color_info(r, &ci) != GIMG_OK) {
     gimg_raster_destroy(r);
@@ -857,7 +857,7 @@ TEST(Ops, CmykBecomesRgbTheWayEveryEngineLessLibraryDoesIt) {
   // Each ink is an independent multiplicative filter over white, so a channel
   // is the product of its own colourant and the black.  The samples are the
   // JPEG and Adobe convention here - 0 is full ink - which is what
-  // GIMG_CMYK_POLARITY_INK means and what this library's decoder produces.
+  // GCOL_CMYK_POLARITY_INK means and what this library's decoder produces.
   //
   // Every expected value below is Pillow's, which is libjpeg's CMYK handling
   // plus its own conversion.  On all fifteen CMYK and YCCK fixtures in
@@ -879,7 +879,7 @@ TEST(Ops, CmykBecomesRgbTheWayEveryEngineLessLibraryDoesIt) {
     SCOPED_TRACE(testing::Message() << "cmyk " << (int)t.c << "," << (int)t.m
                                     << "," << (int)t.y << "," << (int)t.k);
     GIMG_Raster * src =
-        one_cmyk_pixel(t.c, t.m, t.y, t.k, GIMG_CMYK_POLARITY_INK);
+        one_cmyk_pixel(t.c, t.m, t.y, t.k, GCOL_CMYK_POLARITY_INK);
     ASSERT_NE(src, nullptr);
     GIMG_Raster * dst = nullptr;
     ASSERT_EQ(
@@ -901,9 +901,9 @@ TEST(Ops, ReflectionPolarityIsTheOtherWayRound) {
   // that says 0 is no ink must come out as the complement of one that says 0
   // is full ink.
   GIMG_Raster * ink =
-      one_cmyk_pixel(255, 255, 255, 255, GIMG_CMYK_POLARITY_INK);
+      one_cmyk_pixel(255, 255, 255, 255, GCOL_CMYK_POLARITY_INK);
   GIMG_Raster * refl =
-      one_cmyk_pixel(0, 0, 0, 0, GIMG_CMYK_POLARITY_REFLECTION);
+      one_cmyk_pixel(0, 0, 0, 0, GCOL_CMYK_POLARITY_REFLECTION);
   ASSERT_NE(ink, nullptr);
   ASSERT_NE(refl, nullptr);
   GIMG_Raster * a = nullptr;
@@ -921,7 +921,7 @@ TEST(Ops, ReflectionPolarityIsTheOtherWayRound) {
   gimg_raster_destroy(refl);
 
   GIMG_Raster * full = one_cmyk_pixel(255, 255, 255, 255,
-      GIMG_CMYK_POLARITY_REFLECTION);
+      GCOL_CMYK_POLARITY_REFLECTION);
   ASSERT_NE(full, nullptr);
   GIMG_Raster * out = nullptr;
   ASSERT_EQ(
@@ -940,7 +940,7 @@ TEST(Ops, CmykWithNoStatedPolarityIsRefusedRatherThanGuessed) {
   // plausible picture that might be inverted.  Refusing is the honest answer
   // and the error tells the caller what to state.
   GIMG_Raster * src =
-      one_cmyk_pixel(10, 20, 30, 40, GIMG_CMYK_POLARITY_UNKNOWN);
+      one_cmyk_pixel(10, 20, 30, 40, GCOL_CMYK_POLARITY_UNKNOWN);
   ASSERT_NE(src, nullptr);
   GIMG_Raster * dst = nullptr;
   EXPECT_EQ(gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_RGBA8, &dst),
@@ -957,26 +957,26 @@ TEST(Ops, CmykToRgbCarriesNoColorInfo) {
   std::vector<uint8_t> profile(128, 0);
   std::memcpy(profile.data() + 36, "acsp", 4);
   GIMG_Raster * src =
-      one_cmyk_pixel(100, 110, 120, 130, GIMG_CMYK_POLARITY_INK);
+      one_cmyk_pixel(100, 110, 120, 130, GCOL_CMYK_POLARITY_INK);
   ASSERT_NE(src, nullptr);
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
-  ci.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
+  ci.cmyk_polarity = GCOL_CMYK_POLARITY_INK;
   ci.icc_bytes = profile.data();
   ci.icc_size = profile.size();
-  ci.transfer = GIMG_TRANSFER_GAMMA;
+  ci.transfer = GCOL_TRANSFER_GAMMA;
   ci.gamma_value = 1.8;
   ASSERT_EQ(gimg_raster_set_color_info(src, &ci), GIMG_OK);
 
   GIMG_Raster * dst = nullptr;
   ASSERT_EQ(
       gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_RGBA8, &dst), GIMG_OK);
-  const GIMG_Color_Info * got = gimg_raster_color_info_const(dst);
+  const GCOL_Color_Info * got = gimg_raster_color_info_const(dst);
   ASSERT_NE(got, nullptr);
   EXPECT_EQ(got->icc_size, 0u);
   EXPECT_EQ(got->icc_bytes, nullptr);
-  EXPECT_EQ(got->transfer, GIMG_TRANSFER_UNKNOWN);
-  EXPECT_EQ(got->cmyk_polarity, GIMG_CMYK_POLARITY_UNKNOWN)
+  EXPECT_EQ(got->transfer, GCOL_TRANSFER_UNKNOWN);
+  EXPECT_EQ(got->cmyk_polarity, GCOL_CMYK_POLARITY_UNKNOWN)
       << "the result has no ink channels for a polarity to describe";
   gimg_raster_destroy(src);
   gimg_raster_destroy(dst);
@@ -985,7 +985,7 @@ TEST(Ops, CmykToRgbCarriesNoColorInfo) {
 TEST(Ops, CmykToRgbAtADifferentSampleWidthIsRefused) {
   // Narrowing or widening is gimg_ops_convert_bit_depth's job; doing both at
   // once would hide which of them the caller asked for.
-  GIMG_Raster * src = one_cmyk_pixel(10, 20, 30, 40, GIMG_CMYK_POLARITY_INK);
+  GIMG_Raster * src = one_cmyk_pixel(10, 20, 30, 40, GCOL_CMYK_POLARITY_INK);
   ASSERT_NE(src, nullptr);
   GIMG_Raster * dst = nullptr;
   EXPECT_EQ(gimg_ops_convert_pixel_format(src, &GIMG_PIXEL_RGBA16, &dst),
@@ -1002,9 +1002,9 @@ TEST(Ops, SixteenBitCmykUsesTheWholeRange) {
   uint16_t * px = static_cast<uint16_t *>(gimg_raster_pixels(src));
   px[0] = px[1] = px[2] = px[3] = 65535u;      // no ink
   px[4] = px[5] = px[6] = 65535u; px[7] = 0u;  // full black only
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
-  ci.cmyk_polarity = GIMG_CMYK_POLARITY_INK;
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
+  ci.cmyk_polarity = GCOL_CMYK_POLARITY_INK;
   ASSERT_EQ(gimg_raster_set_color_info(src, &ci), GIMG_OK);
 
   GIMG_Raster * dst = nullptr;

@@ -3,7 +3,7 @@
  *
  * A characterisation sweep: what colour every committed fixture decodes to.
  *
- * The redesign that made GIMG_Color_Info store a gamut exactly could have
+ * The redesign that made GCOL_Color_Info store a gamut exactly could have
  * changed what any file already in the tree means, and the corpus is far too
  * large to check by reading.  So this walks every fixture, records the colour
  * interpretation as one line, and compares the whole set against a table
@@ -23,7 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
@@ -36,60 +36,60 @@
 
 namespace {
 
-const char * primaries_name(GIMG_Primaries p) {
+const char * primaries_name(GCOL_Primaries p) {
   switch (p) {
-  case GIMG_PRIMARIES_SRGB:
+  case GCOL_PRIMARIES_SRGB:
     return "sRGB";
-  case GIMG_PRIMARIES_ADOBE_RGB:
+  case GCOL_PRIMARIES_ADOBE_RGB:
     return "AdobeRGB";
-  case GIMG_PRIMARIES_DISPLAY_P3:
+  case GCOL_PRIMARIES_DISPLAY_P3:
     return "DisplayP3";
-  case GIMG_PRIMARIES_BT2020:
+  case GCOL_PRIMARIES_BT2020:
     return "BT2020";
-  case GIMG_PRIMARIES_PROPHOTO:
+  case GCOL_PRIMARIES_PROPHOTO:
     return "ProPhoto";
-  case GIMG_PRIMARIES_UNKNOWN:
+  case GCOL_PRIMARIES_UNKNOWN:
     return "-";
   default:
     return "?";
   }
 }
 
-const char * reference_name(GIMG_Reference r) {
+const char * reference_name(GCOL_Reference r) {
   switch (r) {
-    case GIMG_REFERENCE_DISPLAY: return "display";
-    case GIMG_REFERENCE_SCENE: return "scene";
-    case GIMG_REFERENCE_UNKNOWN: return "-";
+    case GCOL_REFERENCE_DISPLAY: return "display";
+    case GCOL_REFERENCE_SCENE: return "scene";
+    case GCOL_REFERENCE_UNKNOWN: return "-";
     default: return "?";
   }
 }
 
-const char * scale_name(GIMG_Sample_Scale s) {
+const char * scale_name(GCOL_Sample_Scale s) {
   switch (s) {
-    case GIMG_SAMPLE_SCALE_RELATIVE: return "relative";
-    case GIMG_SAMPLE_SCALE_ABSOLUTE: return "absolute";
-    case GIMG_SAMPLE_SCALE_UNKNOWN: return "-";
+    case GCOL_SAMPLE_SCALE_RELATIVE: return "relative";
+    case GCOL_SAMPLE_SCALE_ABSOLUTE: return "absolute";
+    case GCOL_SAMPLE_SCALE_UNKNOWN: return "-";
     default: return "?";
   }
 }
 
-const char * transfer_name(GIMG_Transfer t) {
+const char * transfer_name(GCOL_Transfer t) {
   switch (t) {
-  case GIMG_TRANSFER_LINEAR:
+  case GCOL_TRANSFER_LINEAR:
     return "linear";
-  case GIMG_TRANSFER_SRGB:
+  case GCOL_TRANSFER_SRGB:
     return "sRGB";
-  case GIMG_TRANSFER_GAMMA:
+  case GCOL_TRANSFER_GAMMA:
     return "gamma";
-  case GIMG_TRANSFER_PARAMETRIC:
+  case GCOL_TRANSFER_PARAMETRIC:
     return "parametric";
-  case GIMG_TRANSFER_BT1886:
+  case GCOL_TRANSFER_BT1886:
     return "BT1886";
-  case GIMG_TRANSFER_PQ:
+  case GCOL_TRANSFER_PQ:
     return "PQ";
-  case GIMG_TRANSFER_HLG:
+  case GCOL_TRANSFER_HLG:
     return "HLG";
-  case GIMG_TRANSFER_UNKNOWN:
+  case GCOL_TRANSFER_UNKNOWN:
     return "-";
   default:
     return "?";
@@ -119,7 +119,7 @@ std::string describe(const std::string & rel, const std::vector<uint8_t> & b) {
     gimg_stream_destroy(in);
     return o.str();
   }
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
   if (!ci) {
     o << "no-color-info";
   }
@@ -127,9 +127,9 @@ std::string describe(const std::string & rel, const std::vector<uint8_t> & b) {
     o << "gamut=" << (ci->primaries_stated ? "yes" : "no")
       << " white=" << (ci->white_stated ? "yes" : "no") << " named="
       << primaries_name(
-             gimg_gamut_identify(&ci->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT))
+             gcol_gamut_identify(&ci->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT))
       << " transfer=" << transfer_name(ci->transfer);
-    if (ci->transfer == GIMG_TRANSFER_GAMMA) {
+    if (ci->transfer == GCOL_TRANSFER_GAMMA) {
       char g[32];
       (void)std::snprintf(g, sizeof(g), " gamma=%.4f", ci->gamma_value);
       o << g;

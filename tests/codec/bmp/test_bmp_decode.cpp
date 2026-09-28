@@ -10,7 +10,7 @@
  */
 
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
@@ -953,11 +953,11 @@ TEST(BmpDecode, V4CalibratedEndpointsNameTheGamut) {
   ASSERT_EQ(img.load("bmp_4x4_v4_calibrated.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_SRGB);
-  EXPECT_EQ(color->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_EQ(gcol_gamut_identify(&color->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_SRGB);
+  EXPECT_EQ(color->transfer, GCOL_TRANSFER_GAMMA);
   EXPECT_NEAR(color->gamma_value, 2.2, 0.001);
 }
 
@@ -968,25 +968,25 @@ TEST(BmpDecode, V4EndpointsDistinguishAdobeRgbFromSrgb) {
   ASSERT_EQ(img.load("bmp_4x4_v4_adobe.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_ADOBE_RGB);
+  EXPECT_EQ(gcol_gamut_identify(&color->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_ADOBE_RGB);
 }
 
 TEST(BmpDecode, V4GammasThatDisagreeLeaveTheTransferUnsaid) {
-  // GIMG_Color_Info holds one transfer function.  Three different gammas
+  // GCOL_Color_Info holds one transfer function.  Three different gammas
   // describe a space it cannot state, and averaging them would be a claim
   // about the pixels that the file did not make.
   Loaded img;
   ASSERT_EQ(img.load("bmp_4x4_v4_split_gamma.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
-  EXPECT_EQ(color->transfer, GIMG_TRANSFER_UNKNOWN);
-  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_SRGB)
+  EXPECT_EQ(color->transfer, GCOL_TRANSFER_UNKNOWN);
+  EXPECT_EQ(gcol_gamut_identify(&color->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_SRGB)
       << "the gamut is still known";
 }
 
@@ -995,13 +995,13 @@ TEST(BmpDecode, V5NamesSrgbAndItsRenderingIntent) {
   ASSERT_EQ(img.load("bmp_4x4_v5_srgb.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_SRGB);
-  EXPECT_EQ(color->transfer, GIMG_TRANSFER_SRGB);
+  EXPECT_EQ(gcol_gamut_identify(&color->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_SRGB);
+  EXPECT_EQ(color->transfer, GCOL_TRANSFER_SRGB);
   // LCS_GM_GRAPHICS is the relative colorimetric intent.
-  EXPECT_EQ(color->intent, GIMG_INTENT_RELATIVE_COLORIMETRIC);
+  EXPECT_EQ(color->intent, GCOL_INTENT_RELATIVE_COLORIMETRIC);
 }
 
 TEST(BmpDecode, V5EmbeddedProfileSurvivesIntact) {
@@ -1012,7 +1012,7 @@ TEST(BmpDecode, V5EmbeddedProfileSurvivesIntact) {
   ASSERT_EQ(img.load("bmp_4x4_v5_icc.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
   ASSERT_EQ(color->icc_size, 128u);
   ASSERT_NE(color->icc_bytes, nullptr);
@@ -1036,11 +1036,11 @@ TEST(BmpDecode, V5LinkedProfileIsNotFollowed) {
   ASSERT_EQ(img.load("bmp_4x4_v5_linked_profile.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
   EXPECT_EQ(color->icc_size, 0u);
-  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(gcol_gamut_identify(&color->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_UNKNOWN);
   expect_pattern(img);
 }
 
@@ -1052,7 +1052,7 @@ TEST(BmpDecode, V5LinkedProfilePathIsReportedEvenThoughItIsNotOpened) {
   ASSERT_EQ(img.load("bmp_4x4_v5_linked_profile.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
   ASSERT_NE(color->icc_linked_path, nullptr);
   EXPECT_STREQ(color->icc_linked_path, "C:\\does\\not\\exist.icc");
@@ -1108,7 +1108,7 @@ TEST(BmpDecode, V5LinkedProfileIsAttachedWhenAResolverSuppliesIt) {
   EXPECT_EQ(st.calls, 1);
   EXPECT_EQ(st.seen, "C:\\does\\not\\exist.icc");
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
   ASSERT_EQ(color->icc_size, 64u);
   ASSERT_NE(color->icc_bytes, nullptr);
@@ -1131,7 +1131,7 @@ TEST(BmpDecode, V5LinkedProfileResolverThatRefusesLeavesTheImageUntagged) {
   ASSERT_EQ(img.decode(), GIMG_OK);
 
   EXPECT_EQ(st.calls, 1);
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
   EXPECT_EQ(color->icc_size, 0u);
   ASSERT_NE(color->icc_linked_path, nullptr);
@@ -1161,7 +1161,7 @@ TEST(BmpDecode, V5ProfilePastTheEndOfTheFileLeavesTheImageAlone) {
   ASSERT_EQ(img.load("bmp_4x4_v5_icc_past_eof.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
   EXPECT_EQ(color->icc_size, 0u);
   expect_pattern(img);
@@ -1175,11 +1175,11 @@ TEST(BmpDecode, APlainInfoHeaderSaysNothingAboutColor) {
   ASSERT_EQ(img.load("bmp_4x4_24bit.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
 
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(color, nullptr);
-  EXPECT_EQ(gimg_gamut_identify(&color->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_UNKNOWN);
-  EXPECT_EQ(color->transfer, GIMG_TRANSFER_UNKNOWN);
+  EXPECT_EQ(gcol_gamut_identify(&color->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_UNKNOWN);
+  EXPECT_EQ(color->transfer, GCOL_TRANSFER_UNKNOWN);
   EXPECT_EQ(color->icc_size, 0u);
 }
 
@@ -1198,7 +1198,7 @@ TEST(BmpToPng, AnEmbeddedProfileSurvivesTheConversion) {
   ASSERT_EQ(gimg_item_ensure_decoded(gimg_doc_item(bmp.doc(), 0), nullptr),
       GIMG_OK);
 
-  const GIMG_Color_Info * from_bmp =
+  const GCOL_Color_Info * from_bmp =
       gimg_raster_color_info_const(gimg_item_raster(gimg_doc_item(bmp.doc(), 0)));
   ASSERT_NE(from_bmp, nullptr);
   ASSERT_GT(from_bmp->icc_size, 0u);
@@ -1222,7 +1222,7 @@ TEST(BmpToPng, AnEmbeddedProfileSurvivesTheConversion) {
   Loaded back;
   ASSERT_EQ(back.load_bytes(png), GIMG_OK);
   ASSERT_EQ(back.decode(), GIMG_OK);
-  const GIMG_Color_Info * from_png =
+  const GCOL_Color_Info * from_png =
       gimg_raster_color_info_const(back.raster());
   ASSERT_NE(from_png, nullptr);
   ASSERT_EQ(from_png->icc_size, profile.size())
@@ -1258,10 +1258,10 @@ TEST(BmpToPng, ACalibratedGammaSurvivesAsGama) {
   Loaded back;
   ASSERT_EQ(back.load_bytes(png), GIMG_OK);
   ASSERT_EQ(back.decode(), GIMG_OK);
-  const GIMG_Color_Info * from_png =
+  const GCOL_Color_Info * from_png =
       gimg_raster_color_info_const(back.raster());
   ASSERT_NE(from_png, nullptr);
-  EXPECT_EQ(from_png->transfer, GIMG_TRANSFER_GAMMA);
+  EXPECT_EQ(from_png->transfer, GCOL_TRANSFER_GAMMA);
   EXPECT_NEAR(from_png->gamma_value, 2.2, 0.001);
 
   gimg_stream_destroy(out);
@@ -1292,10 +1292,10 @@ TEST(BmpToPng, AGammaPngCannotStateIsNotWritten) {
   Loaded back;
   ASSERT_EQ(back.load_bytes(png), GIMG_OK);
   ASSERT_EQ(back.decode(), GIMG_OK);
-  const GIMG_Color_Info * from_png =
+  const GCOL_Color_Info * from_png =
       gimg_raster_color_info_const(back.raster());
   ASSERT_NE(from_png, nullptr);
-  EXPECT_EQ(from_png->transfer, GIMG_TRANSFER_UNKNOWN)
+  EXPECT_EQ(from_png->transfer, GCOL_TRANSFER_UNKNOWN)
       << "a gamma gAMA cannot hold should go unsaid";
 
   gimg_stream_destroy(out);
@@ -1402,7 +1402,7 @@ TEST(BmpDecode, AProfileLargerThanThisCodecReadsLeavesTheFileUntagged) {
   ASSERT_EQ(img.load_bytes(file, nullptr), GIMG_OK)
       << "the picture is fine; only its colour annotation is absurd";
   ASSERT_EQ(img.decode(), GIMG_OK);
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(img.raster());
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(img.raster());
   ASSERT_NE(ci, nullptr);
   EXPECT_EQ(ci->icc_size, 0u);
   EXPECT_EQ(ci->icc_bytes, nullptr);

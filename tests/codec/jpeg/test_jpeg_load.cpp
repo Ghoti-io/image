@@ -4165,7 +4165,7 @@ TEST(JpegLoad, MultiSegmentIccDecodeAndRoundTrip) {
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_item_decode(item, nullptr, &raster), GIMG_OK);
   ASSERT_NE(raster, nullptr);
-  const GIMG_Color_Info * ci = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
   ASSERT_NE(ci, nullptr);
   size_t icc_size = ci->icc_size;
   ASSERT_GT(icc_size, 0u) << "multi-segment ICC should yield assembled profile";
@@ -5273,9 +5273,9 @@ TEST(JpegLoad, EveryFourComponentFrameSaysItsInkPolarity) {
     const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
     ASSERT_EQ(fmt->channel_model, GIMG_CHANNEL_CMYK)
         << "this fixture must decode to four ink channels or it tests nothing";
-    const GIMG_Color_Info * color = gimg_raster_color_info_const(raster);
+    const GCOL_Color_Info * color = gimg_raster_color_info_const(raster);
     ASSERT_NE(color, nullptr);
-    EXPECT_EQ(color->cmyk_polarity, GIMG_CMYK_POLARITY_INK);
+    EXPECT_EQ(color->cmyk_polarity, GCOL_CMYK_POLARITY_INK);
 
     gimg_raster_destroy(raster);
     gimg_doc_destroy(doc);
@@ -5296,10 +5296,10 @@ TEST(JpegLoad, AProfileStillReachesARasterThatIsNotFourComponent) {
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(
       gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
-  const GIMG_Color_Info * color = gimg_raster_color_info_const(raster);
+  const GCOL_Color_Info * color = gimg_raster_color_info_const(raster);
   ASSERT_NE(color, nullptr);
   EXPECT_GT(color->icc_size, 0u);
-  EXPECT_EQ(color->cmyk_polarity, GIMG_CMYK_POLARITY_UNKNOWN)
+  EXPECT_EQ(color->cmyk_polarity, GCOL_CMYK_POLARITY_UNKNOWN)
       << "three channels are not ink amounts, so there is no polarity to state";
   gimg_raster_destroy(raster);
   gimg_doc_destroy(doc);

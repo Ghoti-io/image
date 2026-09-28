@@ -68,7 +68,7 @@
 #include <ctype.h>
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
@@ -909,7 +909,7 @@ static uint8_t gimg_png_palette_bit_depth(size_t entries) {
  * True for the chunks that say what the samples mean.
  *
  * A file that brought any of these has already said something about its color,
- * and what it said wins over what the raster's GIMG_Color_Info was reduced to
+ * and what it said wins over what the raster's GCOL_Color_Info was reduced to
  * on the way in - the chunk is what was actually there.  cICP is included even
  * though this writer never generates one, because a file that carried one has
  * said the most specific thing of all.
@@ -1547,7 +1547,7 @@ static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
 
 
 /**
- * Write the color chunk that the raster's GIMG_Color_Info calls for.
+ * Write the color chunk that the raster's GCOL_Color_Info calls for.
  *
  * At most one is written: PNG 11.3.3.3 does not want sRGB and iCCP in the same
  * file, and gAMA is redundant beside either.  sRGB comes first because it is
@@ -1569,7 +1569,7 @@ static GIMG_Result gimg_png_raster_to_raw_rows_adam7(const GIMG_Raster * raster,
  *   annotation could not be written.
  */
 static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
-    const GIMG_Color_Info * info, const GIMG_Allocator * alloc,
+    const GCOL_Color_Info * info, const GIMG_Allocator * alloc,
     GIMG_Save_Report * report) {
   GIMG_Result r = GIMG_OK;
   // The sRGB chunk asserts the whole of sRGB, its transfer curve included, so
@@ -1577,7 +1577,7 @@ static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
   // was too loose: a BMP with a calibrated V4 header naming sRGB's primaries
   // and a gamma of 2.2 is not an sRGB image, and writing sRGB for it threw the
   // gamma away and claimed a curve the file never stated.
-  if (info->transfer == GIMG_TRANSFER_SRGB) {
+  if (info->transfer == GCOL_TRANSFER_SRGB) {
     unsigned char srgb_byte =
         (unsigned char)(info->intent & 3u);
     r = gimg_png_write_chunk(stream, GIMG_PNG_sRGB, &srgb_byte, 1);
@@ -1604,8 +1604,8 @@ static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
   // Not written beside iCCP: the profile is the more specific statement and
   // supersedes it, and 11.3.3.3 does not want the two disagreeing.
   if (info->primaries_stated &&
-      gimg_gamut_identify(&info->gamut, GIMG_GAMUT_TOLERANCE_DEFAULT) !=
-          GIMG_PRIMARIES_SRGB &&
+      gcol_gamut_identify(&info->gamut, GCOL_GAMUT_TOLERANCE_DEFAULT) !=
+          GCOL_PRIMARIES_SRGB &&
       !(info->icc_bytes && info->icc_size > 0)) {
     // White point, then red, green and blue, each x and y times 100000.
     const double coord[8] = {info->gamut.white.x, info->gamut.white.y,
@@ -1631,14 +1631,14 @@ static GIMG_Result gimg_png_write_color_from_info(GIMG_Stream * stream,
     report->bytes_written += 8 + sizeof(chrm) + 4;
   }
 
-  if ((info->transfer == GIMG_TRANSFER_GAMMA &&
+  if ((info->transfer == GCOL_TRANSFER_GAMMA &&
           info->gamma_value > 0.0) ||
-      info->transfer == GIMG_TRANSFER_LINEAR) {
+      info->transfer == GCOL_TRANSFER_LINEAR) {
     // gAMA states the transfer and nothing about the primaries, which for an
     // image whose primaries are sRGB's costs nothing: those are what a PNG
     // reader assumes when no chunk says otherwise.  Linear is a gamma of 1.
     double gamma =
-        info->transfer == GIMG_TRANSFER_LINEAR ? 1.0 : info->gamma_value;
+        info->transfer == GCOL_TRANSFER_LINEAR ? 1.0 : info->gamma_value;
     // gAMA holds gamma x 100000 in four bytes, so it cannot state a gamma
     // above about 42949.  A BMP's V4 gamma is 16.16 fixed point and reaches
     // 65535, and converting one of those to uint32_t is undefined behaviour
@@ -1958,8 +1958,8 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   // however this returns.  Without the copy the iCCP branch read freed memory
   // and wrote whatever was in it into the file; the JPEG writer had the same
   // defect, and ASan found that one.
-  GIMG_Color_Info color_info_for_save;
-  const GIMG_Color_Info * rci = gimg_raster_color_info_const(raster);
+  GCOL_Color_Info color_info_for_save;
+  const GCOL_Color_Info * rci = gimg_raster_color_info_const(raster);
   if (rci) {
     color_info_for_save = *rci;
     if (rci->icc_bytes && rci->icc_size > 0) {
@@ -1977,7 +1977,7 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
   }
   else {
-    gimg_color_info_default(&color_info_for_save);
+    gcol_color_info_default(&color_info_for_save);
   }
   uint8_t color_type = 0;
   uint8_t bit_depth = 0;

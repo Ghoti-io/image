@@ -12,7 +12,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
-#include <ghoti.io/image/color.h>
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <cmath>
@@ -804,20 +804,20 @@ TEST(Resize, TheColourDescriptionSurvives) {
   GIMG_Raster * src = make_noise_gray8(10, 10, 5u);
   ASSERT_NE(src, nullptr);
   const unsigned char profile[] = {0x01, 0x02, 0x03, 0x04};
-  GIMG_Color_Info ci;
-  gimg_color_info_default(&ci);
-  ci.transfer = GIMG_TRANSFER_SRGB;
-  ci.intent = GIMG_INTENT_SATURATION;
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
+  ci.transfer = GCOL_TRANSFER_SRGB;
+  ci.intent = GCOL_INTENT_SATURATION;
   ci.icc_bytes = profile;
   ci.icc_size = sizeof(profile);
   ASSERT_EQ(gimg_raster_set_color_info(src, &ci), GIMG_OK);
   for (GIMG_Resample_Filter f : kAllFilters) {
     GIMG_Raster * dst = nullptr;
     ASSERT_EQ(resize_with(src, 5, 20, f, &dst), GIMG_OK);
-    const GIMG_Color_Info * got = gimg_raster_color_info_const(dst);
+    const GCOL_Color_Info * got = gimg_raster_color_info_const(dst);
     ASSERT_NE(got, nullptr);
-    EXPECT_EQ(got->transfer, GIMG_TRANSFER_SRGB) << filter_name(f);
-    EXPECT_EQ(got->intent, GIMG_INTENT_SATURATION) << filter_name(f);
+    EXPECT_EQ(got->transfer, GCOL_TRANSFER_SRGB) << filter_name(f);
+    EXPECT_EQ(got->intent, GCOL_INTENT_SATURATION) << filter_name(f);
     ASSERT_EQ(got->icc_size, sizeof(profile));
     EXPECT_EQ(memcmp(got->icc_bytes, profile, sizeof(profile)), 0);
     gimg_raster_destroy(dst);
@@ -851,20 +851,20 @@ int main(int argc, char ** argv) {
  * LINEAR is the caller asserting an sRGB transfer, so a raster that states a
  * different one is a contradiction and is refused rather than resolved.
  *
- * The sweep is over every GIMG_Transfer value rather than a chosen few, so a
+ * The sweep is over every GCOL_Transfer value rather than a chosen few, so a
  * transfer added to the enum is covered the day it is added: anything that is
  * neither UNKNOWN nor SRGB has to be refused, and if a future value is meant
  * to be honoured instead, this test is what says so.
  */
 TEST(Resize, LinearRefusesARasterThatStatesANonSrgbTransfer) {
-  for (int t = 0; t < GIMG_TRANSFER_COUNT; t++) {
-    const GIMG_Transfer transfer = static_cast<GIMG_Transfer>(t);
+  for (int t = 0; t < GCOL_TRANSFER_COUNT; t++) {
+    const GCOL_Transfer transfer = static_cast<GCOL_Transfer>(t);
     GIMG_Raster * src = make_raster(8, 8, &GIMG_PIXEL_RGBA8);
     ASSERT_NE(src, nullptr) << "transfer " << t;
-    GIMG_Color_Info info;
-    gimg_color_info_default(&info);
+    GCOL_Color_Info info;
+    gcol_color_info_default(&info);
     info.transfer = transfer;
-    if (transfer == GIMG_TRANSFER_GAMMA) {
+    if (transfer == GCOL_TRANSFER_GAMMA) {
       info.gamma_value = 2.2;
     }
     ASSERT_EQ(gimg_raster_set_color_info(src, &info), GIMG_OK);
@@ -872,7 +872,7 @@ TEST(Resize, LinearRefusesARasterThatStatesANonSrgbTransfer) {
     GIMG_Raster * out = nullptr;
     const GIMG_Result r = resize_linear(src, 4, 4, GIMG_FILTER_BOX, &out);
     const bool asserted_srgb =
-        (transfer == GIMG_TRANSFER_UNKNOWN || transfer == GIMG_TRANSFER_SRGB);
+        (transfer == GCOL_TRANSFER_UNKNOWN || transfer == GCOL_TRANSFER_SRGB);
     if (asserted_srgb) {
       EXPECT_EQ(r, GIMG_OK) << "transfer " << t << " agrees and must resize";
       EXPECT_NE(out, nullptr) << "transfer " << t;
@@ -894,19 +894,19 @@ TEST(Resize, LinearRefusesARasterThatStatesANonSrgbTransfer) {
  * Display P3 is the case that makes the distinction concrete: its primaries
  * are not sRGB's and its transfer curve *is*, so linearising it with sRGB's
  * curve is right. A check keyed on the gamut rather than the transfer would
- * reject this, which is why the one above sweeps GIMG_Transfer and this one
+ * reject this, which is why the one above sweeps GCOL_Transfer and this one
  * exists beside it.
  */
 TEST(Resize, LinearAcceptsAWideGamutRasterWhoseTransferIsSrgb) {
   GIMG_Raster * src = make_raster(8, 8, &GIMG_PIXEL_RGBA8);
   ASSERT_NE(src, nullptr);
-  GIMG_Color_Info info;
-  gimg_color_info_default(&info);
-  info.transfer = GIMG_TRANSFER_SRGB;
-  ASSERT_TRUE(gimg_color_info_set_gamut(&info, GIMG_PRIMARIES_DISPLAY_P3));
+  GCOL_Color_Info info;
+  gcol_color_info_default(&info);
+  info.transfer = GCOL_TRANSFER_SRGB;
+  ASSERT_TRUE(gcol_color_info_set_gamut(&info, GCOL_PRIMARIES_DISPLAY_P3));
   ASSERT_TRUE(info.primaries_stated);
-  ASSERT_NE(gimg_gamut_identify(&info.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
-      GIMG_PRIMARIES_SRGB);
+  ASSERT_NE(gcol_gamut_identify(&info.gamut, GCOL_GAMUT_TOLERANCE_DEFAULT),
+      GCOL_PRIMARIES_SRGB);
   ASSERT_EQ(gimg_raster_set_color_info(src, &info), GIMG_OK);
 
   GIMG_Raster * out = nullptr;

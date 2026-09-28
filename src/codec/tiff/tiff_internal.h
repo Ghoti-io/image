@@ -224,17 +224,17 @@ typedef struct {
   /** WhitePoint (318) and PrimaryChromaticities (319), as CIE 1931 x,y.
    *
    * TIFF 6.0 states both as RATIONALs, so they are exact and need no table;
-   * gimg_gamut_identify() puts a name to the result if it has one.  A file
+   * gcol_gamut_identify() puts a name to the result if it has one.  A file
    * may carry either alone, so the two flags are separate: a white point
    * with no primaries is not a gamut and is kept only so that a reader is
    * told what the file said.
    *
    * TransferFunction (301) is deliberately not read.  It is a sampled lookup
-   * table of 2^BitsPerSample entries, and GIMG_Transfer holds named and
+   * table of 2^BitsPerSample entries, and GCOL_Transfer holds named and
    * parametric curves; fitting a curve to those samples would be inventing a
    * function the file did not state. */
-  GIMG_Chromaticity white_point;
-  GIMG_Chromaticity primaries[3];
+  GCOL_Chromaticity white_point;
+  GCOL_Chromaticity primaries[3];
   bool has_white_point;
   bool has_primaries;
   /** JPEGTables (347), owned: the table-specification stream every strip of
