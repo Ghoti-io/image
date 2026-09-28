@@ -443,9 +443,10 @@ reconstruct one.
   a `max_memory` of 8 each reject the 4x4 fixture, limits that fit let it
   through and still decode correctly, and a limit smaller than an embedded
   PNG's payload refuses the wrapper that carries it.
-- **Fuzzing.** `fuzz_bmp_load` and `fuzz_bmp_encode` share the corpus under
-  `tests/fuzz/corpus` with the PNG and JPEG harnesses, built with ASan and
-  UBSan and `-fno-sanitize-recover=undefined`. BMP is the parser in this
+- **Fuzzing.** `fuzz_bmp_load` and `fuzz_bmp_encode` each have a seed corpus under
+  `tests/fuzz/corpus/<name>/`, built with ASan and
+  UBSan and `-fno-sanitize-recover=undefined`. Only `*.seed` files are tracked;
+  campaign units are gitignored. BMP is the parser in this
   library that most directly indexes a buffer from sizes the header supplied -
   the stride from `biWidth` and `biBitCount`, a palette index against an entry
   count, an RLE run against a row - so it is the one that most needs them.

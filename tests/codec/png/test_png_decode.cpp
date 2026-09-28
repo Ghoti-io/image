@@ -2646,14 +2646,16 @@ std::vector<uint8_t> RawIhdr(uint32_t w, uint32_t h, uint8_t depth, uint8_t ct,
  * nothing to act on. The library's own documentation tells callers to use
  * "the result code and GIMG_Diagnostics, which load and decode do fill".
  *
- * They did not. Measured over tests/fuzz/corpus, 8,403 files with a
- * recognised signature: the BMP loader explained every one of its 215
- * refusals and the GIF loader every one of its 97, while the PNG loader
- * explained 51 of 245. **194 refusals said nothing at all.** Of those, 60
- * were an IHDR the parser rejected without reporting which field, and the
- * rest were chunk-ordering and chunk-length rules whose refusal sites simply
- * did not call the diagnostic helper sitting beside them. The same run now
- * reports 11.
+ * They did not. Measured over the then-committed fuzz campaign corpus
+ * (tests/fuzz/corpus, 8,403 files with a recognised signature): the BMP
+ * loader explained every one of its 215 refusals and the GIF loader every
+ * one of its 97, while the PNG loader explained 51 of 245. **194 refusals
+ * said nothing at all.** Of those, 60 were an IHDR the parser rejected
+ * without reporting which field, and the rest were chunk-ordering and
+ * chunk-length rules whose refusal sites simply did not call the diagnostic
+ * helper sitting beside them. The same run now reports 11. That campaign
+ * population is no longer tracked; this test asserts the named reasons on
+ * hand-built cases instead.
  *
  * Each case below breaks one rule and asserts the reason names it - not
  * merely that something was said - and each group carries a control that

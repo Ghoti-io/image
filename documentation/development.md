@@ -192,7 +192,7 @@ These targets are documented in the main Makefile and in this guide. Use them in
 
 ### Fuzzing
 
-LibFuzzer harnesses under `tests/fuzz/` cover PNG/APNG, JPEG and BMP, each with a load-and-decode harness and a round-trip (load/save/load) one. Build with `make fuzz-png`, `make fuzz-png-encode`, `make fuzz-jpeg`, `make fuzz-jpeg-encode`, `make fuzz-bmp` or `make fuzz-bmp-encode` (requires clang); run with a corpus as described in the Makefile and `tests/fuzz/README.md`.
+LibFuzzer harnesses under `tests/fuzz/` cover PNG/APNG, JPEG, BMP, GIF and TIFF, each with a load-and-decode harness and a round-trip (load/save/load) one. Each harness has its own seed directory under `tests/fuzz/corpus/<name>/`; only `*.seed` files are tracked. Build and run with `make fuzz-png`, `make fuzz-run-png_load`, or `make fuzz FUZZ_TIME=300` (requires clang); see `tests/fuzz/README.md`.
 
 **New codecs:** Add at least (1) a load (and decode) fuzz harness so that arbitrary or truncated input does not crash and returns appropriate errors (`GIMG_ERR_FORMAT`, `GIMG_ERR_CORRUPT`, or `GIMG_ERR_LIMIT`), and (2) if the codec supports save, a round-trip fuzz harness (load→save→load). PNG and JPEG are the reference; see `tests/fuzz/README.md` for harness layout.
 

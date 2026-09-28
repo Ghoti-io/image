@@ -1,30 +1,24 @@
 #!/bin/sh
-# Seed the fuzz corpus from the generated test images.
+# Reminder: the fuzz seeds are tracked as *.seed under tests/fuzz/corpus/<harness>/.
 #
-# tests/fuzz/corpus holds the inputs libFuzzer discovered on its own, which are
-# the product of a randomised search and cannot be regenerated.  The valid
-# images it starts from can be, so they are not stored twice: run this to copy
-# them in before a fuzzing session.
+# The suite's rule - shared with archive, unicode, font, security and the rest -
+# is that only hand-built seeds are committed. What libFuzzer writes beside them
+# during a campaign is gitignored by tests/fuzz/corpus/.gitignore, so after a
+# soak `git status` stays clean and nothing needs pruning before a commit.
 #
-# Generate the test images first if they are not present:
-#   python3 tests/data/png/generate.py
-#   python3 tests/data/jpeg/generate.py
+# To add a seed, copy a small fixture (or a named regression input) into the
+# harness directory with a .seed suffix:
 #
-# After a long session, minimise what has accumulated before committing it -
-# -merge=1 keeps only the inputs that still add coverage, and every harness has
-# to get a say because they share one corpus directory:
+#   cp tests/data/png/png_1x1_gray.png tests/fuzz/corpus/png_load/1x1-gray.seed
 #
-#   mkdir -p /tmp/cmin
-#   for h in fuzz_png_load fuzz_png_encode fuzz_jpeg_load fuzz_jpeg_encode; do
-#     ./build/linux/release/apps/$h -merge=1 /tmp/cmin tests/fuzz/corpus
-#   done
+# Encode harnesses may also carry seeds of other formats: gimg_doc_load
+# dispatches on the bytes, and the writer under test should see rasters that
+# arrived from somewhere else.
+#
+# This script used to copy fixtures into a shared flat corpus and then ask the
+# operator to minimise and commit the campaign units. That is the opposite of
+# the suite rule, so it no longer does anything.
 set -eu
-root=$(cd "$(dirname "$0")/../.." && pwd)
-corpus="$root/tests/fuzz/corpus"
-mkdir -p "$corpus"
-n=0
-for f in "$root"/tests/data/png/*.png "$root"/tests/data/jpeg/*.jpg; do
-  [ -e "$f" ] || continue
-  cp "$f" "$corpus/" && n=$((n + 1))
-done
-echo "seeded $n file(s) into $corpus"
+echo "fuzz seeds are tracked as *.seed under tests/fuzz/corpus/<harness>/" >&2
+echo "see tests/fuzz/README.md" >&2
+exit 0

@@ -10,25 +10,25 @@
  * - and this library's own documentation tells them otherwise: "use the
  * result code and **GIMG_Diagnostics**, which load and decode do fill."
  *
- * They did not all fill it. Measured over the fuzz corpus, 8,403 files with a
- * recognised signature: the BMP loader explained every one of its 215
- * refusals and the GIF loader every one of its 97, while the PNG loader
- * explained 51 of 245 and the JPEG loader 1,687 of 1,832. **339 refusals said
- * nothing at all.**
+ * They did not all fill it. Measured over the then-committed fuzz campaign
+ * corpus (8,403 files with a recognised signature): the BMP loader explained
+ * every one of its 215 refusals and the GIF loader every one of its 97, while
+ * the PNG loader explained 51 of 245 and the JPEG loader 1,687 of 1,832.
+ * **339 refusals said nothing at all.** That campaign population is no longer
+ * tracked - the suite tracks fuzz seeds only - so this gate now sweeps every
+ * codec's fixture directory. Deliberate malformations that no fixture reaches
+ * are asserted by name in test_corrupt.cpp and the per-codec refusal tests.
  *
- * This is the gate that keeps it at zero, and it is a total assertion rather
- * than a sample: every file in the corpus, every refusal, a reason. The
- * corpus is the right population because it is made of the inputs that
- * actually reach these paths - a fuzzer's mutations of real files, which is
- * what a malformed image in the wild looks like - and because no fixture set
- * anyone writes by hand covers the same ground.
+ * This is the gate that keeps silent refusals at zero over the fixtures, and
+ * it is a total assertion rather than a sample: every fixture file, every
+ * refusal, a reason.
  *
  * Two things are checked besides:
  *
  *   - **The sweep is not blind.** A wrong path would find no files and report
- *     a clean run, so the refusal count itself is asserted to be large. A
- *     sweep that cannot see returns the same number as one that found nothing
- *     wrong.
+ *     a clean run, so each registered codec must contribute files and the
+ *     refusal count itself is asserted to be non-zero. A sweep that cannot
+ *     see returns the same number as one that found nothing wrong.
  *   - A file that *loads* must not report an error, so a loader that appended
  *     "something went wrong" unconditionally could not pass.
  *
@@ -157,15 +157,14 @@ void sweep(const std::string & dir, std::map<std::string, Tally> & by_format) {
 } // namespace
 
 TEST(RefusalReasons, EveryRefusedFileSaysWhichRuleItBroke) {
-  // The fuzz corpus, then every registered codec's fixture directory.  The
-  // list is not written out here: a codec added without being swept would
-  // leave this test passing over the four it was written against.
-  const std::string root = std::string(GIMG_TEST_DATA_ROOT) + "/..";
-  std::vector<std::string> dirs = {root + "/fuzz/corpus"};
+  // Every registered codec's fixture directory. The list is not written out
+  // here: a codec added without being swept would leave this test passing
+  // over the formats it was written against.
+  std::vector<std::string> dirs;
   for (const gimg_test::SweptCodec & c : gimg_test::swept_codecs()) {
     dirs.push_back(c.data_dir);
   }
-  ASSERT_GT(dirs.size(), 1u) << "no codecs registered; nothing to sweep";
+  ASSERT_FALSE(dirs.empty()) << "no codecs registered; nothing to sweep";
 
   std::map<std::string, Tally> by_format;
   for (const std::string & dir : dirs) {
@@ -173,9 +172,11 @@ TEST(RefusalReasons, EveryRefusedFileSaysWhichRuleItBroke) {
   }
 
   long total_refused = 0;
+  long total_seen = 0;
   for (const auto & kv : by_format) {
     const Tally & t = kv.second;
     total_refused += t.refused;
+    total_seen += t.refused + t.loaded;
     std::printf("  %-5s refused %5ld, loaded %5ld\n", kv.first.c_str(),
         t.refused, t.loaded);
     EXPECT_EQ(t.silent, 0)
@@ -188,11 +189,14 @@ TEST(RefusalReasons, EveryRefusedFileSaysWhichRuleItBroke) {
   }
 
   // The alarm on the sweep itself: a wrong path finds no files and every
-  // assertion above passes vacuously.
-  ASSERT_GT(total_refused, 500)
-      << "only " << total_refused << " refusals were seen, so this sweep is "
-         "looking at the wrong place - check that tests/fuzz/corpus is where "
-         "it is expected relative to " << GIMG_TEST_DATA_ROOT;
+  // assertion above passes vacuously. Fixtures alone refuse on the order of
+  // tens of files; the floor is well below that and well above zero.
+  ASSERT_GT(total_seen, 100)
+      << "only " << total_seen << " fixture files were seen, so this sweep is "
+         "looking at the wrong place relative to " << GIMG_TEST_DATA_ROOT;
+  EXPECT_GT(total_refused, 0)
+      << "not one fixture was refused; the sweep needs at least one refusal "
+         "per run or a silent-refusal bug has nowhere to show";
   // signature_of() is deliberately not the library's own probe, so a new
   // codec has to be taught its magic here before this sweep can see its
   // files.  Asserting one bucket per registered codec is what makes that a
@@ -293,19 +297,20 @@ void sweep_decode(const std::string & dir, const GIMG_Limits & limits,
 /**
  * Every item of every file that loads either decodes or gives a named reason.
  *
- * The sweep above stops at the load, which is where the corpus was pointed
- * when it was written. A load only parses headers, so every entropy decoder,
- * every LZW walker and every row filter in this library sat behind it
- * untouched by the one population that is actually made of malformed files -
- * and those are exactly the paths whose refusal arms no hand-written fixture
- * reaches.
+ * The sweep above stops at the load. A load only parses headers, so every
+ * entropy decoder, every LZW walker and every row filter in this library sits
+ * behind it - and those are exactly the paths whose refusal arms no
+ * hand-written load fixture reaches on its own. Deliberate malformations for
+ * those paths live in test_corrupt.cpp and the per-codec refusal tests; this
+ * gate walks the fixtures that do load and requires that each item either
+ * produces a raster or names why not.
  *
- * What is asserted is not that a file decodes. Most of these are mutations
- * and most of them should fail. It is that a failure is one of the codes a
- * decoder is allowed to end with, that GIMG_ERR_INTERNAL is never one of them
- * - the library confusing itself is not something a file should be able to
- * arrange - and that a failed decode hands back nothing, since a caller who
- * checks the result and then frees the raster on the success path alone
+ * What is asserted is not that a file decodes. Some fixtures are truncated or
+ * otherwise hostile and should fail. It is that a failure is one of the codes
+ * a decoder is allowed to end with, that GIMG_ERR_INTERNAL is never one of
+ * them - the library confusing itself is not something a file should be able
+ * to arrange - and that a failed decode hands back nothing, since a caller
+ * who checks the result and then frees the raster on the success path alone
  * cannot be expected to free one that arrived with an error.
  *
  * A pixel cap keeps a header claiming an enormous frame from turning this
@@ -313,12 +318,11 @@ void sweep_decode(const std::string & dir, const GIMG_Limits & limits,
  * codec reads.
  */
 TEST(RefusalReasons, EveryItemThatLoadsDecodesOrSaysWhyNot) {
-  const std::string root = std::string(GIMG_TEST_DATA_ROOT) + "/..";
-  std::vector<std::string> dirs = {root + "/fuzz/corpus"};
+  std::vector<std::string> dirs;
   for (const gimg_test::SweptCodec & c : gimg_test::swept_codecs()) {
     dirs.push_back(c.data_dir);
   }
-  ASSERT_GT(dirs.size(), 1u) << "no codecs registered; nothing to sweep";
+  ASSERT_FALSE(dirs.empty()) << "no codecs registered; nothing to sweep";
 
   GIMG_Limits limits;
   gimg_limits_default(&limits);
@@ -348,13 +352,12 @@ TEST(RefusalReasons, EveryItemThatLoadsDecodesOrSaysWhyNot) {
 
   // The same alarm the load sweep carries: a wrong path finds nothing and
   // every assertion above passes vacuously.
-  ASSERT_GT(total_items, 1000)
+  ASSERT_GT(total_items, 100)
       << "only " << total_items << " items were decoded, so this sweep is "
-         "looking at the wrong place - check that tests/fuzz/corpus is where "
-         "it is expected relative to " << GIMG_TEST_DATA_ROOT;
+         "looking at the wrong place relative to " << GIMG_TEST_DATA_ROOT;
   EXPECT_GT(total_refused, 0)
-      << "not one decode in the whole corpus was refused, which is not what a "
-         "corpus of mutations looks like";
+      << "not one decode in the whole fixture set was refused; at least one "
+         "hostile fixture should reach a decoder refusal arm";
   EXPECT_EQ(by_format.size(), gimg_test::swept_codecs().size())
       << "a registered codec contributed no file that loads";
 }

@@ -1,0 +1,20 @@
+# The corpus grows as the fuzzer runs; only the hand-built seeds are tracked.
+#
+# Every harness used to share one flat `tests/fuzz/corpus` directory that
+# `make fuzz-*` handed to libFuzzer, and nothing ignored what a campaign wrote
+# there, so every commit after a soak swept the discoveries in: 8,419 units
+# were tracked, 8,410 of them under hash names. A fifteen-minute run adds a
+# few thousand more, which is a great many git objects for input the next run
+# would find again anyway - and this suite already has cutil's tracked Doxygen
+# output as the cautionary tale.
+#
+# So the corpus gets the rule the rest of the suite already uses: one directory
+# per harness, the hand-built seeds tracked as `*.seed`, and everything else
+# ignored. `!*/` rather than a named directory: `*` excludes the per-harness
+# directories themselves, and git will not look inside an excluded directory, so
+# a `.seed` under one that is not re-included is invisible - `git status` stays
+# clean and the fixture is silently absent from every clone.
+*
+!.gitignore
+!*/
+!*.seed

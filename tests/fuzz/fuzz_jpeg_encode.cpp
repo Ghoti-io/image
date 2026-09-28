@@ -7,7 +7,7 @@
  *
  * Build with: make fuzz-jpeg-encode (uses clang -fsanitize=fuzzer).
  * Run: ./build/linux/release/apps/fuzz_jpeg_encode [corpus_dir]
- * Minimal corpus: copy JPEG files from tests/data/jpeg/ to tests/fuzz/corpus/.
+ * Seeds live in tests/fuzz/corpus/jpeg_encode/*.seed; campaign units are ignored.
  *
  * Copyright 2026 by Corey Pennycuff
  */

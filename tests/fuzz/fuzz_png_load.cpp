@@ -6,9 +6,8 @@
  * GIMG_ERR_LIMIT as appropriate.
  *
  * Build with: make fuzz-png (uses clang -fsanitize=fuzzer).
- * Run: ./build/linux/release/apps/fuzz_png_load [corpus_dir]
- * Minimal corpus in tests/fuzz/corpus (e.g. copies of the PNG files under
- * tests/data/png).
+ * Run:        make fuzz-run-png_load FUZZ_TIME=300
+ * Seeds live in tests/fuzz/corpus/png_load/*.seed; campaign units are ignored.
  *
  * Copyright 2026 by Corey Pennycuff
  */

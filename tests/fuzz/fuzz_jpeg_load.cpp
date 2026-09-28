@@ -6,9 +6,8 @@
  * GIMG_ERR_LIMIT as appropriate.
  *
  * Build with: make fuzz-jpeg (uses clang -fsanitize=fuzzer).
- * Run: ./build/linux/release/apps/fuzz_jpeg_load [corpus_dir]
- * Minimal corpus in tests/fuzz/corpus/ (e.g. copy JPEG files from
- * tests/data/jpeg/).
+ * Run:        make fuzz-run-jpeg_load FUZZ_TIME=300
+ * Seeds live in tests/fuzz/corpus/jpeg_load/*.seed; campaign units are ignored.
  *
  * Copyright 2026 by Corey Pennycuff
  */

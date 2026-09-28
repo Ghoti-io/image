@@ -7360,7 +7360,9 @@ TEST(JpegEncode, SavingFromADocumentWhoseRasterTheSaveOwnsReadsNoFreedColor) {
   // read freed memory - and a garbage icc_size and icc_bytes would have
   // copied arbitrary heap into the output file.  ASan found it on a 47-byte
   // arithmetic lossless JPEG within seconds of the colour path going in; the
-  // input is in tests/fuzz/corpus.
+  // input that found it is kept as tests/fuzz/corpus/jpeg_encode/*.seed
+  // material and is inlined below so the regression does not depend on the
+  // corpus layout.
   //
   // The tests above all attach the raster to the document, which is the case
   // where it outlives the save - so none of them could have caught this.
