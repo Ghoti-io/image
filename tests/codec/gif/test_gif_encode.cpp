@@ -1437,6 +1437,80 @@ TEST(GifEncode, AFrameWithNothingOpaqueStillGetsAColourTable) {
       {expectation(8, 4, all_transparent)});
 }
 
+/**
+ * The delay written into the GCE is the delay the document carried, for every
+ * value including the ones renderers normalise away.
+ *
+ * This is the gate that was missing, and it is a structural check rather than
+ * a comparison on purpose. 1,233 frames across 121 corpus files are byte-exact
+ * against giflib, ImageMagick and Pillow - but only the *pixels* are. None of
+ * those three can corroborate a delay: giflib hands back the raw GCE bytes, so
+ * comparing against it compares our parse of a field to our own reading of the
+ * same bytes; ImageMagick and Pillow both apply the historical browser floor,
+ * rewriting a delay below 2 or 5 hundredths to 10 as a rendering decision, so
+ * a disagreement with them would say nothing about the file.
+ *
+ * The values they normalise are therefore exactly the ones no outside decoder
+ * can check, which is why they are swept here explicitly. 0 is included: it is
+ * a legal delay meaning "as fast as possible", and it is the value most likely
+ * to be silently replaced.
+ */
+TEST(GifEncode, EveryDelayReachesTheGceUnchangedIncludingTheNormalisedRange) {
+  // 0 through 9 are what Pillow and ImageMagick rewrite; the rest span the
+  // field, whose two bytes are little-endian hundredths (89a 23).
+  const uint16_t delays[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 100, 999,
+      1000, 30000, 65534, 65535};
+  for (uint16_t want : delays) {
+    GIMG_Raster * raster = make_raster(8, 4, sixteen);
+    ASSERT_NE(raster, nullptr) << "delay " << want;
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(save_frames({raster}, nullptr, bytes,
+                  [&](GIMG_Doc * doc) {
+                    gimg_item_set_frame_delay(gimg_doc_item(doc, 0), want, 100);
+                  }),
+        GIMG_OK)
+        << "delay " << want;
+    // save_frames hands the raster to the document, which owns it.
+
+    // Find the Graphic Control Extension: 0x21 0xF9, block size 4, then
+    // packed, delay low, delay high, transparent index, terminator.
+    size_t gce = std::string::npos;
+    for (size_t i = 0; i + 7 < bytes.size(); i++) {
+      if (bytes[i] == 0x21u && bytes[i + 1] == 0xF9u && bytes[i + 2] == 4u &&
+          bytes[i + 7] == 0u) {
+        gce = i;
+        break;
+      }
+    }
+    if (gce == std::string::npos) {
+      // No GCE is legal and is not the same as a missing delay: a frame with
+      // no Graphic Control Extension has a delay of zero by 89a 23, so the
+      // absence carries the value. It is only correct for zero, and asserting
+      // that here is what stops the writer from dropping a GCE it owes.
+      EXPECT_EQ(want, 0u) << "delay " << want
+                          << " was written as no GCE at all, which a "
+                             "reader is required to read as zero";
+    }
+    else {
+      const uint16_t wrote =
+          (uint16_t)(bytes[gce + 4] | ((uint16_t)bytes[gce + 5] << 8));
+      EXPECT_EQ(wrote, want)
+          << "delay " << want << " was written as " << wrote
+          << "; a value rewritten here is a rendering decision the file "
+             "format does not make";
+    }
+
+    // And it survives the read back, so the field is not merely written but
+    // means the same thing in both directions.
+    Loaded img;
+    ASSERT_EQ(img.load_bytes(bytes), GIMG_OK) << "delay " << want;
+    uint16_t num = 0, den = 0;
+    gimg_item_frame_delay(gimg_doc_item(img.doc(), 0), &num, &den);
+    EXPECT_EQ(num, want) << "delay " << want << " did not survive a round trip";
+    EXPECT_EQ(den, 100u) << "delay " << want;
+  }
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

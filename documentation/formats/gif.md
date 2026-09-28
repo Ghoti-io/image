@@ -948,9 +948,35 @@ and refused correctly.
 
 ### Gaps in the testing
 
-- The encoder's animation output is checked frame by frame against outside
-  decoders, but no outside decoder is asked whether the **timing** is right,
-  because none of them reports it in a form worth comparing.
+- **Timing has no outside corroboration, and cannot have one.** The encoder's
+  animation output is checked frame by frame against giflib, ImageMagick and
+  Pillow - 1,233 frames across 121 files, byte-exact - but only the *pixels*
+  are compared. None of the three can answer for a delay:
+
+  - **giflib** hands back the raw Graphic Control Extension bytes, so comparing
+    against it compares this library's parse of the field with its own reading
+    of the same bytes. That is not a second opinion.
+  - **ImageMagick and Pillow** both apply the historical browser floor, which
+    rewrites a delay below 2 or 5 hundredths to 10. That is a rendering
+    decision about how an animation should look, not a statement about what
+    the file says, so a disagreement with either would mean nothing.
+
+  The values they normalise away are therefore exactly the ones nothing outside
+  can check. What replaces the comparison is a structural check, in
+  `GifEncode.EveryDelayReachesTheGceUnchangedIncludingTheNormalisedRange`: the
+  delay the document carried is the delay written into the GCE, swept over 0-11
+  and up to 65535, and read back again. It was armed by making the writer apply
+  the browser floor, and it reported 1, 2, 3 and 4.
+
+  One case is not a failure and the sweep says so: a delay of **zero** is
+  written as no Graphic Control Extension at all, because 89a 23 makes an
+  absent GCE mean a zero delay. The absence carries the value. The test accepts
+  that for zero only, which is what stops the writer from dropping a GCE it
+  owes for any other delay.
+
+  The comparison that would be worth having is a **browser**, which is what
+  actually consumes these files - but that measures rendering timing rather
+  than the file's contents, and it belongs to nobody's test suite.
 - Nothing measures output size against another encoder. The writer is not
   trying to be small (see below), so the number would record a choice rather
   than a defect - but it is unmeasured either way.
