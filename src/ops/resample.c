@@ -774,6 +774,24 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
     return GIMG_ERR_UNSUPPORTED;
   }
 
+  // Passing LINEAR is the caller asserting an sRGB transfer, and that is still
+  // how an unstated one is read. What is refused here is a raster that states
+  // a *different* one: the file said gamma 2.2, or BT.1886, or PQ, and the
+  // caller said sRGB, and only one of them can be right. Applying sRGB's curve
+  // anyway is a wrong answer that looks like a right one, so it is refused
+  // until there is an engine that can honour what the file said.
+  //
+  // The primaries are deliberately not consulted. Linearisation is per-channel
+  // and depends on the transfer curve alone, so a Display P3 raster - whose
+  // transfer *is* sRGB's - linearises correctly here and is not refused.
+  if (options->space == GIMG_RESAMPLE_SPACE_LINEAR) {
+    const GIMG_Color_Info * info = gimg_raster_color_info_const(src);
+    if (info && info->transfer != GIMG_TRANSFER_UNKNOWN &&
+        info->transfer != GIMG_TRANSFER_SRGB) {
+      return GIMG_ERR_UNSUPPORTED;
+    }
+  }
+
   const void * src_pixels = gimg_raster_pixels_const(src);
   if (!src_pixels) {
     return GIMG_ERR_INTERNAL;

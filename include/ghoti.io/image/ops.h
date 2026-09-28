@@ -184,8 +184,19 @@ typedef enum {
    * Linearize, average, re-encode. More nearly correct - averaging non-linear
    * values darkens - and **opt-in precisely because the library cannot know
    * the transfer function**. Passing this is the caller asserting an sRGB
-   * transfer; GIMG_Color_Info is not consulted to infer one, for the same
+   * transfer; GIMG_Color_Info is not consulted to *infer* one, for the same
    * reason the CMYK conversion refuses to guess a polarity.
+   *
+   * It is consulted to *contradict* one. A raster whose GIMG_Color_Info states
+   * a transfer that is neither sRGB nor unknown - gamma 2.2, BT.1886, PQ, HLG,
+   * a parametric curve - is refused with GIMG_ERR_UNSUPPORTED, because the
+   * file and the caller have said different things and applying sRGB's curve
+   * anyway would be a wrong answer that looks like a right one. An unstated
+   * transfer is still read as the caller's assertion.
+   *
+   * The primaries are not consulted at all: linearisation is per-channel and
+   * depends on the transfer curve alone, so a Display P3 raster - whose
+   * transfer *is* sRGB's - is resampled here correctly and is not refused.
    */
   GIMG_RESAMPLE_SPACE_LINEAR
 } GIMG_Resample_Space;

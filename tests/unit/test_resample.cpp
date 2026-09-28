@@ -846,3 +846,72 @@ int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+/**
+ * LINEAR is the caller asserting an sRGB transfer, so a raster that states a
+ * different one is a contradiction and is refused rather than resolved.
+ *
+ * The sweep is over every GIMG_Transfer value rather than a chosen few, so a
+ * transfer added to the enum is covered the day it is added: anything that is
+ * neither UNKNOWN nor SRGB has to be refused, and if a future value is meant
+ * to be honoured instead, this test is what says so.
+ */
+TEST(Resize, LinearRefusesARasterThatStatesANonSrgbTransfer) {
+  for (int t = 0; t < GIMG_TRANSFER_COUNT; t++) {
+    const GIMG_Transfer transfer = static_cast<GIMG_Transfer>(t);
+    GIMG_Raster * src = make_raster(8, 8, &GIMG_PIXEL_RGBA8);
+    ASSERT_NE(src, nullptr) << "transfer " << t;
+    GIMG_Color_Info info;
+    gimg_color_info_default(&info);
+    info.transfer = transfer;
+    if (transfer == GIMG_TRANSFER_GAMMA) {
+      info.gamma_value = 2.2;
+    }
+    ASSERT_EQ(gimg_raster_set_color_info(src, &info), GIMG_OK);
+
+    GIMG_Raster * out = nullptr;
+    const GIMG_Result r = resize_linear(src, 4, 4, GIMG_FILTER_BOX, &out);
+    const bool asserted_srgb =
+        (transfer == GIMG_TRANSFER_UNKNOWN || transfer == GIMG_TRANSFER_SRGB);
+    if (asserted_srgb) {
+      EXPECT_EQ(r, GIMG_OK) << "transfer " << t << " agrees and must resize";
+      EXPECT_NE(out, nullptr) << "transfer " << t;
+    }
+    else {
+      EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED)
+          << "transfer " << t << " contradicts the caller and must be refused";
+      EXPECT_EQ(out, nullptr) << "transfer " << t;
+    }
+    gimg_raster_destroy(out);
+    gimg_raster_destroy(src);
+  }
+}
+
+/**
+ * The primaries are not the transfer, and refusing on them would refuse a
+ * raster this code resamples correctly.
+ *
+ * Display P3 is the case that makes the distinction concrete: its primaries
+ * are not sRGB's and its transfer curve *is*, so linearising it with sRGB's
+ * curve is right. A check keyed on the gamut rather than the transfer would
+ * reject this, which is why the one above sweeps GIMG_Transfer and this one
+ * exists beside it.
+ */
+TEST(Resize, LinearAcceptsAWideGamutRasterWhoseTransferIsSrgb) {
+  GIMG_Raster * src = make_raster(8, 8, &GIMG_PIXEL_RGBA8);
+  ASSERT_NE(src, nullptr);
+  GIMG_Color_Info info;
+  gimg_color_info_default(&info);
+  info.transfer = GIMG_TRANSFER_SRGB;
+  ASSERT_TRUE(gimg_color_info_set_gamut(&info, GIMG_PRIMARIES_DISPLAY_P3));
+  ASSERT_TRUE(info.primaries_stated);
+  ASSERT_NE(gimg_gamut_identify(&info.gamut, GIMG_GAMUT_TOLERANCE_DEFAULT),
+      GIMG_PRIMARIES_SRGB);
+  ASSERT_EQ(gimg_raster_set_color_info(src, &info), GIMG_OK);
+
+  GIMG_Raster * out = nullptr;
+  EXPECT_EQ(resize_linear(src, 4, 4, GIMG_FILTER_BOX, &out), GIMG_OK);
+  EXPECT_NE(out, nullptr);
+  gimg_raster_destroy(out);
+  gimg_raster_destroy(src);
+}
