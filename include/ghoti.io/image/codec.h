@@ -531,6 +531,14 @@ typedef struct {
   /** How the PNG writer decides whether to store the image through a palette
    * (11.2.2, color type 3).
    *
+   * The three values answer one question, which is worth naming because the
+   * field looks at first like it answers two: **what happens when the palette
+   * the frame arrived with no longer describes the picture.** Build a new one
+   * (AUTO), write truecolor (NEVER), or refuse (KEEP). Those are the only
+   * three outcomes there are. While an inherited palette still fits, all three
+   * reuse it, so "preserve what arrived" is not a separate axis - it is what
+   * every value already does.
+   *
    * GIMG_PNG_PALETTE_AUTO (0, default) builds one when the image has no more
    * than 256 distinct colors and the palette form is the smaller file.  That
    * is a lossless choice and not color quantization: with 256 colors or
