@@ -171,9 +171,9 @@ GIMG_Result gimg_ico_load(GIMG_Codec * codec, GIMG_Stream * stream,
       const unsigned char * dib = bytes + ent->offset;
       uint32_t bi_w = ico_u32(dib + 4);
       uint32_t bi_h_raw = ico_u32(dib + 8);
-      uint32_t bi_h = (bi_h_raw & 0x80000000u)
-          ? (uint32_t)(-(int32_t)bi_h_raw)
-          : bi_h_raw;
+      // Absolute value in unsigned arithmetic: signed negation of INT_MIN is
+      // undefined, and a fuzzer reached that bit pattern in under a minute.
+      uint32_t bi_h = (bi_h_raw & 0x80000000u) ? (0u - bi_h_raw) : bi_h_raw;
       if ((bi_h % 2u) == 0u) {
         bi_h /= 2u;
       }

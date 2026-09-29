@@ -58,8 +58,15 @@ static GIMG_Result ico_decode_png(const unsigned char * bytes, size_t size,
   if (r != GIMG_OK) {
     return r;
   }
+  // Nested load must see the same pixel ceiling as the outer decode: a PNG
+  // payload can name any canvas in a few header bytes.
+  GIMG_Load_Options load_opts;
+  memset(&load_opts, 0, sizeof(load_opts));
+  if (options) {
+    load_opts.limits = options->limits;
+  }
   GIMG_Doc * doc = NULL;
-  r = png->load_cb(png, stream, NULL, NULL, &doc);
+  r = png->load_cb(png, stream, &load_opts, NULL, &doc);
   gimg_stream_destroy(stream);
   if (r != GIMG_OK || !doc || gimg_doc_item_count(doc) == 0) {
     if (doc) {
@@ -83,8 +90,9 @@ static GIMG_Result ico_decode_dib(const gimg_ico_entry_t * entry,
     return GIMG_ERR_CORRUPT;
   }
   int32_t bi_height = ico_i32(bytes + 8);
-  uint32_t abs_height =
-      bi_height < 0 ? (uint32_t)(-bi_height) : (uint32_t)bi_height;
+  // Unsigned abs: signed negation of INT_MIN is undefined.
+  uint32_t abs_height = bi_height < 0 ? (0u - (uint32_t)bi_height)
+                                       : (uint32_t)bi_height;
   // ICO DIB height is XOR + AND; real height is half (when even and > 0).
   uint32_t real_height = abs_height;
   if (abs_height >= 2u && (abs_height % 2u) == 0u) {
@@ -104,15 +112,32 @@ static GIMG_Result ico_decode_dib(const gimg_ico_entry_t * entry,
   if (compression == 1u || compression == 2u) {
     return GIMG_ERR_UNSUPPORTED;
   }
+  // Compression 3/4 mean BI_BITFIELDS / BI_JPEG on a Windows header, but
+  // Huffman 1D / RLE24 on an OS/2 BITMAPCOREHEADER2. Icons never carry the
+  // OS/2 spellings; refuse them before BMP expands a Huffman stream into an
+  // attacker-sized buffer. Windows sizes are the ones bmp_header_size_windows
+  // accepts (40/52/56/108/124); anything else with 3 or 4 is OS/2.
+  if ((compression == 3u || compression == 4u) &&
+      header_size != 40u && header_size != 52u && header_size != 56u &&
+      header_size != 108u && header_size != 124u) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
 
   GIMG_Stream * stream = NULL;
   GIMG_Result r = gimg_stream_create_memory(bytes, size, &stream);
   if (r != GIMG_OK) {
     return r;
   }
+  // Forward decode limits into the nested DIB load so max_decoded_pixels
+  // refuses a header that names a multi-gigabyte raster before any expand.
+  GIMG_Load_Options load_opts;
+  memset(&load_opts, 0, sizeof(load_opts));
+  if (options) {
+    load_opts.limits = options->limits;
+  }
   GIMG_Doc * dib_doc = NULL;
   r = gimg_bmp_load_dib(
-      bmp_codec, stream, real_height, NULL, NULL, &dib_doc);
+      bmp_codec, stream, real_height, &load_opts, NULL, &dib_doc);
   size_t after_xor = gimg_stream_tell(stream);
   if (r != GIMG_OK || !dib_doc) {
     gimg_stream_destroy(stream);
@@ -124,7 +149,10 @@ static GIMG_Result ico_decode_dib(const gimg_ico_entry_t * entry,
 
   gimg_bmp_doc_state_t * bmp_state =
       (gimg_bmp_doc_state_t *)dib_doc->codec_private;
-  if (bmp_state && gimg_bmp_is_rle(bmp_state->header.compression)) {
+  if (bmp_state &&
+      (gimg_bmp_is_rle(bmp_state->header.compression) ||
+          bmp_state->header.compression == GIMG_BMP_COMP_HUFFMAN1D ||
+          gimg_bmp_is_embedded(bmp_state->header.compression))) {
     gimg_doc_destroy(dib_doc);
     gimg_stream_destroy(stream);
     return GIMG_ERR_UNSUPPORTED;

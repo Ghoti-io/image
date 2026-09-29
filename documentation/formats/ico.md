@@ -55,8 +55,8 @@ item writes `type = 2` (CUR).
 | Area | Supported | Rejected / limitation |
 |------|-----------|------------------------|
 | ICO and CUR directory | yes | count outside `1..GIMG_ICO_MAX_ENTRIES`, or an entry past EOF → `GIMG_ERR_CORRUPT` |
-| DIB payloads | 1–32 bpp RGB/bitfields | `BI_RLE4` / `BI_RLE8` → `GIMG_ERR_UNSUPPORTED` |
-| PNG payloads | via nested PNG codec | whatever PNG refuses |
+| DIB payloads | 1–32 bpp `BI_RGB` / `BI_BITFIELDS` | `BI_RLE4` / `BI_RLE8`, OS/2 Huffman 1D / RLE24, and embedded `BI_JPEG` / `BI_PNG` → `GIMG_ERR_UNSUPPORTED` |
+| PNG payloads | via nested PNG codec | whatever PNG refuses; nested load and DIB load honour the caller's `max_decoded_pixels` |
 | AND mask / alpha | yes, with zero-alpha fallback | — |
 | Hotspot | per-item API | — |
 | Animation as icon | — | `GIMG_ITEM_FRAME` on save → `GIMG_ERR_UNSUPPORTED` |
@@ -85,4 +85,8 @@ item writes `type = 2` (CUR).
 ## Not implemented
 
 - Reading icons from PE resources (`.exe` / `.dll`).
-- RLE DIB payloads inside icons.
+- RLE, OS/2 Huffman 1D, OS/2 RLE24, or embedded JPEG/PNG DIB payloads
+  inside icons. Compression 3 and 4 on a Windows header size remain
+  `BI_BITFIELDS` / `BI_JPEG` as BMP reads them; on an OS/2 header size they
+  are Huffman 1D / RLE24 and are refused before the nested BMP path expands
+  them.
