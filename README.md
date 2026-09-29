@@ -10,9 +10,10 @@ This is what the library implements.
 - PNG, including APNG.
 - JPEG, BMP and GIF.
 - ICO and CUR (one codec; DIB and PNG payloads, AND-mask alpha, hotspots).
-- WebP Phase A: RIFF container, `VP8X` canvas, chunk inventory, and
-  `ICCP`/`EXIF`/`XMP ` carriage. Picture decode and encode are not yet
-  implemented; the format page lists what remains.
+- WebP: RIFF container, `VP8X` canvas, chunk inventory, `ICCP`/`EXIF`/`XMP `
+  carriage, and VP8L lossless decode (byte-identical to `dwebp`). Lossy VP8,
+  separate `ALPH`, animation frames, and encode are not yet implemented; the
+  format page lists what remains.
 - TIFF. It reads every bit depth from 1 to 32, both byte orders, strips and
   tiles, grayscale, palette, RGB, RGBA, separated and YCbCr, separate and
   contiguous planes, every compression the format defines except LogLuv -
@@ -22,9 +23,8 @@ This is what the library implements.
   Deflate. What is absent is listed on the format's own page rather than left
   to be discovered.
 
-Later WebP phases (VP8L/VP8 decode, animation items, lossless encode) follow
-the format page's "Not implemented" list. A page for a format is written with
-its codec.
+Later WebP phases follow the format page's "Not implemented" list. A page for
+a format is written with its codec.
 
 ## Before you call it
 
