@@ -1,6 +1,6 @@
 # The ICC corpus
 
-Six real ICC profiles and the fixtures that carry them.
+Seven real ICC profiles and the fixtures that carry them.
 
 ## Why it exists
 
@@ -37,6 +37,10 @@ chromaticities with a Bradford adaptation to D50.
 | `srgb_sampled_trc.icc` | RGB | sRGB / BT.709 | 1024-point sampled sRGB curve |
 | `gray_g22.icc` | GRAY | — | gamma 2.2 (`kTRC`) |
 | **`swap_rg.icc`** | RGB | **sRGB's green as red and red as green** | gamma 1.0 |
+| `cmyk_mft2.icc` | CMYK | LUT (mft2) | from libs/color's generate_lut.py |
+
+`cmyk_mft2.icc` is shared with `libs/color` so image can gate CMYK→RGB through
+`gimg_ops_transform_color` without a sibling-checkout fallback at runtime.
 
 ### The discriminating one
 

@@ -203,6 +203,11 @@
 #define gimg_ops_resize GHOTIIO_IMAGE(gimg_ops_resize)
 #define gimg_resize_options_default GHOTIIO_IMAGE(gimg_resize_options_default)
 #define gimg_ops_convert_pixel_format GHOTIIO_IMAGE(gimg_ops_convert_pixel_format)
+#define gimg_color_transform_options_default \
+  GHOTIIO_IMAGE(gimg_color_transform_options_default)
+#define gimg_color_transform_options_srgb \
+  GHOTIIO_IMAGE(gimg_color_transform_options_srgb)
+#define gimg_ops_transform_color GHOTIIO_IMAGE(gimg_ops_transform_color)
 #define gimg_ops_raster_equal GHOTIIO_IMAGE(gimg_ops_raster_equal)
 #define gimg_probe GHOTIIO_IMAGE(gimg_probe)
 #define gimg_raster_allocator GHOTIIO_IMAGE(gimg_raster_allocator)

@@ -359,7 +359,7 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 
 @section api_options_color_info Color info (GCOL_Color_Info)
 
-**GCOL_Color_Info** (see `ghoti.io/image/color.h`) is attached to a raster and describes how to interpret color: the gamut, transfer, rendering intent, optional ICC profile, and (for CMYK rasters) channel polarity. It **describes** colour and converts none of it.
+**GCOL_Color_Info** (see `ghoti.io/image/color.h`) is attached to a raster and describes how to interpret color: the gamut, transfer, rendering intent, optional ICC profile, and (for CMYK rasters) channel polarity. Load and save **describe and carry** colour; they do not remap samples. Remapping is `gimg_ops_transform_color`, which parses `icc_bytes` (or uses stated gamut+transfer) through libs/color.
 
 | Field | Description |
 |-------|-------------|
@@ -372,7 +372,7 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 | `sample_scale` | **GCOL_Sample_Scale** — whether the sample is a fraction of an unstated white or an absolute measurement. Independent of `reference`: PQ is display-referred *and* absolute, HLG is scene-referred and relative. |
 | `white_luminance` | cd/m² of a full-scale sample, or 0 when unstated. Meaningful when `sample_scale` is absolute. |
 | `intent` | **GCOL_Rendering_Intent** — written into an ICC profile's header and into a BMP V5 header. A value outside the four ICC names is written as perceptual. |
-| `icc_bytes` / `icc_size` | Optional ICC profile; library does not take ownership. It is carried opaquely: nothing here parses a profile, so an embedded one does not fill in `gamut` or `transfer`. |
+| `icc_bytes` / `icc_size` | Optional ICC profile; library does not take ownership on the struct. Codecs copy it onto the raster. Carriage leaves it opaque; `gimg_ops_transform_color` parses it when converting samples. |
 | `cmyk_polarity` | **GCOL_CMYK_Polarity** — interpretation of CMYK channel values. Only relevant when the raster format is a CMYK one (**GIMG_PIXEL_CMYK8**, **CMYK12**, **CMYK16**). |
 
 ### Naming a gamut
@@ -427,7 +427,7 @@ nothing; and only a three-component frame gets one. See
 
 Raster pixels are stored as raw values; `cmyk_polarity` tells consumers (e.g. display or CMYK→RGB conversion) whether to treat 0 as “no ink” or “full ink” when interpreting the channels. The JPEG decoder states it on every four-component frame, whatever the coding process.
 
-`gimg_ops_convert_pixel_format` reads it to convert a CMYK raster to RGBA, which is the only route from a four-component JPEG into a PNG or a BMP — neither has CMYK. The conversion is the naive one (each ink an independent multiplicative filter over white) and is **not colorimetric**: this library has no colour engine, so what it offers is that conversion or none. It agrees with Pillow exactly on every pixel of every CMYK and YCCK fixture in `tests/data/jpeg`. A polarity of **GCOL_CMYK_POLARITY_UNKNOWN** is refused rather than guessed — the two readings are negatives of each other, and the wrong one gives a plausible but inverted picture. No writer performs the conversion on your behalf.
+`gimg_ops_convert_pixel_format` reads it to convert a CMYK raster to RGBA, which is the only *naive* route from a four-component JPEG into a PNG or a BMP — neither has CMYK. That conversion is each ink as an independent multiplicative filter over white and is **not colorimetric**; it stays so that it agrees with Pillow exactly on every pixel of every CMYK and YCCK fixture in `tests/data/jpeg`. A colorimetric conversion is `gimg_ops_transform_color` toward a destination (commonly sRGB via `gimg_color_transform_options_srgb`). A polarity of **GCOL_CMYK_POLARITY_UNKNOWN** is refused rather than guessed — the two readings are negatives of each other, and the wrong one gives a plausible but inverted picture. No writer performs either conversion on your behalf.
 
 ## `jpeg_arithmetic` (save)
 

@@ -33,13 +33,14 @@ See \ref module_geometry "Geometry: cropping, resizing and compositing" for what
 
 - **Crop:** `gimg_ops_crop` — cut a rectangle out of a raster. The rectangle must lie wholly inside the source; one that leaves it is refused rather than clamped, because a silently smaller result hides an off-by-one in the caller. Works for any format whose pixel is a whole number of bytes, which is wider than the resampler reaches. See `ghoti.io/image/ops.h`.
 - **Resize:** `gimg_ops_resize`, `gimg_resize_options_default` — one separable resampler with five kernels. `GIMG_FILTER_AUTO` is the zero value and a **pinned** alias for `CATMULL_ROM`; it never selects `NEAREST`, because nothing about a raster says whether its samples are colours or labels. `GIMG_FILTER_NEAREST` is the one that returns a value which was in the source. RGBA is filtered premultiplied. `GIMG_RESAMPLE_SPACE_LINEAR` averages light rather than encoded values: the curve comes from the raster's `GCOL_Color_Info` via libs/color, and an unstated transfer is the caller's assertion of sRGB.
+- **Colour transform:** `gimg_ops_transform_color`, `gimg_color_transform_options_default`, `gimg_color_transform_options_srgb` — explicit CMM through libs/color. Load/save only carry profiles; this is the step that remaps samples (matrix/TRC or LUT/CMYK ICC) into a caller-chosen destination. v1: RGBA8 and CMYK8.
 - **Composite:** `gimg_ops_composite` — draw one raster onto another at a signed offset, clipped; `GIMG_COMPOSITE_SOURCE` for any matching format, `GIMG_COMPOSITE_OVER` (Porter-Duff, straight alpha) for RGBA. A source entirely outside the destination draws nothing and returns `GIMG_OK`.
 - **Mirrors and quarter turns:** `gimg_ops_flip_horizontal`, `gimg_ops_flip_vertical`, `gimg_ops_rotate_90_cw`, `gimg_ops_rotate_90_ccw`, `gimg_ops_rotate_180` — in place, any whole-byte format. Each forwards to `gimg_ops_apply_orientation`, which implements all eight of CIPA DC-008 Table 6; these are names, not a second implementation.
 
 ## Bit-depth conversion (8, 12, 16 bits per channel)
 
 - **Sample-level** (see `ghoti.io/image/bitdepth.h`): `gimg_bitdepth_8_to_12`, `gimg_bitdepth_8_to_16`, `gimg_bitdepth_12_to_8`, `gimg_bitdepth_12_to_16`, `gimg_bitdepth_16_to_8`, `gimg_bitdepth_16_to_12` — bitshift/scale and clamp; 12-bit range 0..4095, 16-bit 0..65535. Codecs (e.g. JPEG) use these when raster depth differs from codec precision.
-- **Raster-level:** `gimg_ops_convert_bit_depth` — convert a raster to another bit depth (8, 12, or 16) with the same channel model (GRAY or RGBA); uses the library bit-depth functions. See `ghoti.io/image/ops.h`.
+- **Raster-level:** `gimg_ops_convert_bit_depth` — convert a raster to another bit depth (8, 12, or 16) with the same channel model (GRAY or RGBA); uses the library bit-depth functions. `gimg_ops_convert_pixel_format` — same-format copy, or **naive** CMYK→RGBA (Pillow/libjpeg parity). Colorimetric CMYK→RGB is `gimg_ops_transform_color`. See `ghoti.io/image/ops.h`.
 
 ## Palettes and colour reduction
 

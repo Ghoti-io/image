@@ -24,8 +24,8 @@ written with its codec.
 
 ## Before you call it
 
-- Colour is carried, not converted. An ICC profile is read, kept, reported and written back. No pixel is transformed from one colour space into another.
-- `gimg_ops_resize()` can work in linear light when the caller says the pixels are sRGB. That is the caller's assertion, not a profile the library applied.
+- Colour is carried until you ask. An ICC profile is read, kept, reported and written back. Load and save never remap samples. `gimg_ops_transform_color()` is the explicit CMM step (via libs/color), in the same shape as Pillow ImageCms or WIC's colour transform.
+- `gimg_ops_resize()` can work in linear light using the raster's stated transfer via libs/color. An unstated transfer is still the caller's assertion of sRGB.
 - A memory stream borrows its bytes. They stay alive for the life of the stream.
 - Load and save take a limits struct. `NULL` options are the defaults.
 - `NULL` for an allocator is cutil's default.
@@ -117,9 +117,9 @@ Everything is prefixed `gimg_` / `GIMG_`, under `<ghoti.io/image/...>`.
 - **`codec.h`** — `gimg_probe()`, `gimg_doc_load()`, `gimg_doc_save()`, and `gimg_item_decode()`. The format is recognised from the bytes.
 - **`doc.h`** — a document of items (frames or pages), loop count, frame delay, dispose and blend.
 - **`raster.h`** — width, height, stride, pixel format, and the pixel buffer.
-- **`color.h`** — includes `ghoti.io/color/color.h`. Colour information a file stated (`GCOL_Color_Info`: profile, chromaticities, transfer) is reported and preserved; this library never transforms it.
+- **`color.h`** — includes `ghoti.io/color/color.h`. Colour information a file stated (`GCOL_Color_Info`: profile, chromaticities, transfer) is reported and preserved on load/save; sample remapping is `gimg_ops_transform_color` in `ops.h`.
 - **`meta.h`** — common metadata, plus the raw chunks a format carried so a round trip can put them back.
-- **`ops.h`** — orientation, pixel-format and bit-depth conversion, colour reduction, crop, resize, and composite.
+- **`ops.h`** — orientation, pixel-format and bit-depth conversion, colour transform, colour reduction, crop, resize, and composite.
 - **`allocator.h`** — `GIMG_Allocator`, which is cutil's `GCU_Allocator`.
 
 [Formats](#formats) is what is implemented.

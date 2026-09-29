@@ -297,11 +297,11 @@ GIMG_API GIMG_Result gimg_ops_crop(const GIMG_Raster * src, uint32_t x,
  * because neither PNG nor BMP has CMYK, so without it a four-component JPEG
  * could not be converted into anything at all.
  *
- * It is **not colorimetric**. A real conversion would run the samples through
- * the source profile and a destination profile, and this library has no colour
- * engine; the choice it offers is between the naive conversion and none. It is
- * what libjpeg-based tools do, and it agrees with Pillow exactly on every
- * pixel of every CMYK and YCCK fixture in tests/data/jpeg.
+ * It is **not colorimetric**. A colorimetric conversion runs the samples
+ * through the source profile and a destination via ::gimg_ops_transform_color.
+ * This path stays the naive one so it continues to agree with Pillow and
+ * libjpeg-based tools byte for byte on every CMYK and YCCK fixture in
+ * tests/data/jpeg.
  *
  * The source's `cmyk_polarity` must say which way round the samples are:
  * GCOL_CMYK_POLARITY_UNKNOWN returns GIMG_ERR_UNSUPPORTED rather than a
@@ -345,6 +345,64 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
  */
 GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
     uint8_t dst_bits, GIMG_Raster ** out_raster);
+
+/**
+ * @brief Options for ::gimg_ops_transform_color.
+ *
+ * @a dest must state a usable destination: an ICC profile (`icc_bytes`), or
+ * primaries, white point and transfer. Intent defaults to relative
+ * colorimetric. @a flags are passed to libs/color (::GCOL_TRANSFORM_CLIP,
+ * ::GCOL_TRANSFORM_BPC, ::GCOL_TRANSFORM_TONE_MAP).
+ */
+typedef struct {
+  GCOL_Color_Info dest;
+  GCOL_Rendering_Intent intent;
+  uint32_t flags;
+  uint8_t _reserved[8];
+} GIMG_Color_Transform_Options;
+
+/**
+ * @brief Zero @p options, default dest, relative colorimetric, flags 0.
+ *
+ * Dest starts UNKNOWN — call ::gimg_color_transform_options_srgb or fill
+ * @a dest before transforming.
+ */
+GIMG_API void gimg_color_transform_options_default(
+    GIMG_Color_Transform_Options * options);
+
+/**
+ * @brief Defaults plus dest = IEC 61966-2.1 sRGB (display-referred RGB).
+ *
+ * The common "make this displayable" request. Relative colorimetric, flags 0.
+ */
+GIMG_API void gimg_color_transform_options_srgb(
+    GIMG_Color_Transform_Options * options);
+
+/**
+ * @brief Convert samples from the raster's colour space into @p options->dest.
+ *
+ * Load and save still only carry colour. This is the explicit CMM step,
+ * matching Pillow ImageCms / WIC / ImageMagick `-profile`: nothing moves
+ * until the caller asks.
+ *
+ * Source is taken from the raster's ::GCOL_Color_Info. Embedded (or
+ * resolver-supplied) `icc_bytes` are parsed and used; otherwise stated
+ * primaries, white and transfer feed the matrix path. Untagged CMYK, and
+ * RGB with neither a profile nor a complete description, are refused rather
+ * than guessed.
+ *
+ * v1 buffers: interleaved RGBA8 and CMYK8 only. Other depths return
+ * ::GIMG_ERR_UNSUPPORTED (no silent narrow). CMYK sources need a stated
+ * ::GCOL_CMYK_Polarity. The result is RGBA8 for an RGB destination (alpha
+ * preserved from an RGBA source, opaque otherwise) or CMYK8 for a CMYK
+ * destination profile, and carries @a options->dest.
+ *
+ * @param src Source raster.
+ * @param options Destination and intent; NULL is refused (no implied sRGB).
+ * @param out_raster On success, a new raster; set to NULL on every failure.
+ */
+GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
+    const GIMG_Color_Transform_Options * options, GIMG_Raster ** out_raster);
 
 /**
  * @brief Premultiply alpha (straight -> premultiplied) (spec §4.4).
