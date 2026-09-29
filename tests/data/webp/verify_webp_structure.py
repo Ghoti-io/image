@@ -10,11 +10,17 @@ Phase A gate from notes/image/webp-plan.md: fourcc, payload offset and size
 match libwebp's webpinfo on every good corpus file. Corrupt fixtures are
 expected to make webpinfo complain and are listed separately.
 
+Outside corpora under third_party/webp-refs/ (from tools/oracle/fetch.sh
+webp-refs) are compared the same way when passed as extra directories: files
+webpinfo accepts must match; files webpinfo refuses are skipped (those trees
+mix conformance vectors with intentional bad inputs).
+
 Arm the gate by dropping one chunk from the walk: webpinfo and this parse
 will disagree, and this script must exit non-zero.
 
-Usage:  python3 tests/data/webp/verify_webp_structure.py [DIR]
-        DIR defaults to tests/data/webp.
+Usage:  python3 tests/data/webp/verify_webp_structure.py [DIR ...]
+        With no DIR, defaults to tests/data/webp. Extra directories (for
+        example third_party/webp-refs) are walked recursively.
 
 Exit: 0 when every good fixture matches webpinfo.
 """
@@ -34,6 +40,7 @@ inside_or_reexec("libwebp")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# Committed corrupt fixtures: webpinfo must refuse them. They are not compared.
 CORRUPT = {
     "corrupt_trunc.webp",
     "corrupt_riff_size.webp",
@@ -129,36 +136,95 @@ def compare(path: str) -> None:
     data = open(path, "rb").read()
     ours = walk_chunks(data)
     theirs = webpinfo_chunks(path)
-    if len(ours) != len(theirs):
+    # webpinfo lists the chunks it understands (VP8/VP8L/ALPH/VP8X/…) and
+    # silently drops others (e.g. ICMT comments in libwebp-test-data). Our
+    # walk is the full RIFF inventory; the gate is that every chunk webpinfo
+    # reports appears in ours at the same offset with the same length.
+    by_key = {(c["offset"], c["fourcc"], c["length"]) for c in ours}
+    missing = [
+        t for t in theirs
+        if (t["offset"], t["fourcc"], t["length"]) not in by_key
+    ]
+    if missing:
         raise AssertionError(
-            "%s: count ours=%d webpinfo=%d\n  ours=%s\n  webpinfo=%s"
-            % (os.path.basename(path), len(ours), len(theirs), ours, theirs))
-    for i, (a, b) in enumerate(zip(ours, theirs)):
-        for key in ("fourcc", "offset", "length"):
-            if a[key] != b[key]:
-                raise AssertionError(
-                    "%s[%d].%s: ours=%r webpinfo=%r"
-                    % (os.path.basename(path), i, key, a[key], b[key]))
+            "%s: webpinfo chunks not in our walk: %s\n  ours=%s\n  webpinfo=%s"
+            % (os.path.basename(path), missing, ours, theirs))
+
+
+def list_webp(root: str) -> list[str]:
+    """Return absolute paths of every .webp under root (recursive)."""
+    out: list[str] = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in sorted(filenames):
+            if name.endswith(".webp"):
+                out.append(os.path.join(dirpath, name))
+    return out
+
+
+def label(path: str, roots: list[str]) -> str:
+    """Short path relative to the longest matching root, else basename."""
+    abs_path = os.path.abspath(path)
+    best = None
+    for root in roots:
+        root_abs = os.path.abspath(root)
+        if abs_path == root_abs or abs_path.startswith(root_abs + os.sep):
+            rel = os.path.relpath(abs_path, root_abs)
+            if best is None or len(rel) < len(best):
+                best = rel
+    return best if best is not None else os.path.basename(path)
 
 
 def main() -> int:
-    root = sys.argv[1] if len(sys.argv) > 1 else HERE
-    names = sorted(
-        n for n in os.listdir(root)
-        if n.endswith(".webp") and n not in CORRUPT)
-    if not names:
-        print("no WebP fixtures in %s" % root, file=sys.stderr)
+    roots = [os.path.abspath(p) for p in (sys.argv[1:] or [HERE])]
+    paths: list[str] = []
+    for root in roots:
+        if not os.path.isdir(root):
+            print("not a directory: %s" % root, file=sys.stderr)
+            return 2
+        paths.extend(list_webp(root))
+    # Prefer committed fixtures first, then outside corpora, stable within.
+    paths = sorted(set(paths), key=lambda p: (0 if HERE in p else 1, p))
+    if not paths:
+        print("no WebP fixtures in %s" % ", ".join(roots), file=sys.stderr)
         return 2
+
     failed = 0
-    for name in names:
-        path = os.path.join(root, name)
+    ok = 0
+    skipped = 0
+    for path in paths:
+        name = os.path.basename(path)
+        shown = label(path, roots)
+        if name in CORRUPT:
+            # Committed corrupt cases: webpinfo must refuse.
+            try:
+                webpinfo_chunks(path)
+            except RuntimeError:
+                print("  skip %s (corrupt, webpinfo refuses)" % shown)
+                skipped += 1
+                continue
+            print("  FAIL %s: expected webpinfo to refuse" % shown, file=sys.stderr)
+            failed += 1
+            continue
+        external = not os.path.abspath(path).startswith(
+            os.path.abspath(HERE) + os.sep)
         try:
             compare(path)
-            print("  ok  %s" % name)
-        except Exception as exc:  # noqa: BLE001
-            print("  FAIL %s: %s" % (name, exc), file=sys.stderr)
+            print("  ok  %s" % shown)
+            ok += 1
+        except RuntimeError as exc:
+            # Outside corpora mix good vectors with intentional bad inputs.
+            if external and "webpinfo failed" in str(exc):
+                print("  skip %s (webpinfo refuses)" % shown)
+                skipped += 1
+                continue
+            print("  FAIL %s: %s" % (shown, exc), file=sys.stderr)
             failed += 1
-    print("%d/%d fixtures match webpinfo" % (len(names) - failed, len(names)))
+        except Exception as exc:  # noqa: BLE001
+            print("  FAIL %s: %s" % (shown, exc), file=sys.stderr)
+            failed += 1
+    print(
+        "%d ok, %d skipped, %d failed (%d files)"
+        % (ok, skipped, failed, len(paths)))
     return 1 if failed else 0
 
 

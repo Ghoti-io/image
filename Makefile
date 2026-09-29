@@ -687,6 +687,10 @@ TEST_DATA_ICO := $(IMAGE_ROOT)/tests/data/ico
 # tools/oracle/VERSIONS names.
 TEST_DATA_ICO_EXT := $(IMAGE_ROOT)/third_party/ico-refs
 TEST_DATA_WEBP := $(IMAGE_ROOT)/tests/data/webp
+# Outside-written WebP corpora (libwebp-test-data, codec-corpus, Pillow,
+# image-rs, golang.org/x/image). Not committed; tools/oracle/fetch.sh
+# webp-refs materialises them at the commits tools/oracle/VERSIONS names.
+TEST_DATA_WEBP_EXT := $(IMAGE_ROOT)/third_party/webp-refs
 # Output directory for BMP encode test output.
 TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 TEST_OUT_GIF := $(IMAGE_ROOT)/tests/out/gif
@@ -1283,7 +1287,8 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
 	printf "\033[0;32mICO/CUR output verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying WebP structure against webpinfo ###\033[0m\n\n" && \
-	python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) && \
+	$(CURDIR)/tools/oracle/fetch.sh webp-refs && \
+	python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 	printf "\033[0;32mWebP structure verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying output structure ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
@@ -1341,7 +1346,8 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/du
 		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_ICO_DUMP=$(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) \
 			python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) $(TEST_DATA_ICO_EXT) && \
 		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
-		python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) && \
+		$(CURDIR)/tools/oracle/fetch.sh webp-refs && \
+		python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 		python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 		printf "\033[0;32mPNG, JPEG, BMP, GIF, ICO and WebP output verified, and structurally checked.\033[0m\n"; \
 	else \
@@ -1435,7 +1441,8 @@ test-verify-ico: $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) ## Run ICO/CUR struc
 		printf "\033[0;32mICO/CUR verification passed.\033[0m\n"
 
 test-verify-webp: ## Run WebP structure verification against webpinfo
-	@python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) && \
+	@$(CURDIR)/tools/oracle/fetch.sh webp-refs && \
+		python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 		printf "\033[0;32mWebP structure verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)

@@ -50,3 +50,25 @@ libtiffpic     sha256:e0e34732b61e1ce49eff2c7a079994c856d2a5f772f5228c84678272bc
 # the same bytes).
 pillow-ico       a600f84029383968a28e6d29bf308204cdb4c1d9
 wine-blank-ico   45227d13e63332ade32298c1893fd799f0dea018
+
+# Outside-written WebP corpora for the same reason as ICO and TIFF: our
+# committed fixtures are cwebp/webpmux/img2webp toys, and a generator writes
+# what its author already understood. Nothing below is vendored;
+# tools/oracle/fetch.sh webp-refs materialises them into
+# third_party/webp-refs/ at these commits. Pixel gates still run against
+# dwebp at the pinned libwebp in IMAGES; these trees are extra inputs.
+#
+# libwebp-test-data - BSD (libwebp). Google's official dwebp/lossless vectors
+# (~131 .webp plus reference PAM/PNG and MD5 lists).
+# codec-corpus-webp - Various (see that tree's README). imazen tag v1.1.0
+# sparse-checked to webp-conformance/ (~230 valid files).
+# pillow-webp - MIT-CMU. Every Tests/images/*.webp at the pin.
+# image-rs-webp - MIT/Apache-2.0. tests/images/webp/ plus the regression
+# panic fixture.
+# go-image-webp - BSD-style. golang.org/x/image testdata/*.webp (lossy
+# loop-filter variants, palette lossless, alpha).
+libwebp-test-data  06ddd96e276c2c638a72d39d3c0f340afd61978c
+codec-corpus-webp  51dbd1558f554c0fbe1fb1fa6eea92d53389f297
+pillow-webp        b25d85356f296103f22c0127358f91536c53b399
+image-rs-webp      075e65d618a323e5cb48c1d8710a2eca25d690c6
+go-image-webp      b06f1de3f4900ff828b8f114c37eb9ea10dfed90

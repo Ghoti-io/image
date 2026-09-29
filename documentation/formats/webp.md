@@ -9,9 +9,12 @@ carriage of `ICCP` / `EXIF` / `XMP `, **VP8L lossless picture decode**,
 merged into RGBA). Animation items and encode are later phases; see
 \ref image_format_references "Formats" and `notes/image/webp-plan.md`.
 
-Claims below are checked. The structure gate is `webpinfo`; lossless and
-lossy pixels (and ALPH planes) are gated by `dwebp -pam`, all from the pinned
-`libwebp` 1.5.0 reference in `tools/oracle/containers/IMAGES` (`deb13-8`).
+Claims below are checked. The structure gate is `webpinfo` (committed
+fixtures under `tests/data/webp/` plus outside corpora from
+`tools/oracle/fetch.sh webp-refs`); lossless and lossy pixels (and ALPH
+planes) on the committed fixtures are gated by `dwebp -pam`, all from the
+pinned `libwebp` 1.5.0 reference in `tools/oracle/containers/IMAGES`
+(`deb13-8`).
 
 ## Normative references
 
@@ -104,9 +107,19 @@ plan (`notes/image/webp-plan.md` §6).
   `-alpha_method` / `-alpha_filter`, plus crafted uncompressed ALPH round
   trips for every spatial filter, and truncated / oversized-RIFF corrupt
   cases.
+- Outside-written corpora fetched by `tools/oracle/fetch.sh webp-refs` into
+  `third_party/webp-refs/` at the commits `tools/oracle/VERSIONS` names:
+  Google's `libwebp-test-data`, imazen `codec-corpus` (`webp-conformance/`),
+  Pillow `Tests/images/*.webp`, image-rs `tests/images/webp/` (plus the
+  regression panic fixture), and golang.org/x/image `testdata/*.webp`.
+  None of these are committed. Structure evidence covers every file
+  `webpinfo` accepts; files it refuses (intentional bad inputs in those
+  trees) are skipped.
 - Structure vs `webpinfo` (`verify_webp_structure.py`).
-- Pixels vs `dwebp -pam` for every lossless and lossy fixture (including
-  ALPH+VP8 full RGBA).
+- Pixels vs `dwebp -pam` for every lossless and lossy fixture under
+  `tests/data/webp/` (including ALPH+VP8 full RGBA). Outside corpora are
+  structure-gated today; pixel identity against `dwebp` for them is future
+  work.
 - Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
   anim/save unsupported.
 - Fuzz: `fuzz_webp_load` with seeds from the fixture set.
