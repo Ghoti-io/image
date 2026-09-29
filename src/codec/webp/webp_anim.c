@@ -199,6 +199,39 @@ static void webp_clear_rect(uint8_t * canvas, size_t canvas_stride,
   }
 }
 
+/**
+ * Match libwebp anim_decode.c IsKeyFrame: a keyframe resets the canvas and
+ * is blitted without alpha blending (the bitstream pixels are the canvas).
+ * Frame 0 is always a keyframe; later frames are when they fully cover the
+ * canvas without blending (or after a full dispose).
+ */
+static int webp_is_key_frame(const gimg_webp_doc_state_t * st, size_t index,
+    int prev_was_key_frame) {
+  const gimg_webp_frame_t * fr = &st->frames[index];
+  if (index == 0u) {
+    return 1;
+  }
+  const int full = (fr->width == st->canvas_width &&
+      fr->height == st->canvas_height && fr->x == 0u && fr->y == 0u);
+  // blend_source != 0 means ANMF "do not blend" (WEBP_MUX_NO_BLEND). Do not
+  // treat "no ALPH chunk" as opaque: VP8L carries its own alpha bit, and a
+  // full-canvas OVER frame with in-bitstream alpha is not a keyframe.
+  if (full && fr->blend_source) {
+    return 1;
+  }
+  // has_alpha is not stored separately; a full-frame SOURCE blit already
+  // returned. A full-frame OVER blit is only a keyframe when the previous
+  // frame disposed the whole canvas (or was itself a keyframe that covered
+  // everything and then disposed).
+  const gimg_webp_frame_t * prev = &st->frames[index - 1u];
+  if (!prev->dispose_background) {
+    return 0;
+  }
+  const int prev_full = (prev->width == st->canvas_width &&
+      prev->height == st->canvas_height && prev->x == 0u && prev->y == 0u);
+  return prev_full || prev_was_key_frame;
+}
+
 static GIMG_Result webp_decode_one_frame(const gimg_webp_doc_state_t * st,
     const gimg_webp_frame_t * fr, GIMG_Raster ** out) {
   const unsigned char * vp8 = NULL;
@@ -254,9 +287,14 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
   const size_t canvas_stride = gimg_raster_stride_bytes(canvas);
   memset(canvas_px, 0, canvas_stride * (size_t)canvas_h);
 
+  int prev_was_key_frame = 0;
   for (size_t i = 0; i <= index; ++i) {
     const gimg_webp_frame_t * fr = &st->frames[i];
-    if (i > 0u) {
+    const int key = webp_is_key_frame(st, i, prev_was_key_frame);
+    if (key) {
+      memset(canvas_px, 0, canvas_stride * (size_t)canvas_h);
+    }
+    else if (i > 0u) {
       const gimg_webp_frame_t * prev = &st->frames[i - 1u];
       if (prev->dispose_background) {
         webp_clear_rect(canvas_px, canvas_stride, canvas_w, canvas_h, prev->x,
@@ -282,11 +320,17 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
       gimg_raster_destroy(canvas);
       return GIMG_ERR_CORRUPT;
     }
+    // Keyframes and ANMF "do not blend" replace the rectangle. Otherwise
+    // alpha-blend over the (possibly disposed) canvas, matching libwebp's
+    // BlendPixelNonPremult path. Keyframe must not OVER onto clear: the
+    // integer blend scale rounds RGB by ±1 against the bitstream.
+    const int replace = key || fr->blend_source;
     webp_blit_frame(canvas_px, canvas_stride, canvas_w, canvas_h,
         (const uint8_t *)gimg_raster_pixels(frame_ras),
         gimg_raster_stride_bytes(frame_ras), fr->x, fr->y, fr->width,
-        fr->height, fr->blend_source);
+        fr->height, replace);
     gimg_raster_destroy(frame_ras);
+    prev_was_key_frame = key;
   }
 
   *out_raster = canvas;

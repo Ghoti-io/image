@@ -13,11 +13,12 @@ duration, dispose and blend; decode returns the composited canvas), and
 
 Claims below are checked. The structure gate is `webpinfo` (committed
 fixtures under `tests/data/webp/` plus outside corpora from
-`tools/oracle/fetch.sh webp-refs`); lossless and lossy still pixels (and
-ALPH planes) on the committed fixtures are gated by `dwebp -pam`; animation
-frames are gated by `anim_dump -pam`; lossless saves round-trip through our
-decoder and are accepted by `dwebp`, Pillow and ImageMagick. All from the
-pinned `libwebp` 1.5.0 reference in `tools/oracle/containers/IMAGES`
+`tools/oracle/fetch.sh webp-refs`). Pixel identity for those same trees —
+stills vs `dwebp -pam` (with this library's EXIF orientation apply),
+animations vs `anim_dump -pam` — is `verify_webp_pixels.py`. Committed
+fixture PAMs remain the unit-test goldens. Lossless saves round-trip through
+our decoder and are accepted by `dwebp`, Pillow and ImageMagick. All from
+the pinned `libwebp` 1.5.0 reference in `tools/oracle/containers/IMAGES`
 (`deb13-8`).
 
 ## Normative references
@@ -142,16 +143,17 @@ measurement plan (`notes/image/webp-plan.md` §6).
   Google's `libwebp-test-data`, imazen `codec-corpus` (`webp-conformance/`),
   Pillow `Tests/images/*.webp`, image-rs `tests/images/webp/` (plus the
   regression panic fixture), and golang.org/x/image `testdata/*.webp`.
-  None of these are committed. Structure evidence covers every file
-  `webpinfo` accepts; files it refuses (intentional bad inputs in those
-  trees) are skipped.
+  None of these are committed. Structure and pixel gates cover every file
+  libwebp accepts; files it refuses (intentional bad inputs in those trees)
+  are skipped.
 - Structure vs `webpinfo` (`verify_webp_structure.py`).
-- Still pixels vs `dwebp -pam` for every lossless and lossy fixture under
-  `tests/data/webp/` (including ALPH+VP8 full RGBA). Outside corpora are
-  structure-gated today; pixel identity against `dwebp` for them is future
-  work.
-- Animation composites vs `anim_dump -pam` for `anim.webp`,
-  `anim_offset.webp` and `anim_dispose.webp`.
+- Still and animation pixels vs `dwebp` / `anim_dump`
+  (`verify_webp_pixels.py` via `dump_webp_raster`): committed fixtures and
+  outside corpora together. EXIF orientation is applied on decode (as for
+  every codec); the gate remaps `dwebp`'s bitstream pixels the same way.
+  Colour under a fully transparent pixel is not compared (`dwebp` keeps YUV
+  residue; `anim_dump` clears it).
+- Committed fixture PAMs vs unit tests for lossless/lossy/ALPH/anim.
 - Lossless save: round-trip identity through this decoder; outside acceptance
   by `dwebp`, Pillow and ImageMagick; size vs `cwebp -lossless -exact` on
   `lossless_gradient` published on the Save section (2160 vs 60 bytes).

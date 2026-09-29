@@ -811,6 +811,18 @@ $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_ico_raster.o $
 
 ico-dump-raster: $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) ## Build dump_ico_raster; used by tests/data/ico/verify_ico_pixels.py
 
+# Decode WebP files and dump each item's raster, for verify_webp_pixels.py.
+$(OBJ_DIR)/tests/dump_webp_raster.o: tests/codec/webp/dump_webp_raster.cpp $(FLAGS_STAMP)
+	@printf "\n### Compiling dump_webp_raster ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_webp_raster.o $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
+	@printf "\n### Linking dump_webp_raster ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_webp_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
+
+webp-dump-raster: $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) ## Build dump_webp_raster; used by tests/data/webp/verify_webp_pixels.py
+
 # The corpus is materialised out of the pinned image rather than fetched.
 #
 # bmpsuite's repository holds a generator, not the images, so "the corpus" is
@@ -1244,7 +1256,7 @@ else
 endif
 
 test: ## Make and run the Unit tests, then verify written output against outside decoders
-test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION)
+test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
@@ -1290,6 +1302,10 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	$(CURDIR)/tools/oracle/fetch.sh webp-refs && \
 	python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 	printf "\033[0;32mWebP structure verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying WebP pixels against dwebp/anim_dump ###\033[0m\n\n" && \
+	LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
+		python3 $(CURDIR)/tests/data/webp/verify_webp_pixels.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
+	printf "\033[0;32mWebP pixel verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying output structure ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 	printf "\033[0;32mOutput structure verification passed.\033[0m\n" && \
@@ -1301,7 +1317,7 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	printf "\033[0;32mICC corpus verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
-test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION)
+test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;36m%-30s %8s %10s %s\033[0m\n" "Test Suite" "Tests" "Time" "Status"; \
@@ -1348,6 +1364,8 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/du
 		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
 		$(CURDIR)/tools/oracle/fetch.sh webp-refs && \
 		python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
+			python3 $(CURDIR)/tests/data/webp/verify_webp_pixels.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 		python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 		printf "\033[0;32mPNG, JPEG, BMP, GIF, ICO and WebP output verified, and structurally checked.\033[0m\n"; \
 	else \
@@ -1440,10 +1458,12 @@ test-verify-ico: $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) ## Run ICO/CUR struc
 		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
 		printf "\033[0;32mICO/CUR verification passed.\033[0m\n"
 
-test-verify-webp: ## Run WebP structure verification against webpinfo
+test-verify-webp: $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) ## Run WebP structure and pixel verification against libwebp
 	@$(CURDIR)/tools/oracle/fetch.sh webp-refs && \
 		python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
-		printf "\033[0;32mWebP structure verification passed.\033[0m\n"
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
+			python3 $(CURDIR)/tests/data/webp/verify_webp_pixels.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
+		printf "\033[0;32mWebP structure and pixel verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
 test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
