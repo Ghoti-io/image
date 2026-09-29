@@ -31,7 +31,7 @@
 #include "../codec_internal.h"
 #include "webp_internal.h"
 
-#define WEBP_CAPABILITIES (GIMG_CAP_READ | GIMG_CAP_ICC)
+#define WEBP_CAPABILITIES (GIMG_CAP_READ | GIMG_CAP_ANIMATION | GIMG_CAP_ICC)
 #define GIMG_WEBP_MAGIC_LEN 4
 
 #if defined(__GNUC__) || defined(__clang__)

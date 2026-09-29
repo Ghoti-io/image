@@ -28,19 +28,23 @@ Codec capability bits (see `ghoti.io/image/codec.h`) form a bitmask returned by 
 | **GIMG_CAP_16BPC** | Codec supports 16-bit-per-channel samples. |
 | **GIMG_CAP_CMYK** | Codec supports four ink channels (`GIMG_PIXEL_CMYK8`). |
 
-What the three registered codecs declare:
+What the registered codecs declare:
 
 | Codec | READ | WRITE | ANIMATION | PALETTE | ICC | 16BPC | CMYK |
 |---|---|---|---|---|---|---|---|
 | PNG | yes | yes | yes (APNG) | yes | yes | yes | no |
 | JPEG | yes | yes | no | no | yes | yes | yes |
 | BMP | yes | yes | no | yes | yes | no | no |
+| GIF | yes | yes | yes | yes | no | no | no |
+| TIFF | yes | yes | no | yes | no | yes | yes |
+| ICO / CUR | yes | yes | no | no | no | no | no |
+| WebP | yes | no | yes | no | yes | no | no |
 
 BMP's absences are the format's, not the codec's: a BMP holds one image, its
 samples are a byte at most - a deeper raster is restated at 8 bits rather than
 refused - and its writer reports `GIMG_ERR_UNSUPPORTED` for a CMYK raster
 rather than reinterpreting four ink channels as colour. JPEG has no palette:
-T.81 describes none.
+T.81 describes none. WebP `WRITE` waits on Phase F (lossless only).
 
 ## Load options
 
@@ -158,10 +162,10 @@ Used by `gimg_item_decode()`.
 
 | Field                  | Read by | Use |
 |------------------------|---------|-----|
-| `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF, ICO | Reject if width×height (or the sum over frames) exceeds this. ICO applies it per entry. |
+| `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF, ICO, WebP | Reject if width×height (or the sum over frames) exceeds this. ICO applies it per entry; WebP applies it to the VP8X canvas. |
 | `max_memory`           | **BMP only** | A cap on what one image's pixel data may take. No other codec reads it. |
 | `max_metadata_size`    | PNG, JPEG, BMP, GIF, TIFF | Cap what is kept that is not pixels, including a *total* across segments. `0` is a four-mebibyte guard, not "no limit". |
-| `max_frame_count`      | PNG, GIF, TIFF | Max frames (APNG, GIF frames, TIFF's IFD chain and its SubIFD pages). A BMP bitmap array is several items and is not capped. ICO entries are alternates, not frames; their count is capped at `GIMG_ICO_MAX_ENTRIES` (64) instead. |
+| `max_frame_count`      | PNG, GIF, TIFF, WebP | Max frames (APNG, GIF frames, TIFF's IFD chain and its SubIFD pages, WebP ANMF). A BMP bitmap array is several items and is not capped. ICO entries are alternates, not frames; their count is capped at `GIMG_ICO_MAX_ENTRIES` (64) instead. |
 | `max_chunk_size`       | PNG, JPEG, GIF | Reject a segment larger than this (bomb protection). A BMP wrapping a PNG or JPEG passes it down. |
 
 Every declared field is read by something. `max_memory` is the ragged one: it
@@ -304,21 +308,22 @@ On any error return, **output (out) parameters** (e.g. `GIMG_Doc ** out_doc`, `G
 
 @section api_options_animation Animation (item frame API)
 
-For multi-frame formats (e.g. APNG), each **GIMG_Item** carries frame timing and compositing hints. Defined in `ghoti.io/image/doc.h`:
+For multi-frame formats (APNG, GIF, WebP), each **GIMG_Item** carries frame
+timing and compositing hints. Defined in `ghoti.io/image/doc.h`:
 
-- **Frame delay:** `gimg_item_frame_delay()` / `gimg_item_set_frame_delay()` — numerator and denominator (e.g. fcTL `delay_num`/`delay_den`). Delay in seconds = num/den; den 0 is treated as 100 when writing APNG.
-- **Dispose:** `gimg_item_dispose_op()` / `gimg_item_set_dispose_op()` — **GIMG_Dispose_Op**: `GIMG_DISPOSE_NONE`, `GIMG_DISPOSE_BACKGROUND`, `GIMG_DISPOSE_PREVIOUS`. How to clear the frame region before the next frame.
+- **Frame delay:** `gimg_item_frame_delay()` / `gimg_item_set_frame_delay()` — numerator and denominator (e.g. fcTL `delay_num`/`delay_den`, ANMF duration as ms/1000). Delay in seconds = num/den; den 0 is treated as 100 when writing APNG.
+- **Dispose:** `gimg_item_dispose_op()` / `gimg_item_set_dispose_op()` — **GIMG_Dispose_Op**: `GIMG_DISPOSE_NONE`, `GIMG_DISPOSE_BACKGROUND`, `GIMG_DISPOSE_PREVIOUS`. How to clear the frame region before the next frame. WebP ANMF has no PREVIOUS; dispose-to-background clears to transparent.
 - **Blend:** `gimg_item_blend_op()` / `gimg_item_set_blend_op()` — **GIMG_Blend_Op**: `GIMG_BLEND_SOURCE`, `GIMG_BLEND_OVER`. How to composite the frame over the canvas.
 
 Alongside them, the **document** carries how many times the animation asks to
-be played, because that is where both animated formats put it - GIF in a
-NETSCAPE2.0 Application Extension, APNG in `acTL`'s `num_plays`:
+be played, because that is where the animated formats put it - GIF in a
+NETSCAPE2.0 Application Extension, APNG in `acTL`'s `num_plays`, WebP in ANIM:
 
 - **Loop count:** `gimg_doc_loop_count()` / `gimg_doc_set_loop_count()` /
   `gimg_doc_clear_loop_count()`. Three states, not two. `gimg_doc_loop_count()`
   returns 1 when the document declares a count and writes it to the out-param,
   or 0 when it declares none, leaving the out-param untouched. A declared count
-  of **0 means repeat forever**, which both formats agree on; "declares none"
+  of **0 means repeat forever**, which the animated formats agree on; "declares none"
   is a separate answer, and what to do about it is the player's policy. A GIF
   with no NETSCAPE2.0 block is shown once by every browser, and that convention
   is deliberately not applied here, so that a caller can tell a convention from
@@ -332,18 +337,19 @@ wants to honour them can:
 - **Background colour:** `gimg_doc_background_color()` / `set` / `clear`.
   Reported as RGBA rather than as the index GIF states (89a 18) or the bKGD
   PNG states (11.3.4.1), because once a raster is decoded the palette an index
-  referred to is gone. Filled by GIF, resolved through the Global Color Table,
-  and by PNG from bKGD; JPEG and BMP have no field for one. **The alpha is part
-  of the answer**: GIF cannot leave the field out, so an encoder says "nothing
-  is behind this" by naming an entry its first frame marks transparent, and
-  that arrives as the colour at alpha 0. **Nothing paints it** unless
-  `gif_background` asks - a GIF decodes onto a transparent canvas, matching
-  every viewer real files were authored against, and of the PNG decoders in
-  common use only ImageMagick composites onto a bKGD at all. Setting or
-  clearing it reaches the file: GIF repoints its index and adds a table entry
-  if it must, PNG writes or removes the chunk, and a format that cannot state
-  the colour asked for writes nothing rather than the nearest thing it could
-  say.
+  referred to is gone. Filled by GIF (resolved through the Global Color Table),
+  by PNG from bKGD, and by WebP from the ANIM chunk; JPEG and BMP have no field
+  for one. **The alpha is part of the answer**: GIF cannot leave the field out,
+  so an encoder says "nothing is behind this" by naming an entry its first
+  frame marks transparent, and that arrives as the colour at alpha 0. **Nothing
+  paints it** unless `gif_background` asks - a GIF decodes onto a transparent
+  canvas, matching every viewer real files were authored against, and of the
+  PNG decoders in common use only ImageMagick composites onto a bKGD at all.
+  WebP dispose-to-background clears to transparent rather than painting the
+  ANIM colour. Setting or clearing it reaches the file: GIF repoints its index
+  and adds a table entry if it must, PNG writes or removes the chunk, and a
+  format that cannot state the colour asked for writes nothing rather than the
+  nearest thing it could say.
 - **Pixel aspect ratio:** `gimg_doc_pixel_aspect_ratio()` / `set` / `clear`,
   as a width-over-height ratio. This is "is a pixel square", which is not a
   physical density: GIF states it in its Pixel Aspect Ratio byte and PNG in
@@ -484,10 +490,10 @@ which is the thing a format-independent document model exists to avoid.
 | Role | What it is | Set by |
 |---|---|---|
 | `GIMG_ITEM_IMAGE` | A picture in its own right: a lone image, or one page of several. The default. | JPEG item 0, BMP item 0, and any single-item document - a still PNG, a one-image GIF, or an APNG whose acTL declares one frame |
-| `GIMG_ITEM_FRAME` | A moment in an animation; the delay, dispose and blend fields describe how it is played. | GIF and APNG, when the document has more than one item |
+| `GIMG_ITEM_FRAME` | A moment in an animation; the delay, dispose and blend fields describe how it is played. | GIF, APNG and WebP, when the document has more than one item |
 | `GIMG_ITEM_THUMBNAIL` | A small preview of another item. | JPEG item 1, the Exif IFD1 thumbnail |
 | `GIMG_ITEM_LEVEL` | A reduced-resolution version of another item — a pyramid level. | Nothing yet; reserved for TIFF |
-| `GIMG_ITEM_ALTERNATE` | Another rendering of the same picture, for the caller to choose between. | BMP `BA` array entries after the first |
+| `GIMG_ITEM_ALTERNATE` | Another rendering of the same picture, for the caller to choose between. | BMP `BA` array entries after the first; ICO/CUR directory entries after the first |
 
 `gimg_item_role_subject()` names the item a thumbnail, level or alternate is
 *of*. For `GIMG_ITEM_IMAGE` and `GIMG_ITEM_FRAME` it is the item's own index,

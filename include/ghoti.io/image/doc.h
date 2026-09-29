@@ -149,14 +149,14 @@ GIMG_API GIMG_Result gimg_doc_set_item_count(GIMG_Doc * doc, size_t count);
 /**
  * @brief Get how many times the animation asks to be played.
  *
- * Both animated formats this library reads carry such a count - GIF in a
- * NETSCAPE2.0 Application Extension, APNG in acTL's `num_plays` - and in both
- * a count of zero means "repeat forever".  A file may also carry no count at
- * all, which is not the same instruction: it is the absence of one, and what
- * to do about it is the player's policy rather than the file's.  A GIF with
- * no NETSCAPE2.0 block is shown once by every browser; that convention is not
- * applied here, because a library that guesses leaves the caller unable to
- * tell a guess from a reading.
+ * The animated formats this library reads carry such a count - GIF in a
+ * NETSCAPE2.0 Application Extension, APNG in acTL's `num_plays`, WebP in the
+ * ANIM chunk - and in each a count of zero means "repeat forever".  A file may
+ * also carry no count at all, which is not the same instruction: it is the
+ * absence of one, and what to do about it is the player's policy rather than
+ * the file's.  A GIF with no NETSCAPE2.0 block is shown once by every browser;
+ * that convention is not applied here, because a library that guesses leaves
+ * the caller unable to tell a guess from a reading.
  *
  * @param doc Document.
  * @param out_count On output, the count; 0 means forever.  Untouched when the
@@ -207,11 +207,11 @@ GIMG_API void gimg_doc_clear_loop_count(GIMG_Doc * doc);
 /**
  * @brief Get the colour the file says to put behind the image.
  *
- * GIF names it as an index into the Global Color Table (89a 18) and PNG as
- * bKGD (11.3.4.1); both are reported here as RGBA, because by the time a
- * caller has a decoded raster the palette an index referred to is gone. JPEG
- * and BMP have no such field, so a document from one of those never declares
- * a background.
+ * GIF names it as an index into the Global Color Table (89a 18), PNG as
+ * bKGD (11.3.4.1), and WebP as the ANIM chunk's background colour; all are
+ * reported here as RGBA, because by the time a caller has a decoded raster
+ * the palette an index referred to is gone. JPEG and BMP have no such field,
+ * so a document from one of those never declares a background.
  *
  * **The alpha is part of the answer.** A GIF has no way to leave the field
  * out - a file with a Global Color Table always names one of its entries - so

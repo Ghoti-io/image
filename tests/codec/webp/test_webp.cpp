@@ -217,6 +217,16 @@ void filter_alpha(const std::vector<uint8_t> & src, int w, int h, int filter,
 
 } // namespace
 
+TEST(Webp, Capabilities) {
+  const GIMG_Codec * codec = gimg_codec_by_name("webp");
+  ASSERT_NE(codec, nullptr);
+  const unsigned int caps = gimg_codec_capabilities(codec);
+  EXPECT_TRUE(caps & GIMG_CAP_READ);
+  EXPECT_TRUE(caps & GIMG_CAP_ANIMATION);
+  EXPECT_TRUE(caps & GIMG_CAP_ICC);
+  EXPECT_FALSE(caps & GIMG_CAP_WRITE);
+}
+
 TEST(Webp, ProbeAndLoadSimpleLossy) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(load_doc("simple_lossy.webp", &doc), GIMG_OK);
