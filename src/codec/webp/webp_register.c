@@ -21,8 +21,8 @@
 /**
  * @file
  *
- * Register the WebP codec. Phases A–C: container, VP8L decode, ALPH plane.
- * Lossy VP8, animation and encode remain later phases.
+ * Register the WebP codec. Phases A–E: container, VP8L, ALPH, VP8 keyframes,
+ * ANIM/ANMF. Encode remains Phase F.
  */
 
 #include <ghoti.io/image/macros.h>

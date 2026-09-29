@@ -254,10 +254,10 @@ typedef struct GIMG_Limits {
   size_t max_metadata_size;
   /**
    * 0 = no limit.
-   * @warning **Read by PNG, GIF and TIFF.** The formats whose multi-image form
-   * this was written for - APNG, GIF's own frames, and TIFF's IFD chain, where
-   * it bounds SubIFD pages too because they are appended through the same
-   * call. A BMP bitmap array also loads as several items and is not capped.
+   * @warning **Read by PNG, GIF, TIFF and WebP.** The formats whose multi-image
+   * form this was written for - APNG, GIF's own frames, TIFF's IFD chain
+   * (SubIFD pages too), and WebP ANMF frames. A BMP bitmap array also loads
+   * as several items and is not capped.
    */
   size_t max_frame_count;
   /**

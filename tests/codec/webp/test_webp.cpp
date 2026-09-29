@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * WebP Phase A–D: load, VP8L/VP8 decode, ALPH; refuse anim/save.
+ * WebP Phase A–E: load, VP8L/VP8/ALPH decode, ANIM/ANMF composite; refuse save.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -342,7 +342,20 @@ TEST(Webp, LoadAnimationWalksNestedChunks) {
   ASSERT_NE(st, nullptr);
   EXPECT_TRUE(st->is_animation);
   EXPECT_TRUE(st->has_vp8x);
-  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u);
+  EXPECT_EQ(st->frame_count, 2u);
+  EXPECT_EQ(gimg_item_role(gimg_doc_item(doc, 0)), GIMG_ITEM_FRAME);
+  EXPECT_EQ(gimg_item_role(gimg_doc_item(doc, 1)), GIMG_ITEM_FRAME);
+  uint16_t delay_num = 0, delay_den = 0;
+  gimg_item_frame_delay(gimg_doc_item(doc, 0), &delay_num, &delay_den);
+  EXPECT_EQ(delay_num, 100u);
+  EXPECT_EQ(delay_den, 1000u);
+  EXPECT_EQ(gimg_item_dispose_op(gimg_doc_item(doc, 0)), GIMG_DISPOSE_NONE);
+  EXPECT_EQ(gimg_item_blend_op(gimg_doc_item(doc, 0)), GIMG_BLEND_SOURCE);
+  EXPECT_EQ(gimg_item_blend_op(gimg_doc_item(doc, 1)), GIMG_BLEND_OVER);
+  uint32_t loop = 0;
+  EXPECT_TRUE(gimg_doc_loop_count(doc, &loop));
+  EXPECT_EQ(loop, 0u);
   int anmf = 0;
   int nested = 0;
   for (size_t i = 0; i < st->chunk_count; i++) {
@@ -448,7 +461,67 @@ TEST(Webp, DecodeAlphMethodFixturesMatchDwebp) {
   }
 }
 
-TEST(Webp, AnimAndSaveStillUnsupported) {
+TEST(Webp, DecodeAnimFramesMatchAnimDump) {
+  static const struct {
+    const char * webp;
+    const char * pam0;
+    const char * pam1;
+  } kCases[] = {
+      {"anim.webp", "anim_f_0000.pam", "anim_f_0001.pam"},
+      {"anim_offset.webp", "anim_offset_f_0000.pam", "anim_offset_f_0001.pam"},
+      {"anim_dispose.webp", "anim_dispose_f_0000.pam",
+          "anim_dispose_f_0001.pam"},
+  };
+  for (const auto & c : kCases) {
+    SCOPED_TRACE(c.webp);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(load_doc(c.webp, &doc), GIMG_OK);
+    ASSERT_EQ(gimg_doc_item_count(doc), 2u);
+    GIMG_Raster * r0 = nullptr;
+    GIMG_Raster * r1 = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &r0), GIMG_OK);
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 1), nullptr, &r1), GIMG_OK);
+    expect_raster_matches_pam(r0, c.pam0);
+    expect_raster_matches_pam(r1, c.pam1);
+    gimg_raster_destroy(r0);
+    gimg_raster_destroy(r1);
+    gimg_doc_destroy(doc);
+  }
+}
+
+TEST(Webp, AnimOffsetGeometry) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_doc("anim_offset.webp", &doc), GIMG_OK);
+  const gimg_webp_doc_state_t * st = state_of(doc);
+  ASSERT_NE(st, nullptr);
+  ASSERT_EQ(st->frame_count, 2u);
+  EXPECT_EQ(st->canvas_width, 8u);
+  EXPECT_EQ(st->canvas_height, 8u);
+  EXPECT_EQ(st->frames[0].x, 0u);
+  EXPECT_EQ(st->frames[0].y, 0u);
+  EXPECT_EQ(st->frames[0].width, 8u);
+  EXPECT_EQ(st->frames[0].height, 8u);
+  EXPECT_EQ(st->frames[1].x, 2u);
+  EXPECT_EQ(st->frames[1].y, 2u);
+  EXPECT_EQ(st->frames[1].width, 4u);
+  EXPECT_EQ(st->frames[1].height, 4u);
+  uint32_t loop = 99;
+  EXPECT_TRUE(gimg_doc_loop_count(doc, &loop));
+  EXPECT_EQ(loop, 2u);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, AnimDisposeBackground) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_doc("anim_dispose.webp", &doc), GIMG_OK);
+  EXPECT_EQ(gimg_item_dispose_op(gimg_doc_item(doc, 0)),
+      GIMG_DISPOSE_BACKGROUND);
+  EXPECT_EQ(gimg_item_dispose_op(gimg_doc_item(doc, 1)), GIMG_DISPOSE_NONE);
+  EXPECT_EQ(gimg_item_blend_op(gimg_doc_item(doc, 1)), GIMG_BLEND_OVER);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveStillUnsupported) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(load_doc("simple_lossy.webp", &doc), GIMG_OK);
   GIMG_Raster * raster = nullptr;
@@ -461,11 +534,6 @@ TEST(Webp, AnimAndSaveStillUnsupported) {
   EXPECT_EQ(gimg_doc_save(doc, out, "webp", nullptr, nullptr),
       GIMG_ERR_UNSUPPORTED);
   gimg_stream_destroy(out);
-  gimg_doc_destroy(doc);
-
-  ASSERT_EQ(load_doc("anim.webp", &doc), GIMG_OK);
-  EXPECT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_ERR_UNSUPPORTED);
   gimg_doc_destroy(doc);
 }
 

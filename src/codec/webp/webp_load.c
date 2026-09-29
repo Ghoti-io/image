@@ -23,7 +23,8 @@
  *
  * WebP Phase A load: RIFF walk, VP8X canvas, ICCP/EXIF/XMP carriage.
  * Phase B: decode simple VP8L and VP8X+VP8L (alpha inside VP8L).
- * Phase C/D: VP8 lossy (+ optional ALPH plane). Animation remains Phase E.
+ * Phase C/D: VP8 lossy (+ optional ALPH plane).
+ * Phase E: ANIM/ANMF items and composited frame decode.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -70,14 +71,24 @@ static GIMG_Result webp_push_chunk(gimg_webp_doc_state_t * st, uint32_t fourcc,
 /**
  * List nested bitstream chunks inside an ANMF payload the way webpinfo does:
  * after the 16-byte ANMF header, optional ALPH then VP8 / VP8L.
+ * When @a frame is non-NULL, also records payload spans on that frame.
  */
 static GIMG_Result webp_walk_anmf_payload(gimg_webp_doc_state_t * st,
     size_t anmf_payload_off, uint32_t anmf_payload_size,
-    GIMG_Diagnostics * diagnostics) {
+    gimg_webp_frame_t * frame, GIMG_Diagnostics * diagnostics) {
   if (anmf_payload_size < GIMG_WEBP_ANMF_HEADER_SIZE) {
     webp_load_diag(diagnostics, anmf_payload_off, GIMG_DIAG_ERROR,
         "ANMF shorter than its header");
     return GIMG_ERR_CORRUPT;
+  }
+  if (frame) {
+    GIMG_Result hr = gimg_webp_parse_anmf_header(
+        st->file_bytes + anmf_payload_off, frame);
+    if (hr != GIMG_OK) {
+      webp_load_diag(diagnostics, anmf_payload_off, GIMG_DIAG_ERROR,
+          "ANMF header rejected");
+      return hr;
+    }
   }
   size_t off = anmf_payload_off + GIMG_WEBP_ANMF_HEADER_SIZE;
   size_t end = anmf_payload_off + (size_t)anmf_payload_size;
@@ -103,12 +114,24 @@ static GIMG_Result webp_walk_anmf_payload(gimg_webp_doc_state_t * st,
     }
     if (fourcc == GIMG_WEBP_ALPH) {
       st->has_alpha = 1;
+      if (frame) {
+        frame->alph_payload_off = payload;
+        frame->alph_payload_size = size;
+      }
     }
     else if (fourcc == GIMG_WEBP_VP8) {
       st->is_lossy = 1;
+      if (frame) {
+        frame->vp8_payload_off = payload;
+        frame->vp8_payload_size = size;
+      }
     }
     else if (fourcc == GIMG_WEBP_VP8L) {
       st->is_lossless = 1;
+      if (frame) {
+        frame->vp8l_payload_off = payload;
+        frame->vp8l_payload_size = size;
+      }
       int alpha = 0;
       uint32_t w = 0, h = 0;
       if (gimg_webp_peek_vp8l_dims(
@@ -126,6 +149,25 @@ static GIMG_Result webp_walk_anmf_payload(gimg_webp_doc_state_t * st,
   return GIMG_OK;
 }
 
+static GIMG_Result webp_push_frame(gimg_webp_doc_state_t * st,
+    const gimg_webp_frame_t * frame, size_t max_frames,
+    GIMG_Diagnostics * diagnostics, size_t diag_off) {
+  if (st->frame_count >= max_frames) {
+    webp_load_diag(diagnostics, diag_off, GIMG_DIAG_ERROR,
+        "ANMF count exceeds max_frame_count");
+    return GIMG_ERR_LIMIT;
+  }
+  gimg_webp_frame_t * grown = (gimg_webp_frame_t *)gimg_realloc(st->allocator,
+      st->frames, (st->frame_count + 1u) * sizeof(gimg_webp_frame_t));
+  if (!grown) {
+    return GIMG_ERR_OOM;
+  }
+  st->frames = grown;
+  st->frames[st->frame_count] = *frame;
+  st->frame_count++;
+  return GIMG_OK;
+}
+
 void gimg_webp_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   (void)codec;
   gimg_webp_doc_state_t * state = (gimg_webp_doc_state_t *)codec_private;
@@ -134,6 +176,7 @@ void gimg_webp_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   }
   const GIMG_Allocator * alloc = state->allocator;
   gimg_free(alloc, state->chunks);
+  gimg_free(alloc, state->frames);
   gimg_free(alloc, state->file_bytes);
   gimg_free(alloc, state);
 }
@@ -145,9 +188,12 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
     return GIMG_ERR_INTERNAL;
   }
   *out_doc = NULL;
-  (void)options;
 
   const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
+  size_t max_frames = GIMG_WEBP_DEFAULT_MAX_FRAMES;
+  if (options && options->limits && options->limits->max_frame_count > 0u) {
+    max_frames = options->limits->max_frame_count;
+  }
   size_t file_size = gimg_stream_size(stream);
   if (file_size == GIMG_STREAM_SIZE_UNKNOWN) {
     webp_load_diag(diagnostics, 0u, GIMG_DIAG_ERROR,
@@ -270,14 +316,48 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
     else if (fourcc == GIMG_WEBP_ALPH) {
       state->has_alpha = 1;
     }
-    else if (fourcc == GIMG_WEBP_ANIM || fourcc == GIMG_WEBP_ANMF) {
+    else if (fourcc == GIMG_WEBP_ANIM) {
       state->is_animation = 1;
-      if (fourcc == GIMG_WEBP_ANMF) {
-        r = webp_walk_anmf_payload(state, payload, size, diagnostics);
-        if (r != GIMG_OK) {
+      if (size < 6u) {
+        webp_load_diag(diagnostics, payload, GIMG_DIAG_ERROR,
+            "ANIM shorter than 6 bytes");
+        gimg_webp_free_doc_state(codec, state);
+        return GIMG_ERR_CORRUPT;
+      }
+      // ANIM stores bgcolor as BGRA; the document background is RGBA.
+      state->bgcolor_rgba[0] = bytes[payload + 2];
+      state->bgcolor_rgba[1] = bytes[payload + 1];
+      state->bgcolor_rgba[2] = bytes[payload + 0];
+      state->bgcolor_rgba[3] = bytes[payload + 3];
+      state->loop_count = (uint16_t)(bytes[payload + 4] |
+          ((uint16_t)bytes[payload + 5] << 8));
+      state->has_anim_chunk = 1;
+    }
+    else if (fourcc == GIMG_WEBP_ANMF) {
+      state->is_animation = 1;
+      gimg_webp_frame_t frame;
+      memset(&frame, 0, sizeof(frame));
+      r = webp_walk_anmf_payload(
+          state, payload, size, &frame, diagnostics);
+      if (r != GIMG_OK) {
+        gimg_webp_free_doc_state(codec, state);
+        return r;
+      }
+      if ((uint64_t)frame.x + frame.width > state->canvas_width ||
+          (uint64_t)frame.y + frame.height > state->canvas_height) {
+        // Canvas may not be known yet if VP8X was missing; reject only when
+        // we have dimensions.
+        if (state->canvas_width > 0u && state->canvas_height > 0u) {
+          webp_load_diag(diagnostics, payload, GIMG_DIAG_ERROR,
+              "ANMF rectangle outside canvas");
           gimg_webp_free_doc_state(codec, state);
-          return r;
+          return GIMG_ERR_CORRUPT;
         }
+      }
+      r = webp_push_frame(state, &frame, max_frames, diagnostics, payload);
+      if (r != GIMG_OK) {
+        gimg_webp_free_doc_state(codec, state);
+        return r;
       }
     }
     else if (fourcc == GIMG_WEBP_ICCP) {
@@ -320,8 +400,10 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   GIMG_Doc * doc = NULL;
   r = gimg_doc_create_with_allocator(alloc, &doc);
+  const size_t item_count =
+      (state->frame_count > 0u) ? state->frame_count : 1u;
   if (r == GIMG_OK) {
-    r = gimg_doc_set_item_count(doc, 1u);
+    r = gimg_doc_set_item_count(doc, item_count);
   }
   if (r != GIMG_OK) {
     if (doc) {
@@ -329,6 +411,34 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
     gimg_webp_free_doc_state(codec, state);
     return r;
+  }
+
+  if (state->has_anim_chunk) {
+    gimg_doc_set_loop_count(doc, state->loop_count);
+    gimg_doc_set_background_color(doc, state->bgcolor_rgba);
+  }
+  for (size_t i = 0; i < state->frame_count; ++i) {
+    const gimg_webp_frame_t * fr = &state->frames[i];
+    GIMG_Item * item = gimg_doc_item(doc, i);
+    if (!item) {
+      gimg_doc_destroy(doc);
+      gimg_webp_free_doc_state(codec, state);
+      return GIMG_ERR_INTERNAL;
+    }
+    gimg_item_set_role(item,
+        state->frame_count > 1u ? GIMG_ITEM_FRAME : GIMG_ITEM_IMAGE, i);
+    {
+      // Item delay is uint16/uint16; ANMF duration is 24-bit ms. Cap rather
+      // than lose the denominator (1000) when a frame is longer than ~65s.
+      const uint16_t num = (fr->duration_ms > 65535u)
+          ? (uint16_t)65535u
+          : (uint16_t)fr->duration_ms;
+      gimg_item_set_frame_delay(item, num, 1000u);
+    }
+    gimg_item_set_dispose_op(item,
+        fr->dispose_background ? GIMG_DISPOSE_BACKGROUND : GIMG_DISPOSE_NONE);
+    gimg_item_set_blend_op(
+        item, fr->blend_source ? GIMG_BLEND_SOURCE : GIMG_BLEND_OVER);
   }
 
   if (state->exif && state->exif_size > 0u) {
@@ -391,8 +501,8 @@ GIMG_Result gimg_webp_decode(GIMG_Codec * codec, const GIMG_Item * item,
   const gimg_webp_doc_state_t * st =
       (const gimg_webp_doc_state_t *)doc->codec_private;
 
-  if (st->is_animation) {
-    return GIMG_ERR_UNSUPPORTED;
+  if (st->frame_count > 0u) {
+    return gimg_webp_decode_animation_frame(st, item->index, out_raster);
   }
 
   const gimg_webp_chunk_t * vp8 = NULL;
@@ -411,55 +521,45 @@ GIMG_Result gimg_webp_decode(GIMG_Codec * codec, const GIMG_Item * item,
     }
   }
 
-  // Simple / extended lossless: VP8L alone (alpha may live inside VP8L).
-  if (vp8l && !vp8 && !alph) {
-    const size_t payload_off = vp8l->offset + 8u;
-    if (payload_off + (size_t)vp8l->payload_size > st->file_size) {
-      return GIMG_ERR_CORRUPT;
-    }
-    return gimg_webp_vp8l_decode(st->file_bytes + payload_off,
-        (size_t)vp8l->payload_size, st->allocator, out_raster);
-  }
-
-  // Lossy: VP8 keyframe, optional ALPH replaces the opaque alpha plane.
-  if (vp8 && !vp8l) {
+  const unsigned char * vp8p = NULL;
+  size_t vp8_size = 0;
+  const unsigned char * vp8lp = NULL;
+  size_t vp8l_size = 0;
+  const unsigned char * alphp = NULL;
+  size_t alph_size = 0;
+  if (vp8) {
     const size_t payload_off = vp8->offset + 8u;
     if (payload_off + (size_t)vp8->payload_size > st->file_size) {
       return GIMG_ERR_CORRUPT;
     }
-    GIMG_Result r = gimg_webp_vp8_decode(st->file_bytes + payload_off,
-        (size_t)vp8->payload_size, st->allocator, out_raster);
-    if (r != GIMG_OK) {
-      return r;
+    vp8p = st->file_bytes + payload_off;
+    vp8_size = vp8->payload_size;
+  }
+  if (vp8l) {
+    const size_t payload_off = vp8l->offset + 8u;
+    if (payload_off + (size_t)vp8l->payload_size > st->file_size) {
+      return GIMG_ERR_CORRUPT;
     }
-    if (alph) {
-      const size_t alph_off = alph->offset + 8u;
-      if (alph_off + (size_t)alph->payload_size > st->file_size) {
-        gimg_raster_destroy(*out_raster);
-        *out_raster = NULL;
-        return GIMG_ERR_CORRUPT;
-      }
-      const uint32_t w = gimg_raster_width(*out_raster);
-      const uint32_t h = gimg_raster_height(*out_raster);
-      uint8_t * alpha = NULL;
-      r = gimg_webp_alpha_decode(st->file_bytes + alph_off,
-          (size_t)alph->payload_size, w, h, st->allocator, &alpha);
-      if (r != GIMG_OK) {
-        gimg_raster_destroy(*out_raster);
-        *out_raster = NULL;
-        return r;
-      }
-      uint8_t * px = (uint8_t *)gimg_raster_pixels(*out_raster);
-      const size_t stride = gimg_raster_stride_bytes(*out_raster);
-      for (uint32_t y = 0; y < h; ++y) {
-        for (uint32_t x = 0; x < w; ++x) {
-          px[(size_t)y * stride + (size_t)x * 4u + 3u] =
-              alpha[(size_t)y * w + x];
-        }
-      }
-      gimg_free(st->allocator, alpha);
+    vp8lp = st->file_bytes + payload_off;
+    vp8l_size = vp8l->payload_size;
+  }
+  if (alph) {
+    const size_t alph_off = alph->offset + 8u;
+    if (alph_off + (size_t)alph->payload_size > st->file_size) {
+      return GIMG_ERR_CORRUPT;
     }
-    return GIMG_OK;
+    alphp = st->file_bytes + alph_off;
+    alph_size = alph->payload_size;
+  }
+
+  // Still image: VP8L alone, or VP8 with optional ALPH. Not both bitstreams.
+  if (vp8lp && !vp8p) {
+    return gimg_webp_decode_picture(
+        NULL, 0u, vp8lp, vp8l_size, NULL, 0u, st->allocator, out_raster);
+  }
+  if (vp8p && !vp8lp) {
+    return gimg_webp_decode_picture(
+        vp8p, vp8_size, NULL, 0u, alphp, alph_size, st->allocator, out_raster);
   }
 
   return GIMG_ERR_UNSUPPORTED;

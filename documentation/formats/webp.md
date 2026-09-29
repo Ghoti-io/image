@@ -2,19 +2,21 @@
 
 # WebP
 
-Phases A–D of the WebP codec: the RIFF/`WEBP` container, `VP8X` canvas
+Phases A–E of the WebP codec: the RIFF/`WEBP` container, `VP8X` canvas
 geometry, chunk inventory (including bitstream chunks nested in `ANMF`),
 carriage of `ICCP` / `EXIF` / `XMP `, **VP8L lossless picture decode**,
-**ALPH plane decode**, and **VP8 lossy keyframe decode** (with optional ALPH
-merged into RGBA). Animation items and encode are later phases; see
-\ref image_format_references "Formats" and `notes/image/webp-plan.md`.
+**ALPH plane decode**, **VP8 lossy keyframe decode** (with optional ALPH
+merged into RGBA), and **ANIM/ANMF animation** (frame items with offset,
+duration, dispose and blend; decode returns the composited canvas). Encode
+is a later phase; see \ref image_format_references "Formats" and
+`notes/image/webp-plan.md`.
 
 Claims below are checked. The structure gate is `webpinfo` (committed
 fixtures under `tests/data/webp/` plus outside corpora from
-`tools/oracle/fetch.sh webp-refs`); lossless and lossy pixels (and ALPH
-planes) on the committed fixtures are gated by `dwebp -pam`, all from the
-pinned `libwebp` 1.5.0 reference in `tools/oracle/containers/IMAGES`
-(`deb13-8`).
+`tools/oracle/fetch.sh webp-refs`); lossless and lossy still pixels (and
+ALPH planes) on the committed fixtures are gated by `dwebp -pam`; animation
+frames are gated by `anim_dump -pam`. All from the pinned `libwebp` 1.5.0
+reference in `tools/oracle/containers/IMAGES` (`deb13-8`).
 
 ## Normative references
 
@@ -59,6 +61,12 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   filter, fancy 4:2:0 upsample, and libwebp's fixed-point YUV→RGB. When an
   `ALPH` chunk is present, its plane replaces the opaque alpha channel
   sample-wise. Inter frames are refused.
+- **Animation** (`ANIM` / `ANMF`): one `GIMG_ITEM_FRAME` per ANMF (or a single
+  `IMAGE` when there is only one frame), with duration in ms/1000, dispose
+  `NONE`/`BACKGROUND`, and blend `SOURCE`/`OVER`. Frame offsets stay in
+  codec-private state. Decode of item *i* returns the full VP8X canvas after
+  compositing frames `0…i`, matching `anim_dump`. `ANIM` loop count and
+  background colour are carried on the document. `max_frame_count` caps ANMFs.
 
 ## YUV→RGB (a match, not a derivation)
 
@@ -85,7 +93,7 @@ plan (`notes/image/webp-plan.md` §6).
 | VP8L decode | byte-identical to `dwebp -pam` | corrupt bitstream → `GIMG_ERR_CORRUPT` |
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
 | VP8 decode | keyframe → RGBA, optional ALPH merge; byte-identical to `dwebp -pam` | inter frame / corrupt → `GIMG_ERR_CORRUPT` / `UNSUPPORTED` |
-| Animation items | chunks walked | frames not yet `GIMG_ITEM_FRAME` (phase E); decode refused |
+| Animation | ANMF → `FRAME` items; composite matches `anim_dump -pam` | rectangle past canvas / no bitstream → `GIMG_ERR_CORRUPT`; over `max_frame_count` → `GIMG_ERR_LIMIT` |
 | Encode | — | `GIMG_ERR_UNSUPPORTED` |
 
 ## Where this codec differs from libwebp
@@ -93,8 +101,8 @@ plan (`notes/image/webp-plan.md` §6).
 | Case | This codec | Elsewhere |
 |---|---|---|
 | VP8 / VP8L / ALPH samples | match `dwebp -pam` | same |
-| Anim decode | refused until phase E | `anim_dump` expands frames |
-| Animation model | one `IMAGE` item; inventory only | `anim_dump` expands frames |
+| Anim composite | match `anim_dump -pam` | same |
+| Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
 | VP8 implementation | adapted libwebp 1.5.0 C paths in `vp8ref/` (BSD; see `vp8ref/COPYING`) behind LGPL wrappers | same algorithm as `dwebp` by construction |
@@ -102,7 +110,8 @@ plan (`notes/image/webp-plan.md` §6).
 ## Tested scope
 
 - Fixtures under `tests/data/webp/`: simple lossy/lossless, lossy+alpha,
-  lossless+alpha, EXIF via `webpmux`, animation via `img2webp`, gradient and
+  lossless+alpha, EXIF via `webpmux`, animation via `img2webp` / `webpmux`
+  (including a non-zero frame offset and dispose-to-background), gradient and
   checkerboard lossless files, ALPH method 0/1 fixtures from `cwebp`
   `-alpha_method` / `-alpha_filter`, plus crafted uncompressed ALPH round
   trips for every spatial filter, and truncated / oversized-RIFF corrupt
@@ -116,18 +125,20 @@ plan (`notes/image/webp-plan.md` §6).
   `webpinfo` accepts; files it refuses (intentional bad inputs in those
   trees) are skipped.
 - Structure vs `webpinfo` (`verify_webp_structure.py`).
-- Pixels vs `dwebp -pam` for every lossless and lossy fixture under
+- Still pixels vs `dwebp -pam` for every lossless and lossy fixture under
   `tests/data/webp/` (including ALPH+VP8 full RGBA). Outside corpora are
   structure-gated today; pixel identity against `dwebp` for them is future
   work.
+- Animation composites vs `anim_dump -pam` for `anim.webp`,
+  `anim_offset.webp` and `anim_dispose.webp`.
 - Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
-  anim/save unsupported.
+  anim geometry/dispose/blend, save unsupported.
 - Fuzz: `fuzz_webp_load` with seeds from the fixture set.
 
 ## Not implemented
 
-- Animation items (phase E), VP8L encode (F). Lossy encode is a documented
-  refusal until an RDO measurement plan exists.
+- VP8L encode (phase F). Lossy encode is a documented refusal until an RDO
+  measurement plan exists.
 
 ---
 

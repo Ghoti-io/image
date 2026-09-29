@@ -23,7 +23,7 @@
  *
  * Internal WebP codec structures. Phase A: RIFF container, VP8X, chunk walk,
  * metadata carriage and canvas geometry. Phase B: VP8L lossless decode.
- * Phase C: ALPH. Phase D: VP8 lossy keyframe decode.
+ * Phase C: ALPH. Phase D: VP8 lossy keyframe decode. Phase E: ANIM/ANMF.
  */
 
 #ifndef GHOTI_IO_GIMG_SRC_CODEC_WEBP_WEBP_INTERNAL_H
@@ -75,6 +75,34 @@ extern "C" {
 /** ANMF header is 16 bytes before the nested bitstream. */
 #define GIMG_WEBP_ANMF_HEADER_SIZE 16u
 
+/** Hard cap on ANMF frames when limits->max_frame_count is unset. */
+#define GIMG_WEBP_DEFAULT_MAX_FRAMES 1024u
+
+/**
+ * @brief One ANMF frame: geometry, timing, dispose/blend and bitstream spans.
+ *
+ * Offsets are canvas pixels (the on-disk 24-bit fields store half-pixels;
+ * readers multiply by two, matching libwebp). Bitstream offsets are absolute
+ * file offsets of the nested chunk *payload* (past the eight-byte header),
+ * or zero when that chunk is absent. Decode composites onto the VP8X canvas;
+ * the item itself carries no offset.
+ */
+typedef struct {
+  uint32_t x;
+  uint32_t y;
+  uint32_t width;
+  uint32_t height;
+  uint32_t duration_ms;
+  uint8_t dispose_background; ///< 1 = dispose to transparent background.
+  uint8_t blend_source;       ///< 1 = replace (NO_BLEND); 0 = alpha OVER.
+  size_t alph_payload_off;
+  uint32_t alph_payload_size;
+  size_t vp8_payload_off;
+  uint32_t vp8_payload_size;
+  size_t vp8l_payload_off;
+  uint32_t vp8l_payload_size;
+} gimg_webp_frame_t;
+
 extern const unsigned char gimg_webp_signature[GIMG_WEBP_SIGNATURE_LEN];
 
 int gimg_webp_probe(
@@ -100,7 +128,7 @@ typedef struct {
  * @brief Per-document state after a successful load.
  *
  * Picture payloads are retained. Decode covers simple VP8L, VP8X+VP8L,
- * VP8 keyframes, and VP8+ALPH. Animation remains a later phase.
+ * VP8 keyframes, VP8+ALPH, and ANIM/ANMF frame compositing.
  */
 typedef struct {
   const GIMG_Allocator * allocator;
@@ -108,6 +136,8 @@ typedef struct {
   size_t file_size;
   gimg_webp_chunk_t * chunks;
   size_t chunk_count;
+  gimg_webp_frame_t * frames;
+  size_t frame_count;
   uint32_t canvas_width;
   uint32_t canvas_height;
   uint8_t vp8x_flags; ///< 0 when no VP8X chunk.
@@ -116,6 +146,9 @@ typedef struct {
   int is_animation;   ///< From VP8X or an ANIM/ANMF chunk.
   int is_lossy;       ///< At least one VP8  bitstream present.
   int is_lossless;    ///< At least one VP8L bitstream present.
+  int has_anim_chunk;
+  uint8_t bgcolor_rgba[4]; ///< From ANIM; meaningful when has_anim_chunk.
+  uint16_t loop_count;     ///< From ANIM; 0 = forever.
   const unsigned char * iccp;
   size_t iccp_size;
   const unsigned char * exif;
@@ -194,6 +227,32 @@ GIMG_Result gimg_webp_alpha_decode(const unsigned char * data, size_t size,
  */
 GIMG_Result gimg_webp_vp8_decode(const unsigned char * data, size_t size,
     const GIMG_Allocator * alloc, GIMG_Raster ** out_raster);
+
+/**
+ * @brief Decode one still picture (VP8 and/or VP8L, optional ALPH) to RGBA8.
+ *
+ * Used by both the still-image path and per-ANMF frame decode. Exactly one of
+ * @a vp8 / @a vp8l must be non-NULL.
+ */
+GIMG_Result gimg_webp_decode_picture(const unsigned char * vp8, size_t vp8_size,
+    const unsigned char * vp8l, size_t vp8l_size, const unsigned char * alph,
+    size_t alph_size, const GIMG_Allocator * alloc, GIMG_Raster ** out_raster);
+
+/**
+ * @brief Parse the 16-byte ANMF header into @a frame geometry and flags.
+ * @return GIMG_OK, or GIMG_ERR_CORRUPT when the rectangle is empty.
+ */
+GIMG_Result gimg_webp_parse_anmf_header(const unsigned char * header16,
+    gimg_webp_frame_t * frame);
+
+/**
+ * @brief Composite frames [0, index] onto the canvas and return that raster.
+ *
+ * Matches libwebp `anim_dump`: dispose-to-background clears the previous
+ * frame rectangle to transparent; blend OVER is non-premultiplied alpha.
+ */
+GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
+    size_t index, GIMG_Raster ** out_raster);
 
 /** VP8L transform types (bitstream order). */
 enum {
