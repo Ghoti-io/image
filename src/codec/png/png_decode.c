@@ -67,6 +67,7 @@
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/color/color.h>
+#include <ghoti.io/color/cicp.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <stddef.h>
@@ -137,93 +138,13 @@ static bool gimg_png_gamut_from_chrm(
 }
 /** @} */
 
-/** @name H.273 code points
+/** @name Colour description from ancillary chunks
  *
- * cICP carries ITU-T H.273 code points.  Only PNG uses them here, so the
- * mapping lives beside the reader rather than in the colour module; what it
- * maps *to* is shared, which is the part that matters.
+ * Priority is cICP (PNG Third Edition), then sRGB, then iCCP, then cHRM+gAMA.
+ * Container parsing stays here; H.273 code-point meaning is
+ * ::gcol_cicp_to_color_info in libs/color.
  * @{
  */
-
-/** H.273 Table 2 (ColourPrimaries) to a gamut this library names.
- *
- * Code point 11 is theatrical DCI-P3, which shares Display P3's primaries
- * under a different white.  It is deliberately absent: naming it would need a
- * table entry that breaks the "no two named gamuts share their primaries"
- * invariant gcol_gamut_identify() relies on, and that is a decision for the
- * colour module rather than a side effect of reading a PNG chunk.
- */
-static GCOL_Primaries gimg_png_primaries_from_h273(unsigned int code) {
-  switch (code) {
-  case 1u: // BT.709, which sRGB shares.
-    return GCOL_PRIMARIES_SRGB;
-  case 9u: // BT.2020 / BT.2100.
-    return GCOL_PRIMARIES_BT2020;
-  case 12u: // SMPTE EG 432-1, P3-D65 - Display P3.
-    return GCOL_PRIMARIES_DISPLAY_P3;
-  default:
-    return GCOL_PRIMARIES_UNKNOWN;
-  }
-}
-
-/** H.273 Table 3 (TransferCharacteristics) into @p out_info.
- *
- * Sets the transfer, and with it the reference, scale and peak luminance that
- * transfer implies - gcol_transfer_conventions() owns that part, so PQ's
- * 10000 cd/m^2 is stated once rather than here.
- *
- * Code points 1, 6, 14 and 15 are all BT.709's curve at different bit depths.
- * It is written as a parametric curve rather than given a name of its own:
- * the inverse OETF is exactly an ICC parametricCurveType type 3, so the terms
- * say it precisely and nothing has to approximate.
- *
- * @return true when the code point said something.
- */
-static bool gimg_png_transfer_from_h273(
-    unsigned int code, GCOL_Color_Info * out_info) {
-  switch (code) {
-  case 1u:
-  case 6u:
-  case 14u:
-  case 15u: {
-    // L = ((V + 0.099) / 1.099)^(1/0.45) for V >= 0.081, else V / 4.5.
-    out_info->transfer = GCOL_TRANSFER_PARAMETRIC;
-    out_info->transfer_params[0] = 1.0 / 0.45;   // g
-    out_info->transfer_params[1] = 1.0 / 1.099;  // a
-    out_info->transfer_params[2] = 0.099 / 1.099; // b
-    out_info->transfer_params[3] = 1.0 / 4.5;    // c
-    out_info->transfer_params[4] = 0.081;        // d
-    break;
-  }
-  case 4u: // BT.470 System M, gamma 2.2.
-    out_info->transfer = GCOL_TRANSFER_GAMMA;
-    out_info->gamma_value = 2.2;
-    break;
-  case 5u: // BT.470 System B/G, gamma 2.8.
-    out_info->transfer = GCOL_TRANSFER_GAMMA;
-    out_info->gamma_value = 2.8;
-    break;
-  case 8u:
-    out_info->transfer = GCOL_TRANSFER_LINEAR;
-    break;
-  case 13u:
-    out_info->transfer = GCOL_TRANSFER_SRGB;
-    break;
-  case 16u:
-    out_info->transfer = GCOL_TRANSFER_PQ;
-    break;
-  case 18u:
-    out_info->transfer = GCOL_TRANSFER_HLG;
-    break;
-  default:
-    return false;
-  }
-  (void)gcol_transfer_conventions(out_info->transfer, &out_info->reference,
-      &out_info->sample_scale, &out_info->white_luminance);
-  return true;
-}
-/** @} */
-
 static bool gimg_png_fill_color_info_from_ancillary(
     const gimg_png_doc_state_t * state, const GIMG_Allocator * alloc,
     const GIMG_Limits * limits, GCOL_Color_Info * out_info,
@@ -263,8 +184,8 @@ static bool gimg_png_fill_color_info_from_ancillary(
   //
   // What is translated is whatever GCOL_Color_Info can now state, which since
   // the gamut became coordinates is most of what H.273 names. A code point
-  // outside the tables above is still left unsaid rather than rounded to a
-  // neighbour, and the chunk is kept either way, so nothing is lost.
+  // H.273 does not map is left unsaid rather than rounded to a neighbour, and
+  // the chunk is kept either way, so nothing is lost.
   if (first_cicp != (size_t)-1) {
     const unsigned char * p = state->ancillary[first_cicp].payload;
     size_t len = state->ancillary[first_cicp].payload_size;
@@ -278,15 +199,7 @@ static bool gimg_png_fill_color_info_from_ancillary(
       if (matrix != 0u || full_range != 1u) {
         return false;
       }
-      bool said = false;
-      GCOL_Primaries named = gimg_png_primaries_from_h273(primaries);
-      if (named != GCOL_PRIMARIES_UNKNOWN) {
-        said = gcol_color_info_set_gamut(out_info, named);
-      }
-      if (gimg_png_transfer_from_h273(transfer, out_info)) {
-        said = true;
-      }
-      return said;
+      return gcol_cicp_to_color_info(primaries, transfer, out_info);
     }
   }
 
