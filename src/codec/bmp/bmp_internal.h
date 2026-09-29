@@ -41,6 +41,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /** BMP file signature length (the "BM" magic). */
 #define GIMG_BMP_SIGNATURE_LEN 2
 
@@ -392,6 +396,23 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc);
 
+/**
+ * @brief Load a DIB whose stream is already positioned at the DIB header.
+ *
+ * There is no `BITMAPFILEHEADER`: the palette (if any) follows the DIB header
+ * and the pixel data follows the palette. Used by the ICO codec for icon
+ * payloads; the ordinary BMP file path also routes through this after it has
+ * read `bfOffBits`.
+ *
+ * @param height_override If non-zero, the image height used for pixel layout
+ *   instead of `biHeight`. ICO stores `biHeight` as twice the real height
+ *   (XOR bitmap plus AND mask); pass the real height so only the XOR rows
+ *   are consumed.
+ */
+GIMG_Result gimg_bmp_load_dib(GIMG_Codec * codec, GIMG_Stream * stream,
+    uint32_t height_override, const GIMG_Load_Options * options,
+    GIMG_Diagnostics * diagnostics, GIMG_Doc ** out_doc);
+
 /** @brief Decode callback: document state -> RGBA8 raster. */
 GIMG_Result gimg_bmp_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster);
@@ -414,5 +435,9 @@ void gimg_bmp_free_doc_state(GIMG_Codec * codec, void * codec_private);
  */
 GIMG_Result gimg_bmp_row_stride(
     uint32_t width, uint16_t bit_count, size_t * out_stride);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // GHOTI_IO_GIMG_SRC_CODEC_BMP_BMP_INTERNAL_H

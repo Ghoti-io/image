@@ -17,8 +17,10 @@
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
+#include <cstring>
 #include <vector>
 
+#include "bmp_internal.h"
 #include "bmp_test_utils.h"
 
 using bmp_test::Loaded;
@@ -125,6 +127,47 @@ TEST(BmpDecode, Rgb24) {
   ASSERT_EQ(img.load("bmp_4x4_24bit.bmp"), GIMG_OK);
   ASSERT_EQ(img.decode(), GIMG_OK);
   expect_pattern(img);
+}
+
+TEST(BmpDecode, LoadDibMatchesFileHeaderPath) {
+  // gimg_bmp_load_dib is the shared core the file-header path calls. Skipping
+  // the 14-byte BITMAPFILEHEADER and loading the same bytes as a bare DIB
+  // must produce the same raster - otherwise the two spellings of one path
+  // have drifted (I3 in the ICO plan).
+  std::vector<uint8_t> bytes;
+  ASSERT_TRUE(bmp_test::load_file("bmp_4x4_24bit.bmp", bytes));
+  ASSERT_GT(bytes.size(), 14u);
+
+  Loaded via_file;
+  ASSERT_EQ(via_file.load_bytes(bytes), GIMG_OK);
+  ASSERT_EQ(via_file.decode(), GIMG_OK);
+
+  GIMG_Stream * dib_stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(
+                bytes.data() + 14u, bytes.size() - 14u, &dib_stream),
+      GIMG_OK);
+  GIMG_Codec * bmp = gimg_codec_by_name("bmp");
+  ASSERT_NE(bmp, nullptr);
+  GIMG_Doc * dib_doc = nullptr;
+  ASSERT_EQ(gimg_bmp_load_dib(bmp, dib_stream, 0u, nullptr, nullptr, &dib_doc),
+      GIMG_OK);
+  GIMG_Raster * dib_raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(dib_doc, 0), nullptr, &dib_raster),
+      GIMG_OK);
+
+  ASSERT_EQ(gimg_raster_width(dib_raster), via_file.width());
+  ASSERT_EQ(gimg_raster_height(dib_raster), via_file.height());
+  const uint8_t * a =
+      static_cast<const uint8_t *>(gimg_raster_pixels_const(via_file.raster()));
+  const uint8_t * b =
+      static_cast<const uint8_t *>(gimg_raster_pixels_const(dib_raster));
+  size_t nbytes = (size_t)via_file.height() *
+      (size_t)gimg_raster_stride_bytes(via_file.raster());
+  EXPECT_EQ(memcmp(a, b, nbytes), 0);
+
+  gimg_raster_destroy(dib_raster);
+  gimg_doc_destroy(dib_doc);
+  gimg_stream_destroy(dib_stream);
 }
 
 TEST(BmpDecode, Rgb24TopDown) {

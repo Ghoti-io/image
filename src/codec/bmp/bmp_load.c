@@ -667,7 +667,7 @@ static GIMG_Result bmp_load_embedded(GIMG_Diagnostics * diagnostics,
  */
 static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
     GIMG_Diagnostics * diagnostics, const gimg_bmp_header_t * header,
-    uint32_t data_offset, const GIMG_Limits * limits,
+    uint32_t data_offset, uint32_t min_offset, const GIMG_Limits * limits,
     const GIMG_Allocator * alloc, unsigned char ** out_pixels,
     size_t * out_size) {
   *out_pixels = NULL;
@@ -675,7 +675,10 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
 
   size_t stream_size = gimg_stream_size(stream);
   const bool sized = stream_size != GIMG_STREAM_SIZE_UNKNOWN;
-  if (data_offset < GIMG_BMP_FILE_HEADER_SIZE ||
+  // A BMP file's bfOffBits is at least the 14-byte file header. A bare DIB
+  // (ICO payload) has no file header, so min_offset is 0 and the pixels can
+  // start immediately after a short DIB header and palette.
+  if (data_offset < min_offset ||
       (sized && (size_t)data_offset > stream_size)) {
     bmp_load_diag(diagnostics, (size_t)data_offset,
         "pixel data offset outside the file");
@@ -946,6 +949,11 @@ static GIMG_Result bmp_load_array(GIMG_Codec * codec, GIMG_Stream * stream,
   return GIMG_OK;
 }
 
+static GIMG_Result bmp_load_dib_core(GIMG_Codec * codec, GIMG_Stream * stream,
+    uint32_t height_override, uint32_t data_offset, uint32_t min_offset,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    GIMG_Doc ** out_doc);
+
 GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
     GIMG_Doc ** out_doc) {
@@ -955,7 +963,6 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   *out_doc = NULL;
 
   const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
-  const GIMG_Limits * limits = options ? options->limits : NULL;
 
   // An OS/2 bitmap array holds bitmaps rather than being one, so it is settled
   // before the file header is read: what follows a 'BA' is another header, not
@@ -1027,10 +1034,39 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   }
   uint32_t data_offset = bmp_read_u32(file_rest + 8);
 
+  // Stream sits at the DIB header. The shared DIB core owns everything from
+  // here; bfOffBits is the one field that exists only in a file header.
+  return bmp_load_dib_core(codec, stream, 0u, data_offset,
+      GIMG_BMP_FILE_HEADER_SIZE, options, diagnostics, out_doc);
+}
+
+/**
+ * Shared DIB load: header, palette, pixels, document state.
+ *
+ * @param height_override Non-zero replaces biHeight for pixel layout (ICO).
+ * @param data_offset Absolute pixel offset, or 0 when @a min_offset is 0 to
+ *   mean "pixels follow the palette at the current stream position".
+ * @param min_offset Lower bound for @a data_offset: file headers need 14,
+ *   bare DIBs allow 0.
+ */
+static GIMG_Result bmp_load_dib_core(GIMG_Codec * codec, GIMG_Stream * stream,
+    uint32_t height_override, uint32_t data_offset, uint32_t min_offset,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    GIMG_Doc ** out_doc) {
+  const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
+  const GIMG_Limits * limits = options ? options->limits : NULL;
+
   gimg_bmp_header_t header;
-  r = bmp_read_dib_header(stream, diagnostics, &header);
+  GIMG_Result r = bmp_read_dib_header(stream, diagnostics, &header);
   if (r != GIMG_OK) {
     return r;
+  }
+
+  // ICO stores biHeight as twice the real height (XOR + AND). The caller
+  // passes the real height so only the XOR rows are read; the AND mask is
+  // left for the ICO codec.
+  if (height_override != 0u) {
+    header.height = height_override;
   }
 
   // Reject images whose pixel count exceeds the caller's limit before any
@@ -1055,10 +1091,20 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
     return r;
   }
 
+  // A bare DIB has no bfOffBits: pixels begin immediately after the palette.
+  if (min_offset == 0u && data_offset == 0u) {
+    size_t tell = gimg_stream_tell(stream);
+    if (tell > UINT32_MAX) {
+      gimg_free(alloc, palette);
+      return GIMG_ERR_LIMIT;
+    }
+    data_offset = (uint32_t)tell;
+  }
+
   unsigned char * pixels = NULL;
   size_t pixels_size = 0;
-  r = bmp_read_pixels(stream, diagnostics, &header, data_offset, limits, alloc,
-      &pixels, &pixels_size);
+  r = bmp_read_pixels(stream, diagnostics, &header, data_offset, min_offset,
+      limits, alloc, &pixels, &pixels_size);
   if (r != GIMG_OK) {
     gimg_free(alloc, palette);
     return r;
@@ -1232,4 +1278,17 @@ GIMG_Result gimg_bmp_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   *out_doc = doc;
   return GIMG_OK;
+}
+
+GIMG_Result gimg_bmp_load_dib(GIMG_Codec * codec, GIMG_Stream * stream,
+    uint32_t height_override, const GIMG_Load_Options * options,
+    GIMG_Diagnostics * diagnostics, GIMG_Doc ** out_doc) {
+  if (!codec || !stream || !out_doc) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_doc = NULL;
+  // No BITMAPFILEHEADER: pixels follow the palette at whatever offset the
+  // stream has reached after the DIB header is consumed.
+  return bmp_load_dib_core(
+      codec, stream, height_override, 0u, 0u, options, diagnostics, out_doc);
 }
