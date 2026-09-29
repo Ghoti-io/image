@@ -506,6 +506,12 @@ bool bmp_role(
   return role == (index == 0 ? GIMG_ITEM_IMAGE : GIMG_ITEM_ALTERNATE) &&
       subject == (index == 0 ? index : 0u);
 }
+/** ICO/CUR: the same shape as a BMP BA array - one picture at several sizes
+ * and bit depths, not moments of an animation. */
+bool ico_role(
+    size_t index, size_t count, GIMG_Item_Role role, size_t subject) {
+  return bmp_role(index, count, role, subject);
+}
 /** An animation container: more than one item means the items are moments of
  * one picture, and a single item is a picture. One function for both formats
  * on purpose - a caller counting GIMG_ITEM_IMAGE to find the pictures in a
@@ -568,6 +574,7 @@ std::string probed_format(const std::vector<uint8_t> & bytes) {
 const RoleClaim kRoleClaims[] = {
     {"bmp", bmp_role},
     {"gif", animated_role},
+    {"ico", ico_role},
     {"jpeg", jpeg_role},
     {"png", animated_role},
     {"tiff", tiff_role},

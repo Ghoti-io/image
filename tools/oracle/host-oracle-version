@@ -51,6 +51,10 @@ case "${1:-}" in
             command -v magick >/dev/null 2>&1 || {
               printf 'ImageMagick is not installed on this machine\n' >&2; exit 2; }
             printf 'ImageMagick %s\n' "$(magick -version | sed -n 's/^Version: ImageMagick \([0-9.-]*\).*/\1/p' | head -1)" ;;
+  icoutils)
+            command -v icotool >/dev/null 2>&1 || {
+              printf 'icoutils is not installed on this machine\n' >&2; exit 2; }
+            printf 'icoutils %s\n' "$(icotool --version 2>&1 | sed -n 's/^icotool ([^)]*) \([0-9.]*\).*/\1/p' | head -1)" ;;
   piexif)   exec python3 -c 'import piexif; print("piexif", piexif.VERSION)' ;;
   libtiffpic)
             # Deliberately not answerable here, for the reason the two below

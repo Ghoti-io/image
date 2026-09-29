@@ -186,6 +186,13 @@ typedef GIMG_Result (*GIMG_ICC_Resolver_Fn)(void * user, const char * path,
 /** BMP: write a `BI_PNG` wrapper, whose pixel data is a whole PNG. */
 #define GIMG_BMP_WRAPPER_PNG 2
 
+/** ICO: choose PNG or DIB per the AUTO rule (see GIMG_Save_Options.ico_payload). */
+#define GIMG_ICO_PAYLOAD_AUTO 0
+/** ICO: write every entry as a bare DIB (with AND mask). */
+#define GIMG_ICO_PAYLOAD_DIB 1
+/** ICO: write every entry as a PNG payload. */
+#define GIMG_ICO_PAYLOAD_PNG 2
+
 /** BMP: never run-length encode. */
 #define GIMG_BMP_RLE_NEVER 0
 /** BMP: write BI_RLE8 for an 8-bit indexed image when it comes out smaller. */
@@ -749,8 +756,16 @@ typedef struct {
    * strip is the unit a reader has to hold at once. Ignored for non-TIFF. */
   uint32_t tiff_rows_per_strip;
 
+  /** How the ICO/CUR writer encodes each entry's payload.
+   *
+   * GIMG_ICO_PAYLOAD_AUTO (0, default) writes a PNG when either dimension is
+   * greater than 128 or the source has non-trivial alpha, and a DIB otherwise.
+   * GIMG_ICO_PAYLOAD_DIB and GIMG_ICO_PAYLOAD_PNG force one kind for every
+   * entry. Ignored for non-ICO. */
+  uint8_t ico_payload;
+
   /** Zero; room to grow, and the room a new format's options go in first. */
-  uint8_t _reserved[8];
+  uint8_t _reserved[7];
 } GIMG_Save_Options;
 
 /** @name TIFF compression (TIFF 6.0 sections 9 and 13)

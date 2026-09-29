@@ -117,6 +117,7 @@ say what a given option costs in a real file.
 | `gif_interlace` | For GIF: `0` (default) writes rows top to bottom. `1` writes them in the four-pass interlaced order (89a 20), which lets a reader show a coarse version before the whole file arrives. It changes no pixel. Ignored by other codecs. |
 | `gif_alpha_threshold` | For GIF: what to do with a pixel that is neither fully opaque nor fully transparent. GIF has one bit of transparency (89a 23), so an alpha of 128 cannot be stored, only decided about. `0` (default) refuses such a raster with `GIMG_ERR_UNSUPPORTED` rather than choosing silently; `1`–`255` is a threshold, alpha at or above it becoming opaque. Fully opaque and fully transparent pixels are unaffected. Ignored by other codecs. |
 | `gif_loop_count` | For GIF: how many times a written animation repeats, as the NETSCAPE2.0 Application Extension every decoder reads for this. **An override, not the source** - the count normally comes from `gimg_doc_set_loop_count()`, so a loaded animation keeps what it declared. Non-zero wins; `0` (the default) means the caller did not ask and the document answers. Zero cannot mean "forever" here because it cannot also mean "not set"; say that on the document, which has a spelling for both. A document declaring no count gets no block at all, which browsers play once. Ignored by other codecs. |
+| `ico_payload` | For ICO/CUR: how each entry's image is stored. **GIMG_ICO_PAYLOAD_AUTO** (0, default) writes a PNG when either dimension is greater than 128 or the source has non-trivial alpha, and a DIB otherwise. **GIMG_ICO_PAYLOAD_DIB** and **GIMG_ICO_PAYLOAD_PNG** force one kind for every entry. See \ref format_ico "ICO and CUR". Ignored by other codecs. |
 
 **GIMG_JPEG_Progressive_Config** holds `scan_count` and `scans` (array of **GIMG_JPEG_Progressive_Scan**). Each scan has `Ss`, `Se` (spectral selection, 0–63), `Ah`, `Al` (successive approximation). Caller keeps the array valid for the duration of `gimg_doc_save()`. **When `jpeg_progressive_config` is NULL or `scan_count` is 0:** the encoder uses the default scan script (one DC scan Ss=0, Se=0 then one AC scan Ss=1..63, Ah=0, Al=0). **Custom script:** non-NULL with `scan_count` > 0 uses the given sequence of scans. Initial AC spectral bands (Ah=0, Ss≥1) must not overlap (T.81 Annex G); overlapping [Ss,Se] ranges are rejected with **GIMG_ERR_UNSUPPORTED**. Refinement passes (Ah>0) are supported: DC refinement (Ss=0, Se=0, Ah>0) and AC refinement (Ah>0 for band Ss..Se) with successive-approximation encoding and optional refinement DHT (Th=2).
 
@@ -157,10 +158,10 @@ Used by `gimg_item_decode()`.
 
 | Field                  | Read by | Use |
 |------------------------|---------|-----|
-| `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF | Reject if width×height (or the sum over frames) exceeds this. |
+| `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF, ICO | Reject if width×height (or the sum over frames) exceeds this. ICO applies it per entry. |
 | `max_memory`           | **BMP only** | A cap on what one image's pixel data may take. No other codec reads it. |
 | `max_metadata_size`    | PNG, JPEG, BMP, GIF, TIFF | Cap what is kept that is not pixels, including a *total* across segments. `0` is a four-mebibyte guard, not "no limit". |
-| `max_frame_count`      | PNG, GIF, TIFF | Max frames (APNG, GIF frames, TIFF's IFD chain and its SubIFD pages). A BMP bitmap array is several items and is not capped. |
+| `max_frame_count`      | PNG, GIF, TIFF | Max frames (APNG, GIF frames, TIFF's IFD chain and its SubIFD pages). A BMP bitmap array is several items and is not capped. ICO entries are alternates, not frames; their count is capped at `GIMG_ICO_MAX_ENTRIES` (64) instead. |
 | `max_chunk_size`       | PNG, JPEG, GIF | Reject a segment larger than this (bomb protection). A BMP wrapping a PNG or JPEG passes it down. |
 
 Every declared field is read by something. `max_memory` is the ragged one: it

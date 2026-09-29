@@ -19,6 +19,8 @@ case "${1:-}" in
   netpbm)   printf 'netpbm %s\n' "$(bmptopnm --version 2>&1 | sed -n 's/.*Netpbm \([0-9.]*\).*/\1/p' | head -1)" ;;
   imagemagick)
             printf 'ImageMagick %s\n' "$(magick -version | sed -n 's/^Version: ImageMagick \([0-9.-]*\).*/\1/p' | head -1)" ;;
+  icoutils)
+            printf 'icoutils %s\n' "$(icotool --version 2>&1 | sed -n 's/^icotool ([^)]*) \([0-9.]*\).*/\1/p' | head -1)" ;;
   piexif)   exec python3 -c 'import piexif; print("piexif", piexif.VERSION)' ;;
   libjpeg12)
             printf 'libjpeg-turbo %s\n' "$(cat /opt/libjpeg-turbo.ref)" ;;

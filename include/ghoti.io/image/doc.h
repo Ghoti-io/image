@@ -312,6 +312,18 @@ GIMG_API void gimg_item_set_frame_delay(
     GIMG_Item * item, uint16_t num, uint16_t den);
 
 /**
+ * @brief Cursor hotspot for a CUR entry (pixels from the top-left of the image).
+ *
+ * ICO entries leave both coordinates at zero. A non-zero hotspot on save makes
+ * the written file a CUR (`type = 2`) rather than an ICO.
+ */
+GIMG_API void gimg_item_hotspot(
+    const GIMG_Item * item, uint16_t * x, uint16_t * y);
+
+/** @brief Set the cursor hotspot. NULL @p item is a no-op. */
+GIMG_API void gimg_item_set_hotspot(GIMG_Item * item, uint16_t x, uint16_t y);
+
+/**
  * @brief Get frame dispose operation (APNG fcTL).
  */
 GIMG_API GIMG_Dispose_Op gimg_item_dispose_op(const GIMG_Item * item);

@@ -70,7 +70,7 @@ bool entry_is_directory(const std::string & dir, const struct dirent * e) {
 #endif
 }
 
-/** The format a file's first bytes claim, or "" if none of the four. */
+/** The format a file's first bytes claim, or nullptr if none known here. */
 const char * signature_of(const std::vector<uint8_t> & b) {
   if (b.size() >= 2 && b[0] == 0xFF && b[1] == 0xD8) { return "jpeg"; }
   if (b.size() >= 8 && memcmp(b.data(), "\x89PNG\r\n\x1a\n", 8) == 0) {
@@ -87,6 +87,18 @@ const char * signature_of(const std::vector<uint8_t> & b) {
           memcmp(b.data(), "II\x2b\x00", 4) == 0 ||
           memcmp(b.data(), "MM\x00\x2b", 4) == 0)) {
     return "tiff";
+  }
+  // ICONDIR: reserved=0, type=1 (icon) or 2 (cursor), count >= 1. Weak; the
+  // probe goes further. Count zero is deliberately not attributed here - the
+  // probe declines it and no loader runs, so a silent UNSUPPORTED would
+  // otherwise be blamed on ico.
+  if (b.size() >= 6 && b[0] == 0 && b[1] == 0 &&
+      ((b[2] == 1 && b[3] == 0) || (b[2] == 2 && b[3] == 0))) {
+    const uint16_t count =
+        (uint16_t)((uint32_t)b[4] | ((uint32_t)b[5] << 8));
+    if (count >= 1u) {
+      return "ico";
+    }
   }
   return nullptr;
 }

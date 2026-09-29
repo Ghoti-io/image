@@ -617,6 +617,12 @@ $(OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -DGIMG_TEST_OUT_TIFF=\"$(TEST_OUT_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
+# Tests in tests/codec/ico/ (object name from basename for link).
+$(OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(FLAGS_STAMP)
+	@printf "\n### Compiling Test Object: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/ico -Itests/codec/ico -DGIMG_TEST_DATA_ICO=\"$(TEST_DATA_ICO)\" -DGIMG_TEST_OUT_ICO=\"$(TEST_OUT_ICO)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
 # Test in tests/codec/png/ (object name from basename for link)
 $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: test_png_chunk ###\n"
@@ -654,10 +660,12 @@ TEST_OUT_ROOT := $(IMAGE_ROOT)/tests/out
 TEST_DATA_BMP := $(IMAGE_ROOT)/tests/data/bmp
 TEST_DATA_GIF := $(IMAGE_ROOT)/tests/data/gif
 TEST_DATA_TIFF := $(IMAGE_ROOT)/tests/data/tiff
+TEST_DATA_ICO := $(IMAGE_ROOT)/tests/data/ico
 # Output directory for BMP encode test output.
 TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 TEST_OUT_GIF := $(IMAGE_ROOT)/tests/out/gif
 TEST_OUT_TIFF := $(IMAGE_ROOT)/tests/out/tiff
+TEST_OUT_ICO := $(IMAGE_ROOT)/tests/out/ico
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
 	@mkdir -p $(@D)
@@ -800,7 +808,7 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep against the four
 # in the line every gate prints. It is not a fallback: nothing selects it
 # automatically, because a gate whose reference is not the one it names prints
 # the same green line as one whose is.
-ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-6
+ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-7
 ORACLE_EXEC := tools/oracle/oracle-exec
 ORACLE_ENGINE ?= docker
 
@@ -1220,6 +1228,9 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	printf "\033[0;30;43m\n### Verifying GIF output ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
 	printf "\033[0;32mGIF output verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying ICO/CUR structure against icotool ###\033[0m\n\n" && \
+	python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) && \
+	printf "\033[0;32mICO/CUR structure verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying output structure ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 	printf "\033[0;32mOutput structure verification passed.\033[0m\n" && \
@@ -1271,8 +1282,9 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 		python3 $(CURDIR)/tests/data/jpeg/verify_jpeg_output.py $(TEST_OUT_JPEG) && \
 		python3 $(CURDIR)/tests/data/bmp/verify_bmp_output.py $(TEST_OUT_BMP) && \
 		python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
+		python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) && \
 		python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
-		printf "\033[0;32mPNG, JPEG, BMP and GIF output verified, and structurally checked.\033[0m\n"; \
+		printf "\033[0;32mPNG, JPEG, BMP, GIF and ICO output verified, and structurally checked.\033[0m\n"; \
 	else \
 		printf "\033[0;31m%-30s %8d %6dms FAIL (%d failed)\033[0m\n" "TOTAL" "$$total_tests" "$$total_time" "$$total_failed"; \
 		printf "$$failed_suites\n"; \
@@ -1347,12 +1359,16 @@ test-verify-jpeg: ## Run only JPEG output verification (run 'make test' for full
 test-verify-bmp: ## Run only BMP output verification (run 'make test' for full test + verify)
 	@mkdir -p $(TEST_OUT_BMP)
 	@python3 $(CURDIR)/tests/data/bmp/verify_bmp_output.py $(TEST_OUT_BMP) && \
-		printf "\033[0;32mBMP output verification passed.\033[0m\n
+		printf "\033[0;32mBMP output verification passed.\033[0m\n"
 
 test-verify-gif: ## Run only GIF output verification (run 'make test' for full test + verify)
 	@mkdir -p $(TEST_OUT_GIF)
 	@python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
 		printf "\033[0;32mGIF output verification passed.\033[0m\n"
+
+test-verify-ico: ## Run only ICO/CUR structure verification against icotool
+	@python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) && \
+		printf "\033[0;32mICO/CUR structure verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
 test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
@@ -1545,6 +1561,11 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -DGIMG_TEST_OUT_TIFF=\"$(TEST_OUT_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(ASAN_FLAGS_STAMP)
+	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/ico -Itests/codec/ico -DGIMG_TEST_DATA_ICO=\"$(TEST_DATA_ICO)\" -DGIMG_TEST_OUT_ICO=\"$(TEST_OUT_ICO)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(ASAN_FLAGS_STAMP)
 	@mkdir -p $(@D)
@@ -1842,7 +1863,9 @@ FUZZ_HARNESSES := \
 	gif:fuzz_gif_load:gif_load \
 	gif-encode:fuzz_gif_encode:gif_encode \
 	tiff:fuzz_tiff_load:tiff_load \
-	tiff-encode:fuzz_tiff_encode:tiff_encode
+	tiff-encode:fuzz_tiff_encode:tiff_encode \
+	ico:fuzz_ico_load:ico_load \
+	ico-encode:fuzz_ico_encode:ico_encode
 
 # $1 = make suffix (png), $2 = harness basename (fuzz_png_load), $3 = corpus dir
 define fuzz-rule

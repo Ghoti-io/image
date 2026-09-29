@@ -277,6 +277,23 @@ GIMG_API void gimg_item_set_frame_delay(
   }
 }
 
+GIMG_API void gimg_item_hotspot(
+    const GIMG_Item * item, uint16_t * x, uint16_t * y) {
+  if (x) {
+    *x = item ? item->hotspot_x : 0u;
+  }
+  if (y) {
+    *y = item ? item->hotspot_y : 0u;
+  }
+}
+
+GIMG_API void gimg_item_set_hotspot(GIMG_Item * item, uint16_t x, uint16_t y) {
+  if (item) {
+    item->hotspot_x = x;
+    item->hotspot_y = y;
+  }
+}
+
 GIMG_API GIMG_Dispose_Op gimg_item_dispose_op(const GIMG_Item * item) {
   return item ? item->dispose_op : GIMG_DISPOSE_NONE;
 }
@@ -421,6 +438,9 @@ GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
     // GIMG_Item has to be added to both, and the role was very nearly added
     // to only one.
     gimg_item_set_role(di, gimg_item_role(si), gimg_item_role_subject(si));
+    uint16_t hx = 0, hy = 0;
+    gimg_item_hotspot(si, &hx, &hy);
+    gimg_item_set_hotspot(di, hx, hy);
     GIMG_Raster * sr = gimg_item_raster(si);
     if (sr) {
       GIMG_Raster * copy_r = NULL;
@@ -529,6 +549,7 @@ GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
   gimg_item_set_dispose_op(dst_item, src_item->dispose_op);
   gimg_item_set_blend_op(dst_item, src_item->blend_op);
   gimg_item_set_role(dst_item, src_item->role, src_item->role_subject);
+  gimg_item_set_hotspot(dst_item, src_item->hotspot_x, src_item->hotspot_y);
   GIMG_Raster * sr = gimg_item_raster(src_item);
   if (sr) {
     const GIMG_Allocator * alloc = dst_item->doc ? dst_item->doc->allocator

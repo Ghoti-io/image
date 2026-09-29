@@ -9,6 +9,7 @@ This is what the library implements.
 
 - PNG, including APNG.
 - JPEG, BMP and GIF.
+- ICO and CUR (one codec; DIB and PNG payloads, AND-mask alpha, hotspots).
 - TIFF. It reads every bit depth from 1 to 32, both byte orders, strips and
   tiles, grayscale, palette, RGB, RGBA, separated and YCbCr, separate and
   contiguous planes, every compression the format defines except LogLuv -

@@ -53,6 +53,8 @@ struct GIMG_Item {
   GIMG_Item_Role role;        ///< What this item is; IMAGE by default.
   size_t role_subject;        ///< Item this is a thumbnail/level/alternate of;
                               ///< its own index when the role is not "of".
+  uint16_t hotspot_x;         ///< CUR hotspot X (pixels from left); 0 for ICO.
+  uint16_t hotspot_y;         ///< CUR hotspot Y (pixels from top); 0 for ICO.
 };
 
 /**

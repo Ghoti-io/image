@@ -81,6 +81,7 @@ PROBE = {
     "pixbuf": "GdkPixbuf ",
     "netpbm": "netpbm ",
     "imagemagick": "ImageMagick ",
+    "icoutils": "icoutils ",
     "piexif": "piexif ",
     "libjpeg12": "libjpeg-turbo ",
     "ijg10": "jpeg-10 ",

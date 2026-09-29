@@ -17,12 +17,10 @@ which point back here.
 | BMP | @subpage format_bmp "BMP" | read, write, palette, ICC | the Windows and OS/2 DIB header versions, 1–32 and 64 bpp, RLE4/RLE8/RLE24, OS/2 Huffman 1D, bitfields, embedded JPEG and PNG, `BA` bitmap arrays as the several images they hold, V4/V5 colour with embedded or linked profiles | 1/2/4/8-bit indexed with optional RLE4/RLE8, 24-bit `BI_RGB`, 32-bit `BI_BITFIELDS` when alpha is present, OS/2 RLE24 and Huffman 1D, and `BI_JPEG`/`BI_PNG` wrappers on request |
 | TIFF | @subpage format_tiff "TIFF" | read, write, palette, ICC, 16 bpc, CMYK | TIFF 6.0, both byte orders, strips and tiles, every bit depth from 1 to 32, grayscale in both polarities, palette, RGB, RGBA, separated and YCbCr at any subsampling, PlanarConfiguration 1 and 2, uncompressed, PackBits, LZW, Deflate, CCITT Group 3 and 4, JPEG in both spellings and ThunderScan, with the horizontal predictor, multi-page and pyramids, ICC, ImageDescription, XMP and Orientation | grayscale, RGB, RGBA and CMYK at 8 and 16 bits, one page per item, uncompressed or PackBits, LZW or Deflate with an optional predictor, in either byte order |
 | GIF | @subpage format_gif "GIF" | read, write, animation, palette | GIF87a and GIF89a: the logical screen, global and local colour tables, interlacing, LZW at every minimum code size, graphic control with delay, disposal and transparency, comment extensions, and the NETSCAPE2.0 loop count | one image block per frame, cropped to the rectangle that changed, 1–256 colours, transparency, optional interlacing, animation with delays and a loop count, and comments |
+| ICO / CUR | @subpage format_ico "ICO and CUR" | read, write | Windows icon and cursor directories; DIB and PNG payloads; AND-mask alpha with zero-alpha fallback; CUR hotspots; up to `GIMG_ICO_MAX_ENTRIES` (64) alternates | one entry per `IMAGE`/`ALTERNATE` item; DIB or PNG per `ico_payload`; CUR when a hotspot is set |
 
 Formats with no codec yet - WebP and the rest of the roadmap - have no page
-here. A page is written with the codec, not after it. TIFF's was written when
-it was mostly a list of absences and has shortened as those closed, which is
-the point: a codec that reads part of a format says which part, in the same
-shape as one that reads all of it.
+here. A page is written with the codec, not after it.
 
 ## What each page contains
 
