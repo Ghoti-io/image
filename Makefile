@@ -623,6 +623,12 @@ $(OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/ico -Itests/codec/ico -DGIMG_TEST_DATA_ICO=\"$(TEST_DATA_ICO)\" -DGIMG_TEST_OUT_ICO=\"$(TEST_OUT_ICO)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
+# Tests in tests/codec/webp/ (object name from basename for link).
+$(OBJ_DIR)/tests/%.o: tests/codec/webp/%.cpp $(FLAGS_STAMP)
+	@printf "\n### Compiling Test Object: $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/webp -Isrc/container -Itests/codec/webp -DGIMG_TEST_DATA_WEBP=\"$(TEST_DATA_WEBP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
 # Test in tests/codec/png/ (object name from basename for link)
 $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(FLAGS_STAMP)
 	@printf "\n### Compiling Test Object: test_png_chunk ###\n"
@@ -665,6 +671,7 @@ TEST_DATA_ICO := $(IMAGE_ROOT)/tests/data/ico
 # committed; tools/oracle/fetch.sh ico-refs materialises them at the commits
 # tools/oracle/VERSIONS names.
 TEST_DATA_ICO_EXT := $(IMAGE_ROOT)/third_party/ico-refs
+TEST_DATA_WEBP := $(IMAGE_ROOT)/tests/data/webp
 # Output directory for BMP encode test output.
 TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 TEST_OUT_GIF := $(IMAGE_ROOT)/tests/out/gif
@@ -824,7 +831,7 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep against the four
 # in the line every gate prints. It is not a fallback: nothing selects it
 # automatically, because a gate whose reference is not the one it names prints
 # the same green line as one whose is.
-ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-7
+ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-8
 ORACLE_EXEC := tools/oracle/oracle-exec
 ORACLE_ENGINE ?= docker
 
@@ -991,7 +998,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 .PHONY: fuzz fuzz-clean fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif fuzz-gif-encode fuzz-tiff fuzz-tiff-encode fuzz-ico fuzz-ico-encode
 .PHONY: fuzz-run-png_load fuzz-run-png_encode fuzz-run-jpeg_load fuzz-run-jpeg_encode
 .PHONY: fuzz-run-bmp_load fuzz-run-bmp_encode fuzz-run-gif_load fuzz-run-gif_encode
-.PHONY: fuzz-run-tiff_load fuzz-run-tiff_encode fuzz-run-ico_load fuzz-run-ico_encode
+.PHONY: fuzz-run-tiff_load fuzz-run-tiff_encode fuzz-run-ico_load fuzz-run-ico_encode fuzz-run-webp_load
 .PHONY: bmp-dump-raster ico-dump-raster bmpsuite resample-tool
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-verify-gif test-verify-structure test-watch uninstall watch
@@ -1255,6 +1262,9 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	printf "\033[0;30;43m\n### Verifying ICO/CUR output against outside readers ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
 	printf "\033[0;32mICO/CUR output verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying WebP structure against webpinfo ###\033[0m\n\n" && \
+	python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) && \
+	printf "\033[0;32mWebP structure verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying output structure ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 	printf "\033[0;32mOutput structure verification passed.\033[0m\n" && \
@@ -1311,8 +1321,9 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/du
 		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_ICO_DUMP=$(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) \
 			python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) $(TEST_DATA_ICO_EXT) && \
 		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
+		python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) && \
 		python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
-		printf "\033[0;32mPNG, JPEG, BMP, GIF and ICO output verified, and structurally checked.\033[0m\n"; \
+		printf "\033[0;32mPNG, JPEG, BMP, GIF, ICO and WebP output verified, and structurally checked.\033[0m\n"; \
 	else \
 		printf "\033[0;31m%-30s %8d %6dms FAIL (%d failed)\033[0m\n" "TOTAL" "$$total_tests" "$$total_time" "$$total_failed"; \
 		printf "$$failed_suites\n"; \
@@ -1402,6 +1413,10 @@ test-verify-ico: $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) ## Run ICO/CUR struc
 			python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) $(TEST_DATA_ICO_EXT) && \
 		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
 		printf "\033[0;32mICO/CUR verification passed.\033[0m\n"
+
+test-verify-webp: ## Run WebP structure verification against webpinfo
+	@python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) && \
+		printf "\033[0;32mWebP structure verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
 test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
@@ -1599,6 +1614,11 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(ASAN_FLAGS_STAMP)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/ico -Itests/codec/ico -DGIMG_TEST_DATA_ICO=\"$(TEST_DATA_ICO)\" -DGIMG_TEST_OUT_ICO=\"$(TEST_OUT_ICO)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/webp/%.cpp $(ASAN_FLAGS_STAMP)
+	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/webp -Isrc/container -Itests/codec/webp -DGIMG_TEST_DATA_WEBP=\"$(TEST_DATA_WEBP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(ASAN_FLAGS_STAMP)
 	@mkdir -p $(@D)
@@ -1898,7 +1918,8 @@ FUZZ_HARNESSES := \
 	tiff:fuzz_tiff_load:tiff_load \
 	tiff-encode:fuzz_tiff_encode:tiff_encode \
 	ico:fuzz_ico_load:ico_load \
-	ico-encode:fuzz_ico_encode:ico_encode
+	ico-encode:fuzz_ico_encode:ico_encode \
+	webp:fuzz_webp_load:webp_load
 
 # $1 = make suffix (png), $2 = harness basename (fuzz_png_load), $3 = corpus dir
 define fuzz-rule

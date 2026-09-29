@@ -24,7 +24,7 @@
 # answer that disagrees is a finding to triage rather than a regression to fix.
 #
 # Building it:
-#   podman build -t ghoti-image-oracle-refs:deb13-7 \
+#   podman build -t ghoti-image-oracle-refs:deb13-8 \
 #       -f tools/oracle/containers/image-refs/Containerfile tools/oracle
 # `make oracle-build` does exactly that. The tag says deb13 because the base is
 # what decides four of the five versions, and -1 is a revision that moves when
@@ -37,9 +37,9 @@
 # 2.1.5, which is a change from the host where Pillow's pip wheel bundles its
 # own. jpeg_test_utils.cpp tries Pillow first and the dumper otherwise; that
 # fallback can no longer change the answer.
-pillow	localhost/ghoti-image-oracle-refs:deb13-7	Pillow 11.1.0	Decoded pixels for JPEG, and the reader every verify_*_output.py checks our output with
-libjpeg	localhost/ghoti-image-oracle-refs:deb13-7	libjpeg-turbo 2.1.5	Decoded pixels and DCT coefficients, through tests/tools/jpeg-oracle
-giflib	localhost/ghoti-image-oracle-refs:deb13-7	giflib 5.2.2	LZW expansion, interlace order, colour tables and geometry - not compositing
+pillow	localhost/ghoti-image-oracle-refs:deb13-8	Pillow 11.1.0	Decoded pixels for JPEG, and the reader every verify_*_output.py checks our output with
+libjpeg	localhost/ghoti-image-oracle-refs:deb13-8	libjpeg-turbo 2.1.5	Decoded pixels and DCT coefficients, through tests/tools/jpeg-oracle
+giflib	localhost/ghoti-image-oracle-refs:deb13-8	giflib 5.2.2	LZW expansion, interlace order, colour tables and geometry - not compositing
 
 # The reference implementation of TIFF, and the one every other TIFF reader
 # was written against.
@@ -76,7 +76,7 @@ giflib	localhost/ghoti-image-oracle-refs:deb13-7	giflib 5.2.2	LZW expansion, int
 # otherwise, which reads exactly like a row-order defect in the codec under
 # test; and its samples are ABGR packed into a host-order uint32, which is not
 # a byte layout the format defines.
-libtiff	localhost/ghoti-image-oracle-refs:deb13-7	libtiff 4.7.0	Decoded RGBA for every TIFF, through tests/tools/tiff-oracle
+libtiff	localhost/ghoti-image-oracle-refs:deb13-8	libtiff 4.7.0	Decoded RGBA for every TIFF, through tests/tools/tiff-oracle
 
 # The corpus to ask libtiff about. Not a decoder: 76 real TIFFs written by
 # encoders that are not ours, covering every bit depth from 2 to 32, planar
@@ -87,7 +87,7 @@ libtiff	localhost/ghoti-image-oracle-refs:deb13-7	libtiff 4.7.0	Decoded RGBA for
 # Pinned by the tarball's SHA-256 in tools/oracle/VERSIONS, checked inside the
 # image before extraction, and said there to be our own measurement rather
 # than a digest the server publishes.
-libtiffpic	localhost/ghoti-image-oracle-refs:deb13-7	@VERSIONS	76 real TIFFs for the comparison sweep to run over
+libtiffpic	localhost/ghoti-image-oracle-refs:deb13-8	@VERSIONS	76 real TIFFs for the comparison sweep to run over
 
 # The other two BMP decoders tests/data/bmp/bmpsuite_sweep.py corroborates
 # with. They arrived a tag after the rest, because `make bmpsuite` is not part
@@ -95,8 +95,8 @@ libtiffpic	localhost/ghoti-image-oracle-refs:deb13-7	@VERSIONS	76 real TIFFs for
 # anything - which is the same blindness in a different place: the survey that
 # found twenty-one skipped comparisons was reading the test binaries, and this
 # target is not one.
-pixbuf	localhost/ghoti-image-oracle-refs:deb13-7	GdkPixbuf 2.42.12	A third reading of every BMP in the suite
-netpbm	localhost/ghoti-image-oracle-refs:deb13-7	netpbm 11.10.2	A fourth, through bmptopnm
+pixbuf	localhost/ghoti-image-oracle-refs:deb13-8	GdkPixbuf 2.42.12	A third reading of every BMP in the suite
+netpbm	localhost/ghoti-image-oracle-refs:deb13-8	netpbm 11.10.2	A fourth, through bmptopnm
 
 # The two that are a git checkout rather than a release. Their version field is
 # `@VERSIONS`, which means the pin lives in tools/oracle/VERSIONS and is read
@@ -111,8 +111,8 @@ netpbm	localhost/ghoti-image-oracle-refs:deb13-7	netpbm 11.10.2	A fourth, throug
 # What the image adds to them is the other half of the pin. A commit says which
 # *source*; it does not say which compiler built it. "bmplib agrees on 79 of 91
 # files" named a decoder built by whatever the host had until now.
-bmplib	localhost/ghoti-image-oracle-refs:deb13-7	@VERSIONS	OS/2 Huffman 1D, bitmap arrays and 64-bit BMPs - the formats no installed decoder reads
-bmpsuite	localhost/ghoti-image-oracle-refs:deb13-7	@VERSIONS	The 91-file conformance corpus tests/data/bmp/bmpsuite_sweep.py runs
+bmplib	localhost/ghoti-image-oracle-refs:deb13-8	@VERSIONS	OS/2 Huffman 1D, bitmap arrays and 64-bit BMPs - the formats no installed decoder reads
+bmpsuite	localhost/ghoti-image-oracle-refs:deb13-8	@VERSIONS	The 91-file conformance corpus tests/data/bmp/bmpsuite_sweep.py runs
 
 # A GIF reader that is neither giflib nor this library, and the only one here
 # that composites a whole animation rather than handing back stored frames.
@@ -122,18 +122,25 @@ bmpsuite	localhost/ghoti-image-oracle-refs:deb13-7	@VERSIONS	The 91-file conform
 # a frame count and not its decoders - so when that script moved into this
 # image without ImageMagick in it, three read exactly like four and the run
 # stayed green. The script now names what answered.
-imagemagick	localhost/ghoti-image-oracle-refs:deb13-7	ImageMagick 7.1.1-43	A whole GIF animation, composited, by a reader independent of giflib
+imagemagick	localhost/ghoti-image-oracle-refs:deb13-8	ImageMagick 7.1.1-43	A whole GIF animation, composited, by a reader independent of giflib
 
 # Directory structure and hotspots for ICO/CUR. It does not composite pixels;
 # Pillow and ImageMagick cover that. Pin is the Debian package version in the
 # Containerfile (0.32.3-6), reported here as the upstream version icotool prints.
-icoutils	localhost/ghoti-image-oracle-refs:deb13-7	icoutils 0.32.3	ICO/CUR directory listing and hotspots via `icotool -l`
+icoutils	localhost/ghoti-image-oracle-refs:deb13-8	icoutils 0.32.3	ICO/CUR directory listing and hotspots via `icotool -l`
+
+# Chunk inventory for WebP Phase A (`webpinfo`), and the tool suite for later
+# phases (`dwebp`, `cwebp`, `anim_dump`, `webpmux`). Debian package webp /
+# libwebp-dev 1.5.0-0.1; probe prints the decoder version webpinfo reports.
+# Pillow, ImageMagick and GdkPixbuf also link this library - three wrappers,
+# one reading - so they are not independent oracles for VP8L (webp-plan §7).
+libwebp	localhost/ghoti-image-oracle-refs:deb13-8	libwebp 1.5.0	WebP chunk inventory via `webpinfo`; later phases use dwebp/cwebp/anim_dump
 
 # Not a comparison oracle. tests/data/jpeg/generate.py writes an EXIF
 # orientation with it, so a fixture's bytes depend on it - pinned for the
 # reason `font` pins its fontTools, which is that a
 # generator's version is part of what its output means.
-piexif	localhost/ghoti-image-oracle-refs:deb13-7	piexif 1.1.3	The EXIF writer tests/data/jpeg/generate.py builds its orientation fixture with
+piexif	localhost/ghoti-image-oracle-refs:deb13-8	piexif 1.1.3	The EXIF writer tests/data/jpeg/generate.py builds its orientation fixture with
 
 # The two built from source in the image, pinned in tools/oracle/VERSIONS
 # under the upstream project's own name rather than the name used here.
@@ -201,8 +208,8 @@ piexif	localhost/ghoti-image-oracle-refs:deb13-7	piexif 1.1.3	The EXIF writer te
 # every possible objection is known in advance is not an oracle, and giving it
 # a green-channel tolerance to hide the known case would be an exclusion wide
 # enough to absorb a real one.
-libjpeg12	localhost/ghoti-image-oracle-refs:deb13-7	@VERSIONS:libjpeg-turbo	The 12- and 16-bit JPEG codecs, through cjpeg-static and djpeg-static
-ijg10	localhost/ghoti-image-oracle-refs:deb13-7	@VERSIONS:jpeg-10	Pinned and reachable; answers nothing yet - see the note above for what it does and does not read
+libjpeg12	localhost/ghoti-image-oracle-refs:deb13-8	@VERSIONS:libjpeg-turbo	The 12- and 16-bit JPEG codecs, through cjpeg-static and djpeg-static
+ijg10	localhost/ghoti-image-oracle-refs:deb13-8	@VERSIONS:jpeg-10	Pinned and reachable; answers nothing yet - see the note above for what it does and does not read
 
 # Not here, and each is its own piece of work:
 #   libpng      a second reading of every PNG this library writes; Pillow is

@@ -82,6 +82,7 @@ PROBE = {
     "netpbm": "netpbm ",
     "imagemagick": "ImageMagick ",
     "icoutils": "icoutils ",
+    "libwebp": "libwebp ",
     "piexif": "piexif ",
     "libjpeg12": "libjpeg-turbo ",
     "ijg10": "jpeg-10 ",
