@@ -154,6 +154,33 @@ int gimg_webp_peek_vp8l_dims(const unsigned char * data, size_t size,
 GIMG_Result gimg_webp_vp8l_decode(const unsigned char * data, size_t size,
     const GIMG_Allocator * alloc, GIMG_Raster ** out_raster);
 
+/**
+ * @brief Decode headerless VP8L image data used inside an ALPH chunk.
+ *
+ * Unlike @ref gimg_webp_vp8l_decode, there is no 0x2f frame header: the
+ * bitstream starts at the transform/Huffman stream for a canvas of the given
+ * size. On success, @a out_alpha receives the green channel of each pixel
+ * (libwebp's alpha-in-green convention), @a width * @a height bytes. The
+ * caller owns the buffer. ALPH spatial filtering is applied by
+ * @ref gimg_webp_alpha_decode, not here.
+ */
+GIMG_Result gimg_webp_vp8l_decode_alpha(const unsigned char * data, size_t size,
+    uint32_t width, uint32_t height, const GIMG_Allocator * alloc,
+    uint8_t ** out_alpha);
+
+/**
+ * @brief Decode an ALPH chunk payload to an owned alpha plane.
+ *
+ * @param data   ALPH payload (header byte + compressed or raw samples).
+ * @param size   Payload byte count.
+ * @param width  Canvas / picture width.
+ * @param height Canvas / picture height.
+ * @param out_alpha Receives a @a width * @a height buffer of A samples.
+ */
+GIMG_Result gimg_webp_alpha_decode(const unsigned char * data, size_t size,
+    uint32_t width, uint32_t height, const GIMG_Allocator * alloc,
+    uint8_t ** out_alpha);
+
 /** VP8L transform types (bitstream order). */
 enum {
   GIMG_WEBP_VP8L_PREDICTOR = 0,

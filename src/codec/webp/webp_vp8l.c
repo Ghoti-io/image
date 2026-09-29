@@ -1137,3 +1137,86 @@ Done:
   gimg_free(alloc, dec.node_pool);
   return r;
 }
+
+GIMG_Result gimg_webp_vp8l_decode_alpha(const unsigned char * data, size_t size,
+    uint32_t width, uint32_t height, const GIMG_Allocator * alloc,
+    uint8_t ** out_alpha) {
+  vp8l_dec_t dec;
+  uint32_t * pixels = NULL;
+  uint32_t * argb = NULL;
+  uint8_t * alpha = NULL;
+  GIMG_Result r = GIMG_OK;
+
+  if (!data || !out_alpha || width == 0u || height == 0u) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_alpha = NULL;
+  alloc = gimg_alloc_or_default(alloc);
+
+  memset(&dec, 0, sizeof(dec));
+  dec.alloc = alloc;
+  dec.err = GIMG_OK;
+  br_init(&dec.br, data, size);
+  dec.canvas_width = (int)width;
+  dec.canvas_height = (int)height;
+
+  dec.node_pool_cap = VP8L_HUFF_NODE_POOL;
+  dec.node_pool = (vp8l_huff_node_t *)gimg_malloc(
+      alloc, (size_t)dec.node_pool_cap * sizeof(*dec.node_pool));
+  if (!dec.node_pool) {
+    return GIMG_ERR_OOM;
+  }
+
+  /* ALPH method-1 streams omit the VP8L frame header and start at transforms. */
+  if (!decode_image_stream(&dec, (int)width, (int)height, 1, NULL)) {
+    r = (dec.err != GIMG_OK) ? dec.err : GIMG_ERR_CORRUPT;
+    goto Done;
+  }
+
+  {
+    const size_t n = (size_t)dec.width * (size_t)dec.height;
+    pixels = (uint32_t *)gimg_malloc(alloc, n * sizeof(*pixels));
+    if (!pixels) {
+      r = GIMG_ERR_OOM;
+      goto Done;
+    }
+  }
+
+  if (!decode_image_data(&dec, pixels, dec.width, dec.height)) {
+    r = (dec.err != GIMG_OK) ? dec.err : GIMG_ERR_CORRUPT;
+    goto Done;
+  }
+
+  r = apply_all_inverse(&dec, pixels, &argb);
+  if (r != GIMG_OK) {
+    goto Done;
+  }
+  gimg_free(alloc, pixels);
+  pixels = NULL;
+
+  {
+    const size_t n = (size_t)width * (size_t)height;
+    alpha = (uint8_t *)gimg_malloc(alloc, n);
+    if (!alpha) {
+      r = GIMG_ERR_OOM;
+      goto Done;
+    }
+    /* Alpha samples ride in the green channel (libwebp ExtractAlphaRows). */
+    for (size_t i = 0; i < n; ++i) {
+      alpha[i] = (uint8_t)((argb[i] >> 8) & 0xffu);
+    }
+  }
+
+  *out_alpha = alpha;
+  alpha = NULL;
+  r = GIMG_OK;
+
+Done:
+  gimg_free(alloc, alpha);
+  gimg_free(alloc, pixels);
+  gimg_free(alloc, argb);
+  clear_metadata(&dec);
+  clear_transforms(&dec);
+  gimg_free(alloc, dec.node_pool);
+  return r;
+}
