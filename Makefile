@@ -661,6 +661,10 @@ TEST_DATA_BMP := $(IMAGE_ROOT)/tests/data/bmp
 TEST_DATA_GIF := $(IMAGE_ROOT)/tests/data/gif
 TEST_DATA_TIFF := $(IMAGE_ROOT)/tests/data/tiff
 TEST_DATA_ICO := $(IMAGE_ROOT)/tests/data/ico
+# Outside-written ICO fixtures (Pillow pillow.ico, Wine blank.ico). Not
+# committed; tools/oracle/fetch.sh ico-refs materialises them at the commits
+# tools/oracle/VERSIONS names.
+TEST_DATA_ICO_EXT := $(IMAGE_ROOT)/third_party/ico-refs
 # Output directory for BMP encode test output.
 TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 TEST_OUT_GIF := $(IMAGE_ROOT)/tests/out/gif
@@ -1241,11 +1245,12 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
 	printf "\033[0;32mGIF output verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying ICO/CUR structure against icotool ###\033[0m\n\n" && \
-	python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) && \
+	$(CURDIR)/tools/oracle/fetch.sh ico-refs && \
+	python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) $(TEST_DATA_ICO_EXT) && \
 	printf "\033[0;32mICO/CUR structure verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying ICO/CUR pixels against Pillow/ImageMagick/GdkPixbuf ###\033[0m\n\n" && \
 	LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_ICO_DUMP=$(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) \
-		python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) && \
+		python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) $(TEST_DATA_ICO_EXT) && \
 	printf "\033[0;32mICO/CUR pixel verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying ICO/CUR output against outside readers ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
@@ -1301,9 +1306,10 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/du
 		python3 $(CURDIR)/tests/data/jpeg/verify_jpeg_output.py $(TEST_OUT_JPEG) && \
 		python3 $(CURDIR)/tests/data/bmp/verify_bmp_output.py $(TEST_OUT_BMP) && \
 		python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
-		python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) && \
+		$(CURDIR)/tools/oracle/fetch.sh ico-refs && \
+		python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) $(TEST_DATA_ICO_EXT) && \
 		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_ICO_DUMP=$(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) \
-			python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) && \
+			python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) $(TEST_DATA_ICO_EXT) && \
 		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
 		python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 		printf "\033[0;32mPNG, JPEG, BMP, GIF and ICO output verified, and structurally checked.\033[0m\n"; \
@@ -1390,9 +1396,10 @@ test-verify-gif: ## Run only GIF output verification (run 'make test' for full t
 
 test-verify-ico: $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) ## Run ICO/CUR structure, pixel and output verification
 	@mkdir -p $(TEST_OUT_ICO)
-	@python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) && \
+	@$(CURDIR)/tools/oracle/fetch.sh ico-refs && \
+		python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) $(TEST_DATA_ICO_EXT) && \
 		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_ICO_DUMP=$(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) \
-			python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) && \
+			python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) $(TEST_DATA_ICO_EXT) && \
 		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
 		printf "\033[0;32mICO/CUR verification passed.\033[0m\n"
 

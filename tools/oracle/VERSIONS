@@ -36,3 +36,17 @@ jpeg-10         sha256:8b9eaa13242690ebd03e1728ab1edf97a81a78ed6e83624d493655f31
 # measurement of the file we fetched**, taken 2026-09-26; download.osgeo.org
 # publishes no checksum beside it.
 libtiffpic     sha256:e0e34732b61e1ce49eff2c7a079994c856d2a5f772f5228c84678272bc6829a9
+
+# Outside-written ICO fixtures for the same reason the TIFF corpus is not
+# generated here: a generator writes what its author already understood.
+# Neither file is vendored; tools/oracle/fetch.sh pulls each blob at the
+# commit below into third_party/ico-refs/. The commit is the one that last
+# touched the path, so a later unrelated commit on the branch does not move
+# the pin.
+#
+# pillow.ico - MIT-CMU (Pillow). Five entries, PNG 256x256 plus 32-bpp DIBs.
+# wine blank.ico - LGPL-2.1+ (Wine). Ten entries, PNG 256x256 plus 1-bpp DIBs
+# at each of 48/32/16 (shell32's blank icon; gdiplus tests/wine_test.ico is
+# the same bytes).
+pillow-ico       a600f84029383968a28e6d29bf308204cdb4c1d9
+wine-blank-ico   45227d13e63332ade32298c1893fd799f0dea018

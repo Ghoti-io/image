@@ -14,8 +14,9 @@ are listed separately so a green run does not depend on them.
 Arm the gate by flipping one entry's declared width in a fixture: the parse
 below and icotool will then disagree, and this script must exit non-zero.
 
-Usage:  python3 tests/data/ico/verify_ico_structure.py [DIR]
-        DIR defaults to tests/data/ico.
+Usage:  python3 tests/data/ico/verify_ico_structure.py [DIR ...]
+        With no DIR, defaults to tests/data/ico. Extra directories (for example
+        third_party/ico-refs from tools/oracle/fetch.sh) are compared too.
 
 Exit: 0 when every good fixture matches icotool.
 """
@@ -49,7 +50,16 @@ DIR_MISMATCH = {
     "ico_dir_mismatch.ico",
 }
 
-SKIP = CORRUPT | DIR_MISMATCH
+# icotool -l stops when dwBytesInRes does not match the size it derives from
+# the BITMAPINFOHEADER. Pillow's pillow.ico declares 9832 for the 48x48 32-bpp
+# entry where the DIB+AND is 9640 bytes; icotool then lists only the preceding
+# PNG entry. This library and the pixel gate still read all five entries.
+# Structure evidence for that file is the pixel gate + ImageMagick identify.
+STRUCTURE_SKIP = {
+    "pillow.ico",
+}
+
+SKIP = CORRUPT | DIR_MISMATCH | STRUCTURE_SKIP
 
 LINE_RE = re.compile(
     r"--(?P<kind>icon|cursor)\s+"
@@ -139,24 +149,42 @@ def compare(path: str) -> None:
                         f"ours={a[key]} icotool={b[key]}")
 
 
+def collect(dirs: list[str]) -> list[tuple[str, str]]:
+    """(basename, path) for every good fixture under dirs, first wins on clash."""
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for root in dirs:
+        for name in sorted(os.listdir(root)):
+            if not name.endswith((".ico", ".cur")) or name in SKIP:
+                continue
+            if name in seen:
+                raise SystemExit(
+                    "duplicate fixture name %r under %s; rename one copy"
+                    % (name, root))
+            seen.add(name)
+            out.append((name, os.path.join(root, name)))
+    return out
+
+
 def main() -> int:
-    root = sys.argv[1] if len(sys.argv) > 1 else HERE
-    names = sorted(
-        n for n in os.listdir(root)
-        if n.endswith((".ico", ".cur")) and n not in SKIP)
-    if not names:
-        print(f"no ICO/CUR fixtures in {root}", file=sys.stderr)
+    dirs = [os.path.abspath(d) for d in sys.argv[1:]] or [HERE]
+    for d in dirs:
+        if not os.path.isdir(d):
+            print("not a directory: %s" % d, file=sys.stderr)
+            return 2
+    fixtures = collect(dirs)
+    if not fixtures:
+        print("no ICO/CUR fixtures in %s" % ", ".join(dirs), file=sys.stderr)
         return 2
     failed = 0
-    for name in names:
-        path = os.path.join(root, name)
+    for name, path in fixtures:
         try:
             compare(path)
             print(f"  ok  {name}")
         except Exception as exc:  # noqa: BLE001 - report every fixture
             print(f"  FAIL {name}: {exc}", file=sys.stderr)
             failed += 1
-    print(f"{len(names) - failed}/{len(names)} fixtures match icotool -l")
+    print(f"{len(fixtures) - failed}/{len(fixtures)} fixtures match icotool -l")
     return 1 if failed else 0
 
 

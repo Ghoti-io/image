@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Fetch and build the reference decoders and corpora the BMP sweep uses.
+# Fetch and build the reference decoders and corpora the sweeps use.
 #
 # None of it is committed. bmpsuite is another project's test suite and bmplib
 # is another project's decoder; a copy here would be a snapshot that stops
@@ -11,12 +11,16 @@
 # bmplib is LGPL/GPL. It is built as a shared library and used through the
 # separate process in tests/tools/bmp-oracle, never linked into this library.
 #
-# Both land in third_party/<name>/, which .gitignore excludes. Both are built
-# here rather than only downloaded: an unbuilt bmpsuite holds no .bmp files at
-# all, and an unbuilt bmplib is of no use as a decoder, so "have it" means
-# "built" for each.
+# bmplib and bmpsuite land in third_party/<name>/, which .gitignore excludes.
+# Both are built here rather than only downloaded: an unbuilt bmpsuite holds
+# no .bmp files at all, and an unbuilt bmplib is of no use as a decoder, so
+# "have it" means "built" for each.
 #
-# Usage:  tools/oracle/fetch.sh [bmplib|bmpsuite|all]
+# ICO refs are single blobs (Pillow pillow.ico, Wine blank.ico) fetched at the
+# commit VERSIONS names into third_party/ico-refs/. No build step: the file
+# is the fixture.
+#
+# Usage:  tools/oracle/fetch.sh [bmplib|bmpsuite|ico-refs|all]
 #
 # Copyright 2026 by Corey Pennycuff
 
@@ -103,10 +107,76 @@ fetch_bmpsuite() {
   mv "$dest.partial" "$dest"
 }
 
+# Download one raw blob at a pinned commit into dest.partial/<name>, checking
+# the ICONDIR magic so a HTML error page never lands as a "fixture".
+fetch_ico_blob() {
+  dest_dir=$1
+  name=$2
+  url=$3
+  ref=$4
+  need curl "ico-refs ($name)"
+  printf 'fetch   third_party/ico-refs/%s (%s)\n' "$name" "$ref"
+  tmp="$dest_dir.partial/$name"
+  mkdir -p "$dest_dir.partial"
+  curl -fsSL -o "$tmp" "$url" || {
+    printf 'could not download %s\n' "$url" >&2
+    exit 1
+  }
+  # ICONDIR reserved=0, type=1 (icon) or 2 (cursor), count >= 1.
+  python3 - "$tmp" "$name" <<'PY'
+import struct, sys
+path, name = sys.argv[1], sys.argv[2]
+data = open(path, "rb").read(6)
+if len(data) < 6:
+    sys.stderr.write("%s: shorter than ICONDIR\n" % name)
+    sys.exit(1)
+reserved, typ, count = struct.unpack("<HHH", data)
+if reserved != 0 or typ not in (1, 2) or count < 1:
+    sys.stderr.write(
+        "%s: not an ICO/CUR (reserved=%d type=%d count=%d)\n"
+        % (name, reserved, typ, count))
+    sys.exit(1)
+PY
+  printf '%s\n' "$ref" > "$dest_dir.partial/$name.ref"
+}
+
+fetch_ico_refs() {
+  dest="$root/third_party/ico-refs"
+  pillow_ref=$(ref_for pillow-ico)
+  wine_ref=$(ref_for wine-blank-ico)
+  test -n "$pillow_ref" || {
+    printf 'VERSIONS has no pillow-ico line\n' >&2
+    exit 1
+  }
+  test -n "$wine_ref" || {
+    printf 'VERSIONS has no wine-blank-ico line\n' >&2
+    exit 1
+  }
+  if [ -f "$dest/pillow.ico" ] && [ -f "$dest/wine_blank.ico" ] &&
+      [ -f "$dest/pillow.ico.ref" ] && [ -f "$dest/wine_blank.ico.ref" ] &&
+      [ "$(cat "$dest/pillow.ico.ref")" = "$pillow_ref" ] &&
+      [ "$(cat "$dest/wine_blank.ico.ref")" = "$wine_ref" ]; then
+    printf 'have    third_party/ico-refs\n'
+    return
+  fi
+  rm -rf "$dest.partial"
+  mkdir -p "$dest.partial"
+  fetch_ico_blob "$dest" pillow.ico \
+      "https://raw.githubusercontent.com/python-pillow/Pillow/${pillow_ref}/Tests/images/pillow.ico" \
+      "$pillow_ref"
+  fetch_ico_blob "$dest" wine_blank.ico \
+      "https://raw.githubusercontent.com/wine-mirror/wine/${wine_ref}/dlls/shell32/resources/blank.ico" \
+      "$wine_ref"
+  rm -rf "$dest"
+  mv "$dest.partial" "$dest"
+  printf 'ready   third_party/ico-refs\n'
+}
+
 case "$what" in
   bmplib)   fetch_bmplib ;;
   bmpsuite) fetch_bmpsuite ;;
-  all)      fetch_bmplib; fetch_bmpsuite ;;
-  *)        printf 'usage: tools/oracle/fetch.sh [bmplib|bmpsuite|all]\n' >&2
+  ico-refs) fetch_ico_refs ;;
+  all)      fetch_bmplib; fetch_bmpsuite; fetch_ico_refs ;;
+  *)        printf 'usage: tools/oracle/fetch.sh [bmplib|bmpsuite|ico-refs|all]\n' >&2
             exit 1 ;;
 esac

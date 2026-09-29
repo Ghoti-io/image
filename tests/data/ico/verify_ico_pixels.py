@@ -33,13 +33,17 @@ WHAT IS NOT COMPARED
   is documented in documentation/formats/ico.md and asserted in
   Test(Ico, ZeroAlphaFallsBackToAndMask); asking the oracles to match it would
   fail the intentional deviation.
+- Pillow on `wine_blank.ico` entry 0. That entry is a 1-bit greyscale PNG with
+  a tRNS chunk; this library and ImageMagick decode it as fully transparent,
+  Pillow's ICO path yields opaque black. ImageMagick still covers the entry.
 - The colour under a fully transparent pixel (both sides alpha 0).
 
 Arm the gate by flipping a fixture's red channel: every reader that can see
 that entry will disagree with the dump, and this script must exit non-zero.
 
-Usage:  python3 tests/data/ico/verify_ico_pixels.py [DIR]
-        DIR defaults to tests/data/ico.
+Usage:  python3 tests/data/ico/verify_ico_pixels.py [DIR ...]
+        With no DIR, defaults to tests/data/ico. Extra directories (for example
+        third_party/ico-refs) are compared in the same dump/oracle pass.
         GIMG_ICO_DUMP points at dump_ico_raster (or pass --dump PATH).
 
 Exit: 0 when every compared entry matched every reader that could see it, and
@@ -75,6 +79,14 @@ GDK_SKIP = {
     "ico_mixed.ico",
     "ico_png_32.ico",
     "ico_256_png.ico",
+}
+
+# Entry indices where Pillow is known to disagree with this library and with
+# ImageMagick. Keyed by basename; those entries are still checked by the
+# other readers.
+PILLOW_SKIP_ENTRIES = {
+    # 1-bit greyscale PNG + tRNS: Pillow's ICO path ignores transparency.
+    "wine_blank.ico": {0},
 }
 
 STATUS_RE = re.compile(
@@ -216,13 +228,13 @@ def find_dump(explicit: str | None) -> str:
         "or pass --dump PATH")
 
 
-def compare_in_image(dirpath: str, dump_dir: str, names: list[str]) -> int:
+def compare_in_image(fixtures: list[tuple[str, str]], dump_dir: str) -> int:
     errors: list[str] = []
     checked = 0
     answered: set[str] = set()
 
     by_stem: dict[str, list[dict]] = {}
-    for name in names:
+    for name, _path in fixtures:
         stem = os.path.splitext(name)[0]
         # Discover dumps written as <stem>.<i>.rgba beside a status we re-derive
         # from the file size of each dump via a small meta file the host wrote.
@@ -245,9 +257,8 @@ def compare_in_image(dirpath: str, dump_dir: str, names: list[str]) -> int:
                         dump_dir, "%s.%d.rgba" % (stem, idx)),
                 })
 
-    for name in names:
+    for name, path in fixtures:
         stem = os.path.splitext(name)[0]
-        path = os.path.join(dirpath, name)
         ours = sorted(by_stem.get(stem, []), key=lambda e: e["index"])
         if not ours:
             errors.append("%s: dump_ico_raster produced no entries" % name)
@@ -274,6 +285,8 @@ def compare_in_image(dirpath: str, dump_dir: str, names: list[str]) -> int:
                 "%s: ImageMagick reports %d scenes, we dumped %d"
                 % (name, len(im_scenes), len(ours)))
 
+        pillow_skip = PILLOW_SKIP_ENTRIES.get(name, set())
+
         for ent in ours:
             with open(ent["rgba_path"], "rb") as f:
                 want = f.read()
@@ -281,20 +294,21 @@ def compare_in_image(dirpath: str, dump_dir: str, names: list[str]) -> int:
             entry_agreed = False
             entry_read = False
 
-            try:
-                got = load_pillow(path, w, h)
-            except Exception:
-                got = None
-            if got is not None:
-                entry_read = True
-                answered.add("Pillow")
-                problem = compare(got, want)
-                if problem:
-                    errors.append(
-                        "%s[%d] %dx%d: Pillow reads it as %s"
-                        % (name, idx, w, h, problem))
-                else:
-                    entry_agreed = True
+            if idx not in pillow_skip:
+                try:
+                    got = load_pillow(path, w, h)
+                except Exception:
+                    got = None
+                if got is not None:
+                    entry_read = True
+                    answered.add("Pillow")
+                    problem = compare(got, want)
+                    if problem:
+                        errors.append(
+                            "%s[%d] %dx%d: Pillow reads it as %s"
+                            % (name, idx, w, h, problem))
+                    else:
+                        entry_agreed = True
 
             if im_scenes is not None and idx < len(im_scenes):
                 iw, ih, got = im_scenes[idx]
@@ -353,29 +367,51 @@ def compare_in_image(dirpath: str, dump_dir: str, names: list[str]) -> int:
     return 0
 
 
+def collect_fixtures(dirs: list[str]) -> list[tuple[str, str]]:
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for dirpath in dirs:
+        for name in sorted(os.listdir(dirpath)):
+            if not name.endswith((".ico", ".cur")) or name in SKIP:
+                continue
+            if name.startswith("_"):
+                continue
+            if name in seen:
+                raise SystemExit(
+                    "duplicate fixture name %r under %s; rename one copy"
+                    % (name, dirpath))
+            seen.add(name)
+            out.append((name, os.path.join(dirpath, name)))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("dir", nargs="?", default=HERE)
+    ap.add_argument(
+        "dirs", nargs="*", default=[HERE],
+        help="fixture directories (default: tests/data/ico)")
     ap.add_argument("--dump", default=None, help="path to dump_ico_raster")
     ap.add_argument(
         "--dump-dir", default=None,
         help="host-prepared dump directory (set across oracle re-exec)")
     args = ap.parse_args()
-    dirpath = os.path.abspath(args.dir)
+    dirs = [os.path.abspath(d) for d in (args.dirs or [HERE])]
+    for d in dirs:
+        if not os.path.isdir(d):
+            print("not a directory: %s" % d, file=sys.stderr)
+            return 2
 
-    names = sorted(
-        n for n in os.listdir(dirpath)
-        if n.endswith((".ico", ".cur")) and n not in SKIP
-        and not n.startswith("_"))
-    if not names:
-        print("no ICO/CUR fixtures to compare in %s" % dirpath, file=sys.stderr)
+    fixtures = collect_fixtures(dirs)
+    if not fixtures:
+        print("no ICO/CUR fixtures to compare in %s" % ", ".join(dirs),
+              file=sys.stderr)
         return 2
 
     # Already prepared (re-exec argv, or a caller that dumped first).
     if args.dump_dir and os.path.isdir(args.dump_dir):
         from oracle_reexec import inside_or_reexec  # noqa: WPS433
         inside_or_reexec("pillow", scratch=[args.dump_dir])
-        return compare_in_image(dirpath, args.dump_dir, names)
+        return compare_in_image(fixtures, args.dump_dir)
 
     # Host side: dump, then re-exec into the image with the dump dir mounted.
     try:
@@ -385,7 +421,7 @@ def main() -> int:
         return 2
 
     tmp = tempfile.mkdtemp(prefix="ico-pixels-")
-    paths = [os.path.join(dirpath, n) for n in names]
+    paths = [path for _name, path in fixtures]
     try:
         dumped = run_dump(dump, tmp, paths)
     except RuntimeError as exc:
@@ -405,9 +441,9 @@ def main() -> int:
     # Re-invoke ourselves with --dump-dir so the path survives docker/podman
     # (which does not forward the host environment).
     from oracle_reexec import inside_or_reexec  # noqa: WPS433
-    sys.argv = [sys.argv[0], dirpath, "--dump-dir", tmp]
+    sys.argv = [sys.argv[0]] + dirs + ["--dump-dir", tmp]
     inside_or_reexec("pillow", scratch=[tmp])
-    return compare_in_image(dirpath, tmp, names)
+    return compare_in_image(fixtures, tmp)
 
 
 if __name__ == "__main__":

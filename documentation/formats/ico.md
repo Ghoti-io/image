@@ -77,13 +77,23 @@ item writes `type = 2` (CUR).
 
 - Fixtures from `tests/data/ico/generate.py` (Pillow and ImageMagick inside the
   pinned oracle image, plus hand-assembled DIBs and corrupt cases).
+- Outside-written fixtures fetched by `tools/oracle/fetch.sh ico-refs` into
+  `third_party/ico-refs/` at the commits `tools/oracle/VERSIONS` names: Pillow's
+  `pillow.ico` (MIT-CMU; mixed PNG + 32-bpp DIB) and Wine's
+  `dlls/shell32/resources/blank.ico` as `wine_blank.ico` (LGPL-2.1+; mixed PNG
+  + 1-bpp DIBs). Neither is committed. `pillow.ico` is skipped for the
+  `icotool -l` structure gate: icotool rejects Pillow's oversized
+  `dwBytesInRes` on the 48×48 DIB and then lists only the PNG entry; the pixel
+  gate still covers all five entries.
 - Structure vs `icotool -l` when icoutils is available in the oracle image.
 - Per-entry pixels vs Pillow, ImageMagick and GdkPixbuf
   (`verify_ico_pixels.py`). GdkPixbuf refuses PNG-compressed icons and
   mis-reads mixed DIB+PNG files; those entries are checked by the other two.
   `ico_zero_alpha_and.ico` is the intentional §5.3 deviation (outside readers
   leave XOR alpha at zero; this codec restores the AND mask) and is not
-  compared.
+  compared. Pillow's ICO path also disagrees with this library and ImageMagick
+  on `wine_blank.ico` entry 0 (1-bit greyscale PNG with tRNS); that entry is
+  checked by ImageMagick only.
 - Encoder output vs the same three readers (`verify_ico_output.py`), with
   files published by the encode tests into `tests/out/ico/`.
 - Round-trip save/load of DIB payloads in `test_ico.cpp`.
