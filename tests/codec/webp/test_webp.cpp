@@ -1,7 +1,8 @@
 /**
  * @file
  *
- * WebP Phase A–E: load, VP8L/VP8/ALPH decode, ANIM/ANMF composite; refuse save.
+ * WebP Phase A–F: load, VP8L/VP8/ALPH decode, ANIM/ANMF composite, VP8L
+ * lossless encode; refuse lossy save.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -10,6 +11,7 @@
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
@@ -222,9 +224,9 @@ TEST(Webp, Capabilities) {
   ASSERT_NE(codec, nullptr);
   const unsigned int caps = gimg_codec_capabilities(codec);
   EXPECT_TRUE(caps & GIMG_CAP_READ);
+  EXPECT_TRUE(caps & GIMG_CAP_WRITE);
   EXPECT_TRUE(caps & GIMG_CAP_ANIMATION);
   EXPECT_TRUE(caps & GIMG_CAP_ICC);
-  EXPECT_FALSE(caps & GIMG_CAP_WRITE);
 }
 
 TEST(Webp, ProbeAndLoadSimpleLossy) {
@@ -531,17 +533,74 @@ TEST(Webp, AnimDisposeBackground) {
   gimg_doc_destroy(doc);
 }
 
-TEST(Webp, SaveStillUnsupported) {
+TEST(Webp, SaveLosslessRoundTrip) {
   GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(load_doc("simple_lossy.webp", &doc), GIMG_OK);
-  GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_OK);
-  gimg_raster_destroy(raster);
+  ASSERT_EQ(load_doc("simple_lossless.webp", &doc), GIMG_OK);
+  GIMG_Raster * orig = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &orig), GIMG_OK);
+  ASSERT_NE(orig, nullptr);
+  const uint32_t w = gimg_raster_width(orig);
+  const uint32_t h = gimg_raster_height(orig);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), orig);
+  orig = nullptr;
 
   GIMG_Stream * out = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
-  EXPECT_EQ(gimg_doc_save(doc, out, "webp", nullptr, nullptr),
+  GIMG_Save_Options opts = {};
+  opts.webp_effort = 4;
+  opts.webp_exact = 1;
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, &report), GIMG_OK);
+  EXPECT_GT(report.bytes_written, 0u);
+
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+  ASSERT_GT(nbytes, 0u);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back),
+      GIMG_OK);
+  ASSERT_NE(back, nullptr);
+  EXPECT_EQ(gimg_raster_width(back), w);
+  EXPECT_EQ(gimg_raster_height(back), h);
+
+  /* Compare against a fresh decode of the source fixture. */
+  GIMG_Doc * again = nullptr;
+  ASSERT_EQ(load_doc("simple_lossless.webp", &again), GIMG_OK);
+  GIMG_Raster * expect = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(again, 0), nullptr, &expect),
+      GIMG_OK);
+  EXPECT_TRUE(gimg_ops_raster_equal(expect, back));
+
+  gimg_raster_destroy(expect);
+  gimg_doc_destroy(again);
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveLossyRefused) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_doc("simple_lossless.webp", &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  raster = nullptr;
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
+  EXPECT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr),
       GIMG_ERR_UNSUPPORTED);
   gimg_stream_destroy(out);
   gimg_doc_destroy(doc);

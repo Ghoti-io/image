@@ -310,11 +310,13 @@ TEST(ConversionMatrix, EveryFixtureSurvivesEveryFormatThatCanHoldIt) {
           // raster is widened or narrowed on the way in. Geometry only.
           continue;
         }
-        if (target == "gif" && before.channels == 4 &&
+        if ((target == "gif" || target == "webp") && before.channels == 4 &&
             before.bits == 8) {
           // GIF carries the visible image: one palette index is transparent
           // and the colour stored behind it is the writer's, not the
-          // caller's. Transparency everywhere, colour where it can be seen.
+          // caller's. WebP's default save (webp_exact=0) likewise clears RGB
+          // under fully transparent pixels, matching cwebp -noexact.
+          // Transparency everywhere, colour where it can be seen.
           const size_t n = before.pixels.size();
           ASSERT_EQ(after.pixels.size(), n);
           for (size_t i = 0; i + 3 < n; i += 4) {

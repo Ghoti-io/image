@@ -24,6 +24,7 @@
  * Internal WebP codec structures. Phase A: RIFF container, VP8X, chunk walk,
  * metadata carriage and canvas geometry. Phase B: VP8L lossless decode.
  * Phase C: ALPH. Phase D: VP8 lossy keyframe decode. Phase E: ANIM/ANMF.
+ * Phase F: VP8L lossless encode.
  */
 
 #ifndef GHOTI_IO_GIMG_SRC_CODEC_WEBP_WEBP_INTERNAL_H
@@ -187,6 +188,17 @@ int gimg_webp_peek_vp8l_dims(const unsigned char * data, size_t size,
  */
 GIMG_Result gimg_webp_vp8l_decode(const unsigned char * data, size_t size,
     const GIMG_Allocator * alloc, GIMG_Raster ** out_raster);
+
+/**
+ * @brief Encode an RGBA8 buffer to a VP8L bitstream payload (starts with 0x2f).
+ *
+ * @param exact  Non-zero preserves RGB under fully transparent pixels.
+ * @param effort 0–9; >=1 applies the subtract-green transform.
+ */
+GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
+    uint32_t height, size_t stride, int has_alpha_hint, int exact, int effort,
+    const GIMG_Allocator * alloc, unsigned char ** out_bytes,
+    size_t * out_size);
 
 /**
  * @brief Decode headerless VP8L image data used inside an ALPH chunk.

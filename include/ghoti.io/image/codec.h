@@ -764,9 +764,32 @@ typedef struct {
    * entry. Ignored for non-ICO. */
   uint8_t ico_payload;
 
-  /** Zero; room to grow, and the room a new format's options go in first. */
-  uint8_t _reserved[7];
+  /** WebP: which compressor. GIMG_WEBP_COMPRESS_LOSSLESS (0, default / AUTO)
+   * writes VP8L. GIMG_WEBP_COMPRESS_LOSSY is refused with
+   * GIMG_ERR_UNSUPPORTED until there is a rate-distortion measurement plan.
+   * Ignored for non-WebP. */
+  uint8_t webp_lossless;
+
+  /** WebP: VP8L search / transform budget, 0–9. Higher may apply
+   * subtract-green (effort >= 1). Default when options is NULL is 4; a
+   * present options struct with this field left 0 means effort 0. Ignored
+   * for non-WebP. */
+  uint8_t webp_effort;
+
+  /** WebP: non-zero preserves RGB samples under fully transparent pixels
+   * (libwebp `-exact`). Zero (default) clears them, which usually shrinks
+   * the file. Ignored for non-WebP. */
+  uint8_t webp_exact;
+
+  /** Zero; room to grow. */
+  uint8_t _reserved[4];
 } GIMG_Save_Options;
+
+/** @name WebP compressor choice
+ * @{ */
+#define GIMG_WEBP_COMPRESS_LOSSLESS 0u ///< VP8L (default / AUTO).
+#define GIMG_WEBP_COMPRESS_LOSSY 1u    ///< Refused until Phase G has a plan.
+/** @} */
 
 /** @name TIFF compression (TIFF 6.0 sections 9 and 13)
  *

@@ -88,6 +88,12 @@ bool keeps_every_pixel_and_frame(const std::string & fmt) {
 
 /** Whether a format can hold more than one frame, as the codec declares. */
 bool holds_frames(const std::string & fmt) {
+  // WebP advertises GIMG_CAP_ANIMATION for read (ANMF → FRAME items) but
+  // Phase F writes a still of the first item only. Counting on the capability
+  // bit would demand animation encode that does not exist yet.
+  if (fmt == "webp") {
+    return false;
+  }
   GIMG_Codec * c = gimg_codec_by_name(fmt.c_str());
   return c && (gimg_codec_capabilities(c) & GIMG_CAP_ANIMATION) != 0u;
 }

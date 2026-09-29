@@ -2,21 +2,23 @@
 
 # WebP
 
-Phases A–E of the WebP codec: the RIFF/`WEBP` container, `VP8X` canvas
+Phases A–F of the WebP codec: the RIFF/`WEBP` container, `VP8X` canvas
 geometry, chunk inventory (including bitstream chunks nested in `ANMF`),
 carriage of `ICCP` / `EXIF` / `XMP `, **VP8L lossless picture decode**,
 **ALPH plane decode**, **VP8 lossy keyframe decode** (with optional ALPH
-merged into RGBA), and **ANIM/ANMF animation** (frame items with offset,
-duration, dispose and blend; decode returns the composited canvas). Encode
-is a later phase; see \ref image_format_references "Formats" and
-`notes/image/webp-plan.md`.
+merged into RGBA), **ANIM/ANMF animation** (frame items with offset,
+duration, dispose and blend; decode returns the composited canvas), and
+**VP8L lossless encode** of still images. Lossy encode is refused; see
+\ref image_format_references "Formats" and `notes/image/webp-plan.md`.
 
 Claims below are checked. The structure gate is `webpinfo` (committed
 fixtures under `tests/data/webp/` plus outside corpora from
 `tools/oracle/fetch.sh webp-refs`); lossless and lossy still pixels (and
 ALPH planes) on the committed fixtures are gated by `dwebp -pam`; animation
-frames are gated by `anim_dump -pam`. All from the pinned `libwebp` 1.5.0
-reference in `tools/oracle/containers/IMAGES` (`deb13-8`).
+frames are gated by `anim_dump -pam`; lossless saves round-trip through our
+decoder and are accepted by `dwebp`, Pillow and ImageMagick. All from the
+pinned `libwebp` 1.5.0 reference in `tools/oracle/containers/IMAGES`
+(`deb13-8`).
 
 ## Normative references
 
@@ -78,10 +80,25 @@ oracle comparison: identity with `dwebp -pam` is the gate, not "close to BT.601"
 
 ## Save
 
-Not implemented. `gimg_doc_save(..., "webp", ...)` returns
-`GIMG_ERR_UNSUPPORTED`. Phase F will write lossless (`VP8L`) only; lossy
-encode is intentionally refused until there is a rate-distortion measurement
-plan (`notes/image/webp-plan.md` §6).
+Lossless only (`VP8L`). `gimg_doc_save(..., "webp", ...)` writes a simple
+RIFF/`WEBP`/`VP8L` file, or an extended file with `VP8X` when `ICCP` / `EXIF` /
+`XMP ` are preserved. Options: `webp_effort` (0–9; ≥1 applies subtract-green),
+`webp_exact` (preserve RGB under full transparency), and `webp_lossless`
+(`GIMG_WEBP_COMPRESS_LOSSLESS`, the default; `GIMG_WEBP_COMPRESS_LOSSY` →
+`GIMG_ERR_UNSUPPORTED`). Multi-frame documents are written as a still of the first item (animation
+encode is not implemented); `GIMG_WEBP_COMPRESS_LOSSY` and non-8-bit sources
+are refused.
+
+Round-trip through this library's decoder is identity. Outside consumers
+(`dwebp`, Pillow, ImageMagick) decode the bytes to the same pixels. Size is
+not competitive with `cwebp -lossless` when the latter uses prediction and
+LZ77: on the 32×32 `lossless_gradient` fixture this encoder wrote **2160**
+bytes against `cwebp -lossless -exact` at **60** bytes (measured 2026-09-29
+in `deb13-8`). That gap is expected until LZ77 and spatial transforms land;
+the gate for Phase F is correctness, not rate.
+
+Lossy encode remains intentionally refused until there is a rate-distortion
+measurement plan (`notes/image/webp-plan.md` §6).
 
 ## Compliance checklist
 
@@ -94,7 +111,7 @@ plan (`notes/image/webp-plan.md` §6).
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
 | VP8 decode | keyframe → RGBA, optional ALPH merge; byte-identical to `dwebp -pam` | inter frame / corrupt → `GIMG_ERR_CORRUPT` / `UNSUPPORTED` |
 | Animation | ANMF → `FRAME` items; composite matches `anim_dump -pam` | rectangle past canvas / no bitstream → `GIMG_ERR_CORRUPT`; over `max_frame_count` → `GIMG_ERR_LIMIT` |
-| Encode | — | `GIMG_ERR_UNSUPPORTED` |
+| Encode | VP8L still of the first item; optional ICCP/EXIF/XMP; round-trip identity | lossy / non-8-bit → `GIMG_ERR_UNSUPPORTED`; animation encode not implemented (first frame only) |
 
 ## Where this codec differs from libwebp
 
@@ -102,6 +119,7 @@ plan (`notes/image/webp-plan.md` §6).
 |---|---|---|
 | VP8 / VP8L / ALPH samples | match `dwebp -pam` | same |
 | Anim composite | match `anim_dump -pam` | same |
+| Lossless save | round-trip identity; accepted by `dwebp`/Pillow/ImageMagick | `cwebp -lossless` is much smaller (prediction + LZ77); see Save |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |

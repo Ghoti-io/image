@@ -12,9 +12,9 @@ This is what the library implements.
 - ICO and CUR (one codec; DIB and PNG payloads, AND-mask alpha, hotspots).
 - WebP: RIFF container, `VP8X` canvas, chunk inventory, `ICCP`/`EXIF`/`XMP `
   carriage, VP8L lossless decode, VP8 lossy keyframe decode (optional ALPH),
-  and ANIM/ANMF animation (composited frames), all gated against libwebp
-  (`dwebp` / `anim_dump`). Encode is not yet implemented; the format page
-  lists what remains.
+  ANIM/ANMF animation (composited frames), and VP8L lossless still encode,
+  gated against libwebp (`dwebp` / `anim_dump`). Lossy encode is refused; the
+  format page lists what remains.
 - TIFF. It reads every bit depth from 1 to 32, both byte orders, strips and
   tiles, grayscale, palette, RGB, RGBA, separated and YCbCr, separate and
   contiguous planes, every compression the format defines except LogLuv -

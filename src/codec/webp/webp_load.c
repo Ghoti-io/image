@@ -564,16 +564,3 @@ GIMG_Result gimg_webp_decode(GIMG_Codec * codec, const GIMG_Item * item,
 
   return GIMG_ERR_UNSUPPORTED;
 }
-
-GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
-    GIMG_Stream * stream, const char * format_name,
-    const GIMG_Save_Options * options, GIMG_Save_Report * report) {
-  (void)codec;
-  (void)doc;
-  (void)stream;
-  (void)format_name;
-  (void)options;
-  (void)report;
-  // Phase F writes VP8L; lossy encode is deliberately refused (plan §6).
-  return GIMG_ERR_UNSUPPORTED;
-}
