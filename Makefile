@@ -769,6 +769,18 @@ resample-tool: $(APP_DIR)/resample_tool$(EXE_EXTENSION) ## Build resample_tool; 
 
 bmp-dump-raster: $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION) ## Build dump_bmp_raster; used by tests/data/bmp/bmpsuite_sweep.py
 
+# Decode ICO/CUR files and dump each entry's raster, for verify_ico_pixels.py.
+$(OBJ_DIR)/tests/dump_ico_raster.o: tests/codec/ico/dump_ico_raster.cpp $(FLAGS_STAMP)
+	@printf "\n### Compiling dump_ico_raster ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+$(APP_DIR)/dump_ico_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_ico_raster.o $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
+	@printf "\n### Linking dump_ico_raster ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_ico_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
+
+ico-dump-raster: $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) ## Build dump_ico_raster; used by tests/data/ico/verify_ico_pixels.py
+
 # The corpus is materialised out of the pinned image rather than fetched.
 #
 # bmpsuite's repository holds a generator, not the images, so "the corpus" is
@@ -976,7 +988,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 .PHONY: fuzz-run-png_load fuzz-run-png_encode fuzz-run-jpeg_load fuzz-run-jpeg_encode
 .PHONY: fuzz-run-bmp_load fuzz-run-bmp_encode fuzz-run-gif_load fuzz-run-gif_encode
 .PHONY: fuzz-run-tiff_load fuzz-run-tiff_encode fuzz-run-ico_load fuzz-run-ico_encode
-.PHONY: bmp-dump-raster bmpsuite resample-tool
+.PHONY: bmp-dump-raster ico-dump-raster bmpsuite resample-tool
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-verify-gif test-verify-structure test-watch uninstall watch
 # Debug build commands
@@ -1197,8 +1209,8 @@ else
 endif
 
 test: ## Make and run the Unit tests, then verify written output against outside decoders
-test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION)
-	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF)
+test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION)
+	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
 		printf "\033[0;30;43m\n"; \
@@ -1231,6 +1243,13 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	printf "\033[0;30;43m\n### Verifying ICO/CUR structure against icotool ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) && \
 	printf "\033[0;32mICO/CUR structure verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying ICO/CUR pixels against Pillow/ImageMagick/GdkPixbuf ###\033[0m\n\n" && \
+	LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_ICO_DUMP=$(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) \
+		python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) && \
+	printf "\033[0;32mICO/CUR pixel verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying ICO/CUR output against outside readers ###\033[0m\n\n" && \
+	python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
+	printf "\033[0;32mICO/CUR output verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying output structure ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 	printf "\033[0;32mOutput structure verification passed.\033[0m\n" && \
@@ -1242,8 +1261,8 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	printf "\033[0;32mICC corpus verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
-test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
-	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF)
+test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION)
+	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;36m%-30s %8s %10s %s\033[0m\n" "Test Suite" "Tests" "Time" "Status"; \
 	printf "\033[1;36m%-30s %8s %10s %s\033[0m\n" "------------------------------" "--------" "----------" "------"; \
@@ -1283,6 +1302,9 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 		python3 $(CURDIR)/tests/data/bmp/verify_bmp_output.py $(TEST_OUT_BMP) && \
 		python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
 		python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) && \
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_ICO_DUMP=$(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) \
+			python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) && \
+		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
 		python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 		printf "\033[0;32mPNG, JPEG, BMP, GIF and ICO output verified, and structurally checked.\033[0m\n"; \
 	else \
@@ -1366,9 +1388,13 @@ test-verify-gif: ## Run only GIF output verification (run 'make test' for full t
 	@python3 $(CURDIR)/tests/data/gif/verify_gif_output.py $(TEST_OUT_GIF) && \
 		printf "\033[0;32mGIF output verification passed.\033[0m\n"
 
-test-verify-ico: ## Run only ICO/CUR structure verification against icotool
+test-verify-ico: $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) ## Run ICO/CUR structure, pixel and output verification
+	@mkdir -p $(TEST_OUT_ICO)
 	@python3 $(CURDIR)/tests/data/ico/verify_ico_structure.py $(TEST_DATA_ICO) && \
-		printf "\033[0;32mICO/CUR structure verification passed.\033[0m\n"
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_ICO_DUMP=$(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) \
+			python3 $(CURDIR)/tests/data/ico/verify_ico_pixels.py $(TEST_DATA_ICO) && \
+		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
+		printf "\033[0;32mICO/CUR verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
 test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)

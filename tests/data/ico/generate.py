@@ -163,6 +163,24 @@ def main() -> None:
         (png256, {"w": 256, "h": 256}),
     ]))
 
+    # ImageMagick-written opaque DIB icon — a second writer beside Pillow.
+    # GdkPixbuf can read this; PNG-payload icons it refuses.
+    from tempfile import TemporaryDirectory
+    with TemporaryDirectory() as tmp:
+        src = Path(tmp) / "src.png"
+        Image.new("RGBA", (24, 24), (10, 20, 30, 255)).save(src)
+        out = HERE / "ico_imagemagick_24.ico"
+        proc = __import__("subprocess").run(
+            ["magick", str(src), str(out)],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "magick failed to write ico_imagemagick_24.ico: "
+                + (proc.stderr or proc.stdout))
+        print(f"  {out.name} ({out.stat().st_size} bytes, ImageMagick)")
+
     # Corrupt: entry past EOF
     bad = bytearray(icondir(1, 1))
     bad += direntry(16, 16, 100, 1000)  # offset past end
