@@ -182,17 +182,17 @@ typedef enum {
   GIMG_RESAMPLE_SPACE_ENCODED = 0,
   /**
    * Linearize, average, re-encode. More nearly correct - averaging non-linear
-   * values darkens - and **opt-in precisely because the library cannot know
-   * the transfer function**. Passing this is the caller asserting an sRGB
-   * transfer; GCOL_Color_Info is not consulted to *infer* one, for the same
-   * reason the CMYK conversion refuses to guess a polarity.
+   * values darkens - and **opt-in**. The curve comes from the raster's
+   * GCOL_Color_Info via libs/color: sRGB, BT.1886, PQ, HLG, a plain gamma,
+   * or a complete parametric. An unstated transfer is still the caller's
+   * assertion of sRGB; GCOL_Color_Info is not consulted to *infer* one, for
+   * the same reason the CMYK conversion refuses to guess a polarity.
    *
-   * It is consulted to *contradict* one. A raster whose GCOL_Color_Info states
-   * a transfer that is neither sRGB nor unknown - gamma 2.2, BT.1886, PQ, HLG,
-   * a parametric curve - is refused with GIMG_ERR_UNSUPPORTED, because the
-   * file and the caller have said different things and applying sRGB's curve
-   * anyway would be a wrong answer that looks like a right one. An unstated
-   * transfer is still read as the caller's assertion.
+   * A stated transfer that color cannot evaluate - GAMMA without a positive
+   * gamma_value, PARAMETRIC without a positive g term - is refused with
+   * GIMG_ERR_UNSUPPORTED rather than treated as identity. So is a channel
+   * model that is not light (CMYK, UNKNOWN): the curve says something about
+   * display-referred colour and those samples are not that.
    *
    * The primaries are not consulted at all: linearisation is per-channel and
    * depends on the transfer curve alone, so a Display P3 raster - whose

@@ -848,15 +848,14 @@ int main(int argc, char ** argv) {
 }
 
 /**
- * LINEAR is the caller asserting an sRGB transfer, so a raster that states a
- * different one is a contradiction and is refused rather than resolved.
+ * LINEAR honours the raster's stated transfer through libs/color.
  *
  * The sweep is over every GCOL_Transfer value rather than a chosen few, so a
- * transfer added to the enum is covered the day it is added: anything that is
- * neither UNKNOWN nor SRGB has to be refused, and if a future value is meant
- * to be honoured instead, this test is what says so.
+ * transfer added to the enum is covered the day it is added. UNKNOWN still
+ * means the caller's assertion of sRGB. GAMMA and PARAMETRIC need their
+ * parameters; without them the honest answer is a refusal, not identity.
  */
-TEST(Resize, LinearRefusesARasterThatStatesANonSrgbTransfer) {
+TEST(Resize, LinearHonoursTheStatedTransfer) {
   for (int t = 0; t < GCOL_TRANSFER_COUNT; t++) {
     const GCOL_Transfer transfer = static_cast<GCOL_Transfer>(t);
     GIMG_Raster * src = make_raster(8, 8, &GIMG_PIXEL_RGBA8);
@@ -867,24 +866,79 @@ TEST(Resize, LinearRefusesARasterThatStatesANonSrgbTransfer) {
     if (transfer == GCOL_TRANSFER_GAMMA) {
       info.gamma_value = 2.2;
     }
+    if (transfer == GCOL_TRANSFER_PARAMETRIC) {
+      // Type 0 written as the general form: Y = X^g.
+      info.transfer_params[0] = 2.2;
+      info.transfer_params[1] = 1.0;
+    }
     ASSERT_EQ(gimg_raster_set_color_info(src, &info), GIMG_OK);
 
     GIMG_Raster * out = nullptr;
     const GIMG_Result r = resize_linear(src, 4, 4, GIMG_FILTER_BOX, &out);
-    const bool asserted_srgb =
-        (transfer == GCOL_TRANSFER_UNKNOWN || transfer == GCOL_TRANSFER_SRGB);
-    if (asserted_srgb) {
-      EXPECT_EQ(r, GIMG_OK) << "transfer " << t << " agrees and must resize";
-      EXPECT_NE(out, nullptr) << "transfer " << t;
-    }
-    else {
-      EXPECT_EQ(r, GIMG_ERR_UNSUPPORTED)
-          << "transfer " << t << " contradicts the caller and must be refused";
-      EXPECT_EQ(out, nullptr) << "transfer " << t;
-    }
+    EXPECT_EQ(r, GIMG_OK) << "transfer " << t << " must resize in linear light";
+    EXPECT_NE(out, nullptr) << "transfer " << t;
     gimg_raster_destroy(out);
     gimg_raster_destroy(src);
   }
+}
+
+/**
+ * An incomplete GAMMA or PARAMETRIC is refused rather than treated as the
+ * identity: color would decode those as a no-op, and a no-op under LINEAR
+ * would silently darken the same way ENCODED does.
+ */
+TEST(Resize, LinearRefusesAnIncompleteTransfer) {
+  GIMG_Raster * src = make_raster(8, 8, &GIMG_PIXEL_GRAY8);
+  ASSERT_NE(src, nullptr);
+
+  GCOL_Color_Info info;
+  gcol_color_info_default(&info);
+  info.transfer = GCOL_TRANSFER_GAMMA;
+  info.gamma_value = 0.0;
+  ASSERT_EQ(gimg_raster_set_color_info(src, &info), GIMG_OK);
+  GIMG_Raster * out = nullptr;
+  EXPECT_EQ(resize_linear(src, 4, 4, GIMG_FILTER_BOX, &out),
+      GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(out, nullptr);
+
+  gcol_color_info_default(&info);
+  info.transfer = GCOL_TRANSFER_PARAMETRIC;
+  ASSERT_EQ(gimg_raster_set_color_info(src, &info), GIMG_OK);
+  out = nullptr;
+  EXPECT_EQ(resize_linear(src, 4, 4, GIMG_FILTER_BOX, &out),
+      GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(out, nullptr);
+
+  gimg_raster_destroy(src);
+}
+
+/**
+ * A stated gamma is not sRGB's piecewise curve, and the half-light answer
+ * shows the difference: gamma 2.2 puts 0.5 near 186, sRGB near 188.
+ */
+TEST(Resize, LinearUsesAStatedGammaRatherThanSrgb) {
+  GIMG_Raster * src = make_raster(64, 64, &GIMG_PIXEL_GRAY8);
+  ASSERT_NE(src, nullptr);
+  for (uint32_t y = 0; y < 64; y++) {
+    for (uint32_t x = 0; x < 64; x++) {
+      *px8(src, x, y, 1) = ((x + y) & 1u) ? 255u : 0u;
+    }
+  }
+  GCOL_Color_Info info;
+  gcol_color_info_default(&info);
+  info.transfer = GCOL_TRANSFER_GAMMA;
+  info.gamma_value = 2.2;
+  ASSERT_EQ(gimg_raster_set_color_info(src, &info), GIMG_OK);
+
+  GIMG_Raster * linear = nullptr;
+  ASSERT_EQ(resize_linear(src, 1, 1, GIMG_FILTER_BOX, &linear), GIMG_OK);
+  const int got = *cpx8(linear, 0, 0, 1);
+  EXPECT_GE(got, 183);
+  EXPECT_LE(got, 189) << "half the light under gamma 2.2 encodes near 186; got "
+                      << got;
+
+  gimg_raster_destroy(linear);
+  gimg_raster_destroy(src);
 }
 
 /**
@@ -894,8 +948,8 @@ TEST(Resize, LinearRefusesARasterThatStatesANonSrgbTransfer) {
  * Display P3 is the case that makes the distinction concrete: its primaries
  * are not sRGB's and its transfer curve *is*, so linearising it with sRGB's
  * curve is right. A check keyed on the gamut rather than the transfer would
- * reject this, which is why the one above sweeps GCOL_Transfer and this one
- * exists beside it.
+ * reject this, which is why the sweep above is over GCOL_Transfer and this
+ * one exists beside it.
  */
 TEST(Resize, LinearAcceptsAWideGamutRasterWhoseTransferIsSrgb) {
   GIMG_Raster * src = make_raster(8, 8, &GIMG_PIXEL_RGBA8);

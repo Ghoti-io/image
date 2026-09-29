@@ -54,6 +54,8 @@
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
+#include <ghoti.io/color/color.h>
+#include <ghoti.io/color/math.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -438,14 +440,14 @@ static void gimg_resample_nearest(const unsigned char * src, size_t src_stride,
 
 
 /**
- * sRGB's transfer function and its inverse, as a pair of lookup tables.
+ * Transfer encode/decode as a pair of lookup tables, via libs/color.
  *
  * The forward table maps a sample to a linear value on 0..65535; the reverse
  * maps a linear value back to a sample.  The reverse is built by walking the
- * forward one rather than by evaluating the analytic inverse, so that
- * rev[fwd[v]] == v for every v: the analytic inverse rounds independently and
- * loses a count here and there in the darks, where sRGB is steepest and where
- * a resize that changes nothing would then change something.
+ * forward one rather than by calling gcol_transfer_encode, so that
+ * rev[fwd[v]] == v for every v: independent rounding of the inverse loses a
+ * count here and there in the darks, where curves are steepest and where a
+ * resize that changes nothing would then change something.
  */
 typedef struct {
   uint16_t * forward; /**< max + 1 entries. */
@@ -463,9 +465,39 @@ static void gimg_transfer_free(
   t->reverse = NULL;
 }
 
-static GIMG_Result gimg_transfer_build(
-    const GIMG_Allocator * alloc, uint32_t max, gimg_transfer_tables * out) {
+/**
+ * True when @p info names a transfer color can decode and encode.
+ *
+ * UNKNOWN is not usable here: the caller substitutes sRGB for that case.
+ * GAMMA needs a positive gamma_value; PARAMETRIC needs a positive g term.
+ */
+static bool gimg_transfer_info_usable(const GCOL_Color_Info * info) {
+  if (!info) {
+    return false;
+  }
+  switch (info->transfer) {
+  case GCOL_TRANSFER_LINEAR:
+  case GCOL_TRANSFER_SRGB:
+  case GCOL_TRANSFER_BT1886:
+  case GCOL_TRANSFER_PQ:
+  case GCOL_TRANSFER_HLG:
+    return true;
+  case GCOL_TRANSFER_GAMMA:
+    return info->gamma_value > 0.0 && isfinite(info->gamma_value);
+  case GCOL_TRANSFER_PARAMETRIC:
+    return info->transfer_params[0] > 0.0 &&
+        isfinite(info->transfer_params[0]);
+  default:
+    return false;
+  }
+}
+
+static GIMG_Result gimg_transfer_build(const GIMG_Allocator * alloc,
+    uint32_t max, const GCOL_Color_Info * info, gimg_transfer_tables * out) {
   memset(out, 0, sizeof(*out));
+  if (!gimg_transfer_info_usable(info)) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
   const size_t count = (size_t)max + 1u;
   out->forward = (uint16_t *)gimg_malloc(alloc, count * sizeof(uint16_t));
   out->reverse = (uint16_t *)gimg_malloc(
@@ -476,9 +508,7 @@ static GIMG_Result gimg_transfer_build(
   }
   for (size_t v = 0; v < count; v++) {
     const double c = (double)v / (double)max;
-    const double linear = (c <= 0.04045)
-        ? (c / 12.92)
-        : pow((c + 0.055) / 1.055, 2.4);
+    const double linear = gcol_transfer_decode(info, c);
     double scaled = linear * (double)GIMG_LINEAR_MAX + 0.5;
     if (scaled < 0.0) {
       scaled = 0.0;
@@ -566,15 +596,17 @@ static GIMG_Result gimg_resample_two_pass(const GIMG_Allocator * alloc,
 /**
  * Resample with the samples linearized first and re-encoded afterwards.
  *
- * Averaging sRGB values averages the wrong quantity: the encoding is roughly a
- * 2.2 power, so the mean of two encoded values is darker than the encoding of
- * their mean, and a reduction of a high-contrast picture comes out visibly
- * murkier than it should.
+ * Averaging transfer-encoded values averages the wrong quantity: an encoding
+ * that is roughly a power curve makes the mean of two encoded values darker
+ * than the encoding of their mean, and a reduction of a high-contrast picture
+ * comes out visibly murkier than it should.
  *
  * The work is done at sixteen bits whatever the source width, because
  * linearizing an eight-bit sample and rounding it straight back to eight bits
- * throws away most of the dark end - sRGB spends a quarter of its range on the
- * bottom two percent of the light.
+ * throws away most of the dark end.
+ *
+ * The curve comes from @p transfer via libs/color. Unknown transfers are
+ * resolved to sRGB by the caller before this is entered.
  *
  * **Alpha is not transferred.**  It is a coverage fraction, not a light
  * level, and there is nothing non-linear about it to undo; running it through
@@ -582,10 +614,11 @@ static GIMG_Result gimg_resample_two_pass(const GIMG_Allocator * alloc,
  */
 static GIMG_Result gimg_resample_linear_light(const GIMG_Allocator * alloc,
     const GIMG_Raster * src, GIMG_Raster * dst, GIMG_Resample_Filter filter,
-    uint8_t channels, uint8_t bits, uint32_t max, bool has_alpha) {
+    uint8_t channels, uint8_t bits, uint32_t max, bool has_alpha,
+    const GCOL_Color_Info * transfer) {
   (void)bits;
   gimg_transfer_tables tables;
-  GIMG_Result r = gimg_transfer_build(alloc, max, &tables);
+  GIMG_Result r = gimg_transfer_build(alloc, max, transfer, &tables);
   if (r != GIMG_OK) {
     return r;
   }
@@ -766,29 +799,30 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
   if (options->space == GIMG_RESAMPLE_SPACE_LINEAR &&
       fmt->channel_model != GIMG_CHANNEL_GRAY &&
       fmt->channel_model != GIMG_CHANNEL_RGBA) {
-    // The transfer function being applied is sRGB's, which says something
-    // about light. CMYK samples are ink amounts and GIMG_CHANNEL_UNKNOWN
-    // samples are whatever the file happened to carry; running either through
-    // a curve for display-referred colour would be arithmetic with no meaning
-    // behind it.
+    // Transfer linearisation says something about light. CMYK samples are ink
+    // amounts and GIMG_CHANNEL_UNKNOWN samples are whatever the file happened
+    // to carry; running either through a display-referred curve would be
+    // arithmetic with no meaning behind it.
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  // Passing LINEAR is the caller asserting an sRGB transfer, and that is still
-  // how an unstated one is read. What is refused here is a raster that states
-  // a *different* one: the file said gamma 2.2, or BT.1886, or PQ, and the
-  // caller said sRGB, and only one of them can be right. Applying sRGB's curve
-  // anyway is a wrong answer that looks like a right one, so it is refused
-  // until there is an engine that can honour what the file said.
-  //
-  // The primaries are deliberately not consulted. Linearisation is per-channel
-  // and depends on the transfer curve alone, so a Display P3 raster - whose
-  // transfer *is* sRGB's - linearises correctly here and is not refused.
+  // LINEAR uses libs/color to honour the raster's stated transfer. An
+  // unstated one is still the caller's assertion of sRGB. Primaries are not
+  // consulted: linearisation is per-channel and depends on the curve alone.
+  GCOL_Color_Info srgb_fallback;
+  const GCOL_Color_Info * transfer = NULL;
   if (options->space == GIMG_RESAMPLE_SPACE_LINEAR) {
     const GCOL_Color_Info * info = gimg_raster_color_info_const(src);
-    if (info && info->transfer != GCOL_TRANSFER_UNKNOWN &&
-        info->transfer != GCOL_TRANSFER_SRGB) {
+    if (!info || info->transfer == GCOL_TRANSFER_UNKNOWN) {
+      gcol_color_info_default(&srgb_fallback);
+      srgb_fallback.transfer = GCOL_TRANSFER_SRGB;
+      transfer = &srgb_fallback;
+    }
+    else if (!gimg_transfer_info_usable(info)) {
       return GIMG_ERR_UNSUPPORTED;
+    }
+    else {
+      transfer = info;
     }
   }
 
@@ -826,7 +860,7 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
   const GIMG_Allocator * alloc = gimg_raster_allocator(src);
   if (options->space == GIMG_RESAMPLE_SPACE_LINEAR) {
     r = gimg_resample_linear_light(alloc, src, *out_raster, filter, channels,
-        bits, max, has_alpha);
+        bits, max, has_alpha, transfer);
   }
   else {
     r = gimg_resample_two_pass(alloc,
