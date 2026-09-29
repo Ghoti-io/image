@@ -578,6 +578,9 @@ const RoleClaim kRoleClaims[] = {
     {"jpeg", jpeg_role},
     {"png", animated_role},
     {"tiff", tiff_role},
+    /* Still one IMAGE until phase E expands ANMF into FRAME items; the
+     * animated_role rule already covers both shapes. */
+    {"webp", animated_role},
 };
 
 const RoleClaim * claim_for(const std::string & codec) {

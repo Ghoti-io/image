@@ -22,8 +22,7 @@
  * @file
  *
  * Internal WebP codec structures. Phase A: RIFF container, VP8X, chunk walk,
- * metadata carriage and canvas geometry. Picture decode arrives in later
- * phases (notes/image/webp-plan.md).
+ * metadata carriage and canvas geometry. Phase B: VP8L lossless decode.
  */
 
 #ifndef GHOTI_IO_GIMG_SRC_CODEC_WEBP_WEBP_INTERNAL_H
@@ -99,8 +98,8 @@ typedef struct {
 /**
  * @brief Per-document state after a successful load.
  *
- * Picture payloads are retained for later phases; Phase A does not decode
- * them. Decode returns GIMG_ERR_UNSUPPORTED until then.
+ * Picture payloads are retained; Phase B decodes simple VP8L (and VP8X+VP8L
+ * without a separate ALPH chunk). VP8 lossy and animation remain later phases.
  */
 typedef struct {
   const GIMG_Allocator * allocator;
@@ -145,6 +144,48 @@ int gimg_webp_peek_vp8_dims(const unsigned char * data, size_t size,
     uint32_t * out_w, uint32_t * out_h);
 int gimg_webp_peek_vp8l_dims(const unsigned char * data, size_t size,
     uint32_t * out_w, uint32_t * out_h, int * out_alpha);
+
+/**
+ * @brief Decode a VP8L bitstream payload to an owned RGBA8 raster.
+ *
+ * @param data  VP8L chunk payload (starts with magic 0x2f).
+ * @param size  Payload byte count.
+ */
+GIMG_Result gimg_webp_vp8l_decode(const unsigned char * data, size_t size,
+    const GIMG_Allocator * alloc, GIMG_Raster ** out_raster);
+
+/** VP8L transform types (bitstream order). */
+enum {
+  GIMG_WEBP_VP8L_PREDICTOR = 0,
+  GIMG_WEBP_VP8L_CROSS_COLOR = 1,
+  GIMG_WEBP_VP8L_SUBTRACT_GREEN = 2,
+  GIMG_WEBP_VP8L_COLOR_INDEXING = 3
+};
+
+/**
+ * @brief One inverse-transform descriptor produced while reading the stream.
+ *
+ * @c data owns palette / predictor / colour-code pixels for types that need
+ * them. @c xsize_/@c ysize_ are the dimensions the transform applies to (the
+ * full canvas width for colour indexing, even when the coded width is packed).
+ */
+typedef struct {
+  int type;
+  int bits;
+  int xsize;
+  int ysize;
+  uint32_t * data;
+} gimg_webp_vp8l_xform_t;
+
+/**
+ * @brief Apply one inverse transform to rows [@a row_start, @a row_end).
+ *
+ * @a in and @a out may alias only when the transform allows it (libwebp
+ * colour-indexing packed unpack does; predictor and cross-colour expect
+ * distinct output storage for a full-image pass).
+ */
+void gimg_webp_vp8l_inverse_xform(const gimg_webp_vp8l_xform_t * xform,
+    int row_start, int row_end, const uint32_t * in, uint32_t * out);
 
 #ifdef __cplusplus
 }

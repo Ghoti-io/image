@@ -494,7 +494,7 @@ TEST(Limits, ACapSetAtLoadTimeSurvivesADecodeThatSaysNothing) {
 // from the registry instead - see tests/registry_sweep.h. Adding a format
 // means editing this one list, on purpose.
 const std::vector<std::string> kShippedCodecs = {
-    "bmp", "gif", "ico", "jpeg", "png", "tiff"};
+    "bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"};
 
 TEST(Limits, TheRegistryHoldsEveryShippedCodecAndIsWalkableByIndex) {
   const size_t n = gimg_codec_count();

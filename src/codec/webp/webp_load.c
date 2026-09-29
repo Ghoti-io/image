@@ -22,10 +22,9 @@
  * @file
  *
  * WebP Phase A load: RIFF walk, VP8X canvas, ICCP/EXIF/XMP carriage.
+ * Phase B: decode simple VP8L and VP8X+VP8L (alpha inside VP8L).
  *
- * Picture decode is refused until phases B/D. Animation frames are walked for
- * the chunk inventory but not expanded into GIMG_ITEM_FRAME items until
- * phase E.
+ * VP8 lossy, ALPH+VP8, and animation frames remain later phases.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -378,14 +377,57 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
 GIMG_Result gimg_webp_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster) {
-  (void)codec;
-  (void)item;
   (void)options;
   if (out_raster) {
     *out_raster = NULL;
   }
-  // Phase A: container only. Picture decode is phases B (VP8L) and D (VP8).
-  return GIMG_ERR_UNSUPPORTED;
+  if (!codec || !item || !out_raster || !item->doc) {
+    return GIMG_ERR_INTERNAL;
+  }
+
+  GIMG_Doc * doc = item->doc;
+  if (!doc->codec_private) {
+    return GIMG_ERR_INTERNAL;
+  }
+  const gimg_webp_doc_state_t * st =
+      (const gimg_webp_doc_state_t *)doc->codec_private;
+
+  if (st->is_animation) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  // Find the first top-level VP8L (skip ANMF-nested entries: those sit after
+  // their ANMF parent in the inventory and share the animation flag above).
+  // Also refuse when a VP8 bitstream or a separate ALPH chunk is present —
+  // those are phases D and C.
+  int has_alph = 0;
+  int has_vp8 = 0;
+  const gimg_webp_chunk_t * vp8l = NULL;
+  for (size_t i = 0; i < st->chunk_count; ++i) {
+    const gimg_webp_chunk_t * c = &st->chunks[i];
+    if (c->fourcc == GIMG_WEBP_ALPH) {
+      has_alph = 1;
+    }
+    else if (c->fourcc == GIMG_WEBP_VP8) {
+      has_vp8 = 1;
+    }
+    else if (c->fourcc == GIMG_WEBP_VP8L && !vp8l) {
+      vp8l = c;
+    }
+  }
+  if (has_vp8 || has_alph) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  if (!vp8l) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  const size_t payload_off = vp8l->offset + 8u;
+  if (payload_off + (size_t)vp8l->payload_size > st->file_size) {
+    return GIMG_ERR_CORRUPT;
+  }
+  return gimg_webp_vp8l_decode(st->file_bytes + payload_off,
+      (size_t)vp8l->payload_size, st->allocator, out_raster);
 }
 
 GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,

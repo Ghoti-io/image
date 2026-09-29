@@ -100,6 +100,11 @@ const char * signature_of(const std::vector<uint8_t> & b) {
       return "ico";
     }
   }
+  // RIFF container with WEBP form type. Same twelve-byte head the probe uses.
+  if (b.size() >= 12 && memcmp(b.data(), "RIFF", 4) == 0 &&
+      memcmp(b.data() + 8, "WEBP", 4) == 0) {
+    return "webp";
+  }
   return nullptr;
 }
 
