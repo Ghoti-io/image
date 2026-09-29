@@ -150,7 +150,9 @@ so a program that links `ghoti.io-image-0` links these too.
 
 ## Status
 
-PNG, APNG, JPEG, BMP and GIF load and save.
+PNG (including APNG), JPEG, BMP, GIF, TIFF, ICO/CUR, and WebP load. All of
+those write except that WebP save is lossless stills only (lossy and
+animation encode refused).
 
 ## License
 
