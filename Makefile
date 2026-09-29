@@ -318,7 +318,7 @@ else
 endif
 
 # The standard include directories for the project.
-INCLUDE := -I include/ -I $(GEN_DIR)/
+INCLUDE := -I include/ -I $(GEN_DIR)/ -I src/codec/webp/vp8ref
 # Goals that compile and link nothing.  A missing sibling library must not stop
 # them: `make docs` needs doxygen and the tracked sources, not compress or
 # cutil, and it was failing at parse time - before doxygen was ever reached -
@@ -533,6 +533,21 @@ $(LIBVER_GEN): force-libver
 		'' \
 		'#endif // GHOTI_IO_GIMG_LIBVER_GEN_H' > $@.tmp
 	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
+
+# libwebp-derived VP8 sources are adapted C reference paths; they are not
+# pedantic-clean. Compile them without -pedantic-errors / -Wextra.
+WEBP_VP8_SRCS := webp_bool.c webp_yuv.c webp_vp8.c webp_vp8_header.c \
+	webp_vp8_pred.c webp_vp8_idct.c webp_vp8_filter.c
+WEBP_VP8_CFLAGS := $(filter-out -pedantic-errors -Wextra,$(LIB_CFLAGS)) \
+	-Wno-sign-compare -Wno-unused-parameter
+
+define WEBP_VP8_OBJ_RULE
+$(OBJ_DIR)/codec/webp/$(1:.c=.o): src/codec/webp/$(1) $$(FLAGS_STAMP) | $$(LIBVER_GEN)
+	@printf "\n### Compiling $$@ (VP8, relaxed warnings) ###\n"
+	@mkdir -p $$(@D)
+	$$(CC) $$(WEBP_VP8_CFLAGS) $$(INCLUDE) -c $$< -MMD -MP -MF $$(@:.o=.d) -o $$@
+endef
+$(foreach src,$(WEBP_VP8_SRCS),$(eval $(call WEBP_VP8_OBJ_RULE,$(src))))
 
 $(OBJ_DIR)/%.o: src/%.c $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling $@ ###\n"
@@ -1180,7 +1195,10 @@ ifeq ($(OS_NAME), Linux)
 		printf "declares or defines something without including macros.h first.\n" >&2; \
 		exit 1; \
 	fi
-	@nomacros=$$(find include src -name '*.h' \
+# vp8ref/ is adapted libwebp C under its own BSD license and include style;
+# do not require macros.h or GHOTI_IO_GIMG_ guards there. Symbols stay
+# hidden via -fvisibility=hidden on the wrapping TUs.
+	@nomacros=$$(find include src -name '*.h' ! -path '*/vp8ref/*' \
 		! -name 'libver.h' ! -name 'libver_gen.h' ! -name 'namespace.h' ! -name 'macros.h' \
 		-exec grep -L '#include <ghoti.io/image/macros.h>' {} + || true); \
 	if [ -n "$$nomacros" ]; then \
@@ -1193,7 +1211,8 @@ ifeq ($(OS_NAME), Linux)
 		printf "See CONVENTIONS.md section 4.\n" >&2; \
 		exit 1; \
 	fi
-	@badguards=$$(find include src -name '*.h' -exec awk 'FNR==1{d=0} !d && /^#ifndef/{print $$2; d=1}' {} + \
+	@badguards=$$(find include src -name '*.h' ! -path '*/vp8ref/*' \
+		-exec awk 'FNR==1{d=0} !d && /^#ifndef/{print $$2; d=1}' {} + \
 		| awk '$$1 !~ /^GHOTI_IO_GIMG_/ {print $$1}' || true); \
 	if [ -n "$$badguards" ]; then \
 		printf "\033[0;31m\n### Include guards with the wrong prefix ###\033[0m\n" >&2; \
@@ -1202,7 +1221,8 @@ ifeq ($(OS_NAME), Linux)
 		printf "library token is one rename away from colliding with another library's.\n" >&2; \
 		exit 1; \
 	fi
-	@dupguards=$$(find include src -name '*.h' -exec awk 'FNR==1{d=0} !d && /^#ifndef/{print $$2; d=1}' {} + \
+	@dupguards=$$(find include src -name '*.h' ! -path '*/vp8ref/*' \
+		-exec awk 'FNR==1{d=0} !d && /^#ifndef/{print $$2; d=1}' {} + \
 		| sort | uniq -d || true); \
 	if [ -n "$$dupguards" ]; then \
 		printf "\033[0;31m\n### Headers sharing an include guard ###\033[0m\n" >&2; \
@@ -1558,6 +1578,14 @@ ASAN_LDFLAGS := $(LDFLAGS) $(ASAN_UBSAN_FLAGS)
 ifeq ($(UNAME_S), Linux)
 	ASAN_CFLAGS += -fPIC
 endif
+
+define WEBP_VP8_ASAN_OBJ_RULE
+$(ASAN_OBJ_DIR)/codec/webp/$(1:.c=.o): src/codec/webp/$(1) $$(ASAN_FLAGS_STAMP) | $$(LIBVER_GEN)
+	@printf "\n### Compiling (ASan+UBSan, VP8 relaxed): $$< ###\n"
+	@mkdir -p $$(@D)
+	$$(CC) $$(filter-out -pedantic-errors -Wextra,$$(ASAN_CFLAGS)) -Wno-sign-compare -Wno-unused-parameter $$(INCLUDE) -c $$< -MMD -MP -MF $$(@:.o=.d) -o $$@
+endef
+$(foreach src,$(WEBP_VP8_SRCS),$(eval $(call WEBP_VP8_ASAN_OBJ_RULE,$(src))))
 
 $(ASAN_OBJ_DIR)/%.o: src/%.c $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling (ASan+UBSan): $< ###\n"

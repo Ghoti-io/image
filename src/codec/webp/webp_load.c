@@ -23,8 +23,7 @@
  *
  * WebP Phase A load: RIFF walk, VP8X canvas, ICCP/EXIF/XMP carriage.
  * Phase B: decode simple VP8L and VP8X+VP8L (alpha inside VP8L).
- *
- * VP8 lossy, ALPH+VP8, and animation frames remain later phases.
+ * Phase C/D: VP8 lossy (+ optional ALPH plane). Animation remains Phase E.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -396,38 +395,74 @@ GIMG_Result gimg_webp_decode(GIMG_Codec * codec, const GIMG_Item * item,
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  // Find the first top-level VP8L (skip ANMF-nested entries: those sit after
-  // their ANMF parent in the inventory and share the animation flag above).
-  // Also refuse when a VP8 bitstream or a separate ALPH chunk is present —
-  // those are phases D and C.
-  int has_alph = 0;
-  int has_vp8 = 0;
+  const gimg_webp_chunk_t * vp8 = NULL;
   const gimg_webp_chunk_t * vp8l = NULL;
+  const gimg_webp_chunk_t * alph = NULL;
   for (size_t i = 0; i < st->chunk_count; ++i) {
     const gimg_webp_chunk_t * c = &st->chunks[i];
-    if (c->fourcc == GIMG_WEBP_ALPH) {
-      has_alph = 1;
+    if (c->fourcc == GIMG_WEBP_ALPH && !alph) {
+      alph = c;
     }
-    else if (c->fourcc == GIMG_WEBP_VP8) {
-      has_vp8 = 1;
+    else if (c->fourcc == GIMG_WEBP_VP8 && !vp8) {
+      vp8 = c;
     }
     else if (c->fourcc == GIMG_WEBP_VP8L && !vp8l) {
       vp8l = c;
     }
   }
-  if (has_vp8 || has_alph) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
-  if (!vp8l) {
-    return GIMG_ERR_UNSUPPORTED;
+
+  // Simple / extended lossless: VP8L alone (alpha may live inside VP8L).
+  if (vp8l && !vp8 && !alph) {
+    const size_t payload_off = vp8l->offset + 8u;
+    if (payload_off + (size_t)vp8l->payload_size > st->file_size) {
+      return GIMG_ERR_CORRUPT;
+    }
+    return gimg_webp_vp8l_decode(st->file_bytes + payload_off,
+        (size_t)vp8l->payload_size, st->allocator, out_raster);
   }
 
-  const size_t payload_off = vp8l->offset + 8u;
-  if (payload_off + (size_t)vp8l->payload_size > st->file_size) {
-    return GIMG_ERR_CORRUPT;
+  // Lossy: VP8 keyframe, optional ALPH replaces the opaque alpha plane.
+  if (vp8 && !vp8l) {
+    const size_t payload_off = vp8->offset + 8u;
+    if (payload_off + (size_t)vp8->payload_size > st->file_size) {
+      return GIMG_ERR_CORRUPT;
+    }
+    GIMG_Result r = gimg_webp_vp8_decode(st->file_bytes + payload_off,
+        (size_t)vp8->payload_size, st->allocator, out_raster);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    if (alph) {
+      const size_t alph_off = alph->offset + 8u;
+      if (alph_off + (size_t)alph->payload_size > st->file_size) {
+        gimg_raster_destroy(*out_raster);
+        *out_raster = NULL;
+        return GIMG_ERR_CORRUPT;
+      }
+      const uint32_t w = gimg_raster_width(*out_raster);
+      const uint32_t h = gimg_raster_height(*out_raster);
+      uint8_t * alpha = NULL;
+      r = gimg_webp_alpha_decode(st->file_bytes + alph_off,
+          (size_t)alph->payload_size, w, h, st->allocator, &alpha);
+      if (r != GIMG_OK) {
+        gimg_raster_destroy(*out_raster);
+        *out_raster = NULL;
+        return r;
+      }
+      uint8_t * px = (uint8_t *)gimg_raster_pixels(*out_raster);
+      const size_t stride = gimg_raster_stride_bytes(*out_raster);
+      for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+          px[(size_t)y * stride + (size_t)x * 4u + 3u] =
+              alpha[(size_t)y * w + x];
+        }
+      }
+      gimg_free(st->allocator, alpha);
+    }
+    return GIMG_OK;
   }
-  return gimg_webp_vp8l_decode(st->file_bytes + payload_off,
-      (size_t)vp8l->payload_size, st->allocator, out_raster);
+
+  return GIMG_ERR_UNSUPPORTED;
 }
 
 GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,

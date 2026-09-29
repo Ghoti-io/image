@@ -23,6 +23,7 @@
  *
  * Internal WebP codec structures. Phase A: RIFF container, VP8X, chunk walk,
  * metadata carriage and canvas geometry. Phase B: VP8L lossless decode.
+ * Phase C: ALPH. Phase D: VP8 lossy keyframe decode.
  */
 
 #ifndef GHOTI_IO_GIMG_SRC_CODEC_WEBP_WEBP_INTERNAL_H
@@ -98,8 +99,8 @@ typedef struct {
 /**
  * @brief Per-document state after a successful load.
  *
- * Picture payloads are retained; Phase B decodes simple VP8L (and VP8X+VP8L
- * without a separate ALPH chunk). VP8 lossy and animation remain later phases.
+ * Picture payloads are retained. Decode covers simple VP8L, VP8X+VP8L,
+ * VP8 keyframes, and VP8+ALPH. Animation remains a later phase.
  */
 typedef struct {
   const GIMG_Allocator * allocator;
@@ -180,6 +181,19 @@ GIMG_Result gimg_webp_vp8l_decode_alpha(const unsigned char * data, size_t size,
 GIMG_Result gimg_webp_alpha_decode(const unsigned char * data, size_t size,
     uint32_t width, uint32_t height, const GIMG_Allocator * alloc,
     uint8_t ** out_alpha);
+
+/**
+ * @brief Decode a VP8 keyframe bitstream payload to an owned RGBA8 raster.
+ *
+ * Output is opaque (A=255) and byte-identical to libwebp 1.5.0 `dwebp -pam`
+ * for the colour channels (fancy 4:2:0 upsample + fixed-point YUV→RGB).
+ * Inter frames are refused (`GIMG_ERR_UNSUPPORTED` / corrupt).
+ *
+ * @param data  VP8 chunk payload (frame tag at byte 0).
+ * @param size  Payload byte count.
+ */
+GIMG_Result gimg_webp_vp8_decode(const unsigned char * data, size_t size,
+    const GIMG_Allocator * alloc, GIMG_Raster ** out_raster);
 
 /** VP8L transform types (bitstream order). */
 enum {

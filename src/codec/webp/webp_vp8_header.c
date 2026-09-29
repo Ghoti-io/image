@@ -16,13 +16,14 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * Portions derived from libwebp 1.5.0 (Copyright (c) 2010, Google Inc.).
  */
 
 /**
  * @file
  *
- * Peek canvas dimensions from VP8 / VP8L bitstream headers without decoding
- * the picture. Used when a file has no VP8X chunk (the simple formats).
+ * VP8 / VP8L dimension peeks, plus VP8 frame quant header parse (Phase D).
  */
 
 #include <ghoti.io/image/macros.h>
@@ -34,11 +35,9 @@ int gimg_webp_peek_vp8_dims(const unsigned char * data, size_t size,
   if (!data || !out_w || !out_h || size < 10u) {
     return 0;
   }
-  // Frame tag: 3 bytes. Key frame when bit 0 is clear.
   if ((data[0] & 1u) != 0u) {
     return 0;
   }
-  // Start code 0x9d 0x01 0x2a, then 16-bit width and height (14 bits each).
   if (data[3] != 0x9du || data[4] != 0x01u || data[5] != 0x2au) {
     return 0;
   }
@@ -56,8 +55,6 @@ int gimg_webp_peek_vp8l_dims(const unsigned char * data, size_t size,
   if (!data || !out_w || !out_h || size < 5u) {
     return 0;
   }
-  // Signature byte 0x2f, then little-endian bits: 14-bit w-1, 14-bit h-1,
-  // 1-bit alpha, 3-bit version (must be 0).
   if (data[0] != 0x2fu) {
     return 0;
   }
@@ -71,3 +68,17 @@ int gimg_webp_peek_vp8l_dims(const unsigned char * data, size_t size,
   uint32_t version = (bits >> 29) & 7u;
   return (version == 0u && *out_w > 0u && *out_h > 0u) ? 1 : 0;
 }
+
+#define HAVE_CONFIG_H
+#include "vp8ref/src/webp/config.h"
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#endif
+#include "vp8ref/src/dec/quant_dec.inc"
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif

@@ -1,7 +1,7 @@
 /**
  * @file
  *
- * WebP Phase A–C: load, VP8L decode, ALPH plane decode; refuse VP8/anim/save.
+ * WebP Phase A–D: load, VP8L/VP8 decode, ALPH; refuse anim/save.
  *
  * Copyright 2026 by Corey Pennycuff
  */
@@ -367,13 +367,94 @@ TEST(Webp, CorruptRefused) {
   EXPECT_EQ(doc, nullptr);
 }
 
-TEST(Webp, LossyAndAnimDecodeStillUnsupported) {
+TEST(Webp, DecodeSimpleLossyMatchesDwebp) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(load_doc("simple_lossy.webp", &doc), GIMG_OK);
   GIMG_Raster * raster = nullptr;
-  EXPECT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_ERR_UNSUPPORTED);
-  EXPECT_EQ(raster, nullptr);
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+      GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  expect_raster_matches_pam(raster, "simple_lossy.pam");
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, DecodeLossyGradMatchesDwebp) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_doc("lossy_grad.webp", &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+      GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  expect_raster_matches_pam(raster, "lossy_grad.pam");
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, DecodeLossyExifMatchesDwebpPixels) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_doc("lossy_exif.webp", &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+      GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  expect_raster_matches_pam(raster, "lossy_exif.pam");
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, DecodeLossyAlphaMatchesDwebp) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_doc("lossy_alpha.webp", &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+      GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  expect_raster_matches_pam(raster, "lossy_alpha.pam");
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, DecodeLossyGradAlphaMatchesDwebp) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_doc("lossy_grad_alpha.webp", &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+      GIMG_OK);
+  ASSERT_NE(raster, nullptr);
+  expect_raster_matches_pam(raster, "lossy_grad_alpha.pam");
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, DecodeAlphMethodFixturesMatchDwebp) {
+  static const char * kFiles[] = {
+      "alph_m0_none", "alph_m0_fast", "alph_m0_best",
+      "alph_m1_none", "alph_m1_fast", "alph_m1_best",
+  };
+  for (const char * base : kFiles) {
+    const std::string webp = std::string(base) + ".webp";
+    const std::string pam = std::string(base) + ".pam";
+    SCOPED_TRACE(webp);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(load_doc(webp.c_str(), &doc), GIMG_OK);
+    GIMG_Raster * raster = nullptr;
+    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+        GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    expect_raster_matches_pam(raster, pam.c_str());
+    gimg_raster_destroy(raster);
+    gimg_doc_destroy(doc);
+  }
+}
+
+TEST(Webp, AnimAndSaveStillUnsupported) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_doc("simple_lossy.webp", &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+      GIMG_OK);
+  gimg_raster_destroy(raster);
 
   GIMG_Stream * out = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
@@ -383,17 +464,6 @@ TEST(Webp, LossyAndAnimDecodeStillUnsupported) {
   gimg_doc_destroy(doc);
 
   ASSERT_EQ(load_doc("anim.webp", &doc), GIMG_OK);
-  EXPECT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_ERR_UNSUPPORTED);
-  gimg_doc_destroy(doc);
-
-  ASSERT_EQ(load_doc("lossy_alpha.webp", &doc), GIMG_OK);
-  EXPECT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_ERR_UNSUPPORTED);
-  gimg_doc_destroy(doc);
-
-  // Phase C: ALPH+VP8 full RGBA still waits on VP8 (phase D).
-  ASSERT_EQ(load_doc("alph_m0_none.webp", &doc), GIMG_OK);
   EXPECT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
       GIMG_ERR_UNSUPPORTED);
   gimg_doc_destroy(doc);

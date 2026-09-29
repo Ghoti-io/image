@@ -2,16 +2,16 @@
 
 # WebP
 
-Phases A–C of the WebP codec: the RIFF/`WEBP` container, `VP8X` canvas
+Phases A–D of the WebP codec: the RIFF/`WEBP` container, `VP8X` canvas
 geometry, chunk inventory (including bitstream chunks nested in `ANMF`),
-carriage of `ICCP` / `EXIF` / `XMP `, **VP8L lossless picture decode**, and
-**ALPH plane decode** (raw and VP8L-compressed, all four spatial filters).
-Lossy VP8 colour, animation items, and encode are later phases; see
+carriage of `ICCP` / `EXIF` / `XMP `, **VP8L lossless picture decode**,
+**ALPH plane decode**, and **VP8 lossy keyframe decode** (with optional ALPH
+merged into RGBA). Animation items and encode are later phases; see
 \ref image_format_references "Formats" and `notes/image/webp-plan.md`.
 
-Claims below are checked. The structure gate is `webpinfo`; lossless pixels
-and ALPH planes are gated by `dwebp -pam`, both from the pinned `libwebp`
-1.5.0 reference in `tools/oracle/containers/IMAGES` (`deb13-8`).
+Claims below are checked. The structure gate is `webpinfo`; lossless and
+lossy pixels (and ALPH planes) are gated by `dwebp -pam`, all from the pinned
+`libwebp` 1.5.0 reference in `tools/oracle/containers/IMAGES` (`deb13-8`).
 
 ## Normative references
 
@@ -19,9 +19,10 @@ and ALPH planes are gated by `dwebp -pam`, both from the pinned `libwebp`
   alongside the Phase A implementation (2026-09-29). Where it is silent,
   libwebp's `webpinfo` behaviour is treated as the practical reference for
   chunk listing.
-- **VP8** bitstream headers only (RFC 6386): key-frame start code and coded
-  dimensions, used when a simple lossy file has no `VP8X`. Full VP8 decode is
-  phase D.
+- **VP8** (RFC 6386, *VP8 Data Format and Decoding Guide*). Key frames only —
+  WebP still images never use inter prediction. The RFC's embedded reference C
+  and libwebp 1.5.0's C decode paths are the practical specs; this codec ports
+  the latter for byte identity with `dwebp`.
 - **VP8L** (Google's "WebP Lossless Bitstream Specification"). The prose is
   incomplete in places; **libwebp is the specification** wherever they
   disagree. Decode is required to be byte-identical to `dwebp`.
@@ -49,8 +50,20 @@ Codec-owned allocations use the codec's allocator (default when NULL).
 - **ALPH decode** to an owned `width × height` alpha plane: methods 0
   (uncompressed) and 1 (headerless VP8L), filters none / horizontal /
   vertical / gradient. Level-reduction dithering is not applied — default
-  `dwebp` leaves it off, so PAM alpha is the unfiltered plane. Assembling
-  ALPH with VP8 colour into a full raster waits on phase D.
+  `dwebp` leaves it off, so PAM alpha is the unfiltered plane.
+- **VP8 keyframe decode** to `GIMG_PIXEL_RGBA8`: boolean decoder, segment /
+  filter / quant / probability headers, intra prediction, IDCT/WHT, loop
+  filter, fancy 4:2:0 upsample, and libwebp's fixed-point YUV→RGB. When an
+  `ALPH` chunk is present, its plane replaces the opaque alpha channel
+  sample-wise. Inter frames are refused.
+
+## YUV→RGB (a match, not a derivation)
+
+VP8 produces YUV 4:2:0. Turning that into RGB is a choice of matrix, range and
+rounding. This codec **matches libwebp 1.5.0's fixed-point conversion and
+fancy upsampler** exactly — the same path `dwebp` uses — rather than deriving
+a floating-point conversion that would disagree by ±1 forever. Say so on every
+oracle comparison: identity with `dwebp -pam` is the gate, not "close to BT.601".
 
 ## Save
 
@@ -67,8 +80,8 @@ plan (`notes/image/webp-plan.md` §6).
 | Canvas | from `VP8X` or VP8/VP8L peek | unknown size → `GIMG_ERR_CORRUPT`; over `max_decoded_pixels` → `GIMG_ERR_LIMIT` |
 | Metadata | `ICCP`/`EXIF`/`XMP ` on the document | — |
 | VP8L decode | byte-identical to `dwebp -pam` | corrupt bitstream → `GIMG_ERR_CORRUPT` |
-| ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT`; not yet merged with VP8 colour |
-| VP8 decode | — | `GIMG_ERR_UNSUPPORTED` (phase D); lossy+alpha item decode refused |
+| ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
+| VP8 decode | keyframe → RGBA, optional ALPH merge; byte-identical to `dwebp -pam` | inter frame / corrupt → `GIMG_ERR_CORRUPT` / `UNSUPPORTED` |
 | Animation items | chunks walked | frames not yet `GIMG_ITEM_FRAME` (phase E); decode refused |
 | Encode | — | `GIMG_ERR_UNSUPPORTED` |
 
@@ -76,10 +89,12 @@ plan (`notes/image/webp-plan.md` §6).
 
 | Case | This codec | Elsewhere |
 |---|---|---|
-| VP8L / ALPH samples | match `dwebp -pam` | same |
-| VP8 colour / anim decode | refused until later phases | `dwebp` / `anim_dump` decode |
+| VP8 / VP8L / ALPH samples | match `dwebp -pam` | same |
+| Anim decode | refused until phase E | `anim_dump` expands frames |
 | Animation model | one `IMAGE` item; inventory only | `anim_dump` expands frames |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
+| VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
+| VP8 implementation | adapted libwebp 1.5.0 C paths in `vp8ref/` (BSD; see `vp8ref/COPYING`) behind LGPL wrappers | same algorithm as `dwebp` by construction |
 
 ## Tested scope
 
@@ -90,17 +105,16 @@ plan (`notes/image/webp-plan.md` §6).
   trips for every spatial filter, and truncated / oversized-RIFF corrupt
   cases.
 - Structure vs `webpinfo` (`verify_webp_structure.py`).
-- Pixels vs `dwebp -pam` for every lossless fixture; ALPH plane vs PAM alpha
-  for every ALPH-bearing fixture.
-- Unit tests: load, VP8L decode, ALPH plane match, filter round trip,
-  lossy/anim still unsupported for full decode, save unsupported.
+- Pixels vs `dwebp -pam` for every lossless and lossy fixture (including
+  ALPH+VP8 full RGBA).
+- Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
+  anim/save unsupported.
 - Fuzz: `fuzz_webp_load` with seeds from the fixture set.
 
 ## Not implemented
 
-- VP8 decode and ALPH+VP8 raster assembly (phase D), animation items (E),
-  VP8L encode (F). Lossy encode is a documented refusal until an RDO
-  measurement plan exists.
+- Animation items (phase E), VP8L encode (F). Lossy encode is a documented
+  refusal until an RDO measurement plan exists.
 
 ---
 
