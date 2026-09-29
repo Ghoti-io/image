@@ -69,6 +69,9 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   codec-private state. Decode of item *i* returns the full VP8X canvas after
   compositing frames `0…i`, matching `anim_dump`. `ANIM` loop count and
   background colour are carried on the document. `max_frame_count` caps ANMFs.
+- **VP8L encode** of a still image (first document item): Huffman over
+  literals, subtract-green when `webp_effort` ≥ 1, optional `ICCP` / `EXIF` /
+  `XMP ` via `VP8X`. See Save.
 
 ## YUV→RGB (a match, not a derivation)
 
@@ -149,14 +152,21 @@ measurement plan (`notes/image/webp-plan.md` §6).
   work.
 - Animation composites vs `anim_dump -pam` for `anim.webp`,
   `anim_offset.webp` and `anim_dispose.webp`.
+- Lossless save: round-trip identity through this decoder; outside acceptance
+  by `dwebp`, Pillow and ImageMagick; size vs `cwebp -lossless -exact` on
+  `lossless_gradient` published on the Save section (2160 vs 60 bytes).
 - Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
-  anim geometry/dispose/blend, save unsupported.
+  anim geometry/dispose/blend, save round-trip, lossy-save refusal.
 - Fuzz: `fuzz_webp_load` with seeds from the fixture set.
 
 ## Not implemented
 
-- VP8L encode (phase F). Lossy encode is a documented refusal until an RDO
-  measurement plan exists.
+- Animation encode (multi-frame `ANIM`/`ANMF` write). A multi-item document
+  is saved as a still of the first item.
+- Lossy (`VP8 `) encode — refused until an RDO measurement plan exists
+  (`notes/image/webp-plan.md` §6).
+- LZ77 / predictor / cross-colour / palette search in the lossless encoder
+  (literals + optional subtract-green only today).
 
 ---
 
