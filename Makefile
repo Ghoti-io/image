@@ -499,6 +499,26 @@ ASAN_DEPFILES := $(wildcard ./build/*-asan/objects/*.d ./build/*/*-asan/objects/
 ####################################################################
 
 LIBVER_GEN := $(GEN_DIR)/ghoti.io/$(PROJECT)/libver_gen.h
+# EVERY rule that compiles a translation unit carries `| $(LIBVER_GEN)`, not
+# just the release library's. Each one reaches this generated header -
+# macros.h includes namespace.h includes libver.h includes libver_gen.h - so
+# a rule without it works only on a tree where something else already
+# generated the file. That is the worst shape a build defect takes: it passes
+# for everyone who has built before and fails for everyone who has not, and
+# under -j it is a race rather than a clean failure.
+#
+# CONVENTIONS.md section 6 states the rule and section 12 warns that copying
+# a Makefile copies its defects. This is that: the rules that build the
+# library had it and the thirty-five that compile the tests, release and
+# ASan alike, did not. From a clean tree, asking for a single ASan test
+# object failed outright:
+#
+#     include/ghoti.io/image/libver.h:42:10: fatal error:
+#     ghoti.io/image/libver_gen.h: No such file or directory
+#
+# The direct compile-to-binary rules for the examples and dump tools need
+# nothing: each already depends on $(APP_DIR)/$(STATIC_TARGET), which builds
+# the header first.
 
 # libver_gen.h is regenerated on every build and rewritten only when its content
 # changes, so a variable given on the command line - make MAJOR_VERSION=2, or
@@ -598,64 +618,64 @@ $(TEST_HELPER_OBJ): $(TEST_HELPER_SRC) $(FLAGS_STAMP)
 
 # Pattern rule for compiling test source files to object files
 # This allows tests to be compiled separately from linking
-$(OBJ_DIR)/tests/%.o: tests/%.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/%.o: tests/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 # Tests in tests/unit/ (object still under tests/ so executable name matches)
-$(OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_ROOT=\"$(TEST_DATA_ROOT)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/ itself: cross-codec, so every data directory.
-$(OBJ_DIR)/tests/%.o: tests/codec/%.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/%.o: tests/codec/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_ROOT=\"$(TEST_DATA_ROOT)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/bmp/ (object name from basename for link).
-$(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/bmp -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/gif/ (object name from basename for link).
-$(OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_GIF=\"$(TEST_OUT_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/tiff/ (object name from basename for link).
-$(OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -DGIMG_TEST_OUT_TIFF=\"$(TEST_OUT_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/ico/ (object name from basename for link).
-$(OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/ico -Itests/codec/ico -DGIMG_TEST_DATA_ICO=\"$(TEST_DATA_ICO)\" -DGIMG_TEST_OUT_ICO=\"$(TEST_OUT_ICO)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/webp/ (object name from basename for link).
-$(OBJ_DIR)/tests/%.o: tests/codec/webp/%.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/%.o: tests/codec/webp/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/webp -Isrc/container -Itests/codec/webp -DGIMG_TEST_DATA_WEBP=\"$(TEST_DATA_WEBP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Test in tests/codec/png/ (object name from basename for link)
-$(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: test_png_chunk ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(OBJ_DIR)/tests/test_jpeg_load.o: tests/codec/jpeg/test_jpeg_load.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/test_jpeg_load.o: tests/codec/jpeg/test_jpeg_load.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: test_jpeg_load ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: test_jpeg_encode ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Isrc/codec/jpeg -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -696,12 +716,12 @@ TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 TEST_OUT_GIF := $(IMAGE_ROOT)/tests/out/gif
 TEST_OUT_TIFF := $(IMAGE_ROOT)/tests/out/tiff
 TEST_OUT_ICO := $(IMAGE_ROOT)/tests/out/ico
-$(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(OBJ_DIR)/tests/test_png_encode.o: tests/codec/png/test_png_encode.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/test_png_encode.o: tests/codec/png/test_png_encode.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: test_png_encode ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -754,7 +774,7 @@ $(APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(OBJ_DIR)/tests/test_jpeg_encode.o 
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/test_jpeg_encode.o $(TEST_HELPER_OBJ) $(JPEG_TEST_UTILS_OBJ) $(LDFLAGS) $(TESTFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 # Dump JPEG raster to stdout (for compare_pillow_ours.py).
-$(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/dump_jpeg_raster.o: tests/codec/jpeg/dump_jpeg_raster.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling dump_jpeg_raster ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -764,7 +784,7 @@ $(APP_DIR)/dump_jpeg_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_raster.o
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_jpeg_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 # Dump JPEG file structure: segments in order with offset, size, hex dump (no library dependency).
-$(OBJ_DIR)/tests/dump_jpeg_structure.o: tests/codec/jpeg/dump_jpeg_structure.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/dump_jpeg_structure.o: tests/codec/jpeg/dump_jpeg_structure.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling dump_jpeg_structure ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -776,7 +796,7 @@ $(APP_DIR)/dump_jpeg_structure$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_jpeg_struc
 jpeg-dump-structure: $(APP_DIR)/dump_jpeg_structure$(EXE_EXTENSION) ## Build dump_jpeg_structure; run: build/.../dump_jpeg_structure <file.jpg>
 
 # Decode BMP files and dump each raster, for tests/data/bmp/bmpsuite_sweep.py.
-$(OBJ_DIR)/tests/dump_bmp_raster.o: tests/codec/bmp/dump_bmp_raster.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/dump_bmp_raster.o: tests/codec/bmp/dump_bmp_raster.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling dump_bmp_raster ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -785,7 +805,7 @@ $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_bmp_raster.o $
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/dump_bmp_raster.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
-$(OBJ_DIR)/tests/resample_tool.o: tests/tools/resample/resample_tool.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/resample_tool.o: tests/tools/resample/resample_tool.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling resample_tool ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -800,7 +820,7 @@ resample-tool: $(APP_DIR)/resample_tool$(EXE_EXTENSION) ## Build resample_tool; 
 bmp-dump-raster: $(APP_DIR)/dump_bmp_raster$(EXE_EXTENSION) ## Build dump_bmp_raster; used by tests/data/bmp/bmpsuite_sweep.py
 
 # Decode ICO/CUR files and dump each entry's raster, for verify_ico_pixels.py.
-$(OBJ_DIR)/tests/dump_ico_raster.o: tests/codec/ico/dump_ico_raster.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/dump_ico_raster.o: tests/codec/ico/dump_ico_raster.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling dump_ico_raster ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -812,7 +832,7 @@ $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_ico_raster.o $
 ico-dump-raster: $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) ## Build dump_ico_raster; used by tests/data/ico/verify_ico_pixels.py
 
 # Decode WebP files and dump each item's raster, for verify_webp_pixels.py.
-$(OBJ_DIR)/tests/dump_webp_raster.o: tests/codec/webp/dump_webp_raster.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/dump_webp_raster.o: tests/codec/webp/dump_webp_raster.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling dump_webp_raster ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -824,7 +844,7 @@ $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_webp_raster.o
 webp-dump-raster: $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) ## Build dump_webp_raster; used by tests/data/webp/verify_webp_pixels.py
 
 # Encode lossy WebP (stub VP8) for the Phase G rate/distortion harness.
-$(OBJ_DIR)/tests/encode_webp_lossy.o: tests/codec/webp/encode_webp_lossy.cpp $(FLAGS_STAMP)
+$(OBJ_DIR)/tests/encode_webp_lossy.o: tests/codec/webp/encode_webp_lossy.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling encode_webp_lossy ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -1656,61 +1676,61 @@ $(ASAN_TEST_HELPER_OBJ): $(TEST_HELPER_SRC) $(ASAN_FLAGS_STAMP)
 endif
 
 # ASan test objects: generic and PNG-specific
-$(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/unit/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_ROOT=\"$(TEST_DATA_ROOT)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Tests in tests/codec/bmp/ (mirrors the non-ASan rule; without this the ASan
 # build has no way to make test_bmp_*.o and `make test-asan` does not build).
-$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/%.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object (ASan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -DGIMG_TEST_DATA_ROOT=\"$(TEST_DATA_ROOT)\" -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_PNG=\"$(TEST_OUT_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/bmp/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling ASan Test: $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/bmp -Itests/codec/bmp -DGIMG_TEST_DATA_BMP=\"$(TEST_DATA_BMP)\" -DGIMG_TEST_OUT_BMP=\"$(TEST_OUT_BMP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/gif/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/gif -Itests/codec/gif -DGIMG_TEST_DATA_GIF=\"$(TEST_DATA_GIF)\" -DGIMG_TEST_OUT_GIF=\"$(TEST_OUT_GIF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/tiff/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/tiff -Itests/codec/tiff -DGIMG_TEST_DATA_TIFF=\"$(TEST_DATA_TIFF)\" -DGIMG_TEST_OUT_TIFF=\"$(TEST_OUT_TIFF)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/ico -Itests/codec/ico -DGIMG_TEST_DATA_ICO=\"$(TEST_DATA_ICO)\" -DGIMG_TEST_OUT_ICO=\"$(TEST_OUT_ICO)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/webp/%.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/%.o: tests/codec/webp/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/webp -Isrc/container -Itests/codec/webp -DGIMG_TEST_DATA_WEBP=\"$(TEST_DATA_WEBP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/test_png_encode.o: tests/codec/png/test_png_encode.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/test_png_encode.o: tests/codec/png/test_png_encode.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/png_test_utils.o: tests/codec/png/png_test_utils.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/png_test_utils.o: tests/codec/png/png_test_utils.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/png -DGIMG_TEST_DATA_PNG=\"$(TEST_DATA_PNG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
@@ -1738,12 +1758,12 @@ $(ASAN_APP_DIR)/testPng_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_png_e
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_png_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/png_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
-$(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o: tests/codec/jpeg/test_jpeg_encode.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling ASan Test: test_jpeg_encode ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Isrc/codec/jpeg -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
-$(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o: tests/codec/jpeg/jpeg_test_utils.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o: tests/codec/jpeg/jpeg_test_utils.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling ASan Test Helper: jpeg_test_utils ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
@@ -1753,7 +1773,7 @@ $(ASAN_APP_DIR)/testJpeg_encode$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_jpeg
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) -o $@ $(ASAN_OBJ_DIR)/tests/test_jpeg_encode.o $(ASAN_TEST_HELPER_OBJ) $(ASAN_OBJ_DIR)/tests/jpeg_test_utils.o $(ASAN_LDFLAGS) $(TESTFLAGS) $(ASAN_IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
-$(ASAN_OBJ_DIR)/tests/test_jpeg_load.o: tests/codec/jpeg/test_jpeg_load.cpp $(ASAN_FLAGS_STAMP)
+$(ASAN_OBJ_DIR)/tests/test_jpeg_load.o: tests/codec/jpeg/test_jpeg_load.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling ASan Test: test_jpeg_load ###\n"
 	@mkdir -p $(@D)
 	$(CXX) $(ASAN_CXXFLAGS) -Wno-missing-field-initializers $(INCLUDE) -Isrc/codec/jpeg -Itests/codec/jpeg -DGIMG_TEST_DATA_JPEG=\"$(TEST_DATA_JPEG)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
