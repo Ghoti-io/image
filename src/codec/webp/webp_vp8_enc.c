@@ -28,9 +28,11 @@
 /**
  * @file
  *
- * Deliberately minimal VP8 keyframe encoder. Every macroblock is Intra16
- * DC with a single quantizer; residuals are Y2/UV DC only. dwebp accepts
- * the output. It is not a quality claim.
+ * VP8 keyframe encoder. Every macroblock is Intra16 DC with one quantizer.
+ * The residual is the section 14 Walsh-Hadamard of the sixteen DC
+ * coefficients and the 4×4 DCT of everything else. Mode search is still
+ * one mode. dwebp accepts the output. make webp-rd is the comparison
+ * against cwebp.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -224,10 +226,6 @@ static int clip127(int v) {
   return v < 0 ? 0 : v > 127 ? 127 : v;
 }
 
-static int clip117(int v) {
-  return v < 0 ? 0 : v > 117 ? 117 : v;
-}
-
 static int clip8(int v) {
   return ((v & ~0xff) == 0) ? v : (v < 0) ? 0 : 255;
 }
@@ -251,23 +249,6 @@ static int rgb_to_uv(int cr, int cg, int cb, int r, int g, int b, int n) {
   uv = cr * r + cg * g + cb * b;
   rounding = YUV_HALF << (shift - YUV_FIX);
   return clip8((uv + rounding + (128 << shift)) >> shift);
-}
-
-static uint8_t sample_y(const uint8_t * y, int stride, int x, int y0, int w,
-    int h) {
-  if (x < 0) {
-    x = 0;
-  }
-  if (y0 < 0) {
-    y0 = 0;
-  }
-  if (x >= w) {
-    x = w - 1;
-  }
-  if (y0 >= h) {
-    y0 = h - 1;
-  }
-  return y[y0 * stride + x];
 }
 
 static void put_large_value(bool_writer_t * bw, const uint8_t * p, int v) {
@@ -335,39 +316,6 @@ static void put_large_value(bool_writer_t * bw, const uint8_t * p, int v) {
   }
 }
 
-/** Emit one coeff band starting at position @a first; only coeff[0] may be set.
- *  Returns the GetCoeffs-style return value (position after last nonzero, or
- *  first on immediate EOB). */
-static int put_dc_token(bool_writer_t * bw,
-    const uint8_t bands[GIMG_VP8_NUM_BANDS][GIMG_VP8_NUM_CTX]
-        [GIMG_VP8_NUM_PROBAS],
-    int ctx, int first, int level) {
-  const uint8_t * p = bands[gimg_vp8_bands[first]][ctx];
-  int abs_l;
-  if (level == 0) {
-    bw_put_bit(bw, 0, p[0]); /* EOB */
-    return first;
-  }
-  bw_put_bit(bw, 1, p[0]); /* not EOB */
-  bw_put_bit(bw, 1, p[1]); /* not zero */
-  abs_l = level < 0 ? -level : level;
-  if (abs_l == 1) {
-    bw_put_bit(bw, 0, p[2]);
-  }
-  else {
-    bw_put_bit(bw, 1, p[2]);
-    put_large_value(bw, p, abs_l);
-  }
-  bw_put_bit_uniform(bw, level < 0); /* sign: 1 = negative */
-  /* EOB for remaining coeffs in the band. */
-  {
-    const uint8_t * p_next =
-        bands[gimg_vp8_bands[first + 1]][abs_l > 1 ? 2 : 1];
-    bw_put_bit(bw, 0, p_next[0]);
-  }
-  return first + 1;
-}
-
 static int quantize(int coeff, int q) {
   int abs_c;
   int level;
@@ -380,6 +328,277 @@ static int quantize(int coeff, int q) {
     level = 2047;
   }
   return coeff < 0 ? -level : level;
+}
+
+/* Scan position to raster position. The same order section 14's inverse
+ * reads back. */
+static const uint8_t k_zigzag[16] = {
+  0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15
+};
+
+/* One dimension of the section 14.4 inverse butterfly, run backwards.
+ * The two unscaled passes grow by sixteen; the inverse's final shift of
+ * three is an eight, so the samples are shifted up by three first and
+ * the coefficients are rounded down by four. */
+static void fwd_1d(int o0, int o1, int o2, int o3, int * i0, int * i1,
+    int * i2, int * i3) {
+  const int a1 = o0 + o3;
+  const int d1 = o0 - o3;
+  const int b1 = o1 + o2;
+  const int c1 = o1 - o2;
+  *i0 = a1 + b1;
+  *i2 = a1 - b1;
+  *i1 = ((c1 * 35468) >> 16) + d1 + ((d1 * 20091) >> 16);
+  *i3 = ((d1 * 35468) >> 16) - (c1 + ((c1 * 20091) >> 16));
+}
+
+static void fdct4(const int * sp, int * out) {
+  int src[16];
+  int tmp[16];
+  int r;
+  int c;
+  for (r = 0; r < 16; ++r) {
+    src[r] = sp[r] << 3;
+  }
+  for (r = 0; r < 4; ++r) {
+    fwd_1d(src[r * 4], src[r * 4 + 1], src[r * 4 + 2], src[r * 4 + 3],
+        &tmp[r * 4], &tmp[r * 4 + 1], &tmp[r * 4 + 2], &tmp[r * 4 + 3]);
+  }
+  for (c = 0; c < 4; ++c) {
+    int i0, i1, i2, i3;
+    fwd_1d(tmp[c], tmp[4 + c], tmp[8 + c], tmp[12 + c], &i0, &i1, &i2, &i3);
+    out[c] = (i0 + 8) >> 4;
+    out[4 + c] = (i1 + 8) >> 4;
+    out[8 + c] = (i2 + 8) >> 4;
+    out[12 + c] = (i3 + 8) >> 4;
+  }
+}
+
+/** Section 14.4, so a reconstructed block is what the decoder adds. */
+static void idct4(const int * in, int * out) {
+  int tmp[16];
+  int i;
+  for (i = 0; i < 4; ++i) {
+    const int i0 = in[i];
+    const int i1 = in[4 + i];
+    const int i2 = in[8 + i];
+    const int i3 = in[12 + i];
+    const int a1 = i0 + i2;
+    const int b1 = i0 - i2;
+    int t1 = (i1 * 35468) >> 16;
+    int t2 = i3 + ((i3 * 20091) >> 16);
+    const int c1 = t1 - t2;
+    int d1;
+    t1 = i1 + ((i1 * 20091) >> 16);
+    t2 = (i3 * 35468) >> 16;
+    d1 = t1 + t2;
+    tmp[i] = a1 + d1;
+    tmp[12 + i] = a1 - d1;
+    tmp[4 + i] = b1 + c1;
+    tmp[8 + i] = b1 - c1;
+  }
+  for (i = 0; i < 4; ++i) {
+    const int i0 = tmp[i * 4];
+    const int i1 = tmp[i * 4 + 1];
+    const int i2 = tmp[i * 4 + 2];
+    const int i3 = tmp[i * 4 + 3];
+    const int a1 = i0 + i2;
+    const int b1 = i0 - i2;
+    int t1 = (i1 * 35468) >> 16;
+    int t2 = i3 + ((i3 * 20091) >> 16);
+    const int c1 = t1 - t2;
+    int d1;
+    t1 = i1 + ((i1 * 20091) >> 16);
+    t2 = (i3 * 35468) >> 16;
+    d1 = t1 + t2;
+    out[i * 4] = (a1 + d1 + 4) >> 3;
+    out[i * 4 + 3] = (a1 - d1 + 4) >> 3;
+    out[i * 4 + 1] = (b1 + c1 + 4) >> 3;
+    out[i * 4 + 2] = (b1 - c1 + 4) >> 3;
+  }
+}
+
+/* Section 14.3's butterfly. Two passes multiply by sixteen and the
+ * inverse shifts by three, so the forward shifts by one. */
+static void fwht4(const int * in, int * out) {
+  int tmp[16];
+  int i;
+  for (i = 0; i < 4; ++i) {
+    const int i0 = in[i];
+    const int i1 = in[4 + i];
+    const int i2 = in[8 + i];
+    const int i3 = in[12 + i];
+    const int a1 = i0 + i3;
+    const int b1 = i1 + i2;
+    const int c1 = i1 - i2;
+    const int d1 = i0 - i3;
+    tmp[i] = a1 + b1;
+    tmp[4 + i] = c1 + d1;
+    tmp[8 + i] = a1 - b1;
+    tmp[12 + i] = d1 - c1;
+  }
+  for (i = 0; i < 4; ++i) {
+    const int i0 = tmp[i * 4];
+    const int i1 = tmp[i * 4 + 1];
+    const int i2 = tmp[i * 4 + 2];
+    const int i3 = tmp[i * 4 + 3];
+    const int a1 = i0 + i3;
+    const int b1 = i1 + i2;
+    const int c1 = i1 - i2;
+    const int d1 = i0 - i3;
+    out[i * 4] = (a1 + b1) >> 1;
+    out[i * 4 + 1] = (c1 + d1) >> 1;
+    out[i * 4 + 2] = (a1 - b1) >> 1;
+    out[i * 4 + 3] = (d1 - c1) >> 1;
+  }
+}
+
+/** Section 14.3. */
+static void iwht4(const int * in, int * out) {
+  int tmp[16];
+  int i;
+  for (i = 0; i < 4; ++i) {
+    const int i0 = in[i];
+    const int i1 = in[4 + i];
+    const int i2 = in[8 + i];
+    const int i3 = in[12 + i];
+    const int a1 = i0 + i3;
+    const int b1 = i1 + i2;
+    const int c1 = i1 - i2;
+    const int d1 = i0 - i3;
+    tmp[i] = a1 + b1;
+    tmp[4 + i] = c1 + d1;
+    tmp[8 + i] = a1 - b1;
+    tmp[12 + i] = d1 - c1;
+  }
+  for (i = 0; i < 4; ++i) {
+    const int i0 = tmp[i * 4];
+    const int i1 = tmp[i * 4 + 1];
+    const int i2 = tmp[i * 4 + 2];
+    const int i3 = tmp[i * 4 + 3];
+    const int a1 = i0 + i3;
+    const int b1 = i1 + i2;
+    const int c1 = i1 - i2;
+    const int d1 = i0 - i3;
+    const int a2 = a1 + b1;
+    const int b2 = c1 + d1;
+    const int c2 = a1 - b1;
+    const int d2 = d1 - c1;
+    out[i * 4] = (a2 + 3) >> 3;
+    out[i * 4 + 1] = (b2 + 3) >> 3;
+    out[i * 4 + 2] = (c2 + 3) >> 3;
+    out[i * 4 + 3] = (d2 + 3) >> 3;
+  }
+}
+
+static int src_at(const uint8_t * plane, int stride, int x, int y, int w,
+    int h) {
+  if (w <= 0 || h <= 0) {
+    return 128;
+  }
+  if (x < 0) {
+    x = 0;
+  }
+  if (y < 0) {
+    y = 0;
+  }
+  if (x >= w) {
+    x = w - 1;
+  }
+  if (y >= h) {
+    y = h - 1;
+  }
+  return plane[y * stride + x];
+}
+
+/** Section 12. DC prediction, reading the reconstructed plane. */
+static int dc_pred(const uint8_t * plane, int stride, int x, int y, int n) {
+  int sum = 0;
+  int i;
+  const int shift = (n == 16) ? 4 : 3;
+  if (x == 0 && y == 0) {
+    return 128;
+  }
+  if (y == 0) {
+    for (i = 0; i < n; ++i) {
+      sum += plane[(x - 1) + (y + i) * stride];
+    }
+    return (sum + (1 << (shift - 1))) >> shift;
+  }
+  if (x == 0) {
+    for (i = 0; i < n; ++i) {
+      sum += plane[(x + i) + (y - 1) * stride];
+    }
+    return (sum + (1 << (shift - 1))) >> shift;
+  }
+  for (i = 0; i < n; ++i) {
+    sum += plane[(x + i) + (y - 1) * stride];
+    sum += plane[(x - 1) + (y + i) * stride];
+  }
+  return (sum + (1 << shift)) >> (shift + 1);
+}
+
+static void put_eob(bool_writer_t * bw, const uint8_t * p) {
+  bw_put_bit(bw, 0, p[0]);
+}
+
+static void put_coeff(bool_writer_t * bw, const uint8_t * p, int level,
+    int skip_eob) {
+  int mag;
+  if (!skip_eob) {
+    bw_put_bit(bw, 1, p[0]);
+  }
+  if (level == 0) {
+    bw_put_bit(bw, 0, p[1]);
+    return;
+  }
+  bw_put_bit(bw, 1, p[1]);
+  mag = level < 0 ? -level : level;
+  if (mag == 1) {
+    bw_put_bit(bw, 0, p[2]);
+  }
+  else {
+    bw_put_bit(bw, 1, p[2]);
+    put_large_value(bw, p, mag);
+  }
+  bw_put_bit_uniform(bw, level < 0);
+}
+
+/** Levels are raster order. @a first is 0, or 1 when the DC lives in Y2.
+ *  Returns 1 when any emitted level is nonzero. */
+static int put_block(bool_writer_t * bw,
+    const uint8_t bands[GIMG_VP8_NUM_BANDS][GIMG_VP8_NUM_CTX]
+        [GIMG_VP8_NUM_PROBAS],
+    int ctx, int first, const int * levels) {
+  int last = first - 1;
+  int i;
+  int skip_eob = 0;
+  for (i = first; i < 16; ++i) {
+    if (levels[k_zigzag[i]] != 0) {
+      last = i;
+    }
+  }
+  if (last < first) {
+    put_eob(bw, bands[gimg_vp8_bands[first]][ctx]);
+    return 0;
+  }
+  for (i = first; i <= last; ++i) {
+    const int level = levels[k_zigzag[i]];
+    const uint8_t * p = bands[gimg_vp8_bands[i]][ctx];
+    put_coeff(bw, p, level, skip_eob);
+    if (level == 0) {
+      skip_eob = 1;
+      ctx = 0;
+    }
+    else {
+      skip_eob = 0;
+      ctx = (level == 1 || level == -1) ? 1 : 2;
+    }
+  }
+  if (last < 15) {
+    put_eob(bw, bands[gimg_vp8_bands[last + 1]][ctx]);
+  }
+  return 1;
 }
 
 
@@ -445,8 +664,14 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   size_t out_cap = 0;
   size_t out_len = 0;
   int base_q;
-  int y2_q;
-  int uv_q;
+  int y1_ac_q;
+  int y2_dc_q;
+  int y2_ac_q;
+  int uv_dc_q;
+  int uv_ac_q;
+  uint8_t * rec_y = NULL;
+  uint8_t * rec_u = NULL;
+  uint8_t * rec_v = NULL;
   GIMG_Result r = GIMG_OK;
   uint32_t mb_y;
   uint32_t mb_x;
@@ -464,8 +689,11 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     effort = 9;
   }
   base_q = k_effort_q[effort];
-  y2_q = gimg_vp8_dc_qlookup[clip127(base_q)] * 2;
-  uv_q = gimg_vp8_dc_qlookup[clip117(base_q)];
+  y1_ac_q = (int)gimg_vp8_ac_qlookup[clip127(base_q)];
+  y2_dc_q = gimg_vp8_dc_qlookup[clip127(base_q)] * 2;
+  y2_ac_q = (int)gimg_vp8_ac_qlookup[clip127(base_q)] * 155 / 100;
+  uv_dc_q = gimg_vp8_dc_qlookup[clip127(base_q)];
+  uv_ac_q = (int)gimg_vp8_ac_qlookup[clip127(base_q)];
 
   mb_w = (width + 15u) >> 4;
   mb_h = (height + 15u) >> 4;
@@ -533,190 +761,195 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     goto Done;
   }
 
-  /* Tokens: Y2 DC + 16 Y EOBs + 4 UV DCs per MB. Track nz like the decoder. */
+  /* Tokens follow the decoder: Y2, sixteen luma AC blocks, then U and
+   * V. The next macroblock predicts from this one's reconstruction. */
   {
-    uint8_t * row_nz_dc = (uint8_t *)gimg_malloc(alloc, mb_w);
-    uint8_t * row_nz = (uint8_t *)gimg_malloc(alloc, mb_w);
-    uint8_t left_dc = 0;
-    uint8_t left_nz_bits = 0;
-    if (!row_nz_dc || !row_nz) {
-      gimg_free(alloc, row_nz_dc);
-      gimg_free(alloc, row_nz);
+    const int y4_stride = (int)mb_w * 4;
+    const int uv4_stride = (int)mb_w * 2;
+    uint8_t * y_nz =
+        (uint8_t *)gimg_malloc(alloc, (size_t)y4_stride * mb_h * 4u);
+    uint8_t * u_nz =
+        (uint8_t *)gimg_malloc(alloc, (size_t)uv4_stride * mb_h * 2u);
+    uint8_t * v_nz =
+        (uint8_t *)gimg_malloc(alloc, (size_t)uv4_stride * mb_h * 2u);
+    uint8_t * y2_above = (uint8_t *)gimg_malloc(alloc, mb_w);
+    int y2_left;
+    rec_y = (uint8_t *)gimg_malloc(alloc, (size_t)y_stride * mb_h * 16u);
+    rec_u = (uint8_t *)gimg_malloc(alloc, (size_t)uv_stride * mb_h * 8u);
+    rec_v = (uint8_t *)gimg_malloc(alloc, (size_t)uv_stride * mb_h * 8u);
+    if (!y_nz || !u_nz || !v_nz || !y2_above || !rec_y || !rec_u || !rec_v) {
+      gimg_free(alloc, y_nz);
+      gimg_free(alloc, u_nz);
+      gimg_free(alloc, v_nz);
+      gimg_free(alloc, y2_above);
       r = GIMG_ERR_OOM;
       goto Done;
     }
-    memset(row_nz_dc, 0, mb_w);
-    memset(row_nz, 0, mb_w);
+    memset(y_nz, 0, (size_t)y4_stride * mb_h * 4u);
+    memset(u_nz, 0, (size_t)uv4_stride * mb_h * 2u);
+    memset(v_nz, 0, (size_t)uv4_stride * mb_h * 2u);
+    memset(y2_above, 0, mb_w);
 
     for (mb_y = 0; mb_y < mb_h; ++mb_y) {
-      left_dc = 0;
-      left_nz_bits = 0;
+      y2_left = 0;
       for (mb_x = 0; mb_x < mb_w; ++mb_x) {
-        const uint32_t bx = mb_x * 16u;
-        const uint32_t by = mb_y * 16u;
+        const int bx = (int)mb_x * 16;
+        const int by = (int)mb_y * 16;
+        const int ubx = (int)mb_x * 8;
+        const int uby = (int)mb_y * 8;
         int pred;
-        int64_t sum;
-        int level;
-        int ctx;
+        int dc_coeff[16];
+        int ac_levels[16][16];
+        int y2_level[16];
+        int wht[16];
+        int y2_hat[16];
+        int spatial[16];
+        int sy;
+        int sx;
         int i;
-        int x;
-        int y;
-        uint8_t top_dc = row_nz_dc[mb_x];
-        uint8_t top_nz_bits = row_nz[mb_x];
-        uint8_t out_t_nz;
-        uint8_t out_l_nz;
-        uint8_t tnz;
-        uint8_t lnz;
-        int l;
+        int ctx;
         int nz;
 
-        /* Intra16 DC prediction from top/left borders. */
-        if (mb_x == 0u && mb_y == 0u) {
-          pred = 128;
-        }
-        else if (mb_x == 0u) {
-          int s = 0;
-          for (i = 0; i < 16; ++i) {
-            s += sample_y(y_plane, (int)y_stride, (int)bx + i, (int)by - 1,
-                (int)width, (int)height);
-          }
-          pred = (s + 8) >> 4;
-        }
-        else if (mb_y == 0u) {
-          int s = 0;
-          for (i = 0; i < 16; ++i) {
-            s += sample_y(y_plane, (int)y_stride, (int)bx - 1, (int)by + i,
-                (int)width, (int)height);
-          }
-          pred = (s + 8) >> 4;
-        }
-        else {
-          int s = 0;
-          for (i = 0; i < 16; ++i) {
-            s += sample_y(y_plane, (int)y_stride, (int)bx + i, (int)by - 1,
-                (int)width, (int)height);
-            s += sample_y(y_plane, (int)y_stride, (int)bx - 1, (int)by + i,
-                (int)width, (int)height);
-          }
-          pred = (s + 16) >> 5;
-        }
-
-        sum = 0;
-        for (uint32_t yy = 0; yy < 16u; ++yy) {
-          for (uint32_t xx = 0; xx < 16u; ++xx) {
-            uint32_t px = bx + xx;
-            uint32_t py = by + yy;
-            int sample = 128;
-            if (px < width && py < height) {
-              sample = y_plane[py * y_stride + px];
+        pred = dc_pred(rec_y, (int)y_stride, bx, by, 16);
+        for (sy = 0; sy < 4; ++sy) {
+          for (sx = 0; sx < 4; ++sx) {
+            int residual[16];
+            int coeff[16];
+            int dy;
+            int dx;
+            const int bi = sy * 4 + sx;
+            for (dy = 0; dy < 4; ++dy) {
+              for (dx = 0; dx < 4; ++dx) {
+                residual[dy * 4 + dx] =
+                    src_at(y_plane, (int)y_stride, bx + sx * 4 + dx,
+                        by + sy * 4 + dy, (int)width, (int)height) -
+                    pred;
+              }
             }
-            else if (width > 0u && height > 0u) {
-              sample = sample_y(y_plane, (int)y_stride, (int)px, (int)py,
-                  (int)width, (int)height);
+            fdct4(residual, coeff);
+            dc_coeff[bi] = coeff[0];
+            ac_levels[bi][0] = 0;
+            for (i = 1; i < 16; ++i) {
+              ac_levels[bi][i] = quantize(coeff[i], y1_ac_q);
             }
-            sum += sample - pred;
           }
         }
-        {
-          int mean8 = (int)((sum * 8) / 256);
-          level = quantize(mean8, y2_q);
+        fwht4(dc_coeff, wht);
+        for (i = 0; i < 16; ++i) {
+          y2_level[i] = quantize(wht[i], i == 0 ? y2_dc_q : y2_ac_q);
+          y2_hat[i] = y2_level[i] * (i == 0 ? y2_dc_q : y2_ac_q);
         }
-        ctx = top_dc + left_dc;
-        nz = put_dc_token(&tokens, gimg_vp8_coeffs_proba0[1], ctx, 0, level);
-        left_dc = top_dc = (nz > 0);
-        row_nz_dc[mb_x] = top_dc;
+        ctx = (y2_left ? 1 : 0) + (y2_above[mb_x] ? 1 : 0);
+        nz = put_block(&tokens, gimg_vp8_coeffs_proba0[1], ctx, 0, y2_level);
+        y2_left = nz;
+        y2_above[mb_x] = (uint8_t)nz;
+        iwht4(y2_hat, spatial);
 
-        /* 16 luma 4x4: AC only (first=1), all EOB — still track nz bits. */
-        tnz = top_nz_bits & 0x0fu;
-        lnz = left_nz_bits & 0x0fu;
-        for (y = 0; y < 4; ++y) {
-          l = lnz & 1;
-          for (x = 0; x < 4; ++x) {
-            ctx = l + (tnz & 1);
-            nz = put_dc_token(
-                &tokens, gimg_vp8_coeffs_proba0[0], ctx, 1, 0);
-            l = (nz > 1);
-            tnz = (uint8_t)((tnz >> 1) | (l << 7));
+        for (sy = 0; sy < 4; ++sy) {
+          for (sx = 0; sx < 4; ++sx) {
+            const int fx = (int)mb_x * 4 + sx;
+            const int fy = (int)mb_y * 4 + sy;
+            const int bi = sy * 4 + sx;
+            int block[16];
+            int residue[16];
+            int dy;
+            int dx;
+            ctx = 0;
+            if (fy > 0 && y_nz[(fy - 1) * y4_stride + fx]) {
+              ctx++;
+            }
+            if (fx > 0 && y_nz[fy * y4_stride + (fx - 1)]) {
+              ctx++;
+            }
+            nz = put_block(
+                &tokens, gimg_vp8_coeffs_proba0[0], ctx, 1, ac_levels[bi]);
+            y_nz[fy * y4_stride + fx] = (uint8_t)nz;
+            block[0] = spatial[bi];
+            for (i = 1; i < 16; ++i) {
+              block[i] = ac_levels[bi][i] * y1_ac_q;
+            }
+            idct4(block, residue);
+            for (dy = 0; dy < 4; ++dy) {
+              for (dx = 0; dx < 4; ++dx) {
+                const int v =
+                    pred + residue[dy * 4 + dx];
+                rec_y[(by + sy * 4 + dy) * (int)y_stride + bx + sx * 4 + dx] =
+                    (uint8_t)clip8(v);
+              }
+            }
           }
-          tnz = (uint8_t)(tnz >> 4);
-          lnz = (uint8_t)((lnz >> 1) | (l << 7));
         }
-        out_t_nz = tnz;
-        out_l_nz = (uint8_t)(lnz >> 4);
 
-        /* 4 UV 4x4 blocks (U then V), DC only. */
-        for (int ch = 0; ch < 4; ch += 2) {
-          const uint8_t * uv = (ch == 0) ? u_plane : v_plane;
-          const uint32_t ubx = mb_x * 8u;
-          const uint32_t uby = mb_y * 8u;
-          int upred = 128;
-          int uy;
-          int ux;
-          if (mb_x > 0u || mb_y > 0u) {
-            int s = 0;
-            int n = 0;
-            if (mb_y > 0u) {
-              for (ux = 0; ux < 8; ++ux) {
-                uint32_t px = ubx + (uint32_t)ux;
-                uint32_t py = uby - 1u;
-                if (px < ((width + 1u) >> 1) && py < ((height + 1u) >> 1)) {
-                  s += uv[py * uv_stride + px];
-                  n++;
+        for (int ch = 0; ch < 2; ++ch) {
+          const uint8_t * src = (ch == 0) ? u_plane : v_plane;
+          uint8_t * rec = (ch == 0) ? rec_u : rec_v;
+          uint8_t * nz_plane = (ch == 0) ? u_nz : v_nz;
+          int uv_levels[4][16];
+          int uv_pred;
+          int bi;
+          uv_pred = dc_pred(rec, (int)uv_stride, ubx, uby, 8);
+          for (sy = 0; sy < 2; ++sy) {
+            for (sx = 0; sx < 2; ++sx) {
+              int residual[16];
+              int coeff[16];
+              int dy;
+              int dx;
+              bi = sy * 2 + sx;
+              for (dy = 0; dy < 4; ++dy) {
+                for (dx = 0; dx < 4; ++dx) {
+                  residual[dy * 4 + dx] =
+                      src_at(src, (int)uv_stride, ubx + sx * 4 + dx,
+                          uby + sy * 4 + dy, (int)uv_w, (int)uv_h) -
+                      uv_pred;
+                }
+              }
+              fdct4(residual, coeff);
+              for (i = 0; i < 16; ++i) {
+                uv_levels[bi][i] =
+                    quantize(coeff[i], i == 0 ? uv_dc_q : uv_ac_q);
+              }
+            }
+          }
+          for (sy = 0; sy < 2; ++sy) {
+            for (sx = 0; sx < 2; ++sx) {
+              const int fx = (int)mb_x * 2 + sx;
+              const int fy = (int)mb_y * 2 + sy;
+              int block[16];
+              int residue[16];
+              int dy;
+              int dx;
+              bi = sy * 2 + sx;
+              ctx = 0;
+              if (fy > 0 && nz_plane[(fy - 1) * uv4_stride + fx]) {
+                ctx++;
+              }
+              if (fx > 0 && nz_plane[fy * uv4_stride + (fx - 1)]) {
+                ctx++;
+              }
+              nz = put_block(&tokens, gimg_vp8_coeffs_proba0[2], ctx, 0,
+                  uv_levels[bi]);
+              nz_plane[fy * uv4_stride + fx] = (uint8_t)nz;
+              for (i = 0; i < 16; ++i) {
+                block[i] =
+                    uv_levels[bi][i] * (i == 0 ? uv_dc_q : uv_ac_q);
+              }
+              idct4(block, residue);
+              for (dy = 0; dy < 4; ++dy) {
+                for (dx = 0; dx < 4; ++dx) {
+                  const int v = uv_pred + residue[dy * 4 + dx];
+                  rec[(uby + sy * 4 + dy) * (int)uv_stride + ubx + sx * 4 +
+                      dx] = (uint8_t)clip8(v);
                 }
               }
             }
-            if (mb_x > 0u) {
-              for (uy = 0; uy < 8; ++uy) {
-                uint32_t px = ubx - 1u;
-                uint32_t py = uby + (uint32_t)uy;
-                if (px < ((width + 1u) >> 1) && py < ((height + 1u) >> 1)) {
-                  s += uv[py * uv_stride + px];
-                  n++;
-                }
-              }
-            }
-            if (n > 0) {
-              upred = (s + n / 2) / n;
-            }
           }
-          tnz = (uint8_t)(top_nz_bits >> (4 + ch));
-          lnz = (uint8_t)(left_nz_bits >> (4 + ch));
-          for (uy = 0; uy < 2; ++uy) {
-            l = lnz & 1;
-            for (ux = 0; ux < 2; ++ux) {
-              int64_t usum = 0;
-              int ulevel;
-              for (int dy = 0; dy < 4; ++dy) {
-                for (int dx = 0; dx < 4; ++dx) {
-                  uint32_t px = ubx + (uint32_t)(ux * 4 + dx);
-                  uint32_t py = uby + (uint32_t)(uy * 4 + dy);
-                  int sample = 128;
-                  if (px < ((width + 1u) >> 1) &&
-                      py < ((height + 1u) >> 1)) {
-                    sample = uv[py * uv_stride + px];
-                  }
-                  usum += sample - upred;
-                }
-              }
-              ulevel = quantize((int)(usum / 2), uv_q);
-              ctx = l + (tnz & 1);
-              nz = put_dc_token(
-                  &tokens, gimg_vp8_coeffs_proba0[2], ctx, 0, ulevel);
-              l = (nz > 0);
-              tnz = (uint8_t)((tnz >> 1) | (l << 3));
-            }
-            tnz = (uint8_t)(tnz >> 2);
-            lnz = (uint8_t)((lnz >> 1) | (l << 5));
-          }
-          out_t_nz = (uint8_t)(out_t_nz | ((tnz << 4) << ch));
-          out_l_nz = (uint8_t)(out_l_nz | ((lnz & 0xf0) << ch));
         }
-        row_nz[mb_x] = out_t_nz;
-        left_nz_bits = out_l_nz;
       }
     }
-    gimg_free(alloc, row_nz_dc);
-    gimg_free(alloc, row_nz);
+    gimg_free(alloc, y_nz);
+    gimg_free(alloc, u_nz);
+    gimg_free(alloc, v_nz);
+    gimg_free(alloc, y2_above);
   }
 
   if (!bw_finish(&tokens)) {
@@ -774,5 +1007,8 @@ Done:
   gimg_free(alloc, y_plane);
   gimg_free(alloc, u_plane);
   gimg_free(alloc, v_plane);
+  gimg_free(alloc, rec_y);
+  gimg_free(alloc, rec_u);
+  gimg_free(alloc, rec_v);
   return r;
 }

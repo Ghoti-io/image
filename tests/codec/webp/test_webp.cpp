@@ -2,7 +2,7 @@
  * @file
  *
  * WebP Phase A–G: load, VP8L/VP8/ALPH decode, ANIM/ANMF composite, VP8L
- * lossless encode, stub VP8 lossy encode.
+ * lossless encode, VP8 lossy encode.
  *
  * Each lossless file written here is also left in GIMG_TEST_OUT_WEBP with
  * the source pixels and the encode time, for
@@ -827,6 +827,76 @@ TEST(Webp, SaveLossyDecodable) {
     std::ofstream out(path, std::ios::binary);
     ASSERT_TRUE(static_cast<bool>(out));
     out.write(static_cast<const char *>(bytes),
+        static_cast<std::streamsize>(nbytes));
+    std::ofstream mark(path + ".lossy", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(mark));
+  }
+
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveLossyGradientKeepsDetail) {
+  /* A horizontal ramp. Intra16 DC alone paints each macroblock one
+   * colour, so the two ends of a block match. The 4x4 residual must
+   * separate them. The sidecar checks dwebp parity, not fidelity. */
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(32, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &raster),
+      GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  ASSERT_NE(px, nullptr);
+  for (int y = 0; y < 16; ++y) {
+    for (int x = 0; x < 32; ++x) {
+      uint8_t * p = px + (y * 32 + x) * 4;
+      p[0] = static_cast<uint8_t>(x * 255 / 31);
+      p[1] = 40;
+      p[2] = static_cast<uint8_t>(255 - x * 255 / 31);
+      p[3] = 255;
+    }
+  }
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  raster = nullptr;
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
+  opts.webp_effort = 4;
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr), GIMG_OK);
+
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back), GIMG_OK);
+  const uint8_t * got = static_cast<const uint8_t *>(gimg_raster_pixels(back));
+  ASSERT_NE(got, nullptr);
+  const int left = got[0];
+  const int right = got[15 * 4];
+  const int span = left > right ? left - right : right - left;
+  EXPECT_GT(span, 20);
+
+  {
+    mkdir(GIMG_TEST_OUT_WEBP, 0755);
+    const std::string path =
+        std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_gradient.webp";
+    std::ofstream file(path, std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(file));
+    file.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
     ASSERT_TRUE(static_cast<bool>(mark));
