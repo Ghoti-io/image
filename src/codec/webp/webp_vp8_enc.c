@@ -17,10 +17,12 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
- * The boolean coder follows RFC 6386 section 7. The coefficient
- * probabilities, category probabilities, coefficient bands, and the DC
- * dequantization table are generated from that RFC; see
- * webp_vp8_proba.inc.
+ * The boolean coder follows RFC 6386 section 7. Its range is one less
+ * than the decoder range, and a range below 127 shifts until the span
+ * is at least 128. The coefficient probabilities, category
+ * probabilities, coefficient bands, and the DC dequantization table
+ * are generated from that RFC; see webp_vp8_proba.inc. RGB to YUV is
+ * the ITU-R BT.601 studio-swing matrix that RFC cites, at scale 2^16.
  */
 
 /**
@@ -43,6 +45,36 @@ enum {
   YUV_HALF = 1 << (YUV_FIX - 1),
   VP8_MAX_DIM = 16383
 };
+
+/* ITU-R BT.601 studio swing. Weights 0.299, 0.587, 0.114 are 299, 587,
+ * and 114 over 1000. Luma is 16 + (219/255) times that combination.
+ * Chroma is 128 plus (224/255) times (B - Y) / (2 (1 - Kb)) and the
+ * matching V formula. Each product is rounded at scale 2^16. U and V
+ * give any leftover rounding to the coefficient that completes the
+ * triple, so the three sum to 0 and a neutral colour stays 128. */
+/* The products exceed 2^31, so the rounding multiply is done in
+ * long long and the quotient comes back as int. */
+#define VP8_DIV_ROUND(n, d) \
+  ((int)(((n) + (long long)((d) / 2)) / (long long)(d)))
+#define VP8_KR 299LL
+#define VP8_KG 587LL
+#define VP8_KB 114LL
+#define VP8_KDEN 1000LL
+#define VP8_Y_DEN ((VP8_KDEN) * 255LL)
+#define VP8_Y_R VP8_DIV_ROUND((VP8_KR) * 219LL * (1LL << YUV_FIX), VP8_Y_DEN)
+#define VP8_Y_G VP8_DIV_ROUND((VP8_KG) * 219LL * (1LL << YUV_FIX), VP8_Y_DEN)
+#define VP8_Y_B VP8_DIV_ROUND((VP8_KB) * 219LL * (1LL << YUV_FIX), VP8_Y_DEN)
+#define VP8_C_SCALE (224LL * (1LL << YUV_FIX))
+#define VP8_U_DEN (255LL * 2LL * ((VP8_KDEN) - (VP8_KB)))
+#define VP8_U_R (-VP8_DIV_ROUND((VP8_KR) * VP8_C_SCALE, VP8_U_DEN))
+#define VP8_U_G (-VP8_DIV_ROUND((VP8_KG) * VP8_C_SCALE, VP8_U_DEN))
+#define VP8_U_B0 VP8_DIV_ROUND(((VP8_KDEN) - (VP8_KB)) * VP8_C_SCALE, VP8_U_DEN)
+#define VP8_U_B ((VP8_U_B0) - ((VP8_U_R) + (VP8_U_G) + (VP8_U_B0)))
+#define VP8_V_DEN (255LL * 2LL * ((VP8_KDEN) - (VP8_KR)))
+#define VP8_V_R0 VP8_DIV_ROUND(((VP8_KDEN) - (VP8_KR)) * VP8_C_SCALE, VP8_V_DEN)
+#define VP8_V_G (-VP8_DIV_ROUND((VP8_KG) * VP8_C_SCALE, VP8_V_DEN))
+#define VP8_V_B (-VP8_DIV_ROUND((VP8_KB) * VP8_C_SCALE, VP8_V_DEN))
+#define VP8_V_R ((VP8_V_R0) - ((VP8_V_R0) + (VP8_V_G) + (VP8_V_B)))
 
 /* Pcat3..Pcat6, in the order put_large_value walks. The rows themselves
  * are generated from RFC 6386 section 13.2. */
@@ -120,25 +152,22 @@ static void bw_flush(bool_writer_t * bw) {
   }
 }
 
-static const uint8_t k_norm[128] = {
-  7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-  3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-  2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0
-};
-
-static const uint8_t k_new_range[128] = {
-  127, 127, 191, 127, 159, 191, 223, 127, 143, 159, 175, 191, 207, 223, 239,
-  127, 135, 143, 151, 159, 167, 175, 183, 191, 199, 207, 215, 223, 231, 239,
-  247, 127, 131, 135, 139, 143, 147, 151, 155, 159, 163, 167, 171, 175, 179,
-  183, 187, 191, 195, 199, 203, 207, 211, 215, 219, 223, 227, 231, 235, 239,
-  243, 247, 251, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149,
-  151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179,
-  181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209,
-  211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239,
-  241, 243, 245, 247, 249, 251, 253, 127
-};
+/* Shift until (range + 1) is at least 128. The new range is that
+ * span minus one, which is the encoder side of the section 7 range. */
+static void bw_renorm(bool_writer_t * bw) {
+  int span = bw->range + 1;
+  int shift = 0;
+  while (span < 128) {
+    span <<= 1;
+    shift++;
+  }
+  bw->range = span - 1;
+  bw->value <<= shift;
+  bw->nb_bits += shift;
+  if (bw->nb_bits > 0) {
+    bw_flush(bw);
+  }
+}
 
 static void bw_init(bool_writer_t * bw, const GIMG_Allocator * alloc) {
   memset(bw, 0, sizeof(*bw));
@@ -157,13 +186,7 @@ static int bw_put_bit(bool_writer_t * bw, int bit, int prob) {
     bw->range = split;
   }
   if (bw->range < 127) {
-    const int shift = k_norm[bw->range];
-    bw->range = k_new_range[bw->range];
-    bw->value <<= shift;
-    bw->nb_bits += shift;
-    if (bw->nb_bits > 0) {
-      bw_flush(bw);
-    }
+    bw_renorm(bw);
   }
   return bit;
 }
@@ -178,12 +201,7 @@ static int bw_put_bit_uniform(bool_writer_t * bw, int bit) {
     bw->range = split;
   }
   if (bw->range < 127) {
-    bw->range = k_new_range[bw->range];
-    bw->value <<= 1;
-    bw->nb_bits += 1;
-    if (bw->nb_bits > 0) {
-      bw_flush(bw);
-    }
+    bw_renorm(bw);
   }
   return bit;
 }
@@ -210,22 +228,29 @@ static int clip117(int v) {
   return v < 0 ? 0 : v > 117 ? 117 : v;
 }
 
+static int clip8(int v) {
+  return ((v & ~0xff) == 0) ? v : (v < 0) ? 0 : 255;
+}
+
 static int rgb_to_y(int r, int g, int b) {
-  const int luma = 16839 * r + 33059 * g + 6420 * b;
-  return (luma + YUV_HALF + (16 << YUV_FIX)) >> YUV_FIX;
+  const int luma = VP8_Y_R * r + VP8_Y_G * g + VP8_Y_B * b;
+  return clip8((luma + YUV_HALF + (16 << YUV_FIX)) >> YUV_FIX);
 }
 
-static int clip_uv(int uv, int rounding) {
-  uv = (uv + rounding + (128 << (YUV_FIX + 2))) >> (YUV_FIX + 2);
-  return ((uv & ~0xff) == 0) ? uv : (uv < 0) ? 0 : 255;
-}
-
-static int rgb_to_u(int r, int g, int b) {
-  return clip_uv(-9719 * r - 19081 * g + 28800 * b, YUV_HALF << 2);
-}
-
-static int rgb_to_v(int r, int g, int b) {
-  return clip_uv(28800 * r - 24116 * g - 4684 * b, YUV_HALF << 2);
+/* r, g, b are the sum of n samples. n is 1, 2, or 4. The extra shift
+ * past 2^16 is that average. */
+static int rgb_to_uv(int cr, int cg, int cb, int r, int g, int b, int n) {
+  int shift = YUV_FIX;
+  int samples = n;
+  int uv;
+  int rounding;
+  while (samples > 1) {
+    shift++;
+    samples >>= 1;
+  }
+  uv = cr * r + cg * g + cb * b;
+  rounding = YUV_HALF << (shift - YUV_FIX);
+  return clip8((uv + rounding + (128 << shift)) >> shift);
 }
 
 static uint8_t sample_y(const uint8_t * y, int stride, int x, int y0, int w,
@@ -462,7 +487,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   (void)uv_w;
   (void)uv_h;
 
-  /* RGB → YUV 4:2:0 (libwebp fixed-point spirit). */
+  /* RGB → YUV 4:2:0, BT.601 studio swing. Chroma is the mean of the
+   * 2×2, including a short block on the right or bottom edge. */
   for (uint32_t y = 0; y < height; ++y) {
     const uint8_t * row = rgba + (size_t)y * stride;
     for (uint32_t x = 0; x < width; ++x) {
@@ -484,14 +510,11 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
         }
       }
       if (n > 0) {
-        rsum /= n;
-        gsum /= n;
-        bsum /= n;
+        u_plane[(y / 2u) * uv_stride + (x / 2u)] = (uint8_t)rgb_to_uv(
+            VP8_U_R, VP8_U_G, VP8_U_B, rsum, gsum, bsum, n);
+        v_plane[(y / 2u) * uv_stride + (x / 2u)] = (uint8_t)rgb_to_uv(
+            VP8_V_R, VP8_V_G, VP8_V_B, rsum, gsum, bsum, n);
       }
-      u_plane[(y / 2u) * uv_stride + (x / 2u)] =
-          (uint8_t)rgb_to_u(rsum, gsum, bsum);
-      v_plane[(y / 2u) * uv_stride + (x / 2u)] =
-          (uint8_t)rgb_to_v(rsum, gsum, bsum);
     }
   }
 

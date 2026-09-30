@@ -137,7 +137,11 @@ not apply. On `lossless_checker` effort 4 writes **46** bytes (62 without
 the palette).
 
 **Lossy (stub).** Intra16 DC only, single quantizer, Y2/UV DC residuals —
-deliberately not competitive with `cwebp`. Accepted by `dwebp` and by this
+deliberately not competitive with `cwebp`. RGB becomes YUV with the ITU-R
+BT.601 studio matrix RFC 6386 cites, at scale 2^16; chroma is the mean of
+each 2×2. The bool writer renormalizes from the section 7 range invariant
+(encoder range is one less than the decoder range) rather than from a
+shift table. Accepted by `dwebp` and by this
 decoder. Rate and distortion vs a fast `cwebp` baseline are reported by
 `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh webp-rd`; axes:
 bytes and PSNR-RGB over opaque pixels vs `cwebp -q 75 -m 0`). The target
