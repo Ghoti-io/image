@@ -25,9 +25,9 @@ This is what the library implements.
   Deflate. What is absent is listed on the format's own page rather than left
   to be discovered.
 
-Later WebP work (competitive lossy encode, animation encode, lossless
-palette search) follows the format page's "Not implemented" list. A page
-for a format is written with its codec.
+Later WebP work (competitive lossy encode, animation encode) follows the
+format page's "Not implemented" list. A page for a format is written with
+its codec.
 
 ## Before you call it
 

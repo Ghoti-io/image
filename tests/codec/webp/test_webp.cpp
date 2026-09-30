@@ -647,6 +647,51 @@ TEST(Webp, SaveLosslessEffortShrinksGradient) {
   gimg_doc_destroy(doc);
 }
 
+GIMG_Doc * doc_with_colors(int width, int height, int ncolors) {
+  GIMG_Raster * raster = nullptr;
+  EXPECT_EQ(gimg_raster_create(static_cast<uint32_t>(width),
+                static_cast<uint32_t>(height), &GIMG_PIXEL_RGBA8,
+                GIMG_RASTER_OWNED, nullptr, 0, &raster),
+      GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  EXPECT_NE(px, nullptr);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const int c = (ncolors == 2) ? ((x + y) & 1) : ((x * 3 + y) % ncolors);
+      uint8_t * p = px + (y * width + x) * 4;
+      p[0] = static_cast<uint8_t>(20 + c * 30);
+      p[1] = static_cast<uint8_t>(200 - c * 15);
+      p[2] = static_cast<uint8_t>(c * 40);
+      p[3] = 255;
+    }
+  }
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  EXPECT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  return doc;
+}
+
+TEST(Webp, SaveLosslessPaletteShrinksChecker) {
+  GIMG_Doc * doc = doc_with_colors(32, 8, 2);
+  ASSERT_NE(doc, nullptr);
+  GIMG_Raster * raster = gimg_item_raster(gimg_doc_item(doc, 0));
+  std::vector<uint8_t> plain;
+  std::vector<uint8_t> pal;
+  const size_t n_plain = save_webp(doc, 3, &plain);
+  const size_t n_pal = save_webp(doc, 4, &pal);
+  EXPECT_LT(n_pal, n_plain);
+  EXPECT_TRUE(round_trip_matches(pal, raster));
+  gimg_doc_destroy(doc);
+
+  GIMG_Doc * wide = doc_with_colors(15, 7, 6);
+  ASSERT_NE(wide, nullptr);
+  std::vector<uint8_t> six;
+  ASSERT_GT(save_webp(wide, 4, &six), 0u);
+  EXPECT_TRUE(round_trip_matches(six, gimg_item_raster(gimg_doc_item(wide, 0))));
+  gimg_doc_destroy(wide);
+}
+
 TEST(Webp, SaveLosslessRepeatedRowRoundTrip) {
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(24, 12, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,

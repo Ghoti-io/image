@@ -25,8 +25,10 @@
  * Effort >= 2 also applies one spatial predictor when it shrinks the
  * residual, then LZ77 (exact pixel copies, minimum length 4) before
  * Huffman. Effort >= 3 adds one cross-colour transform when it shrinks
- * the red and blue residuals. Round-trip through our decoder is identity.
- * Output is accepted by libwebp's dwebp.
+ * the red and blue residuals. Effort >= 4 also tries a palette when the
+ * image has at most 256 colours, and keeps it when the file is smaller.
+ * Round-trip through our decoder is identity. Output is accepted by
+ * libwebp's dwebp.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -1104,6 +1106,156 @@ static void fill_cross_tiles(const uint32_t * pix, int width, int height,
   }
 }
 
+enum { VP8L_PAL_HASH = 1024, VP8L_PAL_MAX = 256 };
+
+static int palette_subsampling(int ncolors) {
+  if (ncolors <= 2) {
+    return 3;
+  }
+  if (ncolors <= 4) {
+    return 2;
+  }
+  if (ncolors <= 16) {
+    return 1;
+  }
+  return 0;
+}
+
+/**
+ * First-seen palette, at most 256 colours. @a index receives one byte per
+ * pixel. Returns the colour count, 0 when there are more than 256, or -1
+ * on allocation failure.
+ */
+static int collect_palette(const uint32_t * argb, size_t n, uint32_t * colors,
+    uint8_t ** index_out, const GIMG_Allocator * alloc) {
+  uint32_t slot_color[VP8L_PAL_HASH];
+  int slot_index[VP8L_PAL_HASH];
+  uint8_t slot_used[VP8L_PAL_HASH];
+  uint8_t * index;
+  int ncolors = 0;
+
+  memset(slot_used, 0, sizeof(slot_used));
+  index = (uint8_t *)gimg_malloc(alloc, n);
+  if (!index) {
+    return -1;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const uint32_t pix = argb[i];
+    uint32_t h = (pix * 2654435761u) & (VP8L_PAL_HASH - 1u);
+    for (;;) {
+      if (!slot_used[h]) {
+        if (ncolors == VP8L_PAL_MAX) {
+          gimg_free(alloc, index);
+          return 0;
+        }
+        slot_used[h] = 1;
+        slot_color[h] = pix;
+        slot_index[h] = ncolors;
+        colors[ncolors++] = pix;
+        index[i] = (uint8_t)slot_index[h];
+        break;
+      }
+      if (slot_color[h] == pix) {
+        index[i] = (uint8_t)slot_index[h];
+        break;
+      }
+      h = (h + 1u) & (VP8L_PAL_HASH - 1u);
+    }
+  }
+  *index_out = index;
+  return ncolors;
+}
+
+static uint32_t color_delta_bytes(uint32_t cur, uint32_t prev) {
+  uint32_t d = 0;
+  for (int k = 0; k < 4; ++k) {
+    const unsigned shift = (unsigned)k * 8u;
+    const uint8_t byte =
+        (uint8_t)(((cur >> shift) & 0xffu) - ((prev >> shift) & 0xffu));
+    d |= (uint32_t)byte << shift;
+  }
+  return d;
+}
+
+/**
+ * Palette-only VP8L stream. Indices are packed into the green channel the
+ * way color_index_inverse unpacks them. The colour map is stored as
+ * byte-wise deltas, which expand_color_map adds back.
+ */
+static GIMG_Result encode_palette(const uint32_t * colors, int ncolors,
+    const uint8_t * index, int width, int height, int has_alpha, int use_lz77,
+    const GIMG_Allocator * alloc, unsigned char ** out_bytes, size_t * out_size) {
+  const int bits = palette_subsampling(ncolors);
+  const int ppb = 1 << bits;
+  const int bpp = 8 >> bits;
+  const int sub_w = (width + ppb - 1) >> bits;
+  vp8l_bw_t bw;
+  uint32_t diff[VP8L_PAL_MAX];
+  uint32_t * packed = NULL;
+  GIMG_Result r = GIMG_OK;
+
+  *out_bytes = NULL;
+  *out_size = 0;
+  diff[0] = colors[0];
+  for (int i = 1; i < ncolors; ++i) {
+    diff[i] = color_delta_bytes(colors[i], colors[i - 1]);
+  }
+  packed = (uint32_t *)gimg_malloc(
+      alloc, (size_t)sub_w * (size_t)height * sizeof(uint32_t));
+  if (!packed) {
+    return GIMG_ERR_OOM;
+  }
+  for (int y = 0; y < height; ++y) {
+    const uint8_t * row = index + (size_t)y * (size_t)width;
+    for (int sx = 0; sx < sub_w; ++sx) {
+      uint32_t green = 0;
+      const int x0 = sx * ppb;
+      for (int k = 0; k < ppb; ++k) {
+        if (x0 + k < width) {
+          green |= (uint32_t)row[x0 + k] << (k * bpp);
+        }
+      }
+      packed[(size_t)y * (size_t)sub_w + (size_t)sx] = green << 8;
+    }
+  }
+
+  memset(&bw, 0, sizeof(bw));
+  bw.alloc = alloc;
+  if (!bw_grow(&bw, 64u)) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  bw_put(&bw, VP8L_MAGIC, 8);
+  bw_put(&bw, (uint32_t)(width - 1), 14);
+  bw_put(&bw, (uint32_t)(height - 1), 14);
+  bw_put(&bw, has_alpha ? 1u : 0u, 1);
+  bw_put(&bw, 0, 3);
+  bw_put(&bw, 1, 1);
+  bw_put(&bw, (uint32_t)GIMG_WEBP_VP8L_COLOR_INDEXING, 2);
+  bw_put(&bw, (uint32_t)(ncolors - 1), 8);
+  r = write_coded_image(&bw, diff, ncolors, 1, 0, 0, alloc);
+  if (r != GIMG_OK) {
+    goto Done;
+  }
+  bw_put(&bw, 0, 1);
+  r = write_coded_image(&bw, packed, sub_w, height, 1, use_lz77, alloc);
+  if (r != GIMG_OK) {
+    goto Done;
+  }
+  if (!bw_finish(&bw) || bw.error) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  *out_bytes = bw.buf;
+  *out_size = bw.size;
+  bw.buf = NULL;
+
+Done:
+  gimg_free(alloc, bw.buf);
+  gimg_free(alloc, packed);
+  return r;
+}
+
 GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
     uint32_t height, size_t stride, int has_alpha_hint, int exact, int effort,
     const GIMG_Allocator * alloc, unsigned char ** out_bytes,
@@ -1114,6 +1266,9 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   uint32_t * modes = NULL;
   uint32_t * cc_pix = NULL;
   uint32_t * trial = NULL;
+  uint8_t * pal_index = NULL;
+  uint32_t pal_colors[VP8L_PAL_MAX];
+  int ncolors = 0;
   GIMG_Result r = GIMG_OK;
   size_t n;
   int width_i;
@@ -1172,6 +1327,14 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   }
   if (has_alpha_hint) {
     has_alpha = 1;
+  }
+  memset(&bw, 0, sizeof(bw));
+  if (effort >= 4) {
+    ncolors = collect_palette(argb, n, pal_colors, &pal_index, alloc);
+    if (ncolors < 0) {
+      r = GIMG_ERR_OOM;
+      goto Done;
+    }
   }
 
   memset(&bw, 0, sizeof(bw));
@@ -1327,6 +1490,21 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   *out_size = bw.size;
   bw.buf = NULL;
 
+  if (ncolors > 0) {
+    unsigned char * alt = NULL;
+    size_t alt_size = 0;
+    const GIMG_Result pr = encode_palette(pal_colors, ncolors, pal_index,
+        width_i, height_i, has_alpha, use_lz77, alloc, &alt, &alt_size);
+    if (pr == GIMG_OK && alt_size < *out_size) {
+      gimg_free(alloc, *out_bytes);
+      *out_bytes = alt;
+      *out_size = alt_size;
+    }
+    else {
+      gimg_free(alloc, alt);
+    }
+  }
+
 Done:
   gimg_free(alloc, bw.buf);
   gimg_free(alloc, argb);
@@ -1334,5 +1512,6 @@ Done:
   gimg_free(alloc, modes);
   gimg_free(alloc, cc_pix);
   gimg_free(alloc, trial);
+  gimg_free(alloc, pal_index);
   return r;
 }
