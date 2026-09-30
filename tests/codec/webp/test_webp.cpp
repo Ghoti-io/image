@@ -403,82 +403,22 @@ TEST(Webp, CorruptRefused) {
   EXPECT_EQ(doc, nullptr);
 }
 
-TEST(Webp, DecodeSimpleLossyMatchesDwebp) {
-  GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(load_doc("simple_lossy.webp", &doc), GIMG_OK);
-  GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_OK);
-  ASSERT_NE(raster, nullptr);
-  expect_raster_matches_pam(raster, "simple_lossy.pam");
-  gimg_raster_destroy(raster);
-  gimg_doc_destroy(doc);
-}
-
-TEST(Webp, DecodeLossyGradMatchesDwebp) {
-  GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(load_doc("lossy_grad.webp", &doc), GIMG_OK);
-  GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_OK);
-  ASSERT_NE(raster, nullptr);
-  expect_raster_matches_pam(raster, "lossy_grad.pam");
-  gimg_raster_destroy(raster);
-  gimg_doc_destroy(doc);
-}
-
-TEST(Webp, DecodeLossyExifMatchesDwebpPixels) {
-  GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(load_doc("lossy_exif.webp", &doc), GIMG_OK);
-  GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_OK);
-  ASSERT_NE(raster, nullptr);
-  expect_raster_matches_pam(raster, "lossy_exif.pam");
-  gimg_raster_destroy(raster);
-  gimg_doc_destroy(doc);
-}
-
-TEST(Webp, DecodeLossyAlphaMatchesDwebp) {
-  GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(load_doc("lossy_alpha.webp", &doc), GIMG_OK);
-  GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_OK);
-  ASSERT_NE(raster, nullptr);
-  expect_raster_matches_pam(raster, "lossy_alpha.pam");
-  gimg_raster_destroy(raster);
-  gimg_doc_destroy(doc);
-}
-
-TEST(Webp, DecodeLossyGradAlphaMatchesDwebp) {
-  GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(load_doc("lossy_grad_alpha.webp", &doc), GIMG_OK);
-  GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-      GIMG_OK);
-  ASSERT_NE(raster, nullptr);
-  expect_raster_matches_pam(raster, "lossy_grad_alpha.pam");
-  gimg_raster_destroy(raster);
-  gimg_doc_destroy(doc);
-}
-
-TEST(Webp, DecodeAlphMethodFixturesMatchDwebp) {
+TEST(Webp, DecodeLossyIsUnsupported) {
+  /* The colour bitstream is VP8. This library does not decode it. */
   static const char * kFiles[] = {
-      "alph_m0_none", "alph_m0_fast", "alph_m0_best",
-      "alph_m1_none", "alph_m1_fast", "alph_m1_best",
+      "simple_lossy.webp", "lossy_grad.webp", "lossy_exif.webp",
+      "lossy_alpha.webp", "lossy_grad_alpha.webp",
+      "alph_m0_none.webp", "alph_m0_fast.webp", "alph_m0_best.webp",
+      "alph_m1_none.webp", "alph_m1_fast.webp", "alph_m1_best.webp",
   };
-  for (const char * base : kFiles) {
-    const std::string webp = std::string(base) + ".webp";
-    const std::string pam = std::string(base) + ".pam";
-    SCOPED_TRACE(webp);
+  for (const char * name : kFiles) {
+    SCOPED_TRACE(name);
     GIMG_Doc * doc = nullptr;
-    ASSERT_EQ(load_doc(webp.c_str(), &doc), GIMG_OK);
+    ASSERT_EQ(load_doc(name, &doc), GIMG_OK);
     GIMG_Raster * raster = nullptr;
-    ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-        GIMG_OK);
-    ASSERT_NE(raster, nullptr);
-    expect_raster_matches_pam(raster, pam.c_str());
+    EXPECT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+        GIMG_ERR_UNSUPPORTED);
+    EXPECT_EQ(raster, nullptr);
     gimg_raster_destroy(raster);
     gimg_doc_destroy(doc);
   }
@@ -828,7 +768,7 @@ TEST(Webp, SaveLosslessSkewedHistogramRoundTrip) {
 }
 
 TEST(Webp, SaveLossyDecodable) {
-  /* 4x4 opaque RGBA solid — stub lossy must be accepted by our decoder. */
+  /* 4x4 opaque RGBA solid. The stub writes a VP8 frame. We do not decode it. */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(4, 4, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
                 nullptr, 0, &raster),
@@ -870,11 +810,9 @@ TEST(Webp, SaveLossyDecodable) {
   ASSERT_NE(st, nullptr);
   EXPECT_TRUE(st->is_lossy);
   GIMG_Raster * back = nullptr;
-  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back),
-      GIMG_OK);
-  ASSERT_NE(back, nullptr);
-  EXPECT_EQ(gimg_raster_width(back), 4u);
-  EXPECT_EQ(gimg_raster_height(back), 4u);
+  EXPECT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back),
+      GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(back, nullptr);
 
   gimg_raster_destroy(back);
   gimg_doc_destroy(round);

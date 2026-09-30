@@ -5,8 +5,7 @@
 Phases A–G of the WebP codec: the RIFF/`WEBP` container, `VP8X` canvas
 geometry, chunk inventory (including bitstream chunks nested in `ANMF`),
 carriage of `ICCP` / `EXIF` / `XMP `, **VP8L lossless picture decode**,
-**ALPH plane decode**, **VP8 lossy keyframe decode** (with optional ALPH
-merged into RGBA), **ANIM/ANMF animation** (frame items with offset,
+**ALPH plane decode**, **ANIM/ANMF animation** (frame items with offset,
 duration, dispose and blend; decode returns the composited canvas),
 **VP8L lossless encode**, and a **stub VP8 lossy encode** (not competitive;
 see Save and `make webp-rd`). See \ref image_format_references "Formats"
@@ -21,9 +20,11 @@ fixture PAMs remain the unit-test goldens. Lossless saves are left in
 `tests/out/webp/` and checked by `verify_webp_output.py`: `dwebp -pam`
 must match the source pixels, our decoder must match `dwebp`, and the
 file's size and encode time are printed beside `cwebp -lossless -exact`.
-Lossy stub saves are accepted by `dwebp` and our decoder; rate/distortion
-vs `cwebp` is reported by `make webp-rd`. All from the pinned `libwebp`
-1.5.0 reference in `tools/oracle/containers/IMAGES` (`deb13-8`).
+A VP8 bitstream is refused (`GIMG_ERR_UNSUPPORTED`). Lossy stub saves are
+accepted by `dwebp`; rate/distortion vs `cwebp` is reported by `make
+webp-rd`. The reference is the pinned `libwebp` 1.5.0 image in
+`tools/oracle/containers/IMAGES` (`deb13-8`). This library does not
+contain libwebp's source.
 
 ## Normative references
 
@@ -144,14 +145,15 @@ yet fail on worse PSNR or size.
 
 | Case | This codec | Elsewhere |
 |---|---|---|
-| VP8 / VP8L / ALPH samples | match `dwebp -pam` | same |
+| VP8L / ALPH samples | match `dwebp -pam` | same |
+| VP8 bitstream | `GIMG_ERR_UNSUPPORTED` | `dwebp` decodes it |
 | Anim composite | match `anim_dump -pam` | same |
 | Lossless save | round-trip identity; accepted by `dwebp`; effort ≥ 2 uses one predictor and LZ77 when the residual histogram shrinks; effort ≥ 3 adds cross-colour when the file is shorter; effort ≥ 4 keeps a palette when it is smaller; a Huffman image is kept when it is smaller | gradient effort 4 is 48 bytes, `cwebp -lossless -exact` is 60; see Save |
-| Lossy save | stub VP8 accepted by `dwebp`; `make webp-rd` vs `cwebp -q 75 -m 0` | not competitive; quality bar not armed |
+| Lossy save | stub VP8 accepted by `dwebp`; our decoder refuses it; `make webp-rd` vs `cwebp -q 75 -m 0` | not competitive; quality bar not armed |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
-| VP8 implementation | adapted libwebp 1.5.0 C paths in `vp8ref/` (BSD; see `vp8ref/COPYING`) behind LGPL wrappers | same algorithm as `dwebp` by construction |
+| VP8 implementation | not in this repository | `dwebp` in the oracle image |
 
 ## Tested scope
 

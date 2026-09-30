@@ -240,9 +240,9 @@ GIMG_Result gimg_webp_alpha_decode(const unsigned char * data, size_t size,
 /**
  * @brief Decode a VP8 keyframe bitstream payload to an owned RGBA8 raster.
  *
- * Output is opaque (A=255) and byte-identical to libwebp 1.5.0 `dwebp -pam`
- * for the colour channels (fancy 4:2:0 upsample + fixed-point YUV→RGB).
- * Inter frames are refused (`GIMG_ERR_UNSUPPORTED` / corrupt).
+ * Not implemented. Returns @c GIMG_ERR_UNSUPPORTED. Lossy files are checked
+ * with `dwebp` in the pinned oracle image, which this library does not
+ * contain.
  *
  * @param data  VP8 chunk payload (frame tag at byte 0).
  * @param size  Payload byte count.

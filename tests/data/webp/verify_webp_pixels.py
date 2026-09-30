@@ -6,10 +6,11 @@
 # This file is part of Ghoti.io Image.
 """Compare every WebP fixture's decoded pixels against libwebp.
 
-Phase B/C/D/E gate for outside corpora (and a live check of the committed
-fixtures): stills must be byte-identical to `dwebp -pam` after the same EXIF
-orientation remap this library applies in gimg_item_decode; animations must
-be byte-identical frame-for-frame to `anim_dump -pam`.
+Pixel gate for outside corpora and the committed fixtures. Lossless stills
+must be byte-identical to `dwebp -pam` after the same EXIF orientation remap
+this library applies in gimg_item_decode; lossless animations must be
+byte-identical frame-for-frame to `anim_dump -pam`. A VP8 bitstream is
+refused here and counted as unsupported, not as a match.
 
 dwebp refuses animated files (UNSUPPORTED_FEATURE). Those go through
 anim_dump. Outside trees mix good vectors with intentional bad inputs: a
@@ -289,6 +290,7 @@ def compare_in_image(
     errors: list[str] = []
     ok = 0
     skipped = 0
+    unsupported = 0
     scratch = os.path.join(dump_dir, "oracle")
     os.makedirs(scratch, exist_ok=True)
 
@@ -316,6 +318,10 @@ def compare_in_image(
                 errors.append("%s: anim_dump failed: %s" % (shown, exc))
                 continue
             if fail_reason:
+                if "unsupported" in fail_reason:
+                    print("  vp8 unsupported  %s" % shown)
+                    unsupported += 1
+                    continue
                 errors.append(
                     "%s: we %s but anim_dump decoded %d frames"
                     % (shown, fail_reason, len(ref_paths)))
@@ -371,6 +377,10 @@ def compare_in_image(
             errors.append("%s: dwebp failed: %s" % (shown, exc))
             continue
         if fail_reason:
+            if "unsupported" in fail_reason:
+                print("  vp8 unsupported  %s" % shown)
+                unsupported += 1
+                continue
             errors.append(
                 "%s: we %s but dwebp decoded it" % (shown, fail_reason))
             continue
@@ -402,8 +412,12 @@ def compare_in_image(
     for e in errors:
         print("  %s" % e, file=sys.stderr)
     print(
-        "%d ok, %d skipped, %d failed (%d files)"
-        % (ok, skipped, len(errors), len(paths)))
+        "%d ok, %d vp8 unsupported, %d skipped, %d failed (%d files)"
+        % (ok, unsupported, skipped, len(errors), len(paths)))
+    if unsupported:
+        print(
+            "VP8 decode is not implemented. Those files were not compared "
+            "to dwebp.")
     if errors:
         print("WebP pixel verification FAILED", file=sys.stderr)
         return 1
@@ -469,7 +483,10 @@ def main() -> int:
                             args.dump_dir, "%d.%d.rgba" % (fi, ii)),
                     })
                 elif len(parts) >= 2:
-                    load_fail[int(parts[0])] = parts[1]
+                    # The reason itself contains tabs (item index, then
+                    # decode:unsupported). Keep every field after the file
+                    # index.
+                    load_fail[int(parts[0])] = "\t".join(parts[1:])
         return compare_in_image(
             paths, roots, args.dump_dir, by_index, load_fail)
 
