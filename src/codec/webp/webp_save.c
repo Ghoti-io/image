@@ -21,8 +21,9 @@
 /**
  * @file
  *
- * WebP Phase F: save a still image as lossless VP8L (optional VP8X + ICCP /
- * EXIF / XMP). Lossy and multi-frame saves are refused.
+ * WebP Phase F/G: save a still as lossless VP8L (default) or stub lossy VP8
+ * (optional VP8X + ICCP / EXIF / XMP). Lossy with non-opaque alpha is refused.
+ * Multi-frame save is not implemented (first item only).
  */
 
 #include <ghoti.io/image/macros.h>
@@ -186,8 +187,9 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   uint8_t * rgba = NULL;
   size_t rgba_stride = 0;
   int has_alpha = 0;
-  unsigned char * vp8l = NULL;
-  size_t vp8l_size = 0;
+  unsigned char * picture = NULL;
+  size_t picture_size = 0;
+  int is_lossy = 0;
   webp_buf_t file;
   GIMG_Result r = GIMG_OK;
   uint8_t lossless;
@@ -217,15 +219,12 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   exact = options ? options->webp_exact : 0u;
   meta_policy =
       options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
-
-  if (lossless == GIMG_WEBP_COMPRESS_LOSSY) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
+  is_lossy = (lossless == GIMG_WEBP_COMPRESS_LOSSY);
 
   if (gimg_doc_item_count(doc) < 1u) {
     return GIMG_ERR_UNSUPPORTED;
   }
-  /* Animation write is not Phase F: encode the first item as a still. */
+  /* Animation write is not implemented: encode the first item as a still. */
   item = gimg_doc_item(doc, 0);
   if (!item) {
     return GIMG_ERR_INTERNAL;
@@ -247,9 +246,21 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     goto Done;
   }
 
-  r = gimg_webp_vp8l_encode(rgba, gimg_raster_width(raster),
-      gimg_raster_height(raster), rgba_stride, has_alpha, exact, (int)effort,
-      alloc, &vp8l, &vp8l_size);
+  if (is_lossy) {
+    if (has_alpha) {
+      /* Lossy ALPH encode is a follow-on; refuse non-opaque alpha for now. */
+      r = GIMG_ERR_UNSUPPORTED;
+      goto Done;
+    }
+    r = gimg_webp_vp8_encode(rgba, gimg_raster_width(raster),
+        gimg_raster_height(raster), rgba_stride, (int)effort, alloc, &picture,
+        &picture_size);
+  }
+  else {
+    r = gimg_webp_vp8l_encode(rgba, gimg_raster_width(raster),
+        gimg_raster_height(raster), rgba_stride, has_alpha, exact, (int)effort,
+        alloc, &picture, &picture_size);
+  }
   if (r != GIMG_OK) {
     goto Done;
   }
@@ -381,7 +392,8 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     r = GIMG_ERR_OOM;
     goto Done;
   }
-  if (!buf_append_chunk(&file, GIMG_WEBP_VP8L, vp8l, vp8l_size)) {
+  if (!buf_append_chunk(&file, is_lossy ? GIMG_WEBP_VP8 : GIMG_WEBP_VP8L,
+          picture, picture_size)) {
     r = GIMG_ERR_OOM;
     goto Done;
   }
@@ -413,7 +425,7 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
 Done:
   gimg_free(alloc, file.data);
-  gimg_free(alloc, vp8l);
+  gimg_free(alloc, picture);
   gimg_free(alloc, rgba);
   gimg_free(alloc, iccp);
   gimg_free(alloc, exif);

@@ -823,6 +823,29 @@ $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION): $(OBJ_DIR)/tests/dump_webp_raster.o
 
 webp-dump-raster: $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) ## Build dump_webp_raster; used by tests/data/webp/verify_webp_pixels.py
 
+# Encode lossy WebP (stub VP8) for the Phase G rate/distortion harness.
+$(OBJ_DIR)/tests/encode_webp_lossy.o: tests/codec/webp/encode_webp_lossy.cpp $(FLAGS_STAMP)
+	@printf "\n### Compiling encode_webp_lossy ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+$(APP_DIR)/encode_webp_lossy$(EXE_EXTENSION): $(OBJ_DIR)/tests/encode_webp_lossy.o $(APP_DIR)/$(STATIC_TARGET) | $(APP_DIR)/$(TARGET)
+	@printf "\n### Linking encode_webp_lossy ###\n"
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ_DIR)/tests/encode_webp_lossy.o $(LDFLAGS) $(IMAGELIBRARY) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
+
+webp-encode-lossy: $(APP_DIR)/encode_webp_lossy$(EXE_EXTENSION) ## Build encode_webp_lossy; used by tests/data/webp/verify_webp_rd.py
+
+TEST_DATA_WEBP_RD := $(IMAGE_ROOT)/third_party/webp-rd
+
+webp-rd: $(APP_DIR)/encode_webp_lossy$(EXE_EXTENSION) ## Fetch PNG corpus and report bytes/PSNR-RGB vs cwebp -q 75 -m 0
+	@$(CURDIR)/tools/oracle/fetch.sh webp-rd && \
+	printf "\033[0;30;43m\n### WebP lossy RD (stub vs cwebp -q 75 -m 0) ###\033[0m\n\n" && \
+	LD_LIBRARY_PATH="$(TEST_LD_PATH):$(LIB_INSTALL_PATH)/$(SUITE)" \
+	GIMG_WEBP_ENCODE=$(APP_DIR)/encode_webp_lossy$(EXE_EXTENSION) \
+		python3 $(CURDIR)/tests/data/webp/verify_webp_rd.py --corpus $(TEST_DATA_WEBP_RD)
+
+.PHONY: webp-encode-lossy webp-rd
+
 # The corpus is materialised out of the pinned image rather than fetched.
 #
 # bmpsuite's repository holds a generator, not the images, so "the corpus" is

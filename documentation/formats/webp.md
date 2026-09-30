@@ -2,14 +2,15 @@
 
 # WebP
 
-Phases A–F of the WebP codec: the RIFF/`WEBP` container, `VP8X` canvas
+Phases A–G of the WebP codec: the RIFF/`WEBP` container, `VP8X` canvas
 geometry, chunk inventory (including bitstream chunks nested in `ANMF`),
 carriage of `ICCP` / `EXIF` / `XMP `, **VP8L lossless picture decode**,
 **ALPH plane decode**, **VP8 lossy keyframe decode** (with optional ALPH
 merged into RGBA), **ANIM/ANMF animation** (frame items with offset,
-duration, dispose and blend; decode returns the composited canvas), and
-**VP8L lossless encode** of still images. Lossy encode is refused; see
-\ref image_format_references "Formats" and `notes/image/webp-plan.md`.
+duration, dispose and blend; decode returns the composited canvas),
+**VP8L lossless encode**, and a **stub VP8 lossy encode** (not competitive;
+see Save and `make webp-rd`). See \ref image_format_references "Formats"
+and `notes/image/webp-plan.md`.
 
 Claims below are checked. The structure gate is `webpinfo` (committed
 fixtures under `tests/data/webp/` plus outside corpora from
@@ -17,9 +18,10 @@ fixtures under `tests/data/webp/` plus outside corpora from
 stills vs `dwebp -pam` (with this library's EXIF orientation apply),
 animations vs `anim_dump -pam` — is `verify_webp_pixels.py`. Committed
 fixture PAMs remain the unit-test goldens. Lossless saves round-trip through
-our decoder and are accepted by `dwebp`, Pillow and ImageMagick. All from
-the pinned `libwebp` 1.5.0 reference in `tools/oracle/containers/IMAGES`
-(`deb13-8`).
+our decoder and are accepted by `dwebp`, Pillow and ImageMagick. Lossy stub
+saves are accepted by `dwebp` and our decoder; rate/distortion vs `cwebp`
+is reported by `make webp-rd`. All from the pinned `libwebp` 1.5.0 reference
+in `tools/oracle/containers/IMAGES` (`deb13-8`).
 
 ## Normative references
 
@@ -73,6 +75,9 @@ Codec-owned allocations use the codec's allocator (default when NULL).
 - **VP8L encode** of a still image (first document item): Huffman over
   literals, subtract-green when `webp_effort` ≥ 1, optional `ICCP` / `EXIF` /
   `XMP ` via `VP8X`. See Save.
+- **VP8 lossy stub encode** when `webp_lossless = GIMG_WEBP_COMPRESS_LOSSY`:
+  Intra16 DC, single quantizer, opaque only. Not competitive with `cwebp`;
+  see Save and `make webp-rd`.
 
 ## YUV→RGB (a match, not a derivation)
 
@@ -84,25 +89,31 @@ oracle comparison: identity with `dwebp -pam` is the gate, not "close to BT.601"
 
 ## Save
 
-Lossless only (`VP8L`). `gimg_doc_save(..., "webp", ...)` writes a simple
-RIFF/`WEBP`/`VP8L` file, or an extended file with `VP8X` when `ICCP` / `EXIF` /
-`XMP ` are preserved. Options: `webp_effort` (0–9; ≥1 applies subtract-green),
-`webp_exact` (preserve RGB under full transparency), and `webp_lossless`
-(`GIMG_WEBP_COMPRESS_LOSSLESS`, the default; `GIMG_WEBP_COMPRESS_LOSSY` →
-`GIMG_ERR_UNSUPPORTED`). Multi-frame documents are written as a still of the first item (animation
-encode is not implemented); `GIMG_WEBP_COMPRESS_LOSSY` and non-8-bit sources
-are refused.
+Default is lossless (`VP8L`). `gimg_doc_save(..., "webp", ...)` writes a
+simple RIFF/`WEBP`/`VP8L` file, or an extended file with `VP8X` when `ICCP` /
+`EXIF` / `XMP ` are preserved. Options: `webp_effort` (0–9; ≥1 applies
+subtract-green for lossless, coarse Q ladder for lossy), `webp_exact`
+(preserve RGB under full transparency, lossless only), and `webp_lossless`
+(`GIMG_WEBP_COMPRESS_LOSSLESS` by default, or `GIMG_WEBP_COMPRESS_LOSSY` for
+the stub VP8 encoder). Multi-frame documents are written as a still of the
+first item (animation encode is not implemented). Non-8-bit sources are
+refused. Lossy with any non-opaque alpha is refused until ALPH encode exists.
 
-Round-trip through this library's decoder is identity. Outside consumers
-(`dwebp`, Pillow, ImageMagick) decode the bytes to the same pixels. Size is
-not competitive with `cwebp -lossless` when the latter uses prediction and
-LZ77: on the 32×32 `lossless_gradient` fixture this encoder wrote **2160**
+**Lossless.** Round-trip through this library's decoder is identity. Outside
+consumers (`dwebp`, Pillow, ImageMagick) decode the bytes to the same pixels.
+Size is not competitive with `cwebp -lossless` when the latter uses prediction
+and LZ77: on the 32×32 `lossless_gradient` fixture this encoder wrote **2160**
 bytes against `cwebp -lossless -exact` at **60** bytes (measured 2026-09-29
 in `deb13-8`). That gap is expected until LZ77 and spatial transforms land;
 the gate for Phase F is correctness, not rate.
 
-Lossy encode remains intentionally refused until there is a rate-distortion
-measurement plan (`notes/image/webp-plan.md` §6).
+**Lossy (stub).** Intra16 DC only, single quantizer, Y2/UV DC residuals —
+deliberately not competitive with `cwebp`. Accepted by `dwebp` and by this
+decoder. Rate and distortion vs a fast `cwebp` baseline are reported by
+`make webp-rd` (PNG corpus from `tools/oracle/fetch.sh webp-rd`; axes:
+bytes and PSNR-RGB over opaque pixels vs `cwebp -q 75 -m 0`). The target
+exits non-zero only if encode/decode/measure plumbing breaks; it does not
+yet fail on worse PSNR or size.
 
 ## Compliance checklist
 
@@ -115,7 +126,7 @@ measurement plan (`notes/image/webp-plan.md` §6).
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
 | VP8 decode | keyframe → RGBA, optional ALPH merge; byte-identical to `dwebp -pam` | inter frame / corrupt → `GIMG_ERR_CORRUPT` / `UNSUPPORTED` |
 | Animation | ANMF → `FRAME` items; composite matches `anim_dump -pam` | rectangle past canvas / no bitstream → `GIMG_ERR_CORRUPT`; over `max_frame_count` → `GIMG_ERR_LIMIT` |
-| Encode | VP8L still of the first item; optional ICCP/EXIF/XMP; round-trip identity | lossy / non-8-bit → `GIMG_ERR_UNSUPPORTED`; animation encode not implemented (first frame only) |
+| Encode | VP8L still (default) or stub VP8 lossy of the first item; optional ICCP/EXIF/XMP; lossless round-trip identity | non-8-bit → `GIMG_ERR_UNSUPPORTED`; lossy + non-opaque alpha → `UNSUPPORTED`; animation encode not implemented (first frame only) |
 
 ## Where this codec differs from libwebp
 
@@ -124,6 +135,7 @@ measurement plan (`notes/image/webp-plan.md` §6).
 | VP8 / VP8L / ALPH samples | match `dwebp -pam` | same |
 | Anim composite | match `anim_dump -pam` | same |
 | Lossless save | round-trip identity; accepted by `dwebp`/Pillow/ImageMagick | `cwebp -lossless` is much smaller (prediction + LZ77); see Save |
+| Lossy save | stub VP8 accepted by `dwebp`; `make webp-rd` vs `cwebp -q 75 -m 0` | not competitive; quality bar not armed |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
@@ -157,16 +169,21 @@ measurement plan (`notes/image/webp-plan.md` §6).
 - Lossless save: round-trip identity through this decoder; outside acceptance
   by `dwebp`, Pillow and ImageMagick; size vs `cwebp -lossless -exact` on
   `lossless_gradient` published on the Save section (2160 vs 60 bytes).
+- Lossy stub save: unit tests for decodable round-trip and alpha refusal;
+  `make webp-rd` vs `cwebp -q 75 -m 0` on `third_party/webp-rd/`
+  (`tools/oracle/fetch.sh webp-rd`).
 - Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
-  anim geometry/dispose/blend, save round-trip, lossy-save refusal.
+  anim geometry/dispose/blend, lossless save round-trip, lossy stub
+  decodable / alpha refused.
 - Fuzz: `fuzz_webp_load` with seeds from the fixture set.
 
 ## Not implemented
 
 - Animation encode (multi-frame `ANIM`/`ANMF` write). A multi-item document
   is saved as a still of the first item.
-- Lossy (`VP8 `) encode — refused until an RDO measurement plan exists
-  (`notes/image/webp-plan.md` §6).
+- Competitive lossy encode (mode search, trellis, segments, SNS, multi-pass)
+  and lossy ALPH. The stub exists; `make webp-rd` measures it; the quality
+  bar is not armed (`notes/image/webp-plan.md` §6).
 - LZ77 / predictor / cross-colour / palette search in the lossless encoder
   (literals + optional subtract-green only today).
 

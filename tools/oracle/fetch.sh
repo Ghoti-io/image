@@ -25,7 +25,11 @@
 # three sets of raw .webp blobs (Pillow, image-rs, golang.org/x/image), all
 # at the commits VERSIONS names. Not committed; see VERSIONS for licenses.
 #
-# Usage:  tools/oracle/fetch.sh [bmplib|bmpsuite|ico-refs|webp-refs|all]
+# WebP RD sources are lossless PNGs under third_party/webp-rd/ (Pillow and
+# image-rs blobs at the pillow-rd / image-rs-rd pins). Used by make webp-rd;
+# not committed.
+#
+# Usage:  tools/oracle/fetch.sh [bmplib|bmpsuite|ico-refs|webp-refs|webp-rd|all]
 #
 # Copyright 2026 by Corey Pennycuff
 
@@ -335,12 +339,85 @@ fetch_webp_refs() {
   printf 'ready   third_party/webp-refs\n'
 }
 
+# Download one PNG blob at a pinned commit; refuse anything that is not a PNG
+# signature so a HTML error page never lands as a fixture.
+fetch_png_blob() {
+  dest_dir=$1
+  relpath=$2
+  url=$3
+  need curl "webp-rd ($relpath)"
+  tmp="$dest_dir.partial/$relpath"
+  mkdir -p "$(dirname "$tmp")"
+  curl -fsSL -o "$tmp" "$url" || {
+    printf 'could not download %s\n' "$url" >&2
+    exit 1
+  }
+  python3 - "$tmp" "$relpath" <<'PY'
+import sys
+path, name = sys.argv[1], sys.argv[2]
+data = open(path, "rb").read(8)
+if len(data) < 8 or data[:8] != b"\x89PNG\r\n\x1a\n":
+    sys.stderr.write("%s: not a PNG (got %r)\n" % (name, data[:8]))
+    sys.exit(1)
+PY
+}
+
+fetch_webp_rd() {
+  dest="$root/third_party/webp-rd"
+  pillow_ref=$(ref_for pillow-rd)
+  image_rs_ref=$(ref_for image-rs-rd)
+  test -n "$pillow_ref" && test -n "$image_rs_ref" || {
+    printf 'VERSIONS is missing pillow-rd or image-rs-rd\n' >&2
+    exit 1
+  }
+
+  if webp_refs_have "$dest" pillow "$pillow_ref" && \
+      webp_refs_have "$dest" image-rs "$image_rs_ref" && \
+      [ -d "$dest/pillow" ] && [ -d "$dest/image-rs" ]; then
+    printf 'have    third_party/webp-rd\n'
+    return
+  fi
+
+  rm -rf "$dest.partial"
+  mkdir -p "$dest.partial"
+
+  printf 'fetch   third_party/webp-rd/pillow (%s)\n' "$pillow_ref"
+  for name in \
+      hopper.png test-card.png caption_6_33_22.png copyleft.png \
+      bw_gradient.png hopper_45.png imagedraw_floodfill_RGB.png \
+      transparent.png
+  do
+    fetch_png_blob "$dest" "pillow/$name" \
+        "https://raw.githubusercontent.com/python-pillow/Pillow/${pillow_ref}/Tests/images/${name}"
+  done
+  printf '%s\n' "$pillow_ref" > "$dest.partial/pillow.ref"
+
+  printf 'fetch   third_party/webp-rd/image-rs (%s)\n' "$image_rs_ref"
+  for pair in \
+      "examples/fractal.png:fractal.png" \
+      "examples/concat/200x300.png:200x300.png" \
+      "examples/concat/300x300.png:300x300.png" \
+      "examples/scaledown/scaledown-test-near.png:scaledown-test-near.png"
+  do
+    relpath=${pair%%:*}
+    base=${pair##*:}
+    fetch_png_blob "$dest" "image-rs/$base" \
+        "https://raw.githubusercontent.com/image-rs/image/${image_rs_ref}/${relpath}"
+  done
+  printf '%s\n' "$image_rs_ref" > "$dest.partial/image-rs.ref"
+
+  rm -rf "$dest"
+  mv "$dest.partial" "$dest"
+  printf 'ready   third_party/webp-rd\n'
+}
+
 case "$what" in
   bmplib)    fetch_bmplib ;;
   bmpsuite)  fetch_bmpsuite ;;
   ico-refs)  fetch_ico_refs ;;
   webp-refs) fetch_webp_refs ;;
-  all)       fetch_bmplib; fetch_bmpsuite; fetch_ico_refs; fetch_webp_refs ;;
-  *)         printf 'usage: tools/oracle/fetch.sh [bmplib|bmpsuite|ico-refs|webp-refs|all]\n' >&2
+  webp-rd)   fetch_webp_rd ;;
+  all)       fetch_bmplib; fetch_bmpsuite; fetch_ico_refs; fetch_webp_refs; fetch_webp_rd ;;
+  *)         printf 'usage: tools/oracle/fetch.sh [bmplib|bmpsuite|ico-refs|webp-refs|webp-rd|all]\n' >&2
              exit 1 ;;
 esac

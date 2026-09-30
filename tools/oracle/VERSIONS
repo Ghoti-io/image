@@ -72,3 +72,15 @@ codec-corpus-webp  51dbd1558f554c0fbe1fb1fa6eea92d53389f297
 pillow-webp        b25d85356f296103f22c0127358f91536c53b399
 image-rs-webp      075e65d618a323e5cb48c1d8710a2eca25d690c6
 go-image-webp      b06f1de3f4900ff828b8f114c37eb9ea10dfed90
+
+# Lossless PNG sources for the Phase G rate/distortion harness
+# (make webp-rd). Not committed; tools/oracle/fetch.sh webp-rd materialises
+# them into third_party/webp-rd/ at these commits. Pins match pillow-webp /
+# image-rs-webp so one tree of outside fixtures does not drift from another.
+#
+# pillow-rd - MIT-CMU (Pillow). Opaque RGB/L stills plus transparent.png
+# (alpha; the RD script skips it until lossy ALPH encode exists).
+# image-rs-rd - MIT/Apache-2.0 (image-rs). Mid-size natural / synthetic PNGs
+# from examples/ and tests fixtures.
+pillow-rd          b25d85356f296103f22c0127358f91536c53b399
+image-rs-rd        075e65d618a323e5cb48c1d8710a2eca25d690c6
