@@ -625,7 +625,7 @@ TEST(Webp, SaveLosslessRoundTrip) {
   gimg_doc_destroy(doc);
 }
 
-TEST(Webp, SaveLosslessPredictorShrinksGradient) {
+TEST(Webp, SaveLosslessEffortShrinksGradient) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(load_doc("lossless_gradient.webp", &doc), GIMG_OK);
   GIMG_Raster * raster = nullptr;
@@ -635,9 +635,13 @@ TEST(Webp, SaveLosslessPredictorShrinksGradient) {
 
   std::vector<uint8_t> literals;
   std::vector<uint8_t> predicted;
+  std::vector<uint8_t> crossed;
   const size_t n_lit = save_webp(doc, 1, &literals);
-  const size_t n_pred = save_webp(doc, 4, &predicted);
+  const size_t n_pred = save_webp(doc, 2, &predicted);
+  const size_t n_cross = save_webp(doc, 4, &crossed);
   EXPECT_LT(n_pred, n_lit);
+  EXPECT_LT(n_cross, n_pred);
+  EXPECT_TRUE(round_trip_matches(crossed, raster));
   EXPECT_TRUE(round_trip_matches(predicted, raster));
   EXPECT_TRUE(round_trip_matches(literals, raster));
   gimg_doc_destroy(doc);

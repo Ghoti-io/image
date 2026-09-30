@@ -24,8 +24,9 @@
  * VP8L lossless bitstream encode. Effort >= 1 applies subtract-green.
  * Effort >= 2 also applies one spatial predictor when it shrinks the
  * residual, then LZ77 (exact pixel copies, minimum length 4) before
- * Huffman. Round-trip through our decoder is identity. Output is accepted
- * by libwebp's dwebp.
+ * Huffman. Effort >= 3 adds one cross-colour transform when it shrinks
+ * the red and blue residuals. Round-trip through our decoder is identity.
+ * Output is accepted by libwebp's dwebp.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -975,6 +976,134 @@ Done:
   return r;
 }
 
+static int clamp_i8(int v) {
+  if (v < -128) {
+    return -128;
+  }
+  if (v > 127) {
+    return 127;
+  }
+  return v;
+}
+
+static int round_ratio(double num, double den) {
+  double q;
+  if (den == 0.0) {
+    return 0;
+  }
+  q = num / den;
+  if (q >= 0.0) {
+    return (int)(q + 0.5);
+  }
+  return (int)(q - 0.5);
+}
+
+static int color_delta(int8_t pred, int8_t color) {
+  return ((int)pred * (int)color) >> 5;
+}
+
+/**
+ * Least-squares multipliers for one tile. (m * channel) >> 5 approximates
+ * the channel it predicts, which is the inverse the decoder adds back.
+ */
+static void fit_cross_rect(const uint32_t * pix, int width, int x0, int y0,
+    int x1, int y1, int * g2r, int * g2b, int * r2b) {
+  double sgg = 0.0;
+  double sgr = 0.0;
+  double sgb = 0.0;
+  double srr = 0.0;
+  double srb = 0.0;
+  double det;
+  for (int y = y0; y < y1; ++y) {
+    for (int x = x0; x < x1; ++x) {
+      const uint32_t p = pix[(size_t)y * (size_t)width + (size_t)x];
+      const double g = (double)(int8_t)(p >> 8);
+      const double r = (double)(int8_t)(p >> 16);
+      const double b = (double)(int8_t)p;
+      sgg += g * g;
+      sgr += g * r;
+      sgb += g * b;
+      srr += r * r;
+      srb += r * b;
+    }
+  }
+  *g2r = clamp_i8(round_ratio(32.0 * sgr, sgg));
+  det = sgg * srr - sgr * sgr;
+  if (det == 0.0) {
+    *g2b = clamp_i8(round_ratio(32.0 * sgb, sgg));
+    *r2b = 0;
+  }
+  else {
+    *g2b = clamp_i8(round_ratio(32.0 * (sgb * srr - sgr * srb), det));
+    *r2b = clamp_i8(round_ratio(32.0 * (sgg * srb - sgr * sgb), det));
+  }
+}
+
+static uint32_t pack_cross(int g2r, int g2b, int r2b) {
+  return ((uint32_t)(uint8_t)r2b << 16) | ((uint32_t)(uint8_t)g2b << 8) |
+      (uint32_t)(uint8_t)g2r;
+}
+
+static void apply_cross_tiled(uint32_t * pix, int width, int height, int bits,
+    const uint32_t * codes) {
+  const int tile = 1 << bits;
+  const int tw = (width + tile - 1) >> bits;
+  for (int y = 0; y < height; ++y) {
+    const uint32_t * row = codes + (size_t)(y >> bits) * (size_t)tw;
+    int x = 0;
+    while (x < width) {
+      const uint32_t code = row[x >> bits];
+      const int g2r = (int8_t)(code & 0xffu);
+      const int g2b = (int8_t)((code >> 8) & 0xffu);
+      const int r2b = (int8_t)((code >> 16) & 0xffu);
+      int x1 = (x & ~(tile - 1)) + tile;
+      if (x1 > width) {
+        x1 = width;
+      }
+      for (; x < x1; ++x) {
+        const size_t i = (size_t)y * (size_t)width + (size_t)x;
+        const uint32_t argb = pix[i];
+        const int8_t green = (int8_t)(argb >> 8);
+        const int8_t red = (int8_t)(argb >> 16);
+        int new_red = (int)((argb >> 16) & 0xffu);
+        int new_blue = (int)(argb & 0xffu);
+        new_red -= color_delta((int8_t)g2r, green);
+        new_red &= 0xff;
+        new_blue -= color_delta((int8_t)g2b, green);
+        new_blue -= color_delta((int8_t)r2b, red);
+        new_blue &= 0xff;
+        pix[i] = (argb & 0xff00ff00u) | ((uint32_t)new_red << 16) |
+            (uint32_t)new_blue;
+      }
+    }
+  }
+}
+
+static void fill_cross_tiles(const uint32_t * pix, int width, int height,
+    int bits, uint32_t * codes) {
+  const int tile = 1 << bits;
+  const int tw = (width + tile - 1) >> bits;
+  const int th = (height + tile - 1) >> bits;
+  for (int ty = 0; ty < th; ++ty) {
+    for (int tx = 0; tx < tw; ++tx) {
+      int g2r = 0;
+      int g2b = 0;
+      int r2b = 0;
+      int x1 = (tx + 1) * tile;
+      int y1 = (ty + 1) * tile;
+      if (x1 > width) {
+        x1 = width;
+      }
+      if (y1 > height) {
+        y1 = height;
+      }
+      fit_cross_rect(pix, width, tx * tile, ty * tile, x1, y1, &g2r, &g2b,
+          &r2b);
+      codes[(size_t)ty * (size_t)tw + (size_t)tx] = pack_cross(g2r, g2b, r2b);
+    }
+  }
+}
+
 GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
     uint32_t height, size_t stride, int has_alpha_hint, int exact, int effort,
     const GIMG_Allocator * alloc, unsigned char ** out_bytes,
@@ -983,6 +1112,8 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   uint32_t * argb = NULL;
   uint32_t * resid = NULL;
   uint32_t * modes = NULL;
+  uint32_t * cc_pix = NULL;
+  uint32_t * trial = NULL;
   GIMG_Result r = GIMG_OK;
   size_t n;
   int width_i;
@@ -993,6 +1124,8 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   int use_lz77;
   int pred_mode = 0;
   int pred_bits = 0;
+  int use_cross = 0;
+  int cc_bits = 0;
 
   if (!rgba || !out_bytes || !out_size || width == 0u || height == 0u ||
       width > (uint32_t)VP8L_MAX_DIM || height > (uint32_t)VP8L_MAX_DIM) {
@@ -1106,6 +1239,78 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
       goto Done;
     }
   }
+  {
+    uint32_t * const coded = use_pred ? resid : argb;
+    /* Coarsest first. A finer grid replaces it only when residual SAD drops,
+     * so a tie keeps the smaller coefficient image. */
+    int try_bits[4];
+    int ntry = 0;
+    const int cover = covering_bits(width_i, height_i);
+    uint64_t best_sad = residual_sad(coded, n);
+    int best_bits = 0;
+    try_bits[ntry++] = cover;
+    for (int bits = 5; bits >= 3; --bits) {
+      if (bits != cover) {
+        try_bits[ntry++] = bits;
+      }
+    }
+    if (effort >= 3 && n >= 2u) {
+      trial = (uint32_t *)gimg_malloc(alloc, n * sizeof(uint32_t));
+      if (!trial) {
+        r = GIMG_ERR_OOM;
+        goto Done;
+      }
+      for (int bi = 0; bi < ntry; ++bi) {
+        const int bits = try_bits[bi];
+        const int tile = 1 << bits;
+        const int tw = (width_i + tile - 1) >> bits;
+        const int th = (height_i + tile - 1) >> bits;
+        uint32_t * codes;
+        uint64_t sad;
+        if (bits < 2 || bits > 9) {
+          continue;
+        }
+        codes = (uint32_t *)gimg_malloc(
+            alloc, (size_t)tw * (size_t)th * sizeof(uint32_t));
+        if (!codes) {
+          r = GIMG_ERR_OOM;
+          goto Done;
+        }
+        fill_cross_tiles(coded, width_i, height_i, bits, codes);
+        memcpy(trial, coded, n * sizeof(uint32_t));
+        apply_cross_tiled(trial, width_i, height_i, bits, codes);
+        sad = residual_sad(trial, n);
+        if (sad < best_sad) {
+          best_sad = sad;
+          best_bits = bits;
+          gimg_free(alloc, cc_pix);
+          cc_pix = codes;
+        }
+        else {
+          gimg_free(alloc, codes);
+        }
+      }
+      if (best_bits != 0) {
+        memcpy(trial, coded, n * sizeof(uint32_t));
+        apply_cross_tiled(trial, width_i, height_i, best_bits, cc_pix);
+        memcpy(coded, trial, n * sizeof(uint32_t));
+        use_cross = 1;
+        cc_bits = best_bits;
+      }
+    }
+  }
+  if (use_cross) {
+    const int tile = 1 << cc_bits;
+    const int tw = (width_i + tile - 1) >> cc_bits;
+    const int th = (height_i + tile - 1) >> cc_bits;
+    bw_put(&bw, 1, 1);
+    bw_put(&bw, (uint32_t)GIMG_WEBP_VP8L_CROSS_COLOR, 2);
+    bw_put(&bw, (uint32_t)(cc_bits - 2), 3);
+    r = write_coded_image(&bw, cc_pix, tw, th, 0, 0, alloc);
+    if (r != GIMG_OK) {
+      goto Done;
+    }
+  }
   bw_put(&bw, 0, 1); /* end transforms */
 
   r = write_coded_image(
@@ -1127,5 +1332,7 @@ Done:
   gimg_free(alloc, argb);
   gimg_free(alloc, resid);
   gimg_free(alloc, modes);
+  gimg_free(alloc, cc_pix);
+  gimg_free(alloc, trial);
   return r;
 }

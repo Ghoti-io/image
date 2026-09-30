@@ -93,7 +93,8 @@ Default is lossless (`VP8L`). `gimg_doc_save(..., "webp", ...)` writes a
 simple RIFF/`WEBP`/`VP8L` file, or an extended file with `VP8X` when `ICCP` /
 `EXIF` / `XMP ` are preserved. Options: `webp_effort` (0–9; ≥1 applies
 subtract-green for lossless, ≥2 also applies one spatial predictor when it
-shrinks the residual and then LZ77; coarse Q ladder for lossy), `webp_exact`
+shrinks the residual and then LZ77, ≥3 adds a cross-colour transform when
+that shrinks the red and blue residuals; coarse Q ladder for lossy), `webp_exact`
 (preserve RGB under full transparency, lossless only), and `webp_lossless`
 (`GIMG_WEBP_COMPRESS_LOSSLESS` by default, or `GIMG_WEBP_COMPRESS_LOSSY` for
 the stub VP8 encoder). Multi-frame documents are written as a still of the
@@ -103,10 +104,11 @@ refused. Lossy with any non-opaque alpha is refused until ALPH encode exists.
 **Lossless.** Round-trip through this library's decoder is identity. Outside
 consumers (`dwebp`, Pillow, ImageMagick) decode the bytes to the same pixels.
 On the 32×32 `lossless_gradient` fixture at effort 4 this encoder wrote
-**176** bytes against `cwebp -lossless -exact` at **60** bytes (measured
-2026-09-29 in `deb13-8`; `dwebp -pam` of the two files matched). `cwebp`
-reports prediction and cross-colour on that file and no LZ77. Cross-colour
-and palette search are still absent here.
+**172** bytes against `cwebp -lossless -exact` at **60** bytes (measured
+2026-09-30 in `deb13-8`; `dwebp -pam` of the two files matched). Effort 2
+(predictor and LZ77, no cross-colour) is larger on that fixture. `cwebp`
+uses a finer cross-colour grid and no LZ77 there. Palette search is still
+absent here.
 
 **Lossy (stub).** Intra16 DC only, single quantizer, Y2/UV DC residuals —
 deliberately not competitive with `cwebp`. Accepted by `dwebp` and by this
@@ -135,7 +137,7 @@ yet fail on worse PSNR or size.
 |---|---|---|
 | VP8 / VP8L / ALPH samples | match `dwebp -pam` | same |
 | Anim composite | match `anim_dump -pam` | same |
-| Lossless save | round-trip identity; accepted by `dwebp`; effort ≥ 2 uses subtract-green, one predictor and LZ77 | `cwebp -lossless` is smaller where it uses cross-colour; see Save |
+| Lossless save | round-trip identity; accepted by `dwebp`; effort ≥ 2 uses subtract-green, one predictor and LZ77; effort ≥ 3 adds cross-colour | `cwebp -lossless` is still smaller on the gradient fixture; see Save |
 | Lossy save | stub VP8 accepted by `dwebp`; `make webp-rd` vs `cwebp -q 75 -m 0` | not competitive; quality bar not armed |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
@@ -169,8 +171,9 @@ yet fail on worse PSNR or size.
 - Committed fixture PAMs vs unit tests for lossless/lossy/ALPH/anim.
 - Lossless save: round-trip identity through this decoder; outside acceptance
   by `dwebp`, Pillow and ImageMagick; size vs `cwebp -lossless -exact` on
-  `lossless_gradient` published on the Save section (176 vs 60 bytes at
-  effort 4). Effort 4 is smaller than effort 1 on that fixture.
+  `lossless_gradient` published on the Save section (172 vs 60 bytes at
+  effort 4). Effort 4 is smaller than effort 2, which is smaller than
+  effort 1, on that fixture.
 - Lossy stub save: unit tests for decodable round-trip and alpha refusal;
   `make webp-rd` vs `cwebp -q 75 -m 0` on `third_party/webp-rd/`
   (`tools/oracle/fetch.sh webp-rd`).
@@ -186,8 +189,9 @@ yet fail on worse PSNR or size.
 - Competitive lossy encode (mode search, trellis, segments, SNS, multi-pass)
   and lossy ALPH. The stub exists; `make webp-rd` measures it; the quality
   bar is not armed (`notes/image/webp-plan.md` §6).
-- Cross-colour and palette search in the lossless encoder. Subtract-green
-  (effort ≥ 1), one spatial predictor and LZ77 (effort ≥ 2) are implemented.
+- Palette search in the lossless encoder. Subtract-green (effort ≥ 1),
+  one spatial predictor and LZ77 (effort ≥ 2), and cross-colour (effort ≥ 3)
+  are implemented.
 
 ---
 

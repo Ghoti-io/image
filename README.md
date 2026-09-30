@@ -26,8 +26,8 @@ This is what the library implements.
   to be discovered.
 
 Later WebP work (competitive lossy encode, animation encode, lossless
-cross-colour and palette search) follows the format page's "Not implemented"
-list. A page for a format is written with its codec.
+palette search) follows the format page's "Not implemented" list. A page
+for a format is written with its codec.
 
 ## Before you call it
 
