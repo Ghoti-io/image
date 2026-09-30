@@ -25,6 +25,10 @@ valid stream:
 A round trip through our own decoder is not this check. That is how a
 tree libwebp rejects used to pass.
 
+A file with a `<name>.webp.lossy` sidecar is a lossy encode. Fidelity to
+the source and the cwebp size comparison are skipped. Parity with dwebp
+still fails the run.
+
 Usage:  python3 tests/data/webp/verify_webp_output.py [DIR]
         DIR defaults to tests/out/webp.
         GIMG_WEBP_DUMP points at dump_webp_raster (or pass --dump PATH).
@@ -174,13 +178,16 @@ def compare(directory: str, names: list[str]) -> int:
         path = os.path.join(directory, name)
         expected_path = path + ".expected.rgba"
         time_path = path + ".time"
+        lossy = os.path.isfile(path + ".lossy")
         bad = False
-        if not os.path.isfile(expected_path):
-            errors.append("%s: no source sidecar" % name)
-            failed += 1
-            continue
-        with open(expected_path, "rb") as handle:
-            expected = handle.read()
+        expected = b""
+        if not lossy:
+            if not os.path.isfile(expected_path):
+                errors.append("%s: no source sidecar" % name)
+                failed += 1
+                continue
+            with open(expected_path, "rb") as handle:
+                expected = handle.read()
         ours_path = os.path.join(oracle, "%d.0.rgba" % index)
         if not os.path.isfile(ours_path):
             errors.append("%s: our decoder wrote no raster" % name)
@@ -196,27 +203,31 @@ def compare(directory: str, names: list[str]) -> int:
             errors.append("%s: %s" % (name, exc))
             failed += 1
             continue
-        if len(expected) != len(ref):
-            errors.append(
-                "%s: source is %d bytes, dwebp decoded %d"
-                % (name, len(expected), len(ref)))
-            failed += 1
-            continue
-        fidelity = first_diff(ref, expected, width, "source")
-        if fidelity:
-            errors.append("%s: dwebp %s" % (name, fidelity))
-            bad = True
+        if not lossy:
+            if len(expected) != len(ref):
+                errors.append(
+                    "%s: source is %d bytes, dwebp decoded %d"
+                    % (name, len(expected), len(ref)))
+                failed += 1
+                continue
+            fidelity = first_diff(ref, expected, width, "source")
+            if fidelity:
+                errors.append("%s: dwebp %s" % (name, fidelity))
+                bad = True
         parity = first_diff(ours, ref, width, "dwebp")
         if parity:
             errors.append("%s: our decoder %s" % (name, parity))
             bad = True
-        try:
-            cwebp_path = os.path.join(oracle, "%d.cwebp" % index)
-            cwebp_bytes, cwebp_s = cwebp_lossless(path, cwebp_path)
-        except (RuntimeError, OSError) as exc:
-            errors.append("%s: %s" % (name, exc))
-            failed += 1
-            continue
+        cwebp_bytes = None
+        cwebp_s = None
+        if not lossy:
+            try:
+                cwebp_path = os.path.join(oracle, "%d.cwebp" % index)
+                cwebp_bytes, cwebp_s = cwebp_lossless(path, cwebp_path)
+            except (RuntimeError, OSError) as exc:
+                errors.append("%s: %s" % (name, exc))
+                failed += 1
+                continue
         if bad:
             failed += 1
         ours_us = None
@@ -227,10 +238,16 @@ def compare(directory: str, names: list[str]) -> int:
                 ours_us = int(text)
         ours_ms = ("%.3f ms" % (ours_us / 1000.0)) if ours_us is not None \
             else "time not recorded"
-        print(
-            "  %s  %s  %d bytes (cwebp %d)  encode %s (cwebp %.3f ms)"
-            % ("FAIL" if bad else "ok", name, os.path.getsize(path),
-               cwebp_bytes, ours_ms, cwebp_s * 1000.0))
+        if lossy:
+            print(
+                "  %s  %s  %d bytes  decode parity %s"
+                % ("FAIL" if bad else "ok", name, os.path.getsize(path),
+                   "dwebp" if not bad else "differs"))
+        else:
+            print(
+                "  %s  %s  %d bytes (cwebp %d)  encode %s (cwebp %.3f ms)"
+                % ("FAIL" if bad else "ok", name, os.path.getsize(path),
+                   cwebp_bytes, ours_ms, cwebp_s * 1000.0))
     for err in errors:
         print("  %s" % err, file=sys.stderr)
     print("%d ok, %d failed (%d files)" % (

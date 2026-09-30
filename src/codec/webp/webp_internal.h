@@ -240,9 +240,11 @@ GIMG_Result gimg_webp_alpha_decode(const unsigned char * data, size_t size,
 /**
  * @brief Decode a VP8 keyframe bitstream payload to an owned RGBA8 raster.
  *
- * Not implemented. Returns @c GIMG_ERR_UNSUPPORTED. Lossy files are checked
- * with `dwebp` in the pinned oracle image, which this library does not
- * contain.
+ * Keyframes with no segmentation, a loop-filter level of 0, and one
+ * coefficient partition are decoded, for every intra mode in RFC 6386
+ * sections 11 and 12. Anything else returns @c GIMG_ERR_UNSUPPORTED.
+ * Reconstruction follows that RFC. Lossy files outside the subset are
+ * still checked with `dwebp` in the pinned oracle image.
  *
  * @param data  VP8 chunk payload (frame tag at byte 0).
  * @param size  Payload byte count.

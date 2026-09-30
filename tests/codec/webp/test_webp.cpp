@@ -768,14 +768,17 @@ TEST(Webp, SaveLosslessSkewedHistogramRoundTrip) {
 }
 
 TEST(Webp, SaveLossyDecodable) {
-  /* 4x4 opaque RGBA solid. The stub writes a VP8 frame. We do not decode it. */
+  /* 32x16 opaque solid: two macroblocks, so the second is predicted from
+   * the first. Chroma is uniform, so replicating each sample onto its 2x2
+   * matches dwebp. The sidecar tells the oracle to check that parity and
+   * not lossless fidelity to the source. */
   GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_raster_create(4, 4, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+  ASSERT_EQ(gimg_raster_create(32, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
                 nullptr, 0, &raster),
       GIMG_OK);
   uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
   ASSERT_NE(px, nullptr);
-  for (int i = 0; i < 4 * 4; ++i) {
+  for (int i = 0; i < 32 * 16; ++i) {
     px[i * 4 + 0] = 200;
     px[i * 4 + 1] = 100;
     px[i * 4 + 2] = 50;
@@ -810,9 +813,21 @@ TEST(Webp, SaveLossyDecodable) {
   ASSERT_NE(st, nullptr);
   EXPECT_TRUE(st->is_lossy);
   GIMG_Raster * back = nullptr;
-  EXPECT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back),
-      GIMG_ERR_UNSUPPORTED);
-  EXPECT_EQ(back, nullptr);
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back), GIMG_OK);
+  ASSERT_NE(back, nullptr);
+  EXPECT_EQ(gimg_raster_width(back), 32u);
+  EXPECT_EQ(gimg_raster_height(back), 16u);
+  {
+    mkdir(GIMG_TEST_OUT_WEBP, 0755);
+    const std::string path =
+        std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_32x16.webp";
+    std::ofstream out(path, std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(out));
+    out.write(static_cast<const char *>(bytes),
+        static_cast<std::streamsize>(nbytes));
+    std::ofstream mark(path + ".lossy", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(mark));
+  }
 
   gimg_raster_destroy(back);
   gimg_doc_destroy(round);

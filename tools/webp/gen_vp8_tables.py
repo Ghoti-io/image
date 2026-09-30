@@ -70,9 +70,12 @@ BANNER = """\
  *   gimg_vp8_bands                 section 13.3  coeff_bands
  *   gimg_vp8_pcat1 .. pcat6        section 13.2  Pcat1 .. Pcat6
  *   gimg_vp8_dc_qlookup            section 14.1  dc_qlookup
+ *   gimg_vp8_ac_qlookup            section 14.1  ac_qlookup
+ *   gimg_vp8_kf_bmode_prob         section 11.5  kf_bmode_prob
  *
  * Probabilities and the DC lookup are stored as uint8_t. Every value in
- * those tables is in 0..255. coeff_bands is the sixteen entries the RFC
+ * those tables is in 0..255. The AC lookup is uint16_t: section 14.1's
+ * ac_qlookup exceeds 255. coeff_bands is the sixteen entries the RFC
  * declares, and no sentinel past them.
  */
 """
@@ -111,10 +114,30 @@ def load_rfc(path):
 
 
 def parse_initializer(text, decl):
-    """The brace initializer that follows the first occurrence of decl."""
-    at = text.find(decl)
-    if at < 0:
-        die("RFC text has no %r" % decl)
+    """The brace initializer of the first assigned occurrence of decl.
+
+    Section 11.5 declares kf_bmode_prob once and assigns it later. The
+    assigned occurrence is the table. Dimensions may sit between the name
+    and the '='.
+    """
+    at = 0
+    while True:
+        at = text.find(decl, at)
+        if at < 0:
+            die("RFC text has no assigned %r" % decl)
+        i = at + len(decl)
+        assigned = False
+        while i < len(text):
+            c = text[i]
+            if c.isspace() or c in "[]" or c.isdigit() or c in "+-" or \
+                    c.isalpha() or c == "_":
+                i += 1
+                continue
+            assigned = c == "="
+            break
+        if assigned:
+            break
+        at += len(decl)
     brace = text.find("{", at)
     if brace < 0:
         die("RFC text has no initializer after %r" % decl)
@@ -167,13 +190,17 @@ def expect_shape(value, shape, decl):
         expect_shape(item, shape[1:], decl)
 
 
-def expect_bytes(value, decl):
+def expect_range(value, decl, limit):
     if isinstance(value, int):
-        if value < 0 or value > 255:
-            die("%s: value %d does not fit in a byte" % (decl, value))
+        if value < 0 or value > limit:
+            die("%s: value %d exceeds %d" % (decl, value, limit))
         return
     for item in value:
-        expect_bytes(item, decl)
+        expect_range(item, decl, limit)
+
+
+def expect_bytes(value, decl):
+    expect_range(value, decl, 255)
 
 
 def fmt_ints(nums, indent):
@@ -213,15 +240,15 @@ def fmt_value(value, indent):
     return lines
 
 
-def emit_array(name, dims, value, indent_body=2):
+def emit_array(name, dims, value, ctype="uint8_t", indent_body=2):
     dim = "".join("[%s]" % d for d in dims)
-    decl = "static const uint8_t %s%s = {" % (name, dim)
+    decl = "static const %s %s%s = {" % (ctype, name, dim)
     if len(decl) <= 80:
         lines = [decl]
     else:
         # The dimensions are part of the type. Split them so a generated
         # line stays inside the column limit the rest of the library uses.
-        lines = ["static const uint8_t %s" % name]
+        lines = ["static const %s %s" % (ctype, name)]
         chunk = "    "
         for d in dims:
             piece = "[%s]" % d
@@ -253,6 +280,8 @@ def generate(text):
         parse_initializer(text, "const Prob Pcat%d[]" % n) for n in range(1, 7)
     ]
     dc = parse_initializer(text, "static const int dc_qlookup[QINDEX_RANGE]")
+    ac = parse_initializer(text, "static const int ac_qlookup[QINDEX_RANGE]")
+    bmode = parse_initializer(text, "const Prob kf_bmode_prob")
 
     prob_shape = [4, 8, 3, 11]
     expect_shape(update, prob_shape, "coeff_update_probs")
@@ -271,6 +300,10 @@ def generate(text):
             die("Pcat%d: the RFC terminates the row with 0" % n)
     expect_shape(dc, [DC_QLOOKUP_LEN], "dc_qlookup")
     expect_bytes(dc, "dc_qlookup")
+    expect_shape(ac, [DC_QLOOKUP_LEN], "ac_qlookup")
+    expect_range(ac, "ac_qlookup", 65535)
+    expect_shape(bmode, [10, 10, 9], "kf_bmode_prob")
+    expect_bytes(bmode, "kf_bmode_prob")
 
     parts = [
         LICENSE,
@@ -298,6 +331,12 @@ def generate(text):
         parts.append(emit_array("gimg_vp8_pcat%d" % n, [str(len(table))], table))
         parts.append("\n")
     parts.append(emit_array("gimg_vp8_dc_qlookup", [str(DC_QLOOKUP_LEN)], dc))
+    parts.append("\n")
+    parts.append(emit_array(
+        "gimg_vp8_ac_qlookup", [str(DC_QLOOKUP_LEN)], ac, "uint16_t"))
+    parts.append("\n")
+    parts.append(emit_array(
+        "gimg_vp8_kf_bmode_prob", ["10", "10", "9"], bmode))
     parts.append("\n#endif\n")
     return "".join(parts)
 

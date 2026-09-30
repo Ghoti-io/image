@@ -1367,6 +1367,10 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
 		python3 $(CURDIR)/tests/data/webp/verify_webp_output.py $(TEST_OUT_WEBP) && \
 	printf "\033[0;32mWebP encode output verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying VP8 intra prediction against dwebp ###\033[0m\n\n" && \
+	LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
+		python3 $(CURDIR)/tests/data/webp/verify_vp8_intra.py && \
+	printf "\033[0;32mVP8 intra prediction verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying output structure ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 	printf "\033[0;32mOutput structure verification passed.\033[0m\n" && \
@@ -1429,6 +1433,8 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/du
 			python3 $(CURDIR)/tests/data/webp/verify_webp_pixels.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
 			python3 $(CURDIR)/tests/data/webp/verify_webp_output.py $(TEST_OUT_WEBP) && \
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
+			python3 $(CURDIR)/tests/data/webp/verify_vp8_intra.py && \
 		python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 		printf "\033[0;32mPNG, JPEG, BMP, GIF, ICO and WebP output verified, and structurally checked.\033[0m\n"; \
 	else \
@@ -1529,6 +1535,8 @@ test-verify-webp: $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) ## Run WebP struct
 			python3 $(CURDIR)/tests/data/webp/verify_webp_pixels.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
 			python3 $(CURDIR)/tests/data/webp/verify_webp_output.py $(TEST_OUT_WEBP) && \
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
+			python3 $(CURDIR)/tests/data/webp/verify_vp8_intra.py && \
 		printf "\033[0;32mWebP structure, pixel and encode-output verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
