@@ -4,15 +4,14 @@
 # Copyright (C) 2026 Corey Pennycuff
 #
 # This file is part of Ghoti.io Image.
-"""Check VP8 intra prediction against dwebp on filter-off frames.
+"""Check VP8 intra prediction, the loop filter, and segmentation.
 
-cwebp encodes two pictures with the loop filter forced off. One is flat
-blocks, so the 16x16 modes are used. The other is 4x4 noise, so the
-subblock modes are used. Our decoder must match `dwebp -nofancy`. The
-fancy upsampler is not part of this check.
+cwebp encodes flat blocks (16x16 modes) and 4x4 noise (subblock modes),
+with the filter off, with a nonzero filter, and with four segments.
+Our decoder must match `dwebp`, including the 9-3-3-1 chroma upsample.
 
-A frame that comes back unsupported fails the run. Segmentation, a
-nonzero filter, or more than one coefficient partition still do.
+A frame that comes back unsupported fails the run. This script
+builds keyframes only.
 
 Usage:  python3 tests/data/webp/verify_vp8_intra.py
         GIMG_WEBP_DUMP points at dump_webp_raster (or pass --dump PATH).
@@ -126,7 +125,8 @@ def first_diff(got: bytes, want: bytes, width: int) -> str | None:
 
 
 def check_one(dump: str, oracle: str, work: str, name: str, ppm: bytes,
-        quality: str, method: str) -> str | None:
+        quality: str, method: str, filt: str, sharp: str, segments: str,
+        extra: list[str]) -> str | None:
     ppm_path = os.path.join(work, name + ".ppm")
     webp_path = os.path.join(work, name + ".webp")
     pam_path = os.path.join(work, name + ".pam")
@@ -134,9 +134,9 @@ def check_one(dump: str, oracle: str, work: str, name: str, ppm: bytes,
         handle.write(ppm)
     run([
         oracle, "--scratch", work, "libwebp", "--",
-        "cwebp", "-q", quality, "-m", method, "-f", "0", "-sharpness", "0",
-        "-segments", "1", "-sns", "0", "-o", webp_path, ppm_path,
-    ])
+        "cwebp", "-q", quality, "-m", method, "-f", filt, "-sharpness", sharp,
+        "-segments", segments, "-sns", "0" if segments == "1" else "80",
+    ] + extra + ["-o", webp_path, ppm_path])
     proc = subprocess.run(
         [dump, work, webp_path], check=False, capture_output=True, text=True)
     if proc.returncode != 0 or "\tok\t" not in proc.stdout:
@@ -144,7 +144,7 @@ def check_one(dump: str, oracle: str, work: str, name: str, ppm: bytes,
             name, (proc.stderr or proc.stdout).strip())
     run([
         oracle, "--scratch", work, "libwebp", "--",
-        "dwebp", "-nofancy", "-pam", "-o", pam_path, webp_path,
+        "dwebp", "-pam", "-o", pam_path, webp_path,
     ])
     width, ref = pam_rgba(pam_path)
     rgba_path = os.path.join(work, "0.0.rgba")
@@ -166,13 +166,24 @@ def main(argv: list[str]) -> int:
     work = os.path.join(ROOT, "tests", "out", "webp-intra")
     os.makedirs(work, exist_ok=True)
     cases = (
-        ("blocks", blocks_ppm(64, 48), "40", "3"),
-        ("detail", detail_ppm(48, 32), "50", "4"),
+        ("blocks", blocks_ppm(64, 48), "40", "3", "0", "0", "1", []),
+        ("detail", detail_ppm(48, 32), "50", "4", "0", "0", "1", []),
+        ("blocks_f", blocks_ppm(64, 48), "40", "3", "30", "0", "1", []),
+        ("detail_f", detail_ppm(48, 32), "50", "4", "20", "2", "1", []),
+        ("blocks_simple", blocks_ppm(64, 48), "40", "3", "30", "0", "1",
+         ["-nostrong"]),
+        ("blocks_sharp", blocks_ppm(64, 48), "40", "3", "40", "7", "1", []),
+        ("detail_sharp", detail_ppm(48, 32), "40", "4", "60", "5", "1", []),
+        ("detail_hi", detail_ppm(48, 32), "30", "4", "80", "0", "1", []),
+        ("blocks_seg", blocks_ppm(64, 48), "40", "3", "20", "0", "4", []),
+        ("detail_seg", detail_ppm(48, 32), "40", "4", "30", "2", "4", []),
     )
     failed = 0
-    for name, ppm, quality, method in cases:
+    for name, ppm, quality, method, filt, sharp, segments, extra in cases:
         try:
-            err = check_one(dump, oracle, work, name, ppm, quality, method)
+            err = check_one(
+                dump, oracle, work, name, ppm, quality, method, filt, sharp,
+                segments, extra)
         except (RuntimeError, OSError) as exc:
             print("  FAIL  %s  %s" % (name, exc), file=sys.stderr)
             failed += 1
@@ -181,7 +192,7 @@ def main(argv: list[str]) -> int:
             print("  FAIL  %s  %s" % (name, err), file=sys.stderr)
             failed += 1
         else:
-            print("  ok  %s  decode parity dwebp -nofancy" % name)
+            print("  ok  %s  decode parity dwebp" % name)
     print("%d ok, %d failed (%d files)" % (
         len(cases) - failed, failed, len(cases)))
     if failed:

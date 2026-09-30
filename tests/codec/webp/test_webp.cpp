@@ -403,8 +403,9 @@ TEST(Webp, CorruptRefused) {
   EXPECT_EQ(doc, nullptr);
 }
 
-TEST(Webp, DecodeLossyIsUnsupported) {
-  /* The colour bitstream is VP8. This library does not decode it. */
+TEST(Webp, DecodeLossyStill) {
+  /* Colour is a VP8 keyframe with the loop filter on. Pixel identity
+   * against dwebp is verify_webp_pixels.py. */
   static const char * kFiles[] = {
       "simple_lossy.webp", "lossy_grad.webp", "lossy_exif.webp",
       "lossy_alpha.webp", "lossy_grad_alpha.webp",
@@ -417,8 +418,10 @@ TEST(Webp, DecodeLossyIsUnsupported) {
     ASSERT_EQ(load_doc(name, &doc), GIMG_OK);
     GIMG_Raster * raster = nullptr;
     EXPECT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
-        GIMG_ERR_UNSUPPORTED);
-    EXPECT_EQ(raster, nullptr);
+        GIMG_OK);
+    ASSERT_NE(raster, nullptr);
+    EXPECT_GT(gimg_raster_width(raster), 0u);
+    EXPECT_GT(gimg_raster_height(raster), 0u);
     gimg_raster_destroy(raster);
     gimg_doc_destroy(doc);
   }

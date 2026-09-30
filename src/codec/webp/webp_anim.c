@@ -60,7 +60,8 @@ GIMG_Result gimg_webp_parse_anmf_header(const unsigned char * header16,
 
 GIMG_Result gimg_webp_decode_picture(const unsigned char * vp8, size_t vp8_size,
     const unsigned char * vp8l, size_t vp8l_size, const unsigned char * alph,
-    size_t alph_size, const GIMG_Allocator * alloc, GIMG_Raster ** out_raster) {
+    size_t alph_size, const GIMG_Allocator * alloc, gimg_vp8_seq * seq,
+    GIMG_Raster ** out_raster) {
   if (!out_raster) {
     return GIMG_ERR_INTERNAL;
   }
@@ -95,7 +96,9 @@ GIMG_Result gimg_webp_decode_picture(const unsigned char * vp8, size_t vp8_size,
     return GIMG_OK;
   }
   if (vp8 && !vp8l) {
-    GIMG_Result r = gimg_webp_vp8_decode(vp8, vp8_size, alloc, out_raster);
+    GIMG_Result r = seq
+        ? gimg_webp_vp8_decode_frame(vp8, vp8_size, alloc, seq, out_raster)
+        : gimg_webp_vp8_decode(vp8, vp8_size, alloc, out_raster);
     if (r != GIMG_OK) {
       return r;
     }
@@ -233,7 +236,7 @@ static int webp_is_key_frame(const gimg_webp_doc_state_t * st, size_t index,
 }
 
 static GIMG_Result webp_decode_one_frame(const gimg_webp_doc_state_t * st,
-    const gimg_webp_frame_t * fr, GIMG_Raster ** out) {
+    const gimg_webp_frame_t * fr, gimg_vp8_seq * seq, GIMG_Raster ** out) {
   const unsigned char * vp8 = NULL;
   size_t vp8_size = 0;
   const unsigned char * vp8l = NULL;
@@ -261,8 +264,13 @@ static GIMG_Result webp_decode_one_frame(const gimg_webp_doc_state_t * st,
     alph = st->file_bytes + fr->alph_payload_off;
     alph_size = fr->alph_payload_size;
   }
+  if (vp8l && seq) {
+    /* A lossless frame is not a VP8 reference. The next VP8 interframe
+     * has to follow a keyframe again. */
+    gimg_vp8_seq_reset(st->allocator, seq);
+  }
   return gimg_webp_decode_picture(
-      vp8, vp8_size, vp8l, vp8l_size, alph, alph_size, st->allocator, out);
+      vp8, vp8_size, vp8l, vp8l_size, alph, alph_size, st->allocator, seq, out);
 }
 
 GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
@@ -278,9 +286,15 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
   const uint32_t canvas_w = st->canvas_width;
   const uint32_t canvas_h = st->canvas_height;
   GIMG_Raster * canvas = NULL;
+  gimg_vp8_seq * seq = NULL;
   GIMG_Result r = gimg_raster_create_with_allocator(st->allocator, canvas_w,
       canvas_h, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0, &canvas);
   if (r != GIMG_OK) {
+    return r;
+  }
+  r = gimg_vp8_seq_create(st->allocator, &seq);
+  if (r != GIMG_OK) {
+    gimg_raster_destroy(canvas);
     return r;
   }
   uint8_t * canvas_px = (uint8_t *)gimg_raster_pixels(canvas);
@@ -303,12 +317,14 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
     }
     if ((uint64_t)fr->x + fr->width > canvas_w ||
         (uint64_t)fr->y + fr->height > canvas_h) {
+      gimg_vp8_seq_destroy(st->allocator, seq);
       gimg_raster_destroy(canvas);
       return GIMG_ERR_CORRUPT;
     }
     GIMG_Raster * frame_ras = NULL;
-    r = webp_decode_one_frame(st, fr, &frame_ras);
+    r = webp_decode_one_frame(st, fr, seq, &frame_ras);
     if (r != GIMG_OK) {
+      gimg_vp8_seq_destroy(st->allocator, seq);
       gimg_raster_destroy(canvas);
       return r;
     }
@@ -317,6 +333,7 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
     if (gimg_raster_width(frame_ras) != fr->width ||
         gimg_raster_height(frame_ras) != fr->height) {
       gimg_raster_destroy(frame_ras);
+      gimg_vp8_seq_destroy(st->allocator, seq);
       gimg_raster_destroy(canvas);
       return GIMG_ERR_CORRUPT;
     }
@@ -333,6 +350,7 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
     prev_was_key_frame = key;
   }
 
+  gimg_vp8_seq_destroy(st->allocator, seq);
   *out_raster = canvas;
   return GIMG_OK;
 }

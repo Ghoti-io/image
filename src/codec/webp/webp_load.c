@@ -555,11 +555,12 @@ GIMG_Result gimg_webp_decode(GIMG_Codec * codec, const GIMG_Item * item,
   // Still image: VP8L alone, or VP8 with optional ALPH. Not both bitstreams.
   if (vp8lp && !vp8p) {
     return gimg_webp_decode_picture(
-        NULL, 0u, vp8lp, vp8l_size, NULL, 0u, st->allocator, out_raster);
+        NULL, 0u, vp8lp, vp8l_size, NULL, 0u, st->allocator, NULL, out_raster);
   }
   if (vp8p && !vp8lp) {
     return gimg_webp_decode_picture(
-        vp8p, vp8_size, NULL, 0u, alphp, alph_size, st->allocator, out_raster);
+        vp8p, vp8_size, NULL, 0u, alphp, alph_size, st->allocator, NULL,
+        out_raster);
   }
 
   return GIMG_ERR_UNSUPPORTED;

@@ -21,8 +21,9 @@
 /**
  * @file
  *
- * Register the WebP codec. Phases A–F: container, VP8L, ALPH, VP8 keyframes,
- * ANIM/ANMF, VP8L lossless encode. Lossy encode remains refused.
+ * Register the WebP codec: container, VP8L, ALPH, VP8 keyframes and
+ * interframes, ANIM/ANMF, VP8L lossless encode, and a stub VP8 lossy
+ * encode. Animation encode is not implemented.
  */
 
 #include <ghoti.io/image/macros.h>

@@ -240,9 +240,12 @@ GIMG_Result gimg_webp_alpha_decode(const unsigned char * data, size_t size,
 /**
  * @brief Decode a VP8 keyframe bitstream payload to an owned RGBA8 raster.
  *
- * Keyframes with no segmentation, a loop-filter level of 0, and one
- * coefficient partition are decoded, for every intra mode in RFC 6386
- * sections 11 and 12. Anything else returns @c GIMG_ERR_UNSUPPORTED.
+ * Keyframes are decoded for every intra mode in RFC 6386 sections 11
+ * and 12, including the coefficient partitions of section 9.5. Segment
+ * adjustments (sections 9.3 and 10) select the quantizer and the
+ * loop-filter level, and section 15 then filters the frame. An
+ * interframe needs the reference pictures from an earlier keyframe in
+ * the same @c gimg_vp8_seq; alone, it returns @c GIMG_ERR_CORRUPT.
  * Reconstruction follows that RFC. Lossy files outside the subset are
  * still checked with `dwebp` in the pinned oracle image.
  *
@@ -252,6 +255,24 @@ GIMG_Result gimg_webp_alpha_decode(const unsigned char * data, size_t size,
 GIMG_Result gimg_webp_vp8_decode(const unsigned char * data, size_t size,
     const GIMG_Allocator * alloc, GIMG_Raster ** out_raster);
 
+/** Reference pictures and probabilities carried across one VP8 sequence. */
+typedef struct gimg_vp8_seq gimg_vp8_seq;
+
+GIMG_Result gimg_vp8_seq_create(const GIMG_Allocator * alloc,
+    gimg_vp8_seq ** out);
+void gimg_vp8_seq_destroy(const GIMG_Allocator * alloc, gimg_vp8_seq * seq);
+/** Drop reference pictures. The next frame has to be a keyframe. */
+void gimg_vp8_seq_reset(const GIMG_Allocator * alloc, gimg_vp8_seq * seq);
+
+/**
+ * @brief Decode one VP8 frame, updating @a seq.
+ *
+ * A keyframe replaces the sequence dimensions and the three reference
+ * pictures. An interframe reads them. @a seq is not freed.
+ */
+GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
+    const GIMG_Allocator * alloc, gimg_vp8_seq * seq, GIMG_Raster ** out_raster);
+
 /**
  * @brief Decode one still picture (VP8 and/or VP8L, optional ALPH) to RGBA8.
  *
@@ -260,7 +281,8 @@ GIMG_Result gimg_webp_vp8_decode(const unsigned char * data, size_t size,
  */
 GIMG_Result gimg_webp_decode_picture(const unsigned char * vp8, size_t vp8_size,
     const unsigned char * vp8l, size_t vp8l_size, const unsigned char * alph,
-    size_t alph_size, const GIMG_Allocator * alloc, GIMG_Raster ** out_raster);
+    size_t alph_size, const GIMG_Allocator * alloc, gimg_vp8_seq * seq,
+    GIMG_Raster ** out_raster);
 
 /**
  * @brief Parse the 16-byte ANMF header into @a frame geometry and flags.

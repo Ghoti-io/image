@@ -9,11 +9,18 @@
 Pixel gate for outside corpora and the committed fixtures. Lossless stills
 must be byte-identical to `dwebp -pam` after the same EXIF orientation remap
 this library applies in gimg_item_decode; lossless animations must be
-byte-identical frame-for-frame to `anim_dump -pam`. A VP8 bitstream is
-refused here and counted as unsupported, not as a match.
+byte-identical frame-for-frame to `anim_dump -pam`. A VP8 keyframe,
+coefficient partitions and segmentation included, is compared to
+`dwebp -pam`. Chroma uses the 9-3-3-1 upsample. A still interframe
+is corrupt, which `dwebp` also refuses, so both sides skip it. An
+interframe that follows a keyframe is decoded by the animation path
+and is checked in `verify_vp8_inter.py`, not by this corpus. A
+nonzero frame scale is ignored: reconstruction stays at the coded
+size, which is what `dwebp` writes.
 
-dwebp refuses animated files (UNSUPPORTED_FEATURE). Those go through
-anim_dump. Outside trees mix good vectors with intentional bad inputs: a
+dwebp refuses animated files (UNSUPPORTED_FEATURE). Animations go
+through anim_dump. Outside trees mix good vectors with
+intentional bad inputs: a
 file both sides refuse is skipped; a file we refuse and libwebp accepts is
 a failure.
 
@@ -302,6 +309,7 @@ def compare_in_image(
         fail_reason = load_fail.get(fi)
 
         if is_animated(path):
+            tool = "anim_dump"
             try:
                 ref_paths = anim_dump_pams(
                     path, scratch, "f%d_" % fi)
@@ -312,10 +320,10 @@ def compare_in_image(
                     skipped += 1
                     continue
                 if external:
-                    print("  skip %s (anim_dump refuses: %s)" % (shown, exc))
+                    print("  skip %s (%s refuses: %s)" % (shown, tool, exc))
                     skipped += 1
                     continue
-                errors.append("%s: anim_dump failed: %s" % (shown, exc))
+                errors.append("%s: %s failed: %s" % (shown, tool, exc))
                 continue
             if fail_reason:
                 if "unsupported" in fail_reason:
@@ -323,41 +331,41 @@ def compare_in_image(
                     unsupported += 1
                     continue
                 errors.append(
-                    "%s: we %s but anim_dump decoded %d frames"
-                    % (shown, fail_reason, len(ref_paths)))
+                    "%s: we %s but %s decoded %d frames"
+                    % (shown, fail_reason, tool, len(ref_paths)))
                 continue
             if len(ours) != len(ref_paths):
                 errors.append(
-                    "%s: we dumped %d frames, anim_dump wrote %d"
-                    % (shown, len(ours), len(ref_paths)))
+                    "%s: we dumped %d frames, %s wrote %d"
+                    % (shown, len(ours), tool, len(ref_paths)))
                 continue
-            frame_ok = True
+            frame_errors = []
             for ent, ref_pam in zip(ours, ref_paths):
                 try:
                     rw, rh, ref = read_pam_rgba(ref_pam)
                 except ValueError as exc:
-                    errors.append("%s[%d]: %s" % (shown, ent["index"], exc))
-                    frame_ok = False
+                    frame_errors.append(
+                        "%s[%d]: %s" % (shown, ent["index"], exc))
                     break
                 with open(ent["rgba_path"], "rb") as f:
                     want = f.read()
                 if (rw, rh) != (ent["width"], ent["height"]):
-                    errors.append(
-                        "%s[%d]: anim_dump is %dx%d, dump is %dx%d"
-                        % (shown, ent["index"], rw, rh, ent["width"],
+                    frame_errors.append(
+                        "%s[%d]: %s is %dx%d, dump is %dx%d"
+                        % (shown, ent["index"], tool, rw, rh, ent["width"],
                            ent["height"]))
-                    frame_ok = False
                     break
                 problem = compare_rgba(ref, want, rw, rh)
                 if problem:
-                    errors.append(
+                    frame_errors.append(
                         "%s[%d] %dx%d: %s" % (
                             shown, ent["index"], rw, rh, problem))
-                    frame_ok = False
                     break
-            if frame_ok:
+            if not frame_errors:
                 ok += 1
                 print("  ok  %s (%d frames)" % (shown, len(ours)))
+            else:
+                errors.extend(frame_errors)
             continue
 
         # Still image: dwebp.
@@ -416,8 +424,8 @@ def compare_in_image(
         % (ok, unsupported, skipped, len(errors), len(paths)))
     if unsupported:
         print(
-            "VP8 decode is not implemented. Those files were not compared "
-            "to dwebp.")
+            "Those VP8 files use a feature this decoder does not implement. "
+            "They were not compared to dwebp.")
     if errors:
         print("WebP pixel verification FAILED", file=sys.stderr)
         return 1

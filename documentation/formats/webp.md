@@ -20,7 +20,12 @@ fixture PAMs remain the unit-test goldens. Lossless saves are left in
 `tests/out/webp/` and checked by `verify_webp_output.py`: `dwebp -pam`
 must match the source pixels, our decoder must match `dwebp`, and the
 file's size and encode time are printed beside `cwebp -lossless -exact`.
-A VP8 bitstream is refused (`GIMG_ERR_UNSUPPORTED`). Lossy stub saves are
+A VP8 keyframe is decoded, coefficient partitions, segmentation, and
+the loop filter included, and matches `dwebp`. Chroma is upsampled
+with the 9-3-3-1 kernel. A nonzero frame scale is left at the coded
+size. An interframe predicts from the last, golden, and altref
+pictures of the same sequence; a still interframe has no reference and
+is corrupt. Lossy stub saves are
 accepted by `dwebp`; rate/distortion vs `cwebp` is reported by `make
 webp-rd`. The reference is the pinned `libwebp` 1.5.0 image in
 `tools/oracle/containers/IMAGES` (`deb13-8`). This library does not
@@ -32,10 +37,15 @@ contain libwebp's source.
   alongside the Phase A implementation (2026-09-29). Where it is silent,
   libwebp's `webpinfo` behaviour is treated as the practical reference for
   chunk listing.
-- **VP8** (RFC 6386, *VP8 Data Format and Decoding Guide*). Key frames only —
-  WebP still images never use inter prediction. The RFC's embedded reference C
-  and libwebp 1.5.0's C decode paths are the practical specs; this codec ports
-  the latter for byte identity with `dwebp`.
+- **VP8** (RFC 6386, *VP8 Data Format and Decoding Guide*). Keyframes and
+  interframes. A still image's interframe is corrupt: it has no reference
+  picture. An animation keeps the last, golden, and altref pictures across
+  frames. Reconstruction follows that RFC. Keyframe pixels match `dwebp`,
+  coefficient partitions and segmentation included. The 9-3-3-1 chroma
+  upsample is the display step `dwebp` applies; the RFC leaves that
+  conversion unspecified. The container tools refuse an interframe
+  animation, so that path is checked by shifting `dwebp -yuv` of the
+  keyframe.
 - **VP8L** (Google's "WebP Lossless Bitstream Specification"). The prose is
   incomplete in places; **libwebp is the specification** wherever they
   disagree. Decode is required to be byte-identical to `dwebp`.
@@ -64,11 +74,17 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   (uncompressed) and 1 (headerless VP8L), filters none / horizontal /
   vertical / gradient. Level-reduction dithering is not applied — default
   `dwebp` leaves it off, so PAM alpha is the unfiltered plane.
-- **VP8 keyframe decode** to `GIMG_PIXEL_RGBA8`: boolean decoder, segment /
-  filter / quant / probability headers, intra prediction, IDCT/WHT, loop
-  filter, fancy 4:2:0 upsample, and libwebp's fixed-point YUV→RGB. When an
+- **VP8 decode** to `GIMG_PIXEL_RGBA8`: boolean decoder, segment / filter /
+  quant / probability headers, intra prediction, inter prediction, the
+  coefficient partitions of section 9.5, IDCT/WHT, the section 15 loop
+  filter, the 9-3-3-1 chroma upsample, and the fixed-point YUV→RGB
+  conversion `dwebp` uses. A nonzero frame-scale field is ignored and the
+  coded size is emitted. An animation keeps the last, golden, and altref
+  pictures across its frames, so an interframe predicts from earlier frames
+  of that decode. Dispose and blend still follow the ANMF flags. When an
   `ALPH` chunk is present, its plane replaces the opaque alpha channel
-  sample-wise. Inter frames are refused.
+  sample-wise. A still interframe is corrupt. A version above 3 is
+  unsupported.
 - **Animation** (`ANIM` / `ANMF`): one `GIMG_ITEM_FRAME` per ANMF (or a single
   `IMAGE` when there is only one frame), with duration in ms/1000, dispose
   `NONE`/`BACKGROUND`, and blend `SOURCE`/`OVER`. Frame offsets stay in
@@ -137,7 +153,7 @@ yet fail on worse PSNR or size.
 | Metadata | `ICCP`/`EXIF`/`XMP ` on the document | — |
 | VP8L decode | byte-identical to `dwebp -pam` | corrupt bitstream → `GIMG_ERR_CORRUPT` |
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
-| VP8 decode | keyframe → RGBA, optional ALPH merge; byte-identical to `dwebp -pam` | inter frame / corrupt → `GIMG_ERR_CORRUPT` / `UNSUPPORTED` |
+| VP8 decode | keyframe and, in one sequence, interframe → RGBA, optional ALPH merge, 9-3-3-1 chroma; a keyframe matches `dwebp` | a still interframe → `GIMG_ERR_CORRUPT`; version above 3 → `GIMG_ERR_UNSUPPORTED` |
 | Animation | ANMF → `FRAME` items; composite matches `anim_dump -pam` | rectangle past canvas / no bitstream → `GIMG_ERR_CORRUPT`; over `max_frame_count` → `GIMG_ERR_LIMIT` |
 | Encode | VP8L still (default) or stub VP8 lossy of the first item; optional ICCP/EXIF/XMP; lossless round-trip identity | non-8-bit → `GIMG_ERR_UNSUPPORTED`; lossy + non-opaque alpha → `UNSUPPORTED`; animation encode not implemented (first frame only) |
 
@@ -146,10 +162,10 @@ yet fail on worse PSNR or size.
 | Case | This codec | Elsewhere |
 |---|---|---|
 | VP8L / ALPH samples | match `dwebp -pam` | same |
-| VP8 bitstream | `GIMG_ERR_UNSUPPORTED` | `dwebp` decodes it |
+| VP8 bitstream | keyframe and interframe; a keyframe matches `dwebp` | `dwebp` and `anim_dump` refuse an interframe animation |
 | Anim composite | match `anim_dump -pam` | same |
 | Lossless save | round-trip identity; accepted by `dwebp`; effort ≥ 2 uses one predictor and LZ77 when the residual histogram shrinks; effort ≥ 3 adds cross-colour when the file is shorter; effort ≥ 4 keeps a palette when it is smaller; a Huffman image is kept when it is smaller | gradient effort 4 is 48 bytes, `cwebp -lossless -exact` is 60; see Save |
-| Lossy save | stub VP8 accepted by `dwebp`; our decoder refuses it; `make webp-rd` vs `cwebp -q 75 -m 0` | not competitive; quality bar not armed |
+| Lossy save | stub VP8 accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | not competitive; quality bar not armed |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
@@ -180,6 +196,16 @@ yet fail on worse PSNR or size.
   Colour under a fully transparent pixel is not compared (`dwebp` keeps YUV
   residue; `anim_dump` clears it).
 - Committed fixture PAMs vs unit tests for lossless/lossy/ALPH/anim.
+- VP8 keyframe features vs `dwebp` (`verify_vp8_intra.py`): intra modes,
+  the loop filter (including sharpness and the simple filter), and
+  segmentation. Coefficient partitions and the frame-scale file are in
+  the pixel gate, which decodes at the coded size.
+- VP8 interframes (`verify_vp8_inter.py`). A skipped zero-motion frame
+  matches `dwebp` of the keyframe. An integer or fractional motion
+  vector matches that keyframe's YUV shifted with the edge repeated,
+  then the 9-3-3-1 upsample. `cwebp` and `dwebp` run in the oracle
+  image. The animation is written under `tests/out/` because the
+  container tools refuse an interframe payload.
 - Lossless save: round-trip identity through this decoder; outside acceptance
   by `dwebp`, Pillow and ImageMagick; size vs `cwebp -lossless -exact` on
   `lossless_gradient` published on the Save section (48 vs 60 bytes at
