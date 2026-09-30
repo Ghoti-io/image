@@ -17,16 +17,18 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
- * Boolean coder algorithm matches libwebp 1.5.0 bit_writer_utils (BSD-style);
- * coefficient probability tables match RFC 6386 / libwebp defaults.
+ * The boolean coder follows RFC 6386 section 7. The coefficient
+ * probabilities, category probabilities, coefficient bands, and the DC
+ * dequantization table are generated from that RFC; see
+ * webp_vp8_proba.inc.
  */
 
 /**
  * @file
  *
- * Deliberately minimal VP8 keyframe encoder for Phase G. Every macroblock is
- * Intra16 DC with a single quantizer; residuals are Y2/UV DC only. Output is
- * accepted by dwebp and by our decoder. It is not a quality claim.
+ * Deliberately minimal VP8 keyframe encoder. Every macroblock is Intra16
+ * DC with a single quantizer; residuals are Y2/UV DC only. dwebp accepts
+ * the output. It is not a quality claim.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -42,25 +44,11 @@ enum {
   VP8_MAX_DIM = 16383
 };
 
-/* Paragraph 14.1 — same tables as quant_dec.inc. */
-static const uint8_t k_dc_table[128] = {
-  4, 5, 6, 7, 8, 9, 10, 10, 11, 12, 13, 14, 15, 16, 17, 17, 18, 19, 20, 20,
-  21, 21, 22, 22, 23, 23, 24, 25, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
-  36, 37, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 46, 47, 48, 49, 50, 51, 52,
-  53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,
-  72, 73, 74, 75, 76, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89,
-  91, 93, 95, 96, 98, 100, 101, 102, 104, 106, 108, 110, 112, 114, 116, 118,
-  122, 124, 126, 128, 130, 132, 134, 136, 138, 140, 143, 145, 148, 151, 154,
-  157
+/* Pcat3..Pcat6, in the order put_large_value walks. The rows themselves
+ * are generated from RFC 6386 section 13.2. */
+static const uint8_t * const k_cat3456[] = {
+  gimg_vp8_pcat3, gimg_vp8_pcat4, gimg_vp8_pcat5, gimg_vp8_pcat6
 };
-
-static const uint8_t k_cat3[] = { 173, 148, 140, 0 };
-static const uint8_t k_cat4[] = { 176, 155, 140, 135, 0 };
-static const uint8_t k_cat5[] = { 180, 157, 141, 134, 130, 0 };
-static const uint8_t k_cat6[] = {
-  254, 254, 243, 230, 196, 177, 153, 140, 133, 130, 129, 0
-};
-static const uint8_t * const k_cat3456[] = { k_cat3, k_cat4, k_cat5, k_cat6 };
 
 /* effort 0..9 → base_q (higher = coarser). Default effort 4 → mid ladder. */
 static const int k_effort_q[10] = {
@@ -271,15 +259,15 @@ static void put_large_value(bool_writer_t * bw, const uint8_t * p, int v) {
     bw_put_bit(bw, 1, p[3]);
     bw_put_bit(bw, 0, p[6]);
     bw_put_bit(bw, 0, p[7]);
-    bw_put_bit(bw, v - 5, 159);
+    bw_put_bit(bw, v - 5, gimg_vp8_pcat1[0]);
   }
   else if (v >= 7 && v <= 10) {
     int rem = v - 7;
     bw_put_bit(bw, 1, p[3]);
     bw_put_bit(bw, 0, p[6]);
     bw_put_bit(bw, 1, p[7]);
-    bw_put_bit(bw, (rem >> 1) & 1, 165);
-    bw_put_bit(bw, rem & 1, 145);
+    bw_put_bit(bw, (rem >> 1) & 1, gimg_vp8_pcat2[0]);
+    bw_put_bit(bw, rem & 1, gimg_vp8_pcat2[1]);
   }
   else {
     int cat;
@@ -451,8 +439,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     effort = 9;
   }
   base_q = k_effort_q[effort];
-  y2_q = k_dc_table[clip127(base_q)] * 2;
-  uv_q = k_dc_table[clip117(base_q)];
+  y2_q = gimg_vp8_dc_qlookup[clip127(base_q)] * 2;
+  uv_q = gimg_vp8_dc_qlookup[clip117(base_q)];
 
   mb_w = (width + 15u) >> 4;
   mb_h = (height + 15u) >> 4;

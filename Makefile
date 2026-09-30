@@ -417,7 +417,7 @@ TESTFLAGS := `PKG_CONFIG_PATH=$(PKG_CONFIG_LOOKUP_PATH) pkg-config --libs --cfla
 # $(APP_DIR)/$(TARGET), which the ASan targets do not build; making it a
 # dependency there would link a release library as a side effect of asking for
 # an instrumented run, to re-check exactly what `make test` already checked.
-TEST_GATES ?= check-symbols check-aliasing
+TEST_GATES ?= check-symbols check-aliasing check-vp8-tables
 
 
 # Valgrind flags (exclude "still reachable" as it's not a leak)
@@ -1055,7 +1055,7 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 ####################################################################
 
 # General commands
-.PHONY: clean clean-test-out cloc docs docs-pdf examples coverage check-symbols
+.PHONY: clean clean-test-out cloc docs docs-pdf examples coverage check-symbols check-vp8-tables
 .PHONY: fuzz fuzz-clean fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif fuzz-gif-encode fuzz-tiff fuzz-tiff-encode fuzz-ico fuzz-ico-encode
 .PHONY: fuzz-run-png_load fuzz-run-png_encode fuzz-run-jpeg_load fuzz-run-jpeg_encode
 .PHONY: fuzz-run-bmp_load fuzz-run-bmp_encode fuzz-run-gif_load fuzz-run-gif_encode
@@ -1281,6 +1281,36 @@ ifeq ($(OS_NAME), Linux)
 else
 	@printf "check-symbols: skipped (Linux only)\n"
 endif
+
+# The committed include is what the library compiles. This fails when it is
+# not byte-identical to what tools/webp/gen_vp8_tables.py emits from the
+# pinned RFC 6386 text, which is how a hand edit of the numbers is caught.
+check-vp8-tables: ## Fail if the VP8 tables are not what the RFC 6386 generator produces
+	@rfc=$(CURDIR)/third_party/rfc6386/rfc6386.txt; \
+	if [ ! -f "$$rfc" ]; then \
+		printf "\033[0;31m\n### RFC 6386 is not here ###\033[0m\n" >&2; \
+		printf "The VP8 coefficient tables are generated from that text.\n" >&2; \
+		printf "Fetch it with:\n  tools/webp/fetch_rfc6386.sh\n" >&2; \
+		exit 1; \
+	fi; \
+	if ! command -v python3 >/dev/null 2>&1; then \
+		printf "\033[0;31m\n### python3 is required to check the VP8 tables ###\033[0m\n" >&2; \
+		exit 1; \
+	fi; \
+	tmp=$$(mktemp -d) || exit 1; \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	if ! python3 $(CURDIR)/tools/webp/gen_vp8_tables.py --rfc "$$rfc" --out "$$tmp" >"$$tmp/err" 2>&1; then \
+		printf "\033[0;31m\n### The VP8 table generator failed ###\033[0m\n" >&2; \
+		cat "$$tmp/err" >&2; \
+		exit 1; \
+	fi; \
+	if ! diff -u $(CURDIR)/src/codec/webp/webp_vp8_proba.inc "$$tmp/webp_vp8_proba.inc" >"$$tmp/diff" 2>&1; then \
+		printf "\033[0;31m\n### The committed VP8 tables are stale ###\033[0m\n" >&2; \
+		head -40 "$$tmp/diff" >&2; \
+		printf "\nRegenerate with:\n  tools/webp/gen_vp8_tables.py\n" >&2; \
+		exit 1; \
+	fi; \
+	printf "\033[0;32mVP8 tables are byte-identical to the RFC 6386 generator.\033[0m\n"
 
 test: ## Make and run the Unit tests, then verify written output against outside decoders
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION)

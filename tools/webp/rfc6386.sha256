@@ -1,0 +1,4 @@
+# Official text of RFC 6386 (VP8 Data Format and Decoding Guide), fetched from
+# https://www.rfc-editor.org/rfc/rfc6386.txt
+# tools/webp/gen_vp8_tables.py refuses any other bytes.
+c044997ae5e26f74dc28569f8866937412b2783e887c96e0c09372af78be411c
