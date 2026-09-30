@@ -17,11 +17,13 @@ fixtures under `tests/data/webp/` plus outside corpora from
 `tools/oracle/fetch.sh webp-refs`). Pixel identity for those same trees —
 stills vs `dwebp -pam` (with this library's EXIF orientation apply),
 animations vs `anim_dump -pam` — is `verify_webp_pixels.py`. Committed
-fixture PAMs remain the unit-test goldens. Lossless saves round-trip through
-our decoder and are accepted by `dwebp`, Pillow and ImageMagick. Lossy stub
-saves are accepted by `dwebp` and our decoder; rate/distortion vs `cwebp`
-is reported by `make webp-rd`. All from the pinned `libwebp` 1.5.0 reference
-in `tools/oracle/containers/IMAGES` (`deb13-8`).
+fixture PAMs remain the unit-test goldens. Lossless saves are left in
+`tests/out/webp/` and checked by `verify_webp_output.py`: `dwebp -pam`
+must match the source pixels, our decoder must match `dwebp`, and the
+file's size and encode time are printed beside `cwebp -lossless -exact`.
+Lossy stub saves are accepted by `dwebp` and our decoder; rate/distortion
+vs `cwebp` is reported by `make webp-rd`. All from the pinned `libwebp`
+1.5.0 reference in `tools/oracle/containers/IMAGES` (`deb13-8`).
 
 ## Normative references
 

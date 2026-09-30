@@ -193,22 +193,57 @@ static void depths_to_codes(huff_code_t * tree) {
 }
 
 /**
- * Package-merge style depth assignment is heavy; use a Huffman tree with an
- * iterative depth-limit fix (boost rare counts and rebuild).
+ * Huffman lengths limited to @a depth_limit. libwebp rejects a tree that
+ * does not fill every branch, so a leaf that would pass the limit is not
+ * clamped: rare counts are raised until a complete tree fits.
  */
+static int lengths_full(const uint8_t * lengths, int n) {
+  int count[VP8L_MAX_CODE_LENGTH + 1];
+  int nsym = 0;
+  int num_nodes = 1;
+  int num_open = 1;
+  memset(count, 0, sizeof(count));
+  for (int i = 0; i < n; ++i) {
+    if (lengths[i] > VP8L_MAX_CODE_LENGTH) {
+      return 0;
+    }
+    if (lengths[i] > 0) {
+      ++count[lengths[i]];
+      ++nsym;
+    }
+  }
+  if (nsym <= 1) {
+    return 1;
+  }
+  for (int len = 1; len <= VP8L_MAX_CODE_LENGTH; ++len) {
+    if (count[len] > (1 << len)) {
+      return 0;
+    }
+    num_open <<= 1;
+    num_nodes += num_open;
+    num_open -= count[len];
+    if (num_open < 0) {
+      return 0;
+    }
+  }
+  return num_nodes == 2 * nsym - 1;
+}
+
 static int build_lengths(const uint32_t * histo_in, int n, int depth_limit,
     uint8_t * lengths) {
   uint32_t histo[VP8L_MAX_ALPHABET];
   int symbols[VP8L_MAX_ALPHABET];
   int nsym = 0;
 
+  uint32_t floor = 1u;
+  int force_equal = 0;
+
   if (n > VP8L_MAX_ALPHABET) {
     return 0;
   }
-  memcpy(histo, histo_in, (size_t)n * sizeof(uint32_t));
   memset(lengths, 0, (size_t)n);
 
-  for (int attempt = 0; attempt < 6; ++attempt) {
+  for (int attempt = 0; attempt < 40; ++attempt) {
     typedef struct {
       uint32_t count;
       int left;
@@ -225,6 +260,15 @@ static int build_lengths(const uint32_t * histo_in, int n, int depth_limit,
 
     nsym = 0;
     for (int i = 0; i < n; ++i) {
+      if (histo_in[i] == 0u) {
+        histo[i] = 0u;
+      }
+      else if (force_equal) {
+        histo[i] = 1u;
+      }
+      else {
+        histo[i] = histo_in[i] < floor ? floor : histo_in[i];
+      }
       if (histo[i] > 0u) {
         symbols[nsym++] = i;
       }
@@ -323,23 +367,23 @@ static int build_lengths(const uint32_t * histo_in, int n, int depth_limit,
       }
     }
     if (!too_deep) {
-      return 1;
+      return lengths_full(lengths, n);
     }
-    for (int i = 0; i < n; ++i) {
-      if (histo[i] > 0u && histo[i] < 8u) {
-        histo[i] *= 2u;
-      }
+    if (force_equal) {
+      return 0;
+    }
+    /* A count of one against a huge neighbour makes a leaf deeper than
+     * the limit. Raise the floor until the tree fits. Equal counts are
+     * the last step: 280 symbols balance in 9 levels, 19 in 5. */
+    if (floor >= 0x40000000u) {
+      force_equal = 1;
+    }
+    else {
+      floor *= 2u;
     }
   }
 
-  /* Fallback: flat 8-bit codes for used symbols (always valid for <=256). */
-  for (int i = 0; i < n; ++i) {
-    lengths[i] = histo_in[i] > 0u ? 8 : 0;
-  }
-  if (nsym == 1) {
-    lengths[symbols[0]] = 1;
-  }
-  return 1;
+  return 0;
 }
 
 static int count_tokens(const huff_code_t * tree, huff_token_t * tokens,

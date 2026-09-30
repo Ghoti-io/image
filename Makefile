@@ -662,7 +662,7 @@ $(OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 $(OBJ_DIR)/tests/%.o: tests/codec/webp/%.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/webp -Isrc/container -Itests/codec/webp -DGIMG_TEST_DATA_WEBP=\"$(TEST_DATA_WEBP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Isrc/codec/webp -Isrc/container -Itests/codec/webp -DGIMG_TEST_DATA_WEBP=\"$(TEST_DATA_WEBP)\" -DGIMG_TEST_OUT_WEBP=\"$(TEST_OUT_WEBP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 # Test in tests/codec/png/ (object name from basename for link)
 $(OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
@@ -716,6 +716,8 @@ TEST_OUT_BMP := $(IMAGE_ROOT)/tests/out/bmp
 TEST_OUT_GIF := $(IMAGE_ROOT)/tests/out/gif
 TEST_OUT_TIFF := $(IMAGE_ROOT)/tests/out/tiff
 TEST_OUT_ICO := $(IMAGE_ROOT)/tests/out/ico
+# Lossless encode output. verify_webp_output.py asks dwebp and cwebp.
+TEST_OUT_WEBP := $(IMAGE_ROOT)/tests/out/webp
 $(OBJ_DIR)/tests/test_png_decode.o: tests/codec/png/test_png_decode.cpp $(FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object: test_png_decode ###\n"
 	@mkdir -p $(@D)
@@ -1300,7 +1302,7 @@ endif
 
 test: ## Make and run the Unit tests, then verify written output against outside decoders
 test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION)
-	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO)
+	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO) $(TEST_OUT_WEBP)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
 		printf "\033[0;30;43m\n"; \
@@ -1349,6 +1351,10 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
 		python3 $(CURDIR)/tests/data/webp/verify_webp_pixels.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 	printf "\033[0;32mWebP pixel verification passed.\033[0m\n" && \
+	printf "\033[0;30;43m\n### Verifying WebP encode output against dwebp ###\033[0m\n\n" && \
+	LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
+		python3 $(CURDIR)/tests/data/webp/verify_webp_output.py $(TEST_OUT_WEBP) && \
+	printf "\033[0;32mWebP encode output verification passed.\033[0m\n" && \
 	printf "\033[0;30;43m\n### Verifying output structure ###\033[0m\n\n" && \
 	python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 	printf "\033[0;32mOutput structure verification passed.\033[0m\n" && \
@@ -1361,7 +1367,7 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
 test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION)
-	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO)
+	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO) $(TEST_OUT_WEBP)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;36m%-30s %8s %10s %s\033[0m\n" "Test Suite" "Tests" "Time" "Status"; \
 	printf "\033[1;36m%-30s %8s %10s %s\033[0m\n" "------------------------------" "--------" "----------" "------"; \
@@ -1409,6 +1415,8 @@ test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/du
 		python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
 			python3 $(CURDIR)/tests/data/webp/verify_webp_pixels.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
+			python3 $(CURDIR)/tests/data/webp/verify_webp_output.py $(TEST_OUT_WEBP) && \
 		python3 $(CURDIR)/tests/data/verify_structure.py $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) && \
 		printf "\033[0;32mPNG, JPEG, BMP, GIF, ICO and WebP output verified, and structurally checked.\033[0m\n"; \
 	else \
@@ -1501,12 +1509,15 @@ test-verify-ico: $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) ## Run ICO/CUR struc
 		python3 $(CURDIR)/tests/data/ico/verify_ico_output.py $(TEST_OUT_ICO) && \
 		printf "\033[0;32mICO/CUR verification passed.\033[0m\n"
 
-test-verify-webp: $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) ## Run WebP structure and pixel verification against libwebp
+test-verify-webp: $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) ## Run WebP structure, pixel and encode-output verification against libwebp
+	@mkdir -p $(TEST_OUT_WEBP)
 	@$(CURDIR)/tools/oracle/fetch.sh webp-refs && \
 		python3 $(CURDIR)/tests/data/webp/verify_webp_structure.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
 		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
 			python3 $(CURDIR)/tests/data/webp/verify_webp_pixels.py $(TEST_DATA_WEBP) $(TEST_DATA_WEBP_EXT) && \
-		printf "\033[0;32mWebP structure and pixel verification passed.\033[0m\n"
+		LD_LIBRARY_PATH="$(TEST_LD_PATH)" GIMG_WEBP_DUMP=$(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) \
+			python3 $(CURDIR)/tests/data/webp/verify_webp_output.py $(TEST_OUT_WEBP) && \
+		printf "\033[0;32mWebP structure, pixel and encode-output verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
 test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
@@ -1716,7 +1727,7 @@ $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/ico/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_
 $(ASAN_OBJ_DIR)/tests/%.o: tests/codec/webp/%.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@printf "\n### Compiling Test Object (ASan+UBSan): $* ###\n"
 	@mkdir -p $(@D)
-	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/webp -Isrc/container -Itests/codec/webp -DGIMG_TEST_DATA_WEBP=\"$(TEST_DATA_WEBP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
+	$(CXX) $(ASAN_CXXFLAGS) $(INCLUDE) -Isrc/codec/webp -Isrc/container -Itests/codec/webp -DGIMG_TEST_DATA_WEBP=\"$(TEST_DATA_WEBP)\" -DGIMG_TEST_OUT_WEBP=\"$(TEST_OUT_WEBP)\" -c $< -MMD -MP -MF $(@:.o=.d) -o $@
 
 $(ASAN_OBJ_DIR)/tests/test_png_chunk.o: tests/codec/png/test_png_chunk.cpp $(ASAN_FLAGS_STAMP) | $(LIBVER_GEN)
 	@mkdir -p $(@D)

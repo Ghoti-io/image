@@ -4,6 +4,12 @@
  * WebP Phase A–G: load, VP8L/VP8/ALPH decode, ANIM/ANMF composite, VP8L
  * lossless encode, stub VP8 lossy encode.
  *
+ * Each lossless file written here is also left in GIMG_TEST_OUT_WEBP with
+ * the source pixels and the encode time, for
+ * tests/data/webp/verify_webp_output.py. That script asks dwebp whether
+ * the pixels survived, and asks our decoder the same file. A round trip
+ * through this decoder alone does not.
+ *
  * Copyright 2026 by Corey Pennycuff
  */
 
@@ -17,9 +23,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
+
+#include <sys/stat.h>
 
 #include "../../../src/container/doc_internal.h"
 #include "../../../src/core/alloc_internal.h"
@@ -533,14 +544,21 @@ TEST(Webp, AnimDisposeBackground) {
   gimg_doc_destroy(doc);
 }
 
-size_t save_webp(GIMG_Doc * doc, int effort, std::vector<uint8_t> * out) {
+size_t save_webp(GIMG_Doc * doc, int effort, std::vector<uint8_t> * out,
+    int64_t * encode_us = nullptr) {
   GIMG_Stream * stream = nullptr;
   EXPECT_EQ(gimg_stream_create_memory_output(&stream), GIMG_OK);
   GIMG_Save_Options opts = {};
   opts.webp_effort = static_cast<uint8_t>(effort);
   opts.webp_exact = 1;
   GIMG_Save_Report report = {};
+  const auto t0 = std::chrono::steady_clock::now();
   EXPECT_EQ(gimg_doc_save(doc, stream, "webp", &opts, &report), GIMG_OK);
+  const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - t0).count();
+  if (encode_us) {
+    *encode_us = us;
+  }
   const void * bytes = nullptr;
   size_t nbytes = 0;
   gimg_stream_output_buffer(stream, &bytes, &nbytes);
@@ -548,6 +566,38 @@ size_t save_webp(GIMG_Doc * doc, int effort, std::vector<uint8_t> * out) {
       static_cast<const uint8_t *>(bytes) + nbytes);
   gimg_stream_destroy(stream);
   return nbytes;
+}
+
+/** Leave a lossless file, its source pixels, and its encode time. */
+void publish_encoded(const char * name, const std::vector<uint8_t> & bytes,
+    GIMG_Raster * raster, int64_t encode_us) {
+  mkdir(GIMG_TEST_OUT_WEBP, 0755);
+  const std::string path = std::string(GIMG_TEST_OUT_WEBP) + "/" + name;
+  {
+    std::ofstream out(path, std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(out)) << path;
+    out.write(reinterpret_cast<const char *>(bytes.data()),
+        static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(static_cast<bool>(out)) << path;
+  }
+  const uint32_t w = gimg_raster_width(raster);
+  const uint32_t h = gimg_raster_height(raster);
+  const size_t stride = gimg_raster_stride_bytes(raster);
+  const auto * px = static_cast<const uint8_t *>(gimg_raster_pixels(raster));
+  {
+    std::ofstream side(path + ".expected.rgba", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(side)) << path;
+    for (uint32_t y = 0; y < h; ++y) {
+      side.write(reinterpret_cast<const char *>(px + y * stride),
+          static_cast<std::streamsize>(w) * 4);
+    }
+    ASSERT_TRUE(static_cast<bool>(side)) << path;
+  }
+  {
+    std::ofstream side(path + ".time", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(side)) << path;
+    side << encode_us << "\n";
+  }
 }
 
 bool round_trip_matches(const std::vector<uint8_t> & bytes, GIMG_Raster * expect) {
@@ -588,7 +638,11 @@ TEST(Webp, SaveLosslessRoundTrip) {
   opts.webp_effort = 4;
   opts.webp_exact = 1;
   GIMG_Save_Report report = {};
+  const auto t0 = std::chrono::steady_clock::now();
   ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, &report), GIMG_OK);
+  const int64_t encode_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t0).count();
   EXPECT_GT(report.bytes_written, 0u);
 
   const void * bytes = nullptr;
@@ -596,6 +650,10 @@ TEST(Webp, SaveLosslessRoundTrip) {
   gimg_stream_output_buffer(out, &bytes, &nbytes);
   ASSERT_NE(bytes, nullptr);
   ASSERT_GT(nbytes, 0u);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + nbytes);
+  publish_encoded("simple_lossless_e4.webp", saved,
+      gimg_item_raster(gimg_doc_item(doc, 0)), encode_us);
 
   GIMG_Stream * in = nullptr;
   ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
@@ -636,9 +694,15 @@ TEST(Webp, SaveLosslessEffortShrinksGradient) {
   std::vector<uint8_t> literals;
   std::vector<uint8_t> predicted;
   std::vector<uint8_t> crossed;
-  const size_t n_lit = save_webp(doc, 1, &literals);
-  const size_t n_pred = save_webp(doc, 2, &predicted);
-  const size_t n_cross = save_webp(doc, 4, &crossed);
+  int64_t us_lit = 0;
+  int64_t us_pred = 0;
+  int64_t us_cross = 0;
+  const size_t n_lit = save_webp(doc, 1, &literals, &us_lit);
+  const size_t n_pred = save_webp(doc, 2, &predicted, &us_pred);
+  const size_t n_cross = save_webp(doc, 4, &crossed, &us_cross);
+  publish_encoded("gradient_e1.webp", literals, raster, us_lit);
+  publish_encoded("gradient_e2.webp", predicted, raster, us_pred);
+  publish_encoded("gradient_e4.webp", crossed, raster, us_cross);
   /* One Huffman group on the literals was 2160 bytes. Predictor selection
    * by residual histogram cost lands effort 2 under cwebp's 60-byte file.
    * No cross-colour grid shortens that file, so effort 4 stays with it. */
@@ -683,8 +747,12 @@ TEST(Webp, SaveLosslessPaletteShrinksChecker) {
   GIMG_Raster * raster = gimg_item_raster(gimg_doc_item(doc, 0));
   std::vector<uint8_t> plain;
   std::vector<uint8_t> pal;
-  const size_t n_plain = save_webp(doc, 3, &plain);
-  const size_t n_pal = save_webp(doc, 4, &pal);
+  int64_t us_plain = 0;
+  int64_t us_pal = 0;
+  const size_t n_plain = save_webp(doc, 3, &plain, &us_plain);
+  const size_t n_pal = save_webp(doc, 4, &pal, &us_pal);
+  publish_encoded("palette_plain_e3.webp", plain, raster, us_plain);
+  publish_encoded("palette_checker_e4.webp", pal, raster, us_pal);
   EXPECT_LT(n_pal, n_plain);
   EXPECT_TRUE(round_trip_matches(pal, raster));
   gimg_doc_destroy(doc);
@@ -692,7 +760,10 @@ TEST(Webp, SaveLosslessPaletteShrinksChecker) {
   GIMG_Doc * wide = doc_with_colors(15, 7, 6);
   ASSERT_NE(wide, nullptr);
   std::vector<uint8_t> six;
-  ASSERT_GT(save_webp(wide, 4, &six), 0u);
+  int64_t us_six = 0;
+  ASSERT_GT(save_webp(wide, 4, &six, &us_six), 0u);
+  publish_encoded("palette_six_e4.webp", six,
+      gimg_item_raster(gimg_doc_item(wide, 0)), us_six);
   EXPECT_TRUE(round_trip_matches(six, gimg_item_raster(gimg_doc_item(wide, 0))));
   gimg_doc_destroy(wide);
 }
@@ -718,7 +789,40 @@ TEST(Webp, SaveLosslessRepeatedRowRoundTrip) {
   ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
   gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
   std::vector<uint8_t> bytes;
-  ASSERT_GT(save_webp(doc, 4, &bytes), 0u);
+  int64_t encode_us = 0;
+  ASSERT_GT(save_webp(doc, 4, &bytes, &encode_us), 0u);
+  publish_encoded("repeated_row_e4.webp", bytes,
+      gimg_item_raster(gimg_doc_item(doc, 0)), encode_us);
+  EXPECT_TRUE(round_trip_matches(bytes, gimg_item_raster(gimg_doc_item(doc, 0))));
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveLosslessSkewedHistogramRoundTrip) {
+  /* One dominant green and 200 singletons. The Huffman tree for that
+   * histogram is deeper than 15. A flat code over fewer than 256 symbols
+   * does not fill every branch, and the decoder rejects it. */
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(32, 32, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &raster),
+      GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  ASSERT_NE(px, nullptr);
+  for (int i = 0; i < 32 * 32; ++i) {
+    uint8_t * p = px + i * 4;
+    p[0] = 10;
+    p[1] = (i < 200) ? static_cast<uint8_t>(i) : 0;
+    p[2] = 20;
+    p[3] = 255;
+  }
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  std::vector<uint8_t> bytes;
+  int64_t encode_us = 0;
+  ASSERT_GT(save_webp(doc, 0, &bytes, &encode_us), 0u);
+  publish_encoded("skewed_e0.webp", bytes,
+      gimg_item_raster(gimg_doc_item(doc, 0)), encode_us);
   EXPECT_TRUE(round_trip_matches(bytes, gimg_item_raster(gimg_doc_item(doc, 0))));
   gimg_doc_destroy(doc);
 }

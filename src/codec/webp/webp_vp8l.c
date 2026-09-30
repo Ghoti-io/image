@@ -256,13 +256,26 @@ static int huff_build(vp8l_huff_t * h, const int * code_lengths,
   {
     uint32_t key = 0;
     int sym_i = 0;
+    int num_nodes = 1;
+    int num_open = 1;
     for (len = 1; len <= VP8L_MAX_CODE_LENGTH; ++len) {
-      for (; count[len] > 0; --count[len]) {
+      const int nlen = count[len];
+      num_open <<= 1;
+      num_nodes += num_open;
+      num_open -= nlen;
+      if (num_open < 0) {
+        return 0;
+      }
+      for (int k = 0; k < nlen; ++k) {
         if (!huff_insert(h, key, len, sorted[sym_i++])) {
           return 0;
         }
         key = get_next_key(key, len);
       }
+    }
+    /* libwebp rejects a tree that leaves a branch empty. */
+    if (num_nodes != 2 * num_symbols - 1) {
+      return 0;
     }
   }
   return 1;
