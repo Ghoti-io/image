@@ -13,7 +13,10 @@ zero-motion macroblock must reproduce `dwebp` of the keyframe. An
 integer-pel motion vector must match the same YUV shifted with the
 edge repeated, then this library's 9-3-3-1 upsample and BT.601
 conversion. A fractional vector checks the section 18.3 taps the same
-way.
+way, bicubic for version 0 and bilinear for version 1. Version 3
+keeps the integer sample. A split partition, a golden or altref
+selection, a sign-bias flip, and a simple loop-filter edge are
+checked the same way.
 
 Usage:  python3 tests/data/webp/verify_vp8_inter.py
         GIMG_WEBP_DUMP points at dump_webp_raster (or pass --dump PATH).
@@ -29,27 +32,20 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 
-# Bool-coder renormalization, the same tables the library encoder uses
-# so a partition written here is one the RFC reader accepts.
-K_NORM = [
-    7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 0,
-]
-K_NEW_RANGE = [
-    127, 127, 191, 127, 159, 191, 223, 127, 143, 159, 175, 191, 207, 223, 239,
-    127, 135, 143, 151, 159, 167, 175, 183, 191, 199, 207, 215, 223, 231, 239,
-    247, 127, 131, 135, 139, 143, 147, 151, 155, 159, 163, 167, 171, 175, 179,
-    183, 187, 191, 195, 199, 203, 207, 211, 215, 219, 223, 227, 231, 235, 239,
-    243, 247, 251, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149,
-    151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179,
-    181, 183, 185, 187, 189, 191, 193, 195, 197, 199, 201, 203, 205, 207, 209,
-    211, 213, 215, 217, 219, 221, 223, 225, 227, 229, 231, 233, 235, 237, 239,
-    241, 243, 245, 247, 249, 251, 253, 127,
-]
+def renorm(range_value: int) -> tuple[int, int]:
+    """Encoder range is one less than the RFC 6386 section 7 range.
+
+    Shift the span (range + 1) until it is at least 128. The new range
+    is that span minus one. This is the same step the library encoder
+    uses, so a partition written here is one the RFC reader accepts.
+    """
+    span = range_value + 1
+    shift = 0
+    while span < 128:
+        span <<= 1
+        shift += 1
+    return span - 1, shift
+
 
 def s32(value: int) -> int:
     """int32 wrap, matching the library bool writer's value register."""
@@ -136,8 +132,7 @@ class BoolWriter:
         else:
             self.range = split
         if self.range < 127:
-            shift = K_NORM[self.range]
-            self.range = K_NEW_RANGE[self.range]
+            self.range, shift = renorm(self.range)
             self.value = s32(self.value << shift)
             self.nb_bits += shift
             if self.nb_bits > 0:
@@ -151,9 +146,9 @@ class BoolWriter:
         else:
             self.range = split
         if self.range < 127:
-            self.range = K_NEW_RANGE[self.range]
-            self.value = s32(self.value << 1)
-            self.nb_bits += 1
+            self.range, shift = renorm(self.range)
+            self.value = s32(self.value << shift)
+            self.nb_bits += shift
             if self.nb_bits > 0:
                 self._flush()
 
@@ -236,28 +231,36 @@ def coeff_update_probs() -> list[int]:
     raise RuntimeError("update-prob table has %d entries" % len(nums))
 
 
-def inter_payload(mb_count: int, row_q: int, col_q: int) -> bytes:
-    """One-partition interframe. Every macroblock is skipped.
+def finish_inter(bw: BoolWriter, version: int) -> bytes:
+    part0 = bw.finish()
+    tag = 0x11 | ((version & 7) << 1) | (len(part0) << 5)
+    header = bytes((tag & 0xff, (tag >> 8) & 0xff, (tag >> 16) & 0xff))
+    return header + part0 + b"\x00\x00"
 
-    row_q and col_q are quarter-pel luma displacements. Both zero
-    selects the zero-motion mode. Anything else is a new vector.
-    """
-    bw = BoolWriter()
+
+def write_inter_header(bw: BoolWriter, filter_type: int = 0,
+        filter_level: int = 0, sharpness: int = 0, refresh_gf: int = 1,
+        refresh_arf: int = 1, refresh_last: int = 1, bias_gf: int = 0,
+        bias_arf: int = 0) -> None:
     bw.uniform(0)  # segmentation off
-    bw.literal(0, 1)  # filter type
-    bw.literal(0, 6)  # filter level
-    bw.literal(0, 3)  # sharpness
+    bw.literal(filter_type, 1)
+    bw.literal(filter_level, 6)
+    bw.literal(sharpness, 3)
     bw.uniform(0)  # no loop-filter deltas
     bw.literal(0, 2)  # one coefficient partition
     bw.literal(0, 7)  # quantizer index; skip ignores it
     for _ in range(5):
-        bw.uniform(0)  # quantizer deltas absent
-    bw.uniform(1)  # refresh golden
-    bw.uniform(1)  # refresh altref
-    bw.uniform(0)  # golden sign bias
-    bw.uniform(0)  # altref sign bias
+        bw.uniform(0)
+    bw.uniform(refresh_gf)
+    bw.uniform(refresh_arf)
+    if not refresh_gf:
+        bw.literal(0, 2)  # copy nothing onto golden
+    if not refresh_arf:
+        bw.literal(0, 2)
+    bw.uniform(bias_gf)
+    bw.uniform(bias_arf)
     bw.uniform(1)  # keep token probabilities
-    bw.uniform(1)  # refresh last
+    bw.uniform(refresh_last)
     for prob in coeff_update_probs():
         bw.put(0, prob)
     bw.uniform(1)  # skip enabled
@@ -270,28 +273,108 @@ def inter_payload(mb_count: int, row_q: int, col_q: int) -> bytes:
     for row in MV_UPDATE:
         for prob in row:
             bw.put(0, prob)
+
+
+def write_skip_inter(bw: BoolWriter, ref: str) -> None:
+    bw.uniform(1)  # skip coefficients
+    bw.uniform(1)  # inter
+    if ref == "last":
+        bw.uniform(0)
+    elif ref == "golden":
+        bw.uniform(1)
+        bw.uniform(0)
+    elif ref == "alt":
+        bw.uniform(1)
+        bw.uniform(1)
+    else:
+        raise ValueError(ref)
+
+
+def write_zero_mode(bw: BoolWriter, cnt0: int) -> None:
+    bw.put(0, MODE_CTX[cnt0][0])
+
+
+def write_new_mode(bw: BoolWriter, cnt0: int, row_q: int, col_q: int) -> None:
+    bw.put(1, MODE_CTX[cnt0][0])
+    bw.put(1, MODE_CTX[0][1])
+    bw.put(1, MODE_CTX[0][2])
+    bw.put(0, MODE_CTX[0][3])
+    write_component(bw, row_q, MV_DEFAULT[0])
+    write_component(bw, col_q, MV_DEFAULT[1])
+
+
+def inter_payload(mb_count: int, row_q: int, col_q: int, version: int = 0,
+        filter_type: int = 0, filter_level: int = 0) -> bytes:
+    """One-partition interframe. Every macroblock is skipped.
+
+    row_q and col_q are quarter-pel luma displacements. Both zero
+    selects the zero-motion mode. Anything else is a new vector.
+    The census of an all-zero neighborhood, including the border, is
+    five.
+    """
+    bw = BoolWriter()
+    write_inter_header(
+        bw, filter_type=filter_type, filter_level=filter_level)
     zero = row_q == 0 and col_q == 0
-    # Every neighbor of a zero-motion inter macroblock, including the
-    # border, is a zero vector, so the census is five and the zero-mode
-    # branch probability is mode context [5][0].
-    zero_prob = MODE_CTX[5][0]
     for _ in range(mb_count):
-        bw.uniform(1)  # skip coefficients
-        bw.uniform(1)  # inter
-        bw.uniform(0)  # last frame
+        write_skip_inter(bw, "last")
         if zero:
-            bw.put(0, zero_prob)
+            write_zero_mode(bw, 5)
         else:
-            bw.put(1, MODE_CTX[5][0])
-            bw.put(1, MODE_CTX[0][1])
-            bw.put(1, MODE_CTX[0][2])
-            bw.put(0, MODE_CTX[0][3])  # new, not split
-            write_component(bw, row_q, MV_DEFAULT[0])
-            write_component(bw, col_q, MV_DEFAULT[1])
-    part0 = bw.finish()
-    tag = 0x11 | (len(part0) << 5)  # inter, version 0, show
-    header = bytes((tag & 0xff, (tag >> 8) & 0xff, (tag >> 16) & 0xff))
-    return header + part0 + b"\x00\x00"
+            write_new_mode(bw, 5, row_q, col_q)
+    return finish_inter(bw, version)
+
+
+def split_top_payload() -> bytes:
+    """One macroblock, split top/bottom. Top is a new vector, bottom is zero."""
+    bw = BoolWriter()
+    write_inter_header(bw)
+    write_skip_inter(bw, "last")
+    bw.put(1, MODE_CTX[5][0])
+    bw.put(1, MODE_CTX[0][1])
+    bw.put(1, MODE_CTX[0][2])
+    bw.put(1, MODE_CTX[0][3])  # split
+    bw.put(1, 110)
+    bw.put(1, 111)
+    bw.put(0, 150)  # top_bottom
+    bw.put(1, 208)
+    bw.put(1, 1)
+    bw.put(1, 1)  # new 4x4; both neighbors are outside the frame
+    write_component(bw, 0, MV_DEFAULT[0])
+    write_component(bw, 8, MV_DEFAULT[1])
+    bw.put(1, 106)
+    bw.put(1, 145)
+    bw.put(0, 1)  # zero 4x4; left is zero, above is the new vector
+    return finish_inter(bw, 0)
+
+
+def sign_bias_payload() -> bytes:
+    """Two macroblocks. The right one takes the left vector, negated.
+
+    Golden's sign bias differs from last, so the left macroblock's
+    vector flips when it is the right macroblock's nearest neighbor.
+    """
+    bw = BoolWriter()
+    write_inter_header(bw, bias_gf=1)
+    write_skip_inter(bw, "last")
+    write_new_mode(bw, 5, 0, 8)
+    write_skip_inter(bw, "golden")
+    bw.put(1, MODE_CTX[3][0])
+    bw.put(0, MODE_CTX[2][1])  # nearest
+    return finish_inter(bw, 0)
+
+
+def preserve_refs_payloads(ref: str) -> tuple[bytes, bytes]:
+    """Move, leave golden and altref on the keyframe, then copy one back."""
+    moved = BoolWriter()
+    write_inter_header(moved, refresh_gf=0, refresh_arf=0, refresh_last=1)
+    write_skip_inter(moved, "last")
+    write_new_mode(moved, 5, 0, 8)
+    copied = BoolWriter()
+    write_inter_header(copied)
+    write_skip_inter(copied, ref)
+    write_zero_mode(copied, 5)
+    return finish_inter(moved, 0), finish_inter(copied, 0)
 
 
 def chunk(tag: bytes, payload: bytes) -> bytes:
@@ -329,12 +412,12 @@ def anmf(width: int, height: int, payload: bytes) -> bytes:
     return chunk(b"ANMF", body)
 
 
-def animated(width: int, height: int, key: bytes, inter: bytes) -> bytes:
+def animated(width: int, height: int, payloads: list[bytes]) -> bytes:
     vp8x = bytes((0x02, 0, 0, 0)) + (width - 1).to_bytes(3, "little") + (
         height - 1).to_bytes(3, "little")
     anim = b"\x00\x00\x00\x00\x00\x00"
-    body = b"WEBP" + chunk(b"VP8X", vp8x) + chunk(b"ANIM", anim) + anmf(
-        width, height, key) + anmf(width, height, inter)
+    frames = b"".join(anmf(width, height, payload) for payload in payloads)
+    body = b"WEBP" + chunk(b"VP8X", vp8x) + chunk(b"ANIM", anim) + frames
     return b"RIFF" + len(body).to_bytes(4, "little") + body
 
 
@@ -374,7 +457,10 @@ def interp_at(fil: list[int], plane: bytes, stride: int, w: int, h: int,
 
 
 def predict_plane(src: bytes, w: int, h: int, mv_r: int, mv_c: int,
-        bicubic: bool) -> bytes:
+        bicubic: bool, fullpel: bool = False) -> bytes:
+    if fullpel:
+        mv_r &= ~7
+        mv_c &= ~7
     full_r = shr(mv_r, 3)
     full_c = shr(mv_c, 3)
     vfrac = mv_r - (full_r << 3)
@@ -450,29 +536,94 @@ def yuv_rgba(y: int, u: int, v: int) -> bytes:
     return bytes((r, g, b, 255))
 
 
-def expected_shift(yuv: bytes, width: int, height: int, row_q: int,
-        col_q: int) -> bytes:
+def planes_of(yuv: bytes, width: int, height: int) -> tuple[bytes, bytes, bytes, int, int]:
     cw = (width + 1) // 2
     ch = (height + 1) // 2
     y_n = width * height
     c_n = cw * ch
-    y_plane = yuv[:y_n]
-    u_plane = yuv[y_n:y_n + c_n]
-    v_plane = yuv[y_n + c_n:y_n + 2 * c_n]
-    mv_r = row_q * 2
-    mv_c = col_q * 2
-    pred_y = predict_plane(y_plane, width, height, mv_r, mv_c, True)
-    cr = chroma_avg(mv_r)
-    cc = chroma_avg(mv_c)
-    pred_u = predict_plane(u_plane, cw, ch, cr, cc, True)
-    pred_v = predict_plane(v_plane, cw, ch, cr, cc, True)
+    return yuv[:y_n], yuv[y_n:y_n + c_n], yuv[y_n + c_n:y_n + 2 * c_n], cw, ch
+
+
+def rgba_of(y_plane: bytes, u_plane: bytes, v_plane: bytes, width: int,
+        height: int, cw: int, ch: int) -> bytes:
     out = bytearray()
     for y in range(height):
         for x in range(width):
-            uu = fancy(pred_u, cw, ch, x, y)
-            vv = fancy(pred_v, cw, ch, x, y)
-            out += yuv_rgba(pred_y[y * width + x], uu, vv)
+            out += yuv_rgba(
+                y_plane[y * width + x], fancy(u_plane, cw, ch, x, y),
+                fancy(v_plane, cw, ch, x, y))
     return bytes(out)
+
+
+def stitch_rows(top: bytes, bottom: bytes, width: int, split: int) -> bytes:
+    return top[:split * width] + bottom[split * width:]
+
+
+def stitch_cols(left: bytes, right: bytes, width: int, split: int,
+        height: int) -> bytes:
+    out = bytearray()
+    for y in range(height):
+        row = y * width
+        out += left[row:row + split]
+        out += right[row + split:row + width]
+    return bytes(out)
+
+
+def expected_shift(yuv: bytes, width: int, height: int, row_q: int,
+        col_q: int, bicubic: bool = True, fullpel: bool = False) -> bytes:
+    y_plane, u_plane, v_plane, cw, ch = planes_of(yuv, width, height)
+    mv_r = row_q * 2
+    mv_c = col_q * 2
+    pred_y = predict_plane(
+        y_plane, width, height, mv_r, mv_c, bicubic, fullpel)
+    cr = chroma_avg(mv_r)
+    cc = chroma_avg(mv_c)
+    if fullpel:
+        cr &= ~7
+        cc &= ~7
+    pred_u = predict_plane(u_plane, cw, ch, cr, cc, bicubic, fullpel)
+    pred_v = predict_plane(v_plane, cw, ch, cr, cc, bicubic, fullpel)
+    return rgba_of(pred_y, pred_u, pred_v, width, height, cw, ch)
+
+
+def clamp_signed(value: int) -> int:
+    if value < -128:
+        return -128
+    if value > 127:
+        return 127
+    return value
+
+
+def simple_vertical(plane: bytes, width: int, height: int, edge_x: int,
+        limit: int) -> bytes:
+    """Section 15.3 simple filter on one vertical luma edge."""
+    out = bytearray(plane)
+    for y in range(height):
+        base = y * width + edge_x
+        p1 = out[base - 2]
+        p0 = out[base - 1]
+        q0 = out[base]
+        q1 = out[base + 1]
+        if (abs(p0 - q0) * 2 + abs(p1 - q1) // 2) > limit:
+            continue
+        sp0 = p0 - 128
+        sq0 = q0 - 128
+        outer = clamp_signed((p1 - 128) - (q1 - 128))
+        a = clamp_signed(outer + 3 * (sq0 - sp0))
+        b = shr(clamp_signed(a + 3), 3)
+        a = shr(clamp_signed(a + 4), 3)
+        out[base - 1] = (clamp_signed(sp0 + b) + 128) & 255
+        out[base] = (clamp_signed(sq0 - a) + 128) & 255
+    return bytes(out)
+
+
+def expected_simple_edge(yuv: bytes, width: int, height: int, edge_x: int,
+        level: int) -> bytes:
+    y_plane, u_plane, v_plane, cw, ch = planes_of(yuv, width, height)
+    interior = level
+    limit = ((level + 2) * 2) + interior
+    y_plane = simple_vertical(y_plane, width, height, edge_x, limit)
+    return rgba_of(y_plane, u_plane, v_plane, width, height, cw, ch)
 
 
 def read_i420(path: str, width: int, height: int) -> bytes:
@@ -558,13 +709,10 @@ def blocks_ppm(width: int, height: int) -> bytes:
     return b"P6\n%d %d\n255\n" % (width, height) + b"".join(rows)
 
 
-def check_case(dump: str, oracle: str, work: str, name: str, width: int,
-        height: int, row_q: int, col_q: int) -> str | None:
+def encode_key(oracle: str, work: str, name: str, width: int,
+        height: int) -> tuple[bytes, str]:
     ppm_path = os.path.join(work, name + ".ppm")
     key_path = os.path.join(work, name + "_key.webp")
-    yuv_path = os.path.join(work, name + ".yuv")
-    pam_path = os.path.join(work, name + ".pam")
-    anim_path = os.path.join(work, name + "_anim.webp")
     with open(ppm_path, "wb") as handle:
         handle.write(blocks_ppm(width, height))
     run([
@@ -575,42 +723,166 @@ def check_case(dump: str, oracle: str, work: str, name: str, width: int,
     key = vp8_payload(open(key_path, "rb").read())
     coded_w, coded_h = vp8_size(key)
     if (coded_w, coded_h) != (width, height):
-        return "%s: cwebp coded %dx%d" % (name, coded_w, coded_h)
-    mb_count = ((width + 15) // 16) * ((height + 15) // 16)
-    inter = inter_payload(mb_count, row_q, col_q)
+        raise RuntimeError(
+            "%s: cwebp coded %dx%d" % (name, coded_w, coded_h))
+    return key, key_path
+
+
+def decode_frames(dump: str, work: str, name: str, anim: bytes,
+        nframes: int) -> list[bytes]:
+    anim_path = os.path.join(work, name + "_anim.webp")
     with open(anim_path, "wb") as handle:
-        handle.write(animated(width, height, key, inter))
+        handle.write(anim)
     proc = subprocess.run(
         [dump, work, anim_path], check=False, capture_output=True, text=True)
-    if proc.returncode != 0 or proc.stdout.count("\tok\t") < 2:
-        return "%s: our decoder refused it: %s" % (
-            name, (proc.stderr or proc.stdout).strip())
+    if proc.returncode != 0 or proc.stdout.count("\tok\t") < nframes:
+        raise RuntimeError(
+            "%s: our decoder refused it: %s"
+            % (name, (proc.stderr or proc.stdout).strip()))
+    frames = []
+    for index in range(nframes):
+        with open(os.path.join(work, "0.%d.rgba" % index), "rb") as handle:
+            frames.append(handle.read())
+    return frames
+
+
+def key_pam(oracle: str, work: str, name: str, key_path: str) -> bytes:
+    pam_path = os.path.join(work, name + ".pam")
     run([
         oracle, "--scratch", work, "libwebp", "--",
         "dwebp", "-pam", "-o", pam_path, key_path,
     ])
     _, _, ref = pam_rgba(pam_path)
-    with open(os.path.join(work, "0.0.rgba"), "rb") as handle:
-        got0 = handle.read()
-    err = first_diff(got0, ref, width)
-    if err:
-        return "%s frame 0: %s" % (name, err)
-    with open(os.path.join(work, "0.1.rgba"), "rb") as handle:
-        got1 = handle.read()
-    if row_q == 0 and col_q == 0:
-        err = first_diff(got1, ref, width)
-        if err:
-            return "%s zero motion: %s" % (name, err)
-        return None
+    return ref
+
+
+def key_yuv(oracle: str, work: str, name: str, key_path: str, width: int,
+        height: int) -> bytes:
+    yuv_path = os.path.join(work, name + ".yuv")
     run([
         oracle, "--scratch", work, "libwebp", "--",
         "dwebp", "-yuv", "-o", yuv_path, key_path,
     ])
-    yuv = read_i420(yuv_path, width, height)
-    want = expected_shift(yuv, width, height, row_q, col_q)
-    err = first_diff(got1, want, width)
+    return read_i420(yuv_path, width, height)
+
+
+def check_case(dump: str, oracle: str, work: str, name: str, width: int,
+        height: int, row_q: int, col_q: int, version: int = 0,
+        bicubic: bool = True, fullpel: bool = False) -> str | None:
+    key, key_path = encode_key(oracle, work, name, width, height)
+    mb_count = ((width + 15) // 16) * ((height + 15) // 16)
+    inter = inter_payload(mb_count, row_q, col_q, version)
+    frames = decode_frames(
+        dump, work, name, animated(width, height, [key, inter]), 2)
+    ref = key_pam(oracle, work, name, key_path)
+    err = first_diff(frames[0], ref, width)
+    if err:
+        return "%s frame 0: %s" % (name, err)
+    if (row_q == 0 and col_q == 0) or fullpel and row_q == 0 and col_q == 1:
+        err = first_diff(frames[1], ref, width)
+        if err:
+            return "%s integer sample: %s" % (name, err)
+        return None
+    yuv = key_yuv(oracle, work, name, key_path, width, height)
+    want = expected_shift(
+        yuv, width, height, row_q, col_q, bicubic, fullpel)
+    err = first_diff(frames[1], want, width)
     if err:
         return "%s motion (%d,%d): %s" % (name, col_q, row_q, err)
+    return None
+
+
+def check_split(dump: str, oracle: str, work: str) -> str | None:
+    name, width, height = "split_16", 16, 16
+    key, key_path = encode_key(oracle, work, name, width, height)
+    frames = decode_frames(
+        dump, work, name,
+        animated(width, height, [key, split_top_payload()]), 2)
+    ref = key_pam(oracle, work, name, key_path)
+    err = first_diff(frames[0], ref, width)
+    if err:
+        return "split_16 frame 0: %s" % err
+    yuv = key_yuv(oracle, work, name, key_path, width, height)
+    y_plane, u_plane, v_plane, cw, ch = planes_of(yuv, width, height)
+    top_y = predict_plane(y_plane, width, height, 0, 16, True)
+    bot_y = predict_plane(y_plane, width, height, 0, 0, True)
+    top_u = predict_plane(u_plane, cw, ch, 0, 8, True)
+    bot_u = predict_plane(u_plane, cw, ch, 0, 0, True)
+    top_v = predict_plane(v_plane, cw, ch, 0, 8, True)
+    bot_v = predict_plane(v_plane, cw, ch, 0, 0, True)
+    want = rgba_of(
+        stitch_rows(top_y, bot_y, width, 8),
+        stitch_rows(top_u, bot_u, cw, 4),
+        stitch_rows(top_v, bot_v, cw, 4),
+        width, height, cw, ch)
+    return first_diff(frames[1], want, width)
+
+
+def check_sign(dump: str, oracle: str, work: str) -> str | None:
+    name, width, height = "sign_32", 32, 16
+    key, key_path = encode_key(oracle, work, name, width, height)
+    frames = decode_frames(
+        dump, work, name,
+        animated(width, height, [key, sign_bias_payload()]), 2)
+    ref = key_pam(oracle, work, name, key_path)
+    err = first_diff(frames[0], ref, width)
+    if err:
+        return "sign_32 frame 0: %s" % err
+    yuv = key_yuv(oracle, work, name, key_path, width, height)
+    y_plane, u_plane, v_plane, cw, ch = planes_of(yuv, width, height)
+    left_y = predict_plane(y_plane, width, height, 0, 16, True)
+    right_y = predict_plane(y_plane, width, height, 0, -16, True)
+    left_u = predict_plane(u_plane, cw, ch, 0, 8, True)
+    right_u = predict_plane(u_plane, cw, ch, 0, -8, True)
+    left_v = predict_plane(v_plane, cw, ch, 0, 8, True)
+    right_v = predict_plane(v_plane, cw, ch, 0, -8, True)
+    want = rgba_of(
+        stitch_cols(left_y, right_y, width, 16, height),
+        stitch_cols(left_u, right_u, cw, 8, ch),
+        stitch_cols(left_v, right_v, cw, 8, ch),
+        width, height, cw, ch)
+    return first_diff(frames[1], want, width)
+
+
+def check_refs(dump: str, oracle: str, work: str, ref: str) -> str | None:
+    name, width, height = ref + "_16", 16, 16
+    key, key_path = encode_key(oracle, work, name, width, height)
+    moved, copied = preserve_refs_payloads(ref)
+    frames = decode_frames(
+        dump, work, name, animated(width, height, [key, moved, copied]), 3)
+    ref_pam = key_pam(oracle, work, name, key_path)
+    err = first_diff(frames[0], ref_pam, width)
+    if err:
+        return "%s frame 0: %s" % (name, err)
+    yuv = key_yuv(oracle, work, name, key_path, width, height)
+    want = expected_shift(yuv, width, height, 0, 8)
+    err = first_diff(frames[1], want, width)
+    if err:
+        return "%s moved: %s" % (name, err)
+    err = first_diff(frames[2], ref_pam, width)
+    if err:
+        return "%s still holds the keyframe: %s" % (name, err)
+    return None
+
+
+def check_filter(dump: str, oracle: str, work: str) -> str | None:
+    name, width, height, level = "simple_32", 32, 16, 20
+    key, key_path = encode_key(oracle, work, name, width, height)
+    inter = inter_payload(
+        2, 0, 0, filter_type=1, filter_level=level)
+    frames = decode_frames(
+        dump, work, name, animated(width, height, [key, inter]), 2)
+    ref = key_pam(oracle, work, name, key_path)
+    err = first_diff(frames[0], ref, width)
+    if err:
+        return "simple_32 frame 0: %s" % err
+    yuv = key_yuv(oracle, work, name, key_path, width, height)
+    want = expected_simple_edge(yuv, width, height, 16, level)
+    err = first_diff(frames[1], want, width)
+    if err:
+        return "simple_32 edge: %s" % err
+    if want == ref:
+        return "simple_32 edge: the filter left the keyframe unchanged"
     return None
 
 
@@ -627,16 +899,28 @@ def main(argv: list[str]) -> int:
     work = os.path.join(ROOT, "tests", "out", "webp-inter")
     os.makedirs(work, exist_ok=True)
     cases = (
-        ("zero_32", 32, 32, 0, 0),
-        ("right_16", 16, 16, 0, 8),
-        ("up_left_16", 16, 16, -4, -4),
-        ("frac_16", 16, 16, 0, 1),
+        ("zero_32", 32, 32, 0, 0, 0, True, False),
+        ("right_16", 16, 16, 0, 8, 0, True, False),
+        ("up_left_16", 16, 16, -4, -4, 0, True, False),
+        ("frac_16", 16, 16, 0, 1, 0, True, False),
+        ("bilinear_16", 16, 16, 0, 1, 1, False, False),
+        ("fullpel_int", 16, 16, 0, 8, 3, True, True),
+        ("fullpel_frac", 16, 16, 0, 1, 3, True, True),
+    )
+    extra = (
+        ("split_16", check_split),
+        ("sign_32", check_sign),
+        ("golden_16", lambda d, o, w: check_refs(d, o, w, "golden")),
+        ("alt_16", lambda d, o, w: check_refs(d, o, w, "alt")),
+        ("simple_32", check_filter),
     )
     failed = 0
-    for name, width, height, row_q, col_q in cases:
+    total = len(cases) + len(extra)
+    for name, width, height, row_q, col_q, version, bicubic, fullpel in cases:
         try:
             err = check_case(
-                dump, oracle, work, name, width, height, row_q, col_q)
+                dump, oracle, work, name, width, height, row_q, col_q,
+                version, bicubic, fullpel)
         except (RuntimeError, OSError) as exc:
             print("  FAIL  %s  %s" % (name, exc), file=sys.stderr)
             failed += 1
@@ -646,8 +930,19 @@ def main(argv: list[str]) -> int:
             failed += 1
         else:
             print("  ok  %s" % name)
-    print("%d ok, %d failed (%d files)" % (
-        len(cases) - failed, failed, len(cases)))
+    for name, fn in extra:
+        try:
+            err = fn(dump, oracle, work)
+        except (RuntimeError, OSError) as exc:
+            print("  FAIL  %s  %s" % (name, exc), file=sys.stderr)
+            failed += 1
+            continue
+        if err:
+            print("  FAIL  %s  %s" % (name, err), file=sys.stderr)
+            failed += 1
+        else:
+            print("  ok  %s" % name)
+    print("%d ok, %d failed (%d files)" % (total - failed, failed, total))
     if failed:
         print("VP8 interframe verification FAILED", file=sys.stderr)
         return 1

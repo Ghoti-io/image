@@ -203,7 +203,11 @@ yet fail on worse PSNR or size.
 - VP8 interframes (`verify_vp8_inter.py`). A skipped zero-motion frame
   matches `dwebp` of the keyframe. An integer or fractional motion
   vector matches that keyframe's YUV shifted with the edge repeated,
-  then the 9-3-3-1 upsample. `cwebp` and `dwebp` run in the oracle
+  then the 9-3-3-1 upsample: bicubic on version 0, bilinear on version
+  1, and the integer sample on version 3. The same shift checks a
+  top/bottom split, a golden and an altref kept from the keyframe, a
+  sign-bias flip of the nearest vector, and a simple loop-filter edge
+  between two macroblocks. `cwebp` and `dwebp` run in the oracle
   image. The animation is written under `tests/out/` because the
   container tools refuse an interframe payload.
 - Lossless save: round-trip identity through this decoder; outside acceptance
