@@ -533,6 +533,44 @@ TEST(Webp, AnimDisposeBackground) {
   gimg_doc_destroy(doc);
 }
 
+size_t save_webp(GIMG_Doc * doc, int effort, std::vector<uint8_t> * out) {
+  GIMG_Stream * stream = nullptr;
+  EXPECT_EQ(gimg_stream_create_memory_output(&stream), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_effort = static_cast<uint8_t>(effort);
+  opts.webp_exact = 1;
+  GIMG_Save_Report report = {};
+  EXPECT_EQ(gimg_doc_save(doc, stream, "webp", &opts, &report), GIMG_OK);
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(stream, &bytes, &nbytes);
+  out->assign(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + nbytes);
+  gimg_stream_destroy(stream);
+  return nbytes;
+}
+
+bool round_trip_matches(const std::vector<uint8_t> & bytes, GIMG_Raster * expect) {
+  GIMG_Stream * in = nullptr;
+  if (gimg_stream_create_memory(bytes.data(), bytes.size(), &in) != GIMG_OK) {
+    return false;
+  }
+  GIMG_Doc * round = nullptr;
+  const GIMG_Result loaded = gimg_doc_load(in, nullptr, nullptr, &round);
+  gimg_stream_destroy(in);
+  if (loaded != GIMG_OK) {
+    return false;
+  }
+  GIMG_Raster * back = nullptr;
+  const GIMG_Result decoded =
+      gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back);
+  const bool same =
+      decoded == GIMG_OK && back && gimg_ops_raster_equal(expect, back);
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(round);
+  return same;
+}
+
 TEST(Webp, SaveLosslessRoundTrip) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(load_doc("simple_lossless.webp", &doc), GIMG_OK);
@@ -584,6 +622,50 @@ TEST(Webp, SaveLosslessRoundTrip) {
   gimg_doc_destroy(round);
   gimg_stream_destroy(in);
   gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveLosslessPredictorShrinksGradient) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_doc("lossless_gradient.webp", &doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+
+  std::vector<uint8_t> literals;
+  std::vector<uint8_t> predicted;
+  const size_t n_lit = save_webp(doc, 1, &literals);
+  const size_t n_pred = save_webp(doc, 4, &predicted);
+  EXPECT_LT(n_pred, n_lit);
+  EXPECT_TRUE(round_trip_matches(predicted, raster));
+  EXPECT_TRUE(round_trip_matches(literals, raster));
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveLosslessRepeatedRowRoundTrip) {
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(24, 12, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &raster),
+      GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  ASSERT_NE(px, nullptr);
+  for (int y = 0; y < 12; ++y) {
+    for (int x = 0; x < 24; ++x) {
+      uint8_t * p = px + (y * 24 + x) * 4;
+      p[0] = static_cast<uint8_t>(x * 9);
+      p[1] = static_cast<uint8_t>(40 + (x % 5) * 20);
+      p[2] = static_cast<uint8_t>(255 - x * 4);
+      p[3] = 255;
+    }
+  }
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  std::vector<uint8_t> bytes;
+  ASSERT_GT(save_webp(doc, 4, &bytes), 0u);
+  EXPECT_TRUE(round_trip_matches(bytes, gimg_item_raster(gimg_doc_item(doc, 0))));
   gimg_doc_destroy(doc);
 }
 

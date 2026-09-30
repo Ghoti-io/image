@@ -21,9 +21,11 @@
 /**
  * @file
  *
- * VP8L lossless bitstream encode. Effort >= 1 applies subtract-green; the
- * entropy stage is Huffman over literals (no LZ77). Round-trip through our
- * decoder is identity. Output is accepted by libwebp's dwebp.
+ * VP8L lossless bitstream encode. Effort >= 1 applies subtract-green.
+ * Effort >= 2 also applies one spatial predictor when it shrinks the
+ * residual, then LZ77 (exact pixel copies, minimum length 4) before
+ * Huffman. Round-trip through our decoder is identity. Output is accepted
+ * by libwebp's dwebp.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -46,8 +48,15 @@ enum {
   VP8L_DIST = 4,
   VP8L_MAX_DIM = 16384,
   VP8L_LIT_ALPHABET = VP8L_NUM_LITERAL + VP8L_NUM_LENGTH,
-  VP8L_MAX_ALPHABET = VP8L_LIT_ALPHABET
+  VP8L_MAX_ALPHABET = VP8L_LIT_ALPHABET,
+  VP8L_MAX_LENGTH = 4096,
+  VP8L_MAX_PLANE = 1048576,
+  VP8L_LZ_MIN = 4,
+  VP8L_LZ_HASH_BITS = 12,
+  VP8L_LZ_CHAIN = 16
 };
+
+static const uint32_t k_vp8l_black = 0xff000000u;
 
 static const uint8_t k_code_length_order[VP8L_NUM_CODE_LENGTH] = {
   17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
@@ -551,23 +560,439 @@ static void apply_subtract_green(uint32_t * argb, size_t n) {
   }
 }
 
+/* Component-wise subtract, mod 256. Inverse of the decoder's add. */
+static uint32_t sub_pixels(uint32_t a, uint32_t b) {
+  const uint32_t ag =
+      0x00ff00ffu + (a & 0xff00ff00u) - (b & 0xff00ff00u);
+  const uint32_t rb =
+      0xff00ff00u + (a & 0x00ff00ffu) - (b & 0x00ff00ffu);
+  return (ag & 0xff00ff00u) | (rb & 0x00ff00ffu);
+}
+
+static uint32_t pred_average2(uint32_t a0, uint32_t a1) {
+  return (((a0 ^ a1) & 0xfefefefeu) >> 1) + (a0 & a1);
+}
+
+static uint32_t pred_average3(uint32_t a0, uint32_t a1, uint32_t a2) {
+  return pred_average2(pred_average2(a0, a2), a1);
+}
+
+static uint32_t pred_average4(uint32_t a0, uint32_t a1, uint32_t a2,
+    uint32_t a3) {
+  return pred_average2(pred_average2(a0, a1), pred_average2(a2, a3));
+}
+
+static uint32_t pred_clip255(uint32_t a) {
+  if (a < 256u) {
+    return a;
+  }
+  return ~a >> 24;
+}
+
+static int pred_add_sub_full(int a, int b, int c) {
+  return (int)pred_clip255((uint32_t)(a + b - c));
+}
+
+static uint32_t pred_clamped_full(uint32_t c0, uint32_t c1, uint32_t c2) {
+  const int a = pred_add_sub_full(
+      (int)(c0 >> 24), (int)(c1 >> 24), (int)(c2 >> 24));
+  const int r = pred_add_sub_full(
+      (int)((c0 >> 16) & 0xff), (int)((c1 >> 16) & 0xff),
+      (int)((c2 >> 16) & 0xff));
+  const int g = pred_add_sub_full(
+      (int)((c0 >> 8) & 0xff), (int)((c1 >> 8) & 0xff),
+      (int)((c2 >> 8) & 0xff));
+  const int b = pred_add_sub_full(
+      (int)(c0 & 0xff), (int)(c1 & 0xff), (int)(c2 & 0xff));
+  return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) |
+      (uint32_t)b;
+}
+
+static int pred_add_sub_half(int a, int b) {
+  return (int)pred_clip255((uint32_t)(a + (a - b) / 2));
+}
+
+static uint32_t pred_clamped_half(uint32_t c0, uint32_t c1, uint32_t c2) {
+  const uint32_t ave = pred_average2(c0, c1);
+  const int a = pred_add_sub_half((int)(ave >> 24), (int)(c2 >> 24));
+  const int r = pred_add_sub_half(
+      (int)((ave >> 16) & 0xff), (int)((c2 >> 16) & 0xff));
+  const int g = pred_add_sub_half(
+      (int)((ave >> 8) & 0xff), (int)((c2 >> 8) & 0xff));
+  const int b = pred_add_sub_half((int)(ave & 0xff), (int)(c2 & 0xff));
+  return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) |
+      (uint32_t)b;
+}
+
+static int pred_sub3(int a, int b, int c) {
+  const int pb = b - c;
+  const int pa = a - c;
+  const int apb = pb < 0 ? -pb : pb;
+  const int apa = pa < 0 ? -pa : pa;
+  return apb - apa;
+}
+
+static uint32_t pred_select(uint32_t a, uint32_t b, uint32_t c) {
+  const int pa_minus_pb =
+      pred_sub3((int)(a >> 24), (int)(b >> 24), (int)(c >> 24)) +
+      pred_sub3((int)((a >> 16) & 0xff), (int)((b >> 16) & 0xff),
+          (int)((c >> 16) & 0xff)) +
+      pred_sub3((int)((a >> 8) & 0xff), (int)((b >> 8) & 0xff),
+          (int)((c >> 8) & 0xff)) +
+      pred_sub3((int)(a & 0xff), (int)(b & 0xff), (int)(c & 0xff));
+  return (pa_minus_pb <= 0) ? a : b;
+}
+
+/**
+ * Spatial predictor @a mode. @a left is the pixel to the left; @a top points
+ * at the pixel above, so top[-1] / top[0] / top[1] match the decoder.
+ * Row 0 and column 0 are special-cased by the caller, as in predictor_inverse.
+ */
+static uint32_t predict_mode(int mode, const uint32_t * left,
+    const uint32_t * top) {
+  switch (mode) {
+  case 1:
+    return *left;
+  case 2:
+    return top[0];
+  case 3:
+    return top[1];
+  case 4:
+    return top[-1];
+  case 5:
+    return pred_average3(*left, top[0], top[1]);
+  case 6:
+    return pred_average2(*left, top[-1]);
+  case 7:
+    return pred_average2(*left, top[0]);
+  case 8:
+    return pred_average2(top[-1], top[0]);
+  case 9:
+    return pred_average2(top[0], top[1]);
+  case 10:
+    return pred_average4(*left, top[-1], top[0], top[1]);
+  case 11:
+    return pred_select(top[0], *left, top[-1]);
+  case 12:
+    return pred_clamped_full(*left, top[0], top[-1]);
+  case 13:
+    return pred_clamped_half(*left, top[0], top[-1]);
+  default:
+    return k_vp8l_black;
+  }
+}
+
+static void residual_image(const uint32_t * src, uint32_t * dst, int width,
+    int height, int mode) {
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const int i = y * width + x;
+      uint32_t pred;
+      if (y == 0) {
+        pred = (x == 0) ? k_vp8l_black : src[i - 1];
+      }
+      else if (x == 0) {
+        pred = src[i - width];
+      }
+      else {
+        pred = predict_mode(mode, &src[i - 1], &src[i - width]);
+      }
+      dst[i] = sub_pixels(src[i], pred);
+    }
+  }
+}
+
+static uint64_t residual_sad(const uint32_t * p, size_t n) {
+  uint64_t s = 0;
+  for (size_t i = 0; i < n; ++i) {
+    uint32_t v = p[i];
+    for (int k = 0; k < 4; ++k) {
+      int b = (int)((v >> (8 * k)) & 0xffu);
+      s += (uint64_t)((b >= 128) ? (256 - b) : b);
+    }
+  }
+  return s;
+}
+
+static int covering_bits(int width, int height) {
+  for (int bits = 9; bits >= 2; --bits) {
+    const int tile = 1 << bits;
+    const int tw = (width + tile - 1) >> bits;
+    const int th = (height + tile - 1) >> bits;
+    if (tw == 1 && th == 1) {
+      return bits;
+    }
+  }
+  return 9;
+}
+
+static int prefix_of(int value, int * sym, int * nextra, int * extra) {
+  if (value < 1) {
+    return 0;
+  }
+  if (value <= 4) {
+    *sym = value - 1;
+    *nextra = 0;
+    *extra = 0;
+    return 1;
+  }
+  for (int s = 4; s < VP8L_NUM_DISTANCE; ++s) {
+    const int eb = (s - 2) >> 1;
+    const int offset = (2 + (s & 1)) << eb;
+    const int base = offset + 1;
+    const int count = 1 << eb;
+    if (value >= base && value < base + count) {
+      *sym = s;
+      *nextra = eb;
+      *extra = value - base;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+typedef struct {
+  int pass;
+  int error;
+  uint32_t hist[5][VP8L_MAX_ALPHABET];
+  vp8l_bw_t * bw;
+  huff_code_t * trees;
+} walk_ctx_t;
+
+static void count_literal(walk_ctx_t * ctx, uint32_t p) {
+  ++ctx->hist[VP8L_GREEN][(p >> 8) & 0xffu];
+  ++ctx->hist[VP8L_RED][(p >> 16) & 0xffu];
+  ++ctx->hist[VP8L_BLUE][p & 0xffu];
+  ++ctx->hist[VP8L_ALPHA][(p >> 24) & 0xffu];
+}
+
+static void emit_token(walk_ctx_t * ctx, int is_copy, uint32_t pix, int len,
+    int dist) {
+  int ls = 0;
+  int le = 0;
+  int lx = 0;
+  int ds = 0;
+  int de = 0;
+  int dx = 0;
+  if (ctx->error) {
+    return;
+  }
+  if (!is_copy) {
+    if (ctx->pass == 0) {
+      count_literal(ctx, pix);
+    }
+    else {
+      write_symbol(ctx->bw, &ctx->trees[VP8L_GREEN], (int)((pix >> 8) & 0xffu));
+      write_symbol(ctx->bw, &ctx->trees[VP8L_RED], (int)((pix >> 16) & 0xffu));
+      write_symbol(ctx->bw, &ctx->trees[VP8L_BLUE], (int)(pix & 0xffu));
+      write_symbol(ctx->bw, &ctx->trees[VP8L_ALPHA], (int)((pix >> 24) & 0xffu));
+    }
+    return;
+  }
+  if (!prefix_of(len, &ls, &le, &lx) || ls >= VP8L_NUM_LENGTH ||
+      !prefix_of(dist + 120, &ds, &de, &dx)) {
+    ctx->error = 1;
+    return;
+  }
+  if (ctx->pass == 0) {
+    ++ctx->hist[VP8L_GREEN][VP8L_NUM_LITERAL + ls];
+    ++ctx->hist[VP8L_DIST][ds];
+  }
+  else {
+    write_symbol(ctx->bw, &ctx->trees[VP8L_GREEN], VP8L_NUM_LITERAL + ls);
+    bw_put(ctx->bw, (uint32_t)lx, le);
+    write_symbol(ctx->bw, &ctx->trees[VP8L_DIST], ds);
+    bw_put(ctx->bw, (uint32_t)dx, de);
+  }
+}
+
+static int pix_hash(uint32_t p) {
+  return (int)((p * 2654435761u) >> (32 - VP8L_LZ_HASH_BITS));
+}
+
+static void consider_dist(const uint32_t * pix, int i, int n, int dist,
+    int * best_len, int * best_dist) {
+  int len = 0;
+  int maxl;
+  if (dist <= 0 || dist > i || dist + 120 > VP8L_MAX_PLANE) {
+    return;
+  }
+  if (pix[i] != pix[i - dist]) {
+    return;
+  }
+  maxl = n - i;
+  if (maxl > VP8L_MAX_LENGTH) {
+    maxl = VP8L_MAX_LENGTH;
+  }
+  while (len < maxl && pix[i + len] == pix[i + len - dist]) {
+    ++len;
+  }
+  if (len > *best_len || (len == *best_len && dist < *best_dist)) {
+    *best_len = len;
+    *best_dist = dist;
+  }
+}
+
+static void lz_insert(int * head, int * prev, const uint32_t * pix, int i) {
+  const int h = pix_hash(pix[i]);
+  prev[i] = head[h];
+  head[h] = i;
+}
+
+static int walk_pixels(const uint32_t * pix, int width, int height,
+    int use_lz77, const GIMG_Allocator * alloc, walk_ctx_t * ctx) {
+  const int n = width * height;
+  int * prev = NULL;
+  int head[1 << VP8L_LZ_HASH_BITS];
+  int i = 0;
+
+  if (use_lz77) {
+    prev = (int *)gimg_malloc(alloc, (size_t)n * sizeof(int));
+    if (!prev) {
+      return 0;
+    }
+    for (int h = 0; h < (1 << VP8L_LZ_HASH_BITS); ++h) {
+      head[h] = -1;
+    }
+  }
+
+  while (i < n && !ctx->error) {
+    int best_len = 0;
+    int best_dist = 0;
+    if (use_lz77) {
+      int chain = 0;
+      int pos;
+      consider_dist(pix, i, n, 1, &best_len, &best_dist);
+      if (i >= width) {
+        consider_dist(pix, i, n, width, &best_len, &best_dist);
+      }
+      for (pos = head[pix_hash(pix[i])]; pos >= 0 && chain < VP8L_LZ_CHAIN;
+           pos = prev[pos], ++chain) {
+        consider_dist(pix, i, n, i - pos, &best_len, &best_dist);
+      }
+      if (best_len >= VP8L_LZ_MIN) {
+        emit_token(ctx, 1, 0, best_len, best_dist);
+        for (int k = 0; k < best_len; ++k) {
+          lz_insert(head, prev, pix, i + k);
+        }
+        i += best_len;
+        continue;
+      }
+    }
+    emit_token(ctx, 0, pix[i], 0, 0);
+    if (use_lz77) {
+      lz_insert(head, prev, pix, i);
+    }
+    ++i;
+  }
+  gimg_free(alloc, prev);
+  return !ctx->error;
+}
+
+/**
+ * One VP8L image body: optional Huffman-image bit (level 0 only), five
+ * Huffman trees, then pixels. @a use_lz77 selects backward references.
+ */
+static GIMG_Result write_coded_image(vp8l_bw_t * bw, const uint32_t * argb,
+    int width, int height, int write_meta_bit, int use_lz77,
+    const GIMG_Allocator * alloc) {
+  walk_ctx_t ctx;
+  huff_code_t trees[5];
+  uint8_t * length_bufs[5] = {NULL, NULL, NULL, NULL, NULL};
+  uint16_t * code_bufs[5] = {NULL, NULL, NULL, NULL, NULL};
+  huff_token_t * tokens = NULL;
+  GIMG_Result r = GIMG_OK;
+  int dist_used = 0;
+
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.bw = bw;
+  ctx.trees = trees;
+  bw_put(bw, 0, 1);
+  if (write_meta_bit) {
+    bw_put(bw, 0, 1);
+  }
+  if (!walk_pixels(argb, width, height, use_lz77, alloc, &ctx)) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  if (ctx.error) {
+    r = GIMG_ERR_INTERNAL;
+    goto Done;
+  }
+  for (int i = 0; i < VP8L_NUM_DISTANCE; ++i) {
+    if (ctx.hist[VP8L_DIST][i] != 0u) {
+      dist_used = 1;
+      break;
+    }
+  }
+  if (!dist_used) {
+    ctx.hist[VP8L_DIST][0] = 1u;
+  }
+
+  tokens = (huff_token_t *)gimg_malloc(
+      alloc, (size_t)VP8L_MAX_ALPHABET * sizeof(huff_token_t));
+  if (!tokens) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  for (int t = 0; t < 5; ++t) {
+    const int alph = (t == 0) ? VP8L_LIT_ALPHABET
+                              : (t == 4 ? VP8L_NUM_DISTANCE : VP8L_NUM_LITERAL);
+    length_bufs[t] = (uint8_t *)gimg_calloc(alloc, (size_t)alph, 1u);
+    code_bufs[t] =
+        (uint16_t *)gimg_calloc(alloc, (size_t)alph, sizeof(uint16_t));
+    if (!length_bufs[t] || !code_bufs[t]) {
+      r = GIMG_ERR_OOM;
+      goto Done;
+    }
+    if (!build_lengths(ctx.hist[t], alph, 15, length_bufs[t])) {
+      r = GIMG_ERR_INTERNAL;
+      goto Done;
+    }
+    trees[t].lengths = length_bufs[t];
+    trees[t].codes = code_bufs[t];
+    trees[t].num_symbols = alph;
+    depths_to_codes(&trees[t]);
+    store_huffman(bw, &trees[t], tokens, VP8L_MAX_ALPHABET);
+    clear_if_one_symbol(&trees[t]);
+  }
+  if (bw->error) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  ctx.pass = 1;
+  if (!walk_pixels(argb, width, height, use_lz77, alloc, &ctx) || ctx.error ||
+      bw->error) {
+    r = ctx.error ? GIMG_ERR_INTERNAL : GIMG_ERR_OOM;
+  }
+
+Done:
+  for (int t = 0; t < 5; ++t) {
+    gimg_free(alloc, length_bufs[t]);
+    gimg_free(alloc, code_bufs[t]);
+  }
+  gimg_free(alloc, tokens);
+  return r;
+}
+
 GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
     uint32_t height, size_t stride, int has_alpha_hint, int exact, int effort,
     const GIMG_Allocator * alloc, unsigned char ** out_bytes,
     size_t * out_size) {
   vp8l_bw_t bw;
   uint32_t * argb = NULL;
-  huff_code_t trees[5];
-  uint8_t * length_bufs[5] = {NULL, NULL, NULL, NULL, NULL};
-  uint16_t * code_bufs[5] = {NULL, NULL, NULL, NULL, NULL};
-  huff_token_t * tokens = NULL;
-  uint32_t hist[5][VP8L_MAX_ALPHABET];
+  uint32_t * resid = NULL;
+  uint32_t * modes = NULL;
   GIMG_Result r = GIMG_OK;
   size_t n;
   int width_i;
   int height_i;
   int has_alpha = 0;
   int use_subgreen;
+  int use_pred = 0;
+  int use_lz77;
+  int pred_mode = 0;
+  int pred_bits = 0;
 
   if (!rgba || !out_bytes || !out_size || width == 0u || height == 0u ||
       width > (uint32_t)VP8L_MAX_DIM || height > (uint32_t)VP8L_MAX_DIM) {
@@ -583,6 +1008,7 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
     effort = 9;
   }
   use_subgreen = (effort >= 1);
+  use_lz77 = (effort >= 2);
 
   width_i = (int)width;
   height_i = (int)height;
@@ -629,59 +1055,63 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   bw_put(&bw, 0, 3);
 
   if (use_subgreen) {
-    bw_put(&bw, 1, 1);
-    bw_put(&bw, (uint32_t)GIMG_WEBP_VP8L_SUBTRACT_GREEN, 2);
     apply_subtract_green(argb, n);
   }
-  bw_put(&bw, 0, 1); /* end transforms */
-  bw_put(&bw, 0, 1); /* no color cache */
-  bw_put(&bw, 0, 1); /* no Huffman image */
-
-  memset(hist, 0, sizeof(hist));
-  for (size_t i = 0; i < n; ++i) {
-    uint32_t p = argb[i];
-    ++hist[VP8L_GREEN][(p >> 8) & 0xffu];
-    ++hist[VP8L_RED][(p >> 16) & 0xffu];
-    ++hist[VP8L_BLUE][p & 0xffu];
-    ++hist[VP8L_ALPHA][(p >> 24) & 0xffu];
-  }
-  hist[VP8L_DIST][0] = 1u;
-
-  tokens = (huff_token_t *)gimg_malloc(
-      alloc, (size_t)VP8L_MAX_ALPHABET * sizeof(huff_token_t));
-  if (!tokens) {
-    r = GIMG_ERR_OOM;
-    goto Done;
-  }
-
-  for (int t = 0; t < 5; ++t) {
-    int alph = (t == 0) ? VP8L_LIT_ALPHABET
-                        : (t == 4 ? VP8L_NUM_DISTANCE : VP8L_NUM_LITERAL);
-    length_bufs[t] = (uint8_t *)gimg_calloc(alloc, (size_t)alph, 1u);
-    code_bufs[t] =
-        (uint16_t *)gimg_calloc(alloc, (size_t)alph, sizeof(uint16_t));
-    if (!length_bufs[t] || !code_bufs[t]) {
+  if (effort >= 2 && width_i >= 2 && height_i >= 2) {
+    uint64_t best = residual_sad(argb, n);
+    resid = (uint32_t *)gimg_malloc(alloc, n * sizeof(uint32_t));
+    if (!resid) {
       r = GIMG_ERR_OOM;
       goto Done;
     }
-    if (!build_lengths(hist[t], alph, 15, length_bufs[t])) {
-      r = GIMG_ERR_INTERNAL;
-      goto Done;
+    for (int mode = 0; mode < 14; ++mode) {
+      uint64_t score;
+      residual_image(argb, resid, width_i, height_i, mode);
+      score = residual_sad(resid, n);
+      if (score < best) {
+        best = score;
+        pred_mode = mode;
+        use_pred = 1;
+      }
     }
-    trees[t].lengths = length_bufs[t];
-    trees[t].codes = code_bufs[t];
-    trees[t].num_symbols = alph;
-    depths_to_codes(&trees[t]);
-    store_huffman(&bw, &trees[t], tokens, VP8L_MAX_ALPHABET);
-    clear_if_one_symbol(&trees[t]);
+    if (use_pred) {
+      residual_image(argb, resid, width_i, height_i, pred_mode);
+      pred_bits = covering_bits(width_i, height_i);
+    }
   }
 
-  for (size_t i = 0; i < n; ++i) {
-    uint32_t p = argb[i];
-    write_symbol(&bw, &trees[VP8L_GREEN], (int)((p >> 8) & 0xffu));
-    write_symbol(&bw, &trees[VP8L_RED], (int)((p >> 16) & 0xffu));
-    write_symbol(&bw, &trees[VP8L_BLUE], (int)(p & 0xffu));
-    write_symbol(&bw, &trees[VP8L_ALPHA], (int)((p >> 24) & 0xffu));
+  if (use_subgreen) {
+    bw_put(&bw, 1, 1);
+    bw_put(&bw, (uint32_t)GIMG_WEBP_VP8L_SUBTRACT_GREEN, 2);
+  }
+  if (use_pred) {
+    const int tile = 1 << pred_bits;
+    const int tw = (width_i + tile - 1) >> pred_bits;
+    const int th = (height_i + tile - 1) >> pred_bits;
+    const uint32_t mode_pix =
+        0xff000000u | ((uint32_t)pred_mode << 8);
+    bw_put(&bw, 1, 1);
+    bw_put(&bw, (uint32_t)GIMG_WEBP_VP8L_PREDICTOR, 2);
+    bw_put(&bw, (uint32_t)(pred_bits - 2), 3);
+    modes = (uint32_t *)gimg_malloc(alloc, (size_t)tw * (size_t)th * sizeof(uint32_t));
+    if (!modes) {
+      r = GIMG_ERR_OOM;
+      goto Done;
+    }
+    for (int i = 0; i < tw * th; ++i) {
+      modes[i] = mode_pix;
+    }
+    r = write_coded_image(&bw, modes, tw, th, 0, 0, alloc);
+    if (r != GIMG_OK) {
+      goto Done;
+    }
+  }
+  bw_put(&bw, 0, 1); /* end transforms */
+
+  r = write_coded_image(
+      &bw, use_pred ? resid : argb, width_i, height_i, 1, use_lz77, alloc);
+  if (r != GIMG_OK) {
+    goto Done;
   }
 
   if (!bw_finish(&bw) || bw.error) {
@@ -695,10 +1125,7 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
 Done:
   gimg_free(alloc, bw.buf);
   gimg_free(alloc, argb);
-  for (int t = 0; t < 5; ++t) {
-    gimg_free(alloc, length_bufs[t]);
-    gimg_free(alloc, code_bufs[t]);
-  }
-  gimg_free(alloc, tokens);
+  gimg_free(alloc, resid);
+  gimg_free(alloc, modes);
   return r;
 }
