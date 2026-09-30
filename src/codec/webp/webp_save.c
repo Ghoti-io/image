@@ -213,6 +213,10 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     memset(report, 0, sizeof(*report));
   }
   alloc = gimg_alloc_or_default(codec->allocator);
+  /* Done frees file.data. Several error returns reach it before the RIFF
+   * buffer exists, so the pointer has to be null from here on. */
+  memset(&file, 0, sizeof(file));
+  file.alloc = alloc;
 
   lossless = options ? options->webp_lossless : (uint8_t)GIMG_WEBP_COMPRESS_LOSSLESS;
   effort = options ? options->webp_effort : 4u;
@@ -363,8 +367,6 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     vp8x_flags |= (uint8_t)GIMG_WEBP_VP8X_ALPHA;
   }
 
-  memset(&file, 0, sizeof(file));
-  file.alloc = alloc;
   {
     unsigned char riff[12];
     memcpy(riff, "RIFF", 4);
