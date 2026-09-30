@@ -639,8 +639,13 @@ TEST(Webp, SaveLosslessEffortShrinksGradient) {
   const size_t n_lit = save_webp(doc, 1, &literals);
   const size_t n_pred = save_webp(doc, 2, &predicted);
   const size_t n_cross = save_webp(doc, 4, &crossed);
+  /* One Huffman group on the literals was 2160 bytes. Predictor selection
+   * by residual histogram cost lands effort 2 under cwebp's 60-byte file.
+   * No cross-colour grid shortens that file, so effort 4 stays with it. */
+  EXPECT_LT(n_lit, 2160u);
   EXPECT_LT(n_pred, n_lit);
-  EXPECT_LT(n_cross, n_pred);
+  EXPECT_LT(n_pred, 60u);
+  EXPECT_LE(n_cross, n_pred);
   EXPECT_TRUE(round_trip_matches(crossed, raster));
   EXPECT_TRUE(round_trip_matches(predicted, raster));
   EXPECT_TRUE(round_trip_matches(literals, raster));

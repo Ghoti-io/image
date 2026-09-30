@@ -21,13 +21,15 @@
 /**
  * @file
  *
- * VP8L lossless bitstream encode. Effort >= 1 applies subtract-green.
- * Effort >= 2 also applies one spatial predictor when it shrinks the
- * residual, then LZ77 (exact pixel copies, minimum length 4) before
- * Huffman. Effort >= 3 adds one cross-colour transform when it shrinks
- * the red and blue residuals. Effort >= 4 also tries a palette when the
- * image has at most 256 colours, and keeps it when the file is smaller.
- * Round-trip through our decoder is identity. Output is accepted by
+ * VP8L lossless bitstream encode. Effort >= 1 applies subtract-green
+ * when the literal histogram shrinks. Effort >= 2 also applies one
+ * spatial predictor when that histogram shrinks, then LZ77 (exact pixel
+ * copies, minimum length 4) before Huffman. Effort >= 3 adds one
+ * cross-colour transform when the finished bitstream is shorter.
+ * Effort >= 4 also tries a palette when the image has at most 256
+ * colours, and keeps it when the file is smaller.
+ * The main image also tries a Huffman image and keeps it when the file
+ * is smaller. Round-trip through our decoder is identity. Output is accepted by
  * libwebp's dwebp.
  */
 
@@ -705,18 +707,6 @@ static void residual_image(const uint32_t * src, uint32_t * dst, int width,
   }
 }
 
-static uint64_t residual_sad(const uint32_t * p, size_t n) {
-  uint64_t s = 0;
-  for (size_t i = 0; i < n; ++i) {
-    uint32_t v = p[i];
-    for (int k = 0; k < 4; ++k) {
-      int b = (int)((v >> (8 * k)) & 0xffu);
-      s += (uint64_t)((b >= 128) ? (256 - b) : b);
-    }
-  }
-  return s;
-}
-
 static int covering_bits(int width, int height) {
   for (int bits = 9; bits >= 2; --bits) {
     const int tile = 1 << bits;
@@ -754,19 +744,62 @@ static int prefix_of(int value, int * sym, int * nextra, int * extra) {
   return 0;
 }
 
+enum { VP8L_HUFF_TILES = 64, VP8L_HIST_STRIDE = 5 * VP8L_MAX_ALPHABET };
+
 typedef struct {
   int pass;
   int error;
   uint32_t hist[5][VP8L_MAX_ALPHABET];
   vp8l_bw_t * bw;
   huff_code_t * trees;
+  int width;
+  int col;
+  int row;
+  int mask;
+  int subsample_bits;
+  int tile_w;
+  const int * tile_group;
+  uint32_t * group_hist;
+  int cur_group;
 } walk_ctx_t;
 
+static int group_at(const walk_ctx_t * ctx, int col, int row) {
+  int tx;
+  int ty;
+  if (!ctx->tile_group || ctx->subsample_bits <= 0) {
+    return 0;
+  }
+  tx = col >> ctx->subsample_bits;
+  ty = row >> ctx->subsample_bits;
+  return ctx->tile_group[ty * ctx->tile_w + tx];
+}
+
+static void refresh_group(walk_ctx_t * ctx) {
+  if ((ctx->col & ctx->mask) == 0) {
+    ctx->cur_group = group_at(ctx, ctx->col, ctx->row);
+  }
+}
+
+static uint32_t * hist_chan(walk_ctx_t * ctx, int chan) {
+  if (ctx->group_hist) {
+    return ctx->group_hist +
+        ((size_t)ctx->cur_group * 5u + (size_t)chan) * (size_t)VP8L_MAX_ALPHABET;
+  }
+  return ctx->hist[chan];
+}
+
+static huff_code_t * tree_chan(walk_ctx_t * ctx, int chan) {
+  if (ctx->group_hist) {
+    return &ctx->trees[ctx->cur_group * 5 + chan];
+  }
+  return &ctx->trees[chan];
+}
+
 static void count_literal(walk_ctx_t * ctx, uint32_t p) {
-  ++ctx->hist[VP8L_GREEN][(p >> 8) & 0xffu];
-  ++ctx->hist[VP8L_RED][(p >> 16) & 0xffu];
-  ++ctx->hist[VP8L_BLUE][p & 0xffu];
-  ++ctx->hist[VP8L_ALPHA][(p >> 24) & 0xffu];
+  ++hist_chan(ctx, VP8L_GREEN)[(p >> 8) & 0xffu];
+  ++hist_chan(ctx, VP8L_RED)[(p >> 16) & 0xffu];
+  ++hist_chan(ctx, VP8L_BLUE)[p & 0xffu];
+  ++hist_chan(ctx, VP8L_ALPHA)[(p >> 24) & 0xffu];
 }
 
 static void emit_token(walk_ctx_t * ctx, int is_copy, uint32_t pix, int len,
@@ -785,10 +818,10 @@ static void emit_token(walk_ctx_t * ctx, int is_copy, uint32_t pix, int len,
       count_literal(ctx, pix);
     }
     else {
-      write_symbol(ctx->bw, &ctx->trees[VP8L_GREEN], (int)((pix >> 8) & 0xffu));
-      write_symbol(ctx->bw, &ctx->trees[VP8L_RED], (int)((pix >> 16) & 0xffu));
-      write_symbol(ctx->bw, &ctx->trees[VP8L_BLUE], (int)(pix & 0xffu));
-      write_symbol(ctx->bw, &ctx->trees[VP8L_ALPHA], (int)((pix >> 24) & 0xffu));
+      write_symbol(ctx->bw, tree_chan(ctx, VP8L_GREEN), (int)((pix >> 8) & 0xffu));
+      write_symbol(ctx->bw, tree_chan(ctx, VP8L_RED), (int)((pix >> 16) & 0xffu));
+      write_symbol(ctx->bw, tree_chan(ctx, VP8L_BLUE), (int)(pix & 0xffu));
+      write_symbol(ctx->bw, tree_chan(ctx, VP8L_ALPHA), (int)((pix >> 24) & 0xffu));
     }
     return;
   }
@@ -798,13 +831,13 @@ static void emit_token(walk_ctx_t * ctx, int is_copy, uint32_t pix, int len,
     return;
   }
   if (ctx->pass == 0) {
-    ++ctx->hist[VP8L_GREEN][VP8L_NUM_LITERAL + ls];
-    ++ctx->hist[VP8L_DIST][ds];
+    ++hist_chan(ctx, VP8L_GREEN)[VP8L_NUM_LITERAL + ls];
+    ++hist_chan(ctx, VP8L_DIST)[ds];
   }
   else {
-    write_symbol(ctx->bw, &ctx->trees[VP8L_GREEN], VP8L_NUM_LITERAL + ls);
+    write_symbol(ctx->bw, tree_chan(ctx, VP8L_GREEN), VP8L_NUM_LITERAL + ls);
     bw_put(ctx->bw, (uint32_t)lx, le);
-    write_symbol(ctx->bw, &ctx->trees[VP8L_DIST], ds);
+    write_symbol(ctx->bw, tree_chan(ctx, VP8L_DIST), ds);
     bw_put(ctx->bw, (uint32_t)dx, de);
   }
 }
@@ -842,12 +875,37 @@ static void lz_insert(int * head, int * prev, const uint32_t * pix, int i) {
   head[h] = i;
 }
 
+static void advance_literal(walk_ctx_t * ctx) {
+  ++ctx->col;
+  if (ctx->col >= ctx->width) {
+    ctx->col = 0;
+    ++ctx->row;
+  }
+}
+
+static void advance_copy(walk_ctx_t * ctx, int length) {
+  ctx->col += length;
+  while (ctx->col >= ctx->width) {
+    ctx->col -= ctx->width;
+    ++ctx->row;
+  }
+  if (ctx->col & ctx->mask) {
+    ctx->cur_group = group_at(ctx, ctx->col, ctx->row);
+  }
+}
+
 static int walk_pixels(const uint32_t * pix, int width, int height,
     int use_lz77, const GIMG_Allocator * alloc, walk_ctx_t * ctx) {
   const int n = width * height;
   int * prev = NULL;
   int head[1 << VP8L_LZ_HASH_BITS];
   int i = 0;
+
+  ctx->width = width;
+  ctx->col = 0;
+  ctx->row = 0;
+  ctx->cur_group = 0;
+  (void)height;
 
   if (use_lz77) {
     prev = (int *)gimg_malloc(alloc, (size_t)n * sizeof(int));
@@ -862,6 +920,7 @@ static int walk_pixels(const uint32_t * pix, int width, int height,
   while (i < n && !ctx->error) {
     int best_len = 0;
     int best_dist = 0;
+    refresh_group(ctx);
     if (use_lz77) {
       int chain = 0;
       int pos;
@@ -879,6 +938,7 @@ static int walk_pixels(const uint32_t * pix, int width, int height,
           lz_insert(head, prev, pix, i + k);
         }
         i += best_len;
+        advance_copy(ctx, best_len);
         continue;
       }
     }
@@ -887,6 +947,7 @@ static int walk_pixels(const uint32_t * pix, int width, int height,
       lz_insert(head, prev, pix, i);
     }
     ++i;
+    advance_literal(ctx);
   }
   gimg_free(alloc, prev);
   return !ctx->error;
@@ -896,7 +957,7 @@ static int walk_pixels(const uint32_t * pix, int width, int height,
  * One VP8L image body: optional Huffman-image bit (level 0 only), five
  * Huffman trees, then pixels. @a use_lz77 selects backward references.
  */
-static GIMG_Result write_coded_image(vp8l_bw_t * bw, const uint32_t * argb,
+static GIMG_Result write_one_group(vp8l_bw_t * bw, const uint32_t * argb,
     int width, int height, int write_meta_bit, int use_lz77,
     const GIMG_Allocator * alloc) {
   walk_ctx_t ctx;
@@ -910,6 +971,7 @@ static GIMG_Result write_coded_image(vp8l_bw_t * bw, const uint32_t * argb,
   memset(&ctx, 0, sizeof(ctx));
   ctx.bw = bw;
   ctx.trees = trees;
+  ctx.mask = ~0;
   bw_put(bw, 0, 1);
   if (write_meta_bit) {
     bw_put(bw, 0, 1);
@@ -976,6 +1038,430 @@ Done:
   }
   gimg_free(alloc, tokens);
   return r;
+}
+
+typedef struct {
+  size_t size;
+  int used;
+  uint64_t bits;
+  uint8_t * bytes;
+} bw_snap_t;
+
+static void snap_free(const GIMG_Allocator * alloc, bw_snap_t * s) {
+  gimg_free(alloc, s->bytes);
+  s->bytes = NULL;
+}
+
+static int bw_snap(const vp8l_bw_t * bw, bw_snap_t * s,
+    const GIMG_Allocator * alloc) {
+  s->size = bw->size;
+  s->used = bw->used;
+  s->bits = bw->bits;
+  s->bytes = (uint8_t *)gimg_malloc(alloc, bw->size ? bw->size : 1u);
+  if (!s->bytes) {
+    return 0;
+  }
+  if (bw->size) {
+    memcpy(s->bytes, bw->buf, bw->size);
+  }
+  return 1;
+}
+
+static int bw_restore(vp8l_bw_t * bw, const bw_snap_t * s) {
+  if (s->size > bw->cap && !bw_grow(bw, s->size - bw->size)) {
+    return 0;
+  }
+  if (s->size) {
+    memcpy(bw->buf, s->bytes, s->size);
+  }
+  bw->size = s->size;
+  bw->used = s->used;
+  bw->bits = s->bits;
+  bw->error = 0;
+  return 1;
+}
+
+static uint64_t bw_tell(const vp8l_bw_t * bw) {
+  return (uint64_t)bw->size * 8u + (uint64_t)bw->used;
+}
+
+static uint32_t ulog2_u64(uint64_t v) {
+  uint32_t n = 0;
+  while (v > 1u) {
+    v >>= 1;
+    ++n;
+  }
+  return n;
+}
+
+static uint64_t channel_cost(const uint32_t * h, int n) {
+  uint64_t total = 0;
+  uint64_t bits = 0;
+  uint32_t tlog;
+  for (int i = 0; i < n; ++i) {
+    total += h[i];
+  }
+  if (total <= 1u) {
+    return 0;
+  }
+  tlog = ulog2_u64(total);
+  for (int i = 0; i < n; ++i) {
+    uint32_t clog;
+    if (h[i] == 0u) {
+      continue;
+    }
+    clog = ulog2_u64(h[i]);
+    if (tlog > clog) {
+      bits += (uint64_t)h[i] * (uint64_t)(tlog - clog);
+    }
+  }
+  return bits;
+}
+
+static uint64_t group_cost(const uint32_t * h) {
+  static const int alph[5] = {
+    VP8L_LIT_ALPHABET, VP8L_NUM_LITERAL, VP8L_NUM_LITERAL, VP8L_NUM_LITERAL,
+    VP8L_NUM_DISTANCE
+  };
+  uint64_t bits = 64;
+  for (int c = 0; c < 5; ++c) {
+    bits += channel_cost(h + (size_t)c * VP8L_MAX_ALPHABET, alph[c]);
+  }
+  return bits;
+}
+
+static void add_hist(uint32_t * dst, const uint32_t * src) {
+  for (int i = 0; i < VP8L_HIST_STRIDE; ++i) {
+    dst[i] += src[i];
+  }
+}
+
+/** Merge tiles while sharing a tree group saves more header than it costs. */
+static int cluster_tiles(uint32_t * hists, int * map, int ntiles) {
+  int alive[VP8L_HUFF_TILES];
+  int ng = ntiles;
+  uint32_t sum[VP8L_HIST_STRIDE];
+
+  for (int i = 0; i < ntiles; ++i) {
+    map[i] = i;
+    alive[i] = 1;
+  }
+  for (;;) {
+    int ba = -1;
+    int bb = -1;
+    int64_t best = 0;
+    for (int a = 0; a < ntiles; ++a) {
+      if (!alive[a]) {
+        continue;
+      }
+      for (int b = a + 1; b < ntiles; ++b) {
+        int64_t inc;
+        if (!alive[b]) {
+          continue;
+        }
+        memcpy(sum, hists + (size_t)a * VP8L_HIST_STRIDE,
+            sizeof(sum));
+        add_hist(sum, hists + (size_t)b * VP8L_HIST_STRIDE);
+        inc = (int64_t)group_cost(sum) -
+            (int64_t)group_cost(hists + (size_t)a * VP8L_HIST_STRIDE) -
+            (int64_t)group_cost(hists + (size_t)b * VP8L_HIST_STRIDE);
+        if (ba < 0 || inc < best) {
+          best = inc;
+          ba = a;
+          bb = b;
+        }
+      }
+    }
+    if (ba < 0 || best >= 0) {
+      break;
+    }
+    add_hist(hists + (size_t)ba * VP8L_HIST_STRIDE,
+        hists + (size_t)bb * VP8L_HIST_STRIDE);
+    alive[bb] = 0;
+    --ng;
+    for (int t = 0; t < ntiles; ++t) {
+      if (map[t] == bb) {
+        map[t] = ba;
+      }
+    }
+  }
+  {
+    int dense[VP8L_HUFF_TILES];
+    int n = 0;
+    for (int i = 0; i < ntiles; ++i) {
+      dense[i] = -1;
+    }
+    for (int t = 0; t < ntiles; ++t) {
+      int r = map[t];
+      if (dense[r] < 0) {
+        dense[r] = n++;
+      }
+      map[t] = dense[r];
+    }
+    return n;
+  }
+}
+
+static int fill_group_hists(const uint32_t * argb, int width, int height,
+    int bits, const int * map, int tile_w, uint32_t * hists, int use_lz77,
+    const GIMG_Allocator * alloc) {
+  walk_ctx_t ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.group_hist = hists;
+  ctx.tile_group = map;
+  ctx.subsample_bits = bits;
+  ctx.tile_w = tile_w;
+  ctx.mask = (1 << bits) - 1;
+  return walk_pixels(argb, width, height, use_lz77, alloc, &ctx);
+}
+
+/**
+ * Level-0 image with a Huffman image. Group ids live in the green channel.
+ * Selection matches decode_image_data, including the group a copy lands in.
+ */
+static GIMG_Result write_groups(vp8l_bw_t * bw, const uint32_t * argb,
+    int width, int height, int bits, const int * tile_group, int num_groups,
+    int use_lz77, const GIMG_Allocator * alloc) {
+  const int tile = 1 << bits;
+  const int tw = (width + tile - 1) >> bits;
+  const int th = (height + tile - 1) >> bits;
+  const int ntrees = num_groups * 5;
+  uint32_t * meta = NULL;
+  uint32_t * hists = NULL;
+  huff_code_t * trees = NULL;
+  uint8_t * len_block = NULL;
+  uint16_t * code_block = NULL;
+  huff_token_t * tokens = NULL;
+  walk_ctx_t ctx;
+  GIMG_Result r = GIMG_OK;
+
+  meta = (uint32_t *)gimg_malloc(
+      alloc, (size_t)tw * (size_t)th * sizeof(uint32_t));
+  if (!meta) {
+    return GIMG_ERR_OOM;
+  }
+  for (int i = 0; i < tw * th; ++i) {
+    meta[i] = 0xff000000u | ((uint32_t)tile_group[i] << 8);
+  }
+  bw_put(bw, 0, 1);
+  bw_put(bw, 1, 1);
+  bw_put(bw, (uint32_t)(bits - 2), 3);
+  r = write_one_group(bw, meta, tw, th, 0, use_lz77, alloc);
+  if (r != GIMG_OK) {
+    goto Done;
+  }
+
+  hists = (uint32_t *)gimg_calloc(
+      alloc, (size_t)num_groups * (size_t)VP8L_HIST_STRIDE, sizeof(uint32_t));
+  if (!hists ||
+      !fill_group_hists(argb, width, height, bits, tile_group, tw, hists,
+          use_lz77, alloc)) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  for (int g = 0; g < num_groups; ++g) {
+    uint32_t * dist =
+        hists + ((size_t)g * 5u + (size_t)VP8L_DIST) * VP8L_MAX_ALPHABET;
+    int used = 0;
+    for (int d = 0; d < VP8L_NUM_DISTANCE; ++d) {
+      if (dist[d] != 0u) {
+        used = 1;
+        break;
+      }
+    }
+    if (!used) {
+      dist[0] = 1u;
+    }
+  }
+
+  trees = (huff_code_t *)gimg_calloc(alloc, (size_t)ntrees, sizeof(*trees));
+  len_block = (uint8_t *)gimg_calloc(
+      alloc, (size_t)ntrees * (size_t)VP8L_MAX_ALPHABET, 1u);
+  code_block = (uint16_t *)gimg_calloc(alloc,
+      (size_t)ntrees * (size_t)VP8L_MAX_ALPHABET, sizeof(uint16_t));
+  tokens = (huff_token_t *)gimg_malloc(
+      alloc, (size_t)VP8L_MAX_ALPHABET * sizeof(*tokens));
+  if (!trees || !len_block || !code_block || !tokens) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  for (int g = 0; g < num_groups; ++g) {
+    for (int t = 0; t < 5; ++t) {
+      const int ix = g * 5 + t;
+      const int alph = (t == 0) ? VP8L_LIT_ALPHABET
+                                : (t == 4 ? VP8L_NUM_DISTANCE : VP8L_NUM_LITERAL);
+      huff_code_t * tree = &trees[ix];
+      tree->lengths = len_block + (size_t)ix * VP8L_MAX_ALPHABET;
+      tree->codes = code_block + (size_t)ix * VP8L_MAX_ALPHABET;
+      tree->num_symbols = alph;
+      if (!build_lengths(
+              hists + ((size_t)g * 5u + (size_t)t) * VP8L_MAX_ALPHABET, alph,
+              15, tree->lengths)) {
+        r = GIMG_ERR_INTERNAL;
+        goto Done;
+      }
+      depths_to_codes(tree);
+      store_huffman(bw, tree, tokens, VP8L_MAX_ALPHABET);
+      clear_if_one_symbol(tree);
+    }
+  }
+  if (bw->error) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.pass = 1;
+  ctx.bw = bw;
+  ctx.trees = trees;
+  ctx.group_hist = hists;
+  ctx.tile_group = tile_group;
+  ctx.subsample_bits = bits;
+  ctx.tile_w = tw;
+  ctx.mask = tile - 1;
+  if (!walk_pixels(argb, width, height, use_lz77, alloc, &ctx) || ctx.error ||
+      bw->error) {
+    r = ctx.error ? GIMG_ERR_INTERNAL : GIMG_ERR_OOM;
+  }
+
+Done:
+  gimg_free(alloc, tokens);
+  gimg_free(alloc, code_block);
+  gimg_free(alloc, len_block);
+  gimg_free(alloc, trees);
+  gimg_free(alloc, hists);
+  gimg_free(alloc, meta);
+  return r;
+}
+
+static GIMG_Result write_coded_image(vp8l_bw_t * bw, const uint32_t * argb,
+    int width, int height, int write_meta_bit, int use_lz77,
+    const GIMG_Allocator * alloc) {
+  static const int k_bits[] = {3, 2, 4, 5, 6, 7, 8, 9};
+  bw_snap_t mark;
+  bw_snap_t best;
+  GIMG_Result r;
+  uint64_t best_bits;
+
+  if (!write_meta_bit) {
+    return write_one_group(bw, argb, width, height, 0, use_lz77, alloc);
+  }
+  memset(&mark, 0, sizeof(mark));
+  memset(&best, 0, sizeof(best));
+  if (!bw_snap(bw, &mark, alloc)) {
+    return GIMG_ERR_OOM;
+  }
+  r = write_one_group(bw, argb, width, height, 1, use_lz77, alloc);
+  if (r != GIMG_OK) {
+    snap_free(alloc, &mark);
+    return r;
+  }
+  if (!bw_snap(bw, &best, alloc)) {
+    snap_free(alloc, &mark);
+    return GIMG_ERR_OOM;
+  }
+  best_bits = bw_tell(bw);
+
+  for (int bi = 0; bi < 8; ++bi) {
+    const int bits = k_bits[bi];
+    const int tile = 1 << bits;
+    const int tw = (width + tile - 1) >> bits;
+    const int th = (height + tile - 1) >> bits;
+    const int ntiles = tw * th;
+    uint32_t * hists = NULL;
+    int * ident = NULL;
+    int * clustered = NULL;
+    int ng;
+    if (ntiles < 2 || ntiles > VP8L_HUFF_TILES) {
+      continue;
+    }
+    hists = (uint32_t *)gimg_calloc(
+        alloc, (size_t)ntiles * (size_t)VP8L_HIST_STRIDE, sizeof(uint32_t));
+    ident = (int *)gimg_malloc(alloc, (size_t)ntiles * sizeof(int));
+    clustered = (int *)gimg_malloc(alloc, (size_t)ntiles * sizeof(int));
+    if (!hists || !ident || !clustered) {
+      gimg_free(alloc, hists);
+      gimg_free(alloc, ident);
+      gimg_free(alloc, clustered);
+      snap_free(alloc, &mark);
+      snap_free(alloc, &best);
+      return GIMG_ERR_OOM;
+    }
+    for (int i = 0; i < ntiles; ++i) {
+      ident[i] = i;
+    }
+    if (!fill_group_hists(
+            argb, width, height, bits, ident, tw, hists, use_lz77, alloc)) {
+      gimg_free(alloc, hists);
+      gimg_free(alloc, ident);
+      gimg_free(alloc, clustered);
+      snap_free(alloc, &mark);
+      snap_free(alloc, &best);
+      return GIMG_ERR_OOM;
+    }
+    memcpy(clustered, ident, (size_t)ntiles * sizeof(int));
+    ng = cluster_tiles(hists, clustered, ntiles);
+    gimg_free(alloc, hists);
+    hists = NULL;
+
+    if (ng >= 2) {
+      if (!bw_restore(bw, &mark)) {
+        r = GIMG_ERR_OOM;
+        goto Fail;
+      }
+      r = write_groups(bw, argb, width, height, bits, clustered, ng, use_lz77,
+          alloc);
+      if (r == GIMG_ERR_OOM) {
+        goto Fail;
+      }
+      if (r == GIMG_OK && bw_tell(bw) < best_bits) {
+        snap_free(alloc, &best);
+        if (!bw_snap(bw, &best, alloc)) {
+          r = GIMG_ERR_OOM;
+          goto Fail;
+        }
+        best_bits = bw_tell(bw);
+      }
+    }
+    if (ntiles <= 16 && ng != ntiles) {
+      if (!bw_restore(bw, &mark)) {
+        r = GIMG_ERR_OOM;
+        goto Fail;
+      }
+      r = write_groups(bw, argb, width, height, bits, ident, ntiles, use_lz77,
+          alloc);
+      if (r == GIMG_ERR_OOM) {
+        goto Fail;
+      }
+      if (r == GIMG_OK && bw_tell(bw) < best_bits) {
+        snap_free(alloc, &best);
+        if (!bw_snap(bw, &best, alloc)) {
+          r = GIMG_ERR_OOM;
+          goto Fail;
+        }
+        best_bits = bw_tell(bw);
+      }
+    }
+    gimg_free(alloc, ident);
+    gimg_free(alloc, clustered);
+    ident = NULL;
+    clustered = NULL;
+    continue;
+  Fail:
+    gimg_free(alloc, hists);
+    gimg_free(alloc, ident);
+    gimg_free(alloc, clustered);
+    snap_free(alloc, &mark);
+    snap_free(alloc, &best);
+    return r;
+  }
+  if (!bw_restore(bw, &best)) {
+    snap_free(alloc, &mark);
+    snap_free(alloc, &best);
+    return GIMG_ERR_OOM;
+  }
+  snap_free(alloc, &mark);
+  snap_free(alloc, &best);
+  return GIMG_OK;
 }
 
 static int clamp_i8(int v) {
@@ -1256,6 +1742,24 @@ Done:
   return r;
 }
 
+/** Literal-histogram cost of a residual. Near-constant bytes score near zero. */
+static uint64_t pixel_cost(const uint32_t * p, size_t n) {
+  uint32_t hist[4][256];
+  uint64_t bits = 0;
+  memset(hist, 0, sizeof(hist));
+  for (size_t i = 0; i < n; ++i) {
+    const uint32_t v = p[i];
+    ++hist[0][(v >> 8) & 0xffu];
+    ++hist[1][(v >> 16) & 0xffu];
+    ++hist[2][v & 0xffu];
+    ++hist[3][(v >> 24) & 0xffu];
+  }
+  for (int c = 0; c < 4; ++c) {
+    bits += channel_cost(hist[c], 256);
+  }
+  return bits;
+}
+
 GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
     uint32_t height, size_t stride, int has_alpha_hint, int exact, int effort,
     const GIMG_Allocator * alloc, unsigned char ** out_bytes,
@@ -1264,7 +1768,6 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   uint32_t * argb = NULL;
   uint32_t * resid = NULL;
   uint32_t * modes = NULL;
-  uint32_t * cc_pix = NULL;
   uint32_t * trial = NULL;
   uint8_t * pal_index = NULL;
   uint32_t pal_colors[VP8L_PAL_MAX];
@@ -1279,9 +1782,6 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   int use_lz77;
   int pred_mode = 0;
   int pred_bits = 0;
-  int use_cross = 0;
-  int cc_bits = 0;
-
   if (!rgba || !out_bytes || !out_size || width == 0u || height == 0u ||
       width > (uint32_t)VP8L_MAX_DIM || height > (uint32_t)VP8L_MAX_DIM) {
     return GIMG_ERR_UNSUPPORTED;
@@ -1295,7 +1795,7 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   if (effort > 9) {
     effort = 9;
   }
-  use_subgreen = (effort >= 1);
+  use_subgreen = 0;
   use_lz77 = (effort >= 2);
 
   width_i = (int)width;
@@ -1350,30 +1850,71 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   bw_put(&bw, has_alpha ? 1u : 0u, 1);
   bw_put(&bw, 0, 3);
 
-  if (use_subgreen) {
-    apply_subtract_green(argb, n);
-  }
   if (effort >= 2 && width_i >= 2 && height_i >= 2) {
-    uint64_t best = residual_sad(argb, n);
+    /* Header bits a transform has to earn. SAD keeps a coarse fit whose
+     * leftovers are still expensive; the literal histogram is the cost
+     * the coder actually pays. */
+    const uint64_t pred_penalty = 48;
+    uint64_t best = pixel_cost(argb, n);
+    int best_sub = 0;
+    int best_mode = -1;
+    uint32_t * scratch;
     resid = (uint32_t *)gimg_malloc(alloc, n * sizeof(uint32_t));
-    if (!resid) {
+    scratch = (uint32_t *)gimg_malloc(alloc, n * sizeof(uint32_t));
+    if (!resid || !scratch) {
+      gimg_free(alloc, scratch);
       r = GIMG_ERR_OOM;
       goto Done;
     }
-    for (int mode = 0; mode < 14; ++mode) {
-      uint64_t score;
-      residual_image(argb, resid, width_i, height_i, mode);
-      score = residual_sad(resid, n);
-      if (score < best) {
-        best = score;
-        pred_mode = mode;
-        use_pred = 1;
+    for (int sub = 0; sub < 2; ++sub) {
+      uint64_t plain;
+      memcpy(scratch, argb, n * sizeof(uint32_t));
+      if (sub) {
+        apply_subtract_green(scratch, n);
+      }
+      plain = pixel_cost(scratch, n) + (sub ? 8u : 0u);
+      if (plain < best) {
+        best = plain;
+        best_sub = sub;
+        best_mode = -1;
+      }
+      for (int mode = 0; mode < 14; ++mode) {
+        uint64_t score;
+        residual_image(scratch, resid, width_i, height_i, mode);
+        score = pixel_cost(resid, n) + pred_penalty;
+        if (score < best) {
+          best = score;
+          best_sub = sub;
+          best_mode = mode;
+        }
       }
     }
-    if (use_pred) {
+    gimg_free(alloc, scratch);
+    if (best_sub) {
+      apply_subtract_green(argb, n);
+      use_subgreen = 1;
+    }
+    if (best_mode >= 0) {
+      pred_mode = best_mode;
+      use_pred = 1;
       residual_image(argb, resid, width_i, height_i, pred_mode);
       pred_bits = covering_bits(width_i, height_i);
     }
+  }
+  else if (effort >= 1) {
+    uint32_t * scratch =
+        (uint32_t *)gimg_malloc(alloc, n * sizeof(uint32_t));
+    if (!scratch) {
+      r = GIMG_ERR_OOM;
+      goto Done;
+    }
+    memcpy(scratch, argb, n * sizeof(uint32_t));
+    apply_subtract_green(scratch, n);
+    if (pixel_cost(scratch, n) + 8u < pixel_cost(argb, n)) {
+      memcpy(argb, scratch, n * sizeof(uint32_t));
+      use_subgreen = 1;
+    }
+    gimg_free(alloc, scratch);
   }
 
   if (use_subgreen) {
@@ -1404,82 +1945,106 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
   }
   {
     uint32_t * const coded = use_pred ? resid : argb;
-    /* Coarsest first. A finer grid replaces it only when residual SAD drops,
-     * so a tie keeps the smaller coefficient image. */
-    int try_bits[4];
-    int ntry = 0;
-    const int cover = covering_bits(width_i, height_i);
-    uint64_t best_sad = residual_sad(coded, n);
-    int best_bits = 0;
-    try_bits[ntry++] = cover;
-    for (int bits = 5; bits >= 3; --bits) {
-      if (bits != cover) {
-        try_bits[ntry++] = bits;
-      }
-    }
     if (effort >= 3 && n >= 2u) {
+      /* The coefficient image can cost more than the residual it saves.
+       * Keep a grid only when the finished bitstream is shorter. */
+      int try_bits[4];
+      int ntry = 0;
+      const int cover = covering_bits(width_i, height_i);
+      bw_snap_t mark;
+      bw_snap_t best;
+      uint64_t best_tell;
+      memset(&mark, 0, sizeof(mark));
+      memset(&best, 0, sizeof(best));
+      try_bits[ntry++] = cover;
+      for (int bits = 5; bits >= 3; --bits) {
+        if (bits != cover) {
+          try_bits[ntry++] = bits;
+        }
+      }
       trial = (uint32_t *)gimg_malloc(alloc, n * sizeof(uint32_t));
-      if (!trial) {
+      if (!trial || !bw_snap(&bw, &mark, alloc)) {
+        snap_free(alloc, &mark);
         r = GIMG_ERR_OOM;
         goto Done;
       }
+      bw_put(&bw, 0, 1);
+      r = write_coded_image(
+          &bw, coded, width_i, height_i, 1, use_lz77, alloc);
+      if (r != GIMG_OK || !bw_snap(&bw, &best, alloc)) {
+        snap_free(alloc, &mark);
+        snap_free(alloc, &best);
+        if (r == GIMG_OK) {
+          r = GIMG_ERR_OOM;
+        }
+        goto Done;
+      }
+      best_tell = bw_tell(&bw);
       for (int bi = 0; bi < ntry; ++bi) {
         const int bits = try_bits[bi];
         const int tile = 1 << bits;
         const int tw = (width_i + tile - 1) >> bits;
         const int th = (height_i + tile - 1) >> bits;
         uint32_t * codes;
-        uint64_t sad;
+        uint64_t tell;
         if (bits < 2 || bits > 9) {
           continue;
         }
         codes = (uint32_t *)gimg_malloc(
             alloc, (size_t)tw * (size_t)th * sizeof(uint32_t));
-        if (!codes) {
+        if (!codes || !bw_restore(&bw, &mark)) {
+          gimg_free(alloc, codes);
+          snap_free(alloc, &mark);
+          snap_free(alloc, &best);
           r = GIMG_ERR_OOM;
           goto Done;
         }
         fill_cross_tiles(coded, width_i, height_i, bits, codes);
         memcpy(trial, coded, n * sizeof(uint32_t));
         apply_cross_tiled(trial, width_i, height_i, bits, codes);
-        sad = residual_sad(trial, n);
-        if (sad < best_sad) {
-          best_sad = sad;
-          best_bits = bits;
-          gimg_free(alloc, cc_pix);
-          cc_pix = codes;
+        bw_put(&bw, 1, 1);
+        bw_put(&bw, (uint32_t)GIMG_WEBP_VP8L_CROSS_COLOR, 2);
+        bw_put(&bw, (uint32_t)(bits - 2), 3);
+        r = write_coded_image(&bw, codes, tw, th, 0, 0, alloc);
+        if (r == GIMG_OK) {
+          bw_put(&bw, 0, 1);
+          r = write_coded_image(
+              &bw, trial, width_i, height_i, 1, use_lz77, alloc);
         }
-        else {
-          gimg_free(alloc, codes);
+        gimg_free(alloc, codes);
+        if (r != GIMG_OK) {
+          snap_free(alloc, &mark);
+          snap_free(alloc, &best);
+          goto Done;
+        }
+        tell = bw_tell(&bw);
+        if (tell < best_tell) {
+          snap_free(alloc, &best);
+          if (!bw_snap(&bw, &best, alloc)) {
+            snap_free(alloc, &mark);
+            r = GIMG_ERR_OOM;
+            goto Done;
+          }
+          best_tell = tell;
         }
       }
-      if (best_bits != 0) {
-        memcpy(trial, coded, n * sizeof(uint32_t));
-        apply_cross_tiled(trial, width_i, height_i, best_bits, cc_pix);
-        memcpy(coded, trial, n * sizeof(uint32_t));
-        use_cross = 1;
-        cc_bits = best_bits;
+      if (!bw_restore(&bw, &best)) {
+        snap_free(alloc, &mark);
+        snap_free(alloc, &best);
+        r = GIMG_ERR_OOM;
+        goto Done;
+      }
+      snap_free(alloc, &mark);
+      snap_free(alloc, &best);
+    }
+    else {
+      bw_put(&bw, 0, 1); /* end transforms */
+      r = write_coded_image(
+          &bw, coded, width_i, height_i, 1, use_lz77, alloc);
+      if (r != GIMG_OK) {
+        goto Done;
       }
     }
-  }
-  if (use_cross) {
-    const int tile = 1 << cc_bits;
-    const int tw = (width_i + tile - 1) >> cc_bits;
-    const int th = (height_i + tile - 1) >> cc_bits;
-    bw_put(&bw, 1, 1);
-    bw_put(&bw, (uint32_t)GIMG_WEBP_VP8L_CROSS_COLOR, 2);
-    bw_put(&bw, (uint32_t)(cc_bits - 2), 3);
-    r = write_coded_image(&bw, cc_pix, tw, th, 0, 0, alloc);
-    if (r != GIMG_OK) {
-      goto Done;
-    }
-  }
-  bw_put(&bw, 0, 1); /* end transforms */
-
-  r = write_coded_image(
-      &bw, use_pred ? resid : argb, width_i, height_i, 1, use_lz77, alloc);
-  if (r != GIMG_OK) {
-    goto Done;
   }
 
   if (!bw_finish(&bw) || bw.error) {
@@ -1510,7 +2075,6 @@ Done:
   gimg_free(alloc, argb);
   gimg_free(alloc, resid);
   gimg_free(alloc, modes);
-  gimg_free(alloc, cc_pix);
   gimg_free(alloc, trial);
   gimg_free(alloc, pal_index);
   return r;
