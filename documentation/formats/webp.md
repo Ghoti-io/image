@@ -97,8 +97,8 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   `XMP ` via `VP8X`. See Save.
 - **VP8 lossy encode** when `webp_lossless = GIMG_WEBP_COMPRESS_LOSSY`:
   Intra16 or sixteen 4×4 predictors, a coefficient trellis, and a
-  coarser segment quantizer on a flat macroblock when that score is
-  lower. Non-opaque input adds an uncompressed `ALPH` chunk and
+  finer segment quantizer on a macroblock the 16×16 predictors cannot
+  explain. Non-opaque input adds an uncompressed `ALPH` chunk and
   premultiplies the colour. See Save and `make webp-rd`.
 
 ## YUV→RGB (a match, not a derivation)
@@ -154,10 +154,11 @@ reconstruction the decoder will see. RGB becomes YUV with the ITU-R
 BT.601 studio matrix that RFC cites, at scale 2^16; chroma is the mean
 of each 2×2 and uses the same four predictors. After the deadzone
 quantizer, a backward pass drops a coefficient when its tokens cost
-more than the error it removes. A flat macroblock beside a detailed
-one is offered a quantizer 24 steps coarser and keeps it when that
-score is lower (section 9.3); a uniform picture stays on the frame
-quantizer. The section 15 normal
+more than the error it removes. A macroblock whose best DC, vertical
+or horizontal predictor still leaves more than 80000 of squared error
+takes a finer segment index (section 9.3). At effort 4 that index is
+18, eight steps under the frame quantizer. A picture where every
+macroblock agrees stays on one quantizer. The section 15 normal
 filter then runs at the level whose filtered reconstruction is
 closest to the source. The level is six bits either way, so a flat
 picture, where every level ties, stays off. Prediction keeps the
@@ -170,15 +171,15 @@ decoder. The quantizer ladder follows libwebp's single-segment
 `QualityToCompression` at `cwebp` qualities 15, 35, 50, 65, 75, 80,
 85, 90, 95 and 100, so effort 4 is index 26, the same index
 `cwebp -q 75` writes when the frame has one segment. On a 16×32
-one-pixel checkerboard at that effort the 4×4 predictors write
-**176** bytes. One bright pixel on black at effort 2 (index 38) is
-**56** bytes; the deadzone quantizer alone writes 58. At effort 4
-that spike is 60 bytes either way. On the RD corpus the gray ramp
-is 94 bytes at 49.3 dB against `cwebp -q 75 -m 0` at 104 bytes and
-49.7 dB. Hopper is 2976 bytes at 32.7 dB against 3930 at 33.6 dB, and
-the copyleft logo is 3414 at 42.9 dB against 4574 at 43.3 dB. The
-200×300 and 300×300 gray type is 832 bytes at 47.2 dB and 998 at
-47.6 dB, against 1388 at 47.5 dB and 1880 at 47.9 dB. Rate and
+one-pixel checkerboard at that effort both macroblocks take the
+finer index and the 4×4 predictors write **186** bytes. One bright
+pixel on black at effort 2 takes the finer index and is **60** bytes.
+On the RD corpus the gray ramp is 102 bytes at 49.3 dB against
+`cwebp -q 75 -m 0` at 104 bytes and 49.7 dB. Hopper is 3548 bytes at
+34.0 dB against 3930 at 33.6 dB, and the copyleft logo is 3874 at
+44.8 dB against 4574 at 43.3 dB. The 200×300 and 300×300 gray type
+is 884 bytes at 47.6 dB and 1068 at 48.1 dB, against 1388 at 47.5 dB
+and 1880 at 47.9 dB. Rate and
 distortion vs that baseline are reported by
 `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh webp-rd`; axes:
 bytes and PSNR-RGB over opaque pixels). The target exits non-zero only
@@ -260,9 +261,9 @@ PSNR or size.
   stays uneven inside one macroblock, a ramp whose bit cost moves the
   top-left block off the horizontal predictor, a vertical step whose
   lower block is the vertical predictor, a one-pixel checkerboard whose
-  4×4 predictors write 176 bytes, a one-pixel spike the trellis writes
-  as 56 bytes at effort 2, a flat block beside a checkerboard that stays
-  on the frame quantizer, a filter level that stays 0 on a flat picture and is
+  4×4 predictors write 186 bytes, a one-pixel spike at effort 2 writes
+  60 bytes, a flat block beside a checkerboard that sets the segment
+  flag, a filter level that stays 0 on a flat picture and is
   15 on a horizontal ramp, an alpha plane kept exactly, and `make webp-rd`
   vs `cwebp -q 75 -m 0` on `third_party/webp-rd/`
   (`tools/oracle/fetch.sh webp-rd`).

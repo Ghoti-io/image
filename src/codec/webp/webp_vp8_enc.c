@@ -34,9 +34,9 @@
  * and the tokens; one bit is priced at the luma AC quantizer step, and
  * an equal score stays with the earlier choice. After the deadzone
  * quantizer, a backward pass drops a luma AC coefficient when its
- * tokens cost more than the error it removes. A flat macroblock
- * beside a detailed one is offered a coarser segment quantizer and
- * keeps it when that score is lower (section 9.3). The Intra16
+ * tokens cost more than the error it removes. A macroblock the 16×16
+ * predictors cannot explain takes a finer segment quantizer
+ * (section 9.3). The Intra16
  * residual is the section 14 Walsh-Hadamard of the sixteen DC
  * coefficients and the 4×4 DCT of everything else. A 4×4 macroblock has
  * no Y2 block. A macroblock whose coefficients are all zero is skipped
@@ -107,6 +107,17 @@ static const uint8_t * const k_cat3456[] = {
 static const int k_effort_q[10] = {
   68, 48, 38, 30, 26, 19, 14, 9, 4, 0
 };
+
+/* Finer index for a macroblock the 16×16 predictors cannot explain.
+ * Susceptibility 96 on the same curve, at strength 50. Effort 4 is 18. */
+static const int k_fine_q[10] = {
+  50, 34, 27, 21, 18, 13, 9, 6, 2, 0
+};
+
+/* Residual sum of squares, over the macroblock, above which the finer
+ * index is worth offering. A smooth ramp and a flat gray field stay on
+ * the frame quantizer. */
+enum { VP8_FINE_SSE = 80000 };
 
 typedef struct {
   int range;
@@ -636,6 +647,34 @@ static void fill_pred(const uint8_t * rec, int stride, int x, int y, int n,
   }
 }
 
+/** Minimum squared error of the DC, vertical and horizontal predictors,
+ *  read from the source. Padding outside the frame counts as zero. */
+static int pred_energy(const uint8_t * src, int stride, int bx, int by,
+    int lim_w, int lim_h) {
+  int mode;
+  int best = -1;
+  for (mode = 0; mode < 3; ++mode) {
+    uint8_t pred[256];
+    int sum = 0;
+    int r;
+    int c;
+    fill_pred(src, stride, bx, by, 16, mode, pred);
+    for (r = 0; r < 16; ++r) {
+      for (c = 0; c < 16; ++c) {
+        const int yy = by + r;
+        const int xx = bx + c;
+        const int s = (yy < lim_h && xx < lim_w) ? src[yy * stride + xx] : 0;
+        const int d = s - (int)pred[r * 16 + c];
+        sum += d * d;
+      }
+    }
+    if (best < 0 || sum < best) {
+      best = sum;
+    }
+  }
+  return best;
+}
+
 static int64_t sse_rect(const uint8_t * rec, int rec_stride,
     const uint8_t * src, int src_stride, int x, int y, int n, int lim_w,
     int lim_h) {
@@ -1144,33 +1183,6 @@ static int uv_residual_cost(int levels_u[4][16], int levels_v[4][16],
   return cost;
 }
 
-/* Mean squared deviation below this may take a coarser quantizer. The
- * block keeps it only when that score beats the frame quantizer, and
- * only when the frame also has a block that stays. A uniform picture
- * stays on the single frame quantizer. */
-enum { VP8_FLAT_VAR = 256, VP8_SEG_COARSE = 24 };
-
-static int mb_variance(const uint8_t * plane, int stride, int bx, int by) {
-  int sum = 0;
-  int var = 0;
-  int y;
-  int x;
-  int mean;
-  for (y = 0; y < 16; ++y) {
-    for (x = 0; x < 16; ++x) {
-      sum += plane[(by + y) * stride + bx + x];
-    }
-  }
-  mean = sum / 256;
-  for (y = 0; y < 16; ++y) {
-    for (x = 0; x < 16; ++x) {
-      const int d = (int)plane[(by + y) * stride + bx + x] - mean;
-      var += d * d;
-    }
-  }
-  return var / 256;
-}
-
 /** Section 14.1 steps for one quantizer index, including the decoder's
  *  Y2 AC floor and UV DC cap. */
 static void mb_quants(int q_index, int * y1_dc, int * y1_ac, int * y2_dc,
@@ -1194,201 +1206,6 @@ static void mb_quants(int q_index, int * y1_dc, int * y1_ac, int * y2_dc,
   *uv_ac = (int)gimg_vp8_ac_qlookup[q];
 }
 
-static const uint8_t k_ymode_as_bmode[4];
-
-static int64_t build_i16(const uint8_t * src, int src_stride, int src_w,
-    int src_h, uint8_t * rec, int rec_stride, int bx, int by, int mode,
-    int y1_ac_q, int y2_dc_q, int y2_ac_q, int ac_levels[16][16],
-    int y2_level[16], vp8_prob_set probs);
-static int64_t build_uv(const uint8_t * src_u, const uint8_t * src_v,
-    uint8_t * rec_u, uint8_t * rec_v, int stride, int bx, int by, int lim_w,
-    int lim_h, int mode, int uv_dc_q, int uv_ac_q, int levels_u[4][16],
-    int levels_v[4][16], vp8_prob_set probs);
-static int64_t build_b4(const uint8_t * src, int src_stride, int src_w,
-    int src_h, uint8_t * rec, int rec_stride, int mb_w, int mb_x, int mb_y,
-    int sx, int sy, int mode, int y1_dc_q, int y1_ac_q, int levels[16],
-    vp8_prob_set probs);
-
-/** Rebuild one macroblock at @a q_index with the modes already chosen.
- *  Returns reconstructed error plus token cost. One bit is priced at
- *  this quantizer's luma AC step. Nonzero flags for this macroblock are
- *  replaced; a 4×4 macroblock leaves the Y2 flags alone. */
-static int64_t score_chosen_mb(const uint8_t * y_plane, int y_stride,
-    int width, int height, uint8_t * rec_y, const uint8_t * u_plane,
-    const uint8_t * v_plane, uint8_t * rec_u, uint8_t * rec_v, int uv_stride,
-    int uv_w, int uv_h, int mb_w, int mb_x, int mb_y, int q_index, int y_mode,
-    int uv_mode, const uint8_t * b_mode, uint8_t * y_nz, uint8_t * u_nz,
-    uint8_t * v_nz, uint8_t * y2_above, int * y2_left, int y4_stride,
-    int uv4_stride, const uint8_t * above_b, const uint8_t * left_b,
-    vp8_prob_set probs) {
-  int y1_dc, y1_ac, y2_dc, y2_ac, uv_dc, uv_ac;
-  int ac_levels[16][16];
-  int y2_level[16];
-  int levels_u[4][16];
-  int levels_v[4][16];
-  int64_t sse = 0;
-  int bits = 0;
-  int sy;
-  int sx;
-  mb_quants(q_index, &y1_dc, &y1_ac, &y2_dc, &y2_ac, &uv_dc, &uv_ac);
-  if (y_mode == 4) {
-    bits = bool_cost(0, 145);
-    for (sy = 0; sy < 4; ++sy) {
-      for (sx = 0; sx < 4; ++sx) {
-        int levels[16];
-        const int bi = sy * 4 + sx;
-        const int fx = mb_x * 4 + sx;
-        const int fy = mb_y * 4 + sy;
-        const int above_mode = (sy == 0) ? above_b[mb_x * 4 + sx] : b_mode[bi - 4];
-        const int left_mode = (sx == 0) ? left_b[sy] : b_mode[bi - 1];
-        int ctx = 0;
-        if (fy > 0 && y_nz[(fy - 1) * y4_stride + fx]) {
-          ctx++;
-        }
-        if (fx > 0 && y_nz[fy * y4_stride + (fx - 1)]) {
-          ctx++;
-        }
-        sse += build_b4(y_plane, y_stride, width, height, rec_y, y_stride,
-            mb_w, mb_x, mb_y, sx, sy, b_mode[bi], y1_dc, y1_ac, levels, probs);
-        bits += bmode_cost(b_mode[bi],
-                    gimg_vp8_kf_bmode_prob[above_mode][left_mode]) +
-            block_bit_cost(probs[3], ctx, 0, levels);
-        y_nz[fy * y4_stride + fx] = (uint8_t)block_nz(levels, 0);
-      }
-    }
-  }
-  else {
-    sse = build_i16(y_plane, y_stride, width, height, rec_y, y_stride,
-        mb_x * 16, mb_y * 16, y_mode, y1_ac, y2_dc, y2_ac, ac_levels, y2_level,
-        probs);
-    bits = ymode_cost(y_mode) +
-        i16_residual_cost(ac_levels, y2_level, y_nz, y4_stride, mb_x, mb_y,
-            *y2_left, y2_above[mb_x], probs);
-    *y2_left = block_nz(y2_level, 0);
-    y2_above[mb_x] = (uint8_t)*y2_left;
-    for (sy = 0; sy < 4; ++sy) {
-      for (sx = 0; sx < 4; ++sx) {
-        const int fx = mb_x * 4 + sx;
-        const int fy = mb_y * 4 + sy;
-        y_nz[fy * y4_stride + fx] =
-            (uint8_t)block_nz(ac_levels[sy * 4 + sx], 1);
-      }
-    }
-  }
-  sse += build_uv(u_plane, v_plane, rec_u, rec_v, uv_stride, mb_x * 8,
-      mb_y * 8, uv_w, uv_h, uv_mode, uv_dc, uv_ac, levels_u, levels_v, probs);
-  bits += uvmode_cost(uv_mode) +
-      uv_residual_cost(levels_u, levels_v, u_nz, v_nz, uv4_stride, mb_x, mb_y,
-          probs);
-  for (sy = 0; sy < 2; ++sy) {
-    for (sx = 0; sx < 2; ++sx) {
-      const int fx = mb_x * 2 + sx;
-      const int fy = mb_y * 2 + sy;
-      u_nz[fy * uv4_stride + fx] = (uint8_t)block_nz(levels_u[sy * 2 + sx], 0);
-      v_nz[fy * uv4_stride + fx] = (uint8_t)block_nz(levels_v[sy * 2 + sx], 0);
-    }
-  }
-  return sse * 256 + (int64_t)bits * y1_ac;
-}
-
-/** Section 9.3. A flat macroblock takes the coarser quantizer when that
- *  score is lower than the frame quantizer's. Both classes have to
- *  occur, or the frame stays unsegmented. */
-static void choose_segments(const uint8_t * y_plane, int y_stride, int width,
-    int height, uint8_t * rec_y, const uint8_t * u_plane,
-    const uint8_t * v_plane, uint8_t * rec_u, uint8_t * rec_v, int uv_stride,
-    int uv_w, int uv_h, int mb_w, int mb_h, int base_q, const uint8_t * y_mode,
-    const uint8_t * uv_mode, const uint8_t * b_mode, uint8_t * seg,
-    uint8_t * y_nz, uint8_t * u_nz, uint8_t * v_nz, uint8_t * y2_above,
-    uint8_t * above_b, int y4_stride, int uv4_stride, int * seg_on,
-    vp8_prob_set probs) {
-  int ncoarse = 0;
-  int nfine = 0;
-  int mb_y;
-  int mb_x;
-  memset(y_nz, 0, (size_t)y4_stride * (size_t)mb_h * 4u);
-  memset(u_nz, 0, (size_t)uv4_stride * (size_t)mb_h * 2u);
-  memset(v_nz, 0, (size_t)uv4_stride * (size_t)mb_h * 2u);
-  memset(y2_above, 0, (size_t)mb_w);
-  memset(above_b, 0, (size_t)mb_w * 4u);
-  for (mb_y = 0; mb_y < mb_h; ++mb_y) {
-    uint8_t left_b[4] = { 0, 0, 0, 0 };
-    int y2_left = 0;
-    for (mb_x = 0; mb_x < mb_w; ++mb_x) {
-      const int mi = mb_y * mb_w + mb_x;
-      const int var = mb_variance(y_plane, y_stride, mb_x * 16, mb_y * 16);
-      const int y2_in = y2_left;
-      const uint8_t y2_above_in = y2_above[mb_x];
-      int use_coarse = 0;
-      if (var < VP8_FLAT_VAR) {
-        int64_t fine;
-        int64_t coarse;
-        y2_left = y2_in;
-        y2_above[mb_x] = y2_above_in;
-        fine = score_chosen_mb(y_plane, y_stride, width, height, rec_y,
-            u_plane, v_plane, rec_u, rec_v, uv_stride, uv_w, uv_h, mb_w, mb_x,
-            mb_y, base_q, y_mode[mi], uv_mode[mi], b_mode + mi * 16, y_nz,
-            u_nz, v_nz, y2_above, &y2_left, y4_stride, uv4_stride, above_b,
-            left_b, probs);
-        y2_left = y2_in;
-        y2_above[mb_x] = y2_above_in;
-        coarse = score_chosen_mb(y_plane, y_stride, width, height, rec_y,
-            u_plane, v_plane, rec_u, rec_v, uv_stride, uv_w, uv_h, mb_w, mb_x,
-            mb_y, base_q + VP8_SEG_COARSE, y_mode[mi], uv_mode[mi],
-            b_mode + mi * 16, y_nz, u_nz, v_nz, y2_above, &y2_left, y4_stride,
-            uv4_stride, above_b, left_b, probs);
-        if (coarse < fine) {
-          use_coarse = 1;
-        }
-        else {
-          y2_left = y2_in;
-          y2_above[mb_x] = y2_above_in;
-          score_chosen_mb(y_plane, y_stride, width, height, rec_y, u_plane,
-              v_plane, rec_u, rec_v, uv_stride, uv_w, uv_h, mb_w, mb_x, mb_y,
-              base_q, y_mode[mi], uv_mode[mi], b_mode + mi * 16, y_nz, u_nz,
-              v_nz, y2_above, &y2_left, y4_stride, uv4_stride, above_b, left_b,
-              probs);
-        }
-      }
-      else {
-        score_chosen_mb(y_plane, y_stride, width, height, rec_y, u_plane,
-            v_plane, rec_u, rec_v, uv_stride, uv_w, uv_h, mb_w, mb_x, mb_y,
-            base_q, y_mode[mi], uv_mode[mi], b_mode + mi * 16, y_nz, u_nz,
-            v_nz, y2_above, &y2_left, y4_stride, uv4_stride, above_b, left_b,
-            probs);
-      }
-      if (y_mode[mi] == 4) {
-        int j;
-        y2_left = y2_in;
-        for (j = 0; j < 4; ++j) {
-          above_b[mb_x * 4 + j] = b_mode[mi * 16 + 12 + j];
-          left_b[j] = b_mode[mi * 16 + j * 4 + 3];
-        }
-      }
-      else {
-        int j;
-        const uint8_t mapped = k_ymode_as_bmode[y_mode[mi]];
-        for (j = 0; j < 4; ++j) {
-          above_b[mb_x * 4 + j] = mapped;
-          left_b[j] = mapped;
-        }
-      }
-      if (use_coarse) {
-        seg[mi] = 1;
-        ncoarse++;
-      }
-      else {
-        seg[mi] = 0;
-        nfine++;
-      }
-    }
-  }
-  *seg_on = ncoarse > 0 && nfine > 0;
-  if (!*seg_on) {
-    memset(seg, 0, (size_t)mb_w * (size_t)mb_h);
-  }
-}
-
 /** Section 9.3 signed literal. A zero omits the magnitude. The sign bit
  *  is 1 when the value is negative. */
 static void write_signed_value(bool_writer_t * bw, int value, int nbits) {
@@ -1403,21 +1220,21 @@ static void write_signed_value(bool_writer_t * bw, int value, int nbits) {
   bw_put_bit_uniform(bw, value < 0);
 }
 
-/** Section 10 tree, probabilities left at 255. Segment 0 is two likely
- *  zeros. Segment 1 is the flat-block quantizer. */
-static void write_segment_id(bool_writer_t * bw, int id) {
+/** Section 10 tree. @a prob is P(zero) for the two branch levels. */
+static void write_segment_id(bool_writer_t * bw, int id, const int prob[3]) {
   if (id < 2) {
-    bw_put_bit(bw, 0, 255);
-    bw_put_bit(bw, id == 1, 255);
+    bw_put_bit(bw, 0, prob[0]);
+    bw_put_bit(bw, id == 1, prob[1]);
   }
   else {
-    bw_put_bit(bw, 1, 255);
-    bw_put_bit(bw, id == 3, 255);
+    bw_put_bit(bw, 1, prob[0]);
+    bw_put_bit(bw, id == 3, prob[2]);
   }
 }
 
 static void write_frame_header(bool_writer_t * part0, int base_q, int seg_on,
-    int filter_level, int skip_on, int skip_prob, vp8_prob_set probs) {
+    int q_delta, const int seg_prob[3], int filter_level, int skip_on,
+    int skip_prob, vp8_prob_set probs) {
   int t, b, c, p;
   int s;
   /* keyframe: colorspace=0 (YUV), clamp=0 */
@@ -1429,15 +1246,16 @@ static void write_frame_header(bool_writer_t * part0, int base_q, int seg_on,
     bw_put_bit_uniform(part0, 1); /* update the quantizers */
     bw_put_bit_uniform(part0, 0); /* deltas, added to the frame index */
     write_signed_value(part0, 0, 7);
-    write_signed_value(part0, VP8_SEG_COARSE, 7);
+    write_signed_value(part0, q_delta, 7);
     write_signed_value(part0, 0, 7);
     write_signed_value(part0, 0, 7);
     for (s = 0; s < 4; ++s) {
       write_signed_value(part0, 0, 6); /* loop filter left at 0 */
     }
-    bw_put_bit_uniform(part0, 0); /* probabilities stay 255 */
-    bw_put_bit_uniform(part0, 0);
-    bw_put_bit_uniform(part0, 0);
+    for (s = 0; s < 3; ++s) {
+      bw_put_bit_uniform(part0, 1);
+      bw_put_bits(part0, (uint32_t)seg_prob[s], 8);
+    }
   }
   /* Section 15. Normal filter, sharpness 0, no mode or reference
    * delta. The level is fixed width, so 0 costs the same as any other. */
@@ -1924,7 +1742,8 @@ static void fit_probs(const vp8_counts * counts, vp8_prob_table dst) {
 static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
     int height, uint8_t * rec_y, const uint8_t * u_plane,
     const uint8_t * v_plane, uint8_t * rec_u, uint8_t * rec_v, int uv_stride,
-    int uv_w, int uv_h, int mb_w, int mb_h, int base_q, const uint8_t * y_mode,
+    int uv_w, int uv_h, int mb_w, int mb_h, int base_q, int q_delta,
+    const uint8_t * y_mode,
     const uint8_t * uv_mode, const uint8_t * b_mode, const uint8_t * seg,
     uint8_t * y_nz, uint8_t * u_nz, uint8_t * v_nz, uint8_t * y2_above,
     int y4_stride, int uv4_stride, int skip_on, const uint8_t * mb_skip,
@@ -1951,7 +1770,7 @@ static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
       int sy;
       int sx;
       int any = 0;
-      mb_quants(base_q + (seg[mi] ? VP8_SEG_COARSE : 0), &y1_dc_m, &y1_ac_m,
+      mb_quants(base_q + (seg[mi] ? q_delta : 0), &y1_dc_m, &y1_ac_m,
           &y2_dc_m, &y2_ac_m, &uv_dc_m, &uv_ac_m);
       if (skip_on && mb_skip[mi]) {
         int zi;
@@ -2065,7 +1884,8 @@ static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
 static void choose_skips(const uint8_t * y_plane, int y_stride, int width,
     int height, uint8_t * rec_y, const uint8_t * u_plane,
     const uint8_t * v_plane, uint8_t * rec_u, uint8_t * rec_v, int uv_stride,
-    int uv_w, int uv_h, int mb_w, int mb_h, int base_q, const uint8_t * y_mode,
+    int uv_w, int uv_h, int mb_w, int mb_h, int base_q, int q_delta,
+    const uint8_t * y_mode,
     const uint8_t * uv_mode, const uint8_t * b_mode, const uint8_t * seg,
     uint8_t * y_nz, uint8_t * u_nz, uint8_t * v_nz, uint8_t * y2_above,
     int y4_stride, int uv4_stride, uint8_t * mb_skip, int * skip_on,
@@ -2096,7 +1916,7 @@ static void choose_skips(const uint8_t * y_plane, int y_stride, int width,
       int sy;
       int sx;
       int cost = 0;
-      mb_quants(base_q + (seg[mi] ? VP8_SEG_COARSE : 0), &y1_dc_m, &y1_ac_m,
+      mb_quants(base_q + (seg[mi] ? q_delta : 0), &y1_dc_m, &y1_ac_m,
           &y2_dc_m, &y2_ac_m, &uv_dc_m, &uv_ac_m);
       if (y_mode[mi] == 4) {
         int b_nz[16];
@@ -2422,6 +2242,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   uint8_t * mb_nz = NULL;
   int filter_level = 0;
   int seg_on = 0;
+  int q_delta = 0;
+  int seg_prob[3] = { 255, 255, 255 };
   int skip_on = 0;
   int skip_prob = 0;
   int prob_pass;
@@ -2516,6 +2338,36 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   }
 
   memset(seg, 0, (size_t)mb_w * mb_h);
+  {
+    int nfine = 0;
+    const int nmb = (int)mb_w * (int)mb_h;
+    for (mb_y = 0; mb_y < mb_h; ++mb_y) {
+      for (mb_x = 0; mb_x < mb_w; ++mb_x) {
+        const uint32_t mi = mb_y * mb_w + mb_x;
+        if (pred_energy(y_plane, (int)y_stride, (int)mb_x * 16,
+                (int)mb_y * 16, (int)width, (int)height) > VP8_FINE_SSE) {
+          seg[mi] = 1;
+          nfine++;
+        }
+      }
+    }
+    if (nfine > 0 && nfine < nmb) {
+      int p1;
+      seg_on = 1;
+      q_delta = k_fine_q[effort] - base_q;
+      p1 = ((nmb - nfine) * 255 + nmb / 2) / nmb;
+      if (p1 < 1) {
+        p1 = 1;
+      }
+      if (p1 > 255) {
+        p1 = 255;
+      }
+      seg_prob[1] = p1;
+    }
+    else if (nfine == nmb) {
+      base_q = k_fine_q[effort];
+    }
+  }
 
   /* Score is reconstructed SSE plus the bool-coder cost of the mode
    * and its tokens. One bit (256 cost units) is priced at the luma AC
@@ -2567,7 +2419,7 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
       int y2_ac_m;
       int uv_dc_m;
       int uv_ac_m;
-      mb_quants(base_q + (seg[mi] ? VP8_SEG_COARSE : 0), &y1_dc_m, &y1_ac_m,
+      mb_quants(base_q + (seg[mi] ? q_delta : 0), &y1_dc_m, &y1_ac_m,
           &y2_dc_m, &y2_ac_m, &uv_dc_m, &uv_ac_m);
       for (mode = 0; mode < 4; ++mode) {
         const int64_t sse = build_i16(y_plane, (int)y_stride, (int)width,
@@ -2654,7 +2506,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     memset(&counts, 0, sizeof counts);
     tally_frame(y_plane, (int)y_stride, (int)width, (int)height, rec_y, u_plane,
         v_plane, rec_u, rec_v, (int)uv_stride, (int)uv_w, (int)uv_h, (int)mb_w,
-        (int)mb_h, base_q, y_mode, uv_mode, b_mode, seg, y_nz, u_nz, v_nz,
+        (int)mb_h, base_q, q_delta, y_mode, uv_mode, b_mode, seg, y_nz, u_nz,
+        v_nz,
         y2_above, y4_stride, uv4_stride, 0, NULL, coeff_prob, NULL, &counts);
     fit_probs(&counts, write_prob);
     if (prob_pass == 1 ||
@@ -2664,14 +2517,10 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     memcpy(coeff_prob, write_prob, sizeof coeff_prob);
   }
 
-  choose_segments(y_plane, (int)y_stride, (int)width, (int)height, rec_y,
-      u_plane, v_plane, rec_u, rec_v, (int)uv_stride, (int)uv_w, (int)uv_h,
-      (int)mb_w, (int)mb_h, base_q, y_mode, uv_mode, b_mode, seg, y_nz, u_nz,
-      v_nz, y2_above, above_b, y4_stride, uv4_stride, &seg_on, coeff_prob);
-
   choose_skips(y_plane, (int)y_stride, (int)width, (int)height, rec_y, u_plane,
       v_plane, rec_u, rec_v, (int)uv_stride, (int)uv_w, (int)uv_h, (int)mb_w,
-      (int)mb_h, base_q, y_mode, uv_mode, b_mode, seg, y_nz, u_nz, v_nz,
+      (int)mb_h, base_q, q_delta, y_mode, uv_mode, b_mode, seg, y_nz, u_nz,
+      v_nz,
       y2_above, y4_stride, uv4_stride, mb_skip, &skip_on, &skip_prob,
       coeff_prob);
   {
@@ -2679,7 +2528,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     memset(&counts, 0, sizeof counts);
     tally_frame(y_plane, (int)y_stride, (int)width, (int)height, rec_y, u_plane,
         v_plane, rec_u, rec_v, (int)uv_stride, (int)uv_w, (int)uv_h, (int)mb_w,
-        (int)mb_h, base_q, y_mode, uv_mode, b_mode, seg, y_nz, u_nz, v_nz,
+        (int)mb_h, base_q, q_delta, y_mode, uv_mode, b_mode, seg, y_nz, u_nz,
+        v_nz,
         y2_above, y4_stride, uv4_stride, skip_on, mb_skip, coeff_prob, mb_nz,
         &counts);
     fit_probs(&counts, write_prob);
@@ -2693,8 +2543,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   if (r != GIMG_OK) {
     goto Done;
   }
-  write_frame_header(&part0, base_q, seg_on, filter_level, skip_on, skip_prob,
-      write_prob);
+  write_frame_header(&part0, base_q, seg_on, q_delta, seg_prob, filter_level,
+      skip_on, skip_prob, write_prob);
 
   memset(above_b, 0, (size_t)mb_w * 4u);
   for (mb_y = 0; mb_y < mb_h; ++mb_y) {
@@ -2703,7 +2553,7 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
       const uint32_t mi = mb_y * mb_w + mb_x;
       int j;
       if (seg_on) {
-        write_segment_id(&part0, seg[mi]);
+        write_segment_id(&part0, seg[mi], seg_prob);
       }
       if (skip_on) {
         bw_put_bit(&part0, mb_skip[mi] ? 1 : 0, skip_prob);
@@ -2773,7 +2623,7 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
         int y2_ac_m;
         int uv_dc_m;
         int uv_ac_m;
-        mb_quants(base_q + (seg[mi] ? VP8_SEG_COARSE : 0), &y1_dc_m, &y1_ac_m,
+        mb_quants(base_q + (seg[mi] ? q_delta : 0), &y1_dc_m, &y1_ac_m,
             &y2_dc_m, &y2_ac_m, &uv_dc_m, &uv_ac_m);
 
         if (skip_on && mb_skip[mi]) {
