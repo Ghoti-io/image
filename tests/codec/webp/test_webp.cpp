@@ -487,6 +487,246 @@ TEST(Webp, AnimDisposeBackground) {
   gimg_doc_destroy(doc);
 }
 
+GIMG_Raster * solid_rgba(uint32_t w, uint32_t h, uint8_t r, uint8_t g,
+    uint8_t b, uint8_t a) {
+  GIMG_Raster * raster = nullptr;
+  if (gimg_raster_create(w, h, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0,
+          &raster) != GIMG_OK) {
+    return nullptr;
+  }
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  const size_t stride = gimg_raster_stride_bytes(raster);
+  for (uint32_t y = 0; y < h; ++y) {
+    uint8_t * row = px + y * stride;
+    for (uint32_t x = 0; x < w; ++x) {
+      row[x * 4u + 0u] = r;
+      row[x * 4u + 1u] = g;
+      row[x * 4u + 2u] = b;
+      row[x * 4u + 3u] = a;
+    }
+  }
+  return raster;
+}
+
+/** Leave an animation where verify_webp_output.py can see it. A lossless
+ *  file gets one sidecar per frame; a lossy file is marked so the script
+ *  checks anim_dump parity and not fidelity to the source. */
+void publish_animation(const char * name, const std::vector<uint8_t> & bytes,
+    const std::vector<GIMG_Raster *> & frames, int64_t encode_us, bool lossy) {
+  mkdir(GIMG_TEST_OUT_WEBP, 0755);
+  const std::string path = std::string(GIMG_TEST_OUT_WEBP) + "/" + name;
+  {
+    std::ofstream out(path, std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(out)) << path;
+    out.write(reinterpret_cast<const char *>(bytes.data()),
+        static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(static_cast<bool>(out)) << path;
+  }
+  {
+    std::ofstream side(path + ".anim", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(side)) << path;
+  }
+  if (lossy) {
+    std::ofstream side(path + ".lossy", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(side)) << path;
+  }
+  else {
+    for (size_t i = 0; i < frames.size(); ++i) {
+      const uint32_t w = gimg_raster_width(frames[i]);
+      const uint32_t h = gimg_raster_height(frames[i]);
+      const size_t stride = gimg_raster_stride_bytes(frames[i]);
+      const auto * px =
+          static_cast<const uint8_t *>(gimg_raster_pixels(frames[i]));
+      std::ofstream side(path + ".f" + std::to_string(i) + ".rgba",
+          std::ios::binary);
+      ASSERT_TRUE(static_cast<bool>(side)) << path;
+      for (uint32_t y = 0; y < h; ++y) {
+        side.write(reinterpret_cast<const char *>(px + y * stride),
+            static_cast<std::streamsize>(w) * 4);
+      }
+    }
+  }
+  {
+    std::ofstream side(path + ".time", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(side)) << path;
+    side << encode_us << "\n";
+  }
+}
+
+TEST(Webp, SaveAnimationRoundTrip) {
+  /* Two full-canvas frames. The raster is the canvas at that moment, so
+   * the file blends nothing and a later load shows those pixels. The
+   * delay comes back in milliseconds over 1000, which is how ANMF stores
+   * it. Dispose to background is a flag on the first frame. */
+  GIMG_Raster * red = solid_rgba(8, 8, 200, 10, 10, 255);
+  GIMG_Raster * blue = solid_rgba(8, 8, 10, 10, 200, 255);
+  ASSERT_NE(red, nullptr);
+  ASSERT_NE(blue, nullptr);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), red);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), blue);
+  gimg_item_set_frame_delay(gimg_doc_item(doc, 0), 100, 1000);
+  gimg_item_set_frame_delay(gimg_doc_item(doc, 1), 50, 100);
+  gimg_item_set_dispose_op(gimg_doc_item(doc, 0), GIMG_DISPOSE_BACKGROUND);
+  gimg_doc_set_loop_count(doc, 3);
+  const uint8_t bg[4] = { 1, 2, 3, 255 };
+  gimg_doc_set_background_color(doc, bg);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_effort = 4;
+  opts.webp_exact = 1;
+  GIMG_Save_Report report = {};
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, &report), GIMG_OK);
+  const int64_t encode_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t0).count();
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + nbytes);
+  publish_animation("stub_anim.webp", saved, {red, blue}, encode_us, false);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(round), 2u);
+  EXPECT_EQ(gimg_item_role(gimg_doc_item(round, 0)), GIMG_ITEM_FRAME);
+  GIMG_Raster * back0 = nullptr;
+  GIMG_Raster * back1 = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back0),
+      GIMG_OK);
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 1), nullptr, &back1),
+      GIMG_OK);
+  EXPECT_TRUE(gimg_ops_raster_equal(red, back0));
+  EXPECT_TRUE(gimg_ops_raster_equal(blue, back1));
+  uint16_t num = 0;
+  uint16_t den = 0;
+  gimg_item_frame_delay(gimg_doc_item(round, 0), &num, &den);
+  EXPECT_EQ(num, 100);
+  EXPECT_EQ(den, 1000);
+  gimg_item_frame_delay(gimg_doc_item(round, 1), &num, &den);
+  EXPECT_EQ(num, 500);
+  EXPECT_EQ(den, 1000);
+  EXPECT_EQ(gimg_item_dispose_op(gimg_doc_item(round, 0)),
+      GIMG_DISPOSE_BACKGROUND);
+  EXPECT_EQ(gimg_item_dispose_op(gimg_doc_item(round, 1)), GIMG_DISPOSE_NONE);
+  EXPECT_EQ(gimg_item_blend_op(gimg_doc_item(round, 0)), GIMG_BLEND_SOURCE);
+  EXPECT_EQ(gimg_item_blend_op(gimg_doc_item(round, 1)), GIMG_BLEND_SOURCE);
+  uint32_t loop = 99;
+  EXPECT_TRUE(gimg_doc_loop_count(round, &loop));
+  EXPECT_EQ(loop, 3u);
+  uint8_t got_bg[4] = { 0, 0, 0, 0 };
+  EXPECT_TRUE(gimg_doc_background_color(round, got_bg));
+  EXPECT_EQ(got_bg[0], 1);
+  EXPECT_EQ(got_bg[1], 2);
+  EXPECT_EQ(got_bg[2], 3);
+  EXPECT_EQ(got_bg[3], 255);
+
+  gimg_raster_destroy(back0);
+  gimg_raster_destroy(back1);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveAnimationRefusesWhatTheFormatCannotHold) {
+  GIMG_Raster * a = solid_rgba(8, 8, 1, 2, 3, 255);
+  GIMG_Raster * b = solid_rgba(8, 8, 4, 5, 6, 255);
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), a);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), b);
+  gimg_item_set_dispose_op(gimg_doc_item(doc, 0), GIMG_DISPOSE_PREVIOUS);
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_exact = 1;
+  EXPECT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr),
+      GIMG_ERR_UNSUPPORTED);
+  gimg_stream_destroy(out);
+
+  gimg_item_set_dispose_op(gimg_doc_item(doc, 0), GIMG_DISPOSE_NONE);
+  b = solid_rgba(4, 4, 4, 5, 6, 255);
+  ASSERT_NE(b, nullptr);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), b);
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  EXPECT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr),
+      GIMG_ERR_UNSUPPORTED);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveAnimationLossyDecodable) {
+  GIMG_Raster * red = solid_rgba(16, 16, 220, 20, 20, 255);
+  GIMG_Raster * green = solid_rgba(16, 16, 20, 200, 20, 255);
+  ASSERT_NE(red, nullptr);
+  ASSERT_NE(green, nullptr);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), red);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), green);
+  gimg_item_set_frame_delay(gimg_doc_item(doc, 0), 40, 1000);
+  gimg_item_set_frame_delay(gimg_doc_item(doc, 1), 40, 1000);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
+  opts.webp_effort = 4;
+  GIMG_Save_Report report = {};
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, &report), GIMG_OK);
+  const int64_t encode_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t0).count();
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + nbytes);
+  publish_animation("stub_anim_lossy.webp", saved, {red, green}, encode_us,
+      true);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(round), 2u);
+  GIMG_Raster * back0 = nullptr;
+  GIMG_Raster * back1 = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back0),
+      GIMG_OK);
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 1), nullptr, &back1),
+      GIMG_OK);
+  const uint8_t * p0 = static_cast<const uint8_t *>(gimg_raster_pixels(back0));
+  const uint8_t * p1 = static_cast<const uint8_t *>(gimg_raster_pixels(back1));
+  ASSERT_NE(p0, nullptr);
+  ASSERT_NE(p1, nullptr);
+  EXPECT_GT(p0[0], 150);
+  EXPECT_GT(p1[1], 150);
+
+  gimg_raster_destroy(back0);
+  gimg_raster_destroy(back1);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
 size_t save_webp(GIMG_Doc * doc, int effort, std::vector<uint8_t> * out,
     int64_t * encode_us = nullptr) {
   GIMG_Stream * stream = nullptr;

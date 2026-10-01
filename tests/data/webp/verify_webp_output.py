@@ -29,6 +29,11 @@ A file with a `<name>.webp.lossy` sidecar is a lossy encode. Fidelity to
 the source and the cwebp size comparison are skipped. Parity with dwebp
 still fails the run.
 
+A file with a `<name>.webp.anim` sidecar is an animation. `dwebp` refuses
+those, so the frames are compared to `anim_dump -pam`. Lossless frames
+also have `<name>.webp.f0.rgba`, `f1`, and so on. A lossy animation still
+carries `.lossy` and is checked for parity only.
+
 Usage:  python3 tests/data/webp/verify_webp_output.py [DIR]
         DIR defaults to tests/out/webp.
         GIMG_WEBP_DUMP points at dump_webp_raster (or pass --dump PATH).
@@ -125,6 +130,25 @@ def first_diff(got: bytes, want: bytes, width: int, want_name: str) -> str | Non
     return None
 
 
+def anim_dump_pams(path: str, folder: str, prefix: str) -> list[str]:
+    for name in os.listdir(folder):
+        if name.startswith(prefix) and name.endswith(".pam"):
+            os.remove(os.path.join(folder, name))
+    proc = subprocess.run(
+        ["anim_dump", "-pam", "-folder", folder, "-prefix", prefix, path],
+        check=False, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "anim_dump failed (%d): %s"
+            % (proc.returncode, (proc.stderr or proc.stdout).strip()))
+    frames = sorted(
+        n for n in os.listdir(folder)
+        if n.startswith(prefix) and n.endswith(".pam"))
+    if not frames:
+        raise RuntimeError("anim_dump wrote no PAM frames for %s" % path)
+    return [os.path.join(folder, n) for n in frames]
+
+
 def dwebp_pam(src: str, dest: str) -> None:
     proc = subprocess.run(
         ["dwebp", src, "-pam", "-o", dest],
@@ -157,16 +181,85 @@ def dump_ours(dump: str, outdir: str, paths: list[str]) -> None:
         raise RuntimeError(
             "dump_webp_raster failed (%d): %s"
             % (proc.returncode, proc.stderr.strip() or proc.stdout.strip()))
-    ok = 0
+    seen = set()
     for line in proc.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) >= 3 and parts[2] == "ok":
-            ok += 1
+            seen.add(int(parts[0]))
             continue
         raise RuntimeError("our decoder refused %s" % line)
-    if ok != len(paths):
+    if len(seen) != len(paths):
         raise RuntimeError(
-            "dump_webp_raster wrote %d rasters for %d files" % (ok, len(paths)))
+            "dump_webp_raster decoded %d of %d files"
+            % (len(seen), len(paths)))
+
+
+def compare_animation(directory: str, oracle: str, index: int, name: str,
+                      errors: list[str]) -> bool:
+    """Return True when this animation failed. Appends to errors."""
+    path = os.path.join(directory, name)
+    lossy = os.path.isfile(path + ".lossy")
+    try:
+        refs = anim_dump_pams(path, oracle, "a%d_" % index)
+    except RuntimeError as exc:
+        errors.append("%s: %s" % (name, exc))
+        return True
+    ours_frames = []
+    frame = 0
+    while True:
+        ours_path = os.path.join(oracle, "%d.%d.rgba" % (index, frame))
+        if not os.path.isfile(ours_path):
+            break
+        with open(ours_path, "rb") as handle:
+            ours_frames.append(handle.read())
+        frame += 1
+    if len(ours_frames) != len(refs):
+        errors.append(
+            "%s: our decoder wrote %d frames, anim_dump wrote %d"
+            % (name, len(ours_frames), len(refs)))
+        return True
+    bad = False
+    for frame, ref_path in enumerate(refs):
+        try:
+            width, _height, ref = read_pam_rgba(ref_path)
+        except ValueError as exc:
+            errors.append("%s: %s" % (name, exc))
+            return True
+        parity = first_diff(ours_frames[frame], ref, width, "anim_dump")
+        if parity:
+            errors.append("%s: frame %d our decoder %s" % (name, frame, parity))
+            bad = True
+        if lossy:
+            continue
+        expected_path = path + ".f%d.rgba" % frame
+        if not os.path.isfile(expected_path):
+            errors.append("%s: no source sidecar for frame %d" % (name, frame))
+            return True
+        with open(expected_path, "rb") as handle:
+            expected = handle.read()
+        if len(expected) != len(ref):
+            errors.append(
+                "%s: frame %d source is %d bytes, anim_dump decoded %d"
+                % (name, frame, len(expected), len(ref)))
+            return True
+        fidelity = first_diff(ref, expected, width, "source")
+        if fidelity:
+            errors.append("%s: frame %d anim_dump %s" % (name, frame, fidelity))
+            bad = True
+    time_path = path + ".time"
+    ours_us = None
+    if os.path.isfile(time_path):
+        with open(time_path, "r", encoding="ascii") as handle:
+            text = handle.read().strip()
+        if text.isdigit():
+            ours_us = int(text)
+    ours_ms = ("%.3f ms" % (ours_us / 1000.0)) if ours_us is not None \
+        else "time not recorded"
+    print(
+        "  %s  %s  %d bytes  %d frames  encode %s  decode parity anim_dump"
+        % ("FAIL" if bad else "ok", name, os.path.getsize(path),
+           len(refs), ours_ms))
+    return bad
 
 
 def compare(directory: str, names: list[str]) -> int:
@@ -176,6 +269,10 @@ def compare(directory: str, names: list[str]) -> int:
     os.makedirs(oracle, exist_ok=True)
     for index, name in enumerate(names):
         path = os.path.join(directory, name)
+        if os.path.isfile(path + ".anim"):
+            if compare_animation(directory, oracle, index, name, errors):
+                failed += 1
+            continue
         expected_path = path + ".expected.rgba"
         time_path = path + ".time"
         lossy = os.path.isfile(path + ".lossy")
