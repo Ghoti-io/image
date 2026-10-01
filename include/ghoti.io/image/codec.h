@@ -771,8 +771,10 @@ typedef struct {
 
   /** WebP: encoder effort, 0–9. Lossless: higher may apply subtract-green
    * (effort >= 1) and the later VP8L passes. Lossy: selects the quantizer,
-   * coarser at 0. Default when options is NULL is 4; a present options
-   * struct with this field left 0 means effort 0. Ignored for non-WebP. */
+   * coarser at 0. Effort 4 is index 26, the single-segment index cwebp
+   * writes at quality 75. Default when options is NULL is 4; a present
+   * options struct with this field left 0 means effort 0. Ignored for
+   * non-WebP. */
   uint8_t webp_effort;
 
   /** WebP: non-zero preserves RGB samples under fully transparent pixels

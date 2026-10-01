@@ -910,12 +910,9 @@ TEST(Webp, SaveLossyGradientKeepsDetail) {
 }
 
 TEST(Webp, SaveLossyRampPricesBits) {
-  /* A 32×32 ramp at effort 0. Scoring by error alone keeps the
-   * horizontal predictor on the top-left block, and the decoded
-   * samples are 22 and 71. Pricing each bit at the luma AC quantizer
-   * step moves that block to DC; the samples match an all-DC encode
-   * (21 and 73) and the file is 50 bytes, where both of those
-   * encoders wrote 52.
+  /* A 32×32 ramp at effort 0, quantizer index 68. The four macroblocks
+   * take vertical, horizontal, vertical, and true motion. The corners
+   * come back as the source values 16 and 78, and the file is 54 bytes.
    */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(32, 32, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
@@ -960,9 +957,9 @@ TEST(Webp, SaveLossyRampPricesBits) {
   ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back), GIMG_OK);
   const uint8_t * got = static_cast<const uint8_t *>(gimg_raster_pixels(back));
   ASSERT_NE(got, nullptr);
-  EXPECT_EQ(got[0], 21);
-  EXPECT_EQ(got[(31 * 32 + 31) * 4], 73);
-  EXPECT_EQ(nbytes, 50u);
+  EXPECT_EQ(got[0], 16);
+  EXPECT_EQ(got[(31 * 32 + 31) * 4], 78);
+  EXPECT_EQ(nbytes, 54u);
 
   {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);
@@ -1056,13 +1053,12 @@ TEST(Webp, SaveLossyStepPricesVertical) {
 }
 
 TEST(Webp, SaveLossyCheckerUsesSubblocks) {
-  /* A one-pixel checkerboard, two macroblocks tall. At effort 4 the
-   * sixteen 4×4 predictors, with the coefficient probabilities fit to
-   * the tokens, code it in 142 bytes. Staying on Intra16 before that
-   * search wrote 336, so a file that large means the subblocks never
-   * won. The lower block's modes are coded against the upper block's
-   * modes. The origin stays dark and its right neighbour stays bright,
-   * and the same holds on the next row of macroblocks.
+  /* A one-pixel checkerboard, two macroblocks tall. At effort 4
+   * (quantizer index 26) both macroblocks take the sixteen 4×4
+   * predictors, and the file is 176 bytes. The lower block's modes are
+   * coded against the upper block's modes. The origin stays dark and
+   * its right neighbour stays bright, and the same holds on the next
+   * row of macroblocks.
    */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(16, 32, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
@@ -1111,7 +1107,7 @@ TEST(Webp, SaveLossyCheckerUsesSubblocks) {
   EXPECT_GT(got[4], 200);
   EXPECT_LT(got[16 * 16 * 4], 40);
   EXPECT_GT(got[(16 * 16 + 1) * 4], 200);
-  EXPECT_EQ(nbytes, 142u);
+  EXPECT_EQ(nbytes, 176u);
 
   {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);
@@ -1133,9 +1129,10 @@ TEST(Webp, SaveLossyCheckerUsesSubblocks) {
 }
 
 TEST(Webp, SaveLossySpikeDropsWeakCoeff) {
-  /* One bright pixel. The deadzone quantizer writes 56 bytes. The
-   * trellis drops coefficients whose tokens cost more than the error
-   * they remove, and the file is 54 bytes.
+  /* One bright pixel at effort 2 (quantizer index 38). The deadzone
+   * quantizer writes 58 bytes. The trellis drops coefficients whose
+   * tokens cost more than the error they remove, and the file is 56
+   * bytes. At effort 4 the same picture is 60 bytes either way.
    */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
@@ -1161,13 +1158,13 @@ TEST(Webp, SaveLossySpikeDropsWeakCoeff) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {};
   opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
-  opts.webp_effort = 4;
+  opts.webp_effort = 2;
   ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr), GIMG_OK);
   const void * bytes = nullptr;
   size_t nbytes = 0;
   gimg_stream_output_buffer(out, &bytes, &nbytes);
   ASSERT_NE(bytes, nullptr);
-  EXPECT_EQ(nbytes, 54u);
+  EXPECT_EQ(nbytes, 56u);
   {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);
     const std::string path =
@@ -1486,7 +1483,7 @@ TEST(Webp, SaveLossyFilterLevelFollowsError) {
    * the filtered reconstruction closest to the source, and a tie stays
    * at the lower level. RGB (130,130,129) is Y=U=V=128, every level
    * reconstructs it the same, and the level stays 0. A horizontal ramp
-   * is closer after the filter, and the level is 18. Segmentation is
+   * is closer after the filter, and the level is 15. Segmentation is
    * off on both, so the level is the six bits after the filter-type bit.
    */
   auto level_of = [](int w, int h, bool ramp) {
@@ -1557,7 +1554,7 @@ TEST(Webp, SaveLossyFilterLevelFollowsError) {
     return level;
   };
   EXPECT_EQ(level_of(256, 16, false), 0);
-  EXPECT_EQ(level_of(32, 16, true), 18);
+  EXPECT_EQ(level_of(32, 16, true), 15);
 }
 
 TEST(Webp, AlphPlaneMatchesDwebpLossyAlpha) {

@@ -99,9 +99,13 @@ static const uint8_t * const k_cat3456[] = {
   gimg_vp8_pcat3, gimg_vp8_pcat4, gimg_vp8_pcat5, gimg_vp8_pcat6
 };
 
-/* effort 0..9 → base_q (higher = coarser). Default effort 4 → mid ladder. */
+/* effort 0..9 → base quantizer index (higher is coarser). Each entry is
+ * the single-segment index from libwebp's QualityToCompression at cwebp
+ * qualities 15, 35, 50, 65, 75, 80, 85, 90, 95 and 100. Effort 4 is
+ * index 26, which is what cwebp -q 75 writes when the frame has one
+ * segment. */
 static const int k_effort_q[10] = {
-  100, 90, 80, 70, 60, 50, 40, 30, 20, 10
+  68, 48, 38, 30, 26, 19, 14, 9, 4, 0
 };
 
 typedef struct {
