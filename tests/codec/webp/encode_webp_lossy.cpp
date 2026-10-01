@@ -6,10 +6,12 @@
  *
  * Build with: make webp-encode-lossy
  * Run: encode_webp_lossy <in.png|...> <out.webp>
+ * Effort is 4 unless GIMG_WEBP_EFFORT is 0..9.
  *
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ghoti.io/image/codec.h>
@@ -117,6 +119,13 @@ int main(int argc, char ** argv) {
   std::memset(&save_opts, 0, sizeof(save_opts));
   save_opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
   save_opts.webp_effort = 4;
+  if (const char * env = std::getenv("GIMG_WEBP_EFFORT")) {
+    char * end = nullptr;
+    long effort = std::strtol(env, &end, 10);
+    if (end != env && effort >= 0 && effort <= 9) {
+      save_opts.webp_effort = static_cast<uint8_t>(effort);
+    }
+  }
   GIMG_Save_Report report;
   std::memset(&report, 0, sizeof(report));
   r = gimg_doc_save(doc, out, "webp", &save_opts, &report);

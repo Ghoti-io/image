@@ -162,8 +162,8 @@ not yet competitive with `cwebp`. The bool writer renormalizes from
 the section 7 range
 invariant (encoder range is one less than the decoder range). Accepted
 by `dwebp` and by this decoder. On a 16×32 one-pixel checkerboard at
-effort 4 the 4×4 predictors write **536** bytes; staying on Intra16
-writes 592. One bright pixel on black is **310** bytes; the deadzone
+effort 4 the 4×4 predictors write **398** bytes once the coefficient
+probabilities are fit to the tokens; staying on Intra16 writes 592. One bright pixel on black is **310** bytes; the deadzone
 quantizer alone writes 312. Rate and distortion vs a fast `cwebp`
 baseline are
 reported by `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh
@@ -246,7 +246,7 @@ plumbing breaks; it does not yet fail on worse PSNR or size.
   stays uneven inside one macroblock, a ramp whose bit cost moves the
   top-left block off the horizontal predictor, a vertical step whose
   lower block is the vertical predictor, a one-pixel checkerboard whose
-  4×4 predictors write 536 bytes, a one-pixel spike the trellis writes
+  4×4 predictors write 398 bytes, a one-pixel spike the trellis writes
   as 310 bytes, a flat block beside a checkerboard that sets the
   segment flag, an alpha plane kept exactly, and `make webp-rd`
   vs `cwebp -q 75 -m 0` on `third_party/webp-rd/`

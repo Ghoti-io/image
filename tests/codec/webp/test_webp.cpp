@@ -1057,12 +1057,12 @@ TEST(Webp, SaveLossyStepPricesVertical) {
 
 TEST(Webp, SaveLossyCheckerUsesSubblocks) {
   /* A one-pixel checkerboard, two macroblocks tall. At effort 4 the
-   * sixteen 4×4 predictors code it in 536 bytes. Forcing every
-   * macroblock to stay Intra16 writes 592, so the size fails if the
-   * subblock search never wins. The lower block's modes are coded
-   * against the upper block's modes. The origin stays dark and its
-   * right neighbour stays bright, and the same holds on the next row
-   * of macroblocks.
+   * sixteen 4×4 predictors, with the coefficient probabilities fit to
+   * the tokens, code it in 398 bytes. Staying on Intra16 before that
+   * search wrote 592, so a file that large means the subblocks never
+   * won. The lower block's modes are coded against the upper block's
+   * modes. The origin stays dark and its right neighbour stays bright,
+   * and the same holds on the next row of macroblocks.
    */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(16, 32, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
@@ -1111,7 +1111,7 @@ TEST(Webp, SaveLossyCheckerUsesSubblocks) {
   EXPECT_GT(got[4], 200);
   EXPECT_LT(got[16 * 16 * 4], 40);
   EXPECT_GT(got[(16 * 16 + 1) * 4], 200);
-  EXPECT_EQ(nbytes, 536u);
+  EXPECT_EQ(nbytes, 398u);
 
   {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);
@@ -1370,6 +1370,92 @@ TEST(Webp, SaveLossySegmentsFlatBesideDetail) {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_segments.webp";
+    std::ofstream outfile(path, std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(outfile));
+    outfile.write(static_cast<const char *>(bytes),
+        static_cast<std::streamsize>(nbytes));
+    std::ofstream mark(path + ".lossy", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(mark));
+  }
+
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveLossySkipDropsEmptyTokens) {
+  /* Sixteen flat macroblocks. RGB (130,130,129) lands on Y=U=V=128, so
+   * every residual quantizes to zero. Writing the skip flag is 304
+   * bytes. Leaving it off and emitting the zero tokens is 306.
+   */
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(256, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &raster),
+      GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  ASSERT_NE(px, nullptr);
+  for (int i = 0; i < 256 * 16; ++i) {
+    px[i * 4 + 0] = 130;
+    px[i * 4 + 1] = 130;
+    px[i * 4 + 2] = 129;
+    px[i * 4 + 3] = 255;
+  }
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  raster = nullptr;
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
+  opts.webp_effort = 4;
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr), GIMG_OK);
+
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+  EXPECT_EQ(nbytes, 304u);
+  const auto * file = static_cast<const uint8_t *>(bytes);
+  const uint8_t * vp8 = nullptr;
+  for (size_t i = 12; i + 8 < nbytes;) {
+    const uint32_t sz = (uint32_t)file[i + 4] | ((uint32_t)file[i + 5] << 8) |
+        ((uint32_t)file[i + 6] << 16) | ((uint32_t)file[i + 7] << 24);
+    if (file[i] == 'V' && file[i + 1] == 'P' && file[i + 2] == '8' &&
+        file[i + 3] == ' ') {
+      vp8 = file + i + 8;
+      break;
+    }
+    i += 8u + sz + (sz & 1u);
+  }
+  ASSERT_NE(vp8, nullptr);
+  const uint32_t tag = (uint32_t)vp8[0] | ((uint32_t)vp8[1] << 8) |
+      ((uint32_t)vp8[2] << 16);
+  EXPECT_EQ(tag >> 5, 16u);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back), GIMG_OK);
+  const uint8_t * got = static_cast<const uint8_t *>(gimg_raster_pixels(back));
+  ASSERT_NE(got, nullptr);
+  EXPECT_NEAR(got[0], 130, 8);
+  EXPECT_NEAR(got[1], 130, 8);
+  EXPECT_NEAR(got[2], 130, 8);
+  EXPECT_EQ(got[3], 255);
+  EXPECT_NEAR(got[16 * 4], 130, 8);
+
+  {
+    mkdir(GIMG_TEST_OUT_WEBP, 0755);
+    const std::string path =
+        std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_skip.webp";
     std::ofstream outfile(path, std::ios::binary);
     ASSERT_TRUE(static_cast<bool>(outfile));
     outfile.write(static_cast<const char *>(bytes),
