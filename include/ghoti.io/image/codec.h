@@ -765,8 +765,8 @@ typedef struct {
   uint8_t ico_payload;
 
   /** WebP: which compressor. GIMG_WEBP_COMPRESS_LOSSLESS (0, default / AUTO)
-   * writes VP8L. GIMG_WEBP_COMPRESS_LOSSY writes a VP8 keyframe. Non-opaque
-   * lossy input is refused with GIMG_ERR_UNSUPPORTED. Ignored for non-WebP. */
+   * writes VP8L. GIMG_WEBP_COMPRESS_LOSSY writes a VP8 keyframe, and a
+   * non-opaque picture also writes an ALPH chunk. Ignored for non-WebP. */
   uint8_t webp_lossless;
 
   /** WebP: encoder effort, 0–9. Lossless: higher may apply subtract-green
@@ -787,7 +787,7 @@ typedef struct {
 /** @name WebP compressor choice
  * @{ */
 #define GIMG_WEBP_COMPRESS_LOSSLESS 0u ///< VP8L (default / AUTO).
-#define GIMG_WEBP_COMPRESS_LOSSY 1u    ///< VP8 keyframe. Non-opaque input is refused.
+#define GIMG_WEBP_COMPRESS_LOSSY 1u    ///< VP8 keyframe. Non-opaque input adds ALPH.
 /** @} */
 
 /** @name TIFF compression (TIFF 6.0 sections 9 and 13)

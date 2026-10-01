@@ -21,9 +21,11 @@
 /**
  * @file
  *
- * WebP Phase F/G: save a still as lossless VP8L (default) or stub lossy VP8
- * (optional VP8X + ICCP / EXIF / XMP). Lossy with non-opaque alpha is refused.
- * Multi-frame save is not implemented (first item only).
+ * WebP Phase F/G: save a still as lossless VP8L (default) or lossy VP8
+ * (optional VP8X + ALPH + ICCP / EXIF / XMP). A lossy picture with alpha
+ * stores the plane uncompressed in ALPH and premultiplies the colour
+ * the VP8 frame carries. Multi-frame save is not implemented (first
+ * item only).
  */
 
 #include <ghoti.io/image/macros.h>
@@ -102,6 +104,58 @@ static int buf_append_chunk(webp_buf_t * b, uint32_t fourcc,
     }
   }
   return 1;
+}
+
+/** Straight alpha, kept exact. RGB is scaled by it so a transparent
+ *  sample does not spend VP8 bits on colour the display will not show.
+ *  Rounding is (c * a + 127) / 255, so 255 reproduces the sample. */
+static void premultiply_rgba(uint8_t * rgba, uint32_t width, uint32_t height,
+    size_t stride) {
+  uint32_t y;
+  uint32_t x;
+  for (y = 0; y < height; ++y) {
+    uint8_t * row = rgba + (size_t)y * stride;
+    for (x = 0; x < width; ++x) {
+      uint8_t * p = row + (size_t)x * 4u;
+      const int a = (int)p[3];
+      if (a == 255) {
+        continue;
+      }
+      if (a == 0) {
+        p[0] = 0;
+        p[1] = 0;
+        p[2] = 0;
+        continue;
+      }
+      p[0] = (uint8_t)((p[0] * a + 127) / 255);
+      p[1] = (uint8_t)((p[1] * a + 127) / 255);
+      p[2] = (uint8_t)((p[2] * a + 127) / 255);
+    }
+  }
+}
+
+/** ALPH method 0, no filter, no level reduction. One header byte, then
+ *  the straight alpha plane in row order. */
+static GIMG_Result encode_alpha_raw(const uint8_t * rgba, uint32_t width,
+    uint32_t height, size_t stride, const GIMG_Allocator * alloc,
+    unsigned char ** out, size_t * out_size) {
+  const size_t n = 1u + (size_t)width * (size_t)height;
+  unsigned char * buf = (unsigned char *)gimg_malloc(alloc, n);
+  uint32_t y;
+  uint32_t x;
+  if (!buf) {
+    return GIMG_ERR_OOM;
+  }
+  buf[0] = 0;
+  for (y = 0; y < height; ++y) {
+    const uint8_t * row = rgba + (size_t)y * stride;
+    for (x = 0; x < width; ++x) {
+      buf[1u + (size_t)y * width + x] = row[(size_t)x * 4u + 3u];
+    }
+  }
+  *out = buf;
+  *out_size = n;
+  return GIMG_OK;
 }
 
 /** Sample one pixel as RGBA8 from formats this writer accepts. */
@@ -189,6 +243,8 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   int has_alpha = 0;
   unsigned char * picture = NULL;
   size_t picture_size = 0;
+  unsigned char * alph = NULL;
+  size_t alph_size = 0;
   int is_lossy = 0;
   webp_buf_t file;
   GIMG_Result r = GIMG_OK;
@@ -252,9 +308,13 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
   if (is_lossy) {
     if (has_alpha) {
-      /* Lossy ALPH encode is a follow-on; refuse non-opaque alpha for now. */
-      r = GIMG_ERR_UNSUPPORTED;
-      goto Done;
+      r = encode_alpha_raw(rgba, gimg_raster_width(raster),
+          gimg_raster_height(raster), rgba_stride, alloc, &alph, &alph_size);
+      if (r != GIMG_OK) {
+        goto Done;
+      }
+      premultiply_rgba(rgba, gimg_raster_width(raster),
+          gimg_raster_height(raster), rgba_stride);
     }
     r = gimg_webp_vp8_encode(rgba, gimg_raster_width(raster),
         gimg_raster_height(raster), rgba_stride, (int)effort, alloc, &picture,
@@ -363,7 +423,11 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     need_vp8x = 1;
     vp8x_flags |= (uint8_t)GIMG_WEBP_VP8X_XMP;
   }
-  if (has_alpha && need_vp8x) {
+  if (is_lossy && has_alpha) {
+    need_vp8x = 1;
+    vp8x_flags |= (uint8_t)GIMG_WEBP_VP8X_ALPHA;
+  }
+  else if (has_alpha && need_vp8x) {
     vp8x_flags |= (uint8_t)GIMG_WEBP_VP8X_ALPHA;
   }
 
@@ -391,6 +455,11 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   if (iccp_size > 0u &&
       !buf_append_chunk(&file, GIMG_WEBP_ICCP, iccp, iccp_size)) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  if (alph_size > 0u &&
+      !buf_append_chunk(&file, GIMG_WEBP_ALPH, alph, alph_size)) {
     r = GIMG_ERR_OOM;
     goto Done;
   }
@@ -428,6 +497,7 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 Done:
   gimg_free(alloc, file.data);
   gimg_free(alloc, picture);
+  gimg_free(alloc, alph);
   gimg_free(alloc, rgba);
   gimg_free(alloc, iccp);
   gimg_free(alloc, exif);

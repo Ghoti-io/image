@@ -1132,12 +1132,28 @@ TEST(Webp, SaveLossyCheckerUsesSubblocks) {
   gimg_doc_destroy(doc);
 }
 
-TEST(Webp, SaveLossyAlphaRefused) {
-  GIMG_Doc * doc = nullptr;
-  ASSERT_EQ(load_doc("lossless_alpha.webp", &doc), GIMG_OK);
+TEST(Webp, SaveLossySpikeDropsWeakCoeff) {
+  /* One bright pixel. The deadzone quantizer writes 312 bytes. The
+   * trellis drops coefficients whose tokens cost more than the error
+   * they remove, and the file is 310 bytes.
+   */
   GIMG_Raster * raster = nullptr;
-  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster),
+  ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &raster),
       GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  ASSERT_NE(px, nullptr);
+  memset(px, 0, 16u * 16u * 4u);
+  for (int i = 0; i < 16 * 16; ++i) {
+    px[i * 4 + 3] = 255;
+  }
+  px[(8 * 16 + 8) * 4 + 0] = 255;
+  px[(8 * 16 + 8) * 4 + 1] = 255;
+  px[(8 * 16 + 8) * 4 + 2] = 255;
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
   gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
   raster = nullptr;
 
@@ -1145,8 +1161,226 @@ TEST(Webp, SaveLossyAlphaRefused) {
   ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
   GIMG_Save_Options opts = {};
   opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
-  EXPECT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr),
-      GIMG_ERR_UNSUPPORTED);
+  opts.webp_effort = 4;
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr), GIMG_OK);
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+  EXPECT_EQ(nbytes, 310u);
+  {
+    mkdir(GIMG_TEST_OUT_WEBP, 0755);
+    const std::string path =
+        std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_spike.webp";
+    std::ofstream file(path, std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(file));
+    file.write(static_cast<const char *>(bytes),
+        static_cast<std::streamsize>(nbytes));
+    std::ofstream mark(path + ".lossy", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(mark));
+  }
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveLossyAlphaKeepsPlane) {
+  /* Opaque red on the left, fully transparent green on the right.
+   * Alpha is stored exactly. The colour is premultiplied, so the
+   * transparent side comes back black and the red side stays red.
+   */
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &raster),
+      GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  ASSERT_NE(px, nullptr);
+  for (int y = 0; y < 16; ++y) {
+    for (int x = 0; x < 16; ++x) {
+      uint8_t * p = px + (y * 16 + x) * 4;
+      if (x < 8) {
+        p[0] = 220;
+        p[1] = 10;
+        p[2] = 10;
+        p[3] = 255;
+      }
+      else {
+        p[0] = 10;
+        p[1] = 220;
+        p[2] = 10;
+        p[3] = 0;
+      }
+    }
+  }
+  px[(4 * 16 + 4) * 4 + 3] = 128;
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  raster = nullptr;
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
+  opts.webp_effort = 4;
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr), GIMG_OK);
+
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back), GIMG_OK);
+  const uint8_t * got = static_cast<const uint8_t *>(gimg_raster_pixels(back));
+  ASSERT_NE(got, nullptr);
+  EXPECT_EQ(got[3], 255);
+  EXPECT_GT(got[0], 150);
+  EXPECT_EQ(got[(8) * 4 + 3], 0);
+  EXPECT_LT(got[8 * 4], 40);
+  EXPECT_EQ(got[(4 * 16 + 4) * 4 + 3], 128);
+
+  {
+    mkdir(GIMG_TEST_OUT_WEBP, 0755);
+    const std::string path =
+        std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_alpha.webp";
+    std::ofstream file(path, std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(file));
+    file.write(static_cast<const char *>(bytes),
+        static_cast<std::streamsize>(nbytes));
+    std::ofstream mark(path + ".lossy", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(mark));
+  }
+
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
+/** One prob-128 bool, matching the decoder's bit-at-a-time renorm. */
+static int vp8_uniform_bit(const uint8_t ** p, const uint8_t * end,
+    uint32_t * value, uint32_t * range, int * bit_count) {
+  const uint32_t split = 1u + (((*range - 1u) * 128u) >> 8);
+  int bit;
+  if (*value >= (split << 8)) {
+    bit = 1;
+    *range -= split;
+    *value -= split << 8;
+  }
+  else {
+    bit = 0;
+    *range = split;
+  }
+  while (*range < 128u) {
+    *value <<= 1;
+    *range <<= 1;
+    ++(*bit_count);
+    if (*bit_count == 8) {
+      *bit_count = 0;
+      if (*p < end) {
+        *value |= *(*p)++;
+      }
+    }
+  }
+  return bit;
+}
+
+TEST(Webp, SaveLossySegmentsFlatBesideDetail) {
+  /* Left macroblock is flat, right one is a checkerboard. The flat
+   * block takes the coarser segment quantizer, which sets the
+   * segmentation flag after the two keyframe header bools.
+   */
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(32, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &raster),
+      GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  ASSERT_NE(px, nullptr);
+  for (int y = 0; y < 16; ++y) {
+    for (int x = 0; x < 32; ++x) {
+      uint8_t * p = px + (y * 32 + x) * 4;
+      const uint8_t v = x < 16 ? 128 : (((x ^ y) & 1) ? 255 : 0);
+      p[0] = v;
+      p[1] = v;
+      p[2] = v;
+      p[3] = 255;
+    }
+  }
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  raster = nullptr;
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
+  opts.webp_effort = 4;
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr), GIMG_OK);
+
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+  const auto * file = static_cast<const uint8_t *>(bytes);
+  const uint8_t * vp8 = nullptr;
+  for (size_t i = 12; i + 8 < nbytes; ) {
+    const uint32_t sz = (uint32_t)file[i + 4] | ((uint32_t)file[i + 5] << 8) |
+        ((uint32_t)file[i + 6] << 16) | ((uint32_t)file[i + 7] << 24);
+    if (file[i] == 'V' && file[i + 1] == 'P' && file[i + 2] == '8' &&
+        file[i + 3] == ' ') {
+      vp8 = file + i + 8;
+      break;
+    }
+    i += 8u + sz + (sz & 1u);
+  }
+  ASSERT_NE(vp8, nullptr);
+  const uint8_t * p = vp8 + 12;
+  const uint8_t * end = file + nbytes;
+  uint32_t value = ((uint32_t)vp8[10] << 8) | vp8[11];
+  uint32_t range = 255;
+  int bit_count = 0;
+  EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 0);
+  EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 0);
+  EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 1);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back), GIMG_OK);
+  const uint8_t * got = static_cast<const uint8_t *>(gimg_raster_pixels(back));
+  ASSERT_NE(got, nullptr);
+  EXPECT_GT(got[0], 100);
+  EXPECT_LT(got[0], 160);
+  EXPECT_LT(got[(20) * 4], 40);
+  EXPECT_GT(got[(21) * 4], 200);
+
+  {
+    mkdir(GIMG_TEST_OUT_WEBP, 0755);
+    const std::string path =
+        std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_segments.webp";
+    std::ofstream outfile(path, std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(outfile));
+    outfile.write(static_cast<const char *>(bytes),
+        static_cast<std::streamsize>(nbytes));
+    std::ofstream mark(path + ".lossy", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(mark));
+  }
+
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
   gimg_stream_destroy(out);
   gimg_doc_destroy(doc);
 }

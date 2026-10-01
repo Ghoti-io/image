@@ -211,8 +211,10 @@ void gimg_vp8_pred_b4(uint8_t * dst, const uint8_t * above,
 /**
  * @brief Encode an opaque RGBA8 buffer to a VP8 keyframe bitstream payload.
  *
- * One quantizer. Each macroblock is an Intra16 predictor or sixteen
- * 4×4 predictors. No alpha. @a effort 0–9 maps to a coarse Q ladder.
+ * Each macroblock is an Intra16 predictor or sixteen 4×4 predictors.
+ * A flat block beside a detailed one uses a coarser segment quantizer.
+ * No alpha plane; the container writes ALPH. @a effort 0–9 maps to a
+ * coarse Q ladder.
  */
 GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     uint32_t height, size_t stride, int effort, const GIMG_Allocator * alloc,

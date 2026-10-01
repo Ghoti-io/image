@@ -96,9 +96,10 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   literals, subtract-green when `webp_effort` ≥ 1, optional `ICCP` / `EXIF` /
   `XMP ` via `VP8X`. See Save.
 - **VP8 lossy encode** when `webp_lossless = GIMG_WEBP_COMPRESS_LOSSY`:
-  one of the four Intra16 predictors, or sixteen 4×4 predictors when
-  that scores better. Single quantizer, the section 14 residual, opaque
-  only. See Save and `make webp-rd`.
+  Intra16 or sixteen 4×4 predictors, a coefficient trellis, and a
+  coarser segment quantizer on a flat macroblock beside a detailed
+  one. Non-opaque input adds an uncompressed `ALPH` chunk and
+  premultiplies the colour. See Save and `make webp-rd`.
 
 ## YUV→RGB (a match, not a derivation)
 
@@ -123,7 +124,7 @@ groups encode smaller than one; coarse Q ladder for lossy), `webp_exact`
 (`GIMG_WEBP_COMPRESS_LOSSLESS` by default, or `GIMG_WEBP_COMPRESS_LOSSY` for
 the VP8 encoder). Multi-frame documents are written as a still of the
 first item (animation encode is not implemented). Non-8-bit sources are
-refused. Lossy with any non-opaque alpha is refused until ALPH encode exists.
+refused. Lossy with non-opaque alpha writes an `ALPH` chunk.
 
 **Lossless.** Round-trip through this library's decoder is identity. Outside
 consumers (`dwebp`, Pillow, ImageMagick) decode the bytes to the same pixels.
@@ -145,18 +146,26 @@ subblock is a full sixteen-coefficient block on probability type 3,
 and its DC uses the luma DC quantizer. The score is the quantized
 reconstruction's error plus the bool-coder cost of the modes and the
 tokens. One bit is priced at the luma AC quantizer step, and the
-earlier choice stays when the scores are equal. One quantizer. An
+earlier choice stays when the scores are equal. An
 Intra16 residual is the Walsh-Hadamard of the sixteen DC coefficients
 and the 4×4 DCT of the rest (RFC 6386 section 14), predicted from the
 reconstruction the decoder will see. RGB becomes YUV with the ITU-R
 BT.601 studio matrix that RFC cites, at scale 2^16; chroma is the mean
-of each 2×2 and uses the same four predictors. Trellis, segments, and
-lossy alpha are still absent, so this is not competitive with
-`cwebp`. The bool writer renormalizes from the section 7 range
+of each 2×2 and uses the same four predictors. After the deadzone
+quantizer, a backward pass drops a coefficient when its tokens cost
+more than the error it removes. A flat macroblock beside a detailed
+one takes a quantizer 24 steps coarser (section 9.3); a uniform
+picture stays on the frame quantizer. A non-opaque picture writes
+`VP8X` and an uncompressed `ALPH` plane, and the colour is
+premultiplied by `(c * a + 127) / 255` before the VP8 frame. This is
+not yet competitive with `cwebp`. The bool writer renormalizes from
+the section 7 range
 invariant (encoder range is one less than the decoder range). Accepted
 by `dwebp` and by this decoder. On a 16×32 one-pixel checkerboard at
 effort 4 the 4×4 predictors write **536** bytes; staying on Intra16
-writes 592. Rate and distortion vs a fast `cwebp` baseline are
+writes 592. One bright pixel on black is **310** bytes; the deadzone
+quantizer alone writes 312. Rate and distortion vs a fast `cwebp`
+baseline are
 reported by `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh
 webp-rd`; axes: bytes and PSNR-RGB over opaque pixels vs `cwebp -q 75
 -m 0`). The target exits non-zero only if encode/decode/measure
@@ -173,7 +182,7 @@ plumbing breaks; it does not yet fail on worse PSNR or size.
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
 | VP8 decode | keyframe and, in one sequence, interframe → RGBA, optional ALPH merge, 9-3-3-1 chroma; a keyframe matches `dwebp` | a still interframe → `GIMG_ERR_CORRUPT`; version above 3 → `GIMG_ERR_UNSUPPORTED` |
 | Animation | ANMF → `FRAME` items; composite matches `anim_dump -pam` | rectangle past canvas / no bitstream → `GIMG_ERR_CORRUPT`; over `max_frame_count` → `GIMG_ERR_LIMIT` |
-| Encode | VP8L still (default) or VP8 lossy of the first item; optional ICCP/EXIF/XMP; lossless round-trip identity | non-8-bit → `GIMG_ERR_UNSUPPORTED`; lossy + non-opaque alpha → `UNSUPPORTED`; animation encode not implemented (first frame only) |
+| Encode | VP8L still (default) or VP8 lossy of the first item, with an uncompressed `ALPH` plane when the lossy picture is non-opaque; optional ICCP/EXIF/XMP; lossless round-trip identity | non-8-bit → `GIMG_ERR_UNSUPPORTED`; animation encode not implemented (first frame only) |
 
 ## Where this codec differs from libwebp
 
@@ -183,7 +192,7 @@ plumbing breaks; it does not yet fail on worse PSNR or size.
 | VP8 bitstream | keyframe and interframe; a keyframe matches `dwebp` | `dwebp` and `anim_dump` refuse an interframe animation |
 | Anim composite | match `anim_dump -pam` | same |
 | Lossless save | round-trip identity; accepted by `dwebp`; effort ≥ 2 uses one predictor and LZ77 when the residual histogram shrinks; effort ≥ 3 adds cross-colour when the file is shorter; effort ≥ 4 keeps a palette when it is smaller; a Huffman image is kept when it is smaller | gradient effort 4 is 48 bytes, `cwebp -lossless -exact` is 60; see Save |
-| Lossy save | Intra16 or sixteen 4×4 predictors, scored by reconstructed error plus bool-coder cost; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | no trellis, segments, or lossy alpha; quality bar not armed |
+| Lossy save | Intra16 or 4×4 predictors, trellis, segment quantizers, and an uncompressed ALPH plane; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | quality bar not armed |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
@@ -237,21 +246,24 @@ plumbing breaks; it does not yet fail on worse PSNR or size.
   stays uneven inside one macroblock, a ramp whose bit cost moves the
   top-left block off the horizontal predictor, a vertical step whose
   lower block is the vertical predictor, a one-pixel checkerboard whose
-  4×4 predictors write 536 bytes, and alpha refusal; `make webp-rd`
+  4×4 predictors write 536 bytes, a one-pixel spike the trellis writes
+  as 310 bytes, a flat block beside a checkerboard that sets the
+  segment flag, an alpha plane kept exactly, and `make webp-rd`
   vs `cwebp -q 75 -m 0` on `third_party/webp-rd/`
   (`tools/oracle/fetch.sh webp-rd`).
 - Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
   anim geometry/dispose/blend, lossless save round-trip, lossy
-  decodable / gradient / ramp / step / checker / alpha refused.
+  decodable / gradient / ramp / step / checker / spike / segments /
+  alpha.
 - Fuzz: `fuzz_webp_load` with seeds from the fixture set.
 
 ## Not implemented
 
 - Animation encode (multi-frame `ANIM`/`ANMF` write). A multi-item document
   is saved as a still of the first item.
-- Competitive lossy encode past subblock mode search: trellis, segments,
-  and lossy ALPH. `make webp-rd` measures the current encoder; the
-  quality bar is not armed (`notes/image/webp-plan.md` §6).
+- A quality bar on `make webp-rd`. The target measures bytes and
+  PSNR-RGB against `cwebp` and does not fail when this encoder is
+  worse (`notes/image/webp-plan.md` §6).
 
 ---
 

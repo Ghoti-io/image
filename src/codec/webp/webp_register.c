@@ -23,7 +23,7 @@
  *
  * Register the WebP codec: container, VP8L, ALPH, VP8 keyframes and
  * interframes, ANIM/ANMF, VP8L lossless encode, and VP8 lossy encode
- * (Intra16 or sixteen 4×4 predictors). Animation encode is
+ * (Intra16 or 4×4 predictors, trellis, segments, ALPH). Animation encode is
  * not implemented.
  */
 
