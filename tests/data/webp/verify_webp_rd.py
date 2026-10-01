@@ -17,7 +17,8 @@ Usage:  python3 tests/data/webp/verify_webp_rd.py
         Corpus: third_party/webp-rd/ (tools/oracle/fetch.sh webp-rd).
 
 PSNR is computed on RGB channels only over pixels whose reference alpha is
-255 (fully opaque). Alpha PNGs in the corpus are skipped with a note.
+255 (fully opaque). A PNG with a partial alpha plane is measured on those
+pixels; the transparent ones are left out of the score.
 """
 
 from __future__ import annotations
@@ -72,13 +73,6 @@ def load_png_rgba(path: str):
     im = im.convert("RGBA")
     w, h = im.size
     return w, h, im.tobytes()
-
-
-def has_non_opaque_alpha(rgba: bytes) -> bool:
-    for i in range(3, len(rgba), 4):
-        if rgba[i] != 255:
-            return True
-    return False
 
 
 def read_pam_rgba(path: str) -> tuple[int, int, bytes]:
@@ -138,12 +132,9 @@ def host_encode(pngs: list[str], corpus: str, work: str, encode_bin: str) -> tup
     for png in pngs:
         rel = os.path.relpath(png, corpus)
         try:
-            _w, _h, ref = load_png_rgba(png)
+            _w, _h, _ref = load_png_rgba(png)
         except Exception as exc:  # noqa: BLE001
             failures.append("%s: load PNG: %s" % (rel, exc))
-            continue
-        if has_non_opaque_alpha(ref):
-            skipped.append("%s (non-opaque alpha; lossy ALPH not yet)" % rel)
             continue
         ours_webp = os.path.join(work, stem(rel) + ".ours.webp")
         enc = run([encode_bin, png, ours_webp])

@@ -189,7 +189,11 @@ On the RD corpus the gray ramp is 102 bytes at 49.3 dB against
 34.0 dB against 3930 at 33.6 dB, and the copyleft logo is 3874 at
 44.8 dB against 4574 at 43.3 dB. The 200×300 and 300×300 gray type
 is 884 bytes at 47.6 dB and 1068 at 48.1 dB, against 1388 at 47.5 dB
-and 1880 at 47.9 dB. Rate and
+and 1880 at 47.9 dB. The two pictures with a partial alpha plane are
+in that report as well, scored on the opaque pixels. The caption is
+74350 bytes at 23.8 dB against 9658 at 24.1 dB, and the transparent
+image is 33260 at 26.6 dB against 9902 at 26.7 dB; the alpha plane is
+stored uncompressed. Rate and
 distortion vs that baseline are reported by
 `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh webp-rd`; axes:
 bytes and PSNR-RGB over opaque pixels). The target exits non-zero only
