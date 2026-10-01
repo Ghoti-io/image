@@ -44,7 +44,7 @@ BMP's absences are the format's, not the codec's: a BMP holds one image, its
 samples are a byte at most - a deeper raster is restated at 8 bits rather than
 refused - and its writer reports `GIMG_ERR_UNSUPPORTED` for a CMYK raster
 rather than reinterpreting four ink channels as colour. JPEG has no palette:
-T.81 describes none. WebP write is VP8L by default and VP8 when asked; a lossy picture with alpha also writes an `ALPH` chunk. A document of several items is written as an animation of full-canvas frames.
+T.81 describes none. WebP write is VP8L by default and VP8 when asked; a lossy picture with alpha also writes an `ALPH` chunk. A document of several items is written as an animation; each frame is the rectangle that differs from the canvas already showing.
 
 ## Load options
 

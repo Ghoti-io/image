@@ -124,8 +124,10 @@ effort 4 is index 26), `webp_exact`
 (preserve RGB under full transparency, lossless only), and `webp_lossless`
 (`GIMG_WEBP_COMPRESS_LOSSLESS` by default, or `GIMG_WEBP_COMPRESS_LOSSY` for
 the VP8 encoder). A document of several items is an animation: each
-item is the canvas at that moment, written as one full-canvas `ANMF`
-with blending off, so a later load shows those pixels. The frame delay
+item is the canvas at that moment. The written `ANMF` is the
+rectangle that differs from what is already showing, grown so its
+origin is even, with blending off, so a later load shows those
+pixels. The frame delay
 is stored as milliseconds. Dispose to background is written; dispose
 to previous, and a frame that is not the canvas size, are refused.
 `ANIM` always carries a loop count and a background colour, because
@@ -204,7 +206,7 @@ PSNR or size.
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
 | VP8 decode | keyframe and, in one sequence, interframe → RGBA, optional ALPH merge, 9-3-3-1 chroma; a keyframe matches `dwebp` | a still interframe → `GIMG_ERR_CORRUPT`; version above 3 → `GIMG_ERR_UNSUPPORTED` |
 | Animation | ANMF → `FRAME` items; composite matches `anim_dump -pam` | rectangle past canvas / no bitstream → `GIMG_ERR_CORRUPT`; over `max_frame_count` → `GIMG_ERR_LIMIT` |
-| Encode | VP8L still (default) or VP8 lossy, with an uncompressed `ALPH` plane when the lossy picture is non-opaque; a multi-item document is `ANIM`/`ANMF`, each frame the whole canvas; optional ICCP/EXIF/XMP; lossless round-trip identity | non-8-bit, a frame that is not the canvas size, or dispose-to-previous → `GIMG_ERR_UNSUPPORTED`; over the frame cap → `GIMG_ERR_LIMIT` |
+| Encode | VP8L still (default) or VP8 lossy, with an uncompressed `ALPH` plane when the lossy picture is non-opaque; a multi-item document is `ANIM`/`ANMF`, each frame the rectangle that changed; optional ICCP/EXIF/XMP; lossless round-trip identity | non-8-bit, a frame that is not the canvas size, or dispose-to-previous → `GIMG_ERR_UNSUPPORTED`; over the frame cap → `GIMG_ERR_LIMIT` |
 
 ## Where this codec differs from libwebp
 
@@ -283,8 +285,6 @@ PSNR or size.
 
 ## Not implemented
 
-- A frame rectangle smaller than the canvas. Each written frame is the
-  whole canvas, with blending off.
 - A quality bar on `make webp-rd`. The target measures bytes and
   PSNR-RGB against `cwebp` and does not fail when this encoder is
   worse (`notes/image/webp-plan.md` §6).

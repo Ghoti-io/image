@@ -25,7 +25,8 @@
  * (optional VP8X + ALPH + ICCP / EXIF / XMP). A lossy picture with alpha
  * stores the plane uncompressed in ALPH and premultiplies the colour
  * the VP8 frame carries. A document of several items is an animation:
- * each item is one full-canvas frame.
+ * each item is the canvas at that moment, and the frame written for
+ * it is the rectangle that differs from what is already showing.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -249,18 +250,20 @@ static uint32_t frame_duration_ms(const GIMG_Item * item) {
 }
 
 /** One ANMF: the 16-byte header, then the frame's own bitstream chunks.
- *  The rectangle is the whole canvas at the origin. Blending is off, so
- *  the pixels in the bitstream are the pixels a later load shows. */
-static int append_anmf(webp_buf_t * file, uint32_t width, uint32_t height,
-    uint32_t duration_ms, int dispose_background, int is_lossy,
-    const unsigned char * alph, size_t alph_size,
-    const unsigned char * picture, size_t picture_size) {
+ *  @a x and @a y are canvas pixels and even, because the file stores
+ *  half-pixels. Blending is off, so the rectangle replaces what is there. */
+static int append_anmf(webp_buf_t * file, uint32_t x, uint32_t y,
+    uint32_t width, uint32_t height, uint32_t duration_ms,
+    int dispose_background, int is_lossy, const unsigned char * alph,
+    size_t alph_size, const unsigned char * picture, size_t picture_size) {
   webp_buf_t payload;
   unsigned char hdr[16];
   int ok;
   memset(&payload, 0, sizeof(payload));
   payload.alloc = file->alloc;
   memset(hdr, 0, sizeof(hdr));
+  write_u24le(hdr + 0, x / 2u);
+  write_u24le(hdr + 3, y / 2u);
   write_u24le(hdr + 6, width - 1u);
   write_u24le(hdr + 9, height - 1u);
   write_u24le(hdr + 12, duration_ms);
@@ -296,12 +299,113 @@ static GIMG_Result take_item_raster(GIMG_Item * item, GIMG_Raster ** out,
   return gimg_item_decode(item, NULL, out);
 }
 
+/** Bounding box of pixels that differ, grown so the origin is even.
+ *  An unchanged frame still needs a duration, so it becomes one pixel
+ *  at the origin. */
+static void changed_rect(const uint8_t * desired, size_t desired_stride,
+    const uint8_t * screen, size_t screen_stride, uint32_t width,
+    uint32_t height, uint32_t * out_x, uint32_t * out_y, uint32_t * out_w,
+    uint32_t * out_h) {
+  uint32_t min_x = width;
+  uint32_t min_y = height;
+  uint32_t max_x = 0;
+  uint32_t max_y = 0;
+  int any = 0;
+  uint32_t y;
+  uint32_t x;
+  for (y = 0; y < height; ++y) {
+    const uint8_t * drow = desired + (size_t)y * desired_stride;
+    const uint8_t * srow = screen + (size_t)y * screen_stride;
+    for (x = 0; x < width; ++x) {
+      if (memcmp(drow + (size_t)x * 4u, srow + (size_t)x * 4u, 4u) == 0) {
+        continue;
+      }
+      if (!any || x < min_x) {
+        min_x = x;
+      }
+      if (!any || y < min_y) {
+        min_y = y;
+      }
+      if (x > max_x) {
+        max_x = x;
+      }
+      if (y > max_y) {
+        max_y = y;
+      }
+      any = 1;
+    }
+  }
+  if (!any) {
+    *out_x = 0;
+    *out_y = 0;
+    *out_w = 1;
+    *out_h = 1;
+    return;
+  }
+  if (min_x & 1u) {
+    min_x--;
+  }
+  if (min_y & 1u) {
+    min_y--;
+  }
+  *out_x = min_x;
+  *out_y = min_y;
+  *out_w = (max_x + 1u) - min_x;
+  *out_h = (max_y + 1u) - min_y;
+}
+
+static uint8_t * copy_rect(const uint8_t * src, size_t src_stride, uint32_t x,
+    uint32_t y, uint32_t w, uint32_t h, const GIMG_Allocator * alloc,
+    int * out_has_alpha) {
+  size_t stride = (size_t)w * 4u;
+  uint8_t * dst = (uint8_t *)gimg_malloc(alloc, stride * (size_t)h);
+  uint32_t row;
+  uint32_t col;
+  int has_alpha = 0;
+  if (!dst) {
+    return NULL;
+  }
+  for (row = 0; row < h; ++row) {
+    const uint8_t * from =
+        src + (size_t)(y + row) * src_stride + (size_t)x * 4u;
+    memcpy(dst + (size_t)row * stride, from, stride);
+    for (col = 0; col < w; ++col) {
+      if (from[col * 4u + 3u] != 255u) {
+        has_alpha = 1;
+      }
+    }
+  }
+  *out_has_alpha = has_alpha;
+  return dst;
+}
+
+static void paint_canvas(uint8_t * screen, size_t screen_stride,
+    const uint8_t * desired, size_t desired_stride, uint32_t width,
+    uint32_t height) {
+  uint32_t y;
+  for (y = 0; y < height; ++y) {
+    memcpy(screen + (size_t)y * screen_stride,
+        desired + (size_t)y * desired_stride, (size_t)width * 4u);
+  }
+}
+
+static void clear_rect(uint8_t * screen, size_t screen_stride, uint32_t x,
+    uint32_t y, uint32_t w, uint32_t h) {
+  uint32_t row;
+  for (row = 0; row < h; ++row) {
+    memset(screen + (size_t)(y + row) * screen_stride + (size_t)x * 4u, 0,
+        (size_t)w * 4u);
+  }
+}
+
 /**
- * Each item is the canvas at that moment. WebP has no dispose-to-previous,
- * and this writer has no frame offset, so a frame that is not the canvas
- * size, or a dispose-to-previous, is refused. The ANIM chunk always carries
- * a loop count and a background: the format has no way to omit either, and
- * an absent one is written as 0 (repeat forever, transparent black).
+ * Each item is the canvas at that moment. The written rectangle is the
+ * part that differs from what a player would already be showing, grown
+ * so its origin is even. WebP has no dispose-to-previous, so that op is
+ * refused, as is a frame that is not the canvas size. The ANIM chunk
+ * always carries a loop count and a background: the format has no way
+ * to omit either, and an absent one is written as 0 (repeat forever,
+ * transparent black).
  */
 static GIMG_Result webp_save_animation(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const GIMG_Save_Options * options,
@@ -321,6 +425,8 @@ static GIMG_Result webp_save_animation(GIMG_Codec * codec, const GIMG_Doc * doc,
   int first_owned = 0;
   uint32_t canvas_w = 0;
   uint32_t canvas_h = 0;
+  uint8_t * screen = NULL;
+  size_t screen_stride = 0;
   int any_alpha = 0;
   unsigned char * iccp = NULL;
   size_t iccp_size = 0;
@@ -394,44 +500,84 @@ static GIMG_Result webp_save_animation(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
 
     r = raster_to_rgba8(raster, alloc, &rgba, &rgba_stride, &has_alpha);
+    (void)has_alpha;
     if (r != GIMG_OK) {
       if (owned) {
         gimg_raster_destroy(raster);
       }
       goto Done;
     }
-    if (has_alpha) {
-      any_alpha = 1;
+    if (i == 0u) {
+      screen_stride = (size_t)canvas_w * 4u;
+      screen = (uint8_t *)gimg_malloc(
+          alloc, screen_stride * (size_t)canvas_h);
+      if (!screen) {
+        gimg_free(alloc, rgba);
+        r = GIMG_ERR_OOM;
+        goto Done;
+      }
+      memset(screen, 0, screen_stride * (size_t)canvas_h);
     }
-    if (is_lossy) {
-      if (has_alpha) {
-        r = encode_alpha_raw(rgba, w, h, rgba_stride, alloc, &alph, &alph_size);
+    {
+      uint32_t rx = 0;
+      uint32_t ry = 0;
+      uint32_t rw = 0;
+      uint32_t rh = 0;
+      uint8_t * patch;
+      int patch_alpha = 0;
+      changed_rect(rgba, rgba_stride, screen, screen_stride, canvas_w,
+          canvas_h, &rx, &ry, &rw, &rh);
+      patch = copy_rect(rgba, rgba_stride, rx, ry, rw, rh, alloc, &patch_alpha);
+      if (!patch) {
+        gimg_free(alloc, rgba);
+        if (owned) {
+          gimg_raster_destroy(raster);
+        }
+        r = GIMG_ERR_OOM;
+        goto Done;
+      }
+      if (patch_alpha) {
+        any_alpha = 1;
+      }
+      if (is_lossy) {
+        if (patch_alpha) {
+          r = encode_alpha_raw(patch, rw, rh, (size_t)rw * 4u, alloc, &alph,
+              &alph_size);
+          if (r == GIMG_OK) {
+            premultiply_rgba(patch, rw, rh, (size_t)rw * 4u);
+          }
+        }
         if (r == GIMG_OK) {
-          premultiply_rgba(rgba, w, h, rgba_stride);
+          r = gimg_webp_vp8_encode(patch, rw, rh, (size_t)rw * 4u, effort,
+              alloc, &picture, &picture_size);
         }
       }
-      if (r == GIMG_OK) {
-        r = gimg_webp_vp8_encode(rgba, w, h, rgba_stride, effort, alloc,
-            &picture, &picture_size);
+      else {
+        r = gimg_webp_vp8l_encode(patch, rw, rh, (size_t)rw * 4u, patch_alpha,
+            exact, effort, alloc, &picture, &picture_size);
       }
-    }
-    else {
-      r = gimg_webp_vp8l_encode(rgba, w, h, rgba_stride, has_alpha, exact,
-          effort, alloc, &picture, &picture_size);
-    }
-    gimg_free(alloc, rgba);
-    if (r != GIMG_OK) {
-      gimg_free(alloc, alph);
-      gimg_free(alloc, picture);
-      if (owned) {
-        gimg_raster_destroy(raster);
+      gimg_free(alloc, patch);
+      if (r != GIMG_OK) {
+        gimg_free(alloc, rgba);
+        gimg_free(alloc, alph);
+        gimg_free(alloc, picture);
+        if (owned) {
+          gimg_raster_destroy(raster);
+        }
+        goto Done;
       }
-      goto Done;
-    }
-    if (!append_anmf(&anmf, w, h, frame_duration_ms(item),
-            dispose == GIMG_DISPOSE_BACKGROUND, is_lossy, alph, alph_size,
-            picture, picture_size)) {
-      r = GIMG_ERR_OOM;
+      paint_canvas(screen, screen_stride, rgba, rgba_stride, canvas_w,
+          canvas_h);
+      if (dispose == GIMG_DISPOSE_BACKGROUND) {
+        clear_rect(screen, screen_stride, rx, ry, rw, rh);
+      }
+      gimg_free(alloc, rgba);
+      rgba = NULL;
+      if (!append_anmf(&anmf, rx, ry, rw, rh, frame_duration_ms(item),
+              dispose == GIMG_DISPOSE_BACKGROUND, is_lossy, alph, alph_size,
+              picture, picture_size)) {
+        r = GIMG_ERR_OOM;
+      }
     }
     gimg_free(alloc, alph);
     gimg_free(alloc, picture);
@@ -598,6 +744,7 @@ static GIMG_Result webp_save_animation(GIMG_Codec * codec, const GIMG_Doc * doc,
 Done:
   gimg_free(alloc, file.data);
   gimg_free(alloc, anmf.data);
+  gimg_free(alloc, screen);
   gimg_free(alloc, iccp);
   gimg_free(alloc, exif);
   gimg_free(alloc, xmp);

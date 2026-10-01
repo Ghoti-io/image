@@ -848,7 +848,8 @@ typedef struct {
  *
  *   What becomes of the items after it is the format's to say, and they do
  *   not agree. PNG writes them as the frames of an APNG, GIF as the frames
- *   of an animation, and WebP as full-canvas ANMF frames; JPEG writes item 1
+ *   of an animation, and WebP as ANMF frames of the rectangle that
+ *   changed; JPEG writes item 1
  *   as the Exif thumbnail and ignores the
  *   rest; BMP writes item 0 alone and returns GIMG_OK, because the usual way
  *   to ask for one frame of an animation as a BMP is to hand the whole

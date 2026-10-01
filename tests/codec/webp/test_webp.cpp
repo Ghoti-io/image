@@ -638,6 +638,100 @@ TEST(Webp, SaveAnimationRoundTrip) {
   gimg_doc_destroy(doc);
 }
 
+TEST(Webp, SaveAnimationWritesTheChangedRectangle) {
+  /* Frame 1 changes one pixel at (4,4), which is already an even origin,
+   * so the frame is 1×1 there. Frame 2 changes (1,2). The file stores
+   * the origin in half-pixels, so that box grows left to x = 0 and is
+   * 2×1. Both decoded frames are the canvases that were handed in. */
+  GIMG_Raster * base = solid_rgba(8, 8, 200, 10, 10, 255);
+  GIMG_Raster * dot = solid_rgba(8, 8, 200, 10, 10, 255);
+  GIMG_Raster * nudge = solid_rgba(8, 8, 200, 10, 10, 255);
+  ASSERT_NE(base, nullptr);
+  ASSERT_NE(dot, nullptr);
+  ASSERT_NE(nudge, nullptr);
+  uint8_t * dot_px = static_cast<uint8_t *>(gimg_raster_pixels(dot));
+  uint8_t * nudge_px = static_cast<uint8_t *>(gimg_raster_pixels(nudge));
+  const size_t dot_stride = gimg_raster_stride_bytes(dot);
+  memcpy(nudge_px, dot_px, dot_stride * 8u);
+  uint8_t * changed = dot_px + 4u * dot_stride + 4u * 4u;
+  changed[0] = 10;
+  changed[1] = 10;
+  changed[2] = 220;
+  changed[3] = 255;
+  memcpy(nudge_px, dot_px, dot_stride * 8u);
+  uint8_t * odd = nudge_px + 2u * dot_stride + 1u * 4u;
+  odd[0] = 10;
+  odd[1] = 220;
+  odd[2] = 10;
+  odd[3] = 255;
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 3), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), base);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), dot);
+  gimg_item_set_raster(gimg_doc_item(doc, 2), nudge);
+  gimg_item_set_frame_delay(gimg_doc_item(doc, 0), 20, 1000);
+  gimg_item_set_frame_delay(gimg_doc_item(doc, 1), 20, 1000);
+  gimg_item_set_frame_delay(gimg_doc_item(doc, 2), 20, 1000);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_effort = 4;
+  opts.webp_exact = 1;
+  GIMG_Save_Report report = {};
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, &report), GIMG_OK);
+  const int64_t encode_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t0).count();
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + nbytes);
+  publish_animation("stub_anim_rect.webp", saved, {base, dot, nudge},
+      encode_us, false);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  const gimg_webp_doc_state_t * st = state_of(round);
+  ASSERT_NE(st, nullptr);
+  ASSERT_EQ(st->frame_count, 3u);
+  EXPECT_EQ(st->frames[1].x, 4u);
+  EXPECT_EQ(st->frames[1].y, 4u);
+  EXPECT_EQ(st->frames[1].width, 1u);
+  EXPECT_EQ(st->frames[1].height, 1u);
+  EXPECT_EQ(st->frames[2].x, 0u);
+  EXPECT_EQ(st->frames[2].y, 2u);
+  EXPECT_EQ(st->frames[2].width, 2u);
+  EXPECT_EQ(st->frames[2].height, 1u);
+  GIMG_Raster * back0 = nullptr;
+  GIMG_Raster * back1 = nullptr;
+  GIMG_Raster * back2 = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back0),
+      GIMG_OK);
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 1), nullptr, &back1),
+      GIMG_OK);
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 2), nullptr, &back2),
+      GIMG_OK);
+  EXPECT_TRUE(gimg_ops_raster_equal(base, back0));
+  EXPECT_TRUE(gimg_ops_raster_equal(dot, back1));
+  EXPECT_TRUE(gimg_ops_raster_equal(nudge, back2));
+
+  gimg_raster_destroy(back0);
+  gimg_raster_destroy(back1);
+  gimg_raster_destroy(back2);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
 TEST(Webp, SaveAnimationRefusesWhatTheFormatCannotHold) {
   GIMG_Raster * a = solid_rgba(8, 8, 1, 2, 3, 255);
   GIMG_Raster * b = solid_rgba(8, 8, 4, 5, 6, 255);
