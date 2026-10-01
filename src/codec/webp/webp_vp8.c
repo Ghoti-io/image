@@ -1186,6 +1186,45 @@ static void vp8_loop_filter(uint8_t * y, int y_stride, uint8_t * u,
   }
 }
 
+/** The encoder searches levels against a copy of its reconstruction.
+ *  The decoder has already parsed the same level. A level of 0 is a
+ *  no-op, matching a frame header that skips the filter. */
+GIMG_Result gimg_vp8_loop_filter(uint8_t * y, int y_stride, uint8_t * u,
+    uint8_t * v, int uv_stride, const uint8_t * y_mode, const uint8_t * mb_nz,
+    uint32_t mb_w, uint32_t mb_h, int level, const GIMG_Allocator * alloc) {
+  vp8_mb stack_mb[9];
+  vp8_mb * modes;
+  uint32_t n;
+  uint32_t i;
+  int heap = 0;
+  int zero[4] = { 0, 0, 0, 0 };
+  if (level <= 0) {
+    return GIMG_OK;
+  }
+  n = mb_w * mb_h;
+  if (n <= 9u) {
+    modes = stack_mb;
+  }
+  else {
+    modes = (vp8_mb *)gimg_malloc(alloc, (size_t)n * sizeof(vp8_mb));
+    if (!modes) {
+      return GIMG_ERR_OOM;
+    }
+    heap = 1;
+  }
+  memset(modes, 0, (size_t)n * sizeof(vp8_mb));
+  for (i = 0; i < n; ++i) {
+    modes[i].y = y_mode[i];
+    modes[i].nz = mb_nz[i];
+  }
+  vp8_loop_filter(y, y_stride, u, v, uv_stride, modes, mb_w, mb_h, 0, level,
+      0, 0, zero, zero, 0, 0, zero);
+  if (heap) {
+    gimg_free(alloc, modes);
+  }
+  return GIMG_OK;
+}
+
 /* Section 16.1. Intra modes inside an interframe. DC_PRED is terminal 0. */
 static const int8_t k_if_ymode_tree[] = {
   0, 2, 4, 6, -VP8_V_PRED, -VP8_H_PRED, -VP8_TM_PRED, -VP8_B_PRED

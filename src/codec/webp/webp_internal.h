@@ -208,6 +208,14 @@ void gimg_vp8_load_b_edge(const uint8_t * plane, int stride, int mb_w,
 void gimg_vp8_pred_b4(uint8_t * dst, const uint8_t * above,
     const uint8_t * left, int p, int mode);
 
+/** Section 15 normal filter at one frame level. Sharpness stays 0 and
+ *  there is no segment or mode delta. @a y_mode is the macroblock mode
+ *  (4 is B_PRED). @a mb_nz is 1 when the macroblock had a nonzero
+ *  coefficient. The planes are filtered in place. */
+GIMG_Result gimg_vp8_loop_filter(uint8_t * y, int y_stride, uint8_t * u,
+    uint8_t * v, int uv_stride, const uint8_t * y_mode, const uint8_t * mb_nz,
+    uint32_t mb_w, uint32_t mb_h, int level, const GIMG_Allocator * alloc);
+
 /**
  * @brief Encode an opaque RGBA8 buffer to a VP8 keyframe bitstream payload.
  *

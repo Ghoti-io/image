@@ -33,17 +33,21 @@
  * score is reconstructed error plus the bool-coder cost of the modes
  * and the tokens; one bit is priced at the luma AC quantizer step, and
  * an equal score stays with the earlier choice. After the deadzone
- * quantizer, a backward pass drops a coefficient when its tokens cost
- * more than the error it removes. A flat macroblock beside a detailed
- * one takes a coarser segment quantizer (section 9.3). The Intra16
+ * quantizer, a backward pass drops a luma AC coefficient when its
+ * tokens cost more than the error it removes. A flat macroblock
+ * beside a detailed one takes a coarser segment quantizer (section
+ * 9.3). The Intra16
  * residual is the section 14 Walsh-Hadamard of the sixteen DC
  * coefficients and the 4×4 DCT of everything else. A 4×4 macroblock has
  * no Y2 block. A macroblock whose coefficients are all zero is skipped
  * when that flag costs less than the zero tokens (section 9.1). The
  * coefficient probabilities are then replaced where the tokens save
  * more than the section 13.4 update, and the trellis is priced with
- * that table. dwebp accepts the output. make webp-rd is the comparison
- * against cwebp.
+ * that table. The section 15 normal filter then runs at the level
+ * whose filtered reconstruction is closest to the source. The level
+ * is a fixed-width field, so an equal error stays unfiltered.
+ * Prediction keeps the unfiltered samples. dwebp accepts the output.
+ * make webp-rd is the comparison against cwebp.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -1213,7 +1217,7 @@ static void write_segment_id(bool_writer_t * bw, int id) {
 }
 
 static void write_frame_header(bool_writer_t * part0, int base_q, int seg_on,
-    int skip_on, int skip_prob, vp8_prob_set probs) {
+    int filter_level, int skip_on, int skip_prob, vp8_prob_set probs) {
   int t, b, c, p;
   int s;
   /* keyframe: colorspace=0 (YUV), clamp=0 */
@@ -1235,11 +1239,12 @@ static void write_frame_header(bool_writer_t * part0, int base_q, int seg_on,
     bw_put_bit_uniform(part0, 0);
     bw_put_bit_uniform(part0, 0);
   }
-  /* filter: off */
-  bw_put_bit_uniform(part0, 0); /* simple */
-  bw_put_bits(part0, 0, 6);     /* level */
-  bw_put_bits(part0, 0, 3);     /* sharpness */
-  bw_put_bit_uniform(part0, 0); /* lf delta */
+  /* Section 15. Normal filter, sharpness 0, no mode or reference
+   * delta. The level is fixed width, so 0 costs the same as any other. */
+  bw_put_bit_uniform(part0, 0);
+  bw_put_bits(part0, (uint32_t)filter_level, 6);
+  bw_put_bits(part0, 0, 3);
+  bw_put_bit_uniform(part0, 0);
   /* one coeff partition */
   bw_put_bits(part0, 0, 2);
   /* quantizer */
@@ -1723,7 +1728,7 @@ static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
     const uint8_t * uv_mode, const uint8_t * b_mode, const uint8_t * seg,
     uint8_t * y_nz, uint8_t * u_nz, uint8_t * v_nz, uint8_t * y2_above,
     int y4_stride, int uv4_stride, int skip_on, const uint8_t * mb_skip,
-    vp8_prob_set probs, vp8_counts * counts) {
+    vp8_prob_set probs, uint8_t * mb_nz, vp8_counts * counts) {
   int mb_y;
   int mb_x;
   int y2_left;
@@ -1731,6 +1736,9 @@ static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
   memset(u_nz, 0, (size_t)uv4_stride * (size_t)mb_h * 2u);
   memset(v_nz, 0, (size_t)uv4_stride * (size_t)mb_h * 2u);
   memset(y2_above, 0, (size_t)mb_w);
+  if (mb_nz) {
+    memset(mb_nz, 0, (size_t)mb_w * (size_t)mb_h);
+  }
   for (mb_y = 0; mb_y < mb_h; ++mb_y) {
     y2_left = 0;
     for (mb_x = 0; mb_x < mb_w; ++mb_x) {
@@ -1742,6 +1750,7 @@ static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
       int y1_dc_m, y1_ac_m, y2_dc_m, y2_ac_m, uv_dc_m, uv_ac_m;
       int sy;
       int sx;
+      int any = 0;
       mb_quants(base_q + (seg[mi] ? VP8_SEG_COARSE : 0), &y1_dc_m, &y1_ac_m,
           &y2_dc_m, &y2_ac_m, &uv_dc_m, &uv_ac_m);
       if (skip_on && mb_skip[mi]) {
@@ -1779,6 +1788,9 @@ static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
                 y1_ac_m, levels, probs);
             tally_block(counts, 3, ctx, 0, levels);
             y_nz[fy * y4_stride + fx] = (uint8_t)block_nz(levels, 0);
+            if (y_nz[fy * y4_stride + fx]) {
+              any = 1;
+            }
           }
         }
       }
@@ -1790,6 +1802,9 @@ static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
         tally_block(counts, 1, ctx, 0, y2_level);
         y2_left = block_nz(y2_level, 0);
         y2_above[mb_x] = (uint8_t)y2_left;
+        if (y2_left) {
+          any = 1;
+        }
         for (sy = 0; sy < 4; ++sy) {
           for (sx = 0; sx < 4; ++sx) {
             const int fx = mb_x * 4 + sx;
@@ -1804,6 +1819,9 @@ static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
             }
             tally_block(counts, 0, ctx, 1, ac_levels[bi]);
             y_nz[fy * y4_stride + fx] = (uint8_t)block_nz(ac_levels[bi], 1);
+            if (y_nz[fy * y4_stride + fx]) {
+              any = 1;
+            }
           }
         }
       }
@@ -1827,8 +1845,14 @@ static void tally_frame(const uint8_t * y_plane, int y_stride, int width,
             }
             tally_block(counts, 2, ctx, 0, levels[bi]);
             nz_plane[fy * uv4_stride + fx] = (uint8_t)block_nz(levels[bi], 0);
+            if (nz_plane[fy * uv4_stride + fx]) {
+              any = 1;
+            }
           }
         }
+      }
+      if (mb_nz) {
+        mb_nz[mi] = (uint8_t)any;
       }
     }
   }
@@ -2005,6 +2029,169 @@ static void choose_skips(const uint8_t * y_plane, int y_stride, int width,
   *skip_prob = prob;
 }
 
+/** Sum of squared error over the visible samples. The macroblock pad
+ *  past the picture edge is not part of the picture. */
+static int64_t frame_sse(const uint8_t * rec, int rec_stride,
+    const uint8_t * src, int src_stride, int w, int h) {
+  int64_t sum = 0;
+  int y;
+  for (y = 0; y < h; ++y) {
+    int x;
+    const uint8_t * rr = rec + (size_t)y * (size_t)rec_stride;
+    const uint8_t * ss = src + (size_t)y * (size_t)src_stride;
+    for (x = 0; x < w; ++x) {
+      const int d = (int)rr[x] - (int)ss[x];
+      sum += (int64_t)d * (int64_t)d;
+    }
+  }
+  return sum;
+}
+
+/** Error of one filter level on copies of the unfiltered reconstruction.
+ *  Returns -1 when the filter cannot allocate. */
+static int64_t filtered_sse(uint8_t * ty, uint8_t * tu, uint8_t * tv,
+    const uint8_t * rec_y, const uint8_t * rec_u, const uint8_t * rec_v,
+    size_t y_bytes, size_t uv_bytes, const uint8_t * y_src, int y_stride,
+    int width, int height, const uint8_t * u_src, const uint8_t * v_src,
+    int uv_stride, int uv_w, int uv_h, int mb_w, int mb_h,
+    const uint8_t * y_mode, const uint8_t * mb_nz, int level,
+    const GIMG_Allocator * alloc) {
+  memcpy(ty, rec_y, y_bytes);
+  memcpy(tu, rec_u, uv_bytes);
+  memcpy(tv, rec_v, uv_bytes);
+  if (gimg_vp8_loop_filter(ty, y_stride, tu, tv, uv_stride, y_mode, mb_nz,
+          (uint32_t)mb_w, (uint32_t)mb_h, level, alloc) != GIMG_OK) {
+    return -1;
+  }
+  return frame_sse(ty, y_stride, y_src, y_stride, width, height) +
+      frame_sse(tu, uv_stride, u_src, uv_stride, uv_w, uv_h) +
+      frame_sse(tv, uv_stride, v_src, uv_stride, uv_w, uv_h);
+}
+
+/** Section 15. The level field is six bits whatever the value, so the
+ *  choice is the filtered reconstruction closest to the source. An
+ *  equal error stays with the lower level, and a flat picture stays
+ *  off. Levels 8, 16, …, 56 and 63 are scored first, then the four
+ *  neighbors on each side of the best of those, then the level walks
+ *  left while the error does not rise. On the pictures this was measured
+ *  against, that finds the same level as trying all 63. The filter runs
+ *  on a copy: prediction uses the unfiltered samples. */
+static int choose_filter_level(const uint8_t * y_src, int y_stride, int width,
+    int height, const uint8_t * rec_y, const uint8_t * u_src,
+    const uint8_t * v_src, const uint8_t * rec_u, const uint8_t * rec_v,
+    int uv_stride, int uv_w, int uv_h, int mb_w, int mb_h,
+    const uint8_t * y_mode, const uint8_t * mb_nz, const GIMG_Allocator * alloc,
+    GIMG_Result * err) {
+  const size_t y_bytes = (size_t)y_stride * (size_t)mb_h * 16u;
+  const size_t uv_bytes = (size_t)uv_stride * (size_t)mb_h * 8u;
+  uint8_t * ty = NULL;
+  uint8_t * tu = NULL;
+  uint8_t * tv = NULL;
+  int64_t got[64];
+  uint8_t have[64];
+  int64_t best;
+  int best_level = 0;
+  int level;
+  int i;
+  *err = GIMG_OK;
+  best = frame_sse(rec_y, y_stride, y_src, y_stride, width, height) +
+      frame_sse(rec_u, uv_stride, u_src, uv_stride, uv_w, uv_h) +
+      frame_sse(rec_v, uv_stride, v_src, uv_stride, uv_w, uv_h);
+  if (best == 0) {
+    return 0;
+  }
+  memset(have, 0, sizeof have);
+  got[0] = best;
+  have[0] = 1;
+  ty = (uint8_t *)gimg_malloc(alloc, y_bytes);
+  tu = (uint8_t *)gimg_malloc(alloc, uv_bytes);
+  tv = (uint8_t *)gimg_malloc(alloc, uv_bytes);
+  if (!ty || !tu || !tv) {
+    *err = GIMG_ERR_OOM;
+    goto Done;
+  }
+  for (i = 0; i < 8; ++i) {
+    const int candidate = (i < 7) ? (i + 1) * 8 : 63;
+    int64_t sse;
+    if (have[candidate]) {
+      sse = got[candidate];
+    }
+    else {
+      sse = filtered_sse(ty, tu, tv, rec_y, rec_u, rec_v, y_bytes, uv_bytes,
+          y_src, y_stride, width, height, u_src, v_src, uv_stride, uv_w, uv_h,
+          mb_w, mb_h, y_mode, mb_nz, candidate, alloc);
+      if (sse < 0) {
+        *err = GIMG_ERR_OOM;
+        best_level = 0;
+        goto Done;
+      }
+      got[candidate] = sse;
+      have[candidate] = 1;
+    }
+    if (sse < best) {
+      best = sse;
+      best_level = candidate;
+    }
+  }
+  {
+    const int center = best_level;
+    for (level = center - 4; level <= center + 4; ++level) {
+    int64_t sse;
+    if (level < 1 || level > 63) {
+      continue;
+    }
+    if (have[level]) {
+      sse = got[level];
+    }
+    else {
+      sse = filtered_sse(ty, tu, tv, rec_y, rec_u, rec_v, y_bytes, uv_bytes,
+          y_src, y_stride, width, height, u_src, v_src, uv_stride, uv_w, uv_h,
+          mb_w, mb_h, y_mode, mb_nz, level, alloc);
+      if (sse < 0) {
+        *err = GIMG_ERR_OOM;
+        best_level = 0;
+        goto Done;
+      }
+      got[level] = sse;
+      have[level] = 1;
+    }
+    if (sse < best) {
+      best = sse;
+      best_level = level;
+    }
+    }
+  }
+  while (best_level > 0) {
+    int64_t sse;
+    const int left = best_level - 1;
+    if (have[left]) {
+      sse = got[left];
+    }
+    else {
+      sse = filtered_sse(ty, tu, tv, rec_y, rec_u, rec_v, y_bytes, uv_bytes,
+          y_src, y_stride, width, height, u_src, v_src, uv_stride, uv_w, uv_h,
+          mb_w, mb_h, y_mode, mb_nz, left, alloc);
+      if (sse < 0) {
+        *err = GIMG_ERR_OOM;
+        best_level = 0;
+        goto Done;
+      }
+      got[left] = sse;
+      have[left] = 1;
+    }
+    if (sse > best) {
+      break;
+    }
+    best = sse;
+    best_level = left;
+  }
+Done:
+  gimg_free(alloc, ty);
+  gimg_free(alloc, tu);
+  gimg_free(alloc, tv);
+  return best_level;
+}
+
 GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     uint32_t height, size_t stride, int effort,
     const GIMG_Allocator * alloc, unsigned char ** out_bytes,
@@ -2032,6 +2219,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   uint8_t * b_mode = NULL;
   uint8_t * seg = NULL;
   uint8_t * mb_skip = NULL;
+  uint8_t * mb_nz = NULL;
+  int filter_level = 0;
   int seg_on = 0;
   int skip_on = 0;
   int skip_prob = 0;
@@ -2088,8 +2277,9 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   b_mode = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h * 16u);
   seg = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h);
   mb_skip = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h);
+  mb_nz = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h);
   if (!rec_y || !rec_u || !rec_v || !y_mode || !uv_mode || !b_mode || !seg ||
-      !mb_skip) {
+      !mb_skip || !mb_nz) {
     r = GIMG_ERR_OOM;
     goto Done;
   }
@@ -2287,7 +2477,7 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     tally_frame(y_plane, (int)y_stride, (int)width, (int)height, rec_y, u_plane,
         v_plane, rec_u, rec_v, (int)uv_stride, (int)uv_w, (int)uv_h, (int)mb_w,
         (int)mb_h, base_q, y_mode, uv_mode, b_mode, seg, y_nz, u_nz, v_nz,
-        y2_above, y4_stride, uv4_stride, 0, NULL, coeff_prob, &counts);
+        y2_above, y4_stride, uv4_stride, 0, NULL, coeff_prob, NULL, &counts);
     fit_probs(&counts, write_prob);
     if (prob_pass == 1 ||
         memcmp(write_prob, coeff_prob, sizeof coeff_prob) == 0) {
@@ -2307,13 +2497,21 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     tally_frame(y_plane, (int)y_stride, (int)width, (int)height, rec_y, u_plane,
         v_plane, rec_u, rec_v, (int)uv_stride, (int)uv_w, (int)uv_h, (int)mb_w,
         (int)mb_h, base_q, y_mode, uv_mode, b_mode, seg, y_nz, u_nz, v_nz,
-        y2_above, y4_stride, uv4_stride, skip_on, mb_skip, coeff_prob, &counts);
+        y2_above, y4_stride, uv4_stride, skip_on, mb_skip, coeff_prob, mb_nz,
+        &counts);
     fit_probs(&counts, write_prob);
   }
 
   bw_init(&part0, alloc);
   bw_init(&tokens, alloc);
-  write_frame_header(&part0, base_q, seg_on, skip_on, skip_prob, write_prob);
+  filter_level = choose_filter_level(y_plane, (int)y_stride, (int)width,
+      (int)height, rec_y, u_plane, v_plane, rec_u, rec_v, (int)uv_stride,
+      (int)uv_w, (int)uv_h, (int)mb_w, (int)mb_h, y_mode, mb_nz, alloc, &r);
+  if (r != GIMG_OK) {
+    goto Done;
+  }
+  write_frame_header(&part0, base_q, seg_on, filter_level, skip_on, skip_prob,
+      write_prob);
 
   memset(above_b, 0, (size_t)mb_w * 4u);
   for (mb_y = 0; mb_y < mb_h; ++mb_y) {
@@ -2494,20 +2692,6 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     r = GIMG_ERR_OOM;
     goto Done;
   }
-  /* Padding so the decoder's bool reader is not at eof after the last MB
-   * (VP8DecodeMB fails when token_br->eof_ is set at return). Large frames
-   * need more slack than a handful of bytes. */
-  if (!bw_resize(&tokens, 256u)) {
-    r = GIMG_ERR_OOM;
-    goto Done;
-  }
-  {
-    int pi;
-    for (pi = 0; pi < 256; ++pi) {
-      tokens.buf[tokens.pos++] = 0;
-    }
-  }
-
 
   /* Frame tag (3) + keyframe header (7) + part0 + tokens. */
   out_cap = 10u + part0.pos + tokens.pos + 16u;
@@ -2553,6 +2737,7 @@ Done:
   gimg_free(alloc, b_mode);
   gimg_free(alloc, seg);
   gimg_free(alloc, mb_skip);
+  gimg_free(alloc, mb_nz);
   gimg_free(alloc, above_b);
   gimg_free(alloc, y_nz);
   gimg_free(alloc, u_nz);

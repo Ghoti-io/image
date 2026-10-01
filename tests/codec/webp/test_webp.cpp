@@ -914,8 +914,8 @@ TEST(Webp, SaveLossyRampPricesBits) {
    * horizontal predictor on the top-left block, and the decoded
    * samples are 22 and 71. Pricing each bit at the luma AC quantizer
    * step moves that block to DC; the samples match an all-DC encode
-   * (21 and 73) and the file is 306 bytes, where both of those
-   * encoders wrote 308.
+   * (21 and 73) and the file is 50 bytes, where both of those
+   * encoders wrote 52.
    */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(32, 32, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
@@ -962,7 +962,7 @@ TEST(Webp, SaveLossyRampPricesBits) {
   ASSERT_NE(got, nullptr);
   EXPECT_EQ(got[0], 21);
   EXPECT_EQ(got[(31 * 32 + 31) * 4], 73);
-  EXPECT_EQ(nbytes, 306u);
+  EXPECT_EQ(nbytes, 50u);
 
   {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);
@@ -985,7 +985,7 @@ TEST(Webp, SaveLossyRampPricesBits) {
 
 TEST(Webp, SaveLossyStepPricesVertical) {
   /* Two macroblocks, both a left-black/right-white step. Error alone
-   * ties, so both stay DC and the file is 306 bytes. The lower block's
+   * ties, so both stay DC and the file is 50 bytes. The lower block's
    * vertical predictor repeats the reconstructed row and its residual
    * is shorter; pricing the bits selects it.
    */
@@ -1034,7 +1034,7 @@ TEST(Webp, SaveLossyStepPricesVertical) {
   ASSERT_NE(got, nullptr);
   EXPECT_LT(got[20 * 16 * 4], 40);
   EXPECT_GT(got[(20 * 16 + 12) * 4], 200);
-  EXPECT_EQ(nbytes, 302u);
+  EXPECT_EQ(nbytes, 46u);
 
   {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);
@@ -1058,8 +1058,8 @@ TEST(Webp, SaveLossyStepPricesVertical) {
 TEST(Webp, SaveLossyCheckerUsesSubblocks) {
   /* A one-pixel checkerboard, two macroblocks tall. At effort 4 the
    * sixteen 4×4 predictors, with the coefficient probabilities fit to
-   * the tokens, code it in 398 bytes. Staying on Intra16 before that
-   * search wrote 592, so a file that large means the subblocks never
+   * the tokens, code it in 142 bytes. Staying on Intra16 before that
+   * search wrote 336, so a file that large means the subblocks never
    * won. The lower block's modes are coded against the upper block's
    * modes. The origin stays dark and its right neighbour stays bright,
    * and the same holds on the next row of macroblocks.
@@ -1111,7 +1111,7 @@ TEST(Webp, SaveLossyCheckerUsesSubblocks) {
   EXPECT_GT(got[4], 200);
   EXPECT_LT(got[16 * 16 * 4], 40);
   EXPECT_GT(got[(16 * 16 + 1) * 4], 200);
-  EXPECT_EQ(nbytes, 398u);
+  EXPECT_EQ(nbytes, 142u);
 
   {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);
@@ -1133,9 +1133,9 @@ TEST(Webp, SaveLossyCheckerUsesSubblocks) {
 }
 
 TEST(Webp, SaveLossySpikeDropsWeakCoeff) {
-  /* One bright pixel. The deadzone quantizer writes 312 bytes. The
+  /* One bright pixel. The deadzone quantizer writes 56 bytes. The
    * trellis drops coefficients whose tokens cost more than the error
-   * they remove, and the file is 310 bytes.
+   * they remove, and the file is 54 bytes.
    */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
@@ -1167,7 +1167,7 @@ TEST(Webp, SaveLossySpikeDropsWeakCoeff) {
   size_t nbytes = 0;
   gimg_stream_output_buffer(out, &bytes, &nbytes);
   ASSERT_NE(bytes, nullptr);
-  EXPECT_EQ(nbytes, 310u);
+  EXPECT_EQ(nbytes, 54u);
   {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);
     const std::string path =
@@ -1292,6 +1292,16 @@ static int vp8_uniform_bit(const uint8_t ** p, const uint8_t * end,
   return bit;
 }
 
+/** L(n), most significant bit first, the same order the encoder writes. */
+static int vp8_literal(const uint8_t ** p, const uint8_t * end, uint32_t * value,
+    uint32_t * range, int * bit_count, int nbits) {
+  int v = 0;
+  for (int i = 0; i < nbits; ++i) {
+    v = (v << 1) | vp8_uniform_bit(p, end, value, range, bit_count);
+  }
+  return v;
+}
+
 TEST(Webp, SaveLossySegmentsFlatBesideDetail) {
   /* Left macroblock is flat, right one is a checkerboard. The flat
    * block takes the coarser segment quantizer, which sets the
@@ -1387,8 +1397,8 @@ TEST(Webp, SaveLossySegmentsFlatBesideDetail) {
 
 TEST(Webp, SaveLossySkipDropsEmptyTokens) {
   /* Sixteen flat macroblocks. RGB (130,130,129) lands on Y=U=V=128, so
-   * every residual quantizes to zero. Writing the skip flag is 304
-   * bytes. Leaving it off and emitting the zero tokens is 306.
+   * every residual quantizes to zero. Writing the skip flag is 48
+   * bytes. Leaving it off and emitting the zero tokens is 50.
    */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(256, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
@@ -1420,7 +1430,7 @@ TEST(Webp, SaveLossySkipDropsEmptyTokens) {
   size_t nbytes = 0;
   gimg_stream_output_buffer(out, &bytes, &nbytes);
   ASSERT_NE(bytes, nullptr);
-  EXPECT_EQ(nbytes, 304u);
+  EXPECT_EQ(nbytes, 48u);
   const auto * file = static_cast<const uint8_t *>(bytes);
   const uint8_t * vp8 = nullptr;
   for (size_t i = 12; i + 8 < nbytes;) {
@@ -1469,6 +1479,85 @@ TEST(Webp, SaveLossySkipDropsEmptyTokens) {
   gimg_stream_destroy(in);
   gimg_stream_destroy(out);
   gimg_doc_destroy(doc);
+}
+
+TEST(Webp, SaveLossyFilterLevelFollowsError) {
+  /* The level field is six bits whatever the value, so the choice is
+   * the filtered reconstruction closest to the source, and a tie stays
+   * at the lower level. RGB (130,130,129) is Y=U=V=128, every level
+   * reconstructs it the same, and the level stays 0. A horizontal ramp
+   * is closer after the filter, and the level is 18. Segmentation is
+   * off on both, so the level is the six bits after the filter-type bit.
+   */
+  auto level_of = [](int w, int h, bool ramp) {
+    GIMG_Raster * raster = nullptr;
+    EXPECT_EQ(gimg_raster_create((uint32_t)w, (uint32_t)h, &GIMG_PIXEL_RGBA8,
+                  GIMG_RASTER_OWNED, nullptr, 0, &raster),
+        GIMG_OK);
+    uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+    EXPECT_NE(px, nullptr);
+    for (int y = 0; y < h; ++y) {
+      for (int x = 0; x < w; ++x) {
+        uint8_t * p = px + (y * w + x) * 4;
+        if (ramp) {
+          p[0] = static_cast<uint8_t>(x * 255 / (w - 1));
+          p[1] = 40;
+          p[2] = static_cast<uint8_t>(255 - x * 255 / (w - 1));
+        }
+        else {
+          p[0] = 130;
+          p[1] = 130;
+          p[2] = 129;
+        }
+        p[3] = 255;
+      }
+    }
+    GIMG_Doc * doc = nullptr;
+    EXPECT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    EXPECT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+    gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+    GIMG_Stream * out = nullptr;
+    EXPECT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Options opts = {};
+    opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
+    opts.webp_effort = 4;
+    EXPECT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr), GIMG_OK);
+    const void * bytes = nullptr;
+    size_t nbytes = 0;
+    gimg_stream_output_buffer(out, &bytes, &nbytes);
+    EXPECT_NE(bytes, nullptr);
+    const auto * file = static_cast<const uint8_t *>(bytes);
+    const uint8_t * vp8 = nullptr;
+    for (size_t i = 12; i + 8 < nbytes;) {
+      const uint32_t sz = (uint32_t)file[i + 4] | ((uint32_t)file[i + 5] << 8) |
+          ((uint32_t)file[i + 6] << 16) | ((uint32_t)file[i + 7] << 24);
+      if (file[i] == 'V' && file[i + 1] == 'P' && file[i + 2] == '8' &&
+          file[i + 3] == ' ') {
+        vp8 = file + i + 8;
+        break;
+      }
+      i += 8u + sz + (sz & 1u);
+    }
+    EXPECT_NE(vp8, nullptr);
+    const uint8_t * p = vp8 + 12;
+    const uint8_t * end = file + nbytes;
+    uint32_t value = ((uint32_t)vp8[10] << 8) | vp8[11];
+    uint32_t range = 255;
+    int bit_count = 0;
+    EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 0);
+    EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 0);
+    EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 0);
+    const int simple = vp8_literal(&p, end, &value, &range, &bit_count, 1);
+    const int level = vp8_literal(&p, end, &value, &range, &bit_count, 6);
+    const int sharp = vp8_literal(&p, end, &value, &range, &bit_count, 3);
+    EXPECT_EQ(simple, 0);
+    EXPECT_EQ(sharp, 0);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+    return level;
+  };
+  EXPECT_EQ(level_of(256, 16, false), 0);
+  EXPECT_EQ(level_of(32, 16, true), 18);
 }
 
 TEST(Webp, AlphPlaneMatchesDwebpLossyAlpha) {

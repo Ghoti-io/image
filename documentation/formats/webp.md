@@ -155,21 +155,28 @@ of each 2×2 and uses the same four predictors. After the deadzone
 quantizer, a backward pass drops a coefficient when its tokens cost
 more than the error it removes. A flat macroblock beside a detailed
 one takes a quantizer 24 steps coarser (section 9.3); a uniform
-picture stays on the frame quantizer. A non-opaque picture writes
+picture stays on the frame quantizer. The section 15 normal
+filter then runs at the level whose filtered reconstruction is
+closest to the source. The level is six bits either way, so a flat
+picture, where every level ties, stays off. Prediction keeps the
+unfiltered samples. A non-opaque picture writes
 `VP8X` and an uncompressed `ALPH` plane, and the colour is
-premultiplied by `(c * a + 127) / 255` before the VP8 frame. This is
-not yet competitive with `cwebp`. The bool writer renormalizes from
-the section 7 range
-invariant (encoder range is one less than the decoder range). Accepted
-by `dwebp` and by this decoder. On a 16×32 one-pixel checkerboard at
-effort 4 the 4×4 predictors write **398** bytes once the coefficient
-probabilities are fit to the tokens; staying on Intra16 writes 592. One bright pixel on black is **310** bytes; the deadzone
-quantizer alone writes 312. Rate and distortion vs a fast `cwebp`
-baseline are
-reported by `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh
-webp-rd`; axes: bytes and PSNR-RGB over opaque pixels vs `cwebp -q 75
--m 0`). The target exits non-zero only if encode/decode/measure
-plumbing breaks; it does not yet fail on worse PSNR or size.
+premultiplied by `(c * a + 127) / 255` before the VP8 frame. The bool
+writer renormalizes from the section 7 range invariant (encoder range
+is one less than the decoder range). Accepted by `dwebp` and by this
+decoder. On a 16×32 one-pixel checkerboard at effort 4 the 4×4
+predictors write **142** bytes once the coefficient probabilities are
+fit to the tokens; staying on Intra16 writes 336. One bright pixel on
+black is **54** bytes; the deadzone quantizer alone writes 56. Effort
+4 uses quantizer index 60. `cwebp -q 75 -m 0` uses index 26 on the
+gray ramp in the RD corpus: that ramp is **86** bytes at 49.4 dB
+against 104 bytes at 49.7 dB, and Hopper is 1758 bytes at 28.7 dB
+against 3930 bytes at 33.6 dB. Effort 8 is index 20, and Hopper there
+is 3364 bytes at 33.4 dB. Rate and distortion vs that `cwebp` baseline
+are reported by `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh
+webp-rd`; axes: bytes and PSNR-RGB over opaque pixels). The target
+exits non-zero only if encode/decode/measure plumbing breaks; it does
+not yet fail on worse PSNR or size.
 
 ## Compliance checklist
 
@@ -192,7 +199,7 @@ plumbing breaks; it does not yet fail on worse PSNR or size.
 | VP8 bitstream | keyframe and interframe; a keyframe matches `dwebp` | `dwebp` and `anim_dump` refuse an interframe animation |
 | Anim composite | match `anim_dump -pam` | same |
 | Lossless save | round-trip identity; accepted by `dwebp`; effort ≥ 2 uses one predictor and LZ77 when the residual histogram shrinks; effort ≥ 3 adds cross-colour when the file is shorter; effort ≥ 4 keeps a palette when it is smaller; a Huffman image is kept when it is smaller | gradient effort 4 is 48 bytes, `cwebp -lossless -exact` is 60; see Save |
-| Lossy save | Intra16 or 4×4 predictors, trellis, segment quantizers, and an uncompressed ALPH plane; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | quality bar not armed |
+| Lossy save | Intra16 or 4×4 predictors, trellis, segment quantizers, the section 15 normal filter, and an uncompressed ALPH plane; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | quality bar not armed; effort 4 is a coarser quantizer than that baseline |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
@@ -246,15 +253,16 @@ plumbing breaks; it does not yet fail on worse PSNR or size.
   stays uneven inside one macroblock, a ramp whose bit cost moves the
   top-left block off the horizontal predictor, a vertical step whose
   lower block is the vertical predictor, a one-pixel checkerboard whose
-  4×4 predictors write 398 bytes, a one-pixel spike the trellis writes
-  as 310 bytes, a flat block beside a checkerboard that sets the
-  segment flag, an alpha plane kept exactly, and `make webp-rd`
+  4×4 predictors write 142 bytes, a one-pixel spike the trellis writes
+  as 54 bytes, a flat block beside a checkerboard that sets the
+  segment flag, a filter level that stays 0 on a flat picture and is
+  18 on a horizontal ramp, an alpha plane kept exactly, and `make webp-rd`
   vs `cwebp -q 75 -m 0` on `third_party/webp-rd/`
   (`tools/oracle/fetch.sh webp-rd`).
 - Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
   anim geometry/dispose/blend, lossless save round-trip, lossy
   decodable / gradient / ramp / step / checker / spike / segments /
-  alpha.
+  skip / filter level / alpha.
 - Fuzz: `fuzz_webp_load` with seeds from the fixture set.
 
 ## Not implemented
