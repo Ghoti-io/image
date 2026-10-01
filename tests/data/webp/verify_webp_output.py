@@ -375,6 +375,13 @@ def main(argv: list[str]) -> int:
     oracle = os.path.join(args.directory, "oracle")
     os.makedirs(oracle, exist_ok=True)
     if not args.compare:
+        # A previous run can leave index.2.rgba after a three-frame file.
+        # The next run's two-frame file at that index would inherit it.
+        # Cleared before the dump, and not again on the --compare re-exec,
+        # which reads the rasters this dump just wrote.
+        for name in os.listdir(oracle):
+            if name.endswith(".rgba"):
+                os.remove(os.path.join(oracle, name))
         try:
             dump = find_dump(args.dump)
             dump_ours(dump, oracle, [os.path.join(args.directory, n) for n in names])

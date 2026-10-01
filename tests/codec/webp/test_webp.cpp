@@ -732,6 +732,73 @@ TEST(Webp, SaveAnimationWritesTheChangedRectangle) {
   gimg_doc_destroy(doc);
 }
 
+TEST(Webp, SaveAnimationUnchangedFrameKeepsItsDuration) {
+  /* The second canvas matches the first, so nothing needs drawing. The
+   * frame is still there: one pixel at the origin, and its delay. */
+  GIMG_Raster * a = solid_rgba(8, 8, 40, 80, 120, 255);
+  GIMG_Raster * b = solid_rgba(8, 8, 40, 80, 120, 255);
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), a);
+  gimg_item_set_raster(gimg_doc_item(doc, 1), b);
+  gimg_item_set_frame_delay(gimg_doc_item(doc, 0), 10, 1000);
+  gimg_item_set_frame_delay(gimg_doc_item(doc, 1), 30, 1000);
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_effort = 4;
+  opts.webp_exact = 1;
+  GIMG_Save_Report report = {};
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, &report), GIMG_OK);
+  const int64_t encode_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t0).count();
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+  std::vector<uint8_t> saved(static_cast<const uint8_t *>(bytes),
+      static_cast<const uint8_t *>(bytes) + nbytes);
+  publish_animation("stub_anim_hold.webp", saved, {a, b}, encode_us, false);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  const gimg_webp_doc_state_t * st = state_of(round);
+  ASSERT_NE(st, nullptr);
+  ASSERT_EQ(st->frame_count, 2u);
+  EXPECT_EQ(st->frames[1].x, 0u);
+  EXPECT_EQ(st->frames[1].y, 0u);
+  EXPECT_EQ(st->frames[1].width, 1u);
+  EXPECT_EQ(st->frames[1].height, 1u);
+  uint16_t num = 0;
+  uint16_t den = 0;
+  gimg_item_frame_delay(gimg_doc_item(round, 1), &num, &den);
+  EXPECT_EQ(num, 30);
+  EXPECT_EQ(den, 1000);
+  GIMG_Raster * back0 = nullptr;
+  GIMG_Raster * back1 = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back0),
+      GIMG_OK);
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 1), nullptr, &back1),
+      GIMG_OK);
+  EXPECT_TRUE(gimg_ops_raster_equal(a, back0));
+  EXPECT_TRUE(gimg_ops_raster_equal(b, back1));
+
+  gimg_raster_destroy(back0);
+  gimg_raster_destroy(back1);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
 TEST(Webp, SaveAnimationRefusesWhatTheFormatCannotHold) {
   GIMG_Raster * a = solid_rgba(8, 8, 1, 2, 3, 255);
   GIMG_Raster * b = solid_rgba(8, 8, 4, 5, 6, 255);

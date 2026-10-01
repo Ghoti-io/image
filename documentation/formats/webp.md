@@ -127,7 +127,8 @@ the VP8 encoder). A document of several items is an animation: each
 item is the canvas at that moment. The written `ANMF` is the
 rectangle that differs from what is already showing, grown so its
 origin is even, with blending off, so a later load shows those
-pixels. The frame delay
+pixels. A frame that changes nothing is one pixel at the origin, so
+its duration is kept. The frame delay
 is stored as milliseconds. Dispose to background is written; dispose
 to previous, and a frame that is not the canvas size, are refused.
 `ANIM` always carries a loop count and a background colour, because
@@ -277,7 +278,8 @@ PSNR or size.
   vs `cwebp -q 75 -m 0` on `third_party/webp-rd/`
   (`tools/oracle/fetch.sh webp-rd`).
 - Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
-  anim geometry/dispose/blend, lossless animation round-trip, lossy
+  anim geometry/dispose/blend, lossless animation round-trip, a
+  changed rectangle, an unchanged frame that keeps its duration, lossy
   animation decode, lossless save round-trip, lossy
   decodable / gradient / ramp / step / checker / spike / segments /
   skip / filter level / alpha.
