@@ -14,8 +14,9 @@ This is what the library implements.
   carriage, VP8L lossless decode, VP8 lossy decode of keyframes and of
   interframes in one animation (optional ALPH), ANIM/ANMF animation
   (composited frames), VP8L lossless still encode, and a VP8 lossy
-  encode (Intra16 DC and the section 14 residual; one mode, so not yet
-  competitive; `make webp-rd` reports bytes and PSNR-RGB vs `cwebp`).
+  encode (four Intra16 predictors and the section 14 residual; no
+  subblock modes, so not yet competitive; `make webp-rd` reports bytes
+  and PSNR-RGB vs `cwebp`).
   Decode is gated against libwebp (`dwebp` / `anim_dump`) in
   the oracle image. The format page lists what remains.
 - TIFF. It reads every bit depth from 1 to 32, both byte orders, strips and
@@ -27,7 +28,7 @@ This is what the library implements.
   Deflate. What is absent is listed on the format's own page rather than left
   to be discovered.
 
-Later WebP work (mode search, animation encode) follows the format page's
+Later WebP work (subblock modes, animation encode) follows the format page's
 "Not implemented" list. A page for a format is written with its codec.
 
 ## Before you call it
@@ -154,8 +155,8 @@ so a program that links `ghoti.io-image-0` links these too.
 ## Status
 
 PNG (including APNG), JPEG, BMP, GIF, TIFF, ICO/CUR, and WebP load. All of
-those write. WebP save defaults to lossless stills; lossy is Intra16 with
-the section 14 residual and is not yet competitive (`make webp-rd`);
+those write. WebP save defaults to lossless stills; lossy picks one of
+the four Intra16 predictors and is not yet competitive (`make webp-rd`);
 animation encode is refused.
 
 ## License

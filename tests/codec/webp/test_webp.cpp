@@ -909,6 +909,77 @@ TEST(Webp, SaveLossyGradientKeepsDetail) {
   gimg_doc_destroy(doc);
 }
 
+TEST(Webp, SaveLossyRampPicksHorizontal) {
+  /* A 32×32 ramp at effort 0. The top-left macroblock's horizontal
+   * predictor reconstructs with less error than DC, and that choice
+   * moves the decoded samples. DC-only encode of this image is 21 at
+   * the origin and 73 at the far corner.
+   */
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(32, 32, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &raster),
+      GIMG_OK);
+  uint8_t * px = static_cast<uint8_t *>(gimg_raster_pixels(raster));
+  ASSERT_NE(px, nullptr);
+  for (int y = 0; y < 32; ++y) {
+    for (int x = 0; x < 32; ++x) {
+      uint8_t * p = px + (y * 32 + x) * 4;
+      const uint8_t v = (uint8_t)(16 + x + y);
+      p[0] = v;
+      p[1] = v;
+      p[2] = v;
+      p[3] = 255;
+    }
+  }
+
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  raster = nullptr;
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
+  opts.webp_effort = 0;
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &opts, nullptr), GIMG_OK);
+
+  const void * bytes = nullptr;
+  size_t nbytes = 0;
+  gimg_stream_output_buffer(out, &bytes, &nbytes);
+  ASSERT_NE(bytes, nullptr);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);
+  GIMG_Doc * round = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &round), GIMG_OK);
+  GIMG_Raster * back = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(round, 0), nullptr, &back), GIMG_OK);
+  const uint8_t * got = static_cast<const uint8_t *>(gimg_raster_pixels(back));
+  ASSERT_NE(got, nullptr);
+  EXPECT_EQ(got[0], 22);
+  EXPECT_EQ(got[(31 * 32 + 31) * 4], 71);
+
+  {
+    mkdir(GIMG_TEST_OUT_WEBP, 0755);
+    const std::string path =
+        std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_ramp.webp";
+    std::ofstream file(path, std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(file));
+    file.write(static_cast<const char *>(bytes),
+        static_cast<std::streamsize>(nbytes));
+    std::ofstream mark(path + ".lossy", std::ios::binary);
+    ASSERT_TRUE(static_cast<bool>(mark));
+  }
+
+  gimg_raster_destroy(back);
+  gimg_doc_destroy(round);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
 TEST(Webp, SaveLossyAlphaRefused) {
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(load_doc("lossless_alpha.webp", &doc), GIMG_OK);

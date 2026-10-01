@@ -7,9 +7,9 @@ geometry, chunk inventory (including bitstream chunks nested in `ANMF`),
 carriage of `ICCP` / `EXIF` / `XMP `, **VP8L lossless picture decode**,
 **ALPH plane decode**, **ANIM/ANMF animation** (frame items with offset,
 duration, dispose and blend; decode returns the composited canvas),
-**VP8L lossless encode**, and a **VP8 lossy encode** (Intra16 DC, the
-section 14 residual, one quantizer; not yet competitive; see Save and
-`make webp-rd`). See \ref image_format_references "Formats"
+**VP8L lossless encode**, and a **VP8 lossy encode** (one of the four
+Intra16 predictors, the section 14 residual, one quantizer; not yet
+competitive; see Save and `make webp-rd`). See \ref image_format_references "Formats"
 and `notes/image/webp-plan.md`.
 
 Claims below are checked. The structure gate is `webpinfo` (committed
@@ -96,8 +96,9 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   literals, subtract-green when `webp_effort` ≥ 1, optional `ICCP` / `EXIF` /
   `XMP ` via `VP8X`. See Save.
 - **VP8 lossy encode** when `webp_lossless = GIMG_WEBP_COMPRESS_LOSSY`:
-  Intra16 DC, single quantizer, the section 14 residual, opaque only.
-  No mode search yet. See Save and `make webp-rd`.
+  one of the four Intra16 predictors, single quantizer, the section 14
+  residual, opaque only. Subblock modes are not searched. See Save and
+  `make webp-rd`.
 
 ## YUV→RGB (a match, not a derivation)
 
@@ -137,15 +138,19 @@ group). That fixture has more than 256 colours, so the palette pass does
 not apply. On `lossless_checker` effort 4 writes **46** bytes (62 without
 the palette).
 
-**Lossy.** Intra16 DC only, single quantizer. The residual is the
-Walsh-Hadamard of the sixteen DC coefficients and the 4×4 DCT of the
-rest (RFC 6386 section 14), predicted from the reconstruction the
-decoder will see. RGB becomes YUV with the ITU-R BT.601 studio matrix
-that RFC cites, at scale 2^16; chroma is the mean of each 2×2. The bool
-writer renormalizes from the section 7 range invariant (encoder range is
-one less than the decoder range). There is no mode search yet, so this
-is not competitive with `cwebp`. Accepted by `dwebp` and by this
-decoder. Rate and distortion vs a fast `cwebp` baseline are reported by
+**Lossy.** Each macroblock uses one of the four Intra16 predictors
+(DC, vertical, horizontal, true motion), the one whose quantized
+reconstruction is closest to the source, with DC kept on a tie. One
+quantizer. The residual is the Walsh-Hadamard of the sixteen DC
+coefficients and the 4×4 DCT of the rest (RFC 6386 section 14),
+predicted from the reconstruction the decoder will see. RGB becomes
+YUV with the ITU-R BT.601 studio matrix that RFC cites, at scale 2^16;
+chroma is the mean of each 2×2 and uses the same four predictors.
+Subblock modes are not searched, so this is not competitive with
+`cwebp`. The bool writer renormalizes from the section 7 range
+invariant (encoder range is one less than the decoder range). Accepted
+by `dwebp` and by this decoder. Rate and distortion vs a fast `cwebp`
+baseline are reported by
 `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh webp-rd`; axes:
 bytes and PSNR-RGB over opaque pixels vs `cwebp -q 75 -m 0`). The target
 exits non-zero only if encode/decode/measure plumbing breaks; it does not
@@ -172,7 +177,7 @@ yet fail on worse PSNR or size.
 | VP8 bitstream | keyframe and interframe; a keyframe matches `dwebp` | `dwebp` and `anim_dump` refuse an interframe animation |
 | Anim composite | match `anim_dump -pam` | same |
 | Lossless save | round-trip identity; accepted by `dwebp`; effort ≥ 2 uses one predictor and LZ77 when the residual histogram shrinks; effort ≥ 3 adds cross-colour when the file is shorter; effort ≥ 4 keeps a palette when it is smaller; a Huffman image is kept when it is smaller | gradient effort 4 is 48 bytes, `cwebp -lossless -exact` is 60; see Save |
-| Lossy save | Intra16 DC with the section 14 residual; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | one mode, no search; quality bar not armed |
+| Lossy save | four Intra16 predictors, chosen by reconstructed error, plus the section 14 residual; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | no subblock modes; quality bar not armed |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
@@ -223,21 +228,23 @@ yet fail on worse PSNR or size.
   effort 2 and 4). Effort 4 is no larger than effort 2, which is smaller
   than effort 1, on that fixture.
 - Lossy save: unit tests for a decodable round-trip, a gradient that
-  stays uneven inside one macroblock, and alpha refusal; `make webp-rd`
+  stays uneven inside one macroblock, a ramp whose top-left block
+  takes the horizontal predictor, and alpha refusal; `make webp-rd`
   vs `cwebp -q 75 -m 0` on `third_party/webp-rd/`
   (`tools/oracle/fetch.sh webp-rd`).
 - Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
   anim geometry/dispose/blend, lossless save round-trip, lossy
-  decodable / gradient / alpha refused.
+  decodable / gradient / ramp / alpha refused.
 - Fuzz: `fuzz_webp_load` with seeds from the fixture set.
 
 ## Not implemented
 
 - Animation encode (multi-frame `ANIM`/`ANMF` write). A multi-item document
   is saved as a still of the first item.
-- Competitive lossy encode past this residual: mode search, trellis,
-  segments, and lossy ALPH. `make webp-rd` measures the current encoder;
-  the quality bar is not armed (`notes/image/webp-plan.md` §6).
+- Competitive lossy encode past the four Intra16 predictors: subblock
+  modes, trellis, segments, and lossy ALPH. `make webp-rd` measures the
+  current encoder; the quality bar is not armed
+  (`notes/image/webp-plan.md` §6).
 
 ---
 

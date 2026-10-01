@@ -23,7 +23,8 @@
  *
  * Register the WebP codec: container, VP8L, ALPH, VP8 keyframes and
  * interframes, ANIM/ANMF, VP8L lossless encode, and VP8 lossy encode
- * (Intra16, section 14 residual). Animation encode is not implemented.
+ * (four Intra16 predictors, section 14 residual). Animation encode is
+ * not implemented.
  */
 
 #include <ghoti.io/image/macros.h>

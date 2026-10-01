@@ -28,10 +28,11 @@
 /**
  * @file
  *
- * VP8 keyframe encoder. Every macroblock is Intra16 DC with one quantizer.
- * The residual is the section 14 Walsh-Hadamard of the sixteen DC
- * coefficients and the 4×4 DCT of everything else. Mode search is still
- * one mode. dwebp accepts the output. make webp-rd is the comparison
+ * VP8 keyframe encoder. Every macroblock is one of the four Intra16
+ * predictors, chosen by reconstructed error, with one quantizer. The
+ * residual is the section 14 Walsh-Hadamard of the sixteen DC
+ * coefficients and the 4×4 DCT of everything else. Subblock modes are
+ * not searched. dwebp accepts the output. make webp-rd is the comparison
  * against cwebp.
  */
 
@@ -538,6 +539,123 @@ static int dc_pred(const uint8_t * plane, int stride, int x, int y, int n) {
   return (sum + (1 << shift)) >> (shift + 1);
 }
 
+/* Section 12. Outside the frame: 127 above, 129 to the left. The corner
+ * above a left edge is 129 except at the top-left of the frame, which
+ * is 127. */
+static void load_mb_edge(const uint8_t * plane, int stride, int x, int y,
+    int n, uint8_t * above, uint8_t * left, int * p_out) {
+  int i;
+  if (y == 0) {
+    for (i = 0; i < n; ++i) {
+      above[i] = 127;
+    }
+    *p_out = 127;
+  }
+  else {
+    for (i = 0; i < n; ++i) {
+      above[i] = plane[(y - 1) * stride + x + i];
+    }
+    *p_out = (x == 0) ? 129 : plane[(y - 1) * stride + (x - 1)];
+  }
+  if (x == 0) {
+    for (i = 0; i < n; ++i) {
+      left[i] = 129;
+    }
+  }
+  else {
+    for (i = 0; i < n; ++i) {
+      left[i] = plane[(y + i) * stride + (x - 1)];
+    }
+  }
+}
+
+/** Sections 12.2 and 12.3. @a pred is n by n, row-major. */
+static void fill_pred(const uint8_t * rec, int stride, int x, int y, int n,
+    int mode, uint8_t * pred) {
+  uint8_t above[16];
+  uint8_t left[16];
+  int p;
+  int r;
+  int c;
+  if (mode == 0) {
+    const int dc = dc_pred(rec, stride, x, y, n);
+    for (r = 0; r < n * n; ++r) {
+      pred[r] = (uint8_t)dc;
+    }
+    return;
+  }
+  load_mb_edge(rec, stride, x, y, n, above, left, &p);
+  for (r = 0; r < n; ++r) {
+    for (c = 0; c < n; ++c) {
+      int v;
+      if (mode == 1) {
+        v = above[c];
+      }
+      else if (mode == 2) {
+        v = left[r];
+      }
+      else {
+        v = (int)left[r] + (int)above[c] - p;
+      }
+      pred[r * n + c] = (uint8_t)clip8(v);
+    }
+  }
+}
+
+static int64_t sse_rect(const uint8_t * rec, int rec_stride,
+    const uint8_t * src, int src_stride, int x, int y, int n, int lim_w,
+    int lim_h) {
+  int64_t sum = 0;
+  int r;
+  int c;
+  for (r = 0; r < n; ++r) {
+    const int yy = y + r;
+    if (yy >= lim_h) {
+      break;
+    }
+    for (c = 0; c < n; ++c) {
+      const int xx = x + c;
+      int d;
+      if (xx >= lim_w) {
+        break;
+      }
+      d = (int)rec[yy * rec_stride + xx] - (int)src[yy * src_stride + xx];
+      sum += (int64_t)d * (int64_t)d;
+    }
+  }
+  return sum;
+}
+
+/* Keyframe luma tree, section 8. Bit 0 at 145 is B_PRED, which this
+ * encoder does not emit. DC and V share the 156/163 branch; H and TM
+ * share the other. */
+static void write_ymode(bool_writer_t * bw, int mode) {
+  bw_put_bit(bw, 1, 145);
+  if (mode == 0 || mode == 1) {
+    bw_put_bit(bw, 0, 156);
+    bw_put_bit(bw, mode == 1, 163);
+  }
+  else {
+    bw_put_bit(bw, 1, 156);
+    bw_put_bit(bw, mode == 3, 128);
+  }
+}
+
+/* Section 8 chroma tree. 0 DC, 1 V, 2 H, 3 TM. */
+static void write_uvmode(bool_writer_t * bw, int mode) {
+  if (mode == 0) {
+    bw_put_bit(bw, 0, 142);
+    return;
+  }
+  bw_put_bit(bw, 1, 142);
+  if (mode == 1) {
+    bw_put_bit(bw, 0, 114);
+    return;
+  }
+  bw_put_bit(bw, 1, 114);
+  bw_put_bit(bw, mode == 3, 183);
+}
+
 static void put_eob(bool_writer_t * bw, const uint8_t * p) {
   bw_put_bit(bw, 0, p[0]);
 }
@@ -637,12 +755,130 @@ static void write_frame_header(bool_writer_t * part0, int base_q) {
   bw_put_bit_uniform(part0, 0); /* no skip proba */
 }
 
-static void write_mb_modes(bool_writer_t * part0) {
-  /* Intra16 (bit 1 @145), DC_PRED (0,0 @156/163), UV DC (0 @142) */
-  bw_put_bit(part0, 1, 145);
-  bw_put_bit(part0, 0, 156);
-  bw_put_bit(part0, 0, 163);
-  bw_put_bit(part0, 0, 142);
+/** Quantize one Intra16 macroblock into @a rec and return the visible SSE. */
+static int64_t build_i16(const uint8_t * src, int src_stride, int src_w,
+    int src_h, uint8_t * rec, int rec_stride, int bx, int by, int mode,
+    int y1_ac_q, int y2_dc_q, int y2_ac_q, int ac_levels[16][16],
+    int y2_level[16]) {
+  uint8_t pred[256];
+  int dc_coeff[16];
+  int wht[16];
+  int spatial[16];
+  int sy;
+  int sx;
+  int i;
+  fill_pred(rec, rec_stride, bx, by, 16, mode, pred);
+  for (sy = 0; sy < 4; ++sy) {
+    for (sx = 0; sx < 4; ++sx) {
+      int residual[16];
+      int coeff[16];
+      int dy;
+      int dx;
+      const int bi = sy * 4 + sx;
+      for (dy = 0; dy < 4; ++dy) {
+        for (dx = 0; dx < 4; ++dx) {
+          const int py = sy * 4 + dy;
+          const int px = sx * 4 + dx;
+          residual[dy * 4 + dx] =
+              src_at(src, src_stride, bx + px, by + py, src_w, src_h) -
+              (int)pred[py * 16 + px];
+        }
+      }
+      fdct4(residual, coeff);
+      dc_coeff[bi] = coeff[0];
+      ac_levels[bi][0] = 0;
+      for (i = 1; i < 16; ++i) {
+        ac_levels[bi][i] = quantize(coeff[i], y1_ac_q);
+      }
+    }
+  }
+  fwht4(dc_coeff, wht);
+  for (i = 0; i < 16; ++i) {
+    y2_level[i] = quantize(wht[i], i == 0 ? y2_dc_q : y2_ac_q);
+  }
+  for (i = 0; i < 16; ++i) {
+    wht[i] = y2_level[i] * (i == 0 ? y2_dc_q : y2_ac_q);
+  }
+  iwht4(wht, spatial);
+  for (sy = 0; sy < 4; ++sy) {
+    for (sx = 0; sx < 4; ++sx) {
+      const int bi = sy * 4 + sx;
+      int block[16];
+      int residue[16];
+      int dy;
+      int dx;
+      block[0] = spatial[bi];
+      for (i = 1; i < 16; ++i) {
+        block[i] = ac_levels[bi][i] * y1_ac_q;
+      }
+      idct4(block, residue);
+      for (dy = 0; dy < 4; ++dy) {
+        for (dx = 0; dx < 4; ++dx) {
+          const int py = sy * 4 + dy;
+          const int px = sx * 4 + dx;
+          const int v = (int)pred[py * 16 + px] + residue[dy * 4 + dx];
+          rec[(by + py) * rec_stride + bx + px] = (uint8_t)clip8(v);
+        }
+      }
+    }
+  }
+  return sse_rect(rec, rec_stride, src, src_stride, bx, by, 16, src_w, src_h);
+}
+
+/** Quantize both chroma planes with one mode. Returns U SSE plus V SSE. */
+static int64_t build_uv(const uint8_t * src_u, const uint8_t * src_v,
+    uint8_t * rec_u, uint8_t * rec_v, int stride, int bx, int by, int lim_w,
+    int lim_h, int mode, int uv_dc_q, int uv_ac_q, int levels_u[4][16],
+    int levels_v[4][16]) {
+  const uint8_t * srcs[2] = { src_u, src_v };
+  uint8_t * recs[2] = { rec_u, rec_v };
+  int (*levels[2])[16] = { levels_u, levels_v };
+  int64_t sse = 0;
+  int ch;
+  for (ch = 0; ch < 2; ++ch) {
+    uint8_t pred[64];
+    int sy;
+    int sx;
+    int i;
+    fill_pred(recs[ch], stride, bx, by, 8, mode, pred);
+    for (sy = 0; sy < 2; ++sy) {
+      for (sx = 0; sx < 2; ++sx) {
+        int residual[16];
+        int coeff[16];
+        int block[16];
+        int residue[16];
+        int dy;
+        int dx;
+        const int bi = sy * 2 + sx;
+        for (dy = 0; dy < 4; ++dy) {
+          for (dx = 0; dx < 4; ++dx) {
+            const int py = sy * 4 + dy;
+            const int px = sx * 4 + dx;
+            residual[dy * 4 + dx] =
+                src_at(srcs[ch], stride, bx + px, by + py, lim_w, lim_h) -
+                (int)pred[py * 8 + px];
+          }
+        }
+        fdct4(residual, coeff);
+        for (i = 0; i < 16; ++i) {
+          levels[ch][bi][i] = quantize(coeff[i], i == 0 ? uv_dc_q : uv_ac_q);
+          block[i] = levels[ch][bi][i] * (i == 0 ? uv_dc_q : uv_ac_q);
+        }
+        idct4(block, residue);
+        for (dy = 0; dy < 4; ++dy) {
+          for (dx = 0; dx < 4; ++dx) {
+            const int py = sy * 4 + dy;
+            const int px = sx * 4 + dx;
+            const int v = (int)pred[py * 8 + px] + residue[dy * 4 + dx];
+            recs[ch][(by + py) * stride + bx + px] = (uint8_t)clip8(v);
+          }
+        }
+      }
+    }
+    sse += sse_rect(recs[ch], stride, srcs[ch], stride, bx, by, 8, lim_w,
+        lim_h);
+  }
+  return sse;
 }
 
 GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
@@ -672,6 +908,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   uint8_t * rec_y = NULL;
   uint8_t * rec_u = NULL;
   uint8_t * rec_v = NULL;
+  uint8_t * y_mode = NULL;
+  uint8_t * uv_mode = NULL;
   GIMG_Result r = GIMG_OK;
   uint32_t mb_y;
   uint32_t mb_x;
@@ -712,8 +950,15 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   memset(y_plane, 0, (size_t)y_stride * mb_h * 16u);
   memset(u_plane, 128, (size_t)uv_stride * mb_h * 8u);
   memset(v_plane, 128, (size_t)uv_stride * mb_h * 8u);
-  (void)uv_w;
-  (void)uv_h;
+  rec_y = (uint8_t *)gimg_malloc(alloc, (size_t)y_stride * mb_h * 16u);
+  rec_u = (uint8_t *)gimg_malloc(alloc, (size_t)uv_stride * mb_h * 8u);
+  rec_v = (uint8_t *)gimg_malloc(alloc, (size_t)uv_stride * mb_h * 8u);
+  y_mode = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h);
+  uv_mode = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h);
+  if (!rec_y || !rec_u || !rec_v || !y_mode || !uv_mode) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
 
   /* RGB → YUV 4:2:0, BT.601 studio swing. Chroma is the mean of the
    * 2×2, including a short block on the right or bottom edge. */
@@ -746,14 +991,66 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     }
   }
 
+  /* Pick the Intra16 predictor whose quantized reconstruction is
+   * closest to the source. DC is first, so a tie stays with it. */
+  for (mb_y = 0; mb_y < mb_h; ++mb_y) {
+    for (mb_x = 0; mb_x < mb_w; ++mb_x) {
+      const int bx = (int)mb_x * 16;
+      const int by = (int)mb_y * 16;
+      const int ubx = (int)mb_x * 8;
+      const int uby = (int)mb_y * 8;
+      const uint32_t mi = mb_y * mb_w + mb_x;
+      int ac_levels[16][16];
+      int y2_level[16];
+      int levels_u[4][16];
+      int levels_v[4][16];
+      int mode;
+      int best = 0;
+      int64_t best_sse = -1;
+      for (mode = 0; mode < 4; ++mode) {
+        const int64_t sse = build_i16(y_plane, (int)y_stride, (int)width,
+            (int)height, rec_y, (int)y_stride, bx, by, mode, y1_ac_q,
+            y2_dc_q, y2_ac_q, ac_levels, y2_level);
+        if (best_sse < 0 || sse < best_sse) {
+          best = mode;
+          best_sse = sse;
+        }
+      }
+      if (best != 3) {
+        build_i16(y_plane, (int)y_stride, (int)width, (int)height, rec_y,
+            (int)y_stride, bx, by, best, y1_ac_q, y2_dc_q, y2_ac_q,
+            ac_levels, y2_level);
+      }
+      y_mode[mi] = (uint8_t)best;
+
+      best = 0;
+      best_sse = -1;
+      for (mode = 0; mode < 4; ++mode) {
+        const int64_t sse = build_uv(u_plane, v_plane, rec_u, rec_v,
+            (int)uv_stride, ubx, uby, (int)uv_w, (int)uv_h, mode, uv_dc_q,
+            uv_ac_q, levels_u, levels_v);
+        if (best_sse < 0 || sse < best_sse) {
+          best = mode;
+          best_sse = sse;
+        }
+      }
+      if (best != 3) {
+        build_uv(u_plane, v_plane, rec_u, rec_v, (int)uv_stride, ubx, uby,
+            (int)uv_w, (int)uv_h, best, uv_dc_q, uv_ac_q, levels_u, levels_v);
+      }
+      uv_mode[mi] = (uint8_t)best;
+    }
+  }
+
   bw_init(&part0, alloc);
   bw_init(&tokens, alloc);
   write_frame_header(&part0, base_q);
 
-  /* Modes for every MB (partition 0). */
   for (mb_y = 0; mb_y < mb_h; ++mb_y) {
     for (mb_x = 0; mb_x < mb_w; ++mb_x) {
-      write_mb_modes(&part0);
+      const uint32_t mi = mb_y * mb_w + mb_x;
+      write_ymode(&part0, y_mode[mi]);
+      write_uvmode(&part0, uv_mode[mi]);
     }
   }
   if (!bw_finish(&part0)) {
@@ -774,10 +1071,7 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
         (uint8_t *)gimg_malloc(alloc, (size_t)uv4_stride * mb_h * 2u);
     uint8_t * y2_above = (uint8_t *)gimg_malloc(alloc, mb_w);
     int y2_left;
-    rec_y = (uint8_t *)gimg_malloc(alloc, (size_t)y_stride * mb_h * 16u);
-    rec_u = (uint8_t *)gimg_malloc(alloc, (size_t)uv_stride * mb_h * 8u);
-    rec_v = (uint8_t *)gimg_malloc(alloc, (size_t)uv_stride * mb_h * 8u);
-    if (!y_nz || !u_nz || !v_nz || !y2_above || !rec_y || !rec_u || !rec_v) {
+    if (!y_nz || !u_nz || !v_nz || !y2_above) {
       gimg_free(alloc, y_nz);
       gimg_free(alloc, u_nz);
       gimg_free(alloc, v_nz);
@@ -797,63 +1091,27 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
         const int by = (int)mb_y * 16;
         const int ubx = (int)mb_x * 8;
         const int uby = (int)mb_y * 8;
-        int pred;
-        int dc_coeff[16];
+        const uint32_t mi = mb_y * mb_w + mb_x;
         int ac_levels[16][16];
         int y2_level[16];
-        int wht[16];
-        int y2_hat[16];
-        int spatial[16];
+        int levels_u[4][16];
+        int levels_v[4][16];
         int sy;
         int sx;
-        int i;
         int ctx;
         int nz;
 
-        pred = dc_pred(rec_y, (int)y_stride, bx, by, 16);
-        for (sy = 0; sy < 4; ++sy) {
-          for (sx = 0; sx < 4; ++sx) {
-            int residual[16];
-            int coeff[16];
-            int dy;
-            int dx;
-            const int bi = sy * 4 + sx;
-            for (dy = 0; dy < 4; ++dy) {
-              for (dx = 0; dx < 4; ++dx) {
-                residual[dy * 4 + dx] =
-                    src_at(y_plane, (int)y_stride, bx + sx * 4 + dx,
-                        by + sy * 4 + dy, (int)width, (int)height) -
-                    pred;
-              }
-            }
-            fdct4(residual, coeff);
-            dc_coeff[bi] = coeff[0];
-            ac_levels[bi][0] = 0;
-            for (i = 1; i < 16; ++i) {
-              ac_levels[bi][i] = quantize(coeff[i], y1_ac_q);
-            }
-          }
-        }
-        fwht4(dc_coeff, wht);
-        for (i = 0; i < 16; ++i) {
-          y2_level[i] = quantize(wht[i], i == 0 ? y2_dc_q : y2_ac_q);
-          y2_hat[i] = y2_level[i] * (i == 0 ? y2_dc_q : y2_ac_q);
-        }
+        build_i16(y_plane, (int)y_stride, (int)width, (int)height, rec_y,
+            (int)y_stride, bx, by, y_mode[mi], y1_ac_q, y2_dc_q, y2_ac_q,
+            ac_levels, y2_level);
         ctx = (y2_left ? 1 : 0) + (y2_above[mb_x] ? 1 : 0);
         nz = put_block(&tokens, gimg_vp8_coeffs_proba0[1], ctx, 0, y2_level);
         y2_left = nz;
         y2_above[mb_x] = (uint8_t)nz;
-        iwht4(y2_hat, spatial);
-
         for (sy = 0; sy < 4; ++sy) {
           for (sx = 0; sx < 4; ++sx) {
             const int fx = (int)mb_x * 4 + sx;
             const int fy = (int)mb_y * 4 + sy;
-            const int bi = sy * 4 + sx;
-            int block[16];
-            int residue[16];
-            int dy;
-            int dx;
             ctx = 0;
             if (fy > 0 && y_nz[(fy - 1) * y4_stride + fx]) {
               ctx++;
@@ -861,64 +1119,22 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
             if (fx > 0 && y_nz[fy * y4_stride + (fx - 1)]) {
               ctx++;
             }
-            nz = put_block(
-                &tokens, gimg_vp8_coeffs_proba0[0], ctx, 1, ac_levels[bi]);
+            nz = put_block(&tokens, gimg_vp8_coeffs_proba0[0], ctx, 1,
+                ac_levels[sy * 4 + sx]);
             y_nz[fy * y4_stride + fx] = (uint8_t)nz;
-            block[0] = spatial[bi];
-            for (i = 1; i < 16; ++i) {
-              block[i] = ac_levels[bi][i] * y1_ac_q;
-            }
-            idct4(block, residue);
-            for (dy = 0; dy < 4; ++dy) {
-              for (dx = 0; dx < 4; ++dx) {
-                const int v =
-                    pred + residue[dy * 4 + dx];
-                rec_y[(by + sy * 4 + dy) * (int)y_stride + bx + sx * 4 + dx] =
-                    (uint8_t)clip8(v);
-              }
-            }
           }
         }
 
+        build_uv(u_plane, v_plane, rec_u, rec_v, (int)uv_stride, ubx, uby,
+            (int)uv_w, (int)uv_h, uv_mode[mi], uv_dc_q, uv_ac_q, levels_u,
+            levels_v);
         for (int ch = 0; ch < 2; ++ch) {
-          const uint8_t * src = (ch == 0) ? u_plane : v_plane;
-          uint8_t * rec = (ch == 0) ? rec_u : rec_v;
           uint8_t * nz_plane = (ch == 0) ? u_nz : v_nz;
-          int uv_levels[4][16];
-          int uv_pred;
-          int bi;
-          uv_pred = dc_pred(rec, (int)uv_stride, ubx, uby, 8);
-          for (sy = 0; sy < 2; ++sy) {
-            for (sx = 0; sx < 2; ++sx) {
-              int residual[16];
-              int coeff[16];
-              int dy;
-              int dx;
-              bi = sy * 2 + sx;
-              for (dy = 0; dy < 4; ++dy) {
-                for (dx = 0; dx < 4; ++dx) {
-                  residual[dy * 4 + dx] =
-                      src_at(src, (int)uv_stride, ubx + sx * 4 + dx,
-                          uby + sy * 4 + dy, (int)uv_w, (int)uv_h) -
-                      uv_pred;
-                }
-              }
-              fdct4(residual, coeff);
-              for (i = 0; i < 16; ++i) {
-                uv_levels[bi][i] =
-                    quantize(coeff[i], i == 0 ? uv_dc_q : uv_ac_q);
-              }
-            }
-          }
+          int (*levels)[16] = (ch == 0) ? levels_u : levels_v;
           for (sy = 0; sy < 2; ++sy) {
             for (sx = 0; sx < 2; ++sx) {
               const int fx = (int)mb_x * 2 + sx;
               const int fy = (int)mb_y * 2 + sy;
-              int block[16];
-              int residue[16];
-              int dy;
-              int dx;
-              bi = sy * 2 + sx;
               ctx = 0;
               if (fy > 0 && nz_plane[(fy - 1) * uv4_stride + fx]) {
                 ctx++;
@@ -927,20 +1143,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
                 ctx++;
               }
               nz = put_block(&tokens, gimg_vp8_coeffs_proba0[2], ctx, 0,
-                  uv_levels[bi]);
+                  levels[sy * 2 + sx]);
               nz_plane[fy * uv4_stride + fx] = (uint8_t)nz;
-              for (i = 0; i < 16; ++i) {
-                block[i] =
-                    uv_levels[bi][i] * (i == 0 ? uv_dc_q : uv_ac_q);
-              }
-              idct4(block, residue);
-              for (dy = 0; dy < 4; ++dy) {
-                for (dx = 0; dx < 4; ++dx) {
-                  const int v = uv_pred + residue[dy * 4 + dx];
-                  rec[(uby + sy * 4 + dy) * (int)uv_stride + ubx + sx * 4 +
-                      dx] = (uint8_t)clip8(v);
-                }
-              }
             }
           }
         }
@@ -1010,5 +1214,7 @@ Done:
   gimg_free(alloc, rec_y);
   gimg_free(alloc, rec_u);
   gimg_free(alloc, rec_v);
+  gimg_free(alloc, y_mode);
+  gimg_free(alloc, uv_mode);
   return r;
 }
