@@ -29,10 +29,13 @@
  * @file
  *
  * VP8 keyframe encoder. Every macroblock is one of the four Intra16
- * predictors, chosen by reconstructed error, with one quantizer. The
- * residual is the section 14 Walsh-Hadamard of the sixteen DC
- * coefficients and the 4×4 DCT of everything else. Subblock modes are
- * not searched. dwebp accepts the output. make webp-rd is the comparison
+ * predictors, or sixteen 4×4 predictors when that scores better. The
+ * score is reconstructed error plus the bool-coder cost of the modes
+ * and the tokens; one bit is priced at the luma AC quantizer step, and
+ * an equal score stays with the earlier choice. One quantizer. The
+ * Intra16 residual is the section 14 Walsh-Hadamard of the sixteen DC
+ * coefficients and the 4×4 DCT of everything else. A 4×4 macroblock has
+ * no Y2 block. dwebp accepts the output. make webp-rd is the comparison
  * against cwebp.
  */
 
@@ -626,9 +629,8 @@ static int64_t sse_rect(const uint8_t * rec, int rec_stride,
   return sum;
 }
 
-/* Keyframe luma tree, section 8. Bit 0 at 145 is B_PRED, which this
- * encoder does not emit. DC and V share the 156/163 branch; H and TM
- * share the other. */
+/* Keyframe luma tree, section 8. Bit 0 at 145 is B_PRED. DC and V share
+ * the 156/163 branch; H and TM share the other. */
 static void write_ymode(bool_writer_t * bw, int mode) {
   bw_put_bit(bw, 1, 145);
   if (mode == 0 || mode == 1) {
@@ -639,6 +641,50 @@ static void write_ymode(bool_writer_t * bw, int mode) {
     bw_put_bit(bw, 1, 156);
     bw_put_bit(bw, mode == 3, 128);
   }
+}
+
+/* Section 11.2 subblock tree. The walk matches the decoder's
+ * k_bmode_tree: 0 DC, 1 TM, 2 VE, then HE/RD/VR on one branch and
+ * LD/VL/HD/HU on the other. */
+static void write_bmode(bool_writer_t * bw, int mode, const uint8_t * p) {
+  if (mode == 0) {
+    bw_put_bit(bw, 0, p[0]);
+    return;
+  }
+  bw_put_bit(bw, 1, p[0]);
+  if (mode == 1) {
+    bw_put_bit(bw, 0, p[1]);
+    return;
+  }
+  bw_put_bit(bw, 1, p[1]);
+  if (mode == 2) {
+    bw_put_bit(bw, 0, p[2]);
+    return;
+  }
+  bw_put_bit(bw, 1, p[2]);
+  if (mode == 3) {
+    bw_put_bit(bw, 0, p[3]);
+    bw_put_bit(bw, 0, p[4]);
+    return;
+  }
+  if (mode == 5 || mode == 6) {
+    bw_put_bit(bw, 0, p[3]);
+    bw_put_bit(bw, 1, p[4]);
+    bw_put_bit(bw, mode == 6, p[5]);
+    return;
+  }
+  bw_put_bit(bw, 1, p[3]);
+  if (mode == 4) {
+    bw_put_bit(bw, 0, p[6]);
+    return;
+  }
+  bw_put_bit(bw, 1, p[6]);
+  if (mode == 7) {
+    bw_put_bit(bw, 0, p[7]);
+    return;
+  }
+  bw_put_bit(bw, 1, p[7]);
+  bw_put_bit(bw, mode == 9, p[8]);
 }
 
 /* Section 8 chroma tree. 0 DC, 1 V, 2 H, 3 TM. */
@@ -719,6 +765,292 @@ static int put_block(bool_writer_t * bw,
   return 1;
 }
 
+/* Cost of one section 7 bool, in 1/256 of a bit. @a prob is P(0) on
+ * the 0..255 scale the coder uses. The table is round(-256*log2(i/256));
+ * index 0 is unused because a probability of 0 is not a legal split. */
+static const uint16_t k_bool_cost[256] = {
+       0, 2048, 1792, 1642, 1536, 1454, 1386, 1329, 1280, 1236, 1198, 1162, 1130, 1101, 1073, 1048,
+    1024, 1002,  980,  961,  942,  924,  906,  890,  874,  859,  845,  831,  817,  804,  792,  780,
+     768,  757,  746,  735,  724,  714,  705,  695,  686,  676,  668,  659,  650,  642,  634,  626,
+     618,  611,  603,  596,  589,  582,  575,  568,  561,  555,  548,  542,  536,  530,  524,  518,
+     512,  506,  501,  495,  490,  484,  479,  474,  468,  463,  458,  453,  449,  444,  439,  434,
+     430,  425,  420,  416,  412,  407,  403,  399,  394,  390,  386,  382,  378,  374,  370,  366,
+     362,  358,  355,  351,  347,  343,  340,  336,  333,  329,  326,  322,  319,  315,  312,  309,
+     305,  302,  299,  296,  292,  289,  286,  283,  280,  277,  274,  271,  268,  265,  262,  259,
+     256,  253,  250,  247,  245,  242,  239,  236,  234,  231,  228,  226,  223,  220,  218,  215,
+     212,  210,  207,  205,  202,  200,  197,  195,  193,  190,  188,  185,  183,  181,  178,  176,
+     174,  171,  169,  167,  164,  162,  160,  158,  156,  153,  151,  149,  147,  145,  143,  140,
+     138,  136,  134,  132,  130,  128,  126,  124,  122,  120,  118,  116,  114,  112,  110,  108,
+     106,  104,  102,  101,   99,   97,   95,   93,   91,   89,   87,   86,   84,   82,   80,   78,
+      77,   75,   73,   71,   70,   68,   66,   64,   63,   61,   59,   58,   56,   54,   53,   51,
+      49,   48,   46,   44,   43,   41,   40,   38,   36,   35,   33,   32,   30,   28,   27,   25,
+      24,   22,   21,   19,   18,   16,   15,   13,   12,   10,    9,    7,    6,    4,    3,    1
+};
+
+static int bool_cost(int bit, int prob) {
+  int p = bit ? 256 - prob : prob;
+  if (p < 1) {
+    p = 1;
+  }
+  if (p > 255) {
+    p = 255;
+  }
+  return (int)k_bool_cost[p];
+}
+
+static int bmode_cost(int mode, const uint8_t * p) {
+  int cost = 0;
+  if (mode == 0) {
+    return bool_cost(0, p[0]);
+  }
+  cost = bool_cost(1, p[0]);
+  if (mode == 1) {
+    return cost + bool_cost(0, p[1]);
+  }
+  cost += bool_cost(1, p[1]);
+  if (mode == 2) {
+    return cost + bool_cost(0, p[2]);
+  }
+  cost += bool_cost(1, p[2]);
+  if (mode == 3) {
+    return cost + bool_cost(0, p[3]) + bool_cost(0, p[4]);
+  }
+  if (mode == 5 || mode == 6) {
+    return cost + bool_cost(0, p[3]) + bool_cost(1, p[4]) +
+        bool_cost(mode == 6, p[5]);
+  }
+  cost += bool_cost(1, p[3]);
+  if (mode == 4) {
+    return cost + bool_cost(0, p[6]);
+  }
+  cost += bool_cost(1, p[6]);
+  if (mode == 7) {
+    return cost + bool_cost(0, p[7]);
+  }
+  return cost + bool_cost(1, p[7]) + bool_cost(mode == 9, p[8]);
+}
+
+static int large_cost(const uint8_t * p, int v) {
+  int cost;
+  if (v == 2) {
+    return bool_cost(0, p[3]) + bool_cost(0, p[4]);
+  }
+  if (v == 3 || v == 4) {
+    return bool_cost(0, p[3]) + bool_cost(1, p[4]) + bool_cost(v - 3, p[5]);
+  }
+  if (v == 5 || v == 6) {
+    return bool_cost(1, p[3]) + bool_cost(0, p[6]) + bool_cost(0, p[7]) +
+        bool_cost(v - 5, gimg_vp8_pcat1[0]);
+  }
+  if (v >= 7 && v <= 10) {
+    const int rem = v - 7;
+    return bool_cost(1, p[3]) + bool_cost(0, p[6]) + bool_cost(1, p[7]) +
+        bool_cost((rem >> 1) & 1, gimg_vp8_pcat2[0]) +
+        bool_cost(rem & 1, gimg_vp8_pcat2[1]);
+  }
+  {
+    int cat;
+    int base;
+    int bits;
+    int i;
+    const uint8_t * tab;
+    int rem;
+    cost = bool_cost(1, p[3]) + bool_cost(1, p[6]);
+    if (v < 19) {
+      cat = 0;
+      base = 11;
+      bits = 3;
+    }
+    else if (v < 35) {
+      cat = 1;
+      base = 19;
+      bits = 4;
+    }
+    else if (v < 67) {
+      cat = 2;
+      base = 35;
+      bits = 5;
+    }
+    else {
+      cat = 3;
+      base = 67;
+      bits = 11;
+    }
+    cost += bool_cost((cat >> 1) & 1, p[8]);
+    cost += bool_cost(cat & 1, p[9 + ((cat >> 1) & 1)]);
+    tab = k_cat3456[cat];
+    rem = v - base;
+    for (i = 0; i < bits; ++i) {
+      const int shift = bits - 1 - i;
+      cost += bool_cost((rem >> shift) & 1, tab[i]);
+    }
+  }
+  return cost;
+}
+
+static int coeff_cost(const uint8_t * p, int level, int skip_eob) {
+  int cost = 0;
+  int mag;
+  if (!skip_eob) {
+    cost += bool_cost(1, p[0]);
+  }
+  if (level == 0) {
+    return cost + bool_cost(0, p[1]);
+  }
+  cost += bool_cost(1, p[1]);
+  mag = level < 0 ? -level : level;
+  if (mag == 1) {
+    cost += bool_cost(0, p[2]);
+  }
+  else {
+    cost += bool_cost(1, p[2]);
+    cost += large_cost(p, mag);
+  }
+  /* The sign is a uniform bool. */
+  cost += bool_cost(level < 0, 128);
+  return cost;
+}
+
+/** Same walk as put_block. Cost is in 1/256 of a bit. */
+static int block_bit_cost(
+    const uint8_t bands[GIMG_VP8_NUM_BANDS][GIMG_VP8_NUM_CTX]
+        [GIMG_VP8_NUM_PROBAS],
+    int ctx, int first, const int * levels) {
+  int last = first - 1;
+  int i;
+  int skip_eob = 0;
+  int cost = 0;
+  for (i = first; i < 16; ++i) {
+    if (levels[k_zigzag[i]] != 0) {
+      last = i;
+    }
+  }
+  if (last < first) {
+    return bool_cost(0, bands[gimg_vp8_bands[first]][ctx][0]);
+  }
+  for (i = first; i <= last; ++i) {
+    const int level = levels[k_zigzag[i]];
+    const uint8_t * p = bands[gimg_vp8_bands[i]][ctx];
+    cost += coeff_cost(p, level, skip_eob);
+    if (level == 0) {
+      skip_eob = 1;
+      ctx = 0;
+    }
+    else {
+      skip_eob = 0;
+      ctx = (level == 1 || level == -1) ? 1 : 2;
+    }
+  }
+  if (last < 15) {
+    cost += bool_cost(0, bands[gimg_vp8_bands[last + 1]][ctx][0]);
+  }
+  return cost;
+}
+
+static int ymode_cost(int mode) {
+  int cost = bool_cost(1, 145);
+  if (mode == 0 || mode == 1) {
+    cost += bool_cost(0, 156);
+    cost += bool_cost(mode == 1, 163);
+  }
+  else {
+    cost += bool_cost(1, 156);
+    cost += bool_cost(mode == 3, 128);
+  }
+  return cost;
+}
+
+static int uvmode_cost(int mode) {
+  if (mode == 0) {
+    return bool_cost(0, 142);
+  }
+  if (mode == 1) {
+    return bool_cost(1, 142) + bool_cost(0, 114);
+  }
+  return bool_cost(1, 142) + bool_cost(1, 114) + bool_cost(mode == 3, 183);
+}
+
+static int block_nz(const int * levels, int first) {
+  int i;
+  for (i = first; i < 16; ++i) {
+    if (levels[k_zigzag[i]] != 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/** Token cost of one Intra16 macroblock, given the neighbors already chosen. */
+static int i16_residual_cost(int ac_levels[16][16], const int * y2_level,
+    const uint8_t * y_nz, int y4_stride, int mb_x, int mb_y, int y2_left,
+    int y2_above) {
+  int local[16];
+  int cost;
+  int sy;
+  int sx;
+  int ctx = (y2_left ? 1 : 0) + (y2_above ? 1 : 0);
+  cost = block_bit_cost(gimg_vp8_coeffs_proba0[1], ctx, 0, y2_level);
+  for (sy = 0; sy < 4; ++sy) {
+    for (sx = 0; sx < 4; ++sx) {
+      const int fx = mb_x * 4 + sx;
+      const int fy = mb_y * 4 + sy;
+      const int bi = sy * 4 + sx;
+      ctx = 0;
+      if (sy > 0) {
+        ctx += local[(sy - 1) * 4 + sx];
+      }
+      else if (fy > 0 && y_nz[(fy - 1) * y4_stride + fx]) {
+        ctx++;
+      }
+      if (sx > 0) {
+        ctx += local[sy * 4 + (sx - 1)];
+      }
+      else if (fx > 0 && y_nz[fy * y4_stride + (fx - 1)]) {
+        ctx++;
+      }
+      local[bi] = block_nz(ac_levels[bi], 1);
+      cost += block_bit_cost(gimg_vp8_coeffs_proba0[0], ctx, 1, ac_levels[bi]);
+    }
+  }
+  return cost;
+}
+
+static int uv_residual_cost(int levels_u[4][16], int levels_v[4][16],
+    const uint8_t * u_nz, const uint8_t * v_nz, int uv4_stride, int mb_x,
+    int mb_y) {
+  int cost = 0;
+  int ch;
+  for (ch = 0; ch < 2; ++ch) {
+    const uint8_t * nz_plane = (ch == 0) ? u_nz : v_nz;
+    int (*levels)[16] = (ch == 0) ? levels_u : levels_v;
+    int local[4];
+    int sy;
+    int sx;
+    for (sy = 0; sy < 2; ++sy) {
+      for (sx = 0; sx < 2; ++sx) {
+        const int fx = mb_x * 2 + sx;
+        const int fy = mb_y * 2 + sy;
+        const int bi = sy * 2 + sx;
+        int ctx = 0;
+        if (sy > 0) {
+          ctx += local[(sy - 1) * 2 + sx];
+        }
+        else if (fy > 0 && nz_plane[(fy - 1) * uv4_stride + fx]) {
+          ctx++;
+        }
+        if (sx > 0) {
+          ctx += local[sy * 2 + (sx - 1)];
+        }
+        else if (fx > 0 && nz_plane[fy * uv4_stride + (fx - 1)]) {
+          ctx++;
+        }
+        local[bi] = block_nz(levels[bi], 0);
+        cost += block_bit_cost(gimg_vp8_coeffs_proba0[2], ctx, 0, levels[bi]);
+      }
+    }
+  }
+  return cost;
+}
 
 static void write_frame_header(bool_writer_t * part0, int base_q) {
   int t, b, c, p;
@@ -881,6 +1213,131 @@ static int64_t build_uv(const uint8_t * src_u, const uint8_t * src_v,
   return sse;
 }
 
+/** One 4×4 of a B_PRED macroblock. DC uses the luma DC quantizer. */
+static int64_t build_b4(const uint8_t * src, int src_stride, int src_w,
+    int src_h, uint8_t * rec, int rec_stride, int mb_w, int mb_x, int mb_y,
+    int sx, int sy, int mode, int y1_dc_q, int y1_ac_q, int levels[16]) {
+  uint8_t above[8];
+  uint8_t left[4];
+  uint8_t pred[16];
+  int edge_p;
+  int residual[16];
+  int coeff[16];
+  int block[16];
+  int residue[16];
+  int i;
+  int dy;
+  int dx;
+  const int bx = mb_x * 16 + sx * 4;
+  const int by = mb_y * 16 + sy * 4;
+  gimg_vp8_load_b_edge(rec, rec_stride, mb_w, mb_x, mb_y, sx, bx, by, above,
+      left, &edge_p);
+  gimg_vp8_pred_b4(pred, above, left, edge_p, mode);
+  for (dy = 0; dy < 4; ++dy) {
+    for (dx = 0; dx < 4; ++dx) {
+      residual[dy * 4 + dx] =
+          src_at(src, src_stride, bx + dx, by + dy, src_w, src_h) -
+          (int)pred[dy * 4 + dx];
+    }
+  }
+  fdct4(residual, coeff);
+  for (i = 0; i < 16; ++i) {
+    const int q = (i == 0) ? y1_dc_q : y1_ac_q;
+    levels[i] = quantize(coeff[i], q);
+    block[i] = levels[i] * q;
+  }
+  idct4(block, residue);
+  for (dy = 0; dy < 4; ++dy) {
+    for (dx = 0; dx < 4; ++dx) {
+      const int v = (int)pred[dy * 4 + dx] + residue[dy * 4 + dx];
+      rec[(by + dy) * rec_stride + bx + dx] = (uint8_t)clip8(v);
+    }
+  }
+  return sse_rect(rec, rec_stride, src, src_stride, bx, by, 4, src_w, src_h);
+}
+
+/* Section 11.3. A 16×16 mode stands in as one subblock mode for the
+ * neighbours of a B_PRED block. DC, V, H, TM map to B_DC, B_VE, B_HE, B_TM. */
+static const uint8_t k_ymode_as_bmode[4] = { 0, 2, 3, 1 };
+
+/**
+ * Greedy 4×4 search. Returns 1 when its score beats @a i16_score, leaving
+ * the reconstruction and the nonzero map in place and copying the sixteen
+ * modes to @a out_modes. Otherwise restores both.
+ */
+static int try_bpred(const uint8_t * src, int src_stride, int src_w, int src_h,
+    uint8_t * rec, int rec_stride, int mb_w, int mb_x, int mb_y, uint8_t * y_nz,
+    int y4_stride, const uint8_t * above_b, const uint8_t * left_b,
+    int y1_dc_q, int y1_ac_q, int64_t i16_score, uint8_t * out_modes) {
+  uint8_t saved[256];
+  uint8_t saved_nz[16];
+  uint8_t chosen[16] = { 0 };
+  int64_t sse_sum = 0;
+  int bits = bool_cost(0, 145);
+  int bi;
+  int r;
+  for (r = 0; r < 16; ++r) {
+    memcpy(saved + r * 16, rec + (mb_y * 16 + r) * rec_stride + mb_x * 16, 16);
+  }
+  for (bi = 0; bi < 16; ++bi) {
+    const int sy = bi >> 2;
+    const int sx = bi & 3;
+    const int fx = mb_x * 4 + sx;
+    const int fy = mb_y * 4 + sy;
+    const int above_mode =
+        (sy == 0) ? above_b[mb_x * 4 + sx] : chosen[bi - 4];
+    const int left_mode = (sx == 0) ? left_b[sy] : chosen[bi - 1];
+    const uint8_t * prob = gimg_vp8_kf_bmode_prob[above_mode][left_mode];
+    int ctx = 0;
+    int mode;
+    int best = 0;
+    int64_t best_sc = -1;
+    int levels[16];
+    saved_nz[bi] = y_nz[fy * y4_stride + fx];
+    if (fy > 0 && y_nz[(fy - 1) * y4_stride + fx]) {
+      ctx++;
+    }
+    if (fx > 0 && y_nz[fy * y4_stride + (fx - 1)]) {
+      ctx++;
+    }
+    for (mode = 0; mode < 10; ++mode) {
+      const int64_t sse = build_b4(src, src_stride, src_w, src_h, rec,
+          rec_stride, mb_w, mb_x, mb_y, sx, sy, mode, y1_dc_q, y1_ac_q,
+          levels);
+      const int cost = bmode_cost(mode, prob) +
+          block_bit_cost(gimg_vp8_coeffs_proba0[3], ctx, 0, levels);
+      const int64_t sc = sse * 256 + (int64_t)cost * y1_ac_q;
+      if (best_sc < 0 || sc < best_sc) {
+        best = mode;
+        best_sc = sc;
+      }
+    }
+    {
+      const int64_t sse = build_b4(src, src_stride, src_w, src_h, rec,
+          rec_stride, mb_w, mb_x, mb_y, sx, sy, best, y1_dc_q, y1_ac_q,
+          levels);
+      sse_sum += sse;
+      bits += bmode_cost(best, prob) +
+          block_bit_cost(gimg_vp8_coeffs_proba0[3], ctx, 0, levels);
+      chosen[bi] = (uint8_t)best;
+      y_nz[fy * y4_stride + fx] = (uint8_t)block_nz(levels, 0);
+    }
+  }
+  if (sse_sum * 256 + (int64_t)bits * y1_ac_q < i16_score) {
+    memcpy(out_modes, chosen, 16);
+    return 1;
+  }
+  for (r = 0; r < 16; ++r) {
+    memcpy(rec + (mb_y * 16 + r) * rec_stride + mb_x * 16, saved + r * 16, 16);
+  }
+  for (bi = 0; bi < 16; ++bi) {
+    const int fx = mb_x * 4 + (bi & 3);
+    const int fy = mb_y * 4 + (bi >> 2);
+    y_nz[fy * y4_stride + fx] = saved_nz[bi];
+  }
+  return 0;
+}
+
 GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     uint32_t height, size_t stride, int effort,
     const GIMG_Allocator * alloc, unsigned char ** out_bytes,
@@ -900,6 +1357,7 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   size_t out_cap = 0;
   size_t out_len = 0;
   int base_q;
+  int y1_dc_q;
   int y1_ac_q;
   int y2_dc_q;
   int y2_ac_q;
@@ -910,6 +1368,14 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   uint8_t * rec_v = NULL;
   uint8_t * y_mode = NULL;
   uint8_t * uv_mode = NULL;
+  uint8_t * b_mode = NULL;
+  uint8_t * above_b = NULL;
+  uint8_t * y_nz = NULL;
+  uint8_t * u_nz = NULL;
+  uint8_t * v_nz = NULL;
+  uint8_t * y2_above = NULL;
+  int y4_stride = 0;
+  int uv4_stride = 0;
   GIMG_Result r = GIMG_OK;
   uint32_t mb_y;
   uint32_t mb_x;
@@ -927,6 +1393,7 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     effort = 9;
   }
   base_q = k_effort_q[effort];
+  y1_dc_q = gimg_vp8_dc_qlookup[clip127(base_q)];
   y1_ac_q = (int)gimg_vp8_ac_qlookup[clip127(base_q)];
   y2_dc_q = gimg_vp8_dc_qlookup[clip127(base_q)] * 2;
   y2_ac_q = (int)gimg_vp8_ac_qlookup[clip127(base_q)] * 155 / 100;
@@ -955,7 +1422,8 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   rec_v = (uint8_t *)gimg_malloc(alloc, (size_t)uv_stride * mb_h * 8u);
   y_mode = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h);
   uv_mode = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h);
-  if (!rec_y || !rec_u || !rec_v || !y_mode || !uv_mode) {
+  b_mode = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h * 16u);
+  if (!rec_y || !rec_u || !rec_v || !y_mode || !uv_mode || !b_mode) {
     r = GIMG_ERR_OOM;
     goto Done;
   }
@@ -991,9 +1459,29 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     }
   }
 
-  /* Pick the Intra16 predictor whose quantized reconstruction is
-   * closest to the source. DC is first, so a tie stays with it. */
+  /* Score is reconstructed SSE plus the bool-coder cost of the mode
+   * and its tokens. One bit (256 cost units) is priced at the luma AC
+   * quantizer step. DC is first, so an equal score stays with it. */
+  y4_stride = (int)mb_w * 4;
+  uv4_stride = (int)mb_w * 2;
+  y_nz = (uint8_t *)gimg_malloc(alloc, (size_t)y4_stride * mb_h * 4u);
+  u_nz = (uint8_t *)gimg_malloc(alloc, (size_t)uv4_stride * mb_h * 2u);
+  v_nz = (uint8_t *)gimg_malloc(alloc, (size_t)uv4_stride * mb_h * 2u);
+  y2_above = (uint8_t *)gimg_malloc(alloc, mb_w);
+  above_b = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * 4u);
+  if (!y_nz || !u_nz || !v_nz || !y2_above || !above_b) {
+    r = GIMG_ERR_OOM;
+    goto Done;
+  }
+  memset(y_nz, 0, (size_t)y4_stride * mb_h * 4u);
+  memset(u_nz, 0, (size_t)uv4_stride * mb_h * 2u);
+  memset(v_nz, 0, (size_t)uv4_stride * mb_h * 2u);
+  memset(y2_above, 0, mb_w);
+  memset(above_b, 0, (size_t)mb_w * 4u);
+
   for (mb_y = 0; mb_y < mb_h; ++mb_y) {
+    int y2_left = 0;
+    uint8_t left_b[4] = { 0, 0, 0, 0 };
     for (mb_x = 0; mb_x < mb_w; ++mb_x) {
       const int bx = (int)mb_x * 16;
       const int by = (int)mb_y * 16;
@@ -1006,14 +1494,22 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
       int levels_v[4][16];
       int mode;
       int best = 0;
-      int64_t best_sse = -1;
+      int64_t best_score = -1;
+      int y2_left_in = y2_left;
+      uint8_t y2_above_in = y2_above[mb_x];
+      int sy;
+      int sx;
       for (mode = 0; mode < 4; ++mode) {
         const int64_t sse = build_i16(y_plane, (int)y_stride, (int)width,
             (int)height, rec_y, (int)y_stride, bx, by, mode, y1_ac_q,
             y2_dc_q, y2_ac_q, ac_levels, y2_level);
-        if (best_sse < 0 || sse < best_sse) {
+        const int bits = ymode_cost(mode) +
+            i16_residual_cost(ac_levels, y2_level, y_nz, y4_stride, (int)mb_x,
+                (int)mb_y, y2_left, y2_above[mb_x]);
+        const int64_t score = sse * 256 + (int64_t)bits * y1_ac_q;
+        if (best_score < 0 || score < best_score) {
           best = mode;
-          best_sse = sse;
+          best_score = score;
         }
       }
       if (best != 3) {
@@ -1022,16 +1518,51 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
             ac_levels, y2_level);
       }
       y_mode[mi] = (uint8_t)best;
+      y2_left = block_nz(y2_level, 0);
+      y2_above[mb_x] = (uint8_t)y2_left;
+      for (sy = 0; sy < 4; ++sy) {
+        for (sx = 0; sx < 4; ++sx) {
+          const int fx = (int)mb_x * 4 + sx;
+          const int fy = (int)mb_y * 4 + sy;
+          y_nz[fy * y4_stride + fx] =
+              (uint8_t)block_nz(ac_levels[sy * 4 + sx], 1);
+        }
+      }
+      if (try_bpred(y_plane, (int)y_stride, (int)width, (int)height, rec_y,
+              (int)y_stride, (int)mb_w, (int)mb_x, (int)mb_y, y_nz, y4_stride,
+              above_b, left_b, y1_dc_q, y1_ac_q, best_score,
+              b_mode + mi * 16u)) {
+        int j;
+        y_mode[mi] = 4;
+        y2_left = y2_left_in;
+        y2_above[mb_x] = y2_above_in;
+        for (j = 0; j < 4; ++j) {
+          above_b[mb_x * 4u + (uint32_t)j] = b_mode[mi * 16u + 12u + (uint32_t)j];
+          left_b[j] = b_mode[mi * 16u + (uint32_t)j * 4u + 3u];
+        }
+      }
+      else {
+        int j;
+        const uint8_t mapped = k_ymode_as_bmode[best];
+        for (j = 0; j < 4; ++j) {
+          above_b[mb_x * 4u + (uint32_t)j] = mapped;
+          left_b[j] = mapped;
+        }
+      }
 
       best = 0;
-      best_sse = -1;
+      best_score = -1;
       for (mode = 0; mode < 4; ++mode) {
         const int64_t sse = build_uv(u_plane, v_plane, rec_u, rec_v,
             (int)uv_stride, ubx, uby, (int)uv_w, (int)uv_h, mode, uv_dc_q,
             uv_ac_q, levels_u, levels_v);
-        if (best_sse < 0 || sse < best_sse) {
+        const int bits = uvmode_cost(mode) +
+            uv_residual_cost(levels_u, levels_v, u_nz, v_nz, uv4_stride,
+                (int)mb_x, (int)mb_y);
+        const int64_t score = sse * 256 + (int64_t)bits * y1_ac_q;
+        if (best_score < 0 || score < best_score) {
           best = mode;
-          best_sse = sse;
+          best_score = score;
         }
       }
       if (best != 3) {
@@ -1039,6 +1570,14 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
             (int)uv_w, (int)uv_h, best, uv_dc_q, uv_ac_q, levels_u, levels_v);
       }
       uv_mode[mi] = (uint8_t)best;
+      for (sy = 0; sy < 2; ++sy) {
+        for (sx = 0; sx < 2; ++sx) {
+          const int fx = (int)mb_x * 2 + sx;
+          const int fy = (int)mb_y * 2 + sy;
+          u_nz[fy * uv4_stride + fx] = (uint8_t)block_nz(levels_u[sy * 2 + sx], 0);
+          v_nz[fy * uv4_stride + fx] = (uint8_t)block_nz(levels_v[sy * 2 + sx], 0);
+        }
+      }
     }
   }
 
@@ -1046,10 +1585,38 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   bw_init(&tokens, alloc);
   write_frame_header(&part0, base_q);
 
+  memset(above_b, 0, (size_t)mb_w * 4u);
   for (mb_y = 0; mb_y < mb_h; ++mb_y) {
+    uint8_t left_b[4] = { 0, 0, 0, 0 };
     for (mb_x = 0; mb_x < mb_w; ++mb_x) {
       const uint32_t mi = mb_y * mb_w + mb_x;
-      write_ymode(&part0, y_mode[mi]);
+      int j;
+      if (y_mode[mi] == 4) {
+        bw_put_bit(&part0, 0, 145);
+        for (j = 0; j < 16; ++j) {
+          const int sy = j >> 2;
+          const int sx = j & 3;
+          const int above_mode = (sy == 0) ? above_b[mb_x * 4u + (uint32_t)sx]
+                                            : b_mode[mi * 16u + (uint32_t)j - 4u];
+          const int left_mode = (sx == 0) ? left_b[sy]
+                                           : b_mode[mi * 16u + (uint32_t)j - 1u];
+          write_bmode(&part0, b_mode[mi * 16u + (uint32_t)j],
+              gimg_vp8_kf_bmode_prob[above_mode][left_mode]);
+        }
+        for (j = 0; j < 4; ++j) {
+          above_b[mb_x * 4u + (uint32_t)j] =
+              b_mode[mi * 16u + 12u + (uint32_t)j];
+          left_b[j] = b_mode[mi * 16u + (uint32_t)j * 4u + 3u];
+        }
+      }
+      else {
+        const uint8_t mapped = k_ymode_as_bmode[y_mode[mi]];
+        write_ymode(&part0, y_mode[mi]);
+        for (j = 0; j < 4; ++j) {
+          above_b[mb_x * 4u + (uint32_t)j] = mapped;
+          left_b[j] = mapped;
+        }
+      }
       write_uvmode(&part0, uv_mode[mi]);
     }
   }
@@ -1061,24 +1628,7 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   /* Tokens follow the decoder: Y2, sixteen luma AC blocks, then U and
    * V. The next macroblock predicts from this one's reconstruction. */
   {
-    const int y4_stride = (int)mb_w * 4;
-    const int uv4_stride = (int)mb_w * 2;
-    uint8_t * y_nz =
-        (uint8_t *)gimg_malloc(alloc, (size_t)y4_stride * mb_h * 4u);
-    uint8_t * u_nz =
-        (uint8_t *)gimg_malloc(alloc, (size_t)uv4_stride * mb_h * 2u);
-    uint8_t * v_nz =
-        (uint8_t *)gimg_malloc(alloc, (size_t)uv4_stride * mb_h * 2u);
-    uint8_t * y2_above = (uint8_t *)gimg_malloc(alloc, mb_w);
     int y2_left;
-    if (!y_nz || !u_nz || !v_nz || !y2_above) {
-      gimg_free(alloc, y_nz);
-      gimg_free(alloc, u_nz);
-      gimg_free(alloc, v_nz);
-      gimg_free(alloc, y2_above);
-      r = GIMG_ERR_OOM;
-      goto Done;
-    }
     memset(y_nz, 0, (size_t)y4_stride * mb_h * 4u);
     memset(u_nz, 0, (size_t)uv4_stride * mb_h * 2u);
     memset(v_nz, 0, (size_t)uv4_stride * mb_h * 2u);
@@ -1101,27 +1651,51 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
         int ctx;
         int nz;
 
-        build_i16(y_plane, (int)y_stride, (int)width, (int)height, rec_y,
-            (int)y_stride, bx, by, y_mode[mi], y1_ac_q, y2_dc_q, y2_ac_q,
-            ac_levels, y2_level);
-        ctx = (y2_left ? 1 : 0) + (y2_above[mb_x] ? 1 : 0);
-        nz = put_block(&tokens, gimg_vp8_coeffs_proba0[1], ctx, 0, y2_level);
-        y2_left = nz;
-        y2_above[mb_x] = (uint8_t)nz;
-        for (sy = 0; sy < 4; ++sy) {
-          for (sx = 0; sx < 4; ++sx) {
-            const int fx = (int)mb_x * 4 + sx;
-            const int fy = (int)mb_y * 4 + sy;
-            ctx = 0;
-            if (fy > 0 && y_nz[(fy - 1) * y4_stride + fx]) {
-              ctx++;
+        if (y_mode[mi] == 4) {
+          for (sy = 0; sy < 4; ++sy) {
+            for (sx = 0; sx < 4; ++sx) {
+              const int fx = (int)mb_x * 4 + sx;
+              const int fy = (int)mb_y * 4 + sy;
+              int levels[16];
+              ctx = 0;
+              if (fy > 0 && y_nz[(fy - 1) * y4_stride + fx]) {
+                ctx++;
+              }
+              if (fx > 0 && y_nz[fy * y4_stride + (fx - 1)]) {
+                ctx++;
+              }
+              build_b4(y_plane, (int)y_stride, (int)width, (int)height, rec_y,
+                  (int)y_stride, (int)mb_w, (int)mb_x, (int)mb_y, sx, sy,
+                  b_mode[mi * 16u + (uint32_t)sy * 4u + (uint32_t)sx], y1_dc_q,
+                  y1_ac_q, levels);
+              nz = put_block(&tokens, gimg_vp8_coeffs_proba0[3], ctx, 0, levels);
+              y_nz[fy * y4_stride + fx] = (uint8_t)nz;
             }
-            if (fx > 0 && y_nz[fy * y4_stride + (fx - 1)]) {
-              ctx++;
+          }
+        }
+        else {
+          build_i16(y_plane, (int)y_stride, (int)width, (int)height, rec_y,
+              (int)y_stride, bx, by, y_mode[mi], y1_ac_q, y2_dc_q, y2_ac_q,
+              ac_levels, y2_level);
+          ctx = (y2_left ? 1 : 0) + (y2_above[mb_x] ? 1 : 0);
+          nz = put_block(&tokens, gimg_vp8_coeffs_proba0[1], ctx, 0, y2_level);
+          y2_left = nz;
+          y2_above[mb_x] = (uint8_t)nz;
+          for (sy = 0; sy < 4; ++sy) {
+            for (sx = 0; sx < 4; ++sx) {
+              const int fx = (int)mb_x * 4 + sx;
+              const int fy = (int)mb_y * 4 + sy;
+              ctx = 0;
+              if (fy > 0 && y_nz[(fy - 1) * y4_stride + fx]) {
+                ctx++;
+              }
+              if (fx > 0 && y_nz[fy * y4_stride + (fx - 1)]) {
+                ctx++;
+              }
+              nz = put_block(&tokens, gimg_vp8_coeffs_proba0[0], ctx, 1,
+                  ac_levels[sy * 4 + sx]);
+              y_nz[fy * y4_stride + fx] = (uint8_t)nz;
             }
-            nz = put_block(&tokens, gimg_vp8_coeffs_proba0[0], ctx, 1,
-                ac_levels[sy * 4 + sx]);
-            y_nz[fy * y4_stride + fx] = (uint8_t)nz;
           }
         }
 
@@ -1150,10 +1724,6 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
         }
       }
     }
-    gimg_free(alloc, y_nz);
-    gimg_free(alloc, u_nz);
-    gimg_free(alloc, v_nz);
-    gimg_free(alloc, y2_above);
   }
 
   if (!bw_finish(&tokens)) {
@@ -1216,5 +1786,11 @@ Done:
   gimg_free(alloc, rec_v);
   gimg_free(alloc, y_mode);
   gimg_free(alloc, uv_mode);
+  gimg_free(alloc, b_mode);
+  gimg_free(alloc, above_b);
+  gimg_free(alloc, y_nz);
+  gimg_free(alloc, u_nz);
+  gimg_free(alloc, v_nz);
+  gimg_free(alloc, y2_above);
   return r;
 }

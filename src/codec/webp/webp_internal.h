@@ -200,11 +200,19 @@ GIMG_Result gimg_webp_vp8l_encode(const uint8_t * rgba, uint32_t width,
     const GIMG_Allocator * alloc, unsigned char ** out_bytes,
     size_t * out_size);
 
+/** Section 12.3 edge for one 4×4, including the four samples above-right. */
+void gimg_vp8_load_b_edge(const uint8_t * plane, int stride, int mb_w,
+    int mb_x, int mb_y, int sx, int x, int y, uint8_t * above, uint8_t * left,
+    int * p_out);
+/** Section 12.3 predictor. @a dst is 16 samples, row-major. */
+void gimg_vp8_pred_b4(uint8_t * dst, const uint8_t * above,
+    const uint8_t * left, int p, int mode);
+
 /**
  * @brief Encode an opaque RGBA8 buffer to a VP8 keyframe bitstream payload.
  *
- * Stub Phase G encoder: Intra16 DC, single quantizer, Y2/UV DC residuals
- * only. No alpha. @a effort 0–9 maps to a coarse Q ladder.
+ * One quantizer. Each macroblock is an Intra16 predictor or sixteen
+ * 4×4 predictors. No alpha. @a effort 0–9 maps to a coarse Q ladder.
  */
 GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     uint32_t height, size_t stride, int effort, const GIMG_Allocator * alloc,

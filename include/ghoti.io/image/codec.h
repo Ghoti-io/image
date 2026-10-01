@@ -765,15 +765,14 @@ typedef struct {
   uint8_t ico_payload;
 
   /** WebP: which compressor. GIMG_WEBP_COMPRESS_LOSSLESS (0, default / AUTO)
-   * writes VP8L. GIMG_WEBP_COMPRESS_LOSSY is refused with
-   * GIMG_ERR_UNSUPPORTED until there is a rate-distortion measurement plan.
-   * Ignored for non-WebP. */
+   * writes VP8L. GIMG_WEBP_COMPRESS_LOSSY writes a VP8 keyframe. Non-opaque
+   * lossy input is refused with GIMG_ERR_UNSUPPORTED. Ignored for non-WebP. */
   uint8_t webp_lossless;
 
-  /** WebP: VP8L search / transform budget, 0–9. Higher may apply
-   * subtract-green (effort >= 1). Default when options is NULL is 4; a
-   * present options struct with this field left 0 means effort 0. Ignored
-   * for non-WebP. */
+  /** WebP: encoder effort, 0–9. Lossless: higher may apply subtract-green
+   * (effort >= 1) and the later VP8L passes. Lossy: selects the quantizer,
+   * coarser at 0. Default when options is NULL is 4; a present options
+   * struct with this field left 0 means effort 0. Ignored for non-WebP. */
   uint8_t webp_effort;
 
   /** WebP: non-zero preserves RGB samples under fully transparent pixels
@@ -788,7 +787,7 @@ typedef struct {
 /** @name WebP compressor choice
  * @{ */
 #define GIMG_WEBP_COMPRESS_LOSSLESS 0u ///< VP8L (default / AUTO).
-#define GIMG_WEBP_COMPRESS_LOSSY 1u    ///< Refused until Phase G has a plan.
+#define GIMG_WEBP_COMPRESS_LOSSY 1u    ///< VP8 keyframe. Non-opaque input is refused.
 /** @} */
 
 /** @name TIFF compression (TIFF 6.0 sections 9 and 13)

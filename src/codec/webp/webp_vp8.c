@@ -578,7 +578,7 @@ static void predict_mb(uint8_t * plane, int stride, int x, int y, int n,
  * to the right of subblock 3. On the rightmost macroblock those four repeat
  * the sample at (-1, 15). On the top row they are 127.
  */
-static void load_b_edge(const uint8_t * plane, int stride, int mb_w,
+void gimg_vp8_load_b_edge(const uint8_t * plane, int stride, int mb_w,
     int mb_x, int mb_y, int sx, int x, int y, uint8_t * above,
     uint8_t * left, int * p_out) {
   int i;
@@ -644,7 +644,7 @@ static int b_dc(const uint8_t * above, const uint8_t * left) {
  * Section 12.3. The listing writes svg2p in B_HD_PRED; that name is not
  * defined, and the same line's neighbours are avg2p, so this is avg2.
  */
-static void pred_b4(uint8_t * dst, const uint8_t * above, const uint8_t * left,
+void gimg_vp8_pred_b4(uint8_t * dst, const uint8_t * above, const uint8_t * left,
     int p, int mode) {
   int a0 = above[0];
   int a1 = above[1];
@@ -2710,9 +2710,9 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
             int py = oy + sy * 4;
             int fx = (int)mb_x * 4 + sx;
             int fy = (int)mb_y * 4 + sy;
-            load_b_edge(y_plane, (int)y_stride, (int)mb_w, (int)mb_x,
+            gimg_vp8_load_b_edge(y_plane, (int)y_stride, (int)mb_w, (int)mb_x,
                 (int)mb_y, sx, px, py, edge_a, edge_l, &edge_p);
-            pred_b4(pred, edge_a, edge_l, edge_p, mb->b[sy * 4 + sx]);
+            gimg_vp8_pred_b4(pred, edge_a, edge_l, edge_p, mb->b[sy * 4 + sx]);
             if (skip) {
               paint_b4(y_plane, (int)y_stride, px, py, pred, NULL);
               continue;
