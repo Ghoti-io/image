@@ -23,8 +23,9 @@
  *
  * WebP Phase F/G: save a still as lossless VP8L (default) or lossy VP8
  * (optional VP8X + ALPH + ICCP / EXIF / XMP). A lossy picture with alpha
- * stores the plane uncompressed in ALPH and premultiplies the colour
- * the VP8 frame carries. A document of several items is an animation:
+ * stores the plane in ALPH, as VP8L when that is shorter than the raw
+ * bytes, and premultiplies the colour the VP8 frame carries. A document
+ * of several items is an animation:
  * each item is the canvas at that moment, and the frame written for
  * it is the rectangle that differs from what is already showing.
  */
@@ -156,6 +157,77 @@ static GIMG_Result encode_alpha_raw(const uint8_t * rgba, uint32_t width,
   }
   *out = buf;
   *out_size = n;
+  return GIMG_OK;
+}
+
+/** Raw alpha, or a VP8L bitstream of the green channel when that is
+ *  shorter. The decoder reads that green channel back as the plane.
+ *  Method 1, no filter, no level reduction: one header byte, then the
+ *  transform stream with the five-byte VP8L frame header left off. */
+static GIMG_Result encode_alpha(const uint8_t * rgba, uint32_t width,
+    uint32_t height, size_t stride, int effort, int exact,
+    const GIMG_Allocator * alloc, unsigned char ** out, size_t * out_size) {
+  unsigned char * raw = NULL;
+  size_t raw_size = 0;
+  uint8_t * gray;
+  unsigned char * vp8l = NULL;
+  size_t vp8l_size = 0;
+  unsigned char * packed;
+  size_t n;
+  uint32_t y;
+  uint32_t x;
+  GIMG_Result r;
+
+  r = encode_alpha_raw(rgba, width, height, stride, alloc, &raw, &raw_size);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  n = (size_t)width * (size_t)height;
+  gray = (uint8_t *)gimg_malloc(alloc, n * 4u);
+  if (!gray) {
+    *out = raw;
+    *out_size = raw_size;
+    return GIMG_OK;
+  }
+  for (y = 0; y < height; ++y) {
+    const uint8_t * row = rgba + (size_t)y * stride;
+    uint8_t * dst = gray + (size_t)y * (size_t)width * 4u;
+    for (x = 0; x < width; ++x) {
+      dst[(size_t)x * 4u] = 0;
+      dst[(size_t)x * 4u + 1u] = row[(size_t)x * 4u + 3u];
+      dst[(size_t)x * 4u + 2u] = 0;
+      dst[(size_t)x * 4u + 3u] = 255u;
+    }
+  }
+  r = gimg_webp_vp8l_encode(gray, width, height, (size_t)width * 4u, 0, exact,
+      effort, alloc, &vp8l, &vp8l_size);
+  gimg_free(alloc, gray);
+  /* The ALPH method-1 body omits the 5-byte VP8L frame header and starts
+   * at the transform bit. 8+14+14+1+3 = 40 bits. */
+  if (r != GIMG_OK || vp8l == NULL || vp8l_size <= 5u ||
+      (vp8l_size - 5u) + 1u >= raw_size) {
+    gimg_free(alloc, vp8l);
+    if (r == GIMG_ERR_OOM) {
+      gimg_free(alloc, raw);
+      return r;
+    }
+    *out = raw;
+    *out_size = raw_size;
+    return GIMG_OK;
+  }
+  vp8l_size -= 5u;
+  packed = (unsigned char *)gimg_malloc(alloc, vp8l_size + 1u);
+  if (!packed) {
+    gimg_free(alloc, vp8l);
+    gimg_free(alloc, raw);
+    return GIMG_ERR_OOM;
+  }
+  packed[0] = 1;
+  memcpy(packed + 1, vp8l + 5, vp8l_size);
+  gimg_free(alloc, vp8l);
+  gimg_free(alloc, raw);
+  *out = packed;
+  *out_size = vp8l_size + 1u;
   return GIMG_OK;
 }
 
@@ -541,8 +613,8 @@ static GIMG_Result webp_save_animation(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
       if (is_lossy) {
         if (patch_alpha) {
-          r = encode_alpha_raw(patch, rw, rh, (size_t)rw * 4u, alloc, &alph,
-              &alph_size);
+          r = encode_alpha(patch, rw, rh, (size_t)rw * 4u, effort, (int)exact,
+              alloc, &alph, &alph_size);
           if (r == GIMG_OK) {
             premultiply_rgba(patch, rw, rh, (size_t)rw * 4u);
           }
@@ -833,8 +905,9 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
 
   if (is_lossy) {
     if (has_alpha) {
-      r = encode_alpha_raw(rgba, gimg_raster_width(raster),
-          gimg_raster_height(raster), rgba_stride, alloc, &alph, &alph_size);
+      r = encode_alpha(rgba, gimg_raster_width(raster),
+          gimg_raster_height(raster), rgba_stride, (int)effort, (int)exact,
+          alloc, &alph, &alph_size);
       if (r != GIMG_OK) {
         goto Done;
       }

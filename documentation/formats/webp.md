@@ -98,8 +98,9 @@ Codec-owned allocations use the codec's allocator (default when NULL).
 - **VP8 lossy encode** when `webp_lossless = GIMG_WEBP_COMPRESS_LOSSY`:
   Intra16 or sixteen 4×4 predictors, a coefficient trellis, and a
   finer segment quantizer on a macroblock the 16×16 predictors cannot
-  explain. Non-opaque input adds an uncompressed `ALPH` chunk and
-  premultiplies the colour. See Save and `make webp-rd`.
+  explain. Non-opaque input adds an `ALPH` chunk, VP8L of the green
+  channel when that is shorter than the raw plane, and premultiplies
+  the colour. See Save and `make webp-rd`.
 
 ## YUV→RGB (a match, not a derivation)
 
@@ -173,7 +174,9 @@ filter then runs at the level whose filtered reconstruction is
 closest to the source. The level is six bits either way, so a flat
 picture, where every level ties, stays off. Prediction keeps the
 unfiltered samples. A non-opaque picture writes
-`VP8X` and an uncompressed `ALPH` plane, and the colour is
+`VP8X` and an `ALPH` plane. The plane is a VP8L bitstream of the green
+channel when that is shorter than the raw bytes, and the raw plane
+otherwise. The colour is
 premultiplied by `(c * a + 127) / 255` before the VP8 frame. The bool
 writer renormalizes from the section 7 range invariant (encoder range
 is one less than the decoder range). Accepted by `dwebp` and by this
@@ -191,9 +194,8 @@ On the RD corpus the gray ramp is 102 bytes at 49.3 dB against
 is 884 bytes at 47.6 dB and 1068 at 48.1 dB, against 1388 at 47.5 dB
 and 1880 at 47.9 dB. The two pictures with a partial alpha plane are
 in that report as well, scored on the opaque pixels. The caption is
-74350 bytes at 23.8 dB against 9658 at 24.1 dB, and the transparent
-image is 33260 at 26.6 dB against 9902 at 26.7 dB; the alpha plane is
-stored uncompressed. Rate and
+10384 bytes at 23.8 dB against 9658 at 24.1 dB, and the transparent
+image is 8718 at 26.6 dB against 9902 at 26.7 dB. Rate and
 distortion vs that baseline are reported by
 `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh webp-rd`; axes:
 bytes and PSNR-RGB over opaque pixels). The target exits non-zero only
@@ -211,7 +213,7 @@ PSNR or size.
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
 | VP8 decode | keyframe and, in one sequence, interframe → RGBA, optional ALPH merge, 9-3-3-1 chroma; a keyframe matches `dwebp` | a still interframe → `GIMG_ERR_CORRUPT`; version above 3 → `GIMG_ERR_UNSUPPORTED` |
 | Animation | ANMF → `FRAME` items; composite matches `anim_dump -pam` | rectangle past canvas / no bitstream → `GIMG_ERR_CORRUPT`; over `max_frame_count` → `GIMG_ERR_LIMIT` |
-| Encode | VP8L still (default) or VP8 lossy, with an uncompressed `ALPH` plane when the lossy picture is non-opaque; a multi-item document is `ANIM`/`ANMF`, each frame the rectangle that changed; optional ICCP/EXIF/XMP; lossless round-trip identity | non-8-bit, a frame that is not the canvas size, or dispose-to-previous → `GIMG_ERR_UNSUPPORTED`; over the frame cap → `GIMG_ERR_LIMIT` |
+| Encode | VP8L still (default) or VP8 lossy, with an `ALPH` plane (VP8L when shorter) when the lossy picture is non-opaque; a multi-item document is `ANIM`/`ANMF`, each frame the rectangle that changed; optional ICCP/EXIF/XMP; lossless round-trip identity | non-8-bit, a frame that is not the canvas size, or dispose-to-previous → `GIMG_ERR_UNSUPPORTED`; over the frame cap → `GIMG_ERR_LIMIT` |
 
 ## Where this codec differs from libwebp
 
@@ -221,7 +223,7 @@ PSNR or size.
 | VP8 bitstream | keyframe and interframe; a keyframe matches `dwebp` | `dwebp` and `anim_dump` refuse an interframe animation |
 | Anim composite | match `anim_dump -pam` | same |
 | Lossless save | round-trip identity; accepted by `dwebp`; effort ≥ 2 uses one predictor and LZ77 when the residual histogram shrinks; effort ≥ 3 adds cross-colour when the file is shorter; effort ≥ 4 keeps a palette when it is smaller; a Huffman image is kept when it is smaller | gradient effort 4 is 48 bytes, `cwebp -lossless -exact` is 60; see Save |
-| Lossy save | Intra16 or 4×4 predictors, trellis, segment quantizers, the section 15 normal filter, and an uncompressed ALPH plane; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | quality bar not armed; effort 4 is quantizer index 26, the same single-segment index as that baseline |
+| Lossy save | Intra16 or 4×4 predictors, trellis, segment quantizers, the section 15 normal filter, and an ALPH plane that is VP8L when that is shorter; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | quality bar not armed; effort 4 is quantizer index 26, the same single-segment index as that baseline |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
