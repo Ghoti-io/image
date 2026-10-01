@@ -1301,8 +1301,9 @@ static int vp8_literal(const uint8_t ** p, const uint8_t * end, uint32_t * value
 
 TEST(Webp, SaveLossySegmentsFlatBesideDetail) {
   /* Left macroblock is flat, right one is a checkerboard. The flat
-   * block takes the coarser segment quantizer, which sets the
-   * segmentation flag after the two keyframe header bools.
+   * block is offered a quantizer 24 steps coarser, and it stays on the
+   * frame quantizer because that score is lower. The segmentation flag
+   * after the two keyframe header bools stays off.
    */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(32, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
@@ -1358,7 +1359,7 @@ TEST(Webp, SaveLossySegmentsFlatBesideDetail) {
   int bit_count = 0;
   EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 0);
   EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 0);
-  EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 1);
+  EXPECT_EQ(vp8_uniform_bit(&p, end, &value, &range, &bit_count), 0);
 
   GIMG_Stream * in = nullptr;
   ASSERT_EQ(gimg_stream_create_memory(bytes, nbytes, &in), GIMG_OK);

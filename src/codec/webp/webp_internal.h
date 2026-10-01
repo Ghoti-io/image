@@ -220,7 +220,8 @@ GIMG_Result gimg_vp8_loop_filter(uint8_t * y, int y_stride, uint8_t * u,
  * @brief Encode an opaque RGBA8 buffer to a VP8 keyframe bitstream payload.
  *
  * Each macroblock is an Intra16 predictor or sixteen 4×4 predictors.
- * A flat block beside a detailed one uses a coarser segment quantizer.
+ * A flat block beside a detailed one keeps a coarser segment quantizer
+ * when that score is lower.
  * No alpha plane; the container writes ALPH. @a effort 0–9 maps to a
  * coarse Q ladder.
  */
