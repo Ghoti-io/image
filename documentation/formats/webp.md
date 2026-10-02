@@ -68,6 +68,11 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   the chunk fourcc as the tag; EXIF orientation into `meta_common` when
   parseable.
 - `max_decoded_pixels` applied to the canvas product at load.
+- `max_metadata_size` applied to each `ICCP`, `EXIF` and `XMP ` chunk, through
+  the same `gimg_metadata_verdict()` the other five codecs use. Added
+  2026-10-02; before that these three were bounded by the length of the file
+  and nothing else, and WebP was the only codec in this library that did not
+  read the cap.
 - **VP8L decode** to `GIMG_PIXEL_RGBA8`: prefix codes, LZ77, colour cache, and
   the four inverse transforms (predictor, cross-colour, subtract-green,
   colour-indexing). Top-level `VP8L` only (simple files and `VP8X`+`VP8L`
@@ -210,7 +215,7 @@ PSNR or size.
 |------|-----------|------------------------|
 | Container | RIFF/`WEBP`, `VP8X`, chunk walk | truncated header, RIFF size past EOF, chunk size past end → `GIMG_ERR_CORRUPT` |
 | Canvas | from `VP8X` or VP8/VP8L peek | unknown size → `GIMG_ERR_CORRUPT`; over `max_decoded_pixels` → `GIMG_ERR_LIMIT` |
-| Metadata | `ICCP`/`EXIF`/`XMP ` on the document | — |
+| Metadata | `ICCP`/`EXIF`/`XMP ` on the document, each bounded by `max_metadata_size` | over the caller's cap → `GIMG_ERR_LIMIT`; past the built-in 4 MiB guard → dropped with a warning, because an oversized profile says nothing about whether the picture decodes |
 | VP8L decode | byte-identical to `dwebp -pam` | corrupt bitstream → `GIMG_ERR_CORRUPT` |
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
 | VP8 decode | keyframe and, in one sequence, interframe → RGBA, optional ALPH merge, 9-3-3-1 chroma; a keyframe matches `dwebp` | a still interframe → `GIMG_ERR_CORRUPT`; version above 3 → `GIMG_ERR_UNSUPPORTED` |
@@ -228,8 +233,8 @@ PSNR or size.
 | Lossy save | Intra16 or 4×4 predictors, trellis, segment quantizers, the section 15 normal filter, and an ALPH plane that is VP8L when that is shorter; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | quality bar not armed; effort 4 is quantizer index 26, the same single-segment index as that baseline |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
-| VP8 oracle count | libwebp is the RGB gate; FFmpeg/libvpx are independent for YUV | three readings for the bitstream |
-| VP8 implementation | not in this repository | `dwebp` in the oracle image |
+| VP8 oracle count | **one reference (libwebp)**, the same as VP8L | FFmpeg's and libvpx's native VP8 decoders would be independent readings and are not wired; see Not implemented |
+| VP8 implementation | written here from RFC 6386, including the coefficient tables | `check-vp8-tables` regenerates `webp_vp8_proba.inc` from the RFC and diffs it |
 
 ## Tested scope
 
@@ -291,13 +296,40 @@ PSNR or size.
   animation decode, lossless save round-trip, lossy
   decodable / gradient / ramp / step / checker / spike / segments /
   skip / filter level / alpha.
-- Fuzz: `fuzz_webp_load` with seeds from the fixture set.
+- Fuzz: `fuzz_webp_load` with seeds from the fixture set, which loads *and*
+  decodes every item, so both bitstream decoders are reachable from it; and
+  `fuzz_webp_encode`, added 2026-10-02, which saves each input as VP8L and as
+  VP8 and reads both results back. Both compressors on every unit on purpose:
+  they share a container and nothing else, so a harness that ran only the
+  default would leave the lossy encoder - the larger of the two - unreached.
 
 ## Not implemented
 
 - A quality bar on `make webp-rd`. The target measures bytes and
   PSNR-RGB against `cwebp` and does not fail when this encoder is
   worse (`notes/image/webp-plan.md` §6).
+
+- **A second independent reading of the VP8 bitstream.** Every pixel gate here
+  compares against `dwebp`, and Pillow, ImageMagick and GdkPixbuf all link
+  libwebp, so the count is one reference and not four. `notes/image/webp-plan.md`
+  §7 names what would close it: FFmpeg's native decoder (`libavcodec/vp8.c`)
+  and libvpx are separate codebases written from RFC 6386, both are Debian
+  packages, and both would go in the oracle image pinned by full version.
+  Until then the only reading independent of libwebp is `check-vp8-tables`,
+  which covers the coefficient tables and not the decoder around them.
+
+  This entry replaces a compliance row that claimed "three readings for the
+  bitstream" from 2026-09-29 to 2026-10-02. FFmpeg and libvpx appeared exactly
+  once in this repository during that time - in that claim. The row was written
+  while VP8 decode was still vendored libwebp code and survived both its
+  removal and the rewrite from the RFC.
+
+- **`max_chunk_size` in the RIFF walk.** A WebP file *is* length-prefixed
+  chunks, which is the structure that cap was written for, and `webp_load.c`
+  does not read it: a one-byte chunk cap refuses a PNG, a JPEG and a GIF and
+  lets all 19 WebP fixtures through. `max_metadata_size`, `max_frame_count`
+  and `max_decoded_pixels` are read. `tests/unit/test_limits.cpp` counts the
+  gap rather than asserting around it, so closing it is a moved number.
 
 ---
 
