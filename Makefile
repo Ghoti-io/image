@@ -1056,10 +1056,11 @@ $(APP_DIR)/examples/%$(EXE_EXTENSION): examples/%.c \
 
 # General commands
 .PHONY: clean clean-test-out cloc docs docs-pdf examples coverage check-symbols check-vp8-tables
-.PHONY: fuzz fuzz-clean fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif fuzz-gif-encode fuzz-tiff fuzz-tiff-encode fuzz-ico fuzz-ico-encode
+.PHONY: fuzz fuzz-clean fuzz-png fuzz-png-encode fuzz-jpeg fuzz-jpeg-encode fuzz-bmp fuzz-bmp-encode fuzz-gif fuzz-gif-encode fuzz-tiff fuzz-tiff-encode fuzz-ico fuzz-ico-encode fuzz-webp fuzz-webp-encode
 .PHONY: fuzz-run-png_load fuzz-run-png_encode fuzz-run-jpeg_load fuzz-run-jpeg_encode
 .PHONY: fuzz-run-bmp_load fuzz-run-bmp_encode fuzz-run-gif_load fuzz-run-gif_encode
-.PHONY: fuzz-run-tiff_load fuzz-run-tiff_encode fuzz-run-ico_load fuzz-run-ico_encode fuzz-run-webp_load
+.PHONY: fuzz-run-tiff_load fuzz-run-tiff_encode fuzz-run-ico_load fuzz-run-ico_encode
+.PHONY: fuzz-run-webp_load fuzz-run-webp_encode
 .PHONY: bmp-dump-raster ico-dump-raster bmpsuite resample-tool
 # Release build commands
 .PHONY: all install test test-quiet test-asan test-ubsan test-valgrind test-valgrind-quiet test-verify-png test-verify-jpeg test-verify-bmp test-verify-gif test-verify-structure test-watch uninstall watch
@@ -2048,7 +2049,8 @@ FUZZ_HARNESSES := \
 	tiff-encode:fuzz_tiff_encode:tiff_encode \
 	ico:fuzz_ico_load:ico_load \
 	ico-encode:fuzz_ico_encode:ico_encode \
-	webp:fuzz_webp_load:webp_load
+	webp:fuzz_webp_load:webp_load \
+	webp-encode:fuzz_webp_encode:webp_encode
 
 # $1 = make suffix (png), $2 = harness basename (fuzz_png_load), $3 = corpus dir
 define fuzz-rule

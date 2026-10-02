@@ -405,7 +405,17 @@ static void fdct4(const int * sp, int * out) {
   int r;
   int c;
   for (r = 0; r < 16; ++r) {
-    src[r] = sp[r] << 3;
+    // Multiply, not `<< 3`. These are residuals - pixel minus prediction -
+    // so they are routinely negative, and a left shift of a negative value
+    // is undefined behaviour in C. The two spellings generate the same
+    // instruction; only one of them is defined.
+    //
+    // Found 2026-10-02 by fuzz_webp_encode in its second execution, on a
+    // VP8L seed re-encoded as lossy. make test-asan has
+    // -fno-sanitize-recover=undefined and never fired here, because no
+    // committed lossy fixture reaches this line with a negative residual:
+    // the defect needed a wider population, not a stricter sanitizer.
+    src[r] = sp[r] * 8;
   }
   for (r = 0; r < 4; ++r) {
     fwd_1d(src[r * 4], src[r * 4 + 1], src[r * 4 + 2], src[r * 4 + 3],
