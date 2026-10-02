@@ -982,24 +982,17 @@ static int coeff_cost(const uint8_t * p, int level, int skip_eob) {
   return cost;
 }
 
-/** Same walk as put_block. Cost is in 1/256 of a bit. */
-static int block_bit_cost(
+/** Token cost of zigzag positions [from, to), starting at @a ctx.
+ *  The same walk as the body of block_bit_cost, without the terminal
+ *  EOB bit. @a skip_eob is the flag put_block carries into @a from. */
+static void token_span(
     uint8_t bands[GIMG_VP8_NUM_BANDS][GIMG_VP8_NUM_CTX]
         [GIMG_VP8_NUM_PROBAS],
-    int ctx, int first, const int * levels) {
-  int last = first - 1;
-  int i;
-  int skip_eob = 0;
+    int ctx, int skip_eob, int from, int to, const int * levels, int * cost_out,
+    int * ctx_out, int * skip_out) {
   int cost = 0;
-  for (i = first; i < 16; ++i) {
-    if (levels[k_zigzag[i]] != 0) {
-      last = i;
-    }
-  }
-  if (last < first) {
-    return bool_cost(0, bands[gimg_vp8_bands[first]][ctx][0]);
-  }
-  for (i = first; i <= last; ++i) {
+  int i;
+  for (i = from; i < to; ++i) {
     const int level = levels[k_zigzag[i]];
     const uint8_t * p = bands[gimg_vp8_bands[i]][ctx];
     cost += coeff_cost(p, level, skip_eob);
@@ -1012,8 +1005,34 @@ static int block_bit_cost(
       ctx = (level == 1 || level == -1) ? 1 : 2;
     }
   }
+  *cost_out = cost;
+  *ctx_out = ctx;
+  *skip_out = skip_eob;
+}
+
+/** Same walk as put_block. Cost is in 1/256 of a bit. */
+static int block_bit_cost(
+    uint8_t bands[GIMG_VP8_NUM_BANDS][GIMG_VP8_NUM_CTX]
+        [GIMG_VP8_NUM_PROBAS],
+    int ctx, int first, const int * levels) {
+  int last = first - 1;
+  int i;
+  int cost = 0;
+  int ctx_out = ctx;
+  int skip_out = 0;
+  for (i = first; i < 16; ++i) {
+    if (levels[k_zigzag[i]] != 0) {
+      last = i;
+    }
+  }
+  if (last < first) {
+    return bool_cost(0, bands[gimg_vp8_bands[first]][ctx][0]);
+  }
+  token_span(bands, ctx, 0, first, last + 1, levels, &cost, &ctx_out,
+      &skip_out);
+  (void)skip_out;
   if (last < 15) {
-    cost += bool_cost(0, bands[gimg_vp8_bands[last + 1]][ctx][0]);
+    cost += bool_cost(0, bands[gimg_vp8_bands[last + 1]][ctx_out][0]);
   }
   return cost;
 }
@@ -1070,14 +1089,59 @@ static int trellis_sse(const int * residual, int first, int dc_override,
   return sse;
 }
 
+/** Bit cost of one candidate at zigzag @a pos. Coefficients below @a pos
+ *  are already priced in @a pre_cost. A nonzero candidate, or a zero with
+ *  a nonzero above it, ends at or after @a pos, so that prefix stands.
+ *  Zeroing the last nonzero moves the EOB into the prefix, and the whole
+ *  block is priced instead. */
+static int trellis_bits(
+    uint8_t bands[GIMG_VP8_NUM_BANDS][GIMG_VP8_NUM_CTX]
+        [GIMG_VP8_NUM_PROBAS],
+    int ctx, int first, int pos, int last_hi, int pre_cost, int ctx_at,
+    int skip_at, int cand, const int * levels) {
+  int last;
+  int span_cost = 0;
+  int span_ctx = ctx_at;
+  int span_skip = skip_at;
+  if (cand == 0 && last_hi < 0) {
+    return block_bit_cost(bands, ctx, first, levels);
+  }
+  last = last_hi;
+  if (cand != 0 && last < pos) {
+    last = pos;
+  }
+  token_span(bands, ctx_at, skip_at, pos, last + 1, levels, &span_cost,
+      &span_ctx, &span_skip);
+  (void)span_skip;
+  if (last < 15) {
+    span_cost += bool_cost(0, bands[gimg_vp8_bands[last + 1]][span_ctx][0]);
+  }
+  return pre_cost + span_cost;
+}
+
 /** One backward pass. Each coefficient may stay, shorten by one, or
- *  become zero. A tie keeps the deadzone level, which was tried first. */
+ *  become zero. A tie keeps the deadzone level, which was tried first.
+ *  The pixel error of the levels already chosen is kept, and the token
+ *  cost below the coefficient under test is priced once. */
 static void trellis_dct(const int * residual, int dc_override, int dc_q,
     int ac_q, int first,
     uint8_t bands[GIMG_VP8_NUM_BANDS][GIMG_VP8_NUM_CTX]
         [GIMG_VP8_NUM_PROBAS],
     int ctx, int lambda, int * levels) {
   int pos;
+  int i;
+  int any = 0;
+  int cached_sse;
+  for (i = first; i < 16; ++i) {
+    if (levels[k_zigzag[i]] != 0) {
+      any = 1;
+      break;
+    }
+  }
+  if (!any) {
+    return;
+  }
+  cached_sse = trellis_sse(residual, first, dc_override, dc_q, ac_q, levels);
   for (pos = 15; pos >= first; --pos) {
     const int idx = (int)k_zigzag[pos];
     const int cur = levels[idx];
@@ -1086,29 +1150,47 @@ static void trellis_dct(const int * residual, int dc_override, int dc_q,
     int cand[3];
     int n = 0;
     int best_level = cur;
+    int best_sse = cached_sse;
     int64_t best_score = -1;
+    int last_hi = -1;
+    int pre_cost = 0;
+    int ctx_at = ctx;
+    int skip_at = 0;
     int k;
     if (mag == 0) {
       continue;
     }
+    for (i = pos + 1; i < 16; ++i) {
+      if (levels[k_zigzag[i]] != 0) {
+        last_hi = i;
+      }
+    }
+    token_span(bands, ctx, 0, first, pos, levels, &pre_cost, &ctx_at,
+        &skip_at);
     cand[n++] = cur;
     cand[n++] = 0;
     if (mag > 1) {
       cand[n++] = sign * (mag - 1);
     }
     for (k = 0; k < n; ++k) {
+      int sse;
+      int bits;
       int64_t score;
       levels[idx] = cand[k];
-      score = (int64_t)trellis_sse(residual, first, dc_override, dc_q, ac_q,
-                   levels) *
-              256 +
-          (int64_t)block_bit_cost(bands, ctx, first, levels) * lambda;
+      bits = trellis_bits(bands, ctx, first, pos, last_hi, pre_cost, ctx_at,
+          skip_at, cand[k], levels);
+      sse = (cand[k] == cur) ? cached_sse
+                             : trellis_sse(residual, first, dc_override, dc_q,
+                                   ac_q, levels);
+      score = (int64_t)sse * 256 + (int64_t)bits * lambda;
       if (best_score < 0 || score < best_score) {
         best_score = score;
         best_level = cand[k];
+        best_sse = sse;
       }
     }
     levels[idx] = best_level;
+    cached_sse = best_sse;
   }
 }
 
