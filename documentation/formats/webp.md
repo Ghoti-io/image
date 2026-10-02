@@ -28,7 +28,7 @@ with the 9-3-3-1 kernel. A nonzero frame scale is left at the coded
 size. An interframe predicts from the last, golden, and altref
 pictures of the same sequence; a still interframe has no reference and
 is corrupt. Lossy saves are accepted by `dwebp`; rate/distortion vs
-`cwebp` is reported by `make webp-rd`. The reference is the pinned
+`cwebp` is gated by `make webp-rd` at matched size. The reference is the pinned
 `libwebp` 1.5.0 image in
 `tools/oracle/containers/IMAGES` (`deb13-8`). This library does not
 contain libwebp's source.
@@ -211,9 +211,27 @@ in that report as well, scored on the opaque pixels. The caption is
 image is 8746 at 26.7 dB against 9902 at 26.7 dB. Rate and
 distortion vs that baseline are reported by
 `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh webp-rd`; axes:
-bytes and PSNR-RGB over opaque pixels). The target exits non-zero only
-if encode/decode/measure plumbing breaks; it does not yet fail on worse
-PSNR or size.
+bytes and PSNR-RGB over opaque pixels).
+
+**That target is a gate, not only a report, and the bar is stated at
+matched size.** Bytes and quality trade against each other, so neither
+column alone can be a bar: a PSNR floor is passed by spending bytes and
+a byte ceiling by dropping quality. So for each file it binary-searches
+`cwebp -m 0`'s own `-q` for the largest output no larger than ours, and
+compares one number - how far behind we are at the same price. Measured
+2026-10-02 against libwebp 1.5.0: **mean +2.20 dB, worst -0.78 dB**
+(`pillow/bw_gradient.png`, a 256x10 gradient in 102 bytes), with the
+matched point landing within 2.3% of our byte count on every file and
+within 0.5% on nine of twelve. The bars are 1.5 dB per file and +1.0 dB
+on the mean, and a file whose matched point is further off than 3% is a
+failure rather than a row, because the comparison cannot be stated for
+it. `--no-bar` restores the report-only behaviour.
+
+Armed three ways: tightening either bar names the files it catches, and
+an encoder wrapper that pads every output to twice the bytes - identical
+pictures, double the rate - fails on five files and on the mean while
+the `psnr_ours` column does not move at all, which is the regression a
+one-axis bar is unable to see.
 
 ## Compliance checklist
 
@@ -237,7 +255,7 @@ PSNR or size.
 | VP8 bitstream | keyframe and interframe; a keyframe matches `dwebp` | `dwebp` and `anim_dump` refuse an interframe animation |
 | Anim composite | match `anim_dump -pam` | same |
 | Lossless save | round-trip identity; accepted by `dwebp`; effort ≥ 2 uses one predictor and LZ77 when the residual histogram shrinks; effort ≥ 3 adds cross-colour when the file is shorter; effort ≥ 4 keeps a palette when it is smaller; a Huffman image is kept when it is smaller | gradient effort 4 is 48 bytes, `cwebp -lossless -exact` is 60; see Save |
-| Lossy save | Intra16 or 4×4 predictors, trellis, segment quantizers, the section 15 normal filter, and an ALPH plane that is VP8L when that is shorter; accepted by `dwebp` and by our decoder; `make webp-rd` vs `cwebp -q 75 -m 0` | quality bar not armed; effort 4 is quantizer index 26, the same single-segment index as that baseline |
+| Lossy save | Intra16 or 4×4 predictors, trellis, segment quantizers, the section 15 normal filter, and an ALPH plane that is VP8L when that is shorter; accepted by `dwebp` and by our decoder | `make webp-rd` gates it against `cwebp -m 0` at matched size: 1.5 dB per file, +1.0 dB on the corpus mean. Effort 4 is quantizer index 26, the same single-segment index as `cwebp -q 75 -m 0` |
 | Dispose to background | clears the frame rect to transparent (libwebp) | same; ANIM bgcolor is reported, not painted on dispose |
 | VP8L / ALPH oracle count | one reference (libwebp) | wrappers around the same code are not additional oracles |
 | VP8 oracle count | **one reference (libwebp)**, the same as VP8L | FFmpeg's and libvpx's native VP8 decoders would be independent readings and are not wired; see Not implemented |
@@ -295,7 +313,7 @@ PSNR or size.
   60 bytes, a flat block beside a checkerboard that sets the segment
   flag, a filter level that stays 0 on a flat picture and is
   15 on a horizontal ramp, an alpha plane kept exactly, and `make webp-rd`
-  vs `cwebp -q 75 -m 0` on `third_party/webp-rd/`
+  against `cwebp -m 0` at matched size on `third_party/webp-rd/`
   (`tools/oracle/fetch.sh webp-rd`).
 - Unit tests: load, VP8L/VP8 decode, ALPH plane match, filter round trip,
   anim geometry/dispose/blend, lossless animation round-trip, a
@@ -311,10 +329,6 @@ PSNR or size.
   default would leave the lossy encoder - the larger of the two - unreached.
 
 ## Not implemented
-
-- A quality bar on `make webp-rd`. The target measures bytes and
-  PSNR-RGB against `cwebp` and does not fail when this encoder is
-  worse (`notes/image/webp-plan.md` §6).
 
 - **A second independent reading of the VP8 bitstream.** Every pixel gate here
   compares against `dwebp`, and Pillow, ImageMagick and GdkPixbuf all link

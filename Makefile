@@ -844,9 +844,9 @@ webp-encode-lossy: $(APP_DIR)/encode_webp_lossy$(EXE_EXTENSION) ## Build encode_
 
 TEST_DATA_WEBP_RD := $(IMAGE_ROOT)/third_party/webp-rd
 
-webp-rd: $(APP_DIR)/encode_webp_lossy$(EXE_EXTENSION) ## Fetch PNG corpus and report bytes/PSNR-RGB vs cwebp -q 75 -m 0
+webp-rd: $(APP_DIR)/encode_webp_lossy$(EXE_EXTENSION) ## Fetch PNG corpus and gate lossy quality against cwebp -m 0 at matched size
 	@$(CURDIR)/tools/oracle/fetch.sh webp-rd && \
-	printf "\033[0;30;43m\n### WebP lossy RD (stub vs cwebp -q 75 -m 0) ###\033[0m\n\n" && \
+	printf "\033[0;30;43m\n### WebP lossy RD (vs cwebp -m 0 at matched size) ###\033[0m\n\n" && \
 	LD_LIBRARY_PATH="$(TEST_LD_PATH):$(LIB_INSTALL_PATH)/$(SUITE)" \
 	GIMG_WEBP_ENCODE=$(APP_DIR)/encode_webp_lossy$(EXE_EXTENSION) \
 		python3 $(CURDIR)/tests/data/webp/verify_webp_rd.py --corpus $(TEST_DATA_WEBP_RD)
