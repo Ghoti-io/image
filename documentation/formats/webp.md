@@ -96,8 +96,9 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   literals, subtract-green when `webp_effort` ≥ 1, optional `ICCP` / `EXIF` /
   `XMP ` via `VP8X`. See Save.
 - **VP8 lossy encode** when `webp_lossless = GIMG_WEBP_COMPRESS_LOSSY`:
-  Intra16 or sixteen 4×4 predictors, a coefficient trellis, and a
-  finer segment quantizer on a macroblock the 16×16 predictors cannot
+  Intra16 or sixteen 4×4 predictors, a coefficient trellis priced at
+  the neighbor context, and a finer segment quantizer on a macroblock
+  the 16×16 predictors cannot
   explain. Non-opaque input adds an `ALPH` chunk, VP8L of the green
   channel when that is shorter than the raw plane, and premultiplies
   the colour. See Save and `make webp-rd`.
@@ -188,14 +189,14 @@ one-pixel checkerboard at that effort both macroblocks take the
 finer index and the 4×4 predictors write **186** bytes. One bright
 pixel on black at effort 2 takes the finer index and is **60** bytes.
 On the RD corpus the gray ramp is 102 bytes at 49.3 dB against
-`cwebp -q 75 -m 0` at 104 bytes and 49.7 dB. Hopper is 3548 bytes at
-34.0 dB against 3930 at 33.6 dB, and the copyleft logo is 3874 at
-44.8 dB against 4574 at 43.3 dB. The 200×300 and 300×300 gray type
-is 884 bytes at 47.6 dB and 1068 at 48.1 dB, against 1388 at 47.5 dB
+`cwebp -q 75 -m 0` at 104 bytes and 49.7 dB. Hopper is 3556 bytes at
+34.1 dB against 3930 at 33.6 dB, and the copyleft logo is 3884 at
+45.1 dB against 4574 at 43.3 dB. The 200×300 and 300×300 gray type
+is 880 bytes at 47.6 dB and 1072 at 48.2 dB, against 1388 at 47.5 dB
 and 1880 at 47.9 dB. The two pictures with a partial alpha plane are
 in that report as well, scored on the opaque pixels. The caption is
-10384 bytes at 23.8 dB against 9658 at 24.1 dB, and the transparent
-image is 8718 at 26.6 dB against 9902 at 26.7 dB. Rate and
+10398 bytes at 23.8 dB against 9658 at 24.1 dB, and the transparent
+image is 8746 at 26.7 dB against 9902 at 26.7 dB. Rate and
 distortion vs that baseline are reported by
 `make webp-rd` (PNG corpus from `tools/oracle/fetch.sh webp-rd`; axes:
 bytes and PSNR-RGB over opaque pixels). The target exits non-zero only
