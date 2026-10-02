@@ -315,8 +315,8 @@ For multi-frame formats (APNG, GIF, WebP), each **GIMG_Item** carries frame
 timing and compositing hints. Defined in `ghoti.io/image/doc.h`:
 
 - **Frame delay:** `gimg_item_frame_delay()` / `gimg_item_set_frame_delay()` — numerator and denominator (e.g. fcTL `delay_num`/`delay_den`, ANMF duration as ms/1000). Delay in seconds = num/den; den 0 is treated as 100 when writing APNG.
-- **Dispose:** `gimg_item_dispose_op()` / `gimg_item_set_dispose_op()` — **GIMG_Dispose_Op**: `GIMG_DISPOSE_NONE`, `GIMG_DISPOSE_BACKGROUND`, `GIMG_DISPOSE_PREVIOUS`. How to clear the frame region before the next frame. WebP ANMF has no PREVIOUS; dispose-to-background clears to transparent.
-- **Blend:** `gimg_item_blend_op()` / `gimg_item_set_blend_op()` — **GIMG_Blend_Op**: `GIMG_BLEND_SOURCE`, `GIMG_BLEND_OVER`. How to composite the frame over the canvas.
+- **Dispose:** `gimg_item_dispose_op()` / `gimg_item_set_dispose_op()` — **GIMG_Dispose_Op**: `GIMG_DISPOSE_NONE`, `GIMG_DISPOSE_BACKGROUND`, `GIMG_DISPOSE_PREVIOUS`. How to clear the frame region before the next frame. WebP ANMF has no PREVIOUS, so a WebP save asked for it returns `GIMG_ERR_UNSUPPORTED`. Dispose-to-background clears to transparent.
+- **Blend:** `gimg_item_blend_op()` / `gimg_item_set_blend_op()` — **GIMG_Blend_Op**: `GIMG_BLEND_SOURCE`, `GIMG_BLEND_OVER`. How to composite the frame over the canvas. A WebP save writes do-not-blend: the rectangle is the pixels that should appear.
 
 Alongside them, the **document** carries how many times the animation asks to
 be played, because that is where the animated formats put it - GIF in a

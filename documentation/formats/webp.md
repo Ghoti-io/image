@@ -7,9 +7,10 @@ geometry, chunk inventory (including bitstream chunks nested in `ANMF`),
 carriage of `ICCP` / `EXIF` / `XMP `, **VP8L lossless picture decode**,
 **ALPH plane decode**, **ANIM/ANMF animation** (frame items with offset,
 duration, dispose and blend; decode returns the composited canvas),
-**VP8L lossless encode**, and a **VP8 lossy encode** (one of the four
-Intra16 predictors, the section 14 residual, one quantizer; not yet
-competitive; see Save and `make webp-rd`). See \ref image_format_references "Formats"
+**VP8L lossless encode**, a **VP8 lossy encode** (Intra16 or 4×4
+predictors, a coefficient trellis, a finer segment, and an alpha plane;
+see Save and `make webp-rd`), and **animation encode** (each item is the
+canvas; the file stores the changed rectangle as a keyframe). See \ref image_format_references "Formats"
 and `notes/image/webp-plan.md`.
 
 Claims below are checked. The structure gate is `webpinfo` (committed
@@ -129,7 +130,7 @@ the VP8 encoder). A document of several items is an animation: each
 item is the canvas at that moment. The written `ANMF` is the
 rectangle that differs from what is already showing, grown so its
 origin is even, with blending off, so a later load shows those
-pixels. A frame that changes nothing is one pixel at the origin, so
+pixels. Each frame's bitstream is a keyframe. A frame that changes nothing is one pixel at the origin, so
 its duration is kept. The frame delay
 is stored as milliseconds. Dispose to background is written; dispose
 to previous, and a frame that is not the canvas size, are refused.

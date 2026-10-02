@@ -13,10 +13,10 @@ This is what the library implements.
 - WebP: RIFF container, `VP8X` canvas, chunk inventory, `ICCP`/`EXIF`/`XMP `
   carriage, VP8L lossless decode, VP8 lossy decode of keyframes and of
   interframes in one animation (optional ALPH), ANIM/ANMF animation
-  (composited frames), VP8L lossless still encode, and a VP8 lossy
-  encode (Intra16 or 4×4 predictors, a coefficient trellis, segment
-  quantizers, and an alpha plane; `make webp-rd` reports bytes
-  and PSNR-RGB vs `cwebp`).
+  (composited frames), VP8L lossless encode, and a VP8 lossy encode
+  (Intra16 or 4×4 predictors, a coefficient trellis, segment quantizers,
+  and an alpha plane). A document of several items is written as an
+  animation. `make webp-rd` reports bytes and PSNR-RGB vs `cwebp`.
   Decode is gated against libwebp (`dwebp` / `anim_dump`) in
   the oracle image. The format page lists what remains.
 - TIFF. It reads every bit depth from 1 to 32, both byte orders, strips and
@@ -28,8 +28,8 @@ This is what the library implements.
   Deflate. What is absent is listed on the format's own page rather than left
   to be discovered.
 
-Later WebP work (the quality bar, animation encode) follows the format page's
-"Not implemented" list. A page for a format is written with its codec.
+Later WebP work (the quality bar) follows the format page's "Not implemented"
+list. A page for a format is written with its codec.
 
 ## Before you call it
 
@@ -155,10 +155,10 @@ so a program that links `ghoti.io-image-0` links these too.
 ## Status
 
 PNG (including APNG), JPEG, BMP, GIF, TIFF, ICO/CUR, and WebP load. All of
-those write. WebP save defaults to lossless stills; lossy picks an
-Intra16 predictor or sixteen 4×4 predictors, with a trellis, segment
-quantizers, and an alpha plane (`make webp-rd`); animation encode is
-refused.
+those write. WebP save defaults to lossless; lossy picks an Intra16
+predictor or sixteen 4×4 predictors, with a trellis, segment quantizers,
+and an alpha plane (`make webp-rd`). A document of several items is an
+animation: each frame is a keyframe of the rectangle that changed.
 
 ## License
 
