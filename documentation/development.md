@@ -323,6 +323,14 @@ When implementing a new codec (or auditing an existing one), ensure:
 | **JPEG** | Applied via max segment payload in load | Enforced in load (after SOF) and in entropy decode | N/A (still image; multi-item from EXIF thumbnail counts as one “frame”) |
 | **BMP** | N/A (a DIB has no chunk structure; `max_memory` bounds a linked ICC profile instead) | Enforced in load (after the DIB header) and in decode | N/A (still image; an OS/2 `BA` array's entries are capped at 64 by the codec) |
 | **GIF** | Enforced while joining a sub-block chain, which has no declared total and would otherwise be believed 255 bytes at a time | Enforced in load (per image descriptor) and in decode (the logical screen) | Enforced in load, before each image block is read |
+| **TIFF** | N/A (a tag names an offset; there is no length-prefixed segment to cap). A TIFF whose strips are JPEG passes the caller's cap to the JPEG codec | Enforced in load (per IFD) and in decode | Enforced over the IFD chain, SubIFD pages included |
+| **ICO** | N/A (a directory, not a chunked format). An entry whose payload is a whole PNG passes the caller's cap to the PNG codec | Enforced per entry at load | N/A (entries are alternates, not frames; capped at `GIMG_ICO_MAX_ENTRIES`) |
+| **WebP** | Enforced in `webp_push_chunk()` against each chunk's declared payload, for both the top-level RIFF walk and the nested walk inside an ANMF payload | Enforced against the `VP8X` canvas product at load | Enforced over ANMF chunks |
+
+This table lists every codec that reads files. It stood at four rows from the
+day GIF landed until 2026-10-02, while TIFF, ICO and WebP were added behind
+it - which is the same defect three times, and why the row for WebP's chunk
+cap was written in the commit that implemented it rather than afterwards.
 
 New codecs should enforce the same limits that apply to their format and document which of these (or format-specific limits) they use.
 

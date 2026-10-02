@@ -68,6 +68,12 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   the chunk fourcc as the tag; EXIF orientation into `meta_common` when
   parseable.
 - `max_decoded_pixels` applied to the canvas product at load.
+- `max_chunk_size` applied to every chunk's declared payload, in
+  `webp_push_chunk()` - the one function both the top-level RIFF walk and the
+  nested walk inside an `ANMF` payload call, so a cap cannot be stepped around
+  by putting a bitstream inside a frame. Added 2026-10-02; before that a RIFF
+  file was the format this cap most obviously described and the one it did not
+  reach.
 - `max_metadata_size` applied to each `ICCP`, `EXIF` and `XMP ` chunk, through
   the same `gimg_metadata_verdict()` the other five codecs use. Added
   2026-10-02; before that these three were bounded by the length of the file
@@ -215,6 +221,7 @@ PSNR or size.
 |------|-----------|------------------------|
 | Container | RIFF/`WEBP`, `VP8X`, chunk walk | truncated header, RIFF size past EOF, chunk size past end → `GIMG_ERR_CORRUPT` |
 | Canvas | from `VP8X` or VP8/VP8L peek | unknown size → `GIMG_ERR_CORRUPT`; over `max_decoded_pixels` → `GIMG_ERR_LIMIT` |
+| Chunks | every RIFF chunk's declared payload bounded by `max_chunk_size`, nested `ANMF` bitstreams included | over the cap → `GIMG_ERR_LIMIT`; declared past the RIFF end → `GIMG_ERR_CORRUPT` |
 | Metadata | `ICCP`/`EXIF`/`XMP ` on the document, each bounded by `max_metadata_size` | over the caller's cap → `GIMG_ERR_LIMIT`; past the built-in 4 MiB guard → dropped with a warning, because an oversized profile says nothing about whether the picture decodes |
 | VP8L decode | byte-identical to `dwebp -pam` | corrupt bitstream → `GIMG_ERR_CORRUPT` |
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
@@ -323,13 +330,6 @@ PSNR or size.
   once in this repository during that time - in that claim. The row was written
   while VP8 decode was still vendored libwebp code and survived both its
   removal and the rewrite from the RFC.
-
-- **`max_chunk_size` in the RIFF walk.** A WebP file *is* length-prefixed
-  chunks, which is the structure that cap was written for, and `webp_load.c`
-  does not read it: a one-byte chunk cap refuses a PNG, a JPEG and a GIF and
-  lets all 19 WebP fixtures through. `max_metadata_size`, `max_frame_count`
-  and `max_decoded_pixels` are read. `tests/unit/test_limits.cpp` counts the
-  gap rather than asserting around it, so closing it is a moved number.
 
 ---
 

@@ -167,9 +167,9 @@ Used by `gimg_item_decode()`.
 |------------------------|---------|-----|
 | `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF, ICO, WebP | Reject if width×height (or the sum over frames) exceeds this. ICO applies it per entry; WebP applies it to the VP8X canvas. |
 | `max_memory`           | **BMP only** | A cap on what one image's pixel data may take. No other codec reads it. |
-| `max_metadata_size`    | PNG, JPEG, BMP, GIF, TIFF | Cap what is kept that is not pixels, including a *total* across segments. `0` is a four-mebibyte guard, not "no limit". |
+| `max_metadata_size`    | PNG, JPEG, BMP, GIF, TIFF, WebP | Cap what is kept that is not pixels, including a *total* across segments. `0` is a four-mebibyte guard, not "no limit". |
 | `max_frame_count`      | PNG, GIF, TIFF, WebP | Max frames (APNG, GIF frames, TIFF's IFD chain and its SubIFD pages, WebP ANMF). A BMP bitmap array is several items and is not capped. ICO entries are alternates, not frames; their count is capped at `GIMG_ICO_MAX_ENTRIES` (64) instead. |
-| `max_chunk_size`       | PNG, JPEG, GIF | Reject a segment larger than this (bomb protection). A BMP wrapping a PNG or JPEG passes it down. |
+| `max_chunk_size`       | PNG, JPEG, GIF, WebP | Reject a declared segment payload larger than this (bomb protection). WebP applies it to every RIFF chunk, nested ANMF bitstreams included. A BMP wrapping a PNG or JPEG, a TIFF whose strips are JPEG, and an icon entry that is a PNG all pass it down. |
 
 Every declared field is read by something. `max_memory` is the ragged one: it
 is read by BMP alone, and the cap that bounds every format is

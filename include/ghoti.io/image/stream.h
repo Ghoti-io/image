@@ -269,10 +269,19 @@ typedef struct GIMG_Limits {
    */
   size_t max_frame_count;
   /**
-   * 0 = no limit (bomb protection). Read by PNG, JPEG and GIF - the three
+   * 0 = no limit (bomb protection). Read by PNG, JPEG, GIF and WebP - the
    * formats built out of length-prefixed segments - and by whichever codec a
-   * BMP wrapping a PNG or a JPEG hands its payload to. A DIB has no chunk
-   * structure, so a plain BMP is unaffected.
+   * BMP wrapping a PNG or a JPEG, a TIFF whose strips are JPEG, or an icon
+   * whose entry is a PNG hands its payload to. A DIB, a TIFF's tag table and
+   * an icon directory have no chunk structure, so those three are otherwise
+   * unaffected.
+   *
+   * WebP joined on 2026-10-02. A RIFF file is nothing but length-prefixed
+   * chunks, so it was the format this cap most obviously described and the
+   * one it did not reach: a one-byte cap refused a PNG, a JPEG and a GIF and
+   * let every WebP through. It is enforced in webp_push_chunk(), which both
+   * the top-level RIFF walk and the nested walk inside an ANMF payload call,
+   * so a cap cannot be stepped around by nesting a bitstream in a frame.
    */
   size_t max_chunk_size;
   uint8_t _reserved[8];

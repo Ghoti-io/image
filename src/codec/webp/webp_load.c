@@ -55,7 +55,23 @@ static uint32_t webp_u24(const unsigned char * p) {
 }
 
 static GIMG_Result webp_push_chunk(gimg_webp_doc_state_t * st, uint32_t fourcc,
-    size_t header_offset, uint32_t size, GIMG_Diagnostics * diagnostics) {
+    size_t header_offset, uint32_t size, const GIMG_Limits * limits,
+    GIMG_Diagnostics * diagnostics) {
+  // A RIFF file is nothing but length-prefixed chunks, which is the one
+  // structure max_chunk_size was written for, and this codec did not read it
+  // until 2026-10-02: a one-byte cap refused a PNG, a JPEG and a GIF and let
+  // every WebP fixture through.  The check lives here rather than in either
+  // walk because both walks push through this function - the top-level RIFF
+  // loop and the nested one inside an ANMF payload - and a cap enforced in
+  // only one of them is a cap an animation steps around.  The bound is the
+  // declared payload length, which is what png_chunk.c and the JPEG segment
+  // reader compare against as well.
+  if (limits && limits->max_chunk_size != 0u &&
+      (size_t)size > limits->max_chunk_size) {
+    webp_load_diag(diagnostics, header_offset, GIMG_DIAG_ERROR,
+        "chunk exceeds max_chunk_size");
+    return GIMG_ERR_LIMIT;
+  }
   if (st->chunk_count >= GIMG_WEBP_MAX_CHUNKS) {
     webp_load_diag(diagnostics, header_offset, GIMG_DIAG_ERROR,
         "too many chunks");
@@ -76,7 +92,8 @@ static GIMG_Result webp_push_chunk(gimg_webp_doc_state_t * st, uint32_t fourcc,
  */
 static GIMG_Result webp_walk_anmf_payload(gimg_webp_doc_state_t * st,
     size_t anmf_payload_off, uint32_t anmf_payload_size,
-    gimg_webp_frame_t * frame, GIMG_Diagnostics * diagnostics) {
+    gimg_webp_frame_t * frame, const GIMG_Limits * limits,
+    GIMG_Diagnostics * diagnostics) {
   if (anmf_payload_size < GIMG_WEBP_ANMF_HEADER_SIZE) {
     webp_load_diag(diagnostics, anmf_payload_off, GIMG_DIAG_ERROR,
         "ANMF shorter than its header");
@@ -109,7 +126,8 @@ static GIMG_Result webp_walk_anmf_payload(gimg_webp_doc_state_t * st,
       // would not show as a top-level Chunk line.
       break;
     }
-    GIMG_Result r = webp_push_chunk(st, fourcc, off, size, diagnostics);
+    GIMG_Result r =
+        webp_push_chunk(st, fourcc, off, size, limits, diagnostics);
     if (r != GIMG_OK) {
       return r;
     }
@@ -191,9 +209,10 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   *out_doc = NULL;
 
   const GIMG_Allocator * alloc = gimg_alloc_or_default(codec->allocator);
+  const GIMG_Limits * limits = options ? options->limits : NULL;
   size_t max_frames = GIMG_WEBP_DEFAULT_MAX_FRAMES;
-  if (options && options->limits && options->limits->max_frame_count > 0u) {
-    max_frames = options->limits->max_frame_count;
+  if (limits && limits->max_frame_count > 0u) {
+    max_frames = limits->max_frame_count;
   }
   size_t file_size = gimg_stream_size(stream);
   if (file_size == GIMG_STREAM_SIZE_UNKNOWN) {
@@ -266,7 +285,7 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
       gimg_webp_free_doc_state(codec, state);
       return GIMG_ERR_CORRUPT;
     }
-    r = webp_push_chunk(state, fourcc, off, size, diagnostics);
+    r = webp_push_chunk(state, fourcc, off, size, limits, diagnostics);
     if (r != GIMG_OK) {
       gimg_webp_free_doc_state(codec, state);
       return r;
@@ -339,7 +358,7 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
       gimg_webp_frame_t frame;
       memset(&frame, 0, sizeof(frame));
       r = webp_walk_anmf_payload(
-          state, payload, size, &frame, diagnostics);
+          state, payload, size, &frame, limits, diagnostics);
       if (r != GIMG_OK) {
         gimg_webp_free_doc_state(codec, state);
         return r;
@@ -373,8 +392,8 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
       // oversized profile or Exif block says nothing about whether the
       // picture decodes. A cap the caller set is different - they asked to be
       // told, so that is GIMG_ERR_LIMIT.
-      const gimg_metadata_verdict_t v = gimg_metadata_verdict(
-          options ? options->limits : NULL, (size_t)size);
+      const gimg_metadata_verdict_t v =
+          gimg_metadata_verdict(limits, (size_t)size);
       if (v == GIMG_METADATA_REFUSED) {
         webp_load_diag(diagnostics, payload, GIMG_DIAG_ERROR,
             "metadata chunk exceeds max_metadata_size");

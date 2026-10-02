@@ -330,9 +330,9 @@ TEST(Limits, EveryRegisteredCodecIsInTheLimitsCorpus) {
  * What it can say is that the cap is read at all, and by which codecs.
  */
 TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
-  long jpeg = 0, png = 0, gif = 0, bmp_through = 0, bmp_embedded = 0,
-       tiff_through = 0, tiff_embedded = 0, ico_through = 0, ico_embedded = 0,
-       webp_through = 0, webp_capped = 0;
+  std::map<std::string, long> refused;
+  long bmp_through = 0, bmp_embedded = 0, tiff_through = 0, tiff_embedded = 0,
+       ico_through = 0, ico_embedded = 0;
   for (const Fixture & f : corpus()) {
     GIMG_Limits tiny = none();
     tiny.max_chunk_size = 1u;
@@ -365,34 +365,44 @@ TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
       (r == GIMG_OK ? ico_through : ico_embedded)++;
       continue;
     }
-    if (c == "webp") {
-      // Counted, not asserted, and this is a gap rather than a property.
-      // A RIFF file *is* length-prefixed chunks - the one structure this cap
-      // was written for - and webp_load.c does not read max_chunk_size. So a
-      // one-byte chunk cap lets a WebP through where it refuses a PNG, a JPEG
-      // and a GIF. Recorded here as a number so that closing it is a moved
-      // number rather than a new test; see documentation/formats/webp.md's
-      // "Not implemented".
-      (r == GIMG_OK ? webp_through : webp_capped)++;
-      continue;
-    }
     EXPECT_EQ(r, GIMG_ERR_LIMIT)
         << f.name << ": a one-byte chunk cap let the file through with "
         << (int)r;
-    (c == "jpeg" ? jpeg : c == "png" ? png : gif)++;
+    // Keyed on the codec name rather than a ternary chain. The chain this
+    // replaces ended in a bare `: gif`, so every codec past the third landed
+    // in the bucket labelled "gif" - which is how this file printed "gif 60"
+    // for months after TIFF was added, and would have printed it again for
+    // WebP.
+    //
+    // Incremented on the verdict rather than on reaching this line, so that
+    // the printed line cannot say "refused webp 19" while nineteen files went
+    // through. Neutering the cap in webp_push_chunk() prints webp 0 and fails
+    // twice; counting arrivals printed 19 and failed only on the EXPECT_EQ.
+    if (r == GIMG_ERR_LIMIT) {
+      refused[c]++;
+    }
   }
-  std::printf("  one-byte chunk cap refused jpeg %ld, png %ld, gif %ld; "
-              "%ld bmp fixtures read it as no cap at all and %ld passed it "
-              "down to an embedded codec; %ld tiff have no chunks to cap and "
-              "%ld passed it down to an embedded JPEG; %ld ico are a directory "
-              "with no chunks and %ld passed it down to an embedded PNG; "
-              "%ld webp went through a cap their RIFF chunks do not read and "
-              "%ld were capped\n",
-      jpeg, png, gif, bmp_through, bmp_embedded, tiff_through, tiff_embedded,
-      ico_through, ico_embedded, webp_through, webp_capped);
-  EXPECT_GT(jpeg, 0);
-  EXPECT_GT(png, 0);
-  EXPECT_GT(gif, 0);
+  std::printf("  one-byte chunk cap refused jpeg %ld, png %ld, gif %ld, "
+              "webp %ld; %ld bmp fixtures read it as no cap at all and %ld "
+              "passed it down to an embedded codec; %ld tiff have no chunks "
+              "to cap and %ld passed it down to an embedded JPEG; %ld ico are "
+              "a directory with no chunks and %ld passed it down to an "
+              "embedded PNG\n",
+      refused["jpeg"], refused["png"], refused["gif"], refused["webp"],
+      bmp_through, bmp_embedded, tiff_through, tiff_embedded, ico_through,
+      ico_embedded);
+  EXPECT_GT(refused["jpeg"], 0);
+  EXPECT_GT(refused["png"], 0);
+  EXPECT_GT(refused["gif"], 0);
+  // WebP joined this set on 2026-10-02. Before that it was counted in a
+  // bucket of its own with a comment calling the gap what it was: a RIFF file
+  // *is* length-prefixed chunks, the one structure this cap was written for,
+  // and all 19 fixtures went through a one-byte cap. The check now sits in
+  // webp_push_chunk(), which both the top-level RIFF walk and the nested ANMF
+  // walk call.
+  EXPECT_GT(refused["webp"], 0)
+      << "no WebP fixture was refused by a one-byte chunk cap, so the RIFF "
+         "walk has stopped reading max_chunk_size";
   EXPECT_GT(bmp_through, 0)
       << "no BMP fixture went through a one-byte chunk cap, which is what "
          "this test records BMP as doing";
@@ -405,6 +415,12 @@ TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
   EXPECT_GT(tiff_embedded, 0)
       << "no TIFF fixture passed the chunk cap down to an embedded JPEG, so "
          "the JPEG-in-TIFF fixtures are not in this corpus";
+  EXPECT_GT(ico_through, 0)
+      << "no ICO fixture went through a one-byte chunk cap, which is what "
+         "this test records a directory format as doing";
+  EXPECT_GT(ico_embedded, 0)
+      << "no ICO fixture passed the chunk cap down to an embedded PNG, so "
+         "the PNG-payload icon fixtures are not in this corpus";
 }
 
 /**
