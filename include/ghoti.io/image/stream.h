@@ -221,23 +221,31 @@ typedef struct GIMG_Limits {
   /**
    * 0 = no limit. Read by every codec, at whichever stage knows the size:
    * BMP and JPEG while parsing the frame header, PNG, GIF and TIFF while
-   * decoding. A cap equal to the image's own pixel count passes and one below
-   * it is refused, so it bounds what it names rather than something near it.
+   * decoding, WebP from the canvas product at load. ICO reaches it through
+   * whichever codec owns an entry's payload. A cap equal to the image's own
+   * pixel count passes and one below it is refused, so it bounds what it
+   * names rather than something near it.
    */
   size_t max_decoded_pixels;
   /**
    * 0 = no limit.
-   * @warning **Read by BMP only.** No other codec consults it, so a caller
-   * who sets this to bound a decode gets a bound on BMP and nothing on PNG,
-   * JPEG or GIF. Use max_decoded_pixels, which every codec reads, to bound
-   * the size of what comes back.
+   * @warning **Read by the BMP decoder and by nothing else.** No other
+   * decoder consults it, so a caller who sets this to bound a decode gets a
+   * bound on BMP and nothing on PNG, JPEG, GIF, TIFF or WebP. An ICO is the
+   * one indirect case: an entry whose payload is a Windows DIB is decoded by
+   * BMP with the caller's limits forwarded, so the cap applies there and not
+   * to an entry whose payload is a PNG. Use max_decoded_pixels, which every
+   * codec reads, to bound the size of what comes back.
    */
   size_t max_memory;
   /**
    * 0 = a built-in four-mebibyte guard. Read by every codec, and the only cap
    * that bounds a metadata *total*: PNG's decompressed iCCP, JPEG's combined
    * COM segments, GIF's combined comments, BMP's embedded or resolved profile,
-   * and TIFF's ICC, XMP, JPEGTables and ImageDescription.
+   * TIFF's ICC, XMP, JPEGTables and ImageDescription, and WebP's ICCP, EXIF
+   * and XMP chunks. WebP joined that list on 2026-10-02: it was the sixth
+   * codec and the only one that did not read this cap, so those three chunks
+   * were bounded by the length of the file and nothing else.
    *
    * max_chunk_size bounds one segment as it sits in the file, which is a
    * different question - a file of many comment segments, each within that

@@ -32,6 +32,7 @@
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/limits_internal.h"
 #include "../../meta/exif_internal.h"
 #include "../codec_internal.h"
 #include "webp_internal.h"
@@ -360,17 +361,44 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
         return r;
       }
     }
-    else if (fourcc == GIMG_WEBP_ICCP) {
-      state->iccp = bytes + payload;
-      state->iccp_size = size;
-    }
-    else if (fourcc == GIMG_WEBP_EXIF) {
-      state->exif = bytes + payload;
-      state->exif_size = size;
-    }
-    else if (fourcc == GIMG_WEBP_XMP) {
-      state->xmp = bytes + payload;
-      state->xmp_size = size;
+    else if (fourcc == GIMG_WEBP_ICCP || fourcc == GIMG_WEBP_EXIF ||
+             fourcc == GIMG_WEBP_XMP) {
+      // The one cap every other codec in this library reads, and the one this
+      // codec did not until 2026-10-02. ICCP, EXIF and XMP are the chunks
+      // max_metadata_size is for, and before this they were bounded only by
+      // the length of the file.
+      //
+      // Dropped rather than refused when merely implausible, which is what
+      // PNG, JPEG, BMP, GIF and TIFF all do and for the same reason: an
+      // oversized profile or Exif block says nothing about whether the
+      // picture decodes. A cap the caller set is different - they asked to be
+      // told, so that is GIMG_ERR_LIMIT.
+      const gimg_metadata_verdict_t v = gimg_metadata_verdict(
+          options ? options->limits : NULL, (size_t)size);
+      if (v == GIMG_METADATA_REFUSED) {
+        webp_load_diag(diagnostics, payload, GIMG_DIAG_ERROR,
+            "metadata chunk exceeds max_metadata_size");
+        gimg_webp_free_doc_state(codec, state);
+        return GIMG_ERR_LIMIT;
+      }
+      if (v == GIMG_METADATA_KEEP) {
+        if (fourcc == GIMG_WEBP_ICCP) {
+          state->iccp = bytes + payload;
+          state->iccp_size = size;
+        }
+        else if (fourcc == GIMG_WEBP_EXIF) {
+          state->exif = bytes + payload;
+          state->exif_size = size;
+        }
+        else {
+          state->xmp = bytes + payload;
+          state->xmp_size = size;
+        }
+      }
+      else {
+        webp_load_diag(diagnostics, payload, GIMG_DIAG_WARNING,
+            "metadata chunk past the built-in guard; dropped");
+      }
     }
 
     size_t step = 8u + (size_t)size + ((size & 1u) ? 1u : 0u);

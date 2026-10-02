@@ -33,6 +33,8 @@
 #include <string>
 #include <vector>
 
+#include "../registry_sweep.h"
+
 namespace {
 
 bool read_file(const std::string & dir, const std::string & name,
@@ -106,6 +108,21 @@ Outcome run_with(const std::vector<uint8_t> & bytes, const GIMG_Limits * limits)
   return out;
 }
 
+/**
+ * Every codec the corpus draws fixtures from.
+ *
+ * One list, read by corpus() to find the files and by the per-codec
+ * assertions to know what "every codec" means. They were two lists until
+ * 2026-10-02 and the second one was a hard-coded four, which is how a sweep
+ * over five codecs came to assert over four of them and label the fifth as
+ * the fourth.
+ */
+const std::vector<const char *> & corpus_codecs(void) {
+  static const std::vector<const char *> names = {
+      "jpeg", "png", "bmp", "gif", "tiff", "ico", "webp"};
+  return names;
+}
+
 /** Every fixture that loads and decodes with nothing capped. */
 const std::vector<Fixture> & corpus(void) {
   static std::vector<Fixture> all;
@@ -126,6 +143,14 @@ const std::vector<Fixture> & corpus(void) {
       // after the sweep was written and nothing widened the population, so
       // every claim this file made about "every codec" was made over four.
       {"tiff", root + "/tiff", ".tif"},
+      // ICO and WebP were missing until 2026-10-02, and the comment directly
+      // above was already here when they landed. A warning is not a gate: it
+      // told the next reader what had gone wrong last time and did not stop
+      // it happening again. If a seventh codec arrives and this list still
+      // has six entries, that is the same defect a third time - so prefer a
+      // check keyed on the registry over another comment.
+      {"ico", root + "/ico", ".ico"},
+      {"webp", root + "/webp", ".webp"},
   };
   for (const Dir & d : dirs) {
     DIR * dp = opendir(d.path.c_str());
@@ -176,7 +201,13 @@ GIMG_Limits none(void) {
  */
 TEST(Limits, APixelCapRefusesTheImageItIsOneShortOf) {
   long checked = 0, single = 0;
-  long by_codec[4] = {0, 0, 0, 0};
+  // Keyed on the codec's own name rather than an index, because the array this
+  // replaced had four slots and a final `: 3` that swept every codec after the
+  // third into the bucket labelled "gif". With TIFF in the corpus that label
+  // was already wrong, and the all-four-nonzero assertion below it could be
+  // satisfied by TIFF alone while no GIF fixture reached the cap at all. A map
+  // cannot mislabel a codec it has never heard of.
+  std::map<std::string, long> by_codec;
   for (const Fixture & f : corpus()) {
     GIMG_Limits at = none();
     at.max_decoded_pixels = f.pixels;
@@ -198,19 +229,22 @@ TEST(Limits, APixelCapRefusesTheImageItIsOneShortOf) {
         << f.name << ": a cap of " << (f.pixels - 1u) << " let a " << f.pixels
         << "-pixel image through with result " << (int)tight.result;
     checked++;
-    const std::string c = f.codec;
-    by_codec[c == "jpeg" ? 0 : c == "png" ? 1 : c == "bmp" ? 2 : 3]++;
+    by_codec[f.codec]++;
   }
-  std::printf("  %ld fixtures capped one pixel short of their own size "
-              "(jpeg %ld, png %ld, bmp %ld, gif %ld); %ld are 1x1 and cannot "
-              "express such a cap\n",
-      checked, by_codec[0], by_codec[1], by_codec[2], by_codec[3], single);
-  // Every codec, not just a total: a cap read by three of the four would
-  // still make a healthy-looking number here.
-  for (int i = 0; i < 4; i++) {
-    EXPECT_GT(by_codec[i], 0)
-        << "no fixture of codec index " << i
-        << " reached the pixel cap, so this sweep says nothing about it";
+  std::printf("  %ld fixtures capped one pixel short of their own size (",
+      checked);
+  for (const auto & kv : by_codec) {
+    std::printf("%s %ld ", kv.first.c_str(), kv.second);
+  }
+  std::printf("); %ld are 1x1 and cannot express such a cap\n", single);
+  // Every codec in the corpus, not just a total: a cap read by six of the
+  // seven would still make a healthy-looking number here. Driven off the
+  // directory list rather than a hard-coded count, so adding a codec to the
+  // corpus adds it to this assertion with no second edit.
+  for (const char * codec : corpus_codecs()) {
+    EXPECT_GT(by_codec[codec], 0)
+        << "no " << codec
+        << " fixture reached the pixel cap, so this sweep says nothing about it";
   }
 }
 
@@ -252,6 +286,43 @@ TEST(Limits, AFrameCapRefusesTheFileItIsOneShortOf) {
 }
 
 /**
+ * Every registered codec is in this file's corpus.
+ *
+ * The gate the two stale-population comments in corpus() asked for. Those
+ * comments recorded the same defect twice - TIFF landing outside the sweep in
+ * September, ICO and WebP in October - and a comment cannot fail a build. This
+ * can: the population comes from gimg_codec_count(), so an eighth codec is a
+ * failure here on the commit that registers it, naming itself.
+ *
+ * Armed by deleting one entry from corpus_codecs(): this test then names it.
+ */
+TEST(Limits, EveryRegisteredCodecIsInTheLimitsCorpus) {
+  const std::vector<const char *> & listed = corpus_codecs();
+  for (const gimg_test::SweptCodec & c : gimg_test::swept_codecs()) {
+    if (!c.reads()) { continue; }
+    bool found = false;
+    for (const char * name : listed) {
+      if (c.name == name) { found = true; break; }
+    }
+    EXPECT_TRUE(found)
+        << "codec '" << c.name
+        << "' is registered and reads files, but is not in corpus_codecs(), "
+           "so every per-codec claim in this file is made without it";
+  }
+  // And the other direction: a name listed with no fixtures behind it would
+  // make the per-codec assertions vacuous rather than false.
+  std::map<std::string, long> seen;
+  for (const Fixture & f : corpus()) { seen[f.codec]++; }
+  for (const char * name : listed) {
+    EXPECT_GT(seen[name], 0)
+        << "corpus_codecs() lists '" << name
+        << "' but no fixture of it loads, so claims about it say nothing";
+  }
+  std::printf("  %zu registered codecs, %zu in the corpus\n",
+      gimg_test::swept_codecs().size(), listed.size());
+}
+
+/**
  * A chunk cap of one byte refuses every file whose format has chunks.
  *
  * Unlike the two above this one has no exact bound to assert from outside:
@@ -260,7 +331,8 @@ TEST(Limits, AFrameCapRefusesTheFileItIsOneShortOf) {
  */
 TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
   long jpeg = 0, png = 0, gif = 0, bmp_through = 0, bmp_embedded = 0,
-       tiff_through = 0, tiff_embedded = 0;
+       tiff_through = 0, tiff_embedded = 0, ico_through = 0, ico_embedded = 0,
+       webp_through = 0, webp_capped = 0;
   for (const Fixture & f : corpus()) {
     GIMG_Limits tiny = none();
     tiny.max_chunk_size = 1u;
@@ -285,6 +357,25 @@ TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
       (r == GIMG_OK ? tiff_through : tiff_embedded)++;
       continue;
     }
+    if (c == "ico") {
+      // Same shape as BMP, for the same reason and one level up: an icon is a
+      // directory, not a chunked format, so there is nothing here for the cap
+      // to be a cap on. An entry whose payload is a whole PNG hands the bytes
+      // to the PNG codec, which does read it.
+      (r == GIMG_OK ? ico_through : ico_embedded)++;
+      continue;
+    }
+    if (c == "webp") {
+      // Counted, not asserted, and this is a gap rather than a property.
+      // A RIFF file *is* length-prefixed chunks - the one structure this cap
+      // was written for - and webp_load.c does not read max_chunk_size. So a
+      // one-byte chunk cap lets a WebP through where it refuses a PNG, a JPEG
+      // and a GIF. Recorded here as a number so that closing it is a moved
+      // number rather than a new test; see documentation/formats/webp.md's
+      // "Not implemented".
+      (r == GIMG_OK ? webp_through : webp_capped)++;
+      continue;
+    }
     EXPECT_EQ(r, GIMG_ERR_LIMIT)
         << f.name << ": a one-byte chunk cap let the file through with "
         << (int)r;
@@ -293,8 +384,12 @@ TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
   std::printf("  one-byte chunk cap refused jpeg %ld, png %ld, gif %ld; "
               "%ld bmp fixtures read it as no cap at all and %ld passed it "
               "down to an embedded codec; %ld tiff have no chunks to cap and "
-              "%ld passed it down to an embedded JPEG\n",
-      jpeg, png, gif, bmp_through, bmp_embedded, tiff_through, tiff_embedded);
+              "%ld passed it down to an embedded JPEG; %ld ico are a directory "
+              "with no chunks and %ld passed it down to an embedded PNG; "
+              "%ld webp went through a cap their RIFF chunks do not read and "
+              "%ld were capped\n",
+      jpeg, png, gif, bmp_through, bmp_embedded, tiff_through, tiff_embedded,
+      ico_through, ico_embedded, webp_through, webp_capped);
   EXPECT_GT(jpeg, 0);
   EXPECT_GT(png, 0);
   EXPECT_GT(gif, 0);
@@ -313,35 +408,56 @@ TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
 }
 
 /**
- * The memory cap, which only BMP reads.
+ * The memory cap, which the BMP decoder reads and no other decoder does.
  *
  * A byte is below anything, so what this asserts is presence: BMP refuses and
- * the other three do not notice. The asymmetry is the finding - a caller who
- * sets max_memory to bound a decode gets a bound on BMP and nothing on the
- * other three formats, which is not what the manual's one-line description
- * leads them to expect.
+ * the formats with a decoder of their own do not notice. The asymmetry is the
+ * finding - a caller who sets max_memory to bound a decode gets a bound on
+ * BMP and nothing on the others, which is not what the manual's one-line
+ * description leads them to expect.
+ *
+ * **The third bucket is ICO, and it is not an exception to the rule but a
+ * consequence of it.** An icon entry whose payload is a Windows DIB is handed
+ * to gimg_bmp_load_dib() with the caller's limits forwarded, so the cap is
+ * read - by the BMP decoder, one level down, exactly as the chunk cap is for
+ * a BMP that wraps a PNG and for a TIFF whose strips are JPEG. The test was
+ * named "...ByNoOtherCodec" and said "the other three" when there were five
+ * codecs; widening the corpus to seven on 2026-10-02 made it fail, and the
+ * claim rather than the code was what was wrong. Counted in its own bucket so
+ * that a *decoder* newly reading the cap is still a failure here.
  */
-TEST(Limits, AMemoryCapIsReadByBmpAndByNoOtherCodec) {
-  long bmp_refused = 0, others_through = 0, others_refused = 0;
+TEST(Limits, AMemoryCapIsReadByTheBmpDecoderAndNothingElse) {
+  long bmp_refused = 0, others_through = 0, others_refused = 0,
+       delegated_refused = 0;
   for (const Fixture & f : corpus()) {
     GIMG_Limits tiny = none();
     tiny.max_memory = 1u;
     const GIMG_Result r = run_with(f.bytes, &tiny).result;
-    if (std::string(f.codec) == "bmp") {
+    const std::string c = f.codec;
+    if (c == "bmp") {
       EXPECT_EQ(r, GIMG_ERR_LIMIT)
           << f.name << ": a one-byte memory cap let the file through";
       bmp_refused++;
     }
+    else if (c == "ico") {
+      // Either bucket is correct: a PNG-payload entry does not reach the BMP
+      // decoder and a DIB-payload one does.
+      (r == GIMG_OK ? others_through : delegated_refused)++;
+    }
     else if (r == GIMG_OK) { others_through++; }
     else { others_refused++; }
   }
-  std::printf("  one-byte memory cap: bmp refused %ld; "
-              "%ld non-bmp fixtures went through, %ld were refused\n",
-      bmp_refused, others_through, others_refused);
+  std::printf("  one-byte memory cap: bmp refused %ld; %ld ico refused it "
+              "through the BMP decoder their DIB payload reaches; "
+              "%ld other fixtures went through, %ld were refused\n",
+      bmp_refused, delegated_refused, others_through, others_refused);
   EXPECT_GT(bmp_refused, 0);
+  EXPECT_GT(delegated_refused, 0)
+      << "no ICO fixture reached the BMP decoder's memory cap, so the "
+         "DIB-payload entries are not in this corpus";
   EXPECT_EQ(others_refused, 0)
-      << "a codec other than BMP refused on max_memory; the matrix in this "
-         "file and the note in stream.h both need updating";
+      << "a decoder other than BMP's refused on max_memory; the matrix in "
+         "this file and the note in stream.h both need updating";
 }
 
 /**
@@ -391,7 +507,13 @@ TEST(Limits, MetadataSizeBoundsWhatIsKeptThatIsNotPixels) {
   // and the claim being made is that every codec reads this cap - which is
   // exactly the claim the old table got wrong about max_frame_count by
   // naming two codecs when three read it.
-  for (const char * c : {"png", "jpeg", "bmp", "gif", "tiff"}) {
+  //
+  // WebP joined this list on 2026-10-02. It was the sixth codec and the only
+  // one that did not read the cap: ICCP, EXIF and XMP were bounded by the
+  // length of the file and nothing else. ICO is deliberately absent - an icon
+  // carries no metadata of its own, and an entry whose payload is a PNG is
+  // bounded by the PNG codec reading the same cap one level down.
+  for (const char * c : {"png", "jpeg", "bmp", "gif", "tiff", "webp"}) {
     EXPECT_GT(by_codec[c], 0)
         << c
         << " refused nothing on max_metadata_size, so either its "
