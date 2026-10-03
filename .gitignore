@@ -69,12 +69,18 @@ tests/data/tiff-fax
 # The depth series as ImageMagick reads it, also by `make oracle-tools`.
 tests/data/tiff-depth
 
-# libFuzzer writes a crash-<hash> file beside the binary when it finds one.
+# libFuzzer writes the input it was holding when something went wrong. Since
+# 2026-10-02 `make fuzz-run-*` passes -artifact_prefix so these land under
+# tests/out/fuzz/ rather than in the repository root; these patterns stay as
+# the belt, because a harness run by hand still writes them beside the binary.
 # The interesting ones become test fixtures; none of them belong in the tree.
-# slow-unit-* is the same idea for an input that took longer than -timeout:
-# worth reading (see tests/fuzz/README.md on what they have turned out to be),
-# never worth committing, and written on every run that trips one.
+# slow-unit-* is an input that took longer than -timeout: worth reading (see
+# tests/fuzz/README.md on what they have turned out to be - usually the
+# sanitizers), never worth committing, written on every run that trips one.
+# oom-* was missing from this list until 2026-10-02, so that one shape would
+# have shown up as untracked rather than ignored.
 crash-*
 leak-*
 timeout-*
+oom-*
 slow-unit-*

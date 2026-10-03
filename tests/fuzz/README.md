@@ -69,9 +69,18 @@ change and has not been made.
 
 ## Slow units are usually the sanitizers, not a defect
 
-libFuzzer writes a `*-slow-unit-*` artifact when an input takes longer than a
-second. Under ASan and UBSan that is roughly twenty to thirty times the
+libFuzzer writes a `slow-unit-<hash>` artifact when an input takes longer than
+a second. Under ASan and UBSan that is roughly twenty to thirty times the
 release cost, so an input that takes 40 ms in a release build trips it.
+
+**Where they land:** `make fuzz-run-*` passes
+`-artifact_prefix=tests/out/fuzz/<harness>/`, so look there. Before 2026-10-02
+it passed nothing and libFuzzer wrote them into the working directory, which
+for every target here is the repository root; `.gitignore` had named the five
+shapes from the start, so nothing was ever committed, but three `slow-unit-*`
+files sat in the root unnoticed because an ignored file does not show up in
+`git status`. A harness run by hand with no prefix still writes beside the
+binary, which is why the ignore patterns stay.
 
 Every slow unit a thirty-minute six-harness run produced was a JPEG, and all
 but one ran in 5 to 46 ms without the sanitizers. **Time one in a release
@@ -83,3 +92,21 @@ whose SOF11 names 16385 by 219 - 3.59 megapixels, just under the harnesses'
 Arithmetic decoding is serial by construction and libjpeg's is slow too;
 nothing here is quadratic. What bounds it is `max_decoded_pixels`, which is
 why the harnesses set one (see `fuzz_limits.h`) and why a service should.
+
+The rule held again on a second codec, 2026-10-02. `fuzz_webp_encode` left
+three slow units of 86 to 109 bytes, each a `VP8` header naming 2384x1606 -
+3.83 megapixels, the same shape as the JPEG above and for the same reason: it
+is just under `max_decoded_pixels`. In the fuzz build they take **40 to 47
+seconds**; built with `-fsanitize=fuzzer` alone at `-O2` and linked against
+the release archive, **1.6 to 2.4 seconds**. A committed seed is 11 ms. That
+ratio is the twenty-fold figure above, measured rather than assumed, and it
+is the whole explanation - there is no complexity defect here. Timing them
+that way is two commands and it is the difference between deleting litter and
+opening an investigation:
+
+    clang++ -std=c++20 -O2 -g -fsanitize=fuzzer -I include/ \
+      -I build/linux/release/generated/ $(pkg-config --cflags ...) \
+      -o /tmp/h tests/fuzz/fuzz_webp_encode.cpp \
+      -Wl,--whole-archive build/linux/release/apps/libghoti.io-image-0.a \
+      -Wl,--no-whole-archive $(pkg-config --libs ...) -lm
+    time /tmp/h <the slow unit>

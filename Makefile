@@ -2032,7 +2032,17 @@ FUZZ_LIBS := $(FUZZ_LIBOBJECTS) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS)
 
 # One directory per harness under tests/fuzz/corpus/<name>/, matching the rest
 # of the suite. Only *.seed files are tracked; campaign units are gitignored.
+FUZZ_ARTIFACTS := tests/out/fuzz
 FUZZ_CORPUS := tests/fuzz/corpus
+# Where libFuzzer puts the input it was holding when something went wrong:
+# crash-, leak-, timeout-, oom- and slow-unit- files.
+#
+# With no -artifact_prefix it writes them into the working directory, which for
+# every target here is the repository root. .gitignore has named those five
+# shapes since the harnesses landed, so none was ever at risk of being
+# committed - but a gitignore makes litter invisible rather than absent, and
+# three slow-unit files sat in the root from 2026-10-02 until someone looked.
+# tests/out is what .gitignore's own comment calls the place for stray output.
 # A smoke-test length by default; for a real campaign: make fuzz FUZZ_TIME=3600
 FUZZ_TIME ?= 60
 # Build-target name, harness basename, corpus subdirectory.
@@ -2064,10 +2074,13 @@ fuzz-$1: $(FUZZ_LIBOBJECTS) ## Build the $2 fuzz harness (requires clang++)
 	@echo "Fuzz harness: $(APP_DIR)/$2$(EXE_EXTENSION). Run: make fuzz-run-$3 FUZZ_TIME=$(FUZZ_TIME)"
 
 fuzz-run-$3: fuzz-$1 ## Run the $3 fuzzer for $(FUZZ_TIME) seconds
-	@mkdir -p $(FUZZ_CORPUS)/$3
+	@mkdir -p $(FUZZ_CORPUS)/$3 $(FUZZ_ARTIFACTS)/$3
 	@printf "\n### Fuzzing $3 for $(FUZZ_TIME)s ###\n"
+	@# -artifact_prefix must end in a slash to mean a directory, and libFuzzer
+	@# does not create it - hence the mkdir above.
 	@LD_LIBRARY_PATH="$(TEST_LD_PATH)" $(APP_DIR)/$2$(EXE_EXTENSION) $(FUZZ_CORPUS)/$3 \
-		-max_total_time=$(FUZZ_TIME) -print_final_stats=1
+		-max_total_time=$(FUZZ_TIME) -print_final_stats=1 \
+		-artifact_prefix=$(FUZZ_ARTIFACTS)/$3/
 endef
 
 $(foreach entry,$(FUZZ_HARNESSES),$(eval $(call fuzz-rule,$(word 1,$(subst :, ,$(entry))),$(word 2,$(subst :, ,$(entry))),$(word 3,$(subst :, ,$(entry))))))
