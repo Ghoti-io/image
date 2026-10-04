@@ -91,7 +91,23 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TAG_T6_OPTIONS 293
 #define GIMG_TIFF_TAG_PREDICTOR 317
 #define GIMG_TIFF_TAG_IMAGE_DESCRIPTION 270
+#define GIMG_TIFF_TAG_DOCUMENT_NAME 269
+#define GIMG_TIFF_TAG_MAKE 271
+#define GIMG_TIFF_TAG_MODEL 272
+#define GIMG_TIFF_TAG_PAGE_NAME 285
+#define GIMG_TIFF_TAG_SOFTWARE 305
+#define GIMG_TIFF_TAG_DATE_TIME 306
+#define GIMG_TIFF_TAG_ARTIST 315
+#define GIMG_TIFF_TAG_HOST_COMPUTER 316
+#define GIMG_TIFF_TAG_COPYRIGHT 33432
 #define GIMG_TIFF_TAG_ORIENTATION 274
+/**
+ * The informational ASCII tags, in the order `gimg_tiff_ifd_t.info` stores
+ * them. The reader and the writer both walk this array, so a tag lives here
+ * or it is not kept.
+ */
+#define GIMG_TIFF_INFO_COUNT 9u
+extern const uint16_t gimg_tiff_info_tags[GIMG_TIFF_INFO_COUNT];
 #define GIMG_TIFF_TAG_XMP 700
 #define GIMG_TIFF_TAG_WHITE_POINT 318
 #define GIMG_TIFF_TAG_PRIMARY_CHROMATICITIES 319
@@ -267,6 +283,14 @@ typedef struct {
   uint8_t jpeg_ac_count;
   /** ImageDescription (270), NUL-terminated and owned, or NULL. */
   char * description;
+  /**
+   * DocumentName, Make, Model, PageName, Software, DateTime, Artist,
+   * HostComputer, Copyright. Each is owned, or NULL. Copyright may hold two
+   * notices separated by a NUL (TIFF 6.0 section 8), so the length is
+   * `info_size` and not strlen. The order is `gimg_tiff_info_tags`.
+   */
+  char * info[GIMG_TIFF_INFO_COUNT];
+  size_t info_size[GIMG_TIFF_INFO_COUNT];
   uint16_t orientation;   ///< Tag 274; 0 when the file did not say.
   /** NewSubfileType (254). Bit 0 set means this directory is a
    * reduced-resolution version of another image in the file. */

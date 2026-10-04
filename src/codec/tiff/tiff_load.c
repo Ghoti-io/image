@@ -206,6 +206,68 @@ static GIMG_Result tiff_value_array(const gimg_tiff_doc_state_t * st,
   return GIMG_OK;
 }
 
+const uint16_t gimg_tiff_info_tags[GIMG_TIFF_INFO_COUNT] = {
+    GIMG_TIFF_TAG_DOCUMENT_NAME, GIMG_TIFF_TAG_MAKE, GIMG_TIFF_TAG_MODEL,
+    GIMG_TIFF_TAG_PAGE_NAME, GIMG_TIFF_TAG_SOFTWARE, GIMG_TIFF_TAG_DATE_TIME,
+    GIMG_TIFF_TAG_ARTIST, GIMG_TIFF_TAG_HOST_COMPUTER, GIMG_TIFF_TAG_COPYRIGHT,
+};
+
+static int tiff_info_slot(uint16_t tag) {
+  for (size_t i = 0; i < GIMG_TIFF_INFO_COUNT; i++) {
+    if (gimg_tiff_info_tags[i] == tag) {
+      return (int)i;
+    }
+  }
+  return -1;
+}
+
+/** True when every byte is NUL, which is an ASCII tag with nothing in it. */
+static bool tiff_ascii_blank(const unsigned char * p, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    if (p[i] != 0u) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * One informational ASCII tag.
+ *
+ * The count in a well-formed file includes a trailing NUL, and a real file
+ * sometimes omits it, so the copy grows by one byte when the last byte is
+ * not already NUL. Copyright is two notices separated by a NUL, so the copy
+ * keeps every byte: strlen would keep only the first notice, and a leading
+ * NUL is a missing photographer notice rather than an absent tag.
+ */
+static GIMG_Result tiff_take_ascii(gimg_tiff_doc_state_t * st,
+    const GIMG_Limits * limits, const tiff_entry_t * e, char ** slot,
+    size_t * slot_size) {
+  const gimg_metadata_verdict_t v =
+      gimg_metadata_verdict(limits, e->value_bytes);
+  if (v == GIMG_METADATA_REFUSED) {
+    return GIMG_ERR_LIMIT;
+  }
+  if (v == GIMG_METADATA_IMPLAUSIBLE || e->value_bytes == 0u || !e->values ||
+      tiff_ascii_blank(e->values, e->value_bytes)) {
+    return GIMG_OK;
+  }
+  const bool terminated = e->values[e->value_bytes - 1u] == 0u;
+  const size_t n = e->value_bytes + (terminated ? 0u : 1u);
+  char * text = (char *)gimg_malloc(st->allocator, n);
+  if (!text) {
+    return GIMG_ERR_OOM;
+  }
+  memcpy(text, e->values, e->value_bytes);
+  if (!terminated) {
+    text[e->value_bytes] = '\0';
+  }
+  gimg_free(st->allocator, *slot);
+  *slot = text;
+  *slot_size = n;
+  return GIMG_OK;
+}
+
 static void tiff_free_ifd(const GIMG_Allocator * a, gimg_tiff_ifd_t * ifd) {
   gimg_free(a, ifd->block_offsets);
   gimg_free(a, ifd->block_byte_counts);
@@ -215,6 +277,10 @@ static void tiff_free_ifd(const GIMG_Allocator * a, gimg_tiff_ifd_t * ifd) {
   ifd->jpeg_tables = NULL;
   ifd->jpeg_tables_size = 0;
   gimg_free(a, ifd->description);
+  for (size_t i = 0; i < GIMG_TIFF_INFO_COUNT; i++) {
+    gimg_free(a, ifd->info[i]);
+    ifd->info[i] = NULL;
+  }
   gimg_free(a, ifd->xmp);
   gimg_free(a, ifd->sub_ifds);
   ifd->sub_ifds = NULL;
@@ -325,6 +391,14 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
     }
     if (e.count == 0u) {
       continue;
+    }
+    {
+      const int slot = tiff_info_slot(e.tag);
+      if (slot >= 0) {
+        r = tiff_take_ascii(st, limits, &e, &ifd->info[slot],
+            &ifd->info_size[slot]);
+        continue;
+      }
     }
     switch (e.tag) {
     case GIMG_TIFF_TAG_IMAGE_WIDTH:
@@ -1276,6 +1350,18 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (gimg_doc_ensure_meta_raw(doc, &raw) == GIMG_OK && raw) {
       (void)gimg_meta_raw_attach(
           raw, "tiff", GIMG_TIFF_TAG_XMP, first->xmp, first->xmp_size);
+    }
+  }
+  for (size_t i = 0; i < GIMG_TIFF_INFO_COUNT; i++) {
+    const char * text = first->info[i];
+    if (!text || first->info_size[i] == 0u ||
+        tiff_ascii_blank((const unsigned char *)text, first->info_size[i])) {
+      continue;
+    }
+    GIMG_Meta_Raw * raw = NULL;
+    if (gimg_doc_ensure_meta_raw(doc, &raw) == GIMG_OK && raw) {
+      (void)gimg_meta_raw_attach(raw, "tiff", gimg_tiff_info_tags[i], text,
+          first->info_size[i]);
     }
   }
 

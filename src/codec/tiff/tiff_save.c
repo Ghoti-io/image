@@ -98,7 +98,21 @@ typedef struct {
   const unsigned char * xmp; ///< Borrowed from the document's raw metadata.
   size_t xmp_size;
   unsigned char * xmp_copy;  ///< Owned; gimg_meta_raw_get copies into it.
-  tiff_entry_out_t entries[16];
+  /**
+   * The eight informational ASCII tags, in `gimg_tiff_info_tags` order.
+   * `info` borrows `info_copy`, which `gimg_meta_raw_get` fills.
+   */
+  const unsigned char * info[GIMG_TIFF_INFO_COUNT];
+  size_t info_size[GIMG_TIFF_INFO_COUNT];
+  unsigned char * info_copy[GIMG_TIFF_INFO_COUNT];
+  /**
+   * Ten tags are always written. Resolution, a predictor, a description,
+   * extra samples, XMP, a profile and the nine informational strings can
+   * all be present at once, which is twenty-seven. Sixteen used to be the
+   * bound, and once it was full `tiff_add_entry` dropped whatever came last
+   * without saying so.
+   */
+  tiff_entry_out_t entries[32];
   size_t entry_count;
   unsigned char * pool;    ///< Values too long for an entry.
   size_t pool_size;
@@ -319,8 +333,23 @@ static unsigned char * tiff_add_entry(tiff_page_t * page, uint16_t tag,
   unsigned char * where = page->pool + page->pool_size;
   memcpy(where, values, value_size);
   page->pool_size += value_size;
+  if (value_size & 1u) {
+    // Section 2: a value offset is a word boundary. The pad is not part of
+    // the count, and the pool is zeroed, so the extra byte is a NUL.
+    page->pool_size += 1u;
+  }
   e->values = where;
   return where;
+}
+
+/** True when every byte is NUL, which is an ASCII tag with nothing in it. */
+static bool tiff_ascii_blank(const unsigned char * p, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    if (p[i] != 0u) {
+      return false;
+    }
+  }
+  return true;
 }
 
 static void tiff_free_page(const GIMG_Allocator * alloc, tiff_page_t * page) {
@@ -334,6 +363,9 @@ static void tiff_free_page(const GIMG_Allocator * alloc, tiff_page_t * page) {
   gimg_free(alloc, page->strip_offsets);
   gimg_free(alloc, page->pool);
   gimg_free(alloc, page->xmp_copy);
+  for (size_t i = 0; i < GIMG_TIFF_INFO_COUNT; i++) {
+    gimg_free(alloc, page->info_copy[i]);
+  }
   if (page->raster_owned && page->raster) {
     gimg_raster_destroy(page->raster);
   }
@@ -458,6 +490,16 @@ static GIMG_Result tiff_build_strips(const GIMG_Allocator * alloc,
   return GIMG_OK;
 }
 
+/** One informational ASCII tag, or nothing when that slot is empty. */
+static void tiff_add_info(tiff_page_t * page, size_t slot) {
+  if (slot >= GIMG_TIFF_INFO_COUNT || !page->info[slot] ||
+      page->info_size[slot] == 0u) {
+    return;
+  }
+  tiff_add_entry(page, gimg_tiff_info_tags[slot], GIMG_TIFF_TYPE_ASCII,
+      (uint32_t)page->info_size[slot], page->info[slot], page->info_size[slot]);
+}
+
 /** Build one page's directory entries into its value pool. */
 static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
     tiff_page_t * page, const GIMG_Save_Options * options, bool be) {
@@ -468,8 +510,16 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
   need += page->strip_count * 4u * 2u; // StripOffsets, StripByteCounts
   need += 8u * 2u;                     // Two RATIONAL resolutions
   need += page->icc_size;              // The profile, if there is one
+  need += page->icc_size > 4u ? (page->icc_size & 1u) : 0u;
   need += page->xmp_size;              // The XMP packet, if there is one
-  need += page->description ? strlen(page->description) + 1u : 0u;
+  need += page->xmp_size > 4u ? (page->xmp_size & 1u) : 0u;
+  if (page->description) {
+    const size_t n = strlen(page->description) + 1u;
+    need += n + (n & 1u);
+  }
+  for (size_t i = 0; i < GIMG_TIFF_INFO_COUNT; i++) {
+    need += page->info_size[i] + (page->info_size[i] & 1u);
+  }
   need += 16u;
   page->pool = (unsigned char *)gimg_calloc(alloc, need, 1u);
   if (!page->pool) {
@@ -502,6 +552,18 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
   tiff_put_u16(scratch, page->photometric, be);
   tiff_add_entry(page, GIMG_TIFF_TAG_PHOTOMETRIC, GIMG_TIFF_TYPE_SHORT, 1u,
       scratch, 2u);
+
+  // 269, 270, 271, 272. The pool and the directory walk share this order, so
+  // the strings go in here rather than being sorted afterwards.
+  tiff_add_info(page, 0u); // DocumentName, 269
+  if (page->description) {
+    const size_t n = strlen(page->description) + 1u;
+    tiff_add_entry(page, GIMG_TIFF_TAG_IMAGE_DESCRIPTION,
+        GIMG_TIFF_TYPE_ASCII, (uint32_t)n,
+        (const unsigned char *)page->description, n);
+  }
+  tiff_add_info(page, 1u); // Make, 271
+  tiff_add_info(page, 2u); // Model, 272
 
   // Zeroes for now: the offsets are not known until the file has a shape, and
   // the entry has to exist before the shape can be computed. Whichever of the
@@ -553,23 +615,22 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
   tiff_put_u16(scratch, 1u, be); // PlanarConfiguration: interleaved.
   tiff_add_entry(page, GIMG_TIFF_TAG_PLANAR_CONFIG, GIMG_TIFF_TYPE_SHORT, 1u,
       scratch, 2u);
+  tiff_add_info(page, 3u); // PageName, 285, before ResolutionUnit.
 
   if (page->has_dpi) {
     tiff_put_u16(scratch, 2u, be); // Inches.
     tiff_add_entry(page, GIMG_TIFF_TAG_RESOLUTION_UNIT, GIMG_TIFF_TYPE_SHORT,
         1u, scratch, 2u);
   }
+  // 305, 306, 315, 316, then the predictor at 317.
+  tiff_add_info(page, 4u);
+  tiff_add_info(page, 5u);
+  tiff_add_info(page, 6u);
+  tiff_add_info(page, 7u);
   if (options && options->tiff_predictor == 2u) {
     tiff_put_u16(scratch, 2u, be);
     tiff_add_entry(page, GIMG_TIFF_TAG_PREDICTOR, GIMG_TIFF_TYPE_SHORT, 1u,
         scratch, 2u);
-  }
-  // Tags above 700 in number order, which is where the metadata lands.
-  if (page->description) {
-    const size_t n = strlen(page->description) + 1u;
-    tiff_add_entry(page, GIMG_TIFF_TAG_IMAGE_DESCRIPTION,
-        GIMG_TIFF_TYPE_ASCII, (uint32_t)n,
-        (const unsigned char *)page->description, n);
   }
   // **No Orientation tag, deliberately.**
   //
@@ -594,6 +655,7 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
     tiff_add_entry(page, GIMG_TIFF_TAG_XMP, GIMG_TIFF_TYPE_BYTE,
         (uint32_t)page->xmp_size, page->xmp, page->xmp_size);
   }
+  tiff_add_info(page, 8u); // Copyright, 33432, between XMP and the profile.
   if (page->icc && page->icc_size > 0u) {
     // A TIFF is what professional colour work is stored in, so a profile
     // that arrived has to leave again: dropping it makes the file's colours
@@ -714,8 +776,34 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           page->xmp_size = xmp_size;
         }
       }
+      for (size_t k = 0; k < GIMG_TIFF_INFO_COUNT && r == GIMG_OK; k++) {
+        size_t n = 0;
+        if (gimg_meta_raw_get(raw, "tiff", gimg_tiff_info_tags[k], NULL,
+                &n) != GIMG_OK ||
+            n == 0u) {
+          continue;
+        }
+        page->info_copy[k] = (unsigned char *)gimg_malloc(alloc, n + 1u);
+        if (!page->info_copy[k]) {
+          r = GIMG_ERR_OOM;
+          break;
+        }
+        if (gimg_meta_raw_get(raw, "tiff", gimg_tiff_info_tags[k],
+                page->info_copy[k], &n) != GIMG_OK ||
+            tiff_ascii_blank(page->info_copy[k], n)) {
+          continue;
+        }
+        if (page->info_copy[k][n - 1u] != 0u) {
+          page->info_copy[k][n] = 0u;
+          n += 1u;
+        }
+        page->info[k] = page->info_copy[k];
+        page->info_size[k] = n;
+      }
     }
-    r = tiff_build_strips(alloc, page, options, be);
+    if (r == GIMG_OK) {
+      r = tiff_build_strips(alloc, page, options, be);
+    }
     if (r == GIMG_OK) {
       r = tiff_build_entries(alloc, page, options, be);
     }
@@ -812,6 +900,9 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       else {
         tiff_put_u32(raw + 8, pool_cursor, be);
         pool_cursor += (uint32_t)page->entries[e].value_size;
+        if (page->entries[e].value_size & 1u) {
+          pool_cursor += 1u; // The pad byte tiff_add_entry reserved.
+        }
       }
       r = tiff_write(stream, raw, sizeof(raw), &total);
     }

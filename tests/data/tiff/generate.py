@@ -47,6 +47,15 @@ TAGS = {
     "SubIFDs": 330,
     "YCbCrSubSampling": 530,
     "ImageDescription": 270,
+    "DocumentName": 269,
+    "Make": 271,
+    "Model": 272,
+    "PageName": 285,
+    "Software": 305,
+    "DateTime": 306,
+    "Artist": 315,
+    "HostComputer": 316,
+    "Copyright": 33432,
     "Orientation": 274,
     "Predictor": 317,
     "XMP": 700,
@@ -538,6 +547,19 @@ def main():
            b'<?xpacket end="w"?>')
     meta = strip_fields(W, H, rgb, 2, spp=3)
     meta.append((TAGS["ImageDescription"], ASCII, list(b"a fixture\x00")))
+    # Short enough that some land in the entry itself (four bytes or fewer)
+    # and some in the pool, which is the split a round trip has to survive.
+    meta.append((TAGS["DocumentName"], ASCII, list(b"ab\x00")))
+    meta.append((TAGS["Make"], ASCII, list(b"Acme\x00")))
+    meta.append((TAGS["Model"], ASCII, list(b"Flatbed\x00")))
+    meta.append((TAGS["PageName"], ASCII, list(b"p1\x00")))
+    meta.append((TAGS["Software"], ASCII, list(b"ghoti\x00")))
+    meta.append((TAGS["DateTime"], ASCII, list(b"2026:10:04 01:09:00\x00")))
+    meta.append((TAGS["Artist"], ASCII, list(b"Ada\x00")))
+    meta.append((TAGS["HostComputer"], ASCII, list(b"desk\x00")))
+    # Two notices, photographer then editor, separated by a NUL. A reader
+    # that stops at the first NUL keeps only "photo".
+    meta.append((TAGS["Copyright"], ASCII, list(b"photo\x00editor\x00")))
     meta.append((TAGS["Orientation"], SHORT, [6]))
     meta.append((TAGS["XMP"], BYTE, list(xmp)))
     meta.append((TAGS["ICCProfile"], UNDEFINED, list(profile)))

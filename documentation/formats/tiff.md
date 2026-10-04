@@ -62,11 +62,18 @@ primaries is attached as an RGB gamut.
 2^BitsPerSample entries, and `GCOL_Transfer` holds named and parametric
 curves, so fitting one to those samples would be inventing a function the
 file never stated.
-ImageDescription (270) becomes the document's description, XMP (700) is kept
-whole for the round trip, and Orientation (274) is applied rather than
-carried. The Exif sub-IFD (34665) is not read: it is an offset to another
-directory, and preserving one by copying bytes would preserve offsets that no
-longer point anywhere.
+ImageDescription (270) becomes the document's description. DocumentName
+(269), Make (271), Model (272), PageName (285), Software (305), DateTime
+(306), Artist (315), HostComputer (316) and Copyright (33432) are kept as raw
+metadata and written back, the same way XMP (700) is. They are ASCII and they
+come from the first directory. A later page's own copy is not a second value,
+and a save writes the first page's values onto every page. Copyright may be
+two notices separated by a NUL, and both are kept. DateTime is not checked
+against the `YYYY:MM:DD HH:MM:SS` pattern: a file that wrote something else
+still round-trips. Orientation (274) is applied
+rather than carried. The Exif sub-IFD (34665) is not read: it is an offset
+to another directory, and preserving one by copying bytes would preserve
+offsets that no longer point anywhere.
 
 **YCbCr (section 21).** Any subsampling up to 4x4, converted to RGB on the
 way out. The multipliers are computed from the file's own `YCbCrCoefficients`

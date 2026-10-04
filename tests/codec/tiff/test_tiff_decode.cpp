@@ -463,6 +463,35 @@ TEST(TiffDecode, MetadataSurvivesALoadAndASave) {
   size_t xmp_size = 0;
   ASSERT_EQ(gimg_meta_raw_get(raw, "tiff", 700u, nullptr, &xmp_size), GIMG_OK);
   EXPECT_GT(xmp_size, 0u);
+  // TIFF 6.0 section 8. The short ones sit in the entry; the rest sit in the
+  // pool. Either path dropping its NUL, or the writer running out of
+  // directory slots, fails here.
+  // `n` is the ASCII count, NULs included. Copyright is two notices, so a
+  // comparison that stops at the first NUL would pass while dropping "editor".
+  const struct {
+    uint32_t tag;
+    const char * text;
+    size_t n;
+  } tags[] = {
+      {269u, "ab", 3u},
+      {271u, "Acme", 5u},
+      {272u, "Flatbed", 8u},
+      {285u, "p1", 3u},
+      {305u, "ghoti", 6u},
+      {306u, "2026:10:04 01:09:00", 20u},
+      {315u, "Ada", 4u},
+      {316u, "desk", 5u},
+      {33432u, "photo\0editor", 13u},
+  };
+  for (const auto & tag : tags) {
+    SCOPED_TRACE(tag.tag);
+    size_t n = 0;
+    ASSERT_EQ(gimg_meta_raw_get(raw, "tiff", tag.tag, nullptr, &n), GIMG_OK);
+    ASSERT_EQ(n, tag.n);
+    std::vector<char> buf(n);
+    ASSERT_EQ(gimg_meta_raw_get(raw, "tiff", tag.tag, buf.data(), &n), GIMG_OK);
+    EXPECT_EQ(std::memcmp(buf.data(), tag.text, tag.n), 0);
+  }
 
   // Out and back.
   GIMG_Stream * out = nullptr;
@@ -530,6 +559,62 @@ TEST(TiffDecode, MetadataSurvivesALoadAndASave) {
   EXPECT_EQ(gimg_meta_raw_get(back_raw, "tiff", 700u, nullptr, &back_xmp),
       GIMG_OK);
   EXPECT_EQ(back_xmp, xmp_size);
+  for (const auto & tag : tags) {
+    SCOPED_TRACE(tag.tag);
+    size_t n = 0;
+    ASSERT_EQ(gimg_meta_raw_get(back_raw, "tiff", tag.tag, nullptr, &n),
+        GIMG_OK);
+    ASSERT_EQ(n, tag.n);
+    std::vector<char> buf(n);
+    ASSERT_EQ(
+        gimg_meta_raw_get(back_raw, "tiff", tag.tag, buf.data(), &n), GIMG_OK);
+    EXPECT_EQ(std::memcmp(buf.data(), tag.text, tag.n), 0);
+  }
+  // TIFF 6.0 section 2: entries ascend by tag, and a value that did not fit
+  // in its entry begins on an even offset. The odd-length strings above are
+  // what would push the next value off that boundary.
+  {
+    const auto * file = static_cast<const uint8_t *>(bytes);
+    ASSERT_GE(size, 8u);
+    const bool le = file[0] == 'I';
+    auto u16 = [&](size_t at) -> uint16_t {
+      return le ? (uint16_t)(file[at] | (file[at + 1] << 8))
+                : (uint16_t)((file[at] << 8) | file[at + 1]);
+    };
+    auto u32 = [&](size_t at) -> uint32_t {
+      return le ? (uint32_t)(file[at] | (file[at + 1] << 8) |
+                              (file[at + 2] << 16) | (file[at + 3] << 24))
+                : (uint32_t)((file[at] << 24) | (file[at + 1] << 16) |
+                              (file[at + 2] << 8) | file[at + 3]);
+    };
+    const size_t ifd = u32(4);
+    ASSERT_LE(ifd + 2u, size);
+    const uint16_t entries = u16(ifd);
+    uint16_t prev = 0;
+    for (uint16_t i = 0; i < entries; i++) {
+      const size_t ent = ifd + 2u + ((size_t)i * 12u);
+      ASSERT_LE(ent + 12u, size);
+      const uint16_t tag = u16(ent);
+      EXPECT_GT(tag, prev) << "directory entries are not in tag order";
+      prev = tag;
+      const uint16_t type = u16(ent + 2u);
+      const uint32_t count = u32(ent + 4u);
+      size_t width = 1u;
+      if (type == 3u || type == 8u) {
+        width = 2u;
+      }
+      else if (type == 4u || type == 9u) {
+        width = 4u;
+      }
+      else if (type == 5u || type == 10u) {
+        width = 8u;
+      }
+      if (count > 4u / width) {
+        EXPECT_EQ(u32(ent + 8u) & 1u, 0u)
+            << "tag " << tag << " value does not start on a word boundary";
+      }
+    }
+  }
 
   gimg_raster_destroy(raster);
   gimg_doc_destroy(again);
