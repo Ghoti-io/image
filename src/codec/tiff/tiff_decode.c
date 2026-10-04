@@ -45,6 +45,7 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/color/color.h>
 #include <ghoti.io/image/raster.h>
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -288,6 +289,10 @@ static bool tiff_plan_output(
   const bool ycbcr = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_YCBCR &&
       ifd->compression != GIMG_TIFF_COMPRESSION_JPEG &&
       ifd->compression != GIMG_TIFF_COMPRESSION_JPEG_OLD;
+  // Lab samples are not RGB samples stored wide. Both encodings come out as
+  // eight-bit RGB, which is the conversion libtiff's RGBA reader performs.
+  const bool lab = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_CIELAB ||
+      ifd->photometric == GIMG_TIFF_PHOTOMETRIC_ICCLAB;
   // Sixteen bits stay sixteen bits: narrowing would be a decision about the
   // picture rather than about how it is stored, and GRAY16, RGBA16 and CMYK16
   // exist so the caller makes it. A palette is the exception, because its map
@@ -308,11 +313,12 @@ static bool tiff_plan_output(
   const bool fits_in_8 =
       depth == 1u || depth == 2u || depth == 4u || depth == 8u;
   out->wide = !fits_in_8 &&
-      ifd->photometric != GIMG_TIFF_PHOTOMETRIC_PALETTE && !ycbcr;
-  if (ycbcr) {
-    // Converted to RGB on the way out, because YCbCr is a way of storing
-    // colour rather than a colour model this library's rasters carry - the
-    // JPEG decoder does the same with the same numbers.
+      ifd->photometric != GIMG_TIFF_PHOTOMETRIC_PALETTE && !ycbcr && !lab;
+  if (ycbcr || lab) {
+    // Converted to RGB on the way out. YCbCr and Lab are ways of storing
+    // colour rather than colour models this library's rasters carry. The
+    // JPEG decoder does the same with YCbCr, and Lab follows libtiff's
+    // RGBA reader, which lands on eight bits for both depths.
     out->format = &GIMG_PIXEL_RGBA8;
     out->channels = 4u;
     out->has_alpha = true;
@@ -619,6 +625,237 @@ static void tiff_unpremultiply(const tiff_output_t * out,
   }
 }
 
+/**
+ * libtiff's CIELab-to-sRGB tables.
+ *
+ * The range, the gamma and the matrix are the ones in its RGBA reader
+ * (`display_sRGB`, `CIELABTORGB_TABLE_RANGE`). A CIE formula that is more
+ * precise disagrees with that reader by a level, which is the defect the
+ * YCbCr path already refuses to have. The green and blue steps are computed
+ * from the red gun's span because that is what `TIFFCIELabToRGBInit` does;
+ * with this display every gun has the same span, so the copy is exact.
+ */
+#define GIMG_TIFF_LAB_TABLE 1500
+
+typedef struct {
+  float yr2r[GIMG_TIFF_LAB_TABLE + 1];
+  float yg2g[GIMG_TIFF_LAB_TABLE + 1];
+  float yb2b[GIMG_TIFF_LAB_TABLE + 1];
+  float x0, y0, z0;
+  float step;
+} tiff_lab_t;
+
+static bool tiff_lab_init(tiff_lab_t * lab, const gimg_tiff_ifd_t * ifd) {
+  // Absent tag 318 is CIE D50, as chromaticities, which is what
+  // TIFFGetFieldDefaulted returns. Stated, the tag is used the same way:
+  // Y is 100 and X and Z are recovered from x and y.
+  float wx, wy;
+  if (ifd->has_white_point) {
+    wx = (float)ifd->white_point.x;
+    wy = (float)ifd->white_point.y;
+  }
+  else {
+    const float d50_x = 96.4250F;
+    const float d50_y = 100.0F;
+    const float d50_z = 82.4680F;
+    const float sum = d50_x + d50_y + d50_z;
+    wx = d50_x / sum;
+    wy = d50_y / sum;
+  }
+  if (wy == 0.0F) {
+    return false;
+  }
+  lab->y0 = 100.0F;
+  lab->x0 = wx / wy * lab->y0;
+  lab->z0 = (1.0F - wx - wy) / wy * lab->y0;
+
+  const double inv_gamma = 1.0 / 2.4;
+  lab->step = (100.0F - 1.0F) / (float)GIMG_TIFF_LAB_TABLE;
+  for (size_t i = 0; i <= (size_t)GIMG_TIFF_LAB_TABLE; i++) {
+    const float v = 255.0F *
+        (float)pow((double)i / (double)GIMG_TIFF_LAB_TABLE, inv_gamma);
+    lab->yr2r[i] = v;
+    lab->yg2g[i] = v;
+    lab->yb2b[i] = v;
+  }
+  return true;
+}
+
+/** One gun, by libtiff's `RINT` of the gamma table. */
+static uint8_t tiff_lab_gun(float y, float black, float white, float step,
+    const float * table) {
+  if (y < black) {
+    y = black;
+  }
+  if (y > white) {
+    y = white;
+  }
+  size_t i = (size_t)((y - black) / step);
+  if (i > (size_t)GIMG_TIFF_LAB_TABLE) {
+    i = (size_t)GIMG_TIFF_LAB_TABLE;
+  }
+  const float r = table[i];
+  uint32_t u = (uint32_t)(r > 0.0F ? (r + 0.5) : (r - 0.5));
+  if (u > 255u) {
+    u = 255u;
+  }
+  return (uint8_t)u;
+}
+
+/**
+ * One L\*a\*b\* triple in the sixteen-bit CIE encoding `TIFFCIELab16ToXYZ`
+ * takes: L in 0..65535, a\* and b\* already multiplied by 256.
+ */
+static void tiff_lab16_to_rgb(const tiff_lab_t * lab, uint32_t l, int32_t a,
+    int32_t b, uint8_t rgb[3]) {
+  const float L = (float)l * 100.0F / 65535.0F;
+  float Y, cby, X, Z, tmp;
+  if (L < 8.856F) {
+    Y = (L * lab->y0) / 903.292F;
+    cby = 7.787F * (Y / lab->y0) + 16.0F / 116.0F;
+  }
+  else {
+    cby = (L + 16.0F) / 116.0F;
+    Y = lab->y0 * cby * cby * cby;
+  }
+  tmp = (float)a / 256.0F / 500.0F + cby;
+  if (tmp < 0.2069F) {
+    X = lab->x0 * (tmp - 0.13793F) / 7.787F;
+  }
+  else {
+    X = lab->x0 * tmp * tmp * tmp;
+  }
+  tmp = cby - (float)b / 256.0F / 200.0F;
+  if (tmp < 0.2069F) {
+    Z = lab->z0 * (tmp - 0.13793F) / 7.787F;
+  }
+  else {
+    Z = lab->z0 * tmp * tmp * tmp;
+  }
+
+  static const float m[9] = {
+      3.2410F, -1.5374F, -0.4986F, -0.9692F, 1.8760F, 0.0416F, 0.0556F,
+      -0.2040F, 1.0570F,
+  };
+  const float Yr = m[0] * X + m[1] * Y + m[2] * Z;
+  const float Yg = m[3] * X + m[4] * Y + m[5] * Z;
+  const float Yb = m[6] * X + m[7] * Y + m[8] * Z;
+  rgb[0] = tiff_lab_gun(Yr, 1.0F, 100.0F, lab->step, lab->yr2r);
+  rgb[1] = tiff_lab_gun(Yg, 1.0F, 100.0F, lab->step, lab->yg2g);
+  rgb[2] = tiff_lab_gun(Yb, 1.0F, 100.0F, lab->step, lab->yb2b);
+}
+
+/**
+ * File samples as the arguments of `TIFFCIELab16ToXYZ`.
+ *
+ * Photometric 8 stores a\* and b\* signed. Photometric 9 stores them with
+ * 128 or 32768 added, and its sixteen-bit L\* reaches 100 at 65280 rather
+ * than at 65535, so that sample is scaled onto the 65535-based function.
+ * An eight-bit pixel and the sixteen-bit pixel `L*257`, `a*256`, `b*256`
+ * are the same arguments, which is what makes the two depths agree.
+ */
+static void tiff_lab_arguments(const gimg_tiff_ifd_t * ifd, uint32_t s0,
+    uint32_t s1, uint32_t s2, uint32_t * l, int32_t * a, int32_t * b) {
+  const bool icc = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_ICCLAB;
+  if (ifd->bits_per_sample == 8u) {
+    const int32_t aa =
+        icc ? (int32_t)s1 - 128 : (int32_t)(int8_t)(uint8_t)s1;
+    const int32_t bb =
+        icc ? (int32_t)s2 - 128 : (int32_t)(int8_t)(uint8_t)s2;
+    *l = s0 * 257u;
+    *a = aa * 256;
+    *b = bb * 256;
+    return;
+  }
+  if (icc) {
+    *l = (uint32_t)(((uint64_t)s0 * 65535u) / 65280u);
+    *a = (int32_t)s1 - 32768;
+    *b = (int32_t)s2 - 32768;
+    return;
+  }
+  *l = s0;
+  *a = (int32_t)(int16_t)s1;
+  *b = (int32_t)(int16_t)s2;
+}
+
+/** One interleaved Lab row, written as RGBA8. Alpha is filled later. */
+static void tiff_convert_lab_row(const gimg_tiff_ifd_t * ifd,
+    const tiff_lab_t * lab, const unsigned char * src, unsigned char * dst,
+    size_t pixels) {
+  const unsigned bits = ifd->bits_per_sample;
+  const bool be = ifd->file_big_endian;
+  const size_t spp = ifd->samples_per_pixel;
+  for (size_t i = 0; i < pixels; i++) {
+    const uint32_t s0 = tiff_sample(src, i * spp, bits, be);
+    const uint32_t s1 = tiff_sample(src, i * spp + 1u, bits, be);
+    const uint32_t s2 = tiff_sample(src, i * spp + 2u, bits, be);
+    uint32_t l = 0;
+    int32_t a = 0, b = 0;
+    tiff_lab_arguments(ifd, s0, s1, s2, &l, &a, &b);
+    unsigned char * p = dst + (i * 4u);
+    tiff_lab16_to_rgb(lab, l, a, b, p);
+    if (spp >= 4u) {
+      p[3] = tiff_to_8(tiff_sample(src, i * spp + 3u, bits, be), bits);
+    }
+  }
+}
+
+/**
+ * One plane of a Lab row, stored raw.
+ *
+ * The conversion needs L\*, a\* and b\* together, and with
+ * PlanarConfiguration 2 they arrive in different blocks, so the samples wait
+ * here until every plane has been seen. Converting from this buffer with the
+ * same function the interleaved path uses is what keeps the two layouts from
+ * drifting.
+ */
+static void tiff_stash_lab_row(const gimg_tiff_ifd_t * ifd, uint16_t * raw,
+    const unsigned char * src, uint32_t x, uint32_t y, size_t pixels,
+    int plane) {
+  const unsigned bits = ifd->bits_per_sample;
+  const bool be = ifd->file_big_endian;
+  const size_t spp = ifd->samples_per_pixel;
+  if (plane < 0 || (size_t)plane >= spp) {
+    return;
+  }
+  for (size_t i = 0; i < pixels; i++) {
+    const size_t at =
+        (((size_t)y * ifd->width) + (size_t)x + i) * spp + (size_t)plane;
+    raw[at] = (uint16_t)tiff_sample(src, i, bits, be);
+  }
+}
+
+/** The stashed planes, through the same conversion as an interleaved row. */
+static void tiff_lab_from_planes(const gimg_tiff_ifd_t * ifd,
+    const tiff_lab_t * lab, const uint16_t * raw, unsigned char * dst,
+    size_t stride) {
+  const size_t spp = ifd->samples_per_pixel;
+  const unsigned bits = ifd->bits_per_sample;
+  for (uint32_t y = 0; y < ifd->height; y++) {
+    unsigned char * row = dst + ((size_t)y * stride);
+    for (uint32_t x = 0; x < ifd->width; x++) {
+      const uint16_t * s =
+          raw + ((((size_t)y * ifd->width) + x) * spp);
+      uint32_t l = 0;
+      int32_t a = 0, b = 0;
+      tiff_lab_arguments(ifd, s[0], s[1], s[2], &l, &a, &b);
+      unsigned char * p = row + ((size_t)x * 4u);
+      tiff_lab16_to_rgb(lab, l, a, b, p);
+      if (spp >= 4u) {
+        p[3] = tiff_to_8(s[3], bits);
+      }
+    }
+  }
+}
+
+static GIMG_Result tiff_decode_fail(const GIMG_Allocator * alloc,
+    GIMG_Raster * raster, void * lab, void * raw, GIMG_Result r) {
+  gimg_free(alloc, lab);
+  gimg_free(alloc, raw);
+  gimg_raster_destroy(raster);
+  return r;
+}
+
 GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster) {
   if (!codec || !item || !out_raster) {
@@ -660,6 +897,35 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
   }
   unsigned char * dst_pixels = (unsigned char *)gimg_raster_pixels(raster);
   const size_t stride = gimg_raster_stride_bytes(raster);
+  const bool lab = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_CIELAB ||
+      ifd->photometric == GIMG_TIFF_PHOTOMETRIC_ICCLAB;
+  tiff_lab_t * lab_state = NULL;
+  uint16_t * lab_raw = NULL;
+  if (lab) {
+    lab_state = (tiff_lab_t *)gimg_malloc(alloc, sizeof(*lab_state));
+    if (!lab_state) {
+      gimg_raster_destroy(raster);
+      return GIMG_ERR_OOM;
+    }
+    if (!tiff_lab_init(lab_state, ifd)) {
+      return tiff_decode_fail(
+          alloc, raster, lab_state, NULL, GIMG_ERR_CORRUPT);
+    }
+    if (ifd->planar_config == 2u) {
+      size_t count = 0;
+      size_t bytes = 0;
+      if (!gcu_safe_mul_size(pixels, ifd->samples_per_pixel, &count) ||
+          !gcu_safe_mul_size(count, sizeof(uint16_t), &bytes)) {
+        return tiff_decode_fail(
+            alloc, raster, lab_state, NULL, GIMG_ERR_LIMIT);
+      }
+      lab_raw = (uint16_t *)gimg_malloc(alloc, bytes);
+      if (!lab_raw) {
+        return tiff_decode_fail(alloc, raster, lab_state, NULL, GIMG_ERR_OOM);
+      }
+      memset(lab_raw, 0, bytes);
+    }
+  }
 
   for (size_t b = 0; b < ifd->block_count; b++) {
     tiff_block_t rect;
@@ -697,13 +963,13 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
       const size_t unit_rows = (down + v - 1u) / v;
       if (!gcu_safe_mul_size(units, (h * v) + 2u, &want) ||
           !gcu_safe_mul_size(want, unit_rows, &want)) {
-        gimg_raster_destroy(raster);
-        return GIMG_ERR_LIMIT;
+        return tiff_decode_fail(
+            alloc, raster, lab_state, lab_raw, GIMG_ERR_LIMIT);
       }
     }
     else if (!gcu_safe_mul_size(down, rect.row_bytes, &want)) {
-      gimg_raster_destroy(raster);
-      return GIMG_ERR_LIMIT;
+      return tiff_decode_fail(
+          alloc, raster, lab_state, lab_raw, GIMG_ERR_LIMIT);
     }
     if (ifd->compression == GIMG_TIFF_COMPRESSION_JPEG ||
         ifd->compression == GIMG_TIFF_COMPRESSION_JPEG_OLD) {
@@ -715,8 +981,7 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
       GIMG_Raster * part = NULL;
       r = gimg_tiff_jpeg_block(st, ifd, b, limits, &part);
       if (r != GIMG_OK) {
-        gimg_raster_destroy(raster);
-        return r;
+        return tiff_decode_fail(alloc, raster, lab_state, lab_raw, r);
       }
       const GIMG_Pixel_Format * pf = gimg_raster_format(part);
       if (!pf || pf->channel_count != out.channels ||
@@ -726,8 +991,8 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
         // channel by channel: the two halves of the file describe different
         // images and there is no saying which is the picture.
         gimg_raster_destroy(part);
-        gimg_raster_destroy(raster);
-        return GIMG_ERR_CORRUPT;
+        return tiff_decode_fail(
+            alloc, raster, lab_state, lab_raw, GIMG_ERR_CORRUPT);
       }
       const size_t part_stride = gimg_raster_stride_bytes(part);
       const unsigned char * part_px =
@@ -748,8 +1013,7 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
     bool owned = false;
     r = gimg_tiff_block_bytes(st, ifd, b, want, &src, &have, &owned);
     if (r != GIMG_OK) {
-      gimg_raster_destroy(raster);
-      return r;
+      return tiff_decode_fail(alloc, raster, lab_state, lab_raw, r);
     }
     if (owned) {
       // The predictor is undone over the expanded block, before any row of
@@ -779,14 +1043,30 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
       if (at + rect.row_bytes > have) {
         break;
       }
+      if (lab_raw) {
+        tiff_stash_lab_row(ifd, lab_raw, src + at, rect.x,
+            (uint32_t)(rect.y + row), across, rect.plane);
+        continue;
+      }
       unsigned char * dst = dst_pixels +
           ((size_t)(rect.y + row) * stride) + ((size_t)rect.x * out.bytes);
-      tiff_convert_row(ifd, &out, src + at, dst, across, rect.plane);
+      if (lab_state) {
+        tiff_convert_lab_row(ifd, lab_state, src + at, dst, across);
+      }
+      else {
+        tiff_convert_row(ifd, &out, src + at, dst, across, rect.plane);
+      }
     }
     if (owned) {
       gimg_free(alloc, (void *)(uintptr_t)src);
     }
   }
+
+  if (lab_raw) {
+    tiff_lab_from_planes(ifd, lab_state, lab_raw, dst_pixels, stride);
+  }
+  gimg_free(alloc, lab_raw);
+  gimg_free(alloc, lab_state);
 
   // Alpha last, and over the whole raster: a three-sample RGB image has none
   // to read, and an associated one needs every channel of a pixel in hand.
@@ -808,20 +1088,25 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
   // are what make a gamut, and a lone white point is carried without
   // claiming to be one - which is what stops the PNG writer emitting a cHRM
   // whose three primaries are (0, 0).
-  if (has_icc || ifd->has_primaries || ifd->has_white_point) {
+  //
+  // A Lab page is the exception. Tag 318 there is the reference white of the
+  // conversion already performed, and the file's primaries are not the sRGB
+  // primaries that conversion used. Attaching either would describe a
+  // different colour space from the bytes. An ICC profile still applies.
+  if (has_icc || (!lab && (ifd->has_primaries || ifd->has_white_point))) {
     GCOL_Color_Info info;
     gcol_color_info_default(&info);
     const GCOL_Color_Info * existing = gimg_raster_color_info_const(raster);
     if (existing) {
       info = *existing;
     }
-    if (ifd->has_primaries) {
+    if (!lab && ifd->has_primaries) {
       info.gamut.red = ifd->primaries[0];
       info.gamut.green = ifd->primaries[1];
       info.gamut.blue = ifd->primaries[2];
       info.primaries_stated = true;
     }
-    if (ifd->has_white_point) {
+    if (!lab && ifd->has_white_point) {
       info.gamut.white = ifd->white_point;
       info.white_stated = true;
     }

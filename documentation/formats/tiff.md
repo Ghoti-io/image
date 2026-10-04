@@ -2,7 +2,8 @@
 
 # TIFF
 
-The TIFF codec reads a baseline subset of TIFF 6.0 and writes nothing yet.
+The TIFF codec reads a baseline subset of TIFF 6.0 and writes grayscale, RGB,
+RGBA and CMYK.
 This page says which parts, how each claim was checked, and - at greater
 length than the other format pages, because the absences outnumber the
 presences today - what is deliberately not here. Back to
@@ -54,6 +55,9 @@ in the format, so a file may carry either alone, and `primaries_stated` and
 `white_stated` say which arrived. Three primaries are what make a gamut, so a
 white point by itself is carried without claiming to be one - which is what
 stops a save as PNG writing a `cHRM` whose primaries are all `(0, 0)`.
+A Lab page is the exception, and the section below says why: there tag 318
+is the reference white of the conversion, and neither it nor the file's
+primaries is attached as an RGB gamut.
 **TransferFunction (301) is not read**: it is a sampled lookup table of
 2^BitsPerSample entries, and `GCOL_Transfer` holds named and parametric
 curves, so fitting one to those samples would be inventing a function the
@@ -71,15 +75,30 @@ scaled-integer form every implementation uses - which is what makes it agree
 with libtiff sample for sample rather than by one on the green channel. See
 the deviations table.
 
-**Colour.** PhotometricInterpretation 0 (WhiteIsZero), 1 (BlackIsZero), 2
-(RGB) and 3 (Palette), at eight bits per sample. Grayscale comes back as
-GRAY8 and everything else as RGBA8, which is what the BMP and GIF decoders
-also hand back. WhiteIsZero is complemented on the way out. A ColorMap is
-expanded with the rounding PNG 13.12 states, which is what this library uses
-for every other depth conversion.
+**Colour.** Grayscale (photometric 0 and 1) comes back as GRAY8 or GRAY16.
+WhiteIsZero is complemented on the way out. RGB and a palette come back as
+RGBA8 or RGBA16, which is what the BMP and GIF decoders also hand back at
+eight bits. A ColorMap is expanded with the rounding PNG 13.12 states, which
+is what this library uses for every other depth conversion. A separated image
+is CMYK at 8 or 16 bits. YCbCr and Lab are ways of storing colour rather than
+rasters this library carries; both are described below and both come back as
+RGBA8.
 
 **Alpha.** ExtraSamples 1 (associated) is divided back out, because this
 library's RGBA8 is unassociated; ExtraSamples 2 (unassociated) passes through.
+The same two rules apply after a Lab page has been converted to RGB.
+
+**CIE L\*a\*b\*.** PhotometricInterpretation 8 (TIFF 6.0 section 23) and 9
+(ICCLab, from Adobe's TIFF technical note) both come back as RGBA8.
+Photometric 8 stores a\* and b\* signed; photometric 9 stores them with 128
+added at eight bits and 32768 added at sixteen, and its sixteen-bit L\*
+reaches 100 at 65280. The conversion is the one libtiff's RGBA reader
+performs, including its reference white: tag 318 when the file states one,
+otherwise CIE D50. That white is the reference of the conversion. It is not
+attached to the raster as an RGB gamut, and neither are the file's primaries.
+An ICC profile the file carries is still copied. JPEG-compressed Lab,
+photometric 10, a depth other than 8 or 16, and a sample count other than 3
+or 4 (the fourth being alpha) are refused by name.
 
 **Resolution.** XResolution and YResolution reach `GIMG_Meta_Common` as DPI
 when ResolutionUnit is 2 (inches). Centimetres and "no unit" are not
@@ -117,18 +136,18 @@ back is not available, because an output stream here is append-only.
 | Version | 42 | 43 (BigTIFF) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | IFD chain | Any number up to 4096, refusing a chain that does not advance | A chain that points backwards or at itself &rarr; `GIMG_ERR_CORRUPT`; `max_frame_count` caps it lower |
 | Compression (read) | 1 (none), 2 (CCITT modified Huffman), 3 (Group 3, one- and two-dimensional), 4 (Group 4), 5 (LZW, including the pre-1993 bit-reversed spelling), 6 (old-style JPEG, both shapes), 7 (JPEG), 8 and 32946 (Deflate), 32773 (PackBits), 32809 (ThunderScan) | 34676/34677 (LogLuv) and anything else &rarr; `GIMG_ERR_UNSUPPORTED`, named |
-| JPEG-in-TIFF | Compression 7 with JPEGTables (347), decoded by this library's own JPEG codec through T.81 B.4's abbreviated format - which is what the tag pair *is*. Compression 6 too: the 1992 tags, whose tables are bare arrays at file offsets and whose strips hold entropy data with no frame header, so the frame is assembled from the TIFF tags | 8-bit only, PlanarConfiguration 1 only, and JPEGProc other than baseline &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| JPEG-in-TIFF | Compression 7 with JPEGTables (347), decoded by this library's own JPEG codec through T.81 B.4's abbreviated format - which is what the tag pair *is*. Compression 6 too: the 1992 tags, whose tables are bare arrays at file offsets and whose strips hold entropy data with no frame header, so the frame is assembled from the TIFF tags | 8-bit only, PlanarConfiguration 1 only, JPEGProc other than baseline, and a Lab photometric &rarr; `GIMG_ERR_UNSUPPORTED`, named. The Lab refusal is because the JPEG decoder has already converted the strip |
 | ThunderScan | Compression 32809, four-bit greyscale | Any other depth or sample count &rarr; `GIMG_ERR_CORRUPT`, named |
 | FillOrder | 1 and 2, read by the CCITT decoder | Ignored for every other compression, which is defined on whole bytes; libtiff does the same |
 | T4Options / T6Options | Two-dimensional coding, end-of-line codes present or absent, fill bits | Uncompressed mode (bit 1 of either) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | Compression (write) | none, PackBits, LZW, Deflate, with or without Predictor 2 | - |
 | Predictor | 1 and 2, at 8 and 16 bits | 3 (floating point) and any other value &rarr; `GIMG_ERR_UNSUPPORTED` |
-| Photometric | 0, 1, 2, 3, 5 (separated, read as CMYK), 6 (YCbCr, any subsampling up to 4x4) | 4 (mask), 32844/32845 (LogLuv) and the rest &rarr; `GIMG_ERR_UNSUPPORTED` |
-| BitsPerSample | Any depth from 1 to 32. A depth that divides eight exactly - 1, 2, 4, 8 - comes back in an 8-bit raster, where the full-range map is exact; every other depth comes back in a 16-bit one, for the same reason | Above 32 &rarr; `GIMG_ERR_UNSUPPORTED`; samples that differ from each other are refused as that, separately; a palette above 16 bits, and a separated image at a depth with no CMYK raster, are each refused by name |
-| SamplesPerPixel | 1 for grayscale and palette, 3 or 4 for RGB, 4 for separated | Anything else &rarr; `GIMG_ERR_UNSUPPORTED` |
+| Photometric | 0, 1, 2, 3, 5 (separated, read as CMYK), 6 (YCbCr, any subsampling up to 4x4), 8 (CIELab) and 9 (ICCLab), both as RGBA8 | 4 (mask), 10 (ITU Lab), 32844/32845 (LogLuv) and the rest &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| BitsPerSample | Any depth from 1 to 32. A depth that divides eight exactly - 1, 2, 4, 8 - comes back in an 8-bit raster, where the full-range map is exact; every other depth comes back in a 16-bit one, for the same reason. Lab is the exception: both 8- and 16-bit Lab come back as RGBA8 | Above 32 &rarr; `GIMG_ERR_UNSUPPORTED`; samples that differ from each other are refused as that, separately; a palette above 16 bits, a separated image at a depth with no CMYK raster, and Lab at a depth other than 8 or 16, are each refused by name |
+| SamplesPerPixel | 1 for grayscale and palette, 3 or 4 for RGB and for Lab, 4 for separated | Anything else &rarr; `GIMG_ERR_UNSUPPORTED` |
 | PlanarConfiguration | 1 and 2 | Any other value &rarr; `GIMG_ERR_CORRUPT`; the writer always writes 1 |
 | SampleFormat | 1 (unsigned integer) | 2 (signed), 3 (float) &rarr; `GIMG_ERR_UNSUPPORTED` |
-| Colour tags | ICCProfile (34675) carried opaquely; WhitePoint (318) and PrimaryChromaticities (319) read into the raster's gamut | TransferFunction (301) is a sampled LUT with no home in `GCOL_Transfer` and is not read; a RATIONAL with a zero denominator is treated as unstated |
+| Colour tags | ICCProfile (34675) carried opaquely; WhitePoint (318) and PrimaryChromaticities (319) read into the raster's gamut, except on a Lab page, where tag 318 is the reference white of the conversion and neither tag is attached as an RGB gamut | TransferFunction (301) is a sampled LUT with no home in `GCOL_Transfer` and is not read; a RATIONAL with a zero denominator is treated as unstated; a Lab WhitePoint whose y is zero &rarr; `GIMG_ERR_CORRUPT` |
 | Geometry | Strips and tiles | A block list whose length disagrees with the geometry &rarr; `GIMG_ERR_CORRUPT`; a block outside the file &rarr; `GIMG_ERR_CORRUPT` |
 | Source | A stream that knows its length | A non-seekable stream &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | Limits | `max_decoded_pixels`, `max_frame_count` | `max_chunk_size` has no analogue; a TIFF has no chunk structure |
@@ -150,6 +169,7 @@ sample agrees.** The three differences below are the whole of the rest.
 | A block that ends before its geometry does | The rows that arrived are kept and the rest stay as the raster was created | **The previous strip's rows.** libtiff decodes into a reused buffer and leaves what a short strip did not reach. Measured on `text.tif`, whose last strip declares 39 rows and encodes 36: libtiff's rows 357 and 358 come back byte-identical to its own rows 293 and 294 | Deliberately not matched. The sweep states the condition rather than the file name - every differing row is, on libtiff's side, an exact copy of an earlier row of its own output - so it stops applying if libtiff stops doing it |
 | Widening a sample to sixteen bits | `v * 65535 / max`, **rounded** below sixteen bits and **truncated** above | The same, and this is ImageMagick rather than libtiff - libtiff's RGBA reader refuses those depths. Measured over all 3,139 samples of one picture at each depth: rounding agrees on 3,139 at 10, 12 and 14 bits where truncating agrees on 1,587; truncating agrees on 3,139 at 24 and 32 where rounding agrees on 535 | **Match**, inconsistency and all. The alternative is disagreeing with the only reference that reads these depths |
 | A file with no PhotometricInterpretation | Refused, `GIMG_ERR_CORRUPT`, named | Read; it supplies a default | Deliberately not matched. Section 8 gives that field no default, so a file without one has not said what its samples mean, and guessing is a worse answer than saying so |
+| CIE L\*a\*b\* | Photometric 8, interleaved, at 8 and 16 bits and in both byte orders, with tag 318 omitted or set, agrees sample for sample. Photometric 9, planar Lab, and Lab with an alpha sample decode to that same raster | libtiff's RGBA reader opens photometric 8 only, three samples, contiguous, at 8 or 16 bits. Measured against 4.7.0 on 2026-10-04: the four files it opens agree, and it does not open the other six | Agreed where it reads the file. The six are not a tolerance. `LabEncodingsOfOnePictureMatch` requires them to equal the photometric-8 twin |
 
 The only other asymmetry is the obvious one: libtiff reads a few files this
 codec does not, which is the to-do list rather than a divergence. The sweep
@@ -167,6 +187,11 @@ off it, and what is left is in **Not implemented** below.
 - **Fixtures** in `tests/data/tiff/`, generated by
   `tests/data/tiff/generate.py` rather than vendored, so the properties
   asserted about them are pinned to something other than this library.
+- **CIE L\*a\*b\***, in `tests/codec/tiff/test_tiff_decode.cpp`. One picture stored as photometric
+  8 and 9, at 8 and 16 bits, in both byte orders, chunky and planar, with both
+  kinds of alpha and with a stated white point. The interleaved photometric-8
+  files are in the libtiff sweep and agree. The layouts that reader refuses
+  are required to match the file it does read.
 - **Three properties that need no reference decoder**, in
   `tests/codec/tiff/test_tiff_decode.cpp`:
   the same picture written in both byte orders decodes identically; the same
@@ -256,4 +281,6 @@ Listed so the absences are visible rather than discovered:
   `max_decoded_pixels` rather than decoded in pieces. The reasoning is in the
   workspace note on the decode model: that needs a lazy load contract, which
   is a document-model change for every codec rather than a TIFF feature.
-- **Exif and XMP**, which a TIFF carries in tags this codec does not read.
+- **Exif.** Tag 34665 is an offset to another directory. Copying those bytes
+  would keep offsets that no longer point anywhere, which is why it is not
+  read. XMP (700) is read; the metadata section says how.

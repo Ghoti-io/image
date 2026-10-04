@@ -350,6 +350,21 @@ tests/data/tiff/tiff_ccitt_undecodable.tif | decode-refused
 tests/data/tiff/tiff_chromaticities.tif | gamut=yes white=yes named=AdobeRGB transfer=- reference=- scale=- icc=0 linked=no
 tests/data/tiff/tiff_icc_swap_rg.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=532 linked=no
 tests/data/tiff/tiff_jpeg_gray.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_cielab16.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_cielab16_be.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_cielab16_planar.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_cielab8.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_cielab8_alpha.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_cielab8_assoc.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_cielab8_planar.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_cielab8_white.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_depth32.tif | load-refused
+tests/data/tiff/tiff_lab_icclab16.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_icclab8.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
+tests/data/tiff/tiff_lab_itu.tif | load-refused
+tests/data/tiff/tiff_lab_jpeg.tif | load-refused
+tests/data/tiff/tiff_lab_jpeg_old.tif | load-refused
+tests/data/tiff/tiff_lab_one_sample.tif | load-refused
 tests/data/tiff/tiff_no_photometric.tif | load-refused
 tests/data/tiff/tiff_ojpeg_gray.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no
 tests/data/tiff/tiff_ojpeg_gray_interchange.tif | gamut=no white=no named=- transfer=- reference=- scale=- icc=0 linked=no

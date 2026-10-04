@@ -148,6 +148,16 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_PHOTOMETRIC_TRANSPARENCY_MASK 4
 #define GIMG_TIFF_PHOTOMETRIC_CMYK 5
 #define GIMG_TIFF_PHOTOMETRIC_YCBCR 6
+/**
+ * CIE L\*a\*b\*, TIFF 6.0 section 23. Eight-bit a\* and b\* are signed;
+ * sixteen-bit ones are 256 times the 1976 values.
+ */
+#define GIMG_TIFF_PHOTOMETRIC_CIELAB 8
+/**
+ * The same L\*a\*b\* with the ICC bias: 128 at eight bits, 32768 at sixteen,
+ * and sixteen-bit L\* reaches 100 at 65280. Adobe's TIFF technical note.
+ */
+#define GIMG_TIFF_PHOTOMETRIC_ICCLAB 9
 /** @} */
 
 /** ExtraSamples (TIFF 6.0 section 18): what a fourth or later sample means. */

@@ -646,6 +646,16 @@ TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
           "compression method this codec does not undo"},
       {"tiff_no_photometric.tif", GIMG_ERR_CORRUPT,
           "no PhotometricInterpretation"},
+      {"tiff_lab_jpeg.tif", GIMG_ERR_UNSUPPORTED,
+          "JPEG-compressed Lab"},
+      {"tiff_lab_jpeg_old.tif", GIMG_ERR_UNSUPPORTED,
+          "JPEG-compressed Lab"},
+      {"tiff_lab_itu.tif", GIMG_ERR_UNSUPPORTED,
+          "PhotometricInterpretation 10"},
+      {"tiff_lab_depth32.tif", GIMG_ERR_UNSUPPORTED,
+          "other than eight or sixteen bits"},
+      {"tiff_lab_one_sample.tif", GIMG_ERR_UNSUPPORTED,
+          "other than three or four samples"},
   };
   for (const Case & c : cases) {
     SCOPED_TRACE(c.file);
@@ -672,6 +682,79 @@ TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
  * sequence of mode codes, so "not a fax" is a thing that has to be built on
  * purpose rather than assumed.
  */
+/**
+ * One L\*a\*b\* picture stored every way the reader accepts.
+ *
+ * Photometric 8 and 9 are different spellings of the same 1976 values, and
+ * an eight-bit sample is the same value as the sixteen-bit sample libtiff
+ * derives from it (`L*257`, `a*256`, `b*256`). A decoder that used the ICC
+ * bias for both, or that treated sixteen-bit a\* as unsigned, would disagree
+ * with itself here. libtiff's RGBA reader grades the eight- and sixteen-bit
+ * interleaved CIELab files; it does not read photometric 9, planar Lab or
+ * Lab with alpha, so those are pinned to the file that it does read.
+ */
+TEST(TiffDecode, LabEncodingsOfOnePictureMatch) {
+  Loaded cie;
+  ASSERT_EQ(cie.load("tiff_lab_cielab8.tif"), GIMG_OK) << cie.reasons();
+  const std::vector<uint8_t> want = cie.pixels();
+  ASSERT_EQ(want.size(), 2u * 2u * 4u);
+  const GCOL_Color_Info * info = gimg_raster_color_info_const(cie.raster());
+  if (info) {
+    EXPECT_FALSE(info->white_stated);
+    EXPECT_FALSE(info->primaries_stated);
+  }
+
+  const char * const same[] = {
+      "tiff_lab_icclab8.tif",
+      "tiff_lab_cielab16.tif",
+      "tiff_lab_icclab16.tif",
+      "tiff_lab_cielab16_be.tif",
+      "tiff_lab_cielab8_planar.tif",
+      "tiff_lab_cielab16_planar.tif",
+  };
+  for (const char * name : same) {
+    SCOPED_TRACE(name);
+    Loaded img;
+    ASSERT_EQ(img.load(name), GIMG_OK) << img.reasons();
+    EXPECT_EQ(img.pixels(), want);
+  }
+
+  const uint8_t alphas[] = {255, 200, 10, 0};
+  Loaded straight;
+  ASSERT_EQ(straight.load("tiff_lab_cielab8_alpha.tif"), GIMG_OK)
+      << straight.reasons();
+  const std::vector<uint8_t> ap = straight.pixels();
+  ASSERT_EQ(ap.size(), want.size());
+  for (size_t i = 0; i < 4u; i++) {
+    EXPECT_EQ(ap[i * 4 + 0], want[i * 4 + 0]) << i;
+    EXPECT_EQ(ap[i * 4 + 1], want[i * 4 + 1]) << i;
+    EXPECT_EQ(ap[i * 4 + 2], want[i * 4 + 2]) << i;
+    EXPECT_EQ(ap[i * 4 + 3], alphas[i]) << i;
+  }
+
+  Loaded assoc;
+  ASSERT_EQ(assoc.load("tiff_lab_cielab8_assoc.tif"), GIMG_OK)
+      << assoc.reasons();
+  const std::vector<uint8_t> pre = assoc.pixels();
+  ASSERT_EQ(pre.size(), want.size());
+  const uint8_t assoc_a[] = {255, 128, 255, 255};
+  for (size_t i = 0; i < 4u; i++) {
+    EXPECT_EQ(pre[i * 4 + 3], assoc_a[i]) << i;
+    for (size_t k = 0; k < 3u; k++) {
+      const unsigned v = want[i * 4 + k];
+      const unsigned a = assoc_a[i];
+      const unsigned scaled = (v * 255u + (a / 2u)) / a;
+      EXPECT_EQ(pre[i * 4 + k], (uint8_t)(scaled > 255u ? 255u : scaled))
+          << i << "," << k;
+    }
+  }
+
+  Loaded stated;
+  ASSERT_EQ(stated.load("tiff_lab_cielab8_white.tif"), GIMG_OK)
+      << stated.reasons();
+  EXPECT_NE(stated.pixels(), want);
+}
+
 TEST(TiffDecode, ACcittBlockThatDecodesToNothingIsCorrupt) {
   Loaded img;
   ASSERT_EQ(img.load("tiff_ccitt_undecodable.tif"), GIMG_OK) << img.reasons();

@@ -951,6 +951,44 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
       return GIMG_ERR_CORRUPT;
     }
     break;
+  case GIMG_TIFF_PHOTOMETRIC_CIELAB:
+  case GIMG_TIFF_PHOTOMETRIC_ICCLAB:
+    // JPEG has already turned the strip into RGB by the time this codec
+    // would see it, so a Lab tag beside compression 6 or 7 is describing a
+    // conversion that already happened. Refusing here is what keeps that
+    // path from converting the samples a second time.
+    if (ifd->compression == GIMG_TIFF_COMPRESSION_JPEG ||
+        ifd->compression == GIMG_TIFF_COMPRESSION_JPEG_OLD) {
+      tiff_diag(diag, which,
+          "JPEG-compressed Lab, whose samples the JPEG decoder has already "
+          "converted");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (ifd->samples_per_pixel != 3u && ifd->samples_per_pixel != 4u) {
+      tiff_diag(diag, which,
+          "a Lab image with other than three or four samples");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (ifd->bits_per_sample != 8u && ifd->bits_per_sample != 16u) {
+      tiff_diag(diag, which,
+          "Lab at a depth other than eight or sixteen bits");
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    // libtiff's reader refuses a white point whose y is zero rather than
+    // dividing by it. The same file fails here, at load, where a diagnostic
+    // can name the tag.
+    if (ifd->has_white_point && (float)ifd->white_point.y == 0.0f) {
+      tiff_diag(diag, which, "a Lab WhitePoint whose y is zero");
+      return GIMG_ERR_CORRUPT;
+    }
+    break;
+  case 10:
+    // PhotometricInterpretation 10 is ITU Lab, a different encoding from 8
+    // and 9. Named so a file that carries it is not folded into the generic
+    // refusal, which would read as "we have not looked at Lab yet".
+    tiff_diag(diag, which,
+        "ITU Lab (PhotometricInterpretation 10); not read yet");
+    return GIMG_ERR_UNSUPPORTED;
   case GIMG_TIFF_PHOTOMETRIC_CMYK:
     // "Separated" in the specification's words (section 16), and CMYK in
     // every file that uses it. More than four samples means inks this

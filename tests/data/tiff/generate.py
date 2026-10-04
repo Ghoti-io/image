@@ -894,6 +894,100 @@ def main():
                 if f[0] != TAGS["Photometric"]]
     write("tiff_no_photometric.tif", build("II", [(no_photo, gray)]))
 
+    # CIE L*a*b*. Four pixels chosen so a* and b* are positive, negative and
+    # at the signed extremes; an eight-bit encoding and the sixteen-bit
+    # encoding of the same 1976 values must decode to the same RGBA, and so
+    # must photometric 9, which stores a* and b* with a bias added.
+    lab = [(255, 0, 0), (0, 0, 0), (128, 40, -20), (50, -128, 127)]
+
+    def lab_bytes(icc, bits, endian):
+        out = bytearray()
+        for L, a, b in lab:
+            if bits == 8:
+                aa = (a + 128) & 255 if icc else a & 255
+                bb = (b + 128) & 255 if icc else b & 255
+                out += bytes((L, aa, bb))
+            elif icc:
+                out += struct.pack(endian + "HHH", L * 256,
+                                   (a * 256 + 32768) & 0xFFFF,
+                                   (b * 256 + 32768) & 0xFFFF)
+            else:
+                out += struct.pack(endian + "Hhh", L * 257, a * 256, b * 256)
+        return bytes(out)
+
+    def planes_of(chunky, spp, sample_bytes):
+        n = len(chunky) // (spp * sample_bytes)
+        out = bytearray()
+        for c in range(spp):
+            for i in range(n):
+                at = (i * spp + c) * sample_bytes
+                out += chunky[at:at + sample_bytes]
+        return bytes(out)
+
+    cie8 = lab_bytes(False, 8, "<")
+    icc8 = lab_bytes(True, 8, "<")
+    cie16 = lab_bytes(False, 16, "<")
+    icc16 = lab_bytes(True, 16, "<")
+    cie16be = lab_bytes(False, 16, ">")
+    write("tiff_lab_cielab8.tif",
+          build("II", [(strip_fields(2, 2, cie8, 8, spp=3), cie8)]))
+    write("tiff_lab_icclab8.tif",
+          build("II", [(strip_fields(2, 2, icc8, 9, spp=3), icc8)]))
+    write("tiff_lab_cielab16.tif",
+          build("II", [(strip_fields(2, 2, cie16, 8, spp=3, bps=16), cie16)]))
+    write("tiff_lab_icclab16.tif",
+          build("II", [(strip_fields(2, 2, icc16, 9, spp=3, bps=16), icc16)]))
+    write("tiff_lab_cielab16_be.tif",
+          build("MM", [(strip_fields(2, 2, cie16be, 8, spp=3, bps=16),
+                        cie16be)]))
+    cie8_planes = planes_of(cie8, 3, 1)
+    cie16_planes = planes_of(cie16, 3, 2)
+    write("tiff_lab_cielab8_planar.tif",
+          build_planar("II", 2, 2, cie8_planes, 3, 8, 4))
+    write("tiff_lab_cielab16_planar.tif",
+          build_planar("II", 2, 2, cie16_planes, 3, 8, 8, bps=16))
+
+    alphas = (255, 200, 10, 0)
+    cie8_alpha = bytearray()
+    for i, (L, a, b) in enumerate(lab):
+        cie8_alpha += bytes((L, a & 255, b & 255, alphas[i]))
+    cie8_alpha = bytes(cie8_alpha)
+    write("tiff_lab_cielab8_alpha.tif",
+          build("II", [(strip_fields(2, 2, cie8_alpha, 8, spp=4, extra=2),
+                        cie8_alpha)]))
+    # Associated: the same Lab, and one pixel whose alpha is not opaque, so
+    # the divide-back-out has something to do.
+    assoc_alpha = (255, 128, 255, 255)
+    cie8_assoc = bytearray()
+    for i, (L, a, b) in enumerate(lab):
+        cie8_assoc += bytes((L, a & 255, b & 255, assoc_alpha[i]))
+    cie8_assoc = bytes(cie8_assoc)
+    write("tiff_lab_cielab8_assoc.tif",
+          build("II", [(strip_fields(2, 2, cie8_assoc, 8, spp=4, extra=1),
+                        cie8_assoc)]))
+
+    white = strip_fields(2, 2, cie8, 8, spp=3)
+    white.append((TAGS["WhitePoint"], RATIONAL, [(1, 3), (1, 3)]))
+    write("tiff_lab_cielab8_white.tif", build("II", [(white, cie8)]))
+
+    def compression(fields, comp):
+        return [(t, ty, [comp] if t == TAGS["Compression"] else v)
+                for (t, ty, v) in fields]
+
+    jpeg = compression(strip_fields(1, 1, b"\x00\x00\x00", 8, spp=3), 7)
+    write("tiff_lab_jpeg.tif", build("II", [(jpeg, b"\x00\x00\x00")]))
+    jpeg_old = compression(strip_fields(1, 1, b"\x00\x00\x00", 8, spp=3), 6)
+    write("tiff_lab_jpeg_old.tif",
+          build("II", [(jpeg_old, b"\x00\x00\x00")]))
+    write("tiff_lab_itu.tif",
+          build("II", [(strip_fields(1, 1, b"\x00\x00\x00", 10, spp=3),
+                        b"\x00\x00\x00")]))
+    wide = bytes(12)
+    write("tiff_lab_depth32.tif",
+          build("II", [(strip_fields(1, 1, wide, 8, spp=3, bps=32), wide)]))
+    write("tiff_lab_one_sample.tif",
+          build("II", [(strip_fields(1, 1, b"\x80", 8, spp=1), b"\x80")]))
+
 
 def split_jpeg(blob):
     """Take a baseline JPEG apart into the pieces the TIFF tags want.
@@ -1025,7 +1119,7 @@ def build_multi_strip(endian, w, h, data, rows):
     return _finish(e, pool, [fields])
 
 
-def build_planar(endian, w, h, data, spp, photometric, plane_len):
+def build_planar(endian, w, h, data, spp, photometric, plane_len, bps=8):
     """A file whose channels are stored one plane after another.
 
     Every plane gets its own strip, which is what PlanarConfiguration 2 means
@@ -1043,7 +1137,7 @@ def build_planar(endian, w, h, data, spp, photometric, plane_len):
     fields = [
         (TAGS["ImageWidth"], LONG, [w]),
         (TAGS["ImageLength"], LONG, [h]),
-        (TAGS["BitsPerSample"], SHORT, [8] * spp),
+        (TAGS["BitsPerSample"], SHORT, [bps] * spp),
         (TAGS["Compression"], SHORT, [1]),
         (TAGS["Photometric"], SHORT, [photometric]),
         (TAGS["SamplesPerPixel"], SHORT, [spp]),
