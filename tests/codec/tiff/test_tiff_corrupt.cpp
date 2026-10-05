@@ -255,14 +255,25 @@ TEST(TiffCorrupt, TheHeaderAndTheChainNameWhatBrokeThem) {
   cases.push_back({"a header cut off after four bytes", "truncated header",
       GIMG_ERR_CORRUPT, Bytes{'I', 'I', 42u, 0u}});
   {
+    // Version 43 with a legal offset size, cut off before the IFD offset.
     Bytes b = {'I', 'I', 43u, 0u, 8u, 0u, 0u, 0u};
-    cases.push_back({"little-endian BigTIFF", "BigTIFF",
-        GIMG_ERR_UNSUPPORTED, b});
+    cases.push_back({"little-endian BigTIFF cut off before its IFD offset",
+        "truncated header", GIMG_ERR_CORRUPT, b});
   }
   {
     Bytes b = {'M', 'M', 0u, 43u, 0u, 0u, 0u, 8u};
-    cases.push_back({"big-endian BigTIFF", "BigTIFF", GIMG_ERR_UNSUPPORTED,
-        b});
+    cases.push_back({"big-endian BigTIFF cut off before its IFD offset",
+        "truncated header", GIMG_ERR_CORRUPT, b});
+  }
+  {
+    Bytes b = {'I', 'I', 43u, 0u, 4u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    cases.push_back({"a BigTIFF whose offset size is not 8", "offset size",
+        GIMG_ERR_UNSUPPORTED, b});
+  }
+  {
+    Bytes b = {'I', 'I', 43u, 0u, 8u, 0u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    cases.push_back({"a BigTIFF whose reserved word is not zero", "reserved",
+        GIMG_ERR_CORRUPT, b});
   }
   {
     Case c{"a file read from something that cannot be measured",

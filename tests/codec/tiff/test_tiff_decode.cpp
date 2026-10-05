@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
@@ -35,6 +36,8 @@
 #include <gtest/gtest.h>
 #include <iterator>
 #include <string>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -140,6 +143,19 @@ TEST(TiffDecode, TheSamePictureInBothByteOrdersDecodesAlike) {
   EXPECT_EQ(a, b) << "a field was read from the wrong end of its bytes";
   // And both are the picture the generator wrote, not merely each other.
   EXPECT_EQ(a, gray_ramp(4, 4));
+}
+
+TEST(TiffDecode, ABigTiffOfThatPictureMatchesItInBothByteOrders) {
+  // Version 43, 20-byte entries, strip offsets stored as LONG8. The picture
+  // is the gray ramp the classic pair carries, so a reader that only
+  // understood the 12-byte entry would not come back with these pixels.
+  Loaded classic, le, be;
+  ASSERT_EQ(classic.load("tiff_4x4_gray8_le.tif"), GIMG_OK);
+  ASSERT_EQ(le.load("tiff_4x4_gray8_bigtiff_le.tif"), GIMG_OK) << le.reasons();
+  ASSERT_EQ(be.load("tiff_4x4_gray8_bigtiff_be.tif"), GIMG_OK) << be.reasons();
+  EXPECT_EQ(le.pixels(), classic.pixels());
+  EXPECT_EQ(be.pixels(), classic.pixels());
+  EXPECT_EQ(le.pixels(), gray_ramp(4, 4));
 }
 
 TEST(TiffDecode, ATiledImageAndAStrippedOneAgree) {
@@ -622,6 +638,173 @@ TEST(TiffDecode, MetadataSurvivesALoadAndASave) {
   gimg_stream_destroy(out);
 }
 
+TEST(TiffDecode, InformationalTagsOnABigTiffMatchTheClassicRoundTrip) {
+  // The same tags, XMP and description the classic round trip keeps, written
+  // as version 43. A value of five to eight bytes is inline there and pooled
+  // in classic TIFF, so this is a different layout of the same directory.
+  Loaded img;
+  ASSERT_EQ(img.load("tiff_4x4_metadata.tif"), GIMG_OK) << img.reasons();
+  const std::vector<uint8_t> want_pixels = img.pixels();
+
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.tiff_bigtiff = GIMG_TIFF_BIG_FORCE;
+  GIMG_Save_Report rep = {};
+  ASSERT_EQ(gimg_doc_save(img.doc(), out, "tiff", &opts, &rep), GIMG_OK);
+  const void * bytes = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &bytes, &size);
+  const auto * file = static_cast<const uint8_t *>(bytes);
+  ASSERT_GE(size, 16u);
+  EXPECT_EQ(file[0], (uint8_t)'I');
+  EXPECT_EQ(file[2] | (file[3] << 8), 43);
+  EXPECT_EQ(file[4] | (file[5] << 8), 8);
+  const uint64_t ifd = (uint64_t)file[8] | ((uint64_t)file[9] << 8) |
+      ((uint64_t)file[10] << 16) | ((uint64_t)file[11] << 24) |
+      ((uint64_t)file[12] << 32) | ((uint64_t)file[13] << 40) |
+      ((uint64_t)file[14] << 48) | ((uint64_t)file[15] << 56);
+  ASSERT_LE(ifd + 8u, size);
+  const uint64_t entries = (uint64_t)file[ifd] | ((uint64_t)file[ifd + 1] << 8) |
+      ((uint64_t)file[ifd + 2] << 16) | ((uint64_t)file[ifd + 3] << 24);
+  uint16_t prev = 0;
+  for (uint64_t i = 0; i < entries; i++) {
+    const size_t ent = (size_t)ifd + 8u + (size_t)i * 20u;
+    ASSERT_LE(ent + 20u, size);
+    const uint16_t tag = (uint16_t)(file[ent] | (file[ent + 1] << 8));
+    EXPECT_GT(tag, prev);
+    prev = tag;
+  }
+
+  GIMG_Stream * back = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(bytes, size, &back), GIMG_OK);
+  GIMG_Doc * again = nullptr;
+  ASSERT_EQ(gimg_doc_load(back, nullptr, nullptr, &again), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(again, 0), nullptr, &raster), GIMG_OK);
+  const uint32_t w = gimg_raster_width(raster);
+  const uint32_t h = gimg_raster_height(raster);
+  const size_t stride = gimg_raster_stride_bytes(raster);
+  const size_t bpp =
+      gimg_raster_bytes_per_pixel(gimg_raster_format(raster));
+  std::vector<uint8_t> flat;
+  const uint8_t * p = (const uint8_t *)gimg_raster_pixels(raster);
+  for (uint32_t y = 0; y < h; y++) {
+    flat.insert(flat.end(), p + (y * stride), p + (y * stride) + (w * bpp));
+  }
+  EXPECT_EQ(flat, want_pixels);
+
+  GIMG_Meta_Common * common = gimg_doc_meta_common(again);
+  ASSERT_NE(common, nullptr);
+  ASSERT_NE(gimg_meta_common_description(common), nullptr);
+  EXPECT_STREQ(gimg_meta_common_description(common), "a fixture");
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(again);
+  ASSERT_NE(raw, nullptr);
+  size_t xmp = 0;
+  EXPECT_EQ(gimg_meta_raw_get(raw, "tiff", 700u, nullptr, &xmp), GIMG_OK);
+  EXPECT_GT(xmp, 0u);
+  size_t n = 0;
+  ASSERT_EQ(gimg_meta_raw_get(raw, "tiff", 33432u, nullptr, &n), GIMG_OK);
+  ASSERT_EQ(n, 13u);
+  std::vector<char> notice(n);
+  ASSERT_EQ(gimg_meta_raw_get(raw, "tiff", 33432u, notice.data(), &n), GIMG_OK);
+  EXPECT_EQ(std::memcmp(notice.data(), "photo\0editor", 13u), 0);
+  const GCOL_Color_Info * info = gimg_raster_color_info_const(raster);
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->icc_size, 276u);
+
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(again);
+  gimg_stream_destroy(back);
+  gimg_stream_destroy(out);
+}
+
+/**
+ * A two-by-two picture whose one strip sits past 4 GiB.
+ *
+ * The file is sparse: the header and the directory are at the start and four
+ * pixels are written at offset 2^32. Loading still copies the whole file,
+ * which is what the limit is about, and the raster that comes back is four
+ * bytes. Holding the saved multi-gigabyte buffer and that copy at once is a
+ * second 4 GiB allocation, so the writer covers the save and this file covers
+ * the read.
+ */
+TEST(TiffDecode, AStripOffsetPastFourGigabytesIsRead) {
+  const uint64_t strip_at = 0x100000000ull;
+  const uint8_t pixels[4] = {0x10, 0x20, 0x30, 0x40};
+  std::vector<uint8_t> head;
+  auto u16 = [&](uint16_t v) {
+    head.push_back((uint8_t)v);
+    head.push_back((uint8_t)(v >> 8));
+  };
+  auto u64 = [&](uint64_t v) {
+    for (int i = 0; i < 8; i++) {
+      head.push_back((uint8_t)(v >> (8 * i)));
+    }
+  };
+  auto entry = [&](uint16_t tag, uint16_t type, uint64_t count, uint64_t value) {
+    u16(tag);
+    u16(type);
+    u64(count);
+    u64(value);
+  };
+  head.push_back('I');
+  head.push_back('I');
+  u16(43);
+  u16(8);
+  u16(0);
+  u64(16);
+  u64(6);
+  entry(256, 4, 1, 2);             // ImageWidth, LONG
+  entry(257, 4, 1, 2);             // ImageLength
+  entry(258, 3, 1, 8);             // BitsPerSample, SHORT
+  entry(262, 3, 1, 1);             // PhotometricInterpretation, BlackIsZero
+  entry(273, 16, 1, strip_at);     // StripOffsets, LONG8
+  entry(279, 16, 1, 4);            // StripByteCounts, LONG8
+  u64(0);
+
+  char path[] = "/tmp/gimg-bigtiff-XXXXXX";
+  const int fd = mkstemp(path);
+  ASSERT_GE(fd, 0);
+  unlink(path);
+  const off_t file_size = (off_t)(strip_at + sizeof(pixels));
+  ASSERT_EQ(ftruncate(fd, file_size), 0);
+  ASSERT_EQ(pwrite(fd, head.data(), head.size(), 0), (ssize_t)head.size());
+  ASSERT_EQ(pwrite(fd, pixels, sizeof(pixels), (off_t)strip_at),
+      (ssize_t)sizeof(pixels));
+  void * map = mmap(nullptr, (size_t)file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  ASSERT_NE(map, MAP_FAILED);
+  close(fd);
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(map, (size_t)file_size, &s), GIMG_OK);
+  GIMG_Diagnostics diag = {};
+  GIMG_Doc * doc = nullptr;
+  const GIMG_Result loaded = gimg_doc_load(s, nullptr, &diag, &doc);
+  if (loaded != GIMG_OK) {
+    for (size_t i = 0; i < diag.count; i++) {
+      ADD_FAILURE() << diag.items[i].recommended_action;
+    }
+  }
+  ASSERT_EQ(loaded, GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster), GIMG_OK);
+  EXPECT_EQ(gimg_raster_width(raster), 2u);
+  EXPECT_EQ(gimg_raster_height(raster), 2u);
+  const uint8_t * p = (const uint8_t *)gimg_raster_pixels(raster);
+  const size_t stride = gimg_raster_stride_bytes(raster);
+  EXPECT_EQ(p[0], pixels[0]);
+  EXPECT_EQ(p[1], pixels[1]);
+  EXPECT_EQ(p[stride], pixels[2]);
+  EXPECT_EQ(p[stride + 1], pixels[3]);
+
+  gimg_raster_destroy(raster);
+  gimg_doc_destroy(doc);
+  gimg_diagnostics_destroy(&diag);
+  gimg_stream_destroy(s);
+  munmap(map, (size_t)file_size);
+}
+
 TEST(TiffDecode, APyramidLevelIsNotAnotherPage) {
   // TIFF spells "a smaller copy of this image" two ways: a directory in the
   // main chain whose NewSubfileType has bit 0 set, and a SubIFD hanging off
@@ -633,7 +816,8 @@ TEST(TiffDecode, APyramidLevelIsNotAnotherPage) {
   // pictures in a document must not count a thumbnail of one of them, and
   // before this nothing in the API could tell it not to.
   const char * const files[] = {
-      "tiff_pyramid_chain.tif", "tiff_pyramid_subifd.tif"};
+      "tiff_pyramid_chain.tif", "tiff_pyramid_subifd.tif",
+      "tiff_pyramid_subifd_bigtiff_be.tif"};
   for (const char * file : files) {
     SCOPED_TRACE(file);
     Loaded img;
@@ -727,6 +911,7 @@ TEST(TiffDecode, EveryRefusalSaysWhichRuleItBroke) {
   };
   const Case cases[] = {
       {"tiff_bad_magic.tif", GIMG_ERR_UNSUPPORTED, "BigTIFF"},
+      {"tiff_bad_offset_size.tif", GIMG_ERR_UNSUPPORTED, "offset size"},
       {"tiff_unknown_compression.tif", GIMG_ERR_UNSUPPORTED,
           "compression method this codec does not undo"},
       {"tiff_no_photometric.tif", GIMG_ERR_CORRUPT,

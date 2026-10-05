@@ -24,12 +24,16 @@
  * Read a TIFF's header and image file directories (TIFF 6.0 sections 2, 8).
  *
  * A TIFF is a header naming the offset of the first IFD, and each IFD is a
- * count, that many twelve-byte entries, and the offset of the next one.  An
- * entry is a tag, a type, a count, and four bytes that hold the value when it
- * fits and an offset to it when it does not.  Everything else in the format -
- * where the pixels are, how they are compressed, what the samples mean - is a
- * tag, which is why this file is mostly about reading one entry correctly and
- * the rest is a table.
+ * count, that many entries, and the offset of the next one.  Classic TIFF
+ * (version 42) uses a 2-byte count, 12-byte entries and a 4-byte next
+ * pointer; a value lives in the entry when it is four bytes or fewer.
+ * BigTIFF (version 43) uses an 8-byte count, 20-byte entries and an 8-byte
+ * next pointer; a value lives in the entry when it is eight bytes or fewer.
+ * An entry is a tag, a type, a count, and the bytes that hold the value when
+ * it fits and an offset to it when it does not.  Everything else in the
+ * format - where the pixels are, how they are compressed, what the samples
+ * mean - is a tag, which is why this file is mostly about reading one entry
+ * correctly and the rest is a table.
  *
  * Every IFD becomes an item.  A multi-page TIFF is several pictures in one
  * file, which is what items are for and what the GIF, APNG and BMP array
@@ -84,6 +88,12 @@ static uint32_t tiff_u32(const unsigned char * p, bool be) {
                   ((uint32_t)p[1] << 8) | (uint32_t)p[0]);
 }
 
+static uint64_t tiff_u64(const unsigned char * p, bool be) {
+  const uint64_t hi = tiff_u32(be ? p : p + 4, be);
+  const uint64_t lo = tiff_u32(be ? p + 4 : p, be);
+  return (hi << 32) | lo;
+}
+
 /** Bytes one value of @p type occupies, or 0 for a type this codec does not
  * know.  An unknown type is not an error by itself - a file may carry tags
  * this codec ignores - but its length cannot be computed, so such an entry is
@@ -105,6 +115,9 @@ static size_t tiff_type_size(uint16_t type) {
   case GIMG_TIFF_TYPE_RATIONAL:
   case GIMG_TIFF_TYPE_SRATIONAL:
   case GIMG_TIFF_TYPE_DOUBLE:
+  case GIMG_TIFF_TYPE_LONG8:
+  case GIMG_TIFF_TYPE_SLONG8:
+  case GIMG_TIFF_TYPE_IFD8:
     return 8u;
   default:
     return 0u;
@@ -123,18 +136,35 @@ typedef struct {
 /**
  * Point @p out at an entry's values, wherever they are.
  *
- * Four bytes or fewer live in the entry itself, left-justified, in the file's
- * byte order (TIFF 6.0 section 2, "IFD Entry").  Anything longer is at the
- * offset those four bytes hold, and that offset is checked against the end of
- * the file here rather than by every caller.
+ * A value that fits lives in the entry itself, left-justified, in the file's
+ * byte order (TIFF 6.0 section 2, "IFD Entry").  Classic TIFF fits four
+ * bytes; BigTIFF fits eight.  Anything longer is at the offset the entry
+ * holds, and that offset is checked against the end of the file here rather
+ * than by every caller.
  */
 static bool tiff_entry_at(const gimg_tiff_doc_state_t * st,
     const unsigned char * entry, tiff_entry_t * out) {
   out->tag = tiff_u16(entry + 0, st->big_endian);
   out->type = tiff_u16(entry + 2, st->big_endian);
-  out->count = tiff_u32(entry + 4, st->big_endian);
   out->values = NULL;
   out->value_bytes = 0;
+
+  const unsigned char * value_at;
+  size_t inline_max;
+  if (st->bigtiff) {
+    const uint64_t count = tiff_u64(entry + 4, st->big_endian);
+    if (count > 0xFFFFFFFFu) {
+      return false;
+    }
+    out->count = (uint32_t)count;
+    value_at = entry + 12;
+    inline_max = 8u;
+  }
+  else {
+    out->count = tiff_u32(entry + 4, st->big_endian);
+    value_at = entry + 8;
+    inline_max = 4u;
+  }
 
   const size_t unit = tiff_type_size(out->type);
   if (unit == 0u) {
@@ -144,17 +174,20 @@ static bool tiff_entry_at(const gimg_tiff_doc_state_t * st,
   if (!gcu_safe_mul_size(unit, (size_t)out->count, &total)) {
     return false;
   }
-  if (total <= 4u) {
-    out->values = entry + 8;
+  if (total <= inline_max) {
+    out->values = value_at;
     out->value_bytes = total;
     return true;
   }
-  const uint32_t at = tiff_u32(entry + 8, st->big_endian);
+  const uint64_t at =
+      st->bigtiff ? tiff_u64(value_at, st->big_endian)
+                  : (uint64_t)tiff_u32(value_at, st->big_endian);
   size_t end = 0;
-  if (!gcu_safe_add_size((size_t)at, total, &end) || end > st->file_size) {
+  if (at > st->file_size ||
+      !gcu_safe_add_size((size_t)at, total, &end) || end > st->file_size) {
     return false;
   }
-  out->values = st->file + at;
+  out->values = st->file + (size_t)at;
   out->value_bytes = total;
   return true;
 }
@@ -175,6 +208,10 @@ static uint64_t tiff_value(
   case 4u:
     return (uint64_t)tiff_u32(p, st->big_endian);
   case 8u:
+    if (e->type == GIMG_TIFF_TYPE_LONG8 || e->type == GIMG_TIFF_TYPE_SLONG8 ||
+        e->type == GIMG_TIFF_TYPE_IFD8) {
+      return tiff_u64(p, st->big_endian);
+    }
     // A RATIONAL is two LONGs; callers that want both read them directly.
     return (uint64_t)tiff_u32(p, st->big_endian);
   default:
@@ -352,26 +389,45 @@ static void tiff_ifd_defaults(gimg_tiff_ifd_t * ifd) {
  *
  * @param out_next Offset of the following IFD, or 0 at the end of the chain.
  */
-static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
+static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint64_t at,
     const GIMG_Limits * limits, GIMG_Diagnostics * diag, gimg_tiff_ifd_t * ifd,
-    uint32_t * out_next) {
+    uint64_t * out_next) {
   tiff_ifd_defaults(ifd);
   ifd->file_big_endian = st->big_endian;
   *out_next = 0u;
 
-  if ((size_t)at + 2u > st->file_size) {
-    tiff_diag(diag, at, "the directory begins past the end of the file");
+  const size_t count_bytes = st->bigtiff ? 8u : 2u;
+  const size_t entry_bytes = st->bigtiff ? 20u : 12u;
+  const size_t next_bytes = st->bigtiff ? 8u : 4u;
+  if (at > st->file_size) {
+    tiff_diag(diag, (size_t)at, "the directory begins past the end of the file");
     return GIMG_ERR_CORRUPT;
   }
-  const uint32_t count = tiff_u16(st->file + at, st->big_endian);
+  const size_t pos = (size_t)at;
+  size_t count_end = 0;
+  if (!gcu_safe_add_size(pos, count_bytes, &count_end) ||
+      count_end > st->file_size) {
+    tiff_diag(diag, pos, "the directory begins past the end of the file");
+    return GIMG_ERR_CORRUPT;
+  }
+  uint64_t count64 = st->bigtiff ? tiff_u64(st->file + pos, st->big_endian)
+                                 : (uint64_t)tiff_u16(st->file + pos, st->big_endian);
+  if (count64 > GIMG_TIFF_MAX_ENTRIES) {
+    tiff_diag(diag, pos, "more entries than this codec reads");
+    return GIMG_ERR_LIMIT;
+  }
+  const uint32_t count = (uint32_t)count64;
+  size_t entries_bytes = 0;
   size_t after = 0;
-  if (!gcu_safe_mul_size((size_t)count, 12u, &after) ||
-      !gcu_safe_add_size(after, (size_t)at + 2u, &after) ||
-      after + 4u > st->file_size) {
-    tiff_diag(diag, at, "the directory runs past the end of the file");
+  if (!gcu_safe_mul_size((size_t)count, entry_bytes, &entries_bytes) ||
+      !gcu_safe_add_size(entries_bytes, count_end, &after) ||
+      !gcu_safe_add_size(after, next_bytes, &after) || after > st->file_size) {
+    tiff_diag(diag, pos, "the directory runs past the end of the file");
     return GIMG_ERR_CORRUPT;
   }
-  *out_next = tiff_u32(st->file + after, st->big_endian);
+  *out_next = st->bigtiff ? tiff_u64(st->file + (after - next_bytes), st->big_endian)
+                          : (uint64_t)tiff_u32(st->file + (after - next_bytes),
+                                st->big_endian);
 
   uint64_t * strip_offsets = NULL;
   size_t strip_offset_count = 0;
@@ -382,7 +438,8 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint32_t at,
 
   for (uint32_t i = 0; i < count && r == GIMG_OK; i++) {
     tiff_entry_t e;
-    if (!tiff_entry_at(st, st->file + at + 2u + ((size_t)i * 12u), &e)) {
+    if (!tiff_entry_at(st,
+            st->file + pos + count_bytes + ((size_t)i * entry_bytes), &e)) {
       // A type this codec cannot size, or values outside the file.  Skipping
       // is right for a tag nobody reads and wrong for one that decides how to
       // decode; the check after the loop is what separates them, because a
@@ -1139,8 +1196,8 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
  * cannot be added to only one kind of directory.
  */
 static GIMG_Result tiff_append_ifd(GIMG_Codec * codec,
-    gimg_tiff_doc_state_t * st, uint32_t at, const GIMG_Limits * limits,
-    GIMG_Diagnostics * diagnostics, size_t * out_index, uint32_t * out_next) {
+    gimg_tiff_doc_state_t * st, uint64_t at, const GIMG_Limits * limits,
+    GIMG_Diagnostics * diagnostics, size_t * out_index, uint64_t * out_next) {
   *out_index = 0;
   *out_next = 0u;
   if (st->ifd_count >= GIMG_TIFF_MAX_IFDS) {
@@ -1223,14 +1280,37 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
     return r;
   }
 
-  r = gimg_tiff_read_header(st->file, size, &st->big_endian);
+  r = gimg_tiff_read_header(st->file, size, &st->big_endian, &st->bigtiff);
   if (r != GIMG_OK) {
-    tiff_diag(diagnostics, 0u,
-        r == GIMG_ERR_UNSUPPORTED
-            ? "BigTIFF (version 43) is a different format; not read"
-            : "the file does not begin with a TIFF header");
+    tiff_diag(diagnostics, 0u, "the file does not begin with a TIFF header");
     gimg_tiff_free_doc_state(codec, st);
     return r;
+  }
+  uint64_t at = 0;
+  if (st->bigtiff) {
+    // Version 43: offset size, a zero word, then the 8-byte IFD offset.
+    if (size < 16u) {
+      tiff_diag(diagnostics, 0u, "truncated header");
+      gimg_tiff_free_doc_state(codec, st);
+      return GIMG_ERR_CORRUPT;
+    }
+    const uint16_t offset_size = tiff_u16(st->file + 4, st->big_endian);
+    const uint16_t reserved = tiff_u16(st->file + 6, st->big_endian);
+    if (offset_size != 8u) {
+      tiff_diag(diagnostics, 4u, "BigTIFF offset size is not 8");
+      gimg_tiff_free_doc_state(codec, st);
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    if (reserved != 0u) {
+      tiff_diag(diagnostics, 6u,
+          "the BigTIFF header's reserved word is not zero");
+      gimg_tiff_free_doc_state(codec, st);
+      return GIMG_ERR_CORRUPT;
+    }
+    at = tiff_u64(st->file + 8, st->big_endian);
+  }
+  else {
+    at = tiff_u32(st->file + 4, st->big_endian);
   }
 
   // Walk the chain, refusing one that does not move forward.  An offset that
@@ -1242,17 +1322,16 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // it until now. A directory in the *chain* whose NewSubfileType says
   // "reduced resolution" is the older spelling of the same thing and belongs
   // to the last full-size page seen.
-  uint32_t at = tiff_u32(st->file + 4, st->big_endian);
-  uint32_t previous = 0u;
+  uint64_t previous = 0u;
   size_t last_full_size = 0;
   while (at != 0u) {
     if (st->ifd_count > 0u && at <= previous) {
-      tiff_diag(diagnostics, at, "the directory chain does not advance");
+      tiff_diag(diagnostics, (size_t)at, "the directory chain does not advance");
       gimg_tiff_free_doc_state(codec, st);
       return GIMG_ERR_CORRUPT;
     }
     size_t index = 0;
-    uint32_t next = 0u;
+    uint64_t next = 0u;
     r = tiff_append_ifd(
         codec, st, at, limits, diagnostics, &index, &next);
     if (r != GIMG_OK) {
@@ -1274,13 +1353,13 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const size_t levels = st->ifds[index].sub_ifd_count;
     for (size_t k = 0; k < levels && r == GIMG_OK; k++) {
       const uint64_t where = st->ifds[index].sub_ifds[k];
-      if (where == 0u || where > 0xFFFFFFFFu) {
+      if (where == 0u) {
         continue;
       }
       size_t level_index = 0;
-      uint32_t ignored = 0u;
-      r = tiff_append_ifd(codec, st, (uint32_t)where, limits, diagnostics,
-          &level_index, &ignored);
+      uint64_t ignored = 0u;
+      r = tiff_append_ifd(codec, st, where, limits, diagnostics, &level_index,
+          &ignored);
       if (r == GIMG_OK) {
         st->ifds[level_index].role = GIMG_ITEM_LEVEL;
         st->ifds[level_index].role_subject = index;

@@ -13,9 +13,9 @@
  * many items, a page one pixel wide, a 16-bit CMYK raster: each moves the
  * arithmetic that every later offset is computed from.
  *
- * The save options are varied with the input so that the four TIFF ones -
- * compression, predictor, byte order, rows per strip - are all reached,
- * rather than every run exercising the default file.
+ * The save options are varied with the input so that the TIFF ones -
+ * compression, predictor, byte order, BigTIFF, rows per strip - are all
+ * reached, rather than every run exercising the default file.
  *
  * Build with: make fuzz-tiff-encode (uses clang -fsanitize=fuzzer).
  * Run: ./build/linux/release/apps/fuzz_tiff_encode [corpus_dir]
@@ -71,11 +71,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   opts.metadata_policy = fuzz_save_policy(data, size);
   // Every option, chosen from the input so that one corpus reaches all of
   // them. A harness that only ever wrote the default file would leave the
-  // compressors, the predictor and the big-endian layout unfuzzed while
-  // reporting a clean run over the writer.
+  // compressors, the predictor, the big-endian layout and the version-43
+  // writer unfuzzed while reporting a clean run.
   opts.tiff_compression = (uint8_t)(data[0] & 3u);
   opts.tiff_predictor = (uint8_t)((data[0] >> 2) & 1u) ? 2u : 0u;
   opts.tiff_big_endian = (uint8_t)((data[0] >> 3) & 1u);
+  // 0, 1 or 2: automatic, forced BigTIFF, forced classic. 3 is not a mode.
+  opts.tiff_bigtiff = (uint8_t)((data[0] >> 4) % 3u);
   opts.tiff_rows_per_strip = (uint32_t)(data[size - 1u] & 7u);
   if (opts.tiff_compression == 0u) {
     // The writer refuses a predictor with nothing behind it, on purpose.

@@ -17,6 +17,10 @@ import zlib
 
 # Field types, TIFF 6.0 section 2.
 BYTE, ASCII, SHORT, LONG, RATIONAL = 1, 2, 3, 4, 5
+# BigTIFF's 64-bit unsigned integer. Strip offsets use it there.
+LONG8 = 16
+# A 64-bit IFD offset. BigTIFF stores SubIFDs as this.
+IFD8 = 18
 # UNDEFINED, which is how an ICC profile is stored: a byte string the format
 # has no opinion about.
 UNDEFINED = 7
@@ -72,7 +76,7 @@ TAGS = {
 }
 
 TYPE_SIZE = {BYTE: 1, ASCII: 1, UNDEFINED: 1, SHORT: 2, LONG: 4,
-             RATIONAL: 8}
+             RATIONAL: 8, LONG8: 8, IFD8: 8}
 
 
 def pack_values(endian, ftype, values):
@@ -83,17 +87,20 @@ def pack_values(endian, ftype, values):
         return b"".join(struct.pack(endian + "H", v) for v in values)
     if ftype == LONG:
         return b"".join(struct.pack(endian + "I", v) for v in values)
+    if ftype in (LONG8, IFD8):
+        return b"".join(struct.pack(endian + "Q", v) for v in values)
     if ftype == RATIONAL:
         return b"".join(struct.pack(endian + "II", n, d) for n, d in values)
     raise ValueError(ftype)
 
 
-def build(endian, ifds, version=42):
+def build(endian, ifds, version=42, big=False):
     """Lay out a whole TIFF.
 
     `ifds` is a list of (fields, data) where fields is a list of
     (tag, type, values) and data is the strip or tile bytes for that IFD.
-    A field whose values do not fit in four bytes goes into an overflow area,
+    A field whose values do not fit inline (four bytes, or eight in a BigTIFF)
+    goes into an overflow area,
     and so does each IFD's pixel data; the directories follow both.
 
     Two passes, because the directories' own offsets depend on how much
@@ -104,8 +111,12 @@ def build(endian, ifds, version=42):
     "the offsets and the byte counts do not describe the same blocks".
     """
     e = "<" if endian == "II" else ">"
+    # BigTIFF: 16-byte header, values inline through eight bytes, 20-byte
+    # entries. Classic stays at four and twelve, which is what every other
+    # fixture here is.
+    inline = 8 if big else 4
     pool = bytearray()
-    pool_base = 8
+    pool_base = 16 if big else 8
 
     def stash(raw):
         at = pool_base + len(pool)
@@ -129,8 +140,9 @@ def build(endian, ifds, version=42):
 
     overflow_total = sum(len(raw) + (len(raw) % 2)
                          for rows in entries for *_x, raw in rows
-                         if len(raw) > 4)
-    sizes = [2 + 12 * len(rows) + 4 for rows in entries]
+                         if len(raw) > inline)
+    sizes = [(8 + 20 * len(rows) + 8) if big else (2 + 12 * len(rows) + 4)
+             for rows in entries]
     cursor = pool_base + len(pool) + overflow_total
     ifd_at = []
     for size in sizes:
@@ -139,25 +151,31 @@ def build(endian, ifds, version=42):
 
     overflow = bytearray()
     directories = bytearray()
+    count_fmt = "Q" if big else "H"
+    field_fmt = "HHQ" if big else "HHI"
+    off_fmt = "Q" if big else "I"
     for i, rows in enumerate(entries):
-        out = bytearray(struct.pack(e + "H", len(rows)))
+        out = bytearray(struct.pack(e + count_fmt, len(rows)))
         for tag, ftype, count, raw in rows:
-            out += struct.pack(e + "HHI", tag, ftype, count)
-            if len(raw) <= 4:
-                out += raw + b"\x00" * (4 - len(raw))
+            out += struct.pack(e + field_fmt, tag, ftype, count)
+            if len(raw) <= inline:
+                out += raw + b"\x00" * (inline - len(raw))
             else:
                 place = pool_base + len(pool) + len(overflow)
                 overflow.extend(raw)
                 if len(overflow) % 2:
                     overflow.append(0)
-                out += struct.pack(e + "I", place)
+                out += struct.pack(e + off_fmt, place)
         nxt = ifd_at[i + 1] if i + 1 < len(ifd_at) else 0
-        out += struct.pack(e + "I", nxt)
+        out += struct.pack(e + off_fmt, nxt)
         directories += out
 
     assert len(overflow) == overflow_total, (len(overflow), overflow_total)
-    header = endian.encode() + struct.pack(e + "H", version)
-    return bytes(header + struct.pack(e + "I", ifd_at[0]) + bytes(pool) +
+    if big:
+        header = endian.encode() + struct.pack(e + "HHH", 43, 8, 0)
+    else:
+        header = endian.encode() + struct.pack(e + "H", version)
+    return bytes(header + struct.pack(e + off_fmt, ifd_at[0]) + bytes(pool) +
                  bytes(overflow) + bytes(directories))
 
 
@@ -344,6 +362,17 @@ def main():
                          ("MM", "tiff_4x4_gray8_be.tif")):
         write(name, build(endian,
                           [(strip_fields(W, H, gray, 1), gray)]))
+    # The same picture as a BigTIFF: version 43, 20-byte entries, strip
+    # offsets and byte counts stored as LONG8. Both byte orders.
+    big_fields = []
+    for tag, ftype, values in strip_fields(W, H, gray, 1):
+        if tag in (TAGS["StripOffsets"], TAGS["StripByteCounts"]):
+            ftype = LONG8
+        big_fields.append((tag, ftype, values))
+    write("tiff_4x4_gray8_bigtiff_le.tif",
+          build("II", [(big_fields, gray)], big=True))
+    write("tiff_4x4_gray8_bigtiff_be.tif",
+          build("MM", [(big_fields, gray)], big=True))
 
     # ---- WhiteIsZero: the complement of the same samples ----
     write("tiff_4x4_whitezero.tif",
@@ -695,6 +724,11 @@ def main():
     write("tiff_pyramid_chain.tif",
           build("II", [(chain_full, full), (chain_half, half)]))
     write("tiff_pyramid_subifd.tif", build_subifd("II", full, half))
+    # The same pyramid as a big-endian BigTIFF, with the SubIFD offset stored
+    # as IFD8. A little-endian LONG would still be readable if that type were
+    # dropped, because its low 32 bits sit where a 32-bit read expects them.
+    write("tiff_pyramid_subifd_bigtiff_be.tif",
+          build_subifd("MM", full, half, big=True))
 
     # ---- What the fuzzer found ----
     #
@@ -886,6 +920,9 @@ def main():
 
     # ---- Refusals ----
     write("tiff_bad_magic.tif", b"II\x2b\x00" + b"\x00" * 12)
+    # Version 43 whose offset-size field is 4, not the required 8.
+    write("tiff_bad_offset_size.tif",
+          b"II" + struct.pack("<HHH", 43, 4, 0) + b"\x00" * 8)
     # A compression this codec does not undo. It was LZW here until LZW
     # landed, CCITT Group 3 until Group 3 landed, and JPEG until JPEG landed;
     # a refusal fixture has to name something still refused, or the test that
@@ -1171,20 +1208,22 @@ def build_planar(endian, w, h, data, spp, photometric, plane_len, bps=8):
     return _finish(e, pool, [fields])
 
 
-def build_subifd(endian, full, half):
+def build_subifd(endian, full, half, big=False):
     """A full-size page whose SubIFDs tag names one reduced-resolution one.
 
     Laid out by hand because the SubIFD is a directory the main chain does
     not contain: its offset lives in a tag, and the page that names it has to
-    know where it landed.
+    know where it landed. `big` writes version 43 and stores that offset as
+    IFD8, which is eight bytes and still fits in the entry.
     """
     e = "<" if endian == "II" else ">"
+    header_len = 16 if big else 8
     pool = bytearray()
-    full_at = 8 + len(pool)
+    full_at = header_len + len(pool)
     pool.extend(full)
     if len(pool) % 2:
         pool.append(0)
-    half_at = 8 + len(pool)
+    half_at = header_len + len(pool)
     pool.extend(half)
     if len(pool) % 2:
         pool.append(0)
@@ -1213,15 +1252,25 @@ def build_subifd(endian, full, half):
         (TAGS["PlanarConfig"], SHORT, [1]),
         (TAGS["StripOffsets"], LONG, [full_at]),
         (TAGS["StripByteCounts"], LONG, [len(full)]),
-        (TAGS["SubIFDs"], LONG, [0]),  # Patched once the layout is known.
+        (TAGS["SubIFDs"], IFD8 if big else LONG, [0]),  # Patched once known.
     ]
-    main_size = 2 + 12 * len(main_fields) + 4
-    main_at = 8 + len(pool)
+    main_size = (8 + 20 * len(main_fields) + 8) if big else (
+        2 + 12 * len(main_fields) + 4)
+    main_at = header_len + len(pool)
     sub_at = main_at + main_size
     main_fields = [(t, ty, [sub_at] if t == TAGS["SubIFDs"] else v)
                    for (t, ty, v) in main_fields]
 
     def directory(fields, nxt):
+        if big:
+            out = bytearray(struct.pack(e + "Q", len(fields)))
+            for tag, ftype, values in sorted(fields, key=lambda f: f[0]):
+                raw = pack_values(e, ftype, values)
+                out += struct.pack(e + "HHQ", tag, ftype, len(values))
+                assert len(raw) <= 8, "this layout keeps every value inline"
+                out += raw + b"\x00" * (8 - len(raw))
+            out += struct.pack(e + "Q", nxt)
+            return bytes(out)
         out = bytearray(struct.pack(e + "H", len(fields)))
         for tag, ftype, values in sorted(fields, key=lambda f: f[0]):
             raw = pack_values(e, ftype, values)
@@ -1231,8 +1280,13 @@ def build_subifd(endian, full, half):
         out += struct.pack(e + "I", nxt)
         return bytes(out)
 
-    header = endian.encode() + struct.pack(e + "H", 42)
-    return bytes(header + struct.pack(e + "I", main_at) + bytes(pool) +
+    if big:
+        header = endian.encode() + struct.pack(e + "HHH", 43, 8, 0)
+        ifd_off = struct.pack(e + "Q", main_at)
+    else:
+        header = endian.encode() + struct.pack(e + "H", 42)
+        ifd_off = struct.pack(e + "I", main_at)
+    return bytes(header + ifd_off + bytes(pool) +
                  directory(main_fields, 0) + directory(sub_fields, 0))
 
 

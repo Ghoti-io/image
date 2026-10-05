@@ -141,6 +141,188 @@ TEST(TiffEncode, EveryOptionThatCannotBeHonouredIsRefused) {
   fine.tiff_compression = 3u;
   fine.tiff_predictor = 2u;
   EXPECT_EQ(save(doc, &fine, nullptr), GIMG_OK);
+
+  GIMG_Save_Options odd = {};
+  odd.tiff_bigtiff = 9u;
+  EXPECT_EQ(save(doc, &odd, nullptr), GIMG_ERR_UNSUPPORTED);
+  gimg_doc_destroy(doc);
+}
+
+TEST(TiffEncode, ASmallFileStaysClassicUnlessAsked) {
+  // The default measures the offsets and keeps version 42 when they fit.
+  // Forcing version 43 is the same picture in the wider directory.
+  GIMG_Doc * doc = make_doc(4u, 4u, &GIMG_PIXEL_GRAY8, 1u);
+  ASSERT_NE(doc, nullptr);
+  std::vector<uint8_t> classic;
+  ASSERT_EQ(save(doc, nullptr, &classic), GIMG_OK);
+  ASSERT_GE(classic.size(), 8u);
+  EXPECT_EQ(classic[0], (uint8_t)'I');
+  EXPECT_EQ(classic[2] | (classic[3] << 8), 42);
+  const size_t ifd = (size_t)classic[4] | ((size_t)classic[5] << 8) |
+      ((size_t)classic[6] << 16) | ((size_t)classic[7] << 24);
+  ASSERT_LT(ifd + 14u, classic.size());
+  // Twelve bytes from the first entry to the second: the classic width.
+  const uint16_t first =
+      (uint16_t)(classic[ifd + 2] | (classic[ifd + 3] << 8));
+  const uint16_t second =
+      (uint16_t)(classic[ifd + 14] | (classic[ifd + 15] << 8));
+  EXPECT_LT(first, second);
+
+  GIMG_Save_Options force = {};
+  force.tiff_bigtiff = GIMG_TIFF_BIG_FORCE;
+  std::vector<uint8_t> big;
+  ASSERT_EQ(save(doc, &force, &big), GIMG_OK);
+  ASSERT_GE(big.size(), 16u);
+  EXPECT_EQ(big[2] | (big[3] << 8), 43);
+  EXPECT_EQ(big[4] | (big[5] << 8), 8);
+  const uint64_t big_ifd = (uint64_t)big[8] | ((uint64_t)big[9] << 8) |
+      ((uint64_t)big[10] << 16) | ((uint64_t)big[11] << 24) |
+      ((uint64_t)big[12] << 32) | ((uint64_t)big[13] << 40) |
+      ((uint64_t)big[14] << 48) | ((uint64_t)big[15] << 56);
+  ASSERT_LT(big_ifd + 28u, big.size());
+  const uint16_t big_first =
+      (uint16_t)(big[big_ifd + 8] | (big[big_ifd + 9] << 8));
+  const uint16_t big_second =
+      (uint16_t)(big[big_ifd + 28] | (big[big_ifd + 29] << 8));
+  EXPECT_LT(big_first, big_second);
+
+  uint32_t w = 0, h = 0;
+  const std::vector<uint8_t> back = reload(big, &w, &h, nullptr);
+  EXPECT_EQ(w, 4u);
+  EXPECT_EQ(h, 4u);
+  const std::vector<uint8_t> classic_pixels =
+      reload(classic, nullptr, nullptr, nullptr);
+  EXPECT_EQ(back, classic_pixels);
+
+  // Big-endian version 43. The 64-bit stores are a different byte order
+  // from the little-endian file above.
+  GIMG_Save_Options be = {};
+  be.tiff_bigtiff = GIMG_TIFF_BIG_FORCE;
+  be.tiff_big_endian = 1u;
+  std::vector<uint8_t> big_be;
+  ASSERT_EQ(save(doc, &be, &big_be), GIMG_OK);
+  ASSERT_GE(big_be.size(), 4u);
+  EXPECT_EQ(big_be[0], (uint8_t)'M');
+  EXPECT_EQ(big_be[1], (uint8_t)'M');
+  EXPECT_EQ(big_be[3], 43u);
+  EXPECT_EQ(reload(big_be, nullptr, nullptr, nullptr), classic_pixels);
+
+  // Forcing classic on a file that fits is version 42, the same as the default.
+  GIMG_Save_Options stay = {};
+  stay.tiff_bigtiff = GIMG_TIFF_BIG_CLASSIC;
+  std::vector<uint8_t> forced_classic;
+  ASSERT_EQ(save(doc, &stay, &forced_classic), GIMG_OK);
+  ASSERT_GE(forced_classic.size(), 4u);
+  EXPECT_EQ(forced_classic[2] | (forced_classic[3] << 8), 42);
+
+  // Two pages, so the 8-byte next-IFD pointer has somewhere to point. A
+  // writer that stored a zero there would come back as the first page only.
+  GIMG_Doc * pages = make_doc(2u, 2u, &GIMG_PIXEL_GRAY8, 2u);
+  ASSERT_NE(pages, nullptr);
+  GIMG_Save_Options force_pages = {};
+  force_pages.tiff_bigtiff = GIMG_TIFF_BIG_FORCE;
+  std::vector<uint8_t> multi;
+  ASSERT_EQ(save(pages, &force_pages, &multi), GIMG_OK);
+  size_t items = 0;
+  (void)reload(multi, nullptr, nullptr, &items);
+  EXPECT_EQ(items, 2u);
+  gimg_doc_destroy(pages);
+  gimg_doc_destroy(doc);
+}
+
+/**
+ * A page whose second strip starts past 4 GiB.
+ *
+ * Sixteen bytes a row and 2^28 rows in the first strip is exactly 4 GiB, so
+ * the next strip's offset does not fit in a classic TIFF. The rows are
+ * borrowed from the raster, and the bytes are inspected in the output buffer
+ * rather than copied: a second 4 GiB buffer is what this machine does not
+ * have. The matching read is AStripOffsetPastFourGigabytesIsRead.
+ */
+TEST(TiffEncode, AnOffsetPastFourGigabytesIsWrittenAsBigTiff) {
+  const uint32_t width = 16u;
+  const uint32_t rows = 0x10000000u;
+  const uint32_t height = rows + 1u;
+  // Created empty on purpose. Filling every byte would dirty 4 GiB before
+  // the file is even written, and the loop that does it is one store a byte.
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  GIMG_Raster * raster = nullptr;
+  ASSERT_EQ(gimg_raster_create(width, height, &GIMG_PIXEL_GRAY8,
+                GIMG_RASTER_OWNED, nullptr, 0, &raster),
+      GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), raster);
+  uint8_t * pixels = (uint8_t *)gimg_raster_pixels(raster);
+  const size_t stride = gimg_raster_stride_bytes(raster);
+  ASSERT_EQ(stride, (size_t)width);
+  pixels[0] = 0x11;
+  pixels[(size_t)rows * stride] = 0x22;
+
+  GIMG_Save_Options classic = {};
+  classic.tiff_rows_per_strip = rows;
+  classic.tiff_bigtiff = GIMG_TIFF_BIG_CLASSIC;
+  EXPECT_EQ(save(doc, &classic, nullptr), GIMG_ERR_LIMIT);
+
+  GIMG_Save_Options opts = {};
+  opts.tiff_rows_per_strip = rows;
+  GIMG_Stream * stream = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&stream), GIMG_OK);
+  GIMG_Save_Report report = {};
+  const GIMG_Result r = gimg_doc_save(doc, stream, "tiff", &opts, &report);
+  ASSERT_EQ(r, GIMG_OK);
+  const void * bytes = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(stream, &bytes, &size);
+  const auto * file = static_cast<const uint8_t *>(bytes);
+  ASSERT_GE(size, 16u);
+  EXPECT_EQ(file[2] | (file[3] << 8), 43);
+  const uint64_t ifd = (uint64_t)file[8] | ((uint64_t)file[9] << 8) |
+      ((uint64_t)file[10] << 16) | ((uint64_t)file[11] << 24) |
+      ((uint64_t)file[12] << 32) | ((uint64_t)file[13] << 40) |
+      ((uint64_t)file[14] << 48) | ((uint64_t)file[15] << 56);
+  EXPECT_GT(ifd, 0xFFFFFFFFull);
+  const uint64_t second = 16ull + (uint64_t)rows * width;
+  ASSERT_LT(second, size);
+  EXPECT_EQ(file[16], 0x11);
+  EXPECT_EQ(file[second], 0x22);
+  EXPECT_GT(second, 0xFFFFFFFFull);
+
+  // The two LONG8 StripOffsets in the pool, not the bytes the cursor
+  // happened to land on. A directory that stored only the low 32 bits
+  // would still have those payload bytes in the right place.
+  const uint64_t entries = (uint64_t)file[ifd] | ((uint64_t)file[ifd + 1] << 8) |
+      ((uint64_t)file[ifd + 2] << 16) | ((uint64_t)file[ifd + 3] << 24);
+  bool saw_offsets = false;
+  for (uint64_t i = 0; i < entries; i++) {
+    const size_t ent = (size_t)ifd + 8u + (size_t)i * 20u;
+    ASSERT_LE(ent + 20u, size);
+    const uint16_t tag = (uint16_t)(file[ent] | (file[ent + 1] << 8));
+    if (tag != 273u) {
+      continue;
+    }
+    EXPECT_EQ(file[ent + 2] | (file[ent + 3] << 8), 16); // LONG8
+    const uint64_t count = (uint64_t)file[ent + 4] |
+        ((uint64_t)file[ent + 5] << 8) | ((uint64_t)file[ent + 6] << 16) |
+        ((uint64_t)file[ent + 7] << 24);
+    EXPECT_EQ(count, 2u);
+    uint64_t pool = 0;
+    for (int b = 0; b < 8; b++) {
+      pool |= (uint64_t)file[ent + 12u + (size_t)b] << (8 * b);
+    }
+    ASSERT_LE(pool + 16u, size);
+    uint64_t first_off = 0;
+    uint64_t second_off = 0;
+    for (int b = 0; b < 8; b++) {
+      first_off |= (uint64_t)file[pool + (size_t)b] << (8 * b);
+      second_off |= (uint64_t)file[pool + 8u + (size_t)b] << (8 * b);
+    }
+    EXPECT_EQ(first_off, 16u);
+    EXPECT_EQ(second_off, 16ull + (uint64_t)rows * width);
+    saw_offsets = true;
+  }
+  EXPECT_TRUE(saw_offsets);
+
+  gimg_stream_destroy(stream);
   gimg_doc_destroy(doc);
 }
 

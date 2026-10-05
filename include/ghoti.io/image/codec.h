@@ -750,7 +750,15 @@ typedef struct {
    * through both orders is the sharpest test a byte-order-agnostic reader
    * has. 0, the default, writes "II". Ignored for non-TIFF. */
   uint8_t tiff_big_endian;
-  uint8_t _reserved_tiff;
+  /** TIFF: classic TIFF or BigTIFF.
+   *
+   * GIMG_TIFF_BIG_AUTO (0, the default) writes version 43 only when an offset
+   * does not fit in 32 bits, and version 42 otherwise. A small file saved
+   * this way comes back as classic TIFF. GIMG_TIFF_BIG_FORCE always writes
+   * version 43. GIMG_TIFF_BIG_CLASSIC always writes version 42, and returns
+   * GIMG_ERR_LIMIT when an offset does not fit. Any other value is
+   * GIMG_ERR_UNSUPPORTED. Ignored for non-TIFF. */
+  uint8_t tiff_bigtiff;
   /** TIFF: rows in one strip. 0, the default, picks a number that puts about
    * eight kilobytes in each - libtiff's own rule, and for the same reason: a
    * strip is the unit a reader has to hold at once. Ignored for non-TIFF. */
@@ -801,6 +809,16 @@ typedef struct {
 #define GIMG_TIFF_COMPRESS_PACKBITS 1u ///< PackBits (section 9).
 #define GIMG_TIFF_COMPRESS_LZW 2u      ///< LZW (section 13).
 #define GIMG_TIFF_COMPRESS_DEFLATE 3u  ///< Deflate, the smallest of the four.
+/** @} */
+
+/** @name TIFF container (classic or BigTIFF)
+ *
+ * Zero is automatic, so a zero-initialized ::GIMG_Save_Options writes classic
+ * TIFF for every file whose offsets fit in 32 bits.
+ * @{ */
+#define GIMG_TIFF_BIG_AUTO 0u    ///< Version 43 only when a 32-bit offset does not fit.
+#define GIMG_TIFF_BIG_FORCE 1u   ///< Always write BigTIFF (version 43).
+#define GIMG_TIFF_BIG_CLASSIC 2u ///< Always write classic TIFF. GIMG_ERR_LIMIT if it does not fit.
 /** @} */
 
 /** @name PNG row filters (PNG 9.2, Table 9.1)

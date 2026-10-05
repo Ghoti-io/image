@@ -945,9 +945,10 @@ TEST(TiffFax, EveryVariantDecodesToTheUncompressedOne) {
  * The round-trip sweep already checks that a TIFF this library writes is one
  * it can read back, and that is the weaker half: a writer and a reader that
  * share a misunderstanding agree with each other perfectly. This is the other
- * half. Every fixture is written out in five ways - stored, PackBits, LZW,
- * Deflate with the predictor, and big-endian - and libtiff is asked to read
- * each one and compared sample for sample against the raster that went in.
+ * half. Every fixture is written out in six ways - stored, PackBits, LZW,
+ * Deflate with the predictor, big-endian, and forced BigTIFF - and libtiff
+ * is asked to read each one and compared sample for sample against the
+ * raster that went in.
  */
 TEST(TiffOracle, EverythingWeWriteLibtiffReadsAndAgreesWith) {
   if (!oracle_gate::reachable("libtiff")) {
@@ -958,13 +959,15 @@ TEST(TiffOracle, EverythingWeWriteLibtiffReadsAndAgreesWith) {
     uint8_t compression;
     uint8_t predictor;
     uint8_t big_endian;
+    uint8_t bigtiff;
   };
   const Mode modes[] = {
-      {"stored", 0u, 0u, 0u},
-      {"packbits", 1u, 0u, 0u},
-      {"lzw", 2u, 0u, 0u},
-      {"deflate-predictor", 3u, 2u, 0u},
-      {"big-endian", 0u, 0u, 1u},
+      {"stored", 0u, 0u, 0u, 0u},
+      {"packbits", 1u, 0u, 0u, 0u},
+      {"lzw", 2u, 0u, 0u, 0u},
+      {"deflate-predictor", 3u, 2u, 0u, 0u},
+      {"big-endian", 0u, 0u, 1u, 0u},
+      {"bigtiff", 0u, 0u, 0u, GIMG_TIFF_BIG_FORCE},
   };
 
   const std::string written_dir = out_dir() + "/written";
@@ -1000,6 +1003,7 @@ TEST(TiffOracle, EverythingWeWriteLibtiffReadsAndAgreesWith) {
       opts.tiff_compression = m.compression;
       opts.tiff_predictor = m.predictor;
       opts.tiff_big_endian = m.big_endian;
+      opts.tiff_bigtiff = m.bigtiff;
       GIMG_Save_Report rep = {};
       const GIMG_Result sr = gimg_doc_save(doc, out, "tiff", &opts, &rep);
       if (sr == GIMG_OK) {

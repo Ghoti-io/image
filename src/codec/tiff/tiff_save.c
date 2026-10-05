@@ -70,8 +70,9 @@ typedef struct {
   uint16_t type;
   uint32_t count;
   /** Values, already packed in the file's byte order. Points into the page's
-   * value pool when longer than four bytes. */
-  unsigned char inline_bytes[4];
+   * value pool when longer than the inline field (four bytes, eight in
+   * BigTIFF). */
+  unsigned char inline_bytes[8];
   const unsigned char * values;
   size_t value_size;
 } tiff_entry_out_t;
@@ -88,8 +89,14 @@ typedef struct {
   uint32_t rows_per_strip;
   size_t strip_count;
   unsigned char ** strips; ///< Each strip's bytes as they go into the file.
+  /** The strips borrow the raster: uncompressed 8-bit rows already sit in
+   * file order, so there is nothing to copy and nothing to free. */
+  bool strips_borrowed;
   size_t * strip_sizes;
-  uint32_t * strip_offsets;
+  uint64_t * strip_offsets;
+  /** This page is being written as BigTIFF. Set before the entries are built,
+   * because that is what chooses inline width and the offset type. */
+  bool bigtiff;
   uint32_t x_dpi, y_dpi;
   bool has_dpi;
   const unsigned char * icc; ///< Borrowed from the raster's colour info.
@@ -116,7 +123,7 @@ typedef struct {
   size_t entry_count;
   unsigned char * pool;    ///< Values too long for an entry.
   size_t pool_size;
-  uint32_t pool_at;        ///< Where the pool lands in the file.
+  uint64_t pool_at;        ///< Where the pool lands in the file.
   unsigned char * offsets_in_pool; ///< Where StripOffsets landed, or NULL
                                    ///< when one strip put it inline.
   size_t offsets_entry;            ///< Its index in `entries`.
@@ -150,6 +157,11 @@ static void tiff_put_u32(unsigned char * p, uint32_t v, bool be) {
     p[2] = (unsigned char)(v >> 16);
     p[3] = (unsigned char)(v >> 24);
   }
+}
+
+static void tiff_put_u64(unsigned char * p, uint64_t v, bool be) {
+  tiff_put_u32(be ? p : p + 4, (uint32_t)(v >> 32), be);
+  tiff_put_u32(be ? p + 4 : p, (uint32_t)v, be);
 }
 
 /** Write @p size bytes, refusing a short write rather than reporting one. */
@@ -324,9 +336,10 @@ static unsigned char * tiff_add_entry(tiff_page_t * page, uint16_t tag,
   e->values = NULL;
   e->value_size = value_size;
   memset(e->inline_bytes, 0, sizeof(e->inline_bytes));
-  if (value_size <= 4u) {
-    // Four bytes or fewer live in the entry itself, left-justified and in the
-    // file's byte order (section 2, "IFD Entry").
+  // Four bytes or fewer live in a classic entry; eight in a BigTIFF one.
+  // Left-justified, in the file's byte order (section 2, "IFD Entry").
+  const size_t inline_max = page->bigtiff ? 8u : 4u;
+  if (value_size <= inline_max) {
     memcpy(e->inline_bytes, values, value_size);
     return NULL;
   }
@@ -353,7 +366,7 @@ static bool tiff_ascii_blank(const unsigned char * p, size_t n) {
 }
 
 static void tiff_free_page(const GIMG_Allocator * alloc, tiff_page_t * page) {
-  if (page->strips) {
+  if (page->strips && !page->strips_borrowed) {
     for (size_t i = 0; i < page->strip_count; i++) {
       gimg_free(alloc, page->strips[i]);
     }
@@ -405,7 +418,7 @@ static GIMG_Result tiff_build_strips(const GIMG_Allocator * alloc,
   page->strip_sizes =
       (size_t *)gimg_calloc(alloc, page->strip_count, sizeof(size_t));
   page->strip_offsets =
-      (uint32_t *)gimg_calloc(alloc, page->strip_count, sizeof(uint32_t));
+      (uint64_t *)gimg_calloc(alloc, page->strip_count, sizeof(uint64_t));
   if (!page->strips || !page->strip_sizes || !page->strip_offsets) {
     return GIMG_ERR_OOM;
   }
@@ -413,6 +426,27 @@ static GIMG_Result tiff_build_strips(const GIMG_Allocator * alloc,
   const uint8_t * pixels =
       (const uint8_t *)gimg_raster_pixels_const(page->raster);
   const size_t stride = gimg_raster_stride_bytes(page->raster);
+
+  // An uncompressed 8-bit row is already the bytes the file wants, and the
+  // rows are contiguous when the stride is the row length. Pointing at them
+  // keeps a multi-gigabyte page from being held twice, which is the
+  // difference between a file past 4 GiB fitting in memory and it not.
+  if (!method && predictor == 0u && page->bits == 8u && pixels &&
+      stride == row_bytes) {
+    page->strips_borrowed = true;
+    for (size_t s = 0; s < page->strip_count; s++) {
+      const uint32_t first = (uint32_t)(s * rows);
+      const uint32_t count =
+          (page->height - first < rows) ? (page->height - first) : rows;
+      size_t raw_size = 0;
+      if (!gcu_safe_mul_size(count, row_bytes, &raw_size)) {
+        return GIMG_ERR_LIMIT;
+      }
+      page->strips[s] = (unsigned char *)(pixels + ((size_t)first * stride));
+      page->strip_sizes[s] = raw_size;
+    }
+    return GIMG_OK;
+  }
 
   for (size_t s = 0; s < page->strip_count; s++) {
     const uint32_t first = (uint32_t)(s * rows);
@@ -507,7 +541,9 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
   // which actually do, and this is only an upper bound on what it may use.
   size_t need = 0;
   need += (size_t)page->samples * 2u;  // BitsPerSample
-  need += page->strip_count * 4u * 2u; // StripOffsets, StripByteCounts
+  // Offsets are 4 bytes in classic TIFF and 8 in BigTIFF. The larger figure
+  // is only an upper bound; tiff_add_entry records what it actually used.
+  need += page->strip_count * (page->bigtiff ? 8u : 4u) * 2u;
   need += 8u * 2u;                     // Two RATIONAL resolutions
   need += page->icc_size;              // The profile, if there is one
   need += page->icc_size > 4u ? (page->icc_size & 1u) : 0u;
@@ -568,15 +604,21 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
   // Zeroes for now: the offsets are not known until the file has a shape, and
   // the entry has to exist before the shape can be computed. Whichever of the
   // two places they end up - inline for a single strip, the pool for more -
-  // is remembered so they can be filled in.
-  size_t offsets_bytes = page->strip_count * 4u;
+  // is remembered so they can be filled in. BigTIFF stores them as LONG8.
+  const uint16_t offset_type =
+      page->bigtiff ? GIMG_TIFF_TYPE_LONG8 : GIMG_TIFF_TYPE_LONG;
+  const size_t offset_unit = page->bigtiff ? 8u : 4u;
+  size_t offsets_bytes = 0;
+  if (!gcu_safe_mul_size(page->strip_count, offset_unit, &offsets_bytes)) {
+    return GIMG_ERR_LIMIT;
+  }
   unsigned char * offsets_scratch = (unsigned char *)gimg_calloc(
       alloc, offsets_bytes ? offsets_bytes : 1u, 1u);
   if (!offsets_scratch) {
     return GIMG_ERR_OOM;
   }
   page->offsets_in_pool = tiff_add_entry(page, GIMG_TIFF_TAG_STRIP_OFFSETS,
-      GIMG_TIFF_TYPE_LONG, (uint32_t)page->strip_count, offsets_scratch,
+      offset_type, (uint32_t)page->strip_count, offsets_scratch,
       offsets_bytes);
   page->offsets_entry = page->entry_count - 1u;
   gimg_free(alloc, offsets_scratch);
@@ -594,9 +636,14 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
     return GIMG_ERR_OOM;
   }
   for (size_t i = 0; i < page->strip_count; i++) {
-    tiff_put_u32(counts + (i * 4u), (uint32_t)page->strip_sizes[i], be);
+    if (page->bigtiff) {
+      tiff_put_u64(counts + (i * 8u), (uint64_t)page->strip_sizes[i], be);
+    }
+    else {
+      tiff_put_u32(counts + (i * 4u), (uint32_t)page->strip_sizes[i], be);
+    }
   }
-  tiff_add_entry(page, GIMG_TIFF_TAG_STRIP_BYTE_COUNTS, GIMG_TIFF_TYPE_LONG,
+  tiff_add_entry(page, GIMG_TIFF_TAG_STRIP_BYTE_COUNTS, offset_type,
       (uint32_t)page->strip_count, counts, offsets_bytes);
   gimg_free(alloc, counts);
 
@@ -666,6 +713,68 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
   return GIMG_OK;
 }
 
+static void tiff_clear_entries(const GIMG_Allocator * alloc, tiff_page_t * page) {
+  gimg_free(alloc, page->pool);
+  page->pool = NULL;
+  page->pool_size = 0;
+  page->entry_count = 0;
+  page->offsets_in_pool = NULL;
+  page->offsets_entry = 0;
+  page->pool_at = 0;
+}
+
+/**
+ * Assign every offset. Classic TIFF is refused when one of them, or the
+ * file's end, does not fit in 32 bits.
+ */
+static GIMG_Result tiff_lay_out(
+    tiff_page_t * plan, size_t pages, bool bigtiff, size_t * directory_at) {
+  const size_t header = bigtiff ? 16u : 8u;
+  const size_t entry_bytes = bigtiff ? 20u : 12u;
+  const size_t ifd_fixed = bigtiff ? 16u : 6u; // The count, and the next pointer.
+  size_t cursor = header;
+  for (size_t i = 0; i < pages; i++) {
+    tiff_page_t * page = &plan[i];
+    for (size_t s = 0; s < page->strip_count; s++) {
+      if (!bigtiff &&
+          (cursor > 0xFFFFFFFFu || page->strip_sizes[s] > 0xFFFFFFFFu)) {
+        return GIMG_ERR_LIMIT;
+      }
+      page->strip_offsets[s] = cursor;
+      if (!gcu_safe_add_size(cursor, page->strip_sizes[s], &cursor)) {
+        return GIMG_ERR_LIMIT;
+      }
+      // Keep every following offset even, as the format asks.
+      if ((cursor & 1u) && !gcu_safe_add_size(cursor, 1u, &cursor)) {
+        return GIMG_ERR_LIMIT;
+      }
+    }
+  }
+  for (size_t i = 0; i < pages; i++) {
+    if (!bigtiff && cursor > 0xFFFFFFFFu) {
+      return GIMG_ERR_LIMIT;
+    }
+    directory_at[i] = cursor;
+    size_t ifd = 0;
+    if (!gcu_safe_mul_size(plan[i].entry_count, entry_bytes, &ifd) ||
+        !gcu_safe_add_size(ifd, ifd_fixed, &ifd) ||
+        !gcu_safe_add_size(cursor, ifd, &cursor)) {
+      return GIMG_ERR_LIMIT;
+    }
+    if (!bigtiff && cursor > 0xFFFFFFFFu) {
+      return GIMG_ERR_LIMIT;
+    }
+    plan[i].pool_at = cursor;
+    if (!gcu_safe_add_size(cursor, plan[i].pool_size, &cursor)) {
+      return GIMG_ERR_LIMIT;
+    }
+  }
+  if (!bigtiff && cursor > 0xFFFFFFFFu) {
+    return GIMG_ERR_LIMIT;
+  }
+  return GIMG_OK;
+}
+
 GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report) {
@@ -693,6 +802,10 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     // Horizontal differencing without a compressor behind it makes a file
     // larger and harder to read for nothing at all. Refusing is better than
     // honouring a request that can only have been a mistake.
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  const uint8_t big_mode = options ? options->tiff_bigtiff : GIMG_TIFF_BIG_AUTO;
+  if (big_mode > GIMG_TIFF_BIG_CLASSIC) {
     return GIMG_ERR_UNSUPPORTED;
   }
 
@@ -804,44 +917,53 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (r == GIMG_OK) {
       r = tiff_build_strips(alloc, page, options, be);
     }
-    if (r == GIMG_OK) {
-      r = tiff_build_entries(alloc, page, options, be);
-    }
   }
 
-  // ---- Lay the file out ------------------------------------------------
+  // ---- Choose classic or BigTIFF, then lay the file out ----------------
+  //
+  // The strips are measured first. A default save is BigTIFF only when an
+  // offset in the classic layout does not fit in 32 bits; forcing either
+  // container skips that choice. Entries are built after the choice, because
+  // a value of five to eight bytes is inline in BigTIFF and in the pool in
+  // classic TIFF, and that changes the offsets.
   //
   // Header, then every page's strips, then every page's directory followed
   // by its own value pool. Nothing is patched afterwards, so every offset
   // below has to be right the first time.
-  size_t cursor = 8u;
-  for (size_t i = 0; i < pages && r == GIMG_OK; i++) {
-    tiff_page_t * page = &plan[i];
-    for (size_t s = 0; s < page->strip_count; s++) {
-      if (cursor > 0xFFFFFFFFu) {
-        r = GIMG_ERR_LIMIT; // Past what a classic TIFF offset can say.
-        break;
-      }
-      page->strip_offsets[s] = (uint32_t)cursor;
-      cursor += page->strip_sizes[s];
-      cursor += cursor & 1u; // Keep every offset even, as the format asks.
-    }
-  }
   size_t ifd_at[64];
   const bool many = pages > (sizeof(ifd_at) / sizeof(ifd_at[0]));
-  size_t * directory_at = many
-      ? (size_t *)gimg_calloc(alloc, pages, sizeof(size_t))
-      : ifd_at;
-  if (!directory_at) {
-    r = GIMG_ERR_OOM;
+  size_t * directory_at = NULL;
+  bool bigtiff = big_mode == GIMG_TIFF_BIG_FORCE;
+  if (r == GIMG_OK) {
+    directory_at = many ? (size_t *)gimg_calloc(alloc, pages, sizeof(size_t))
+                        : ifd_at;
+    if (!directory_at) {
+      r = GIMG_ERR_OOM;
+    }
   }
-  for (size_t i = 0; i < pages && r == GIMG_OK; i++) {
-    directory_at[i] = cursor;
-    cursor += 2u + (plan[i].entry_count * 12u) + 4u;
-    plan[i].pool_at = (uint32_t)cursor;
-    cursor += plan[i].pool_size;
-    if (cursor > 0xFFFFFFFFu) {
-      r = GIMG_ERR_LIMIT;
+  if (r == GIMG_OK && !bigtiff) {
+    for (size_t i = 0; i < pages && r == GIMG_OK; i++) {
+      plan[i].bigtiff = false;
+      r = tiff_build_entries(alloc, &plan[i], options, be);
+    }
+    if (r == GIMG_OK) {
+      r = tiff_lay_out(plan, pages, false, directory_at);
+    }
+    if (r == GIMG_ERR_LIMIT && big_mode == GIMG_TIFF_BIG_AUTO) {
+      for (size_t i = 0; i < pages; i++) {
+        tiff_clear_entries(alloc, &plan[i]);
+      }
+      bigtiff = true;
+      r = GIMG_OK;
+    }
+  }
+  if (r == GIMG_OK && bigtiff) {
+    for (size_t i = 0; i < pages && r == GIMG_OK; i++) {
+      plan[i].bigtiff = true;
+      r = tiff_build_entries(alloc, &plan[i], options, be);
+    }
+    if (r == GIMG_OK) {
+      r = tiff_lay_out(plan, pages, true, directory_at);
     }
   }
   // The strip offsets are known now, so the entry that names them can be
@@ -850,26 +972,47 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     tiff_page_t * page = &plan[i];
     if (page->offsets_in_pool) {
       for (size_t s = 0; s < page->strip_count; s++) {
-        tiff_put_u32(page->offsets_in_pool + (s * 4u), page->strip_offsets[s],
-            be);
+        if (page->bigtiff) {
+          tiff_put_u64(page->offsets_in_pool + (s * 8u),
+              page->strip_offsets[s], be);
+        }
+        else {
+          tiff_put_u32(page->offsets_in_pool + (s * 4u),
+              (uint32_t)page->strip_offsets[s], be);
+        }
       }
     }
     else if (page->strip_count > 0u) {
       // One strip, so the offset lives in the entry itself.
-      tiff_put_u32(page->entries[page->offsets_entry].inline_bytes,
-          page->strip_offsets[0], be);
+      if (page->bigtiff) {
+        tiff_put_u64(page->entries[page->offsets_entry].inline_bytes,
+            page->strip_offsets[0], be);
+      }
+      else {
+        tiff_put_u32(page->entries[page->offsets_entry].inline_bytes,
+            (uint32_t)page->strip_offsets[0], be);
+      }
     }
   }
 
   // ---- Write it front to back ------------------------------------------
   size_t total = 0;
   if (r == GIMG_OK) {
-    unsigned char header[8];
+    unsigned char header[16];
+    const size_t header_len = bigtiff ? 16u : 8u;
     header[0] = be ? 'M' : 'I';
     header[1] = header[0];
-    tiff_put_u16(header + 2, 42u, be);
-    tiff_put_u32(header + 4, (uint32_t)directory_at[0], be);
-    r = tiff_write(stream, header, sizeof(header), &total);
+    if (bigtiff) {
+      tiff_put_u16(header + 2, 43u, be);
+      tiff_put_u16(header + 4, 8u, be);
+      tiff_put_u16(header + 6, 0u, be);
+      tiff_put_u64(header + 8, (uint64_t)directory_at[0], be);
+    }
+    else {
+      tiff_put_u16(header + 2, 42u, be);
+      tiff_put_u32(header + 4, (uint32_t)directory_at[0], be);
+    }
+    r = tiff_write(stream, header, header_len, &total);
   }
   const unsigned char pad = 0u;
   for (size_t i = 0; i < pages && r == GIMG_OK; i++) {
@@ -883,34 +1026,60 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   for (size_t i = 0; i < pages && r == GIMG_OK; i++) {
     tiff_page_t * page = &plan[i];
-    unsigned char count[2];
-    tiff_put_u16(count, (uint16_t)page->entry_count, be);
-    r = tiff_write(stream, count, sizeof(count), &total);
+    unsigned char count[8];
+    const size_t count_len = page->bigtiff ? 8u : 2u;
+    if (page->bigtiff) {
+      tiff_put_u64(count, (uint64_t)page->entry_count, be);
+    }
+    else {
+      tiff_put_u16(count, (uint16_t)page->entry_count, be);
+    }
+    r = tiff_write(stream, count, count_len, &total);
     // Entries are written in tag order, which TIFF 6.0 section 2 requires
     // and which tiff_build_entries already produces by construction.
-    uint32_t pool_cursor = page->pool_at;
+    uint64_t pool_cursor = page->pool_at;
+    const size_t inline_max = page->bigtiff ? 8u : 4u;
+    const size_t entry_len = page->bigtiff ? 20u : 12u;
     for (size_t e = 0; e < page->entry_count && r == GIMG_OK; e++) {
-      unsigned char raw[12];
+      unsigned char raw[20];
+      memset(raw, 0, sizeof(raw));
       tiff_put_u16(raw, page->entries[e].tag, be);
       tiff_put_u16(raw + 2, page->entries[e].type, be);
-      tiff_put_u32(raw + 4, page->entries[e].count, be);
-      if (page->entries[e].value_size <= 4u) {
-        memcpy(raw + 8, page->entries[e].inline_bytes, 4u);
+      if (page->bigtiff) {
+        tiff_put_u64(raw + 4, page->entries[e].count, be);
       }
       else {
-        tiff_put_u32(raw + 8, pool_cursor, be);
-        pool_cursor += (uint32_t)page->entries[e].value_size;
+        tiff_put_u32(raw + 4, page->entries[e].count, be);
+      }
+      const size_t value_at = page->bigtiff ? 12u : 8u;
+      if (page->entries[e].value_size <= inline_max) {
+        memcpy(raw + value_at, page->entries[e].inline_bytes, inline_max);
+      }
+      else {
+        if (page->bigtiff) {
+          tiff_put_u64(raw + value_at, pool_cursor, be);
+        }
+        else {
+          tiff_put_u32(raw + value_at, (uint32_t)pool_cursor, be);
+        }
+        pool_cursor += page->entries[e].value_size;
         if (page->entries[e].value_size & 1u) {
           pool_cursor += 1u; // The pad byte tiff_add_entry reserved.
         }
       }
-      r = tiff_write(stream, raw, sizeof(raw), &total);
+      r = tiff_write(stream, raw, entry_len, &total);
     }
     if (r == GIMG_OK) {
-      unsigned char next[4];
-      tiff_put_u32(next,
-          (i + 1u < pages) ? (uint32_t)directory_at[i + 1u] : 0u, be);
-      r = tiff_write(stream, next, sizeof(next), &total);
+      unsigned char next[8];
+      const uint64_t nxt =
+          (i + 1u < pages) ? (uint64_t)directory_at[i + 1u] : 0u;
+      if (page->bigtiff) {
+        tiff_put_u64(next, nxt, be);
+      }
+      else {
+        tiff_put_u32(next, (uint32_t)nxt, be);
+      }
+      r = tiff_write(stream, next, page->bigtiff ? 8u : 4u, &total);
     }
     if (r == GIMG_OK && page->pool_size > 0u) {
       r = tiff_write(stream, page->pool, page->pool_size, &total);

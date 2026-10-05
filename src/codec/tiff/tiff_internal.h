@@ -51,9 +51,9 @@
 extern const unsigned char gimg_tiff_magic_le[GIMG_TIFF_SIGNATURE_LEN];
 /** "MM" then 42: big-endian classic TIFF. */
 extern const unsigned char gimg_tiff_magic_be[GIMG_TIFF_SIGNATURE_LEN];
-/** "II" then 43: little-endian BigTIFF, recognised only to be refused. */
+/** "II" then 43: little-endian BigTIFF. */
 extern const unsigned char gimg_tiff_magic_le_big[GIMG_TIFF_SIGNATURE_LEN];
-/** "MM" then 43: big-endian BigTIFF, likewise. */
+/** "MM" then 43: big-endian BigTIFF. */
 extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 
 /** @name TIFF 6.0 field types (section 2, "Types") @{ */
@@ -69,7 +69,11 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TYPE_SRATIONAL 10
 #define GIMG_TIFF_TYPE_FLOAT 11
 #define GIMG_TIFF_TYPE_DOUBLE 12
-#define GIMG_TIFF_TYPE_MAX 12
+/** 64-bit types. BigTIFF stores offsets in these; classic TIFF does not. */
+#define GIMG_TIFF_TYPE_LONG8 16
+#define GIMG_TIFF_TYPE_SLONG8 17
+#define GIMG_TIFF_TYPE_IFD8 18
+#define GIMG_TIFF_TYPE_MAX 18
 /** @} */
 
 /** @name The baseline tags this codec reads (TIFF 6.0 sections 8 and 15) @{ */
@@ -320,6 +324,8 @@ typedef struct {
 typedef struct {
   const GIMG_Allocator * allocator;
   bool big_endian;
+  /** Version 43: 8-byte offsets, 20-byte entries, a value inline in eight bytes. */
+  bool bigtiff;
   unsigned char * file; ///< The whole file, owned.
   size_t file_size;
   gimg_tiff_ifd_t * ifds;
@@ -327,10 +333,13 @@ typedef struct {
 } gimg_tiff_doc_state_t;
 
 /** Read the header and say which byte order it declares.
- * @return GIMG_OK with @p out_big_endian set, GIMG_ERR_FORMAT if the bytes
- *   are not a TIFF header, GIMG_ERR_UNSUPPORTED for BigTIFF. */
-GIMG_Result gimg_tiff_read_header(
-    const unsigned char * bytes, size_t size, bool * out_big_endian);
+ *
+ * @param out_bigtiff Set when the magic is version 43. The offset-size field
+ *   is not checked here; the loader refuses one that is not 8.
+ * @return GIMG_OK with the two outs set, GIMG_ERR_FORMAT if the bytes are not
+ *   a TIFF header. */
+GIMG_Result gimg_tiff_read_header(const unsigned char * bytes, size_t size,
+    bool * out_big_endian, bool * out_bigtiff);
 
 GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,

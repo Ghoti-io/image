@@ -13,8 +13,8 @@ presences today - what is deliberately not here. Back to
 
 - **Specification:** [TIFF Revision 6.0, final, 3 June 1992](https://web.archive.org/web/20210108172930/https://www.adobe.io/content/dam/udp/en/open/standards/tiff/TIFF6.pdf),
   Adobe Systems. Sections referenced below by their numbers in that document.
-- **BigTIFF** is a different format with its own version number (43 where TIFF
-  writes 42). It is recognised only so that it can be refused by name.
+- **BigTIFF** (version 43) is read. A save writes it when an offset does not
+  fit in 32 bits, or when the caller asks; the save section says which.
 
 Codec-owned allocations use the codec allocator, as
 \ref image_development "Development" requires; the document and its rasters
@@ -26,6 +26,17 @@ use the document allocator.
 and directory entries of every type the specification defines, with a value
 read from the entry itself when it fits in four bytes and from the offset
 those bytes hold when it does not. Every IFD becomes one document item.
+
+**BigTIFF.** Version 43 is the same directory with wider fields. The header
+is 16 bytes: the byte order, version 43, an offset-size field of 8, a zero
+word, then an 8-byte offset to the first IFD. Each IFD has an 8-byte count,
+20-byte entries and an 8-byte next pointer, and a value is read from the
+entry when it fits in eight bytes. LONG8 (16), SLONG8 (17) and IFD8 (18) are
+the 64-bit types. Strip, tile, SubIFD and JPEG-table offsets use them when
+the file is BigTIFF. An offset-size field other than 8 is
+`GIMG_ERR_UNSUPPORTED` and the diagnostic names that field. A reserved word
+other than zero is `GIMG_ERR_CORRUPT`. The whole file is still held in
+memory, and `max_decoded_pixels` still applies.
 
 **Pyramids.** A reduced-resolution copy is a `GIMG_ITEM_LEVEL` of the page it
 belongs to rather than a second picture, in both of the format's spellings:
@@ -125,10 +136,20 @@ because that is what this library's RGBA means and because libtiff's guess
 for a fourth sample it was not told about is "unspecified" rather than alpha.
 Resolution is written when the document carries DPI.
 
-Four options, all in @ref api_options "API options": `tiff_compression`
+Five options, all in @ref api_options "API options": `tiff_compression`
 (none, PackBits, LZW or Deflate), `tiff_predictor` (horizontal differencing),
-`tiff_big_endian`, and `tiff_rows_per_strip`. The default is an uncompressed
-little-endian file, which is the format's own default.
+`tiff_big_endian`, `tiff_rows_per_strip`, and `tiff_bigtiff`. The default is
+an uncompressed little-endian classic TIFF, which is the format's own
+default.
+
+`tiff_bigtiff` chooses the container. Left at zero, a save writes version 43
+only when an offset does not fit in 32 bits, and version 42 otherwise. That
+is measured after the strips are, because a value of five to eight bytes is
+inline in BigTIFF and out in the pool in classic TIFF, and the two layouts
+do not share offsets. A small image saved this way comes back as version 42
+with 12-byte entries. Forcing BigTIFF writes version 43 of that same
+picture. Forcing classic when an offset does not fit returns
+`GIMG_ERR_LIMIT` and writes nothing.
 
 The file is laid out in one pass over a plan rather than written and patched.
 Everything in a TIFF is found by absolute offset, so a writer either computes
@@ -140,7 +161,7 @@ back is not available, because an output stream here is append-only.
 | Area | Supported | Rejected / limitation |
 |---|---|---|
 | Byte order | "II" and "MM" | - |
-| Version | 42 | 43 (BigTIFF) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| Version | 42, and 43 (BigTIFF) when the header's offset size is 8 | An offset size other than 8 &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | IFD chain | Any number up to 4096, refusing a chain that does not advance | A chain that points backwards or at itself &rarr; `GIMG_ERR_CORRUPT`; `max_frame_count` caps it lower |
 | Compression (read) | 1 (none), 2 (CCITT modified Huffman), 3 (Group 3, one- and two-dimensional), 4 (Group 4), 5 (LZW, including the pre-1993 bit-reversed spelling), 6 (old-style JPEG, both shapes), 7 (JPEG), 8 and 32946 (Deflate), 32773 (PackBits), 32809 (ThunderScan) | 34676/34677 (LogLuv) and anything else &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | JPEG-in-TIFF | Compression 7 with JPEGTables (347), decoded by this library's own JPEG codec through T.81 B.4's abbreviated format - which is what the tag pair *is*. Compression 6 too: the 1992 tags, whose tables are bare arrays at file offsets and whose strips hold entropy data with no frame header, so the frame is assembled from the TIFF tags | 8-bit only, PlanarConfiguration 1 only, JPEGProc other than baseline, and a Lab photometric &rarr; `GIMG_ERR_UNSUPPORTED`, named. The Lab refusal is because the JPEG decoder has already converted the strip |
@@ -207,6 +228,12 @@ off it, and what is left is in **Not implemented** below.
   checked against a gradient recomputed in the test from the formula the
   generator used, so a transposed or mirrored decode fails rather than merely
   agreeing with its sibling.
+- **BigTIFF**, in the same file and in `test_tiff_encode.cpp`. The gray ramp
+  written as version 43 in both byte orders matches the classic file. A small
+  save at the default is version 42; forcing BigTIFF reloads to the same
+  pixels. A page whose second strip starts past 4 GiB is written as version
+  43, and a sparse file with a strip at that offset decodes the pixels that
+  were written there. An offset size other than 8 is refused by name.
 - **The cross-codec sweeps** cover TIFF with no per-format code, because they
   take their population from the codec registry: truncation at every cut point
   of every fixture, the refusal-reason sweep, the conversion matrix, and the

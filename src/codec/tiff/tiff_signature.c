@@ -33,9 +33,9 @@
  * order and the version are one indivisible test.
  *
  * BigTIFF writes 43 where classic TIFF writes 42.  Its two spellings are
- * registered here as well, not because this codec reads one, but so that a
- * BigTIFF is refused by the TIFF codec with a reason rather than falling
- * through every codec and coming back as "no format recognised these bytes".
+ * registered here as well, so a version-43 file is claimed by this codec
+ * rather than falling through every other one.  The offset-size field that
+ * follows the magic is checked by the loader: only 8 is BigTIFF.
  */
 
 #include <ghoti.io/image/macros.h>
@@ -52,11 +52,12 @@ const unsigned char gimg_tiff_magic_le_big[GIMG_TIFF_SIGNATURE_LEN] = {
 const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN] = {
     'M', 'M', 0, 43};
 
-GIMG_Result gimg_tiff_read_header(
-    const unsigned char * bytes, size_t size, bool * out_big_endian) {
-  if (!bytes || !out_big_endian) {
+GIMG_Result gimg_tiff_read_header(const unsigned char * bytes, size_t size,
+    bool * out_big_endian, bool * out_bigtiff) {
+  if (!bytes || !out_big_endian || !out_bigtiff) {
     return GIMG_ERR_INTERNAL;
   }
+  *out_bigtiff = false;
   if (size < GIMG_TIFF_SIGNATURE_LEN) {
     return GIMG_ERR_FORMAT;
   }
@@ -68,9 +69,15 @@ GIMG_Result gimg_tiff_read_header(
     *out_big_endian = true;
     return GIMG_OK;
   }
-  if (memcmp(bytes, gimg_tiff_magic_le_big, GIMG_TIFF_SIGNATURE_LEN) == 0 ||
-      memcmp(bytes, gimg_tiff_magic_be_big, GIMG_TIFF_SIGNATURE_LEN) == 0) {
-    return GIMG_ERR_UNSUPPORTED;
+  if (memcmp(bytes, gimg_tiff_magic_le_big, GIMG_TIFF_SIGNATURE_LEN) == 0) {
+    *out_big_endian = false;
+    *out_bigtiff = true;
+    return GIMG_OK;
+  }
+  if (memcmp(bytes, gimg_tiff_magic_be_big, GIMG_TIFF_SIGNATURE_LEN) == 0) {
+    *out_big_endian = true;
+    *out_bigtiff = true;
+    return GIMG_OK;
   }
   return GIMG_ERR_FORMAT;
 }
