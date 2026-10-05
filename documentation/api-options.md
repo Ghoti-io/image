@@ -14,7 +14,7 @@ question and why the default does not change with the scale.
 - **GIMG_Probe_Result** — Filled by `gimg_probe()`. Contains `format_name` (e.g. `"png"`) and `confidence` (0–100). Used to select the codec for `gimg_doc_load()` or to report format detection. **Lifetime:** `format_name` is valid only until the next call that mutates the codec registry (e.g. `gimg_codec_register()`). Do not store the pointer long-term; copy the string if you need to keep it.
 - **GIMG_Codec** — Opaque codec descriptor. Create stubs with `gimg_codec_create_stub()` or `gimg_codec_create_stub_with_allocator()`, register with `gimg_codec_register()`. Look up by name with `gimg_codec_by_name()`.
 
-@section api_options_codec_capabilities Codec capabilities (GIMG_CAP_*)
+@subsection api_options_codec_capabilities Codec capabilities (GIMG_CAP_*)
 
 Codec capability bits (see `ghoti.io/image/codec.h`) form a bitmask returned by `gimg_codec_capabilities()`. They indicate what a codec supports so callers can check before using load/save/decode or format-specific options.
 
@@ -131,7 +131,7 @@ say what a given option costs in a real file.
 
 Used by `gimg_doc_save()`.
 
-@section api_options_meta_policy Metadata policy (GIMG_Meta_Policy)
+@subsection api_options_meta_policy Metadata policy (GIMG_Meta_Policy)
 
 Controls which ancillary metadata is written on save. Defined in `ghoti.io/image/meta.h`. No silent stripping: the policy is explicit.
 
@@ -272,7 +272,7 @@ are covered by the same fallback.
 - **GIMG_Result** — Result codes (e.g. `GIMG_OK`, `GIMG_ERR_FORMAT`, `GIMG_ERR_LIMIT`, `GIMG_ERR_CORRUPT`). See `ghoti.io/image/core.h`.
 - **GIMG_Diagnostics** — List of **GIMG_Diagnostic** items (codec name, offset, chunk/tag id, severity, recommended action). Filled by `gimg_doc_load()`, which is the only entry point that takes one: a decode has no diagnostics parameter, and a save's report field is never written. See the note under Strictness. **Lifecycle:** Call `gimg_diagnostics_init(d, allocator)` to set an optional allocator (NULL = default). Append uses this allocator for realloc. When done, call `gimg_diagnostics_clear(d)` to free the list and reset count/capacity, or `gimg_diagnostics_destroy(d)` to free and zero the whole struct. Callers must call clear or destroy to avoid leaks; the same allocator is used for growth and for release.
 
-@section api_options_diagnostics_functions Diagnostics API (lifecycle)
+@subsection api_options_diagnostics_functions Diagnostics API (lifecycle)
 
 | Function | Description |
 |----------|-------------|
@@ -281,7 +281,7 @@ are covered by the same fallback.
 | `gimg_diagnostics_clear(d)` | Free the list, set count/capacity to 0. Idempotent if empty. Allocator unchanged so append can be used again. |
 | `gimg_diagnostics_destroy(d)` | Same as clear, then zero the whole struct (including allocator). Struct can be discarded or re-initialized with init. |
 
-@section api_options_error_handling Error handling
+@subsection api_options_error_handling Error handling
 
 When to return which result code, when to append diagnostics, and how output parameters behave on error.
 
@@ -310,7 +310,7 @@ Guideline: Prefer the most specific code that fits (e.g. GIMG_ERR_CORRUPT for ba
 
 On any error return, **output (out) parameters** (e.g. `GIMG_Doc ** out_doc`, `GIMG_Raster ** out_raster`) are left **unchanged** unless otherwise documented: the caller’s pointer is not written to, so any previous value remains. The implementation must not leak: if it allocated an object before failing later, it frees that object before returning. Callers should not rely on partial fills; on error they should treat all out parameters as unchanged and not use any partially filled state.
 
-@section api_options_animation Animation (item frame API)
+@subsection api_options_animation Animation (item frame API)
 
 For multi-frame formats (APNG, GIF, WebP), each **GIMG_Item** carries frame
 timing and compositing hints. Defined in `ghoti.io/image/doc.h`:
@@ -363,11 +363,11 @@ wants to honour them can:
 
 Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read them on save.
 
-@section api_options_raster_formats_12bit Raster formats (12-bit)
+@subsection api_options_raster_formats_12bit Raster formats (12-bit)
 
 **GIMG_PIXEL_GRAY12** and **GIMG_PIXEL_RGBA12** (see `ghoti.io/image/raster.h`): 12 bits per channel, stored as **uint16_t per sample** with value in **0..4095** (clamped; no left-shift in the raster). Used for codecs that support 12-bit precision (e.g. JPEG 12-bit). Conversion to/from 8- or 16-bit uses the library bit-depth API (`gimg_bitdepth_*`, `gimg_ops_convert_bit_depth`).
 
-@section api_options_color_info Color info (GCOL_Color_Info)
+@subsection api_options_color_info Color info (GCOL_Color_Info)
 
 **GCOL_Color_Info** (see `ghoti.io/image/color.h`) is attached to a raster and describes how to interpret color: the gamut, transfer, rendering intent, optional ICC profile, and (for CMYK rasters) channel polarity. Load and save **describe and carry** colour; they do not remap samples. Remapping is `gimg_ops_transform_color`, which parses `icc_bytes` (or uses stated gamut+transfer) through libs/color.
 

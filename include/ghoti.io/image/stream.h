@@ -217,6 +217,12 @@ GIMG_API void gimg_stream_destroy(GIMG_Stream * stream);
 // Limit options (spec §6.3). Used by load/decode paths.
 //
 
+/**
+ * @brief Resource limits applied while loading and decoding.
+ *
+ * A field of 0 means no limit.
+ * @see api_options
+ */
 typedef struct GIMG_Limits {
   /**
    * 0 = no limit. Read by every codec, at whichever stage knows the size:
@@ -284,7 +290,7 @@ typedef struct GIMG_Limits {
    * so a cap cannot be stepped around by nesting a bitstream in a frame.
    */
   size_t max_chunk_size;
-  uint8_t _reserved[8];
+  uint8_t _reserved[8]; ///< Zero; room to grow.
 } GIMG_Limits;
 
 /**

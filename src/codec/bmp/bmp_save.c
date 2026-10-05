@@ -709,7 +709,7 @@ typedef struct {
   bool top_down;            ///< True to write rows top to bottom.
   size_t stride;            ///< Bytes per row of uncompressed pixel data.
   size_t pixel_bytes;       ///< Bytes of pixel data, encoded or not.
-  /** Bytes @ref GIMG_BMP_V4_TAIL_AT onwards of a V4 or V5 header; used only
+  /** Bytes GIMG_BMP_V4_TAIL_AT onwards of a V4 or V5 header; used only
    * when dib_size says one of those is being written. */
   unsigned char color_tail[GIMG_BMP_V5HEADER_SIZE - GIMG_BMP_V4_TAIL_AT];
   const void * profile;     ///< ICC profile to embed, or NULL.

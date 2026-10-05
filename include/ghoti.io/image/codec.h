@@ -66,7 +66,7 @@ typedef struct {
                             ///< as gimg_codec_name() reports it; NULL if none
                             ///< did.
   unsigned int confidence;  ///< 0–100; 0 = no match.
-  uint8_t _reserved[4];
+  uint8_t _reserved[4]; ///< Zero; room to grow.
 } GIMG_Probe_Result;
 
 /**
@@ -249,7 +249,7 @@ typedef struct {
    * an alpha mask, or a V3 or later header - is not affected by this: its
    * mask is honored as written either way.  Ignored for non-BMP. */
   uint8_t bmp_rgb32_alpha;
-  uint8_t _reserved[7];
+  uint8_t _reserved[7]; ///< Zero; room to grow.
   /** Called when a file names an ICC profile rather than carrying one.
    *
    * BMP's PROFILE_LINKED is the case: the header holds a file path. This
@@ -320,8 +320,8 @@ typedef struct {
  * Caller keeps the array valid for the duration of gimg_doc_save().
  */
 typedef struct {
-  unsigned int scan_count;
-  const GIMG_JPEG_Progressive_Scan * scans;
+  unsigned int scan_count;                    ///< Number of entries in @a scans.
+  const GIMG_JPEG_Progressive_Scan * scans;   ///< The scan sequence.
 } GIMG_JPEG_Progressive_Config;
 
 /**
@@ -345,7 +345,7 @@ typedef struct {
  * @see api_options
  */
 typedef struct {
-  GIMG_Meta_Policy metadata_policy;
+  GIMG_Meta_Policy metadata_policy; ///< How metadata is carried into the output; NULL options means GIMG_META_PRESERVE_ALL.
   /** PNG: 0 = non-interlaced (default), 1 = Adam7 (11.2.2). Ignored for
    * non-PNG; GIF's four-pass order is gif_interlace, which is a different
    * field for a different format. */
@@ -854,7 +854,7 @@ typedef struct {
    * so a decode reports through its result code alone as well.
    */
   GIMG_Diagnostics * diagnostics;
-  uint8_t _reserved[8];
+  uint8_t _reserved[8]; ///< Zero; room to grow.
 } GIMG_Save_Report;
 
 /**
@@ -924,7 +924,7 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
  * @see api_options
  */
 typedef struct {
-  const GIMG_Limits * limits;
+  const GIMG_Limits * limits; ///< Resource limits, or NULL for none.
   /** JPEG: chroma upsampling when decoding 4:2:0/4:2:2.
    * GIMG_JPEG_CHROMA_UPSAMPLE_DEFAULT (0), FANCY (1) or SIMPLE (2).
    * DEFAULT means FANCY, so passing a zero-initialized GIMG_Decode_Options
@@ -976,7 +976,7 @@ typedef struct {
    * the reverse; neither does both, so neither setting reproduces either of
    * them exactly.  \ref format_gif "GIF" has the table. */
   uint8_t gif_background;
-  uint8_t _reserved[5];
+  uint8_t _reserved[5]; ///< Zero; room to grow.
 } GIMG_Decode_Options;
 
 /**

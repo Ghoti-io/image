@@ -111,7 +111,7 @@ typedef struct {
    */
   uint8_t bits_per_channel[8];
   uint8_t alignment;                ///< Row alignment in bytes (e.g. 16).
-  uint8_t _reserved[5];
+  uint8_t _reserved[5]; ///< Zero; room to grow.
 } GIMG_Pixel_Format;
 
 /**

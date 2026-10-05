@@ -64,13 +64,13 @@ typedef enum {
  * @brief Single diagnostic: codec, offset, chunk/tag, severity, action.
  */
 typedef struct {
-  const char * codec_name;
-  size_t offset;
-  uint32_t chunk_or_tag_id;
-  GIMG_Diag_Severity severity;
+  const char * codec_name;        ///< Name of the codec that raised the diagnostic.
+  size_t offset;                  ///< Byte offset in the input where the problem was found.
+  uint32_t chunk_or_tag_id;       ///< Identifier of the chunk or tag concerned.
+  GIMG_Diag_Severity severity;    ///< Warning or error.
   const char *
       recommended_action; ///< Optional; e.g. "increase max_chunk_size".
-  uint8_t _reserved[8];
+  uint8_t _reserved[8]; ///< Zero; room to grow.
 } GIMG_Diagnostic;
 
 /**
@@ -82,10 +82,10 @@ typedef struct {
  * or gimg_diagnostics_destroy() when done to avoid leaks.
  */
 typedef struct {
-  GIMG_Diagnostic * items;
-  size_t count;
-  size_t capacity;
-  const GIMG_Allocator * allocator;
+  GIMG_Diagnostic * items;        ///< The diagnostics, in the order they were appended.
+  size_t count;                   ///< Number of diagnostics in use.
+  size_t capacity;                ///< Number of diagnostics @a items has room for.
+  const GIMG_Allocator * allocator; ///< Allocator for the list, or NULL for the default.
 } GIMG_Diagnostics;
 
 /**

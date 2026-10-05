@@ -302,6 +302,7 @@ static bool gimg_png_fill_color_info_from_ancillary(
   }
   return said_something;
 }
+/** @} */
 
 /** APNG frame compositing: blend frame rectangle onto canvas at (fx,fy).
  * SOURCE (blend_op 0): replace canvas region with frame pixels.

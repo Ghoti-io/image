@@ -205,7 +205,7 @@ typedef enum {
 typedef struct {
   GIMG_Resample_Filter filter; ///< Default GIMG_FILTER_AUTO.
   GIMG_Resample_Space space;   ///< Default GIMG_RESAMPLE_SPACE_ENCODED.
-  uint8_t _reserved[8];
+  uint8_t _reserved[8]; ///< Zero; room to grow.
 } GIMG_Resize_Options;
 
 /**
@@ -355,10 +355,10 @@ GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
  * ::GCOL_TRANSFORM_BPC, ::GCOL_TRANSFORM_TONE_MAP).
  */
 typedef struct {
-  GCOL_Color_Info dest;
-  GCOL_Rendering_Intent intent;
-  uint32_t flags;
-  uint8_t _reserved[8];
+  GCOL_Color_Info dest;           ///< Destination colour description.
+  GCOL_Rendering_Intent intent;   ///< Rendering intent; defaults to relative colorimetric.
+  uint32_t flags;                 ///< GCOL_TRANSFORM_* flags passed to libs/color.
+  uint8_t _reserved[8];           ///< Zero; room to grow.
 } GIMG_Color_Transform_Options;
 
 /**

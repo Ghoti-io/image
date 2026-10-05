@@ -16,8 +16,8 @@ presences today - what is deliberately not here. Back to
 - **BigTIFF** (version 43) is read. A save writes it when an offset does not
   fit in 32 bits, or when the caller asks; the save section says which.
 
-Codec-owned allocations use the codec allocator, as
-\ref image_development "Development" requires; the document and its rasters
+Codec-owned allocations use the codec allocator, as the development conventions
+require; the document and its rasters
 use the document allocator.
 
 ## Parts implemented
@@ -94,12 +94,12 @@ with libtiff sample for sample rather than by one on the green channel. See
 the deviations table.
 
 **Colour.** Grayscale (photometric 0 and 1) comes back as GRAY8 or GRAY16.
-WhiteIsZero is complemented on the way out. RGB and a palette come back as
+WhiteIsZero is complemented on the way out. RGB and a palette come back as the development conventions
 RGBA8 or RGBA16, which is what the BMP and GIF decoders also hand back at
 eight bits. A ColorMap is expanded with the rounding PNG 13.12 states, which
 is what this library uses for every other depth conversion. A separated image
 is CMYK at 8 or 16 bits. YCbCr and Lab are ways of storing colour rather than
-rasters this library carries; both are described below and both come back as
+rasters this library carries; both are described below and both come back as the development conventions
 RGBA8.
 
 **Alpha.** ExtraSamples 1 (associated) is divided back out, because this
