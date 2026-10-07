@@ -1183,7 +1183,6 @@ static void add_hist(uint32_t * dst, const uint32_t * src) {
 /** Merge tiles while sharing a tree group saves more header than it costs. */
 static int cluster_tiles(uint32_t * hists, int * map, int ntiles) {
   int alive[VP8L_HUFF_TILES];
-  int ng = ntiles;
   uint32_t sum[VP8L_HIST_STRIDE];
 
   for (int i = 0; i < ntiles; ++i) {
@@ -1222,7 +1221,6 @@ static int cluster_tiles(uint32_t * hists, int * map, int ntiles) {
     add_hist(hists + (size_t)ba * VP8L_HIST_STRIDE,
         hists + (size_t)bb * VP8L_HIST_STRIDE);
     alive[bb] = 0;
-    --ng;
     for (int t = 0; t < ntiles; ++t) {
       if (map[t] == bb) {
         map[t] = ba;
