@@ -47,6 +47,7 @@ enum {
   VP8L_BLUE = 2,
   VP8L_ALPHA = 3,
   VP8L_DIST = 4,
+  /* Initial node pool; it grows as a file's codes need more. */
   VP8L_HUFF_NODE_POOL = 65536,
   VP8L_MAX_SYMBOLS = VP8L_NUM_LITERAL + VP8L_NUM_LENGTH + (1 << VP8L_MAX_CACHE_BITS)
 };
@@ -138,6 +139,7 @@ typedef struct {
 
 typedef struct {
   vp8l_huff_node_t * nodes;
+  int base; /* offset of nodes in the decoder's pool */
   int capacity;
   int used;
   int32_t root; /* -1 empty; >=0 node; leaf-only tree uses special */
@@ -529,28 +531,56 @@ static int read_huffman_code_lengths(vp8l_dec_t * dec,
   return 1;
 }
 
+/* A tree over alphabet_size symbols has at most alphabet_size - 1 internal
+ * nodes. The pool grows here, so it is sized by the codes a file carries
+ * rather than by a fixed count that large valid images exceed. */
+static int reserve_nodes(vp8l_dec_t * dec, int need) {
+  int cap = dec->node_pool_cap;
+  vp8l_huff_node_t * grown;
+  if (cap - dec->node_pool_used >= need) {
+    return 1;
+  }
+  while (cap - dec->node_pool_used < need) {
+    if (cap > (1 << 29)) {
+      set_err(dec, GIMG_ERR_OOM);
+      return 0;
+    }
+    cap *= 2;
+  }
+  grown = (vp8l_huff_node_t *)gimg_realloc(
+      dec->alloc, dec->node_pool, (size_t)cap * sizeof(*grown));
+  if (!grown) {
+    set_err(dec, GIMG_ERR_OOM);
+    return 0;
+  }
+  dec->node_pool = grown;
+  dec->node_pool_cap = cap;
+  return 1;
+}
+
+/* keep = 0 builds the tree to validate it and gives its nodes back. */
 static int read_huffman_code(vp8l_dec_t * dec, int alphabet_size,
-    vp8l_huff_t * out_tree) {
+    vp8l_huff_t * out_tree, int keep) {
   const int simple_code = br_read_bits(&dec->br, 1);
   memset(dec->code_lengths, 0, (size_t)alphabet_size * sizeof(int));
 
   if (simple_code) {
+    /* A symbol past the alphabet (only the 40-symbol distance alphabet can
+     * be named past its end in eight bits) is dropped, as libwebp 1.5.0
+     * drops it: the other symbol, if any, becomes a single-symbol code, and
+     * a code left empty is refused by huff_build. */
     const int num_symbols = br_read_bits(&dec->br, 1) + 1;
     const int first_symbol_len_code = br_read_bits(&dec->br, 1);
     int symbol =
         br_read_bits(&dec->br, (first_symbol_len_code == 0) ? 1 : 8);
-    if (symbol >= alphabet_size) {
-      set_err(dec, GIMG_ERR_CORRUPT);
-      return 0;
+    if (symbol < alphabet_size) {
+      dec->code_lengths[symbol] = 1;
     }
-    dec->code_lengths[symbol] = 1;
     if (num_symbols == 2) {
       symbol = br_read_bits(&dec->br, 8);
-      if (symbol >= alphabet_size) {
-        set_err(dec, GIMG_ERR_CORRUPT);
-        return 0;
+      if (symbol < alphabet_size) {
+        dec->code_lengths[symbol] = 1;
       }
-      dec->code_lengths[symbol] = 1;
     }
   }
   else {
@@ -576,17 +606,19 @@ static int read_huffman_code(vp8l_dec_t * dec, int alphabet_size,
     return 0;
   }
 
-  out_tree->nodes = dec->node_pool + dec->node_pool_used;
-  out_tree->capacity = dec->node_pool_cap - dec->node_pool_used;
-  if (out_tree->capacity < 2) {
-    set_err(dec, GIMG_ERR_OOM);
+  if (!reserve_nodes(dec, alphabet_size)) {
     return 0;
   }
+  out_tree->base = dec->node_pool_used;
+  out_tree->nodes = dec->node_pool + out_tree->base;
+  out_tree->capacity = dec->node_pool_cap - dec->node_pool_used;
   if (!huff_build(out_tree, dec->code_lengths, alphabet_size)) {
     set_err(dec, GIMG_ERR_CORRUPT);
     return 0;
   }
-  dec->node_pool_used += out_tree->used;
+  if (keep) {
+    dec->node_pool_used += out_tree->used;
+  }
   return 1;
 }
 
@@ -670,10 +702,9 @@ static int read_huffman_codes(vp8l_dec_t * dec, int xsize, int ysize,
           alphabet_size += 1 << color_cache_bits;
         }
         memset(&discard, 0, sizeof(discard));
-        if (!read_huffman_code(dec, alphabet_size, &discard)) {
+        if (!read_huffman_code(dec, alphabet_size, &discard, 0)) {
           goto Error;
         }
-        /* Nodes consumed into pool but unused — fine. */
       }
     }
     else {
@@ -684,10 +715,17 @@ static int read_huffman_codes(vp8l_dec_t * dec, int xsize, int ysize,
         if (j == 0 && color_cache_bits > 0) {
           alphabet_size += 1 << color_cache_bits;
         }
-        if (!read_huffman_code(dec, alphabet_size, &group->trees[j])) {
+        if (!read_huffman_code(dec, alphabet_size, &group->trees[j], 1)) {
           goto Error;
         }
       }
+    }
+  }
+  /* The pool may have moved while it grew. */
+  for (int i = 0; i < num_htree_groups; ++i) {
+    for (int j = 0; j < VP8L_HUFFMAN_PER_META; ++j) {
+      vp8l_huff_t * tree = &dec->htree_groups[i].trees[j];
+      tree->nodes = dec->node_pool + tree->base;
     }
   }
   ok = 1;
