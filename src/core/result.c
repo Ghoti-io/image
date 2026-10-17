@@ -36,6 +36,7 @@ static const char * const gimg_result_strings[] = {
     "corrupt data",
     "out of memory",
     "internal error",
+    "invalid argument",
 };
 
 GIMG_API const char * gimg_result_string(GIMG_Result result) {

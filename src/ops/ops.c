@@ -518,6 +518,11 @@ GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
   if (r != GIMG_OK) {
     return r;
   }
+  // The built-in at the new depth says straight; the samples are scaled, not
+  // re-interpreted, so the form is the source's.
+  if (src_f->channel_model == GIMG_CHANNEL_RGBA) {
+    (*out_raster)->format.alpha_form = src_f->alpha_form;
+  }
   size_t src_stride = gimg_raster_stride_bytes(src);
   size_t dst_stride = gimg_raster_stride_bytes(*out_raster);
   const unsigned char * sp =
@@ -594,6 +599,10 @@ GIMG_API GIMG_Result gimg_alpha_premultiply(GIMG_Raster * raster) {
   if (!format_is_rgba8(gimg_raster_format(raster))) {
     return GIMG_ERR_UNSUPPORTED;
   }
+  // The form is the whole defence against applying the same step twice.
+  if (gimg_raster_format(raster)->alpha_form != GIMG_ALPHA_STRAIGHT) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
   unsigned char * p = (unsigned char *)gimg_raster_pixels(raster);
   size_t stride = gimg_raster_stride_bytes(raster);
   uint32_t width = gimg_raster_width(raster);
@@ -612,6 +621,7 @@ GIMG_API GIMG_Result gimg_alpha_premultiply(GIMG_Raster * raster) {
       px[2] = (unsigned char)((unsigned int)px[2] * a / 255);
     }
   }
+  raster->format.alpha_form = (uint8_t)GIMG_ALPHA_PREMULTIPLIED;
   return GIMG_OK;
 }
 
@@ -620,6 +630,10 @@ GIMG_API GIMG_Result gimg_alpha_unpremultiply(GIMG_Raster * raster) {
     return GIMG_ERR_INTERNAL;
   }
   if (!format_is_rgba8(gimg_raster_format(raster))) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  // The form is the whole defence against applying the same step twice.
+  if (gimg_raster_format(raster)->alpha_form != GIMG_ALPHA_PREMULTIPLIED) {
     return GIMG_ERR_UNSUPPORTED;
   }
   unsigned char * p = (unsigned char *)gimg_raster_pixels(raster);
@@ -639,6 +653,7 @@ GIMG_API GIMG_Result gimg_alpha_unpremultiply(GIMG_Raster * raster) {
       px[2] = (unsigned char)((unsigned int)px[2] * 255 / a);
     }
   }
+  raster->format.alpha_form = (uint8_t)GIMG_ALPHA_STRAIGHT;
   return GIMG_OK;
 }
 
@@ -658,7 +673,8 @@ GIMG_API bool gimg_ops_raster_equal(const GIMG_Raster * a, const GIMG_Raster * b
   const GIMG_Pixel_Format * fb = gimg_raster_format(b);
   if (!fa || !fb || fa->channel_model != fb->channel_model ||
       fa->channel_type != fb->channel_type ||
-      fa->channel_count != fb->channel_count) {
+      fa->channel_count != fb->channel_count ||
+      fa->alpha_form != fb->alpha_form) {
     return false;
   }
   for (int i = 0; i < 8; i++) {

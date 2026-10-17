@@ -1020,3 +1020,164 @@ TEST(Ops, SixteenBitCmykUsesTheWholeRange) {
   gimg_raster_destroy(src);
   gimg_raster_destroy(dst);
 }
+
+// ---- Alpha form (AD-26) ----------------------------------------------------
+
+namespace {
+
+GIMG_Raster * make_rgba8_pixel(unsigned char r, unsigned char g,
+    unsigned char b, unsigned char a, GIMG_Alpha_Form form = GIMG_ALPHA_STRAIGHT,
+    uint32_t w = 1, uint32_t h = 1) {
+  GIMG_Pixel_Format f = GIMG_PIXEL_RGBA8;
+  f.alpha_form = form;
+  GIMG_Raster * raster = nullptr;
+  EXPECT_EQ(gimg_raster_create(
+                w, h, &f, GIMG_RASTER_OWNED, nullptr, 0, &raster),
+      GIMG_OK);
+  unsigned char * p = (unsigned char *)gimg_raster_pixels(raster);
+  for (uint32_t i = 0; i < w * h; i++) {
+    p[i * 4 + 0] = r;
+    p[i * 4 + 1] = g;
+    p[i * 4 + 2] = b;
+    p[i * 4 + 3] = a;
+  }
+  return raster;
+}
+
+} // namespace
+
+TEST(OpsAlphaForm, PremultiplyThenUnpremultiplyMovesTheForm) {
+  GIMG_Raster * r = make_rgba8_pixel(100, 150, 200, 128);
+  ASSERT_NE(r, nullptr);
+  EXPECT_EQ(gimg_raster_format(r)->alpha_form, GIMG_ALPHA_STRAIGHT);
+  ASSERT_EQ(gimg_alpha_premultiply(r), GIMG_OK);
+  EXPECT_EQ(gimg_raster_format(r)->alpha_form, GIMG_ALPHA_PREMULTIPLIED);
+  const unsigned char * p = (const unsigned char *)gimg_raster_pixels(r);
+  // Bytes are those of the pre-existing arithmetic: v * a / 255.
+  EXPECT_EQ(p[0], 100 * 128 / 255);
+  EXPECT_EQ(p[1], 150 * 128 / 255);
+  EXPECT_EQ(p[2], 200 * 128 / 255);
+  EXPECT_EQ(p[3], 128);
+  ASSERT_EQ(gimg_alpha_unpremultiply(r), GIMG_OK);
+  EXPECT_EQ(gimg_raster_format(r)->alpha_form, GIMG_ALPHA_STRAIGHT);
+  EXPECT_EQ(p[0], (100 * 128 / 255) * 255 / 128);
+  gimg_raster_destroy(r);
+}
+
+TEST(OpsAlphaForm, PremultiplyTwiceIsRefusedAndPixelsAreUnchanged) {
+  GIMG_Raster * r = make_rgba8_pixel(100, 150, 200, 128);
+  ASSERT_EQ(gimg_alpha_premultiply(r), GIMG_OK);
+  unsigned char before[4];
+  std::memcpy(before, gimg_raster_pixels(r), 4);
+  EXPECT_EQ(gimg_alpha_premultiply(r), GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(std::memcmp(before, gimg_raster_pixels(r), 4), 0);
+  EXPECT_EQ(gimg_raster_format(r)->alpha_form, GIMG_ALPHA_PREMULTIPLIED);
+  gimg_raster_destroy(r);
+}
+
+TEST(OpsAlphaForm, UnpremultiplyOfStraightIsRefusedAndPixelsAreUnchanged) {
+  GIMG_Raster * r = make_rgba8_pixel(100, 150, 200, 128);
+  unsigned char before[4];
+  std::memcpy(before, gimg_raster_pixels(r), 4);
+  EXPECT_EQ(gimg_alpha_unpremultiply(r), GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(std::memcmp(before, gimg_raster_pixels(r), 4), 0);
+  EXPECT_EQ(gimg_raster_format(r)->alpha_form, GIMG_ALPHA_STRAIGHT);
+  gimg_raster_destroy(r);
+}
+
+TEST(OpsAlphaForm, LegacyZeroFormPremultipliesAsStraight) {
+  GIMG_Pixel_Format legacy = GIMG_PIXEL_RGBA8;
+  legacy.alpha_form = 0;
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                1, 1, &legacy, GIMG_RASTER_OWNED, nullptr, 0, &r),
+      GIMG_OK);
+  EXPECT_EQ(gimg_alpha_premultiply(r), GIMG_OK);
+  EXPECT_EQ(gimg_raster_format(r)->alpha_form, GIMG_ALPHA_PREMULTIPLIED);
+  gimg_raster_destroy(r);
+}
+
+TEST(OpsAlphaForm, NoAlphaFormatIsStillUnsupported) {
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                1, 1, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED, nullptr, 0, &r),
+      GIMG_OK);
+  EXPECT_EQ(gimg_alpha_premultiply(r), GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(gimg_alpha_unpremultiply(r), GIMG_ERR_UNSUPPORTED);
+  gimg_raster_destroy(r);
+}
+
+TEST(OpsAlphaForm, CompositeOverRefusesPremultipliedAndMismatchedForms) {
+  GIMG_Raster * dst = make_rgba8_pixel(0, 0, 0, 255);
+  GIMG_Raster * src = make_rgba8_pixel(10, 20, 30, 128);
+  EXPECT_EQ(gimg_ops_composite(dst, src, 0, 0, GIMG_COMPOSITE_OVER), GIMG_OK);
+  ASSERT_EQ(gimg_alpha_premultiply(src), GIMG_OK);
+  // Mismatched forms.
+  EXPECT_EQ(gimg_ops_composite(dst, src, 0, 0, GIMG_COMPOSITE_OVER),
+      GIMG_ERR_UNSUPPORTED);
+  // Both premultiplied: OVER is the straight formula, so refused.
+  ASSERT_EQ(gimg_alpha_premultiply(dst), GIMG_OK);
+  EXPECT_EQ(gimg_ops_composite(dst, src, 0, 0, GIMG_COMPOSITE_OVER),
+      GIMG_ERR_UNSUPPORTED);
+  // A plain copy of one form onto the same form is fine.
+  EXPECT_EQ(gimg_ops_composite(dst, src, 0, 0, GIMG_COMPOSITE_SOURCE), GIMG_OK);
+  gimg_raster_destroy(dst);
+  gimg_raster_destroy(src);
+}
+
+TEST(OpsAlphaForm, ResizeAndTransformRefusePremultiplied) {
+  GIMG_Raster * r = make_rgba8_pixel(10, 20, 30, 128, GIMG_ALPHA_STRAIGHT, 4, 4);
+  GIMG_Raster * out = nullptr;
+  // A tagged source, so that a refusal below cannot be the "untagged RGB"
+  // refusal.
+  GCOL_Color_Info ci;
+  gcol_color_info_default(&ci);
+  ASSERT_TRUE(gcol_color_info_set_gamut(&ci, GCOL_PRIMARIES_DISPLAY_P3));
+  ci.transfer = GCOL_TRANSFER_SRGB;
+  ASSERT_EQ(gimg_raster_set_color_info(r, &ci), GIMG_OK);
+  GIMG_Resize_Options opts;
+  gimg_resize_options_default(&opts);
+  EXPECT_EQ(gimg_ops_resize(r, 2, 2, &opts, &out), GIMG_OK);
+  gimg_raster_destroy(out);
+  out = nullptr;
+  ASSERT_EQ(gimg_alpha_premultiply(r), GIMG_OK);
+  EXPECT_EQ(gimg_ops_resize(r, 2, 2, &opts, &out), GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(out, nullptr);
+  GIMG_Color_Transform_Options topts;
+  gimg_color_transform_options_srgb(&topts);
+  EXPECT_EQ(gimg_ops_transform_color(r, &topts, &out), GIMG_ERR_UNSUPPORTED);
+  EXPECT_EQ(out, nullptr);
+  // The control: the same call on a straight raster is accepted, so the
+  // refusal above is about the form and nothing else.
+  GIMG_Raster * straight = make_rgba8_pixel(10, 20, 30, 128);
+  ASSERT_EQ(gimg_raster_set_color_info(straight, &ci), GIMG_OK);
+  EXPECT_EQ(gimg_ops_transform_color(straight, &topts, &out), GIMG_OK);
+  gimg_raster_destroy(out);
+  gimg_raster_destroy(straight);
+  gimg_raster_destroy(r);
+}
+
+TEST(OpsAlphaForm, BitDepthConversionKeepsTheSourceForm) {
+  GIMG_Raster * r = make_rgba8_pixel(10, 20, 30, 128);
+  ASSERT_EQ(gimg_alpha_premultiply(r), GIMG_OK);
+  GIMG_Raster * wide = nullptr;
+  ASSERT_EQ(gimg_ops_convert_bit_depth(r, 16, &wide), GIMG_OK);
+  EXPECT_EQ(gimg_raster_format(wide)->alpha_form, GIMG_ALPHA_PREMULTIPLIED);
+  gimg_raster_destroy(wide);
+  GIMG_Raster * copy = nullptr;
+  ASSERT_EQ(gimg_ops_convert_bit_depth(r, 8, &copy), GIMG_OK);
+  EXPECT_EQ(gimg_raster_format(copy)->alpha_form, GIMG_ALPHA_PREMULTIPLIED);
+  gimg_raster_destroy(copy);
+  gimg_raster_destroy(r);
+}
+
+TEST(OpsAlphaForm, RasterEqualComparesTheForm) {
+  GIMG_Raster * a = make_rgba8_pixel(10, 20, 30, 255);
+  GIMG_Raster * b = make_rgba8_pixel(10, 20, 30, 255);
+  EXPECT_TRUE(gimg_ops_raster_equal(a, b));
+  ASSERT_EQ(gimg_alpha_premultiply(b), GIMG_OK); // opaque: bytes do not change
+  EXPECT_EQ(std::memcmp(gimg_raster_pixels(a), gimg_raster_pixels(b), 4), 0);
+  EXPECT_FALSE(gimg_ops_raster_equal(a, b));
+  gimg_raster_destroy(a);
+  gimg_raster_destroy(b);
+}

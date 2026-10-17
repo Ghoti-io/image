@@ -22,6 +22,24 @@
  * @file
  *
  * Basic operations: orientation, pixel format conversion, alpha (spec §8).
+ *
+ * **Alpha form.** An RGBA raster records whether its color channels are
+ * straight or premultiplied (GIMG_Pixel_Format::alpha_form), and each
+ * operation here states which it accepts:
+ *
+ * - gimg_alpha_premultiply() takes STRAIGHT and leaves PREMULTIPLIED;
+ *   gimg_alpha_unpremultiply() takes PREMULTIPLIED and leaves STRAIGHT.  Each
+ *   refuses the other form with GIMG_ERR_UNSUPPORTED and leaves the pixels
+ *   untouched.
+ * - gimg_ops_composite() with GIMG_COMPOSITE_OVER, gimg_ops_resize() and
+ *   gimg_ops_transform_color() take STRAIGHT (or no alpha) and refuse
+ *   PREMULTIPLIED with GIMG_ERR_UNSUPPORTED.  gimg_ops_composite() also
+ *   requires the two rasters to have the same form.
+ * - Operations that only move or copy samples (orientation, the mirrors and
+ *   quarter turns, crop, a same-format gimg_ops_convert_pixel_format(),
+ *   gimg_ops_convert_bit_depth()) accept either form and give the result the
+ *   source's form.
+ * - gimg_ops_raster_equal() treats two rasters of different forms as unequal.
  */
 
 #ifndef GHOTI_IO_GIMG_OPS_H
@@ -100,7 +118,9 @@ typedef enum {
  * GIMG_COMPOSITE_SOURCE works for any format whose pixel is a whole number of
  * bytes. GIMG_COMPOSITE_OVER needs RGBA at 8 or 16 bits.
  *
- * Alpha is straight, not premultiplied, on the way in and on the way out.
+ * Alpha is straight, not premultiplied, on the way in and on the way out;
+ * OVER refuses a premultiplied destination (GIMG_ERR_UNSUPPORTED), and the
+ * two rasters must have the same alpha form.
  * Where the result is wholly transparent the colour channels are set to zero
  * rather than left holding the destination's, so that compositing the same
  * source over two different destinations gives the same bytes wherever
@@ -406,15 +426,24 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
 
 /**
  * @brief Premultiply alpha (straight -> premultiplied) (spec §4.4).
- * @param raster RGBA raster (in-place).
- * @return GIMG_OK or GIMG_ERR_UNSUPPORTED if format not supported.
+ *
+ * Accepts an RGBA8 raster whose alpha form is GIMG_ALPHA_STRAIGHT; on success
+ * the form reads GIMG_ALPHA_PREMULTIPLIED.  An already-premultiplied raster is
+ * refused rather than multiplied twice.
+ * @param raster RGBA8 raster (in-place).
+ * @return GIMG_OK, or GIMG_ERR_UNSUPPORTED if the format is not RGBA8 or the
+ *   raster is not straight; the pixels are untouched in that case.
  */
 GIMG_API GIMG_Result gimg_alpha_premultiply(GIMG_Raster * raster);
 
 /**
  * @brief Unpremultiply alpha (premultiplied -> straight).
- * @param raster RGBA raster (in-place).
- * @return GIMG_OK or GIMG_ERR_UNSUPPORTED if format not supported.
+ *
+ * Accepts an RGBA8 raster whose alpha form is GIMG_ALPHA_PREMULTIPLIED; on
+ * success the form reads GIMG_ALPHA_STRAIGHT.  A straight raster is refused.
+ * @param raster RGBA8 raster (in-place).
+ * @return GIMG_OK, or GIMG_ERR_UNSUPPORTED if the format is not RGBA8 or the
+ *   raster is not premultiplied; the pixels are untouched in that case.
  */
 GIMG_API GIMG_Result gimg_alpha_unpremultiply(GIMG_Raster * raster);
 

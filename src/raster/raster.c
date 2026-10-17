@@ -40,6 +40,7 @@ static const GIMG_Pixel_Format gimg_pixel_rgba8 = {
     .channel_count = 4,
     .bits_per_channel = {8, 8, 8, 8, 0, 0, 0, 0},
     .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_STRAIGHT,
     ._reserved = {0},
 };
 
@@ -50,6 +51,7 @@ static const GIMG_Pixel_Format gimg_pixel_rgba16 = {
     .channel_count = 4,
     .bits_per_channel = {16, 16, 16, 16, 0, 0, 0, 0},
     .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_STRAIGHT,
     ._reserved = {0},
 };
 
@@ -60,6 +62,7 @@ static const GIMG_Pixel_Format gimg_pixel_gray8 = {
     .channel_count = 1,
     .bits_per_channel = {8, 0, 0, 0, 0, 0, 0, 0},
     .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_NONE,
     ._reserved = {0},
 };
 
@@ -70,6 +73,7 @@ static const GIMG_Pixel_Format gimg_pixel_gray16 = {
     .channel_count = 1,
     .bits_per_channel = {16, 0, 0, 0, 0, 0, 0, 0},
     .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_NONE,
     ._reserved = {0},
 };
 
@@ -80,6 +84,7 @@ static const GIMG_Pixel_Format gimg_pixel_gray12 = {
     .channel_count = 1,
     .bits_per_channel = {12, 0, 0, 0, 0, 0, 0, 0},
     .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_NONE,
     ._reserved = {0},
 };
 
@@ -90,6 +95,7 @@ static const GIMG_Pixel_Format gimg_pixel_rgba12 = {
     .channel_count = 4,
     .bits_per_channel = {12, 12, 12, 12, 0, 0, 0, 0},
     .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_STRAIGHT,
     ._reserved = {0},
 };
 
@@ -100,6 +106,7 @@ static const GIMG_Pixel_Format gimg_pixel_cmyk8 = {
     .channel_count = 4,
     .bits_per_channel = {8, 8, 8, 8, 0, 0, 0, 0},
     .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_NONE,
     ._reserved = {0},
 };
 
@@ -114,6 +121,7 @@ static const GIMG_Pixel_Format gimg_pixel_cmyk12 = {
     .channel_count = 4,
     .bits_per_channel = {12, 12, 12, 12, 0, 0, 0, 0},
     .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_NONE,
     ._reserved = {0},
 };
 
@@ -124,6 +132,7 @@ static const GIMG_Pixel_Format gimg_pixel_cmyk16 = {
     .channel_count = 4,
     .bits_per_channel = {16, 16, 16, 16, 0, 0, 0, 0},
     .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_NONE,
     ._reserved = {0},
 };
 
@@ -236,6 +245,22 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
   if (ownership == GIMG_RASTER_BORROWED && !buffer) {
     return GIMG_ERR_INTERNAL;
   }
+
+  GIMG_Pixel_Format resolved = *format;
+  if (resolved.alpha_form > GIMG_ALPHA_PREMULTIPLIED) {
+    return GIMG_ERR_INVALID;
+  }
+  if (resolved.channel_model == GIMG_CHANNEL_RGBA) {
+    // Zero is a struct from before the field existed; straight is what every
+    // RGBA raster here has always been.
+    if (resolved.alpha_form == GIMG_ALPHA_NONE) {
+      resolved.alpha_form = GIMG_ALPHA_STRAIGHT;
+    }
+  }
+  else if (resolved.alpha_form != GIMG_ALPHA_NONE) {
+    return GIMG_ERR_INVALID;
+  }
+  format = &resolved;
 
   size_t bpp = gimg_raster_bytes_per_pixel(format);
   if (bpp == 0) {

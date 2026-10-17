@@ -775,6 +775,11 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
     // the other palette work already puts it.
     return GIMG_ERR_UNSUPPORTED;
   }
+  if (fmt->alpha_form == GIMG_ALPHA_PREMULTIPLIED) {
+    // The filter premultiplies on the way in and divides back out on the way
+    // out; it takes straight alpha and gives straight alpha.
+    return GIMG_ERR_UNSUPPORTED;
+  }
   const uint8_t channels = fmt->channel_count;
   if (channels == 0u) {
     return GIMG_ERR_UNSUPPORTED;

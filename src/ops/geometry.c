@@ -124,7 +124,8 @@ static bool gimg_geometry_same_format(
     const GIMG_Pixel_Format * a, const GIMG_Pixel_Format * b) {
   if (a->channel_model != b->channel_model ||
       a->channel_type != b->channel_type || a->layout != b->layout ||
-      a->channel_count != b->channel_count) {
+      a->channel_count != b->channel_count ||
+      a->alpha_form != b->alpha_form) {
     return false;
   }
   for (uint8_t i = 0; i < a->channel_count && i < 8u; i++) {
@@ -237,6 +238,11 @@ GIMG_API GIMG_Result gimg_ops_composite(GIMG_Raster * dst,
       return GIMG_ERR_UNSUPPORTED;
     }
     if (bits != 8u && bits != 16u) {
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    // The blend below is the straight-alpha formula; applied to premultiplied
+    // samples it would be quietly wrong.
+    if (dst_fmt->alpha_form != GIMG_ALPHA_STRAIGHT) {
       return GIMG_ERR_UNSUPPORTED;
     }
   }

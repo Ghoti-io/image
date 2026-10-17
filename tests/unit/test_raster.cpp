@@ -112,3 +112,95 @@ int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// ---- Alpha form (AD-26) ----------------------------------------------------
+
+TEST(RasterAlphaForm, BuiltInConstants) {
+  EXPECT_EQ(GIMG_PIXEL_RGBA8.alpha_form, GIMG_ALPHA_STRAIGHT);
+  EXPECT_EQ(GIMG_PIXEL_RGBA16.alpha_form, GIMG_ALPHA_STRAIGHT);
+  EXPECT_EQ(GIMG_PIXEL_RGBA12.alpha_form, GIMG_ALPHA_STRAIGHT);
+  EXPECT_EQ(GIMG_PIXEL_GRAY8.alpha_form, GIMG_ALPHA_NONE);
+  EXPECT_EQ(GIMG_PIXEL_GRAY16.alpha_form, GIMG_ALPHA_NONE);
+  EXPECT_EQ(GIMG_PIXEL_GRAY12.alpha_form, GIMG_ALPHA_NONE);
+  EXPECT_EQ(GIMG_PIXEL_CMYK8.alpha_form, GIMG_ALPHA_NONE);
+  EXPECT_EQ(GIMG_PIXEL_CMYK12.alpha_form, GIMG_ALPHA_NONE);
+  EXPECT_EQ(GIMG_PIXEL_CMYK16.alpha_form, GIMG_ALPHA_NONE);
+}
+
+TEST(RasterAlphaForm, LegacyZeroBecomesStraightInTheRastersCopy) {
+  GIMG_Pixel_Format legacy = GIMG_PIXEL_RGBA8;
+  legacy.alpha_form = 0; // a struct built before the field existed
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                2, 2, &legacy, GIMG_RASTER_OWNED, nullptr, 0, &r),
+      GIMG_OK);
+  EXPECT_EQ(gimg_raster_format(r)->alpha_form, GIMG_ALPHA_STRAIGHT);
+  EXPECT_EQ(legacy.alpha_form, GIMG_ALPHA_NONE); // caller's struct untouched
+  gimg_raster_destroy(r);
+}
+
+TEST(RasterAlphaForm, PremultipliedIsKeptAndCopied) {
+  GIMG_Pixel_Format f = GIMG_PIXEL_RGBA8;
+  f.alpha_form = GIMG_ALPHA_PREMULTIPLIED;
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(gimg_raster_create(
+                2, 2, &f, GIMG_RASTER_OWNED, nullptr, 0, &r),
+      GIMG_OK);
+  EXPECT_EQ(gimg_raster_format(r)->alpha_form, GIMG_ALPHA_PREMULTIPLIED);
+  GIMG_Raster * c = nullptr;
+  ASSERT_EQ(gimg_raster_copy(r, &c), GIMG_OK);
+  EXPECT_EQ(gimg_raster_format(c)->alpha_form, GIMG_ALPHA_PREMULTIPLIED);
+  gimg_raster_destroy(c);
+  gimg_raster_destroy(r);
+}
+
+TEST(RasterAlphaForm, AlphaOnAModelWithoutAlphaIsInvalid) {
+  GIMG_Pixel_Format f = GIMG_PIXEL_GRAY8;
+  GIMG_Raster * r = nullptr;
+  f.alpha_form = GIMG_ALPHA_STRAIGHT;
+  EXPECT_EQ(gimg_raster_create(
+                2, 2, &f, GIMG_RASTER_OWNED, nullptr, 0, &r),
+      GIMG_ERR_INVALID);
+  EXPECT_EQ(r, nullptr);
+  f.alpha_form = GIMG_ALPHA_PREMULTIPLIED;
+  EXPECT_EQ(gimg_raster_create(
+                2, 2, &f, GIMG_RASTER_OWNED, nullptr, 0, &r),
+      GIMG_ERR_INVALID);
+  EXPECT_EQ(r, nullptr);
+  // An RGB model (no alpha channel) is the case the matrix names.
+  GIMG_Pixel_Format rgb = GIMG_PIXEL_RGBA8;
+  rgb.channel_model = GIMG_CHANNEL_RGB;
+  rgb.channel_count = 3;
+  rgb.bits_per_channel[3] = 0;
+  rgb.alpha_form = GIMG_ALPHA_STRAIGHT;
+  EXPECT_EQ(gimg_raster_create(
+                2, 2, &rgb, GIMG_RASTER_OWNED, nullptr, 0, &r),
+      GIMG_ERR_INVALID);
+  EXPECT_EQ(r, nullptr);
+  rgb.alpha_form = GIMG_ALPHA_NONE;
+  EXPECT_EQ(gimg_raster_create(
+                2, 2, &rgb, GIMG_RASTER_OWNED, nullptr, 0, &r),
+      GIMG_OK);
+  EXPECT_EQ(gimg_raster_format(r)->alpha_form, GIMG_ALPHA_NONE);
+  gimg_raster_destroy(r);
+}
+
+TEST(RasterAlphaForm, ValueOutsideTheEnumIsInvalid) {
+  GIMG_Pixel_Format f = GIMG_PIXEL_RGBA8;
+  f.alpha_form = 9;
+  GIMG_Raster * r = nullptr;
+  EXPECT_EQ(gimg_raster_create(
+                2, 2, &f, GIMG_RASTER_OWNED, nullptr, 0, &r),
+      GIMG_ERR_INVALID);
+  EXPECT_EQ(r, nullptr);
+}
+
+TEST(RasterAlphaForm, ResultStringTableIsComplete) {
+  for (int i = 0; i < GIMG_RESULT_COUNT; i++) {
+    const char * s = gimg_result_string((GIMG_Result)i);
+    ASSERT_NE(s, nullptr);
+    EXPECT_STRNE(s, "unknown") << i;
+  }
+  EXPECT_STREQ(gimg_result_string(GIMG_ERR_INVALID), "invalid argument");
+  EXPECT_STREQ(gimg_result_string(GIMG_RESULT_COUNT), "unknown");
+}

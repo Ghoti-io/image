@@ -91,6 +91,26 @@ typedef enum {
 } GIMG_Pixel_Layout;
 
 /**
+ * @brief How a format's alpha channel relates to its color channels.
+ *
+ * Bytes alone do not say whether an RGBA pixel has been multiplied by its own
+ * alpha, and treating a premultiplied buffer as straight (or the reverse) is
+ * an error nothing downstream can detect.  The form is therefore recorded
+ * with the format, and each operation states the form it accepts.
+ */
+typedef enum {
+  /** No alpha channel; the model is gray, CMYK, and so on.  Zero, so a format
+   *  built before this field existed reads as "unsaid", which raster
+   *  creation resolves (see GIMG_Pixel_Format::alpha_form). */
+  GIMG_ALPHA_NONE = 0,
+  /** Color channels are independent of alpha. */
+  GIMG_ALPHA_STRAIGHT,
+  /** Color channels have been multiplied by alpha (and rounded as
+   *  gimg_alpha_premultiply() rounds). */
+  GIMG_ALPHA_PREMULTIPLIED
+} GIMG_Alpha_Form;
+
+/**
  * @brief Pixel format descriptor (spec §4.1).
  */
 typedef struct {
@@ -111,7 +131,19 @@ typedef struct {
    */
   uint8_t bits_per_channel[8];
   uint8_t alignment;                ///< Row alignment in bytes (e.g. 16).
-  uint8_t _reserved[5]; ///< Zero; room to grow.
+  /**
+   * A GIMG_Alpha_Form.  Built-in RGBA constants are STRAIGHT and all others
+   * NONE.
+   *
+   * A struct built before this field existed carries zero.  On an alpha-bearing
+   * model (GIMG_CHANNEL_RGBA) gimg_raster_create() reads zero as STRAIGHT and
+   * stores that in the raster's own copy of the format; the caller's struct is
+   * not touched.  On a model with no alpha channel, STRAIGHT or PREMULTIPLIED
+   * is refused with GIMG_ERR_INVALID, as is any value that is not a
+   * GIMG_Alpha_Form.
+   */
+  uint8_t alpha_form;
+  uint8_t _reserved[4]; ///< Zero; room to grow.
 } GIMG_Pixel_Format;
 
 /**

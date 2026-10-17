@@ -198,6 +198,10 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
   if (!src_rgba && !src_cmyk) {
     return GIMG_ERR_UNSUPPORTED;
   }
+  if (fmt->alpha_form == GIMG_ALPHA_PREMULTIPLIED) {
+    // A color transform acts on color, and premultiplied color is not it.
+    return GIMG_ERR_UNSUPPORTED;
+  }
   for (uint8_t i = 1; i < fmt->channel_count && i < 8u; i++) {
     if (fmt->bits_per_channel[i] != fmt->bits_per_channel[0]) {
       return GIMG_ERR_UNSUPPORTED;

@@ -48,6 +48,7 @@ typedef enum {
   GIMG_ERR_CORRUPT,     ///< Corrupt or invalid data.
   GIMG_ERR_OOM,         ///< Out of memory.
   GIMG_ERR_INTERNAL,    ///< Internal library error.
+  GIMG_ERR_INVALID,     ///< A caller-supplied argument is wrong (CONVENTIONS §5).
   GIMG_RESULT_COUNT
 } GIMG_Result;
 

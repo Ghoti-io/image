@@ -758,7 +758,9 @@ TEST(Corrupt, ABmpResolverCannotHandBackMoreThanTheCodecAccepts) {
   s.height = 2;
   Bytes tail(2u * 3u * 2u, 0x20u);  // Two rows of pixels...
   const size_t path_at = tail.size();
-  tail.insert(tail.end(), path, path + path_len);  // ...then the path.
+  for (size_t i = 0; i < path_len; i++) {  // ...then the path.
+    tail.push_back((uint8_t)path[i]);
+  }
   s.after_header = tail;
   s.dib_words = {{kCsType, 0x4C494E4Bu},  // 'LINK'
       {kProfileData, (uint32_t)(124u + path_at)},
