@@ -952,6 +952,18 @@ oracle-tools: ## Build the JPEG, GIF, BMP and TIFF oracle tools inside the image
 		libtiff -- gcc -O2 -g -std=c17 -Wall -Wextra -Werror \
 		-o "$(CURDIR)/tests/tools/tiff-oracle/build/dump_tiff_pixels_libtiff" \
 		"$(CURDIR)/tests/tools/tiff-oracle/dump_tiff_pixels_libtiff.c" -ltiff
+	@printf '### Building oracle tool logluv_libtiff (in %s) ###\n' "$(ORACLE_IMAGE)"
+	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/tiff-oracle/build" \
+		libtiff -- gcc -O2 -g -std=c17 -Wall -Wextra -Werror \
+		-o "$(CURDIR)/tests/tools/tiff-oracle/build/logluv_libtiff" \
+		"$(CURDIR)/tests/tools/tiff-oracle/logluv_libtiff.c" -ltiff -lm
+	@# SGI LogLuv in every form, byte order and layout, written by libtiff:
+	@# the sample set's three LogLuv files are all big-endian and stripped.
+	@printf '### Writing the LogLuv variants with libtiff ###\n'
+	@rm -rf tests/data/tiff-logluv && mkdir -p tests/data/tiff-logluv
+	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/data/tiff-logluv" \
+		libtiff -- "$(CURDIR)/tests/tools/tiff-oracle/build/logluv_libtiff" \
+		--write "$(CURDIR)/tests/data/tiff-logluv"
 	@printf '### Building oracle tool make_fax_tiffs_libtiff (in %s) ###\n' "$(ORACLE_IMAGE)"
 	@$(ORACLE_EXEC) --scratch "$(CURDIR)/tests/tools/tiff-oracle/build" \
 		libtiff -- gcc -O2 -g -std=c17 -Wall -Wextra -Werror \

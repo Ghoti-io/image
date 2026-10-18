@@ -21,12 +21,12 @@ This is what the library implements.
   the oracle image. The format page lists what remains.
 - TIFF. It reads every bit depth from 1 to 32, both byte orders, strips and
   tiles, grayscale, palette, RGB, RGBA, separated and YCbCr, separate and
-  contiguous planes, every compression the format defines except LogLuv -
-  PackBits, LZW, Deflate, CCITT Group 3 and 4, JPEG in both spellings,
-  ThunderScan - with multi-page documents and pyramids. It writes 8- and
-  16-bit grayscale, RGB, RGBA and CMYK, uncompressed or with PackBits, LZW or
-  Deflate. What is absent is listed on the format's own page rather than left
-  to be discovered.
+  contiguous planes, every compression the format defines - PackBits, LZW,
+  Deflate, CCITT Group 3 and 4, JPEG in both spellings, ThunderScan, and SGI
+  LogLuv, which decodes to a float raster - with multi-page documents and
+  pyramids. It writes 8- and 16-bit grayscale, RGB, RGBA and CMYK,
+  uncompressed or with PackBits, LZW or Deflate. What is absent is listed on
+  the format's own page rather than left to be discovered.
 
 Later WebP work (the quality bar) follows the format page's "Not implemented"
 list. A page for a format is written with its codec.

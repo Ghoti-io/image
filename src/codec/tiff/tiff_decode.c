@@ -44,6 +44,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/color/color.h>
+#include <ghoti.io/color/math.h>
 #include <ghoti.io/image/raster.h>
 #include <math.h>
 #include <stdint.h>
@@ -309,6 +310,19 @@ static bool tiff_plan_output(
   // Measured against ImageMagick on the sample set's depth series: at six
   // bits an eight-bit raster disagreed on 3,071 samples of 3,139 and a
   // sixteen-bit one agrees on all of them.
+  if (gimg_tiff_is_logluv(ifd)) {
+    // Float, and nothing else would do: see tiff_logluv.c.  The alpha of the
+    // RGBA form is written with the colour, as 1.0, so the integer fill
+    // below must not run over it.
+    const bool logl = ifd->photometric == GIMG_TIFF_PHOTOMETRIC_LOGL;
+    out->format = logl ? &GIMG_PIXEL_GRAYF32 : &GIMG_PIXEL_RGBAF32;
+    out->channels = logl ? 1u : 4u;
+    out->bytes = out->channels * sizeof(float);
+    out->wide = false;
+    out->has_alpha = false;
+    out->source_alpha = false;
+    return true;
+  }
   const unsigned depth = ifd->bits_per_sample;
   const bool fits_in_8 =
       depth == 1u || depth == 2u || depth == 4u || depth == 8u;
@@ -901,6 +915,18 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
       ifd->photometric == GIMG_TIFF_PHOTOMETRIC_ICCLAB;
   tiff_lab_t * lab_state = NULL;
   uint16_t * lab_raw = NULL;
+  const bool logluv = gimg_tiff_is_logluv(ifd);
+  // XYZ to linear RGB in sRGB's primaries and white: a change of coordinates,
+  // exact up to rounding and invertible, with nothing clamped.
+  double xyz_to_rgb[9] = {0};
+  if (logluv) {
+    GCOL_Gamut srgb;
+    if (!gcol_gamut_named(GCOL_PRIMARIES_SRGB, &srgb) ||
+        gcol_xyz_to_gamut(&srgb, xyz_to_rgb) != GCOL_OK) {
+      gimg_raster_destroy(raster);
+      return GIMG_ERR_INTERNAL;
+    }
+  }
   if (lab) {
     lab_state = (tiff_lab_t *)gimg_malloc(alloc, sizeof(*lab_state));
     if (!lab_state) {
@@ -1008,6 +1034,32 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
       gimg_raster_destroy(part);
       continue;
     }
+    if (logluv) {
+      // Coded rows are as wide as the block, tile padding included; only the
+      // part inside the picture is kept.
+      size_t cells = 0, bytes = 0;
+      if (!gcu_safe_mul_size(rect.width, down, &cells) ||
+          !gcu_safe_mul_size(cells, sizeof(uint32_t), &bytes)) {
+        return tiff_decode_fail(
+            alloc, raster, lab_state, lab_raw, GIMG_ERR_LIMIT);
+      }
+      uint32_t * codes = (uint32_t *)gimg_malloc(alloc, bytes);
+      if (!codes) {
+        return tiff_decode_fail(
+            alloc, raster, lab_state, lab_raw, GIMG_ERR_OOM);
+      }
+      const size_t got = gimg_tiff_logluv_rows(ifd,
+          st->file + ifd->block_offsets[b],
+          (size_t)ifd->block_byte_counts[b], rect.width, down, codes);
+      for (size_t row = 0; row < got; row++) {
+        float * dst = (float *)(void *)(dst_pixels +
+            ((size_t)(rect.y + row) * stride) + ((size_t)rect.x * out.bytes));
+        gimg_tiff_logluv_to_float(
+            ifd, codes + (row * rect.width), across, xyz_to_rgb, dst);
+      }
+      gimg_free(alloc, codes);
+      continue;
+    }
     const unsigned char * src = NULL;
     size_t have = 0;
     bool owned = false;
@@ -1093,7 +1145,26 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
   // conversion already performed, and the file's primaries are not the sRGB
   // primaries that conversion used. Attaching either would describe a
   // different colour space from the bytes. An ICC profile still applies.
-  if (has_icc || (!lab && (ifd->has_primaries || ifd->has_white_point))) {
+  //
+  // LogLuv is the other exception, for the same reason: its samples are XYZ
+  // until this decoder put them in sRGB's primaries, so those are the gamut,
+  // whatever 318 and 319 say.  The light is the scene's, measured: one unit
+  // is StoNits cd/m^2 when the file says so and unstated when it does not.
+  if (logluv) {
+    GCOL_Color_Info info;
+    gcol_color_info_default(&info);
+    (void)gcol_color_info_set_gamut(&info, GCOL_PRIMARIES_SRGB);
+    info.transfer = GCOL_TRANSFER_LINEAR;
+    info.reference = GCOL_REFERENCE_SCENE;
+    info.sample_scale = GCOL_SAMPLE_SCALE_ABSOLUTE;
+    info.white_luminance = ifd->has_stonits ? ifd->stonits : 0.0;
+    // No ICC profile, even when the file carries one: the samples are CIE
+    // XYZ, which needs no profile to interpret, and a profile describing
+    // the file's device would not describe these numbers.
+    (void)gimg_raster_set_color_info(raster, &info);
+  }
+  else if (has_icc ||
+      (!lab && (ifd->has_primaries || ifd->has_white_point))) {
     GCOL_Color_Info info;
     gcol_color_info_default(&info);
     const GCOL_Color_Info * existing = gimg_raster_color_info_const(raster);

@@ -26,6 +26,8 @@
 #include <cstdint>
 #include <algorithm>
 #include <cstring>
+#include <ghoti.io/color/color.h>
+#include <ghoti.io/color/math.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
@@ -439,6 +441,158 @@ TEST(TiffCorrupt, TheYCbCrAndSeparatedTagsNameTheirOwnRules) {
                     {258u, T_SHORT, {4u, 4u, 4u, 4u}}),
           Bytes(8u, 0u))});
   for (const Case & c : cases) { run_case(c); }
+}
+
+namespace {
+
+// A 2x2 LogL image in SGILog: each row is two run-length planes, the high
+// bytes then the low ones.  Row 0 is literals, row 1 a run of each byte.
+const uint16_t kLogLCodes[4] = {0x0000u, 0x4000u, 0xc123u, 0xc123u};
+const Bytes kLogLRows = {
+    0x02u, 0x00u, 0x40u, 0x02u, 0x00u, 0x00u, // row 0: literal, literal
+    0x80u, 0xc1u, 0x80u, 0x23u,               // row 1: run of 2, run of 2
+};
+
+std::vector<Tag> logl_tags(size_t bytes = 10u) {
+  return {
+      {256u, T_LONG, {2u}},
+      {257u, T_LONG, {2u}},
+      // What libtiff stamps for a 16-bit signed caller buffer.  Not read.
+      {258u, T_SHORT, {16u}},
+      {259u, T_SHORT, {34676u}},
+      {262u, T_SHORT, {32844u}},
+      {273u, T_LONG, {8u}},
+      {277u, T_SHORT, {1u}},
+      {278u, T_LONG, {2u}},
+      {279u, T_LONG, {(uint32_t)bytes}},
+      {284u, T_SHORT, {1u}},
+      {339u, T_SHORT, {2u}},
+  };
+}
+
+GIMG_Raster * decode_bytes(const Bytes & b, GIMG_Result * out) {
+  GIMG_Stream * s = nullptr;
+  GIMG_Doc * doc = nullptr;
+  GIMG_Raster * raster = nullptr;
+  *out = gimg_stream_create_memory(b.data(), b.size(), &s);
+  if (*out == GIMG_OK) {
+    *out = gimg_doc_load(s, nullptr, nullptr, &doc);
+  }
+  if (*out == GIMG_OK) {
+    *out = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &raster);
+  }
+  if (doc) { gimg_doc_destroy(doc); }
+  if (s) { gimg_stream_destroy(s); }
+  return raster;
+}
+
+float float_at(const GIMG_Raster * r, uint32_t x, uint32_t y, unsigned c) {
+  const uint8_t * p = (const uint8_t *)gimg_raster_pixels_const(r) +
+      (size_t)y * gimg_raster_stride_bytes(r);
+  const size_t ch = gimg_raster_format(r)->channel_count;
+  float v;
+  std::memcpy(&v, p + ((size_t)x * ch + c) * sizeof(float), sizeof v);
+  return v;
+}
+
+} // namespace
+
+// The bytes this decoder must undo, built by hand rather than by libtiff, so
+// the storage is checked here without an oracle: literals and runs, and a
+// block that ends inside its second row.  test_tiff_logluv.cpp is where the
+// same decoder is held to libtiff over every form and layout.
+TEST(TiffLogLuvBytes, AHandBuiltLogLDecodesToItsCodes) {
+  GIMG_Result r;
+  GIMG_Raster * raster = decode_bytes(make_tiff(logl_tags(), kLogLRows), &r);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_EQ(gimg_raster_format(raster)->channel_type, GIMG_CHANNEL_FLOAT);
+  ASSERT_EQ(gimg_raster_format(raster)->channel_count, 1u);
+  for (uint32_t i = 0; i < 4u; i++) {
+    EXPECT_EQ(float_at(raster, i % 2u, i / 2u, 0),
+        (float)gcol_logl16_to_y(kLogLCodes[i]))
+        << i;
+  }
+  EXPECT_LT(float_at(raster, 0, 1, 0), 0.0f); // The sign bit is kept.
+  gimg_raster_destroy(raster);
+
+  // Cut inside row 1: row 0 survives and row 1 stays as created, zero.
+  Bytes cut(kLogLRows.begin(), kLogLRows.begin() + 8);
+  raster = decode_bytes(make_tiff(logl_tags(8u), cut), &r);
+  ASSERT_EQ(r, GIMG_OK);
+  EXPECT_EQ(float_at(raster, 1, 0, 0), (float)gcol_logl16_to_y(0x4000u));
+  EXPECT_EQ(float_at(raster, 0, 1, 0), 0.0f);
+  EXPECT_EQ(float_at(raster, 1, 1, 0), 0.0f);
+  gimg_raster_destroy(raster);
+}
+
+TEST(TiffLogLuvBytes, AHandBuiltLogLuv24DecodesToItsCodes) {
+  // Two pixels, three bytes each, most significant first in a little-endian
+  // file: the packing does not follow the byte order.
+  const uint32_t codes[2] = {0xc03ffbu, 0x5f1f40u};
+  const Bytes px = {0xc0u, 0x3fu, 0xfbu, 0x5fu, 0x1fu, 0x40u};
+  std::vector<Tag> tags = logl_tags(6u);
+  tags = with(tags, {257u, T_LONG, {1u}});
+  tags = with(tags, {258u, T_SHORT, {32u, 32u, 32u}});
+  tags = with(tags, {259u, T_SHORT, {34677u}});
+  tags = with(tags, {262u, T_SHORT, {32845u}});
+  tags = with(tags, {277u, T_SHORT, {3u}});
+  tags = with(tags, {278u, T_LONG, {1u}});
+  tags = with(tags, {339u, T_SHORT, {3u, 3u, 3u}});
+  GIMG_Result r;
+  GIMG_Raster * raster = decode_bytes(make_tiff(tags, px), &r);
+  ASSERT_EQ(r, GIMG_OK);
+  ASSERT_EQ(gimg_raster_format(raster)->channel_count, 4u);
+  GCOL_Gamut srgb;
+  double m[9];
+  ASSERT_TRUE(gcol_gamut_named(GCOL_PRIMARIES_SRGB, &srgb));
+  ASSERT_EQ(gcol_xyz_to_gamut(&srgb, m), GCOL_OK);
+  for (uint32_t x = 0; x < 2u; x++) {
+    double xyz[3];
+    ASSERT_EQ(gcol_logluv24_to_xyz(codes[x], xyz), GCOL_OK);
+    for (unsigned c = 0; c < 3u; c++) {
+      const double want =
+          m[c * 3] * xyz[0] + m[c * 3 + 1] * xyz[1] + m[c * 3 + 2] * xyz[2];
+      EXPECT_EQ(float_at(raster, x, 0, c), (float)want) << x << " " << c;
+    }
+    EXPECT_EQ(float_at(raster, x, 0, 3), 1.0f);
+  }
+  gimg_raster_destroy(raster);
+}
+
+TEST(TiffCorrupt, TheLogLuvTagsNameTheirOwnRules) {
+  run_case({"the LogL base", nullptr, GIMG_OK,
+      make_tiff(logl_tags(), kLogLRows)});
+  std::vector<Case> cases;
+  cases.push_back({"SGILog on BlackIsZero samples",
+      "SGILog compression on samples that are not LogL", GIMG_ERR_CORRUPT,
+      make_tiff(with(logl_tags(), {262u, T_SHORT, {1u}}), kLogLRows)});
+  cases.push_back({"LogL stored uncompressed", "outside SGILog compression",
+      GIMG_ERR_CORRUPT,
+      make_tiff(with(logl_tags(), {259u, T_SHORT, {1u}}), kLogLRows)});
+  cases.push_back({"LogL in the 24-bit coding", "LogL in 24-bit SGILog",
+      GIMG_ERR_CORRUPT,
+      make_tiff(with(logl_tags(), {259u, T_SHORT, {34677u}}), kLogLRows)});
+  cases.push_back({"LogL with three samples", "LogL with other than one",
+      GIMG_ERR_CORRUPT,
+      make_tiff(with(logl_tags(), {277u, T_SHORT, {3u}}), kLogLRows)});
+  cases.push_back({"LogLuv with one sample", "LogLuv with other than three",
+      GIMG_ERR_CORRUPT,
+      make_tiff(with(logl_tags(), {262u, T_SHORT, {32845u}}), kLogLRows)});
+  cases.push_back({"LogL in separate planes", "PlanarConfiguration 2",
+      GIMG_ERR_UNSUPPORTED,
+      make_tiff(with(logl_tags(), {284u, T_SHORT, {2u}}), kLogLRows)});
+  cases.push_back({"LogL with a Predictor", "Predictor on LogLuv codes",
+      GIMG_ERR_UNSUPPORTED,
+      make_tiff(with(logl_tags(), {317u, T_SHORT, {2u}}), kLogLRows)});
+  // BitsPerSample and SampleFormat describe the writer's buffer, so values
+  // the integer checks would refuse load here.
+  cases.push_back({"LogL stamped 32-bit float", nullptr, GIMG_OK,
+      make_tiff(with(with(logl_tags(), {258u, T_SHORT, {32u}}),
+                    {339u, T_SHORT, {3u}}),
+          kLogLRows)});
+  for (const Case & c : cases) {
+    run_case(c);
+  }
 }
 
 int main(int argc, char ** argv) {

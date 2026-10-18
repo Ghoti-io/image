@@ -118,6 +118,34 @@ An ICC profile the file carries is still copied. JPEG-compressed Lab,
 photometric 10, a depth other than 8 or 16, and a sample count other than 3
 or 4 (the fourth being alpha) are refused by name.
 
+**SGI LogLuv.** PhotometricInterpretation 32844 (LogL) and 32845 (LogLuv),
+in compression 34676 (SGILog) and, for LogLuv only, 34677 (SGILog24) - Greg
+Larson's encodings of absolute luminance. They come back as **float**:
+LogL as `GIMG_PIXEL_GRAYF32` holding Y, LogLuv as `GIMG_PIXEL_RGBAF32`
+holding CIE XYZ taken to linear RGB in sRGB's primaries (an exact change of
+coordinates; out-of-gamut colours stay negative), alpha 1. Nothing is clamped
+or tone mapped: LogLuv32 spans 38 decades, a fifth of libtiffpic's
+`off_luv32.tif` is brighter than Y = 1, and an integer raster would make the
+exposure a decoder's decision. The colour info says linear, scene-referred,
+absolute, with `white_luminance` set from StoNits (37439) - cd/m^2 for a
+sample of 1 - when the file states it and 0 when it does not. An ICC profile
+the file carries is not attached, because the samples are XYZ and need none.
+
+Storage is in this codec (`tiff_logluv.c`); what a code means is in
+libs/color (`gcol_logl16_to_y`, `gcol_logluv32_to_xyz`,
+`gcol_logluv24_to_xyz`), where it is held to libtiff. SGILog codes each row
+byte plane by byte plane, most significant first, each plane a run-length
+stream; SGILog24 packs three bytes a pixel, most significant first. Neither
+follows the file's byte order. BitsPerSample and SampleFormat are not read
+on these pages, because they describe the buffer the writing program gave
+libtiff (32-bit float, 16-bit signed) and not what is stored. Refused by
+name: SGILog on any other photometric, LogL or LogLuv outside SGILog, LogL in
+SGILog24, the wrong sample count, PlanarConfiguration 2, a Predictor.
+
+Every float raster operation and encoder rule applies: the raster moves
+through flips, rotations and crops untouched, and every encoder refuses it
+(see `api-options.md`, "Raster formats (float)").
+
 **Resolution.** XResolution and YResolution reach `GIMG_Meta_Common` as DPI
 when ResolutionUnit is 2 (inches). Centimetres and "no unit" are not
 converted, because that field carries dots per inch and nothing else.
@@ -163,18 +191,18 @@ back is not available, because an output stream here is append-only.
 | Byte order | "II" and "MM" | - |
 | Version | 42, and 43 (BigTIFF) when the header's offset size is 8 | An offset size other than 8 &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | IFD chain | Any number up to 4096, refusing a chain that does not advance | A chain that points backwards or at itself &rarr; `GIMG_ERR_CORRUPT`; `max_frame_count` caps it lower |
-| Compression (read) | 1 (none), 2 (CCITT modified Huffman), 3 (Group 3, one- and two-dimensional), 4 (Group 4), 5 (LZW, including the pre-1993 bit-reversed spelling), 6 (old-style JPEG, both shapes), 7 (JPEG), 8 and 32946 (Deflate), 32773 (PackBits), 32809 (ThunderScan) | 34676/34677 (LogLuv) and anything else &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| Compression (read) | 1 (none), 2 (CCITT modified Huffman), 3 (Group 3, one- and two-dimensional), 4 (Group 4), 5 (LZW, including the pre-1993 bit-reversed spelling), 6 (old-style JPEG, both shapes), 7 (JPEG), 8 and 32946 (Deflate), 32773 (PackBits), 32809 (ThunderScan), 34676 (SGILog) and 34677 (SGILog24) on LogLuv pages | Anything else &rarr; `GIMG_ERR_UNSUPPORTED`, named; SGILog on any photometric but LogL or LogLuv &rarr; `GIMG_ERR_CORRUPT` |
 | JPEG-in-TIFF | Compression 7 with JPEGTables (347), decoded by this library's own JPEG codec through T.81 B.4's abbreviated format - which is what the tag pair *is*. Compression 6 too: the 1992 tags, whose tables are bare arrays at file offsets and whose strips hold entropy data with no frame header, so the frame is assembled from the TIFF tags | 8-bit only, PlanarConfiguration 1 only, JPEGProc other than baseline, and a Lab photometric &rarr; `GIMG_ERR_UNSUPPORTED`, named. The Lab refusal is because the JPEG decoder has already converted the strip |
 | ThunderScan | Compression 32809, four-bit greyscale | Any other depth or sample count &rarr; `GIMG_ERR_CORRUPT`, named |
 | FillOrder | 1 and 2, read by the CCITT decoder | Ignored for every other compression, which is defined on whole bytes; libtiff does the same |
 | T4Options / T6Options | Two-dimensional coding, end-of-line codes present or absent, fill bits | Uncompressed mode (bit 1 of either) &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | Compression (write) | none, PackBits, LZW, Deflate, with or without Predictor 2 | - |
 | Predictor | 1 and 2, at 8 and 16 bits | 3 (floating point) and any other value &rarr; `GIMG_ERR_UNSUPPORTED` |
-| Photometric | 0, 1, 2, 3, 5 (separated, read as CMYK), 6 (YCbCr, any subsampling up to 4x4), 8 (CIELab) and 9 (ICCLab), both as RGBA8 | 4 (mask), 10 (ITU Lab), 32844/32845 (LogLuv) and the rest &rarr; `GIMG_ERR_UNSUPPORTED`, named |
+| Photometric | 0, 1, 2, 3, 5 (separated, read as CMYK), 6 (YCbCr, any subsampling up to 4x4), 8 (CIELab) and 9 (ICCLab), both as RGBA8; 32844 (LogL) as GRAYF32 and 32845 (LogLuv) as RGBAF32 | 4 (mask), 10 (ITU Lab) and the rest &rarr; `GIMG_ERR_UNSUPPORTED`, named |
 | BitsPerSample | Any depth from 1 to 32. A depth that divides eight exactly - 1, 2, 4, 8 - comes back in an 8-bit raster, where the full-range map is exact; every other depth comes back in a 16-bit one, for the same reason. Lab is the exception: both 8- and 16-bit Lab come back as RGBA8 | Above 32 &rarr; `GIMG_ERR_UNSUPPORTED`; samples that differ from each other are refused as that, separately; a palette above 16 bits, a separated image at a depth with no CMYK raster, and Lab at a depth other than 8 or 16, are each refused by name |
 | SamplesPerPixel | 1 for grayscale and palette, 3 or 4 for RGB and for Lab, 4 for separated | Anything else &rarr; `GIMG_ERR_UNSUPPORTED` |
 | PlanarConfiguration | 1 and 2 | Any other value &rarr; `GIMG_ERR_CORRUPT`; the writer always writes 1 |
-| SampleFormat | 1 (unsigned integer) | 2 (signed), 3 (float) &rarr; `GIMG_ERR_UNSUPPORTED` |
+| SampleFormat | 1 (unsigned integer); not read on a LogLuv page | 2 (signed), 3 (float) &rarr; `GIMG_ERR_UNSUPPORTED` |
 | Colour tags | ICCProfile (34675) carried opaquely; WhitePoint (318) and PrimaryChromaticities (319) read into the raster's gamut, except on a Lab page, where tag 318 is the reference white of the conversion and neither tag is attached as an RGB gamut | TransferFunction (301) is a sampled LUT with no home in `GCOL_Transfer` and is not read; a RATIONAL with a zero denominator is treated as unstated; a Lab WhitePoint whose y is zero &rarr; `GIMG_ERR_CORRUPT` |
 | Geometry | Strips and tiles | A block list whose length disagrees with the geometry &rarr; `GIMG_ERR_CORRUPT`; a block outside the file &rarr; `GIMG_ERR_CORRUPT` |
 | Source | A stream that knows its length | A non-seekable stream &rarr; `GIMG_ERR_UNSUPPORTED`, named |
@@ -291,13 +319,6 @@ off it, and what is left is in **Not implemented** below.
 
 Listed so the absences are visible rather than discovered:
 
-- **LogLuv** (compressions 34676 and 34677, photometric 32844 and 32845),
-  the only compression the sample set still names every run. It is a
-  logarithmic encoding of CIE Lu'v', which decodes to floating-point
-  luminance rather than to integer samples; this library has no float raster,
-  and libtiff's eight-bit answer for one is a tone mapping rather than a
-  decode. Both of those would have to be decided before it could be read, and
-  neither is a TIFF question.
 - **CCITT uncompressed mode**, the escape inside a Group 3 or Group 4 stream
   that switches to literal bits. It is refused where a file declares it in
   T4Options or T6Options rather than discovered mid-row: nothing is known to

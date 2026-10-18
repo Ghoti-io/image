@@ -161,8 +161,14 @@ std::string describe(const std::string & rel, const std::vector<uint8_t> & b) {
  * population this test measures is what the repository commits.
  */
 bool is_generated(const std::string & rel) {
-  static const char * const skip[] = {"tests/data/tiff-corpus/",
-      "tests/data/tiff-fax/", "tests/data/tiff-depth/", "tests/data/out/"};
+  // Every tests/data/tiff-*/ by the prefix, not by name: a list of names
+  // missed tiff-logluv/ the day `make oracle-tools` started writing it, and
+  // the sweep failed on twelve files no clone has.  tests/data/tiff/ itself
+  // is committed and does not match, because of the hyphen.
+  if (rel.rfind("tests/data/tiff-", 0) == 0) {
+    return true;
+  }
+  static const char * const skip[] = {"tests/data/out/"};
   for (const char * s : skip) {
     if (rel.rfind(s, 0) == 0) {
       return true;

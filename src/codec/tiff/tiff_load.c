@@ -48,6 +48,7 @@
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
+#include <float.h>
 #include <string.h>
 
 #include "../../container/doc_internal.h"
@@ -547,6 +548,20 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint64_t at,
         ifd->has_y_res = ifd->y_res_den != 0u;
       }
       break;
+    case GIMG_TIFF_TAG_STONITS:
+      // One DOUBLE.  Anything else - another type, zero, a NaN - is a file
+      // that has not said what its luminance is in, which is what absent
+      // means too.
+      if (e.type == GIMG_TIFF_TYPE_DOUBLE && e.value_bytes >= 8u) {
+        const uint64_t raw = tiff_u64(e.values, st->big_endian);
+        double v;
+        memcpy(&v, &raw, sizeof v);
+        if (v > 0.0 && v <= DBL_MAX) {
+          ifd->stonits = v;
+          ifd->has_stonits = true;
+        }
+      }
+      break;
     case GIMG_TIFF_TAG_WHITE_POINT:
       // Two RATIONALs: x then y.  A zero denominator is a division this will
       // not do, and a file that writes one has said nothing.
@@ -896,6 +911,50 @@ static bool tiff_expected_block_count(
   return gcu_safe_mul_size(per_plane, ifd->samples_per_pixel, out_count);
 }
 
+/**
+ * The checks every directory gets whatever its samples are: the blocks add
+ * up, lie inside the file, and the picture is within the pixel limit.
+ */
+static GIMG_Result tiff_check_blocks(const gimg_tiff_doc_state_t * st,
+    gimg_tiff_ifd_t * ifd, const GIMG_Limits * limits,
+    GIMG_Diagnostics * diag, size_t which) {
+  size_t want_blocks = 0;
+  if (!tiff_expected_block_count(ifd, &want_blocks)) {
+    tiff_diag(diag, which, "the strip or tile geometry does not add up");
+    return GIMG_ERR_CORRUPT;
+  }
+  if (ifd->block_count != want_blocks) {
+    tiff_diag(diag, which,
+        "the image names a different number of blocks than its geometry has");
+    return GIMG_ERR_CORRUPT;
+  }
+  // Every block has to lie inside the file.  Checked here, once, so that
+  // decode can read it without re-deciding whether the bytes are there. This
+  // is the *stored* extent, which for a compressed block is shorter than the
+  // pixels it expands to.
+  for (size_t i = 0; i < ifd->block_count; i++) {
+    size_t end = 0;
+    if (!gcu_safe_add_size((size_t)ifd->block_offsets[i],
+            (size_t)ifd->block_byte_counts[i], &end) ||
+        end > st->file_size) {
+      tiff_diag(diag, which, "a strip or tile lies outside the file");
+      return GIMG_ERR_CORRUPT;
+    }
+  }
+
+  size_t pixels = 0;
+  if (gimg_safe_pixel_count(ifd->width, ifd->height, &pixels) != GIMG_OK) {
+    tiff_diag(diag, which, "the pixel count overflows");
+    return GIMG_ERR_LIMIT;
+  }
+  if (limits && limits->max_decoded_pixels &&
+      pixels > limits->max_decoded_pixels) {
+    tiff_diag(diag, which, "increase max_decoded_pixels");
+    return GIMG_ERR_LIMIT;
+  }
+  return GIMG_OK;
+}
+
 static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
     gimg_tiff_ifd_t * ifd, const GIMG_Limits * limits,
     GIMG_Diagnostics * diag, size_t which) {
@@ -907,6 +966,17 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
     tiff_diag(diag, which,
         "no PhotometricInterpretation, which has no default (TIFF 6.0 8)");
     return GIMG_ERR_CORRUPT;
+  }
+  if (gimg_tiff_is_logluv(ifd)) {
+    // A different kind of sample altogether, with checks of its own; the
+    // integer ones below would refuse it for its SampleFormat.
+    GIMG_Result code = GIMG_OK;
+    const char * why = gimg_tiff_logluv_refusal(ifd, &code);
+    if (why) {
+      tiff_diag(diag, which, why);
+      return code;
+    }
+    return tiff_check_blocks(st, ifd, limits, diag, which);
   }
   if (!gimg_tiff_compression_known(ifd->compression)) {
     tiff_diag(diag, which,
@@ -1146,41 +1216,7 @@ static GIMG_Result tiff_check_supported(const gimg_tiff_doc_state_t * st,
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  size_t want_blocks = 0;
-  if (!tiff_expected_block_count(ifd, &want_blocks)) {
-    tiff_diag(diag, which, "the strip or tile geometry does not add up");
-    return GIMG_ERR_CORRUPT;
-  }
-  if (ifd->block_count != want_blocks) {
-    tiff_diag(diag, which,
-        "the image names a different number of blocks than its geometry has");
-    return GIMG_ERR_CORRUPT;
-  }
-  // Every block has to lie inside the file.  Checked here, once, so that
-  // decode can read it without re-deciding whether the bytes are there. This
-  // is the *stored* extent, which for a compressed block is shorter than the
-  // pixels it expands to.
-  for (size_t i = 0; i < ifd->block_count; i++) {
-    size_t end = 0;
-    if (!gcu_safe_add_size((size_t)ifd->block_offsets[i],
-            (size_t)ifd->block_byte_counts[i], &end) ||
-        end > st->file_size) {
-      tiff_diag(diag, which, "a strip or tile lies outside the file");
-      return GIMG_ERR_CORRUPT;
-    }
-  }
-
-  size_t pixels = 0;
-  if (gimg_safe_pixel_count(ifd->width, ifd->height, &pixels) != GIMG_OK) {
-    tiff_diag(diag, which, "the pixel count overflows");
-    return GIMG_ERR_LIMIT;
-  }
-  if (limits && limits->max_decoded_pixels &&
-      pixels > limits->max_decoded_pixels) {
-    tiff_diag(diag, which, "increase max_decoded_pixels");
-    return GIMG_ERR_LIMIT;
-  }
-  return GIMG_OK;
+  return tiff_check_blocks(st, ifd, limits, diag, which);
 }
 
 // ---------------------------------------------------------------------------

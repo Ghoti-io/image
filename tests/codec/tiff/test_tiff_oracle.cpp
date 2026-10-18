@@ -66,6 +66,10 @@ struct Image {
   uint32_t height = 0;
   std::vector<uint8_t> rgba;
   bool ok = false;
+  /** Decoded to float - LogLuv - and so not comparable in RGBA8 at all:
+   * libtiff's RGBA reader tone-maps it. test_tiff_logluv.cpp compares those
+   * against libtiff's float decode instead. */
+  bool float_samples = false;
 };
 
 std::string data_dir() { return std::string(GIMG_TEST_DATA_TIFF); }
@@ -155,6 +159,14 @@ Image ours(const std::string & dir, const std::string & name) {
       img.height = gimg_raster_height(raster);
       const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
       const size_t bpp = gimg_raster_bytes_per_pixel(fmt);
+      if (fmt && fmt->channel_type == GIMG_CHANNEL_FLOAT) {
+        img.ok = true;
+        img.float_samples = true;
+        gimg_raster_destroy(raster);
+        gimg_doc_destroy(doc);
+        gimg_stream_destroy(s);
+        return img;
+      }
       // CMYK8 and RGBA8 are both four bytes, so the model rather than the
       // width is what says which. libtiff's RGBA reader converts separated
       // images to RGB; this codec hands back CMYK, so the comparison does
@@ -422,6 +434,7 @@ struct Tally {
   long oriented = 0;
   long ojpeg_ycbcr = 0;
   long stale_rows = 0;
+  std::vector<std::string> float_elsewhere;
 };
 
 /** Compare one directory's files, sample for sample, in libtiff's space. */
@@ -446,6 +459,10 @@ void sweep(const std::string & dir, const std::vector<std::string> & names,
     if (!a.ok && b.ok) {
       t->only_they_read++;
       t->they_alone.push_back(name + " (" + describe(ref) + ")");
+      continue;
+    }
+    if (a.float_samples) {
+      t->float_elsewhere.push_back(name);
       continue;
     }
     // **A file with an Orientation other than 1 is counted, not compared.**
@@ -615,6 +632,10 @@ void report(const char * label, const Tally & t) {
   }
   for (const std::string & n : t.neither) {
     std::printf("    neither reads: %s\n", n.c_str());
+  }
+  for (const std::string & n : t.float_elsewhere) {
+    std::printf("    float, compared in test_tiff_logluv.cpp: %s\n",
+        n.c_str());
   }
   if (t.oriented > 0) {
     std::printf("    %ld files declare an Orientation and are not compared: "

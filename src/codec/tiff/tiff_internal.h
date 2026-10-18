@@ -143,6 +143,8 @@ extern const uint16_t gimg_tiff_info_tags[GIMG_TIFF_INFO_COUNT];
 #define GIMG_TIFF_TAG_TILE_BYTE_COUNTS 325
 #define GIMG_TIFF_TAG_EXTRA_SAMPLES 338
 #define GIMG_TIFF_TAG_SAMPLE_FORMAT 339
+/** StoNits: cd/m^2 per unit of LogLuv Y (Larson, SGI LogLuv TIFF). */
+#define GIMG_TIFF_TAG_STONITS 37439
 /** @} */
 
 /** @name Compression values (TIFF 6.0 section 8) @{ */
@@ -158,6 +160,11 @@ extern const uint16_t gimg_tiff_info_tags[GIMG_TIFF_INFO_COUNT];
 #define GIMG_TIFF_COMPRESSION_THUNDERSCAN 32809
 /** Deflate again, under the number that predates Adobe's registration. */
 #define GIMG_TIFF_COMPRESSION_DEFLATE_OLD 32946
+/** SGI LogLuv: LogL16 or LogLuv32 samples, run-length coded byte plane by
+ * byte plane, one row at a time. */
+#define GIMG_TIFF_COMPRESSION_SGILOG 34676
+/** SGI LogLuv24: three bytes a pixel, most significant first, uncoded. */
+#define GIMG_TIFF_COMPRESSION_SGILOG24 34677
 /** @} */
 
 /** @name PhotometricInterpretation (TIFF 6.0 section 8) @{ */
@@ -178,6 +185,10 @@ extern const uint16_t gimg_tiff_info_tags[GIMG_TIFF_INFO_COUNT];
  * and sixteen-bit L\* reaches 100 at 65280. Adobe's TIFF technical note.
  */
 #define GIMG_TIFF_PHOTOMETRIC_ICCLAB 9
+/** SGI LogL: log luminance, one sample; only inside compression 34676. */
+#define GIMG_TIFF_PHOTOMETRIC_LOGL 32844
+/** SGI LogLuv: log luminance and u'v'; only inside 34676 or 34677. */
+#define GIMG_TIFF_PHOTOMETRIC_LOGLUV 32845
 /** @} */
 
 /** ExtraSamples (TIFF 6.0 section 18): what a fourth or later sample means. */
@@ -318,6 +329,10 @@ typedef struct {
   uint32_t x_res_num, x_res_den;
   uint32_t y_res_num, y_res_den;
   bool has_x_res, has_y_res;
+  /** StoNits (37439): cd/m^2 for a LogLuv Y of 1.  Kept only when it is a
+   * positive finite DOUBLE; otherwise the file has not said. */
+  double stonits;
+  bool has_stonits;
 } gimg_tiff_ifd_t;
 
 /** Document-private state: the file, and one entry per IFD. */
@@ -410,6 +425,40 @@ GIMG_Result gimg_tiff_thunder_decode(const gimg_tiff_ifd_t * ifd,
 
 /** Whether this codec can undo @p compression. */
 bool gimg_tiff_compression_known(uint16_t compression);
+
+/** @name SGI LogLuv, in tiff_logluv.c @{ */
+
+/** Whether @p ifd is LogL or LogLuv, by photometric or by compression. */
+bool gimg_tiff_is_logluv(const gimg_tiff_ifd_t * ifd);
+
+/**
+ * Why a LogLuv directory cannot be read, or NULL if it can.  Replaces the
+ * integer checks for such a directory: BitsPerSample and SampleFormat there
+ * describe the buffer a writer handed libtiff, not what is stored.
+ */
+const char * gimg_tiff_logluv_refusal(
+    const gimg_tiff_ifd_t * ifd, GIMG_Result * out_code);
+
+/**
+ * Expand up to @p rows rows of @p width pixels from one stored block into
+ * codes - LogL16, LogLuv32 or LogLuv24, as the directory says.
+ *
+ * @return How many rows were complete.  A block that ends early keeps the
+ *   rows before the one it ended in, as every other method here does.
+ */
+size_t gimg_tiff_logluv_rows(const gimg_tiff_ifd_t * ifd,
+    const unsigned char * stored, size_t stored_size, size_t width,
+    size_t rows, uint32_t * codes);
+
+/**
+ * Write @p pixels codes as float: Y for LogL; for LogLuv, linear RGB in the
+ * primaries @p xyz_to_rgb maps to, and an alpha of 1.
+ */
+void gimg_tiff_logluv_to_float(const gimg_tiff_ifd_t * ifd,
+    const uint32_t * codes, size_t pixels, const double xyz_to_rgb[9],
+    float * out);
+
+/** @} */
 
 GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
