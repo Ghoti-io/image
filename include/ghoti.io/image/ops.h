@@ -411,11 +411,24 @@ GIMG_API void gimg_color_transform_options_srgb(
  * RGB with neither a profile nor a complete description, are refused rather
  * than guessed.
  *
- * v1 buffers: interleaved RGBA8 and CMYK8 only. Other depths return
- * ::GIMG_ERR_UNSUPPORTED (no silent narrow). CMYK sources need a stated
- * ::GCOL_CMYK_Polarity. The result is RGBA8 for an RGB destination (alpha
- * preserved from an RGBA source, opaque otherwise) or CMYK8 for a CMYK
- * destination profile, and carries @a options->dest.
+ * Sources: RGBA, gray and CMYK at 8, 12 and 16 bits, and RGBA and gray as
+ * 32-bit float. The result keeps the source's depth - 16 bits in, 16 out,
+ * float in, float out - in the destination's model: RGBA for an RGB
+ * destination (alpha copied from an RGBA source, opaque otherwise), gray
+ * for a gray destination (a gray profile, or a description with a white
+ * and a transfer and no primaries), CMYK for a CMYK destination profile.
+ * It carries @a options->dest.
+ *
+ * Float results are not clipped: light above the destination's white and
+ * colour outside its gamut come out as the numbers they are, as littleCMS
+ * gives them, unless @a options->flags has ::GCOL_TRANSFORM_CLIP. Integer
+ * results are clipped, because nothing else fits.
+ *
+ * A gray raster under an RGB description is that space's neutrals. Refused
+ * with ::GIMG_ERR_UNSUPPORTED: CMYK sources without a stated
+ * ::GCOL_CMYK_Polarity; colour samples under a gray profile; an RGBA source
+ * with any alpha below opaque going to gray or CMYK, which have nowhere to
+ * put it; a float source going to CMYK; premultiplied alpha.
  *
  * @param src Source raster.
  * @param options Destination and intent; NULL is refused (no implied sRGB).

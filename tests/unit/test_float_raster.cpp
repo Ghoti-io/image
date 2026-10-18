@@ -12,7 +12,9 @@
  * surface: the byte movers keep every bit (checked with values no integer
  * path would preserve: negatives, values past 1, a NaN, -0.0), and every
  * operation that interprets a sample, and every codec that writes, says
- * GIMG_ERR_UNSUPPORTED.  A new operation or codec lands in one list or the
+ * GIMG_ERR_UNSUPPORTED.  gimg_ops_transform_color is the one operation that
+ * reads float samples as numbers, and test_color_transform.cpp holds it to
+ * littleCMS.  A new operation or codec lands in one list or the
  * other, or the sweep over the registry fails.
  *
  * Copyright 2026 by Corey Pennycuff
@@ -257,11 +259,6 @@ TEST(FloatRaster, EveryInterpretingOperationRefuses) {
           << (int)bits;
       EXPECT_EQ(out, nullptr);
     }
-
-    GIMG_Color_Transform_Options co;
-    gimg_color_transform_options_srgb(&co);
-    EXPECT_EQ(gimg_ops_transform_color(src, &co, &out), GIMG_ERR_UNSUPPORTED);
-    EXPECT_EQ(out, nullptr);
 
     EXPECT_EQ(gimg_alpha_premultiply(src), GIMG_ERR_UNSUPPORTED);
     EXPECT_EQ(gimg_alpha_unpremultiply(src), GIMG_ERR_UNSUPPORTED);

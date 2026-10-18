@@ -42,6 +42,7 @@
 /** ICC data-space signatures from the profile header (four-character codes). */
 #define GIMG_ICC_SIG_RGB 0x52474220u  /* 'RGB ' */
 #define GIMG_ICC_SIG_CMYK 0x434D594Bu /* 'CMYK' */
+#define GIMG_ICC_SIG_GRAY 0x47524159u /* 'GRAY' */
 
 static GIMG_Result gimg_map_gcol_result(GCOL_Result r) {
   switch (r) {
@@ -65,6 +66,15 @@ static GIMG_Result gimg_map_gcol_result(GCOL_Result r) {
 }
 
 /**
+ * A gray description: a white and a transfer and no primaries, which is
+ * what gcol_icc_to_color_info gives for a gray profile.
+ */
+static bool gimg_color_info_gray_ready(const GCOL_Color_Info * info) {
+  return info && !info->primaries_stated && info->white_stated &&
+      info->transfer != GCOL_TRANSFER_UNKNOWN;
+}
+
+/**
  * True when @p info can feed gcol_transform_create without an ICC LUT path.
  */
 static bool gimg_color_info_matrix_ready(const GCOL_Color_Info * info) {
@@ -77,6 +87,7 @@ typedef struct {
   GCOL_Color_Info info;
   bool use_lut; ///< true: create_icc / create_to_icc with @a icc
   bool own_icc;
+  bool gray;    ///< A gray description: matrix path, GCOL_PIXEL_GRAY.
 } gimg_color_endpoint;
 
 static void gimg_color_endpoint_clear(gimg_color_endpoint * e) {
@@ -86,14 +97,16 @@ static void gimg_color_endpoint_clear(gimg_color_endpoint * e) {
   e->icc = NULL;
   e->own_icc = false;
   e->use_lut = false;
+  e->gray = false;
   memset(&e->info, 0, sizeof(e->info));
 }
 
 /**
  * Resolve a Color_Info (and optional ICC bytes) into a transform endpoint.
  *
- * Matrix/TRC ICC becomes a description. LUT / CMYK ICC stays as a profile.
- * A description without ICC needs primaries, white and transfer.
+ * Matrix/TRC ICC - RGB or gray - becomes a description. LUT / CMYK ICC stays
+ * as a profile. A description without ICC needs primaries, white and
+ * transfer, or for gray a white and a transfer.
  */
 static GIMG_Result gimg_color_endpoint_from_info(const GCOL_Color_Info * in,
     bool is_cmyk_raster, gimg_color_endpoint * out) {
@@ -117,7 +130,13 @@ static GIMG_Result gimg_color_endpoint_from_info(const GCOL_Color_Info * in,
       /* Polarity (and any CMYK-only fields) stay with the caller's info. */
       out->info.cmyk_polarity = in->cmyk_polarity;
       out->use_lut = false;
+      out->gray = gcol_icc_data_space(out->icc) == GIMG_ICC_SIG_GRAY;
       return GIMG_OK;
+    }
+    if (gcol_icc_data_space(out->icc) == GIMG_ICC_SIG_GRAY) {
+      // A gray LUT profile: libs/color's LUT paths are RGB and CMYK.
+      gimg_color_endpoint_clear(out);
+      return GIMG_ERR_UNSUPPORTED;
     }
     out->use_lut = true;
     out->info = *in;
@@ -130,7 +149,8 @@ static GIMG_Result gimg_color_endpoint_from_info(const GCOL_Color_Info * in,
     /* Untagged CMYK has no safe default (no SWOP/FOGRA guess). */
     return GIMG_ERR_UNSUPPORTED;
   }
-  if (!gimg_color_info_matrix_ready(in)) {
+  out->gray = gimg_color_info_gray_ready(in);
+  if (!out->gray && !gimg_color_info_matrix_ready(in)) {
     return GIMG_ERR_UNSUPPORTED;
   }
   out->info = *in;
@@ -164,23 +184,124 @@ GIMG_API void gimg_color_transform_options_srgb(
       &options->dest.sample_scale, &options->dest.white_luminance);
 }
 
-static bool gimg_format_is_rgba8(const GIMG_Pixel_Format * fmt) {
-  return fmt && fmt->channel_model == GIMG_CHANNEL_RGBA &&
-      fmt->channel_count == 4u && fmt->bits_per_channel[0] == 8u &&
-      fmt->layout == GIMG_LAYOUT_INTERLEAVED;
-}
+/** The storage a raster's samples have, as this transform reads them. */
+typedef enum {
+  GIMG_XF_U8 = 0, ///< One byte, 0..255.
+  GIMG_XF_U12,    ///< uint16_t, 0..4095.
+  GIMG_XF_U16,    ///< uint16_t, 0..65535.
+  GIMG_XF_F32     ///< float, linear or encoded, unbounded.
+} gimg_xf_storage;
 
-static bool gimg_format_is_cmyk8(const GIMG_Pixel_Format * fmt) {
-  return fmt && fmt->channel_model == GIMG_CHANNEL_CMYK &&
-      fmt->channel_count == 4u && fmt->bits_per_channel[0] == 8u &&
-      fmt->layout == GIMG_LAYOUT_INTERLEAVED;
-}
-
-static bool gimg_dest_is_cmyk(const gimg_color_endpoint * dest) {
-  if (dest->use_lut && dest->icc) {
-    return gcol_icc_data_space(dest->icc) == GIMG_ICC_SIG_CMYK;
+/** Which model the raster carries, and in what storage, or false. */
+static bool gimg_xf_classify(const GIMG_Pixel_Format * fmt,
+    GCOL_Pixel_Model * model, unsigned * channels, gimg_xf_storage * storage) {
+  if (!fmt || fmt->layout != GIMG_LAYOUT_INTERLEAVED) {
+    return false;
   }
-  return false;
+  if (fmt->channel_model == GIMG_CHANNEL_RGBA && fmt->channel_count == 4u) {
+    *model = GCOL_PIXEL_RGB;
+  }
+  else if (fmt->channel_model == GIMG_CHANNEL_GRAY &&
+      fmt->channel_count == 1u) {
+    *model = GCOL_PIXEL_GRAY;
+  }
+  else if (fmt->channel_model == GIMG_CHANNEL_CMYK &&
+      fmt->channel_count == 4u) {
+    *model = GCOL_PIXEL_CMYK;
+  }
+  else {
+    return false;
+  }
+  *channels = fmt->channel_count;
+  const unsigned bits = gimg_pixel_format_channel_bits(fmt, 0);
+  for (uint8_t i = 1; i < fmt->channel_count; i++) {
+    if (gimg_pixel_format_channel_bits(fmt, i) != bits) {
+      return false;
+    }
+  }
+  if (fmt->channel_type == GIMG_CHANNEL_FLOAT) {
+    // Float CMYK has no format here, and so no reader either.
+    *storage = GIMG_XF_F32;
+    return bits == 32u && *model != GCOL_PIXEL_CMYK;
+  }
+  if (fmt->channel_type != GIMG_CHANNEL_UNORM) {
+    return false;
+  }
+  switch (bits) {
+  case 8u:
+    *storage = GIMG_XF_U8;
+    return true;
+  case 12u:
+    *storage = GIMG_XF_U12;
+    return true;
+  case 16u:
+    *storage = GIMG_XF_U16;
+    return true;
+  default:
+    return false;
+  }
+}
+
+/** The output format for @p model at the source's storage, or NULL. */
+static const GIMG_Pixel_Format * gimg_xf_out_format(
+    GCOL_Pixel_Model model, gimg_xf_storage storage) {
+  static const GIMG_Pixel_Format * const table[3][4] = {
+      {&GIMG_PIXEL_RGBA8, &GIMG_PIXEL_RGBA12, &GIMG_PIXEL_RGBA16,
+          &GIMG_PIXEL_RGBAF32},
+      {&GIMG_PIXEL_CMYK8, &GIMG_PIXEL_CMYK12, &GIMG_PIXEL_CMYK16, NULL},
+      {&GIMG_PIXEL_GRAY8, &GIMG_PIXEL_GRAY12, &GIMG_PIXEL_GRAY16,
+          &GIMG_PIXEL_GRAYF32},
+  };
+  const int row = model == GCOL_PIXEL_RGB ? 0
+      : model == GCOL_PIXEL_CMYK          ? 1
+                                          : 2;
+  return table[row][storage];
+}
+
+static double gimg_xf_full(gimg_xf_storage storage) {
+  return storage == GIMG_XF_U12 ? 4095.0
+      : storage == GIMG_XF_U16  ? 65535.0
+      : storage == GIMG_XF_U8   ? 255.0
+                                : 1.0;
+}
+
+/** Sample @p i of a row of @p storage, as a unit-interval (or free) float. */
+static float gimg_xf_read(
+    const unsigned char * row, size_t i, gimg_xf_storage storage) {
+  switch (storage) {
+  case GIMG_XF_U8:
+    return (float)row[i] / 255.0f;
+  case GIMG_XF_U12:
+  case GIMG_XF_U16: {
+    uint16_t v;
+    memcpy(&v, row + i * 2u, sizeof v);
+    return (float)((double)v / gimg_xf_full(storage));
+  }
+  case GIMG_XF_F32:
+  default: {
+    float v;
+    memcpy(&v, row + i * 4u, sizeof v);
+    return v;
+  }
+  }
+}
+
+/** Store @p v as sample @p i of a row: rounded and clamped, or as is. */
+static void gimg_xf_write(
+    unsigned char * row, size_t i, gimg_xf_storage storage, float v) {
+  if (storage == GIMG_XF_F32) {
+    memcpy(row + i * 4u, &v, sizeof v);
+    return;
+  }
+  double d = (double)v;
+  d = !(d > 0.0) ? 0.0 : d > 1.0 ? 1.0 : d;
+  const double q = d * gimg_xf_full(storage) + 0.5;
+  if (storage == GIMG_XF_U8) {
+    row[i] = (unsigned char)q;
+    return;
+  }
+  const uint16_t w = (uint16_t)q;
+  memcpy(row + i * 2u, &w, sizeof w);
 }
 
 GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
@@ -193,20 +314,17 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
   }
 
   const GIMG_Pixel_Format * fmt = gimg_raster_format(src);
-  const bool src_rgba = gimg_format_is_rgba8(fmt);
-  const bool src_cmyk = gimg_format_is_cmyk8(fmt);
-  if (!src_rgba && !src_cmyk) {
+  GCOL_Pixel_Model raster_model;
+  unsigned raster_channels = 0;
+  gimg_xf_storage storage;
+  if (!gimg_xf_classify(fmt, &raster_model, &raster_channels, &storage)) {
     return GIMG_ERR_UNSUPPORTED;
   }
   if (fmt->alpha_form == GIMG_ALPHA_PREMULTIPLIED) {
     // A color transform acts on color, and premultiplied color is not it.
     return GIMG_ERR_UNSUPPORTED;
   }
-  for (uint8_t i = 1; i < fmt->channel_count && i < 8u; i++) {
-    if (fmt->bits_per_channel[i] != fmt->bits_per_channel[0]) {
-      return GIMG_ERR_UNSUPPORTED;
-    }
-  }
+  const bool src_cmyk = raster_model == GCOL_PIXEL_CMYK;
 
   const GCOL_Color_Info * src_ci = gimg_raster_color_info_const(src);
   GCOL_Color_Info src_fallback;
@@ -231,27 +349,74 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
     return r;
   }
 
-  /* Dest that is a CMYK LUT while the caller's dest Color_Info said RGB-only
-   * is fine; dest that is matrix RGB while source is CMYK needs the LUT path
-   * on the source. Both LUT endpoints have no single color API — refuse. */
+#define GIMG_XF_REFUSE(code)                                                   \
+  do {                                                                         \
+    gimg_color_endpoint_clear(&src_ep);                                        \
+    gimg_color_endpoint_clear(&dst_ep);                                        \
+    return (code);                                                             \
+  } while (0)
+
+  /* Both LUT endpoints have no single color API - refuse. */
   if (src_ep.use_lut && dst_ep.use_lut) {
-    gimg_color_endpoint_clear(&src_ep);
-    gimg_color_endpoint_clear(&dst_ep);
-    return GIMG_ERR_UNSUPPORTED;
+    GIMG_XF_REFUSE(GIMG_ERR_UNSUPPORTED);
+  }
+  // What the source samples are fed to libs/color as.  A gray raster
+  // described as RGB (a gray PNG with an sRGB chunk, say) is that RGB space's
+  // neutrals, R = G = B.  The reverse - colour samples under a gray
+  // description - says nothing about the colour, and is refused.
+  GCOL_Pixel_Model feed_model = raster_model;
+  if (raster_model == GCOL_PIXEL_GRAY && !src_ep.gray) {
+    feed_model = GCOL_PIXEL_RGB;
+  }
+  if (src_ep.gray && raster_model != GCOL_PIXEL_GRAY) {
+    GIMG_XF_REFUSE(GIMG_ERR_UNSUPPORTED);
+  }
+  if (src_ep.gray && (dst_ep.use_lut)) {
+    GIMG_XF_REFUSE(GIMG_ERR_UNSUPPORTED); // No gray LUT path in libs/color.
+  }
+  if (src_ep.use_lut && dst_ep.gray) {
+    GIMG_XF_REFUSE(GIMG_ERR_UNSUPPORTED);
+  }
+  if (feed_model == GCOL_PIXEL_RGB && src_ep.use_lut &&
+      gcol_icc_data_space(src_ep.icc) == GIMG_ICC_SIG_CMYK) {
+    GIMG_XF_REFUSE(GIMG_ERR_UNSUPPORTED);
   }
 
   GCOL_CMYK_Polarity polarity = src_ci->cmyk_polarity;
   if (src_cmyk && polarity == GCOL_CMYK_POLARITY_UNKNOWN) {
-    gimg_color_endpoint_clear(&src_ep);
-    gimg_color_endpoint_clear(&dst_ep);
-    return GIMG_ERR_UNSUPPORTED;
+    GIMG_XF_REFUSE(GIMG_ERR_UNSUPPORTED);
   }
-  if (gimg_dest_is_cmyk(&dst_ep) &&
+  const bool dest_cmyk = dst_ep.use_lut &&
+      gcol_icc_data_space(dst_ep.icc) == GIMG_ICC_SIG_CMYK;
+  if (dest_cmyk &&
       options->dest.cmyk_polarity == GCOL_CMYK_POLARITY_UNKNOWN) {
     /* Writing CMYK needs a polarity the same way reading does. */
-    gimg_color_endpoint_clear(&src_ep);
-    gimg_color_endpoint_clear(&dst_ep);
-    return GIMG_ERR_UNSUPPORTED;
+    GIMG_XF_REFUSE(GIMG_ERR_UNSUPPORTED);
+  }
+  const GCOL_Pixel_Model out_model = dest_cmyk ? GCOL_PIXEL_CMYK
+      : dst_ep.gray                            ? GCOL_PIXEL_GRAY
+                                               : GCOL_PIXEL_RGB;
+  const GIMG_Pixel_Format * out_fmt = gimg_xf_out_format(out_model, storage);
+  if (!out_fmt) {
+    GIMG_XF_REFUSE(GIMG_ERR_UNSUPPORTED); // Float into CMYK.
+  }
+  const bool src_alpha = raster_model == GCOL_PIXEL_RGB;
+  const uint32_t width = gimg_raster_width(src);
+  const uint32_t height = gimg_raster_height(src);
+  const unsigned char * src_px =
+      (const unsigned char *)gimg_raster_pixels_const(src);
+  const size_t src_stride = gimg_raster_stride_bytes(src);
+  if (src_alpha && out_model != GCOL_PIXEL_RGB) {
+    // A gray or CMYK result has nowhere to put alpha, so only an opaque
+    // picture can go there without losing something it said.
+    for (uint32_t y = 0; y < height; y++) {
+      const unsigned char * row = src_px + (size_t)y * src_stride;
+      for (uint32_t x = 0; x < width; x++) {
+        if (gimg_xf_read(row, (size_t)x * 4u + 3u, storage) != 1.0f) {
+          GIMG_XF_REFUSE(GIMG_ERR_UNSUPPORTED);
+        }
+      }
+    }
   }
 
   GCOL_Transform * xform = NULL;
@@ -265,94 +430,120 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
         options->intent, options->flags, options->dest.cmyk_polarity, &xform);
   }
   else {
-    cr = gcol_transform_create(NULL, &src_ep.info, &dst_ep.info, options->intent,
+    cr = gcol_transform_create_model(NULL, &src_ep.info,
+        src_ep.gray ? GCOL_PIXEL_GRAY : GCOL_PIXEL_RGB, &dst_ep.info,
+        dst_ep.gray ? GCOL_PIXEL_GRAY : GCOL_PIXEL_RGB, options->intent,
         options->flags, &xform);
   }
   if (cr != GCOL_OK) {
-    gimg_color_endpoint_clear(&src_ep);
-    gimg_color_endpoint_clear(&dst_ep);
-    return gimg_map_gcol_result(cr);
+    GIMG_XF_REFUSE(gimg_map_gcol_result(cr));
   }
-
-  const bool dest_cmyk = gimg_dest_is_cmyk(&dst_ep);
-  const GIMG_Pixel_Format * out_fmt =
-      dest_cmyk ? &GIMG_PIXEL_CMYK8 : &GIMG_PIXEL_RGBA8;
-  const uint32_t width = gimg_raster_width(src);
-  const uint32_t height = gimg_raster_height(src);
-  const size_t pixel_count = (size_t)width * (size_t)height;
 
   GIMG_Raster * out = NULL;
   r = gimg_raster_create(width, height, out_fmt, GIMG_RASTER_OWNED, NULL, 0,
       &out);
   if (r != GIMG_OK) {
     gcol_transform_free(xform);
-    gimg_color_endpoint_clear(&src_ep);
-    gimg_color_endpoint_clear(&dst_ep);
-    return r;
+    GIMG_XF_REFUSE(r);
   }
 
-  const unsigned char * src_px =
-      (const unsigned char *)gimg_raster_pixels_const(src);
+  // Each row is handed to libs/color as it is stored when that is eight
+  // bits - the path every 8-bit transform has always taken - and as floats
+  // otherwise, which carry sixteen bits exactly and let a float raster keep
+  // values past [0, 1].  The colour channels plus alpha when there is one;
+  // a gray raster under an RGB description is widened to R = G = B first.
+  const bool direct = storage == GIMG_XF_U8 && feed_model == raster_model;
+  const unsigned feed_colour = feed_model == GCOL_PIXEL_GRAY ? 1u
+      : feed_model == GCOL_PIXEL_CMYK                        ? 4u
+                                                             : 3u;
+  const unsigned feed_channels = feed_colour + (src_alpha ? 1u : 0u);
+  const unsigned out_colour = out_model == GCOL_PIXEL_GRAY ? 1u
+      : out_model == GCOL_PIXEL_CMYK                       ? 4u
+                                                           : 3u;
+  // Alpha goes through libs/color when both sides have it; an RGB result
+  // from a source without one is made opaque below.
+  const unsigned res_channels =
+      out_colour + ((src_alpha && out_model == GCOL_PIXEL_RGB) ? 1u : 0u);
+  const GCOL_Sample_Type type =
+      storage == GIMG_XF_U8 ? GCOL_SAMPLE_UINT8 : GCOL_SAMPLE_FLOAT32;
+  const size_t sample = storage == GIMG_XF_U8 ? 1u : sizeof(float);
+  GCOL_Sample_Layout feed_layout = {type, feed_channels, feed_model};
+  GCOL_Sample_Layout res_layout = {type, res_channels, out_model};
+
+  const GIMG_Allocator * alloc = gimg_raster_allocator(src);
+  unsigned char * feed = NULL;
+  unsigned char * res = (unsigned char *)gimg_malloc(
+      alloc, (size_t)width * res_channels * sample);
+  if (!direct) {
+    feed = (unsigned char *)gimg_malloc(
+        alloc, (size_t)width * feed_channels * sample);
+  }
+  if (!res || (!direct && !feed)) {
+    gimg_free(alloc, res);
+    gimg_free(alloc, feed);
+    gimg_raster_destroy(out);
+    gcol_transform_free(xform);
+    GIMG_XF_REFUSE(GIMG_ERR_OOM);
+  }
+
   unsigned char * dst_px = (unsigned char *)gimg_raster_pixels(out);
-
-  GCOL_Sample_Layout src_layout;
-  GCOL_Sample_Layout dst_layout;
-  memset(&src_layout, 0, sizeof(src_layout));
-  memset(&dst_layout, 0, sizeof(dst_layout));
-  src_layout.type = GCOL_SAMPLE_UINT8;
-  dst_layout.type = GCOL_SAMPLE_UINT8;
-
-  if (src_cmyk) {
-    src_layout.model = GCOL_PIXEL_CMYK;
-    src_layout.channel_count = 4u;
-  }
-  else {
-    src_layout.model = GCOL_PIXEL_RGB;
-    src_layout.channel_count = 4u;
-  }
-
-  if (dest_cmyk) {
-    dst_layout.model = GCOL_PIXEL_CMYK;
-    dst_layout.channel_count = 4u;
-    cr = gcol_transform_apply(
-        xform, &src_layout, src_px, &dst_layout, dst_px, pixel_count);
-  }
-  else if (src_cmyk) {
-    /* Apply into tightly packed RGB, then expand to opaque RGBA. */
-    unsigned char * rgb =
-        (unsigned char *)gimg_malloc(gimg_raster_allocator(src),
-            pixel_count * 3u);
-    if (!rgb) {
-      gimg_raster_destroy(out);
-      gcol_transform_free(xform);
-      gimg_color_endpoint_clear(&src_ep);
-      gimg_color_endpoint_clear(&dst_ep);
-      return GIMG_ERR_OOM;
+  const size_t dst_stride = gimg_raster_stride_bytes(out);
+  const unsigned out_channels = out_fmt->channel_count;
+  for (uint32_t y = 0; y < height && cr == GCOL_OK; y++) {
+    const unsigned char * srow = src_px + (size_t)y * src_stride;
+    const unsigned char * in = srow;
+    if (!direct) {
+      for (uint32_t x = 0; x < width; x++) {
+        for (unsigned c = 0; c < feed_channels; c++) {
+          // Widening gray: every colour channel reads the one sample.  A
+          // gray raster has no alpha, so there is nothing after it.
+          const unsigned from = feed_model != raster_model ? 0u : c;
+          const float v = gimg_xf_read(
+              srow, (size_t)x * raster_channels + from, storage);
+          if (storage == GIMG_XF_U8) {
+            feed[(size_t)x * feed_channels + c] =
+                (unsigned char)(v * 255.0f + 0.5f);
+          }
+          else {
+            memcpy(feed + ((size_t)x * feed_channels + c) * sizeof(float), &v,
+                sizeof v);
+          }
+        }
+      }
+      in = feed;
     }
-    dst_layout.model = GCOL_PIXEL_RGB;
-    dst_layout.channel_count = 3u;
     cr = gcol_transform_apply(
-        xform, &src_layout, src_px, &dst_layout, rgb, pixel_count);
-    if (cr == GCOL_OK) {
-      for (size_t i = 0; i < pixel_count; i++) {
-        dst_px[i * 4u + 0u] = rgb[i * 3u + 0u];
-        dst_px[i * 4u + 1u] = rgb[i * 3u + 1u];
-        dst_px[i * 4u + 2u] = rgb[i * 3u + 2u];
-        dst_px[i * 4u + 3u] = 255u;
+        xform, &feed_layout, in, &res_layout, res, (size_t)width);
+    unsigned char * drow = dst_px + (size_t)y * dst_stride;
+    for (uint32_t x = 0; x < width && cr == GCOL_OK; x++) {
+      for (unsigned c = 0; c < out_channels; c++) {
+        float v = 1.0f; // Alpha the result has and the source did not.
+        if (c < res_channels) {
+          const size_t at = (size_t)x * res_channels + c;
+          if (storage == GIMG_XF_U8) {
+            v = (float)res[at] / 255.0f;
+          }
+          else {
+            memcpy(&v, res + at * sizeof(float), sizeof v);
+          }
+        }
+        if (storage == GIMG_XF_U8 && c < res_channels) {
+          drow[(size_t)x * out_channels + c] =
+              res[(size_t)x * res_channels + c];
+        }
+        else {
+          gimg_xf_write(drow, (size_t)x * out_channels + c, storage, v);
+        }
       }
     }
-    gimg_free(gimg_raster_allocator(src), rgb);
-  }
-  else {
-    dst_layout.model = GCOL_PIXEL_RGB;
-    dst_layout.channel_count = 4u;
-    cr = gcol_transform_apply(
-        xform, &src_layout, src_px, &dst_layout, dst_px, pixel_count);
   }
 
+  gimg_free(alloc, res);
+  gimg_free(alloc, feed);
   gcol_transform_free(xform);
   gimg_color_endpoint_clear(&src_ep);
   gimg_color_endpoint_clear(&dst_ep);
+#undef GIMG_XF_REFUSE
 
   if (cr != GCOL_OK) {
     gimg_raster_destroy(out);

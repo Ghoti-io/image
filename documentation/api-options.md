@@ -377,10 +377,11 @@ What accepts them:
 |-----------|--------------|
 | flips, rotations, `gimg_ops_apply_orientation`, `gimg_ops_crop`, `gimg_raster_copy`, `gimg_ops_composite` with `GIMG_COMPOSITE_SOURCE`, `gimg_ops_convert_pixel_format` to the same format | moved bit for bit |
 | `gimg_ops_raster_equal` | compared by bits (a NaN equals itself; 0.0 is not -0.0) |
-| resize, `GIMG_COMPOSITE_OVER`, bit-depth and pixel-format conversion, `gimg_ops_transform_color`, premultiply, colour counting, palettes, quantize | `GIMG_ERR_UNSUPPORTED` |
+| `gimg_ops_transform_color` | transformed in float, unbounded, into a float raster of the destination's model (littleCMS's convention); `GCOL_TRANSFORM_CLIP` clips it |
+| resize, `GIMG_COMPOSITE_OVER`, bit-depth and pixel-format conversion, premultiply, colour counting, palettes, quantize | `GIMG_ERR_UNSUPPORTED` |
 | every encoder | `GIMG_ERR_UNSUPPORTED` |
 
-Turning one into an integer raster is a tone-mapping decision, and this library leaves it to the caller.
+Turning one into an integer raster is a tone-mapping decision, and this library leaves it to the caller. A transform does not make it: a float result keeps values above 1.
 
 @subsection api_options_color_info Color info (GCOL_Color_Info)
 
