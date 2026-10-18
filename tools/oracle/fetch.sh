@@ -2,19 +2,20 @@
 #
 # Fetch and build the reference decoders and corpora the sweeps use.
 #
-# None of it is committed. bmpsuite is another project's test suite and bmplib
-# is another project's decoder; a copy here would be a snapshot that stops
-# being the thing everyone else is measured against the moment it is taken.
-# What *is* committed is tools/oracle/VERSIONS, because "corroborated by
-# bmplib" means nothing without saying which bmplib.
+# None of it is committed. bmpsuite is another project's test suite; a copy
+# here would be a snapshot that stops being the thing everyone else is
+# measured against the moment it is taken. What *is* committed is
+# tools/oracle/VERSIONS, because "corroborated by bmpsuite" means nothing
+# without saying which bmpsuite.
 #
-# bmplib is LGPL/GPL. It is built as a shared library and used through the
-# separate process in tests/tools/bmp-oracle, never linked into this library.
+# bmplib is not here any more. It is built into the pinned oracle image at
+# the commit VERSIONS names, and `make oracle-tools` compiles its dumper
+# there; the host build this script used to do was read by nothing, and
+# needed meson, which the build container does not have.
 #
-# bmplib and bmpsuite land in third_party/<name>/, which .gitignore excludes.
-# Both are built here rather than only downloaded: an unbuilt bmpsuite holds
-# no .bmp files at all, and an unbuilt bmplib is of no use as a decoder, so
-# "have it" means "built" for each.
+# bmpsuite lands in third_party/bmpsuite/, which .gitignore excludes. It is
+# built here rather than only downloaded: an unbuilt bmpsuite holds no .bmp
+# files at all, so "have it" means "built".
 #
 # ICO refs are single blobs (Pillow pillow.ico, Wine blank.ico) fetched at the
 # commit VERSIONS names into third_party/ico-refs/. No build step: the file
@@ -29,7 +30,7 @@
 # image-rs blobs at the pillow-rd / image-rs-rd pins). Used by make webp-rd;
 # not committed.
 #
-# Usage:  tools/oracle/fetch.sh [bmplib|bmpsuite|ico-refs|webp-refs|webp-rd|all]
+# Usage:  tools/oracle/fetch.sh [bmpsuite|ico-refs|webp-refs|webp-rd|all]
 #
 # Copyright 2026 by Corey Pennycuff
 
@@ -76,26 +77,6 @@ need() {
     printf 'missing %s, which %s needs\n' "$1" "$2" >&2
     exit 1
   }
-}
-
-fetch_bmplib() {
-  ref=$(ref_for bmplib)
-  dest="$root/third_party/bmplib"
-  if [ -f "$dest/build/libbmp.so" ] || [ -f "$dest/build/libbmp.a" ]; then
-    printf 'have    third_party/bmplib\n'
-    return
-  fi
-  need git bmplib
-  need meson bmplib
-  need ninja bmplib
-  printf 'fetch   third_party/bmplib (%s)\n' "$ref"
-  clone_at_ref "$dest" https://github.com/rupertwh/bmplib.git "$ref"
-  printf 'build   third_party/bmplib\n'
-  run_quiet meson setup --buildtype=release "$dest.partial/build" \
-      "$dest.partial"
-  run_quiet ninja -C "$dest.partial/build"
-  rm -rf "$dest"
-  mv "$dest.partial" "$dest"
 }
 
 fetch_bmpsuite() {
@@ -412,12 +393,11 @@ fetch_webp_rd() {
 }
 
 case "$what" in
-  bmplib)    fetch_bmplib ;;
   bmpsuite)  fetch_bmpsuite ;;
   ico-refs)  fetch_ico_refs ;;
   webp-refs) fetch_webp_refs ;;
   webp-rd)   fetch_webp_rd ;;
-  all)       fetch_bmplib; fetch_bmpsuite; fetch_ico_refs; fetch_webp_refs; fetch_webp_rd ;;
-  *)         printf 'usage: tools/oracle/fetch.sh [bmplib|bmpsuite|ico-refs|webp-refs|webp-rd|all]\n' >&2
+  all)       fetch_bmpsuite; fetch_ico_refs; fetch_webp_refs; fetch_webp_rd ;;
+  *)         printf 'usage: tools/oracle/fetch.sh [bmpsuite|ico-refs|webp-refs|webp-rd|all]\n' >&2
              exit 1 ;;
 esac

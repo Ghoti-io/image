@@ -892,7 +892,13 @@ bmpsuite: bmp-dump-raster ## Run the bmpsuite conformance sweep against the four
 # in the line every gate prints. It is not a fallback: nothing selects it
 # automatically, because a gate whose reference is not the one it names prints
 # the same green line as one whose is.
-ORACLE_IMAGE := ghoti-image-oracle-refs:deb13-8
+# Read from containers/IMAGES, which every reference there shares, so the tag
+# built here is the one oracle-exec looks for. It used to be written out
+# without the localhost/ prefix: podman stores the two as one image, docker as
+# two, so on a docker machine `make oracle-build` built an image oracle-exec
+# never found.
+ORACLE_IMAGE := $(shell awk -F'\t' '$$1 == "pillow" { print $$2; exit }' \
+	tools/oracle/containers/IMAGES)
 ORACLE_EXEC := tools/oracle/oracle-exec
 ORACLE_ENGINE ?= docker
 
@@ -1012,6 +1018,53 @@ oracle-tools: ## Build the JPEG, GIF, BMP and TIFF oracle tools inside the image
 	@printf '\033[0;32mOracle tools built against the pinned references.\033[0m\n'
 
 .PHONY: oracle-build oracle-verify oracle-tools
+
+####################################################################
+# What make test reads that git does not hold.
+#
+# Every one of these is pinned - a digest, a commit, or the oracle image's
+# version - and produced by a script, so a fresh clone makes them rather than
+# failing a gate for the want of them: the RFC 6386 text, the corpora
+# tools/oracle/fetch.sh fetches, and everything `make oracle-tools` builds
+# and writes inside the pinned image (the oracle tools, the libtiff sample
+# set, the CCITT and LogLuv variants, the depth series). Nothing skips. A
+# machine that cannot make them - no network, no container engine - fails
+# here, saying which, rather than in a test that has nothing to read.
+#
+# The scripts keep what they already have, so this costs a few checks when
+# everything is present. The oracle half is rebuilt when a pin or an oracle
+# tool's source changes, or when one of its directories is gone.
+####################################################################
+
+ORACLE_INPUTS_STAMP := tests/out/.oracle-inputs
+ORACLE_INPUT_DIRS := tests/data/tiff-corpus tests/data/tiff-fax \
+	tests/data/tiff-logluv tests/data/tiff-depth
+ORACLE_INPUT_SOURCES := tools/oracle/containers/IMAGES tools/oracle/VERSIONS \
+	$(wildcard tests/tools/*-oracle/*.c)
+
+test-inputs: ## Fetch and generate everything make test reads that git does not hold
+	@sh tools/webp/fetch.sh
+	@sh tools/oracle/fetch.sh all
+	@for d in $(ORACLE_INPUT_DIRS); do \
+		[ -d "$$d" ] || rm -f $(ORACLE_INPUTS_STAMP); \
+	done
+	@$(MAKE) --no-print-directory $(ORACLE_INPUTS_STAMP)
+
+$(ORACLE_INPUTS_STAMP): $(ORACLE_INPUT_SOURCES)
+	@command -v $(ORACLE_ENGINE) >/dev/null 2>&1 || { \
+		printf '\033[0;31m\n### No container engine (%s) ###\033[0m\n' \
+			"$(ORACLE_ENGINE)" >&2; \
+		printf 'make test compares against the references pinned in %s,\n' \
+			"$(ORACLE_IMAGE)" >&2; \
+		printf 'which needs podman or docker. Install one, or name it with\n' >&2; \
+		printf 'ORACLE_ENGINE= (and GHOTI_CONTAINER_ENGINE= for oracle-exec).\n' >&2; \
+		exit 1; }
+	@$(ORACLE_ENGINE) image inspect $(ORACLE_IMAGE) >/dev/null 2>&1 || \
+		$(MAKE) --no-print-directory oracle-build
+	@$(MAKE) --no-print-directory oracle-tools
+	@mkdir -p $(@D) && touch $@
+
+.PHONY: test-inputs
 
 # The three oracle tools used to have a target each here, building them
 # against this machine's headers into the same directories `oracle-tools` now
@@ -1303,7 +1356,7 @@ check-vp8-tables: ## Fail if the VP8 tables are not what the RFC 6386 generator 
 	if [ ! -f "$$rfc" ]; then \
 		printf "\033[0;31m\n### RFC 6386 is not here ###\033[0m\n" >&2; \
 		printf "The VP8 coefficient tables are generated from that text.\n" >&2; \
-		printf "Fetch it with:\n  tools/webp/fetch_rfc6386.sh\n" >&2; \
+		printf "Fetch it with:\n  tools/webp/fetch.sh\n" >&2; \
 		exit 1; \
 	fi; \
 	if ! command -v python3 >/dev/null 2>&1; then \
@@ -1326,7 +1379,7 @@ check-vp8-tables: ## Fail if the VP8 tables are not what the RFC 6386 generator 
 	printf "\033[0;32mVP8 tables are byte-identical to the RFC 6386 generator.\033[0m\n"
 
 test: ## Make and run the Unit tests, then verify written output against outside decoders
-test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION)
+test: test-inputs $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample_tool$(EXE_EXTENSION) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO) $(TEST_OUT_WEBP)
 	@for test_exe in $(TEST_EXECUTABLES); do \
 		test_name=$$(basename $$test_exe $(EXE_EXTENSION)); \
@@ -1399,7 +1452,7 @@ test: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/resample
 	printf "\033[0;32mICC corpus verification passed.\033[0m\n"
 
 test-quiet: ## Run tests with minimal output (one line per test suite)
-test-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION)
+test-quiet: test-inputs $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $(APP_DIR)/dump_ico_raster$(EXE_EXTENSION) $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION)
 	@mkdir -p $(TEST_OUT_PNG) $(TEST_OUT_JPEG) $(TEST_OUT_BMP) $(TEST_OUT_GIF) $(TEST_OUT_ICO) $(TEST_OUT_WEBP)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;36m%-30s %8s %10s %s\033[0m\n" "Test Suite" "Tests" "Time" "Status"; \
@@ -1561,7 +1614,7 @@ test-verify-webp: $(APP_DIR)/dump_webp_raster$(EXE_EXTENSION) ## Run WebP struct
 		printf "\033[0;32mWebP structure, pixel and encode-output verification passed.\033[0m\n"
 
 test-valgrind: ## Run all tests under valgrind (Linux only)
-test-valgrind: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
+test-valgrind: test-inputs $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 ifeq ($(OS_NAME), Linux)
 	@failed=""; \
 	for test_exe in $(TEST_EXECUTABLES); do \
@@ -1591,7 +1644,7 @@ endif
 # even when Valgrind reports 0 errors and 0 leaks. Use test-valgrind-noleak to
 # pass when Valgrind is clean regardless of test results.
 test-valgrind-quiet: ## Run tests under valgrind with minimal output (Linux only)
-test-valgrind-quiet: $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
+test-valgrind-quiet: test-inputs $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES)
 ifeq ($(OS_NAME), Linux)
 	@total_tests=0; total_passed=0; total_failed=0; total_time=0; failed_suites=""; \
 	printf "\n\033[1;35m%-30s %8s %10s %s\033[0m\n" "Test Suite (Valgrind)" "Tests" "Time" "Status"; \
@@ -1830,7 +1883,7 @@ $(ASAN_APP_DIR)/testJpeg_load$(EXE_EXTENSION): $(ASAN_OBJ_DIR)/tests/test_jpeg_l
 ASAN_TEST_EXECUTABLES := $(addprefix $(ASAN_APP_DIR)/,$(addsuffix $(EXE_EXTENSION),$(TEST_NAMES)))
 
 test-asan: ## Run all tests with AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)
-test-asan: $(ASAN_APP_DIR)/$(ASAN_TARGET) $(ASAN_TEST_EXECUTABLES)
+test-asan: test-inputs $(ASAN_APP_DIR)/$(ASAN_TARGET) $(ASAN_TEST_EXECUTABLES)
 ifeq ($(OS_NAME), Linux)
 	@printf "\033[0;36m\n"
 	@printf "###########################################\n"

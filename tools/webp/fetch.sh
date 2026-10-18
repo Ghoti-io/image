@@ -7,7 +7,7 @@
 # a file that does not match it. The tables the library compiles are produced
 # from this text by tools/webp/gen_vp8_tables.py.
 #
-# Usage:  tools/webp/fetch_rfc6386.sh
+# Usage:  tools/webp/fetch.sh
 #
 # Copyright 2026 by Corey Pennycuff
 
@@ -19,10 +19,15 @@ dest=$root/third_party/rfc6386/rfc6386.txt
 pin=$root/tools/webp/rfc6386.sha256
 
 command -v curl >/dev/null 2>&1 || {
-  printf 'missing curl, which fetch_rfc6386.sh needs\n' >&2
+  printf 'missing curl, which tools/webp/fetch.sh needs\n' >&2
   exit 1
 }
 want=$(awk 'NF && $1 !~ /^#/ { print $1; exit }' "$pin")
+# Already here and still the pinned bytes: nothing to do.  make test runs
+# this every time, so it must cost nothing when there is nothing to fetch.
+if [ -f "$dest" ] && [ "$(sha256sum "$dest" | awk '{ print $1 }')" = "$want" ]; then
+  exit 0
+fi
 mkdir -p "$(dirname "$dest")"
 tmp=$dest.partial
 curl -fsSL -o "$tmp" "$url"

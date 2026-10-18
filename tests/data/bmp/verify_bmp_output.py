@@ -69,8 +69,9 @@ def load_pixbuf(path):
     return bytes(out), (w, h)
 
 
-# bmplib is not installed by any package here; it is built from source by
-# tools/oracle/fetch.sh.  It is listed because it is the only decoder reachable
+# bmplib is not installed by any package here; it is built into the pinned
+# oracle image, and `make oracle-tools` compiles the dumper below against it.
+# It is listed because it is the only decoder reachable
 # from here that reads what this writer can now produce at a caller's request:
 # Pillow refuses a 2-bit BMP outright ("Unsupported BMP pixel depth"), and
 # nothing installed reads OS/2 RLE24 at all.  Without it those files would have
@@ -132,8 +133,8 @@ def verify_directory(dirpath):
     available = [(name, fn) for name, fn in DECODERS if importable(fn)]
     if not available:
         return ["no outside BMP decoder is available (Pillow, GdkPixbuf or "
-                "bmplib); install one: pip install Pillow, or run "
-                "tools/oracle/fetch.sh bmplib"], 0
+                "bmplib); the oracle image carries all three; make test "
+                "builds the bmplib dumper with make oracle-tools"], 0
 
     for name in names:
         path = os.path.join(dirpath, name)
@@ -171,8 +172,8 @@ def verify_directory(dirpath):
             hint = ""
             if not any(n == "bmplib" for n, _ in available):
                 hint = (" - bmplib is not built, and it is the only decoder "
-                        "here that reads 2-bit or OS/2 RLE24 files; run "
-                        "tools/oracle/fetch.sh bmplib")
+                        "here that reads 2-bit or OS/2 RLE24 files; make "
+                        "oracle-tools builds it in the pinned image")
             errors.append(
                 "%s: no outside decoder read it and agreed%s" % (name, hint))
 

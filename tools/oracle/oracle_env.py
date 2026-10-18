@@ -223,6 +223,30 @@ ALIAS = dict(
     if "=" in pair)
 
 
+_rootless = None
+
+
+def _engine_maps_user():
+    """Whether the engine already makes container root the calling user.
+
+    Rootless podman does: what a container writes into a mounted directory is
+    owned by whoever ran it. Docker does not: the same files are owned by
+    root, and the next `make oracle-tools` cannot delete its own output.
+    Measured on the EVO-X2 (docker 29.8.2), 2026-10-17, where the second run
+    failed on every file of tests/data/tiff-corpus. `docker` here is a podman
+    shim, which is why this machine never showed it.
+    """
+    global _rootless
+    if _rootless is None:
+        try:
+            said = subprocess.run([ENGINE, "--version"], capture_output=True,
+                text=True, stdin=subprocess.DEVNULL).stdout.lower()
+        except OSError:
+            said = ""
+        _rootless = "podman" in said
+    return _rootless
+
+
 def command(name, argv, scratch=None):
     """The argv that runs `argv` against `name`'s reference.
 
@@ -250,6 +274,11 @@ def command(name, argv, scratch=None):
     out = [ENGINE, "run", "--rm", "-i",
         "--network", "none",
         "--volume", "%s:%s:ro" % (ROOT, ROOT)]
+    if not _engine_maps_user() and hasattr(os, "getuid"):
+        # Run as the caller, so what the reference writes is the caller's to
+        # replace. HOME is somewhere it can write, which / is not.
+        out += ["--user", "%d:%d" % (os.getuid(), os.getgid()),
+                "--env", "HOME=/tmp"]
     paths = [scratch] if isinstance(scratch, str) else list(scratch or [])
     for path in paths:
         out += ["--volume", "%s:%s:rw" % (path, path)]
