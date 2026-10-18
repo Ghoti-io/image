@@ -367,6 +367,21 @@ Codecs that support animation (GIMG_CAP_ANIMATION) set these on load and read th
 
 **GIMG_PIXEL_GRAY12** and **GIMG_PIXEL_RGBA12** (see `ghoti.io/image/raster.h`): 12 bits per channel, stored as **uint16_t per sample** with value in **0..4095** (clamped; no left-shift in the raster). Used for codecs that support 12-bit precision (e.g. JPEG 12-bit). Conversion to/from 8- or 16-bit uses the library bit-depth API (`gimg_bitdepth_*`, `gimg_ops_convert_bit_depth`).
 
+@subsection api_options_raster_formats_float Raster formats (float)
+
+**GIMG_PIXEL_RGBAF32** and **GIMG_PIXEL_GRAYF32**: one C `float` per channel, linear light, never clamped - above 1 is brighter than the reference white, below 0 is outside the gamut, and the raster's `GCOL_Color_Info` says what 1 means. They exist for samples no integer can hold. A `GIMG_CHANNEL_FLOAT` format at any width but 32 is refused by `gimg_raster_create()`.
+
+What accepts them:
+
+| Operation | Float raster |
+|-----------|--------------|
+| flips, rotations, `gimg_ops_apply_orientation`, `gimg_ops_crop`, `gimg_raster_copy`, `gimg_ops_composite` with `GIMG_COMPOSITE_SOURCE`, `gimg_ops_convert_pixel_format` to the same format | moved bit for bit |
+| `gimg_ops_raster_equal` | compared by bits (a NaN equals itself; 0.0 is not -0.0) |
+| resize, `GIMG_COMPOSITE_OVER`, bit-depth and pixel-format conversion, `gimg_ops_transform_color`, premultiply, colour counting, palettes, quantize | `GIMG_ERR_UNSUPPORTED` |
+| every encoder | `GIMG_ERR_UNSUPPORTED` |
+
+Turning one into an integer raster is a tone-mapping decision, and this library leaves it to the caller.
+
 @subsection api_options_color_info Color info (GCOL_Color_Info)
 
 **GCOL_Color_Info** (see `ghoti.io/image/color.h`) is attached to a raster and describes how to interpret color: the gamut, transfer, rendering intent, optional ICC profile, and (for CMYK rasters) channel polarity. Load and save **describe and carry** colour; they do not remap samples. Remapping is `gimg_ops_transform_color`, which parses `icc_bytes` (or uses stated gamut+transfer) through libs/color.

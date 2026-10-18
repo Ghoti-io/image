@@ -684,7 +684,8 @@ GIMG_API GIMG_Result gimg_ops_quantize(const GIMG_Raster * src,
 /**
  * @brief Compare two rasters: dimensions, format, and pixel data must match.
  * Strides may differ; comparison is row-by-row over pixel bytes. Color info is
- * not compared.
+ * not compared.  Float samples are compared by their bits, so a NaN equals
+ * the same NaN and 0.0 does not equal -0.0.
  * @return true if equal, false if either is NULL or dimensions/format/pixels
  * differ.
  */

@@ -136,6 +136,32 @@ static const GIMG_Pixel_Format gimg_pixel_cmyk16 = {
     ._reserved = {0},
 };
 
+// Linear light that an integer cannot hold: LogLuv's 38 decades of
+// luminance, and anything brighter than white.  Single precision because
+// half precision stops at 65504 and 2^-24; nothing here reads or writes any
+// other float width.
+static const GIMG_Pixel_Format gimg_pixel_rgbaf32 = {
+    .channel_model = GIMG_CHANNEL_RGBA,
+    .channel_type = GIMG_CHANNEL_FLOAT,
+    .layout = GIMG_LAYOUT_INTERLEAVED,
+    .channel_count = 4,
+    .bits_per_channel = {32, 32, 32, 32, 0, 0, 0, 0},
+    .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_STRAIGHT,
+    ._reserved = {0},
+};
+
+static const GIMG_Pixel_Format gimg_pixel_grayf32 = {
+    .channel_model = GIMG_CHANNEL_GRAY,
+    .channel_type = GIMG_CHANNEL_FLOAT,
+    .layout = GIMG_LAYOUT_INTERLEAVED,
+    .channel_count = 1,
+    .bits_per_channel = {32, 0, 0, 0, 0, 0, 0, 0},
+    .alignment = GIMG_DEFAULT_STRIDE_ALIGNMENT,
+    .alpha_form = GIMG_ALPHA_NONE,
+    ._reserved = {0},
+};
+
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA8 = gimg_pixel_rgba8;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA16 = gimg_pixel_rgba16;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAY8 = gimg_pixel_gray8;
@@ -145,6 +171,8 @@ GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBA12 = gimg_pixel_rgba12;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK8 = gimg_pixel_cmyk8;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK12 = gimg_pixel_cmyk12;
 GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_CMYK16 = gimg_pixel_cmyk16;
+GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_RGBAF32 = gimg_pixel_rgbaf32;
+GIMG_API const GIMG_Pixel_Format GIMG_PIXEL_GRAYF32 = gimg_pixel_grayf32;
 
 GIMG_API uint8_t gimg_pixel_format_channel_bits(
     const GIMG_Pixel_Format * format, uint8_t index) {
@@ -261,6 +289,17 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
     return GIMG_ERR_INVALID;
   }
   format = &resolved;
+
+  // A float channel is a C float.  Any other width would be read by every
+  // integer path that switches on bits_per_channel - a sixteen-bit "float"
+  // is a UNORM16 to all of them - so it is refused here, once.
+  if (format->channel_type == GIMG_CHANNEL_FLOAT) {
+    for (uint8_t i = 0; i < format->channel_count; i++) {
+      if (gimg_pixel_format_channel_bits(format, i) != 32u) {
+        return GIMG_ERR_UNSUPPORTED;
+      }
+    }
+  }
 
   size_t bpp = gimg_raster_bytes_per_pixel(format);
   if (bpp == 0) {

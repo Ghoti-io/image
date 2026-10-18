@@ -196,6 +196,22 @@ extern const GIMG_Pixel_Format GIMG_PIXEL_CMYK12;
 extern const GIMG_Pixel_Format GIMG_PIXEL_CMYK16;
 
 /**
+ * @brief RGBA, one C float per channel, linear light.
+ *
+ * For samples an integer cannot hold: what a TIFF LogLuv file decodes to.
+ * Values are not clamped - above 1 is brighter than the reference white,
+ * below 0 is out of gamut - and the raster's GCOL_Color_Info says what 1
+ * means.  Geometry, crop, copy, GIMG_COMPOSITE_SOURCE and conversion to the
+ * same format move the bytes untouched; every operation that reads a sample
+ * as a number, and every encoder, refuses it with GIMG_ERR_UNSUPPORTED.  A
+ * float format at any width but 32 is refused by gimg_raster_create().
+ */
+extern const GIMG_Pixel_Format GIMG_PIXEL_RGBAF32;
+
+/** @brief Grayscale, one C float, linear light; see GIMG_PIXEL_RGBAF32. */
+extern const GIMG_Pixel_Format GIMG_PIXEL_GRAYF32;
+
+/**
  * @brief Ownership of the pixel buffer.
  *
  * With GIMG_RASTER_OWNED, @a buffer may be NULL (library allocates and zeros)
@@ -211,6 +227,9 @@ typedef enum {
 
 /**
  * @brief Create a raster image (uses default allocator).
+ *
+ * @return GIMG_ERR_UNSUPPORTED for a format with no whole-byte pixel, or a
+ *   GIMG_CHANNEL_FLOAT format with any channel not 32 bits wide.
  */
 GIMG_API GIMG_Result gimg_raster_create(uint32_t width, uint32_t height,
     const GIMG_Pixel_Format * format, GIMG_Raster_Ownership ownership,
