@@ -14,10 +14,13 @@
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <vector>
 
 #include "bmp_internal.h"
@@ -1179,6 +1182,49 @@ TEST(BmpDecode, V5LinkedProfileResolverThatRefusesLeavesTheImageUntagged) {
   EXPECT_EQ(color->icc_size, 0u);
   ASSERT_NE(color->icc_linked_path, nullptr);
   expect_pattern(img);
+}
+
+// The whole path a linked profile takes, through the public API only: the
+// file names a profile, the caller's resolver hands back bytes, and
+// gimg_ops_transform_color applies them.  The two tests above cover the
+// attach and test_color_transform.cpp covers the transform on hand-set
+// bytes; this is the one that joins them.  swap_rg.icc exchanges red and
+// green, so a step that dropped or ignored the profile is a visible failure
+// rather than a plausible-looking image.
+TEST(BmpDecode, V5LinkedProfileFromAResolverDrivesTheColourTransform) {
+  std::ifstream f(std::string(GIMG_TEST_DATA_BMP) + "/../icc/swap_rg.icc",
+      std::ios::binary);
+  ResolverState st;
+  st.profile.assign(
+      (std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  ASSERT_FALSE(st.profile.empty()) << "run tests/data/icc/generate.py";
+
+  GIMG_Load_Options options;
+  memset(&options, 0, sizeof(options));
+  options.icc_resolver = test_resolver;
+  options.icc_resolver_user = &st;
+  Loaded img;
+  ASSERT_EQ(img.load("bmp_4x4_v5_linked_profile.bmp", &options), GIMG_OK);
+  ASSERT_EQ(img.decode(), GIMG_OK);
+  ASSERT_EQ(st.calls, 1);
+
+  GIMG_Color_Transform_Options opts;
+  gimg_color_transform_options_srgb(&opts);
+  GIMG_Raster * out = nullptr;
+  ASSERT_EQ(gimg_ops_transform_color(img.raster(), &opts, &out), GIMG_OK);
+  ASSERT_NE(out, nullptr);
+  const uint8_t * q = (const uint8_t *)gimg_raster_pixels_const(out);
+  // Pure red and pure green in the top row trade places; blue stays blue.
+  const uint8_t * red_in = q;            // (0,0) was red
+  const uint8_t * green_in = q + 4u;     // (1,0) was green
+  const uint8_t * blue_in = q + 8u;      // (2,0) was blue
+  EXPECT_LT(red_in[0], 40u);
+  EXPECT_GT(red_in[1], 215u);
+  EXPECT_GT(green_in[0], 215u);
+  EXPECT_LT(green_in[1], 40u);
+  EXPECT_GT(blue_in[2], 215u);
+  EXPECT_LT(blue_in[0], 40u);
+  gimg_raster_destroy(out);
 }
 
 TEST(BmpDecode, V5EmbeddedProfileDoesNotReachTheResolver) {
