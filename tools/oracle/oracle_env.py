@@ -227,23 +227,33 @@ _rootless = None
 
 
 def _engine_maps_user():
-    """Whether the engine already makes container root the calling user.
+    """Whether the engine runs rootless, so container root is the caller.
 
-    Rootless podman does: what a container writes into a mounted directory is
-    owned by whoever ran it. Docker does not: the same files are owned by
-    root, and the next `make oracle-tools` cannot delete its own output.
-    Measured on the EVO-X2 (docker 29.8.2), 2026-10-17, where the second run
-    failed on every file of tests/data/tiff-corpus. `docker` here is a podman
-    shim, which is why this machine never showed it.
+    A rootless engine (podman by default, docker in its rootless mode) maps
+    root inside the container to whoever started it, and what a reference
+    writes into a mounted directory is theirs. A rootful one (docker's usual
+    install, or podman run as root) does not: the files are owned by root,
+    and the caller cannot replace or delete them afterwards - found on the
+    EVO-X2's docker, 2026-10-17, where a second `make oracle-tools` failed on
+    every file the first had written. Passing --user fixes the rootful case
+    and breaks the rootless one, where it would make the files a subordinate
+    uid's, so the engine is asked rather than guessed from its name.
     """
     global _rootless
     if _rootless is None:
-        try:
-            said = subprocess.run([ENGINE, "--version"], capture_output=True,
-                text=True, stdin=subprocess.DEVNULL).stdout.lower()
-        except OSError:
-            said = ""
-        _rootless = "podman" in said
+        def ask(*args):
+            try:
+                return subprocess.run([ENGINE] + list(args),
+                    capture_output=True, text=True,
+                    stdin=subprocess.DEVNULL).stdout
+            except OSError:
+                return ""
+        if "podman" in ask("--version").lower():
+            _rootless = ask("info", "--format",
+                "{{.Host.Security.Rootless}}").strip() == "true"
+        else:
+            _rootless = "rootless" in ask("info", "--format",
+                "{{json .SecurityOptions}}")
     return _rootless
 
 
