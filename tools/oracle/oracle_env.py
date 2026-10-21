@@ -233,8 +233,8 @@ def _engine_maps_user():
     root inside the container to whoever started it, and what a reference
     writes into a mounted directory is theirs. A rootful one (docker's usual
     install, or podman run as root) does not: the files are owned by root,
-    and the caller cannot replace or delete them afterwards - found on the
-    EVO-X2's docker, 2026-10-17, where a second `make oracle-tools` failed on
+    and the caller cannot replace or delete them afterwards - found on a
+    rootful docker install, 2026-10-17, where a second `make oracle-tools` failed on
     every file the first had written. Passing --user fixes the rootful case
     and breaks the rootless one, where it would make the files a subordinate
     uid's, so the engine is asked rather than guessed from its name.
