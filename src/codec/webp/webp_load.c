@@ -531,6 +531,27 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
   return GIMG_OK;
 }
 
+GIMG_Result gimg_webp_check_bitstream_size(const unsigned char * vp8,
+    size_t vp8_size, const unsigned char * vp8l, size_t vp8l_size,
+    uint32_t want_w, uint32_t want_h) {
+  uint32_t w = 0, h = 0;
+  int alpha = 0;
+  if (vp8l) {
+    if (!gimg_webp_peek_vp8l_dims(vp8l, vp8l_size, &w, &h, &alpha)) {
+      return GIMG_ERR_CORRUPT;
+    }
+  }
+  else if (vp8) {
+    if (!gimg_webp_peek_vp8_dims(vp8, vp8_size, &w, &h)) {
+      return GIMG_OK; // not a key frame: no size of its own to compare
+    }
+  }
+  else {
+    return GIMG_OK;
+  }
+  return (w == want_w && h == want_h) ? GIMG_OK : GIMG_ERR_CORRUPT;
+}
+
 GIMG_Result gimg_webp_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster) {
   (void)options;
@@ -600,6 +621,13 @@ GIMG_Result gimg_webp_decode(GIMG_Codec * codec, const GIMG_Item * item,
   }
 
   // Still image: VP8L alone, or VP8 with optional ALPH. Not both bitstreams.
+  if ((vp8lp != NULL) != (vp8p != NULL)) {
+    const GIMG_Result sr = gimg_webp_check_bitstream_size(
+        vp8p, vp8_size, vp8lp, vp8l_size, st->canvas_width, st->canvas_height);
+    if (sr != GIMG_OK) {
+      return sr;
+    }
+  }
   if (vp8lp && !vp8p) {
     return gimg_webp_decode_picture(
         NULL, 0u, vp8lp, vp8l_size, NULL, 0u, st->allocator, NULL, out_raster);

@@ -173,7 +173,15 @@ typedef struct {
   uint32_t range;
   uint32_t value;
   int bit_count;
+  /** Bytes the decoder wanted from beyond the end of its partition.  The
+   * register is loaded a little ahead of use, so a few are ordinary at the
+   * very end of a sound stream; a partition that is short of what the
+   * picture needs overruns by more than that. */
+  int over;
 } vp8_bool;
+
+/** The most bytes a sound partition's final reads may take from beyond it. */
+#define VP8_BOOL_OVERRUN_ALLOWED 2
 
 typedef uint8_t vp8_probs[4][8][3][11];
 
@@ -222,6 +230,9 @@ static int vp8_bool_read(vp8_bool * d, int prob, int * bit) {
        * stop sequence lives in the bytes that were written. */
       if (d->p < d->end) {
         d->value |= (uint32_t)(*d->p++);
+      }
+      else if (d->over < 1 << 20) {
+        d->over++;
       }
     }
   }
@@ -2854,6 +2865,21 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
           }
         }
       }
+    }
+  }
+
+  /* A partition that ran dry decoded zeros for what it lacked: a flat,
+   * plausible picture from a stream that was cut short or lies about its
+   * partition sizes.  libwebp refuses both the first partition and a token
+   * partition in that state, and so does this. */
+  if (hdr.over > VP8_BOOL_OVERRUN_ALLOWED) {
+    r = GIMG_ERR_CORRUPT;
+    goto Done;
+  }
+  for (p = 0; p < npart; ++p) {
+    if (part_dec[p].over > VP8_BOOL_OVERRUN_ALLOWED) {
+      r = GIMG_ERR_CORRUPT;
+      goto Done;
     }
   }
 

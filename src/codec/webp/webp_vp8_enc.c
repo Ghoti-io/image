@@ -2872,6 +2872,14 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
     r = GIMG_ERR_OOM;
     goto Done;
   }
+  // The frame tag holds the first partition's size in nineteen bits (RFC 6386
+  // 9.1).  A larger one - mode data for a very large, very detailed picture -
+  // would be written with its high bits dropped, and the file that resulted
+  // was returned as a success.
+  if (part0.pos > 0x7FFFFu) {
+    r = GIMG_ERR_LIMIT;
+    goto Done;
+  }
   {
     uint32_t part0_size = (uint32_t)part0.pos;
     uint32_t tag = (part0_size << 5) | (1u << 4); /* keyframe, profile 0, show */

@@ -1582,8 +1582,9 @@ TEST(Webp, SaveLossySpikeDropsWeakCoeff) {
 
 TEST(Webp, SaveLossyAlphaKeepsPlane) {
   /* Opaque red on the left, fully transparent green on the right.
-   * Alpha is stored exactly. The colour is premultiplied, so the
-   * transparent side comes back black and the red side stays red.
+   * Alpha is stored exactly. The colour is straight, so the transparent
+   * side comes back black, the red side stays red, and a half-transparent
+   * pixel keeps its colour rather than coming back half as bright.
    */
   GIMG_Raster * raster = nullptr;
   ASSERT_EQ(gimg_raster_create(16, 16, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
@@ -1609,6 +1610,7 @@ TEST(Webp, SaveLossyAlphaKeepsPlane) {
     }
   }
   px[(4 * 16 + 4) * 4 + 3] = 128;
+  px[(4 * 16 + 4) * 4 + 0] = 255;
 
   GIMG_Doc * doc = nullptr;
   ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
@@ -1641,6 +1643,9 @@ TEST(Webp, SaveLossyAlphaKeepsPlane) {
   EXPECT_EQ(got[(8) * 4 + 3], 0);
   EXPECT_LT(got[8 * 4], 40);
   EXPECT_EQ(got[(4 * 16 + 4) * 4 + 3], 128);
+  // Straight alpha: the colour of the half-transparent sample is not scaled
+  // by it (it was 128 or so when it was).
+  EXPECT_GT(got[(4 * 16 + 4) * 4 + 0], 200);
 
   {
     mkdir(GIMG_TEST_OUT_WEBP, 0755);

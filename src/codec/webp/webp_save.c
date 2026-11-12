@@ -157,10 +157,14 @@ static int buf_append_chunk(webp_buf_t * b, uint32_t fourcc,
   return 1;
 }
 
-/** Straight alpha, kept exact. RGB is scaled by it so a transparent
- *  sample does not spend VP8 bits on colour the display will not show.
- *  Rounding is (c * a + 127) / 255, so 255 reproduces the sample. */
-static void premultiply_rgba(uint8_t * rgba, uint32_t width, uint32_t height,
+/** Straight alpha, kept exact.  A fully transparent sample has its RGB
+ *  zeroed so it does not spend VP8 bits on colour the display will not show.
+ *
+ *  Nothing else is done to the colour.  WebP's alpha is straight: a reader
+ *  composites VP8 + ALPH as non-premultiplied, so scaling the RGB of a
+ *  half-transparent sample by its alpha - which this used to do - came back as
+ *  a colour half as bright as the one that was saved. */
+static void flatten_transparent_rgba(uint8_t * rgba, uint32_t width, uint32_t height,
     size_t stride) {
   uint32_t y;
   uint32_t x;
@@ -168,19 +172,11 @@ static void premultiply_rgba(uint8_t * rgba, uint32_t width, uint32_t height,
     uint8_t * row = rgba + (size_t)y * stride;
     for (x = 0; x < width; ++x) {
       uint8_t * p = row + (size_t)x * 4u;
-      const int a = (int)p[3];
-      if (a == 255) {
-        continue;
-      }
-      if (a == 0) {
+      if (p[3] == 0) {
         p[0] = 0;
         p[1] = 0;
         p[2] = 0;
-        continue;
       }
-      p[0] = (uint8_t)((p[0] * a + 127) / 255);
-      p[1] = (uint8_t)((p[1] * a + 127) / 255);
-      p[2] = (uint8_t)((p[2] * a + 127) / 255);
     }
   }
 }
@@ -665,7 +661,7 @@ static GIMG_Result webp_save_animation(GIMG_Codec * codec, const GIMG_Doc * doc,
           r = encode_alpha(patch, rw, rh, (size_t)rw * 4u, effort, (int)exact,
               alloc, &alph, &alph_size);
           if (r == GIMG_OK) {
-            premultiply_rgba(patch, rw, rh, (size_t)rw * 4u);
+            flatten_transparent_rgba(patch, rw, rh, (size_t)rw * 4u);
           }
         }
         if (r == GIMG_OK) {
@@ -965,7 +961,7 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       if (r != GIMG_OK) {
         goto Done;
       }
-      premultiply_rgba(rgba, gimg_raster_width(raster),
+      flatten_transparent_rgba(rgba, gimg_raster_width(raster),
           gimg_raster_height(raster), rgba_stride);
     }
     r = gimg_webp_vp8_encode(rgba, gimg_raster_width(raster),

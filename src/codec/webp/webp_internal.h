@@ -188,6 +188,22 @@ int gimg_webp_peek_vp8l_dims(const unsigned char * data, size_t size,
     uint32_t * out_w, uint32_t * out_h, int * out_alpha);
 
 /**
+ * @brief Refuse a bitstream whose own header names another size than the
+ * container does.
+ *
+ * Both decoders size their buffers from the bitstream, so the limit that was
+ * checked against the VP8X canvas or the ANMF rectangle bounded nothing: a
+ * canvas of one pixel could hold a bitstream of sixteen thousand squared.
+ * Called before any allocation.  A VP8 frame that is not a key frame has no
+ * size of its own and is passed.
+ *
+ * @return GIMG_OK, or GIMG_ERR_CORRUPT when the sizes disagree.
+ */
+GIMG_Result gimg_webp_check_bitstream_size(const unsigned char * vp8,
+    size_t vp8_size, const unsigned char * vp8l, size_t vp8l_size,
+    uint32_t want_w, uint32_t want_h);
+
+/**
  * @brief Decode a VP8L bitstream payload to an owned RGBA8 raster.
  *
  * @param data  VP8L chunk payload (starts with magic 0x2f).

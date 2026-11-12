@@ -111,8 +111,9 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   the neighbor context, and a finer segment quantizer on a macroblock
   the 16×16 predictors cannot
   explain. Non-opaque input adds an `ALPH` chunk, VP8L of the green
-  channel when that is shorter than the raw plane, and premultiplies
-  the colour. See Save and `make webp-rd`.
+  channel when that is shorter than the raw plane; the colour stays
+  straight (a fully transparent sample's RGB is zeroed). See Save and
+  `make webp-rd`.
 
 ## YUV→RGB (a match, not a derivation)
 
@@ -189,7 +190,8 @@ unfiltered samples. A non-opaque picture writes
 `VP8X` and an `ALPH` plane. The plane is a VP8L bitstream of the green
 channel when that is shorter than the raw bytes, and the raw plane
 otherwise. The colour is
-premultiplied by `(c * a + 127) / 255` before the VP8 frame. The bool
+straight, as WebP's alpha is: only a fully transparent sample has its RGB
+zeroed before the VP8 frame. The bool
 writer renormalizes from the section 7 range invariant (encoder range
 is one less than the decoder range). Accepted by `dwebp` and by this
 decoder. The quantizer ladder follows libwebp's single-segment

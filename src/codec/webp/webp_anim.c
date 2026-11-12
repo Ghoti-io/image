@@ -264,6 +264,13 @@ static GIMG_Result webp_decode_one_frame(const gimg_webp_doc_state_t * st,
     alph = st->file_bytes + fr->alph_payload_off;
     alph_size = fr->alph_payload_size;
   }
+  {
+    const GIMG_Result sr = gimg_webp_check_bitstream_size(
+        vp8, vp8_size, vp8l, vp8l_size, fr->width, fr->height);
+    if (sr != GIMG_OK) {
+      return sr;
+    }
+  }
   if (vp8l && seq) {
     /* A lossless frame is not a VP8 reference. The next VP8 interframe
      * has to follow a keyframe again. */
