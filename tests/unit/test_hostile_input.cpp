@@ -18,6 +18,7 @@
  */
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
@@ -30,6 +31,7 @@
 #ifndef _WIN32
 #include <pthread.h>
 #endif
+#include "../../src/codec/codec_internal.h"
 #include "../../src/core/alloc_internal.h"
 #include "../../src/meta/exif_internal.h"
 
@@ -286,7 +288,8 @@ Bytes zlib_stored(const Bytes & raw) {
  * (0, @p fy), carried in fdAT after an empty IDAT.  @p iccp, when not empty,
  * goes in as the compressed part of an iCCP chunk.
  */
-Bytes apng(uint32_t w, uint32_t h, uint32_t fy, const Bytes & iccp) {
+Bytes apng(uint32_t w, uint32_t h, uint32_t fy, const Bytes & iccp,
+    uint32_t declared_frames = 1) {
   Bytes f = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
   Bytes p;
   be32(p, w);
@@ -299,7 +302,7 @@ Bytes apng(uint32_t w, uint32_t h, uint32_t fy, const Bytes & iccp) {
     chunk(f, "iCCP", p);
   }
   p.clear();
-  be32(p, 1);
+  be32(p, declared_frames);
   be32(p, 0);
   chunk(f, "acTL", p);
   chunk(f, "IDAT", Bytes());
@@ -359,6 +362,69 @@ TEST(HostileInput, AnApngWhoseProfileIsRefusedIsFreedOnce) {
   EXPECT_EQ(out, nullptr);
   if (out) {
     gimg_raster_destroy(out);
+  }
+}
+
+/** An allocator that records the largest request and refuses large ones. */
+struct Watching {
+  GIMG_Allocator a{};
+  size_t largest = 0;
+};
+const size_t kRefuseAbove = (size_t)16 << 20;
+void * w_malloc(void * ctx, size_t n) {
+  Watching * w = (Watching *)ctx;
+  w->largest = n > w->largest ? n : w->largest;
+  return n > kRefuseAbove ? nullptr : malloc(n ? n : 1u);
+}
+void * w_calloc(void * ctx, size_t n, size_t size) {
+  Watching * w = (Watching *)ctx;
+  const size_t total = (size != 0 && n > (size_t)-1 / size) ? (size_t)-1
+                                                           : n * size;
+  w->largest = total > w->largest ? total : w->largest;
+  return total > kRefuseAbove ? nullptr : calloc(n ? n : 1u, size ? size : 1u);
+}
+void * w_realloc(void * ctx, void * p, size_t n) {
+  Watching * w = (Watching *)ctx;
+  w->largest = n > w->largest ? n : w->largest;
+  return n > kRefuseAbove ? nullptr : realloc(p, n ? n : 1u);
+}
+void w_free(void *, void * p) {
+  free(p);
+}
+
+TEST(HostileInput, AnApngFrameCountIsHeldToWhatTheFileCouldHold) {
+  // acTL is eight bytes and its frame count sized a table of 48-byte
+  // entries: a 200-byte file asked for about a hundred gigabytes.
+  GIMG_Codec * codec = gimg_codec_by_name("png");
+  ASSERT_NE(codec, nullptr);
+  const GIMG_Allocator * saved = codec->allocator;
+  for (uint32_t frames : {1u, 0x7FFFFFFFu, 100000u}) {
+    Watching w;
+    w.a.ctx = &w;
+    w.a.malloc_fn = w_malloc;
+    w.a.calloc_fn = w_calloc;
+    w.a.realloc_fn = w_realloc;
+    w.a.free_fn = w_free;
+    const Bytes file = apng(4, 4, 2, Bytes(), frames);
+    codec->allocator = &w.a;
+    GIMG_Stream * s = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory(file.data(), file.size(), &s),
+        GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+    if (doc) {
+      gimg_doc_destroy(doc);
+    }
+    gimg_stream_destroy(s);
+    codec->allocator = saved;
+    if (frames == 1u) {
+      EXPECT_EQ(r, GIMG_OK) << "control";
+    }
+    else {
+      EXPECT_NE(r, GIMG_OK) << frames;
+    }
+    EXPECT_LT(w.largest, (size_t)1 << 20)
+        << frames << " declared frames in a " << file.size() << " byte file";
   }
 }
 

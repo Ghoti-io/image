@@ -368,6 +368,22 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_png_free_doc_state(codec, state);
         return GIMG_ERR_LIMIT;
       }
+      // The frame table is allocated from this number, so it is held to what
+      // the stream could contain: a frame is at least an fcTL chunk, 38 bytes
+      // with its length, type and CRC.  Without this an eight-byte chunk
+      // asked for 48 bytes times 2^31.  It is the same refusal a short file
+      // gets at the end of the load, made before the allocation.
+      {
+        const size_t stream_size = gimg_stream_size(stream);
+        if (stream_size != GIMG_STREAM_SIZE_UNKNOWN &&
+            (size_t)num_frames > stream_size / 38u) {
+          // The rule the end of the load would have named, seen early.
+          png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+              "fewer fcTL chunks than the acTL declared frames (APNG 4.1)");
+          gimg_png_free_doc_state(codec, state);
+          return GIMG_ERR_FORMAT;
+        }
+      }
       state->is_apng = 1;
       state->frame_count = (size_t)num_frames;
       state->num_plays = num_plays;
