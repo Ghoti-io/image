@@ -2037,3 +2037,51 @@ int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// A file this library writes is a file this library reads.  The chunk table
+// held 256 entries and a frame costs two or three, so an animation past 127
+// frames saved without complaint and could not be loaded again.
+TEST(WebpAnimation, AnAnimationOfThreeHundredFramesLoadsAgain) {
+  const size_t frames = 300;
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, frames), GIMG_OK);
+  for (size_t i = 0; i < frames; i++) {
+    GIMG_Raster * r = nullptr;
+    ASSERT_EQ(gimg_raster_create(
+                  2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &r),
+        GIMG_OK);
+    unsigned char * px = (unsigned char *)gimg_raster_pixels(r);
+    memset(px, 0xFF, gimg_raster_stride_bytes(r) * 2u);
+    px[0] = (unsigned char)(i & 0xFFu);
+    px[1] = (unsigned char)(i >> 8);
+    GIMG_Item * item = gimg_doc_item(doc, i);
+    gimg_item_set_raster(item, r);
+    gimg_item_set_frame_delay(item, 1u, 10u);
+  }
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", nullptr, &report), GIMG_OK);
+  gimg_doc_destroy(doc);
+  const void * p = nullptr;
+  size_t n = 0;
+  gimg_stream_output_buffer(out, &p, &n);
+
+  GIMG_Stream * in = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(p, n, &in), GIMG_OK);
+  GIMG_Doc * back = nullptr;
+  ASSERT_EQ(gimg_doc_load(in, nullptr, nullptr, &back), GIMG_OK);
+  ASSERT_NE(back, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(back), frames);
+  GIMG_Raster * last = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(back, frames - 1), nullptr, &last),
+      GIMG_OK);
+  const unsigned char * px = (const unsigned char *)gimg_raster_pixels_const(last);
+  EXPECT_EQ(px[0], (unsigned char)((frames - 1) & 0xFFu));
+  EXPECT_EQ(px[1], (unsigned char)((frames - 1) >> 8));
+  gimg_raster_destroy(last);
+  gimg_doc_destroy(back);
+  gimg_stream_destroy(in);
+  gimg_stream_destroy(out);
+}

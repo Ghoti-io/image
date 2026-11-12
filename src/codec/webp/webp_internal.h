@@ -46,8 +46,15 @@ extern "C" {
 /** "RIFF" / "WEBP" at the head; twelve bytes total before the first chunk. */
 #define GIMG_WEBP_SIGNATURE_LEN 12
 
-/** Hard cap on reported chunks (top-level plus ANMF-nested bitstreams). */
-#define GIMG_WEBP_MAX_CHUNKS 256u
+/**
+ * Hard cap on reported chunks (top-level plus ANMF-nested bitstreams).
+ *
+ * Sized from the frame cap: a frame is an ANMF and up to two chunks inside
+ * it (ALPH and the bitstream), and a file has a handful more around them.
+ * At 256 this refused any animation past 127 frames, including the ones this
+ * library's own writer produces, which stops at GIMG_WEBP_DEFAULT_MAX_FRAMES.
+ */
+#define GIMG_WEBP_MAX_CHUNKS (3u * GIMG_WEBP_DEFAULT_MAX_FRAMES + 16u)
 
 /** FourCCs as little-endian uint32 (on-disk order). */
 #define GIMG_WEBP_FOURCC(a, b, c, d) \
