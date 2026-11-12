@@ -81,7 +81,13 @@ come from the first directory. A later page's own copy is not a second value,
 and a save writes the first page's values onto every page. Copyright may be
 two notices separated by a NUL, and both are kept. DateTime is not checked
 against the `YYYY:MM:DD HH:MM:SS` pattern: a file that wrote something else
-still round-trips. Orientation (274) is applied
+still round-trips. A save follows `metadata_policy`: `GIMG_META_DROP_ALL`
+writes none of these, `GIMG_META_KEEP_COMMON_ONLY` the description alone,
+`GIMG_META_KEEP_RAW_ONLY` the raw tags and XMP without the description, and
+`GIMG_META_STRIP_GPS` everything but the XMP packet, which can carry a
+location and is not parsed. The ICC profile and the resolution are written
+under every policy: they say what the samples mean and how large a pixel is.
+Orientation (274) is applied
 rather than carried. The Exif sub-IFD (34665) is not read: it is an offset
 to another directory, and preserving one by copying bytes would preserve
 offsets that no longer point anywhere.
@@ -94,12 +100,12 @@ with libtiff sample for sample rather than by one on the green channel. See
 the deviations table.
 
 **Colour.** Grayscale (photometric 0 and 1) comes back as GRAY8 or GRAY16.
-WhiteIsZero is complemented on the way out. RGB and a palette come back as the development conventions
+WhiteIsZero is complemented on the way out. RGB and a palette come back as
 RGBA8 or RGBA16, which is what the BMP and GIF decoders also hand back at
 eight bits. A ColorMap is expanded with the rounding PNG 13.12 states, which
 is what this library uses for every other depth conversion. A separated image
 is CMYK at 8 or 16 bits. YCbCr and Lab are ways of storing colour rather than
-rasters this library carries; both are described below and both come back as the development conventions
+rasters this library carries; both are described below and both come back as
 RGBA8.
 
 **Alpha.** ExtraSamples 1 (associated) is divided back out, because this

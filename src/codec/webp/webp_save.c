@@ -18,6 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+
 /**
  * @file
  *
@@ -38,7 +39,55 @@
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
 #include "../codec_internal.h"
+#include "../../meta/exif_internal.h"
 #include "webp_internal.h"
+
+/**
+ * Apply an Exif policy to the chunks about to be written.
+ *
+ * STRIP_GPS and NORMALIZE_EXIF used to be read here as PRESERVE_ALL: the
+ * EXIF chunk went out unchanged and the save reported success, which for
+ * STRIP_GPS means publishing the location the caller asked to have removed.
+ * As in the PNG writer, Exif the library cannot parse fails the save rather
+ * than passing through.  XMP can carry a location too and is not parsed, so
+ * STRIP_GPS leaves it out.
+ */
+static GIMG_Result webp_apply_exif_policy(const GIMG_Allocator * alloc,
+    GIMG_Meta_Policy policy, unsigned char ** exif, size_t * exif_size,
+    unsigned char ** xmp, size_t * xmp_size) {
+  if (policy != GIMG_META_STRIP_GPS && policy != GIMG_META_NORMALIZE_EXIF) {
+    return GIMG_OK;
+  }
+  if (policy == GIMG_META_STRIP_GPS && *xmp) {
+    gimg_free(alloc, *xmp);
+    *xmp = NULL;
+    *xmp_size = 0u;
+  }
+  if (!*exif || *exif_size == 0u) {
+    return GIMG_OK;
+  }
+  // Some writers put the JPEG APP1 prefix in front of the TIFF block.
+  const unsigned char * tiff = *exif;
+  size_t tiff_size = *exif_size;
+  if (tiff_size > 6u && memcmp(tiff, "Exif\0\0", 6u) == 0) {
+    tiff += 6u;
+    tiff_size -= 6u;
+  }
+  void * modified = NULL;
+  size_t modified_size = 0u;
+  GIMG_Result r = (policy == GIMG_META_STRIP_GPS)
+      ? gimg_exif_strip_gps(alloc, tiff, tiff_size, &modified, &modified_size)
+      : gimg_exif_normalize(alloc, tiff, tiff_size, &modified, &modified_size);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  if (modified) {
+    gimg_free(alloc, *exif);
+    *exif = (unsigned char *)modified;
+    *exif_size = modified_size;
+  }
+  return GIMG_OK;
+}
 
 static void write_u32le(unsigned char * p, uint32_t v) {
   p[0] = (unsigned char)(v & 0xffu);
@@ -715,6 +764,11 @@ static GIMG_Result webp_save_animation(GIMG_Codec * codec, const GIMG_Doc * doc,
         xmp_size = sz;
       }
     }
+    r = webp_apply_exif_policy(
+        alloc, meta_policy, &exif, &exif_size, &xmp, &xmp_size);
+    if (r != GIMG_OK) {
+      goto Done;
+    }
     if (iccp_size == 0u && meta_policy != GIMG_META_KEEP_RAW_ONLY && first) {
       const GCOL_Color_Info * ci = gimg_raster_color_info_const(first);
       if (ci && ci->icc_bytes && ci->icc_size > 0u) {
@@ -982,6 +1036,11 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         }
         xmp_size = sz;
       }
+    }
+    r = webp_apply_exif_policy(
+        alloc, meta_policy, &exif, &exif_size, &xmp, &xmp_size);
+    if (r != GIMG_OK) {
+      goto Done;
     }
     if (iccp_size == 0u && meta_policy != GIMG_META_KEEP_RAW_ONLY) {
       const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);

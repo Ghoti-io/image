@@ -130,7 +130,16 @@ GIMG_API GIMG_Result gimg_meta_raw_attach(GIMG_Meta_Raw * raw,
     size_t size);
 
 /**
- * @brief Retrieve raw block; returns size. NULL data = query size only.
+ * @brief Retrieve a raw block.
+ *
+ * With @p data NULL this is a size query: *size is set to the block's length.
+ * With a buffer, *size must hold the buffer's capacity on entry; it is set to
+ * the block's length, and the block is copied only if it fits. A buffer that
+ * is too small returns GIMG_ERR_LIMIT with *size the length needed and
+ * nothing written.
+ *
+ * @return GIMG_OK; GIMG_ERR_UNSUPPORTED if there is no such block;
+ *   GIMG_ERR_LIMIT if @p data is too small.
  */
 GIMG_API GIMG_Result gimg_meta_raw_get(const GIMG_Meta_Raw * raw,
     const char * format_id, uint32_t tag_or_chunk_id, void * data,

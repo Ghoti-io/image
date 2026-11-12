@@ -122,7 +122,14 @@ GIMG_API GIMG_Result gimg_meta_raw_get(const GIMG_Meta_Raw * raw,
     if (strcmp(raw->blocks[i].format_id, format_id) != 0) {
       continue;
     }
+    // With a buffer, *size is how much it holds.  A block's length comes
+    // from a file, and a copy that trusts the caller to have asked first
+    // writes that many bytes into whatever it was given.
+    const size_t capacity = *size;
     *size = raw->blocks[i].size;
+    if (data && capacity < raw->blocks[i].size) {
+      return GIMG_ERR_LIMIT;
+    }
     if (data && raw->blocks[i].size > 0 && raw->blocks[i].data) {
       memcpy(data, raw->blocks[i].data, raw->blocks[i].size);
     }

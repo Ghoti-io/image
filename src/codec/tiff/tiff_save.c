@@ -855,6 +855,19 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       r = GIMG_ERR_FORMAT;
       break;
     }
+    // The metadata policy.  This writer used to read none of it, so
+    // GIMG_META_DROP_ALL still wrote the description, Artist, Make, Model
+    // and the XMP packet.  The profile and the resolution are not gated:
+    // they say what the samples mean and how large a pixel is.  XMP can
+    // carry a location and is not parsed, so STRIP_GPS leaves it out; this
+    // writer has no Exif or GPS directory to strip.
+    const GIMG_Meta_Policy policy =
+        options ? options->metadata_policy : GIMG_META_PRESERVE_ALL;
+    const bool use_common =
+        policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_RAW_ONLY;
+    const bool use_raw =
+        policy != GIMG_META_DROP_ALL && policy != GIMG_META_KEEP_COMMON_ONLY;
+    const bool use_xmp = use_raw && policy != GIMG_META_STRIP_GPS;
     const GCOL_Color_Info * info =
         gimg_raster_color_info_const(page->raster);
     if (info && info->icc_bytes && info->icc_size > 0u) {
@@ -870,15 +883,17 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         page->y_dpi = y;
         page->has_dpi = true;
       }
-      page->description = gimg_meta_common_description(common);
+      page->description =
+          use_common ? gimg_meta_common_description(common) : NULL;
       if (page->description && page->description[0] == '\0') {
         page->description = NULL;
       }
     }
-    GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+    GIMG_Meta_Raw * raw = use_raw ? gimg_doc_meta_raw(doc) : NULL;
     if (raw) {
       size_t xmp_size = 0;
-      if (gimg_meta_raw_get(raw, "tiff", GIMG_TIFF_TAG_XMP, NULL,
+      if (use_xmp &&
+          gimg_meta_raw_get(raw, "tiff", GIMG_TIFF_TAG_XMP, NULL,
               &xmp_size) == GIMG_OK &&
           xmp_size > 0u) {
         page->xmp_copy = (unsigned char *)gimg_malloc(alloc, xmp_size);

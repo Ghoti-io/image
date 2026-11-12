@@ -241,6 +241,7 @@ one-axis bar is unable to see.
 | Canvas | from `VP8X` or VP8/VP8L peek | unknown size → `GIMG_ERR_CORRUPT`; over `max_decoded_pixels` → `GIMG_ERR_LIMIT` |
 | Chunks | every RIFF chunk's declared payload bounded by `max_chunk_size`, nested `ANMF` bitstreams included | over the cap → `GIMG_ERR_LIMIT`; declared past the RIFF end → `GIMG_ERR_CORRUPT` |
 | Metadata | `ICCP`/`EXIF`/`XMP ` on the document, each bounded by `max_metadata_size` | over the caller's cap → `GIMG_ERR_LIMIT`; past the built-in 4 MiB guard → dropped with a warning, because an oversized profile says nothing about whether the picture decodes |
+| Metadata on save | `GIMG_META_STRIP_GPS` removes the GPS directory from `EXIF` and leaves `XMP ` out (it can carry a location and is not parsed); `GIMG_META_NORMALIZE_EXIF` rewrites `EXIF` | Exif the library cannot parse under either policy fails the save rather than passing through |
 | VP8L decode | byte-identical to `dwebp -pam` | corrupt bitstream → `GIMG_ERR_CORRUPT` |
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
 | VP8 decode | keyframe and, in one sequence, interframe → RGBA, optional ALPH merge, 9-3-3-1 chroma; a keyframe matches `dwebp` | a still interframe → `GIMG_ERR_CORRUPT`; version above 3 → `GIMG_ERR_UNSUPPORTED` |
