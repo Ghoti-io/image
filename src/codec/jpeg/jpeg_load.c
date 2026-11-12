@@ -140,7 +140,10 @@ static bool jpeg_app13_iptc_caption(const unsigned char * app13,
         ((uint32_t)app13[off + 6 + name_total + 2] << 8) |
         (uint32_t)app13[off + 6 + name_total + 3];
     size_t data_off = off + 6 + name_total + 4;
-    if (data_off + data_size > app13_len) {
+    // Compared as a subtraction: the sum of two 32-bit quantities wraps in a
+    // 32-bit size_t, and a size that wrapped passes the test it is meant to
+    // fail.
+    if (data_off > app13_len || data_size > app13_len - data_off) {
       break;
     }
     if (id == 0x0404 && data_size > 0) {
@@ -167,7 +170,13 @@ static bool jpeg_app13_iptc_caption(const unsigned char * app13,
     }
     // Resource data is padded to an even length as well, so the next '8BIM'
     // does not begin at data_off + data_size when that is odd.
-    off = data_off + data_size + (data_size & 1u);
+    off = data_off + data_size;
+    if (data_size & 1u) {
+      if (off >= app13_len) {
+        break;
+      }
+      off++;
+    }
   }
   return false;
 }
@@ -983,6 +992,27 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
           scan->dc_tbl[i] = (payload_buf[2 + i * 2] >> 4) & 0x0Fu;
           scan->ac_tbl[i] = payload_buf[2 + i * 2] & 0x0Fu;
         }
+        // A sequential or lossless frame codes each component once.  A scan
+        // naming one already coded is a second copy of it, and nothing else
+        // limits how many such scans a frame may hold: each one is a full
+        // pass over the samples.
+        if (!sos_progressive) {
+          for (unsigned prev = 0; prev < *sos_num_scans; prev++) {
+            for (uint8_t a = 0; a < sos_scans[prev].comp_count; a++) {
+              for (uint8_t b = 0; b < ns; b++) {
+                if (sos_scans[prev].comp_id[a] == scan->comp_id[b]) {
+                  gimg_free(alloc, payload_buf);
+                  jpeg_load_diag(diagnostics, seg_start, marker,
+                      GIMG_ERR_FORMAT,
+                      "a scan codes a component an earlier scan already "
+                      "coded (T.81 A.2.3)");
+                  gimg_jpeg_free_doc_state(codec, state);
+                  return GIMG_ERR_FORMAT;
+                }
+              }
+            }
+          }
+        }
         scan->ss = payload_buf[1 + ns * 2];
         scan->se = payload_buf[2 + ns * 2];
         {
@@ -1267,6 +1297,17 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
         }
         if (gimg_jpeg_marker_has_no_length(b)) {
           // SOI or other no-length marker; hand off to main loop.
+          pending_marker = b;
+          have_pending_marker = true;
+          break;
+        }
+        // Only the four segments that change how the scan just read - or the
+        // scans after it - are decoded are applied here.  Every other one
+        // (DQT, APPn, COM, ...) is the main loop's, which handles each kind
+        // once; this branch used to read it and throw it away, so the first
+        // DQT, APP or COM after a scan's data never took effect.
+        if (b != GIMG_JPEG_MARKER_DHT && b != GIMG_JPEG_MARKER_DNL &&
+            b != GIMG_JPEG_MARKER_DRI && b != GIMG_JPEG_MARKER_DAC) {
           pending_marker = b;
           have_pending_marker = true;
           break;
@@ -1608,6 +1649,8 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
                 off += data_len;
               }
             }
+            // The single-segment form may already have stored a profile.
+            gimg_free(alloc, state->app2_icc);
             state->app2_icc = assembled;
             state->app2_icc_len = total_profile;
             state->app2_icc_num_chunks = total_chunks;
@@ -1716,6 +1759,7 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
             gimg_free(alloc, payload_buf);
           jpeg_load_diag(diagnostics, 0u, 0xFEu, GIMG_ERR_LIMIT,
               "the comment segments together exceed max_metadata_size");
+          gimg_jpeg_free_doc_state(codec, state);
           return GIMG_ERR_LIMIT;
         }
         if (v == GIMG_METADATA_IMPLAUSIBLE) {

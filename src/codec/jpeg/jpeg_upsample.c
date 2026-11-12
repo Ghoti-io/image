@@ -244,10 +244,12 @@ void jpeg_ycbcr_to_rgb(int y, int cb, int cr, int center, int max_val,
   // FIX(1.40200) = 91881, FIX(0.34414) = 22554, FIX(0.71414) = 46802,
   // FIX(1.77200) = 116130, and ONE_HALF = 1 << 15 for rounding.  The shift is
   // arithmetic, so it floors, which is what the reference tables do.
-  int r = y + (int)((91881L * cr_x + 32768) >> 16);
+  // In 64 bits: at 16-bit precision the products pass INT32_MAX (and `long`
+  // is 32 bits on Windows and every ILP32 target).
+  int r = y + (int)(((int64_t)91881 * cr_x + 32768) >> 16);
   int g = y +
-      (int)(((int32_t)(-22554) * cb_x + (int32_t)(-46802) * cr_x + 32768) >> 16);
-  int b = y + (int)((116130L * cb_x + 32768) >> 16);
+      (int)(((int64_t)(-22554) * cb_x + (int64_t)(-46802) * cr_x + 32768) >> 16);
+  int b = y + (int)(((int64_t)116130 * cb_x + 32768) >> 16);
   if (r < 0)
     r = 0;
   if (r > max_val)

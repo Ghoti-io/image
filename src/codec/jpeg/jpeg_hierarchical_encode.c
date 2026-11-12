@@ -569,7 +569,8 @@ GIMG_Result gimg_jpeg_encode_hierarchical(const GIMG_Allocator * alloc,
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
-  if (!fmt || width == 0 || height == 0) {
+  if (!fmt || width == 0 || height == 0 || width > GIMG_JPEG_MAX_DIMENSION ||
+      height > GIMG_JPEG_MAX_DIMENSION) {
     return GIMG_ERR_UNSUPPORTED;
   }
   // Eight-bit gray or color.  A DCT pyramid is built at 8 bits because the
