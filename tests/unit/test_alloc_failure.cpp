@@ -149,6 +149,9 @@ TEST(AllocFailure, EveryFailedLoadFreesEverythingItTook) {
   const std::string root = std::string(GIMG_TEST_DATA_JPEG) + "/..";
   const std::string bmp_dir = root + "/bmp";
   const std::string gif_dir = root + "/gif";
+  const std::string tiff_dir = root + "/tiff";
+  const std::string ico_dir = root + "/ico";
+  const std::string webp_dir = root + "/webp";
   struct Dir {
     const char * codec;
     const char * path;
@@ -158,6 +161,9 @@ TEST(AllocFailure, EveryFailedLoadFreesEverythingItTook) {
       {"png", GIMG_TEST_DATA_PNG, ".png"},
       {"bmp", bmp_dir.c_str(), ".bmp"},
       {"gif", gif_dir.c_str(), ".gif"},
+      {"tiff", tiff_dir.c_str(), ".tif"},
+      {"ico", ico_dir.c_str(), ".ico"},
+      {"webp", webp_dir.c_str(), ".webp"},
   };
 
   long swept = 0, skipped = 0, injections = 0;
@@ -307,6 +313,9 @@ TEST(AllocFailure, EveryFailedDecodeFreesEverythingItTook) {
   const std::string root = std::string(GIMG_TEST_DATA_JPEG) + "/..";
   const std::string bmp_dir = root + "/bmp";
   const std::string gif_dir = root + "/gif";
+  const std::string tiff_dir = root + "/tiff";
+  const std::string ico_dir = root + "/ico";
+  const std::string webp_dir = root + "/webp";
   struct Dir {
     const char * codec;
     const char * path;
@@ -316,6 +325,9 @@ TEST(AllocFailure, EveryFailedDecodeFreesEverythingItTook) {
       {"png", GIMG_TEST_DATA_PNG, ".png"},
       {"bmp", bmp_dir.c_str(), ".bmp"},
       {"gif", gif_dir.c_str(), ".gif"},
+      {"tiff", tiff_dir.c_str(), ".tif"},
+      {"ico", ico_dir.c_str(), ".ico"},
+      {"webp", webp_dir.c_str(), ".webp"},
   };
 
   long swept = 0, skipped = 0, injections = 0;
@@ -1142,6 +1154,9 @@ TEST(AllocFailure, EveryFailedResaveFreesEverythingItTook) {
   const std::string root = std::string(GIMG_TEST_DATA_JPEG) + "/..";
   const std::string bmp_dir = root + "/bmp";
   const std::string gif_dir = root + "/gif";
+  const std::string tiff_dir = root + "/tiff";
+  const std::string ico_dir = root + "/ico";
+  const std::string webp_dir = root + "/webp";
   struct Dir {
     const char * codec;
     const char * path;
@@ -1151,6 +1166,9 @@ TEST(AllocFailure, EveryFailedResaveFreesEverythingItTook) {
       {"png", GIMG_TEST_DATA_PNG, ".png"},
       {"bmp", bmp_dir.c_str(), ".bmp"},
       {"gif", gif_dir.c_str(), ".gif"},
+      {"tiff", tiff_dir.c_str(), ".tif"},
+      {"ico", ico_dir.c_str(), ".ico"},
+      {"webp", webp_dir.c_str(), ".webp"},
   };
 
   long swept = 0, skipped = 0, injections = 0;
