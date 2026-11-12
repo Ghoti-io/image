@@ -119,6 +119,30 @@ GIMG_Result gimg_exif_normalize(const GIMG_Allocator * allocator,
     const void * exif, size_t size, void ** out, size_t * out_size);
 
 /**
+ * The Exif a writer puts out for @p policy, from the blob the document holds.
+ *
+ * Decoding applies Exif orientation to the pixels, so pixels handed to a
+ * writer are already upright and an Orientation tag that still says 6 makes
+ * every viewer, and this library on reload, rotate them a second time.  So
+ * whenever Exif is kept, its orientation goes out as 1:
+ *
+ * - STRIP_GPS: GPS removed, then upright.
+ * - NORMALIZE_EXIF: upright.
+ * - PRESERVE_ALL: upright if the blob parses; one that does not is written
+ *   as it came, because that policy promises not to lose what it cannot read.
+ * - Any other policy: untouched (*out stays NULL).
+ *
+ * STRIP_GPS and NORMALIZE_EXIF fail, as gimg_exif_strip_gps() and
+ * gimg_exif_normalize() do, on a blob they cannot parse.
+ *
+ * @param out On success the new blob (caller frees with @p allocator), or
+ *   NULL when the original is to be written as it is.
+ */
+GIMG_Result gimg_exif_for_save(const GIMG_Allocator * allocator,
+    GIMG_Meta_Policy policy, const void * exif, size_t size, void ** out,
+    size_t * out_size);
+
+/**
  * Get embedded JPEG thumbnail from Exif (IFD1) if present.
  * @param tiff TIFF blob (e.g. Exif APP1 payload after "Exif\\0\\0", so first
  *   byte is II/MM).

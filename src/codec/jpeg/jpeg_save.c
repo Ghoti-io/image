@@ -512,6 +512,12 @@ static GIMG_Result jpeg_raster_to_scan_data_12bit(const GIMG_Allocator * alloc,
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
+  // As on the eight-bit path: a size the reader refuses is not written, and
+  // the frame header holds it in sixteen bits.
+  if (width == 0 || height == 0 || width > GIMG_JPEG_MAX_DIMENSION ||
+      height > GIMG_JPEG_MAX_DIMENSION) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
   // T.81 B.2.2 counts components from 1 to 255 and Table B.2 allows P = 12 in
   // a DCT frame; the two are independent, so four components and more are as
   // legal here as at eight bits.  Only the three-component case is color, and
@@ -4093,22 +4099,22 @@ have_scan:
                     'E', 'x', 'i', 'f', 0, 0};
                 unsigned char * prefixed = NULL;
                 if (policy == GIMG_META_STRIP_GPS ||
-                    policy == GIMG_META_NORMALIZE_EXIF) {
+                    policy == GIMG_META_NORMALIZE_EXIF ||
+                    policy == GIMG_META_PRESERVE_ALL) {
                   if (exif_size <= sizeof(exif_prefix) ||
                       memcmp(exif_buf, exif_prefix, sizeof(exif_prefix)) != 0) {
                     // The loader only files a payload here when it begins
                     // with the identifier, so this is unreachable from a
                     // loaded file; if it ever is reached, the payload is not
                     // what this code believes and it must not be edited.
-                    r = GIMG_ERR_CORRUPT;
-                  }
-                  else if (policy == GIMG_META_STRIP_GPS) {
-                    r = gimg_exif_strip_gps(alloc, exif_buf + sizeof(exif_prefix),
-                        exif_size - sizeof(exif_prefix), &modified,
-                        &modified_size);
+                    // The policy that keeps everything writes it as it is.
+                    if (policy != GIMG_META_PRESERVE_ALL) {
+                      r = GIMG_ERR_CORRUPT;
+                    }
                   }
                   else {
-                    r = gimg_exif_normalize(alloc, exif_buf + sizeof(exif_prefix),
+                    r = gimg_exif_for_save(alloc, policy,
+                        exif_buf + sizeof(exif_prefix),
                         exif_size - sizeof(exif_prefix), &modified,
                         &modified_size);
                   }

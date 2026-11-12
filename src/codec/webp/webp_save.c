@@ -55,7 +55,8 @@
 static GIMG_Result webp_apply_exif_policy(const GIMG_Allocator * alloc,
     GIMG_Meta_Policy policy, unsigned char ** exif, size_t * exif_size,
     unsigned char ** xmp, size_t * xmp_size) {
-  if (policy != GIMG_META_STRIP_GPS && policy != GIMG_META_NORMALIZE_EXIF) {
+  if (policy != GIMG_META_STRIP_GPS && policy != GIMG_META_NORMALIZE_EXIF &&
+      policy != GIMG_META_PRESERVE_ALL) {
     return GIMG_OK;
   }
   if (policy == GIMG_META_STRIP_GPS && *xmp) {
@@ -75,9 +76,8 @@ static GIMG_Result webp_apply_exif_policy(const GIMG_Allocator * alloc,
   }
   void * modified = NULL;
   size_t modified_size = 0u;
-  GIMG_Result r = (policy == GIMG_META_STRIP_GPS)
-      ? gimg_exif_strip_gps(alloc, tiff, tiff_size, &modified, &modified_size)
-      : gimg_exif_normalize(alloc, tiff, tiff_size, &modified, &modified_size);
+  GIMG_Result r = gimg_exif_for_save(
+      alloc, policy, tiff, tiff_size, &modified, &modified_size);
   if (r != GIMG_OK) {
     return r;
   }

@@ -736,8 +736,9 @@ TEST(ExifThumbnailWriters, OrientationAndThumbnailSurviveARoundTrip) {
     GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
     EXPECT_EQ(gimg_exif_parse_orientation(blob.data(), blob.size(), &o),
         GIMG_OK);
-    EXPECT_EQ(o, GIMG_ORIENTATION_ROTATE_90_CW)
-        << "the JPEG thumbnail writer dropped the base orientation";
+    EXPECT_EQ(o, GIMG_ORIENTATION_NORMAL)
+        << "the thumbnail writer keeps the tag, written upright because the"
+           " pixels were turned upright at decode";
 
     const void * thumb = nullptr;
     size_t thumb_n = 0;
@@ -765,8 +766,8 @@ TEST(ExifThumbnailWriters, OrientationAndThumbnailSurviveARoundTrip) {
     GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
     EXPECT_EQ(gimg_exif_parse_orientation(blob.data(), blob.size(), &o),
         GIMG_OK);
-    EXPECT_EQ(o, GIMG_ORIENTATION_ROTATE_90_CW)
-        << "the TechNote-2 writer dropped the base orientation";
+    EXPECT_EQ(o, GIMG_ORIENTATION_NORMAL)
+        << "the TechNote-2 writer writes the orientation upright";
 
     void * thumb = nullptr;
     size_t thumb_n = 0;
@@ -818,8 +819,8 @@ TEST(ExifThumbnailWriters, OrientationAndThumbnailSurviveARoundTrip) {
     EXPECT_EQ(gimg_exif_parse_orientation(blob.data(), blob.size(), &o),
         GIMG_OK)
         << pc.what;
-    EXPECT_EQ(o, GIMG_ORIENTATION_ROTATE_90_CW)
-        << pc.what << ": the uncompressed writer dropped the base orientation";
+    EXPECT_EQ(o, GIMG_ORIENTATION_NORMAL)
+        << pc.what << ": the uncompressed writer writes the orientation upright";
 
     uint32_t w = 0, h = 0;
     uint8_t bits = 0;

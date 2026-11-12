@@ -477,6 +477,54 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
   return GIMG_OK;
 }
 
+GIMG_Result gimg_exif_for_save(const GIMG_Allocator * allocator,
+    GIMG_Meta_Policy policy, const void * exif, size_t size, void ** out,
+    size_t * out_size) {
+  *out = NULL;
+  *out_size = 0;
+  allocator = gimg_alloc_or_default(allocator);
+  if (policy == GIMG_META_NORMALIZE_EXIF) {
+    return gimg_exif_normalize(allocator, exif, size, out, out_size);
+  }
+  if (policy == GIMG_META_PRESERVE_ALL) {
+    const GIMG_Result r =
+        gimg_exif_normalize(allocator, exif, size, out, out_size);
+    if (r == GIMG_OK || r == GIMG_ERR_OOM) {
+      return r;
+    }
+    *out = NULL;
+    *out_size = 0;
+    return GIMG_OK;
+  }
+  if (policy != GIMG_META_STRIP_GPS) {
+    return GIMG_OK;
+  }
+  void * stripped = NULL;
+  size_t stripped_size = 0;
+  GIMG_Result r =
+      gimg_exif_strip_gps(allocator, exif, size, &stripped, &stripped_size);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  void * upright = NULL;
+  size_t upright_size = 0;
+  r = gimg_exif_normalize(allocator, stripped ? stripped : exif,
+      stripped ? stripped_size : size, &upright, &upright_size);
+  if (r == GIMG_OK && upright) {
+    gimg_free(allocator, stripped);
+    *out = upright;
+    *out_size = upright_size;
+    return GIMG_OK;
+  }
+  if (r == GIMG_ERR_OOM) {
+    gimg_free(allocator, stripped);
+    return r;
+  }
+  *out = stripped;
+  *out_size = stripped_size;
+  return GIMG_OK;
+}
+
 GIMG_Result gimg_exif_normalize(const GIMG_Allocator * allocator,
     const void * exif, size_t size, void ** out, size_t * out_size) {
   if (!exif || !out || !out_size) {
@@ -1060,7 +1108,7 @@ GIMG_Result gimg_exif_build_with_thumbnail_jpeg(
     write_u16(dst + ent_off, GIMG_EXIF_TAG_ORIENTATION, le);
     write_u16(dst + ent_off + 2, GIMG_EXIF_TYPE_SHORT, le);
     write_u32(dst + ent_off + 4, 1, le);
-    write_u16(dst + ent_off + 8, (uint16_t)orientation, le);
+    write_u16(dst + ent_off + 8, 1u, le); // upright: see gimg_exif_for_save()
     ent_off += 12;
   }
   write_u32(dst + ent_off, ifd1_off, le);
@@ -1161,7 +1209,7 @@ GIMG_Result gimg_exif_build_with_thumbnail_uncompressed(
     write_u16(dst + ent_off, GIMG_EXIF_TAG_ORIENTATION, le);
     write_u16(dst + ent_off + 2, GIMG_EXIF_TYPE_SHORT, le);
     write_u32(dst + ent_off + 4, 1, le);
-    write_u16(dst + ent_off + 8, (uint16_t)orientation, le);
+    write_u16(dst + ent_off + 8, 1u, le); // upright: see gimg_exif_for_save()
     ent_off += 12;
   }
   write_u32(dst + ent_off, ifd1_off, le);
@@ -1271,7 +1319,7 @@ GIMG_Result gimg_exif_build_with_thumbnail_tiff_jpeg(
     write_u16(dst + ent_off, GIMG_EXIF_TAG_ORIENTATION, le);
     write_u16(dst + ent_off + 2, GIMG_EXIF_TYPE_SHORT, le);
     write_u32(dst + ent_off + 4, 1, le);
-    write_u16(dst + ent_off + 8, (uint16_t)orientation, le);
+    write_u16(dst + ent_off + 8, 1u, le); // upright: see gimg_exif_for_save()
     ent_off += 12;
   }
   write_u32(dst + ent_off, ifd1_off, le);

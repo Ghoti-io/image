@@ -4108,8 +4108,19 @@ TEST(PngEncode, AnEditingPolicyRewritesTheExifChunkItWasGiven) {
 
   std::vector<uint8_t> preserved;
   ASSERT_TRUE(resave_with_policy(file, GIMG_META_PRESERVE_ALL, preserved));
-  EXPECT_EQ(chunk_payload(preserved, "eXIf"), original)
-      << "control: PRESERVE_ALL writes the payload it was given";
+  // PRESERVE_ALL keeps every tag, but the pixels were turned upright when
+  // the picture was decoded, so the Orientation it carries goes out as 1:
+  // only that field differs from what the file arrived with.
+  {
+    const std::vector<uint8_t> kept = chunk_payload(preserved, "eXIf");
+    ASSERT_EQ(kept.size(), original.size());
+    size_t differing = 0;
+    for (size_t i = 0; i < kept.size(); i++) {
+      differing += kept[i] != original[i];
+    }
+    EXPECT_LE(differing, 2u)
+        << "control: PRESERVE_ALL changes only the orientation value";
+  }
 
   std::vector<uint8_t> normalized;
   ASSERT_TRUE(
@@ -4117,8 +4128,10 @@ TEST(PngEncode, AnEditingPolicyRewritesTheExifChunkItWasGiven) {
   const std::vector<uint8_t> after = chunk_payload(normalized, "eXIf");
   EXPECT_FALSE(after.empty())
       << "normalizing must rewrite the chunk, not drop it";
-  EXPECT_NE(after, original)
-      << "a normalized payload is not the one the file arrived with";
+  if (original != chunk_payload(preserved, "eXIf")) {
+    EXPECT_EQ(after, chunk_payload(preserved, "eXIf"))
+        << "both policies put the orientation out as 1";
+  }
 }
 
 /**
