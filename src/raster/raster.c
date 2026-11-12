@@ -27,6 +27,7 @@
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/color/color.h>
 #include <ghoti.io/image/raster.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "../core/alloc_internal.h"
@@ -302,6 +303,59 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
     }
   }
 
+  // The rest of the format, as a whole.  Every operation reads the channel
+  // count the model implies and the depth of the first channel, so a format
+  // that disagrees with itself - four channels of 16, 8, 8 and 8 bits under
+  // an RGBA model, or two channels under CMYK - is one they would read and
+  // write at a size the buffer does not have.
+  if ((unsigned)format->channel_model >= (unsigned)GIMG_CHANNEL_COUNT ||
+      (unsigned)format->channel_type >= (unsigned)GIMG_CHANNEL_TYPE_COUNT) {
+    return GIMG_ERR_INVALID;
+  }
+  if (format->layout != GIMG_LAYOUT_INTERLEAVED) {
+    // There is no planar storage for the operations to be correct about.
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  {
+    unsigned expected = 0; // 0: any count
+    switch (format->channel_model) {
+    case GIMG_CHANNEL_GRAY:
+    case GIMG_CHANNEL_INDEXED:
+      expected = 1u;
+      break;
+    case GIMG_CHANNEL_RGB:
+    case GIMG_CHANNEL_YCBCR:
+    case GIMG_CHANNEL_LAB:
+      expected = 3u;
+      break;
+    case GIMG_CHANNEL_RGBA:
+    case GIMG_CHANNEL_CMYK:
+      expected = 4u;
+      break;
+    default:
+      break;
+    }
+    if (expected != 0u && format->channel_count != expected) {
+      return GIMG_ERR_INVALID;
+    }
+    if (format->channel_count == 0u) {
+      return GIMG_ERR_INVALID;
+    }
+  }
+  {
+    const unsigned depth = format->bits_per_channel[0];
+    if (depth != 8u && depth != 12u && depth != 16u && depth != 32u) {
+      // Whole-byte samples only; a depth below eight bits is not stored.
+      return GIMG_ERR_UNSUPPORTED;
+    }
+    const unsigned n = format->channel_count < 8u ? format->channel_count : 8u;
+    for (unsigned i = 1; i < n; i++) {
+      if (format->bits_per_channel[i] != depth) {
+        return GIMG_ERR_INVALID;
+      }
+    }
+  }
+
   size_t bpp = gimg_raster_bytes_per_pixel(format);
   if (bpp == 0) {
     return GIMG_ERR_UNSUPPORTED;
@@ -328,6 +382,19 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
   size_t total = 0;
   if (!gcu_safe_mul_size(stride_bytes, (size_t)height, &total)) {
     return GIMG_ERR_LIMIT;
+  }
+  if (ownership == GIMG_RASTER_BORROWED) {
+    // The operations read 16- and 32-bit samples through typed pointers, and a
+    // misaligned access through one is undefined however it behaves at -O1.
+    // The library's own buffers are aligned; a caller's must be too.
+    const size_t sample =
+        format->bits_per_channel[0] >= 32u ? 4u
+        : format->bits_per_channel[0] >= 12u ? 2u
+                                             : 1u;
+    if ((sample > 1u) &&
+        ((((uintptr_t)buffer) % sample) != 0u || (stride_bytes % sample) != 0u)) {
+      return GIMG_ERR_INVALID;
+    }
   }
 
   allocator = gimg_alloc_or_default(allocator);

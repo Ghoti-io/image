@@ -274,8 +274,18 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
   }
   *out_doc = NULL;
 
+  // A seekable stream is read from its start, both to identify the format
+  // and to decode it, so that the two cannot disagree about where the
+  // picture begins.  A stream that cannot seek is read from where it is.
+  GIMG_Result r = gimg_stream_seek(stream, 0);
+  if (r == GIMG_ERR_UNSUPPORTED) {
+    r = GIMG_OK;
+  }
+  if (r != GIMG_OK) {
+    return r;
+  }
   GIMG_Probe_Result probe = {0};
-  GIMG_Result r = gimg_probe(stream, &probe);
+  r = gimg_probe(stream, &probe);
   if (r != GIMG_OK || !probe.format_name) {
     return GIMG_ERR_UNSUPPORTED;
   }
@@ -285,12 +295,10 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  // Probe uses peek and does not advance the stream; rewind only if seekable
-  // so that codecs that assume position 0 see the start. Non-seekable streams
-  // are already at 0 after peek.
+  // Probe uses peek and does not advance the stream.
   r = gimg_stream_seek(stream, 0);
   if (r == GIMG_ERR_UNSUPPORTED) {
-    r = GIMG_OK;  // Non-seekable; probe used peek, position unchanged.
+    r = GIMG_OK;
   }
   if (r != GIMG_OK) {
     return r;

@@ -271,6 +271,10 @@ static GIMG_Result ops_cmyk_to_rgba(const GIMG_Raster * src,
     const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster) {
   const GIMG_Pixel_Format * src_f = gimg_raster_format(src);
   uint8_t bits = src_f->bits_per_channel[0];
+  if (bits != 8u && bits != 12u && bits != 16u) {
+    // The loops below read one byte or two per sample, nothing else.
+    return GIMG_ERR_UNSUPPORTED;
+  }
   if (bits != dst_format->bits_per_channel[0]) {
     // Narrowing or widening is gimg_ops_convert_bit_depth's job; doing both
     // at once would hide which of them a caller asked for.
@@ -474,9 +478,22 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
     }
     return cr;
   }
+  // Zero in an RGBA format's alpha form means straight, as the constructor
+  // reads it.  Changing between straight and premultiplied changes the
+  // samples, which this path does not do; labelling a raster as the other
+  // would be a lie about them.
+  const int src_alpha = (src_f->channel_model == GIMG_CHANNEL_RGBA &&
+                            src_f->alpha_form == GIMG_ALPHA_NONE)
+      ? (int)GIMG_ALPHA_STRAIGHT
+      : (int)src_f->alpha_form;
+  const int dst_alpha = (dst_format->channel_model == GIMG_CHANNEL_RGBA &&
+                            dst_format->alpha_form == GIMG_ALPHA_NONE)
+      ? (int)GIMG_ALPHA_STRAIGHT
+      : (int)dst_format->alpha_form;
   if (src_f->channel_model != dst_format->channel_model ||
       src_f->channel_type != dst_format->channel_type ||
-      src_f->channel_count != dst_format->channel_count) {
+      src_f->channel_count != dst_format->channel_count ||
+      src_alpha != dst_alpha) {
     *out_raster = NULL;
     return GIMG_ERR_UNSUPPORTED;
   }

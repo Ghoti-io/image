@@ -158,9 +158,18 @@ static void pal_hist_free(pal_hist_t * h) {
 }
 
 static size_t pal_hash(uint32_t key) {
-  // Fibonacci hashing: one multiply, then take the high bits, which is where
-  // a multiplicative hash puts the mixing.
-  return (size_t)(key * UINT32_C(2654435761));
+  // The callers keep the low bits of this, and the low bits of a plain
+  // multiplicative hash depend only on the low bits of the key: alpha is the
+  // low byte of an opaque colour's key and is constant, so only one slot in
+  // 256 was ever a home slot and a red-green gradient was one long probe
+  // chain.  This is the 32-bit finalizer of MurmurHash3, which mixes every
+  // input bit into every output bit.
+  key ^= key >> 16;
+  key *= UINT32_C(0x85EBCA6B);
+  key ^= key >> 13;
+  key *= UINT32_C(0xC2B2AE35);
+  key ^= key >> 16;
+  return (size_t)key;
 }
 
 static bool pal_hist_rehash(pal_hist_t * h, size_t slots) {

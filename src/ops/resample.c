@@ -176,14 +176,22 @@ static GIMG_Result gimg_resample_axis_build(const GIMG_Allocator * alloc,
   const double filter_scale = (scale >= 1.0) ? scale : 1.0;
   const double support = gimg_resample_kernel_support(filter) * filter_scale;
 
-  int32_t support_max = (int32_t)ceil(support) * 2 + 1;
+  // Every index below is a signed 32-bit one, and a double past that range
+  // converts to nothing defined.
+  if (in_size > (uint32_t)INT32_MAX || out_size > (uint32_t)INT32_MAX) {
+    return GIMG_ERR_LIMIT;
+  }
+  // Never plan for more taps than the axis has samples; the clamped bounds
+  // below could not reach them anyway, and the allocation would be wasted.
+  // Clamped as a double first, because the radius itself can pass any int.
+  const double radius = ceil(support);
+  int32_t support_max = (radius >= (double)in_size)
+      ? (int32_t)in_size
+      : (int32_t)((int64_t)radius * 2 + 1 > (int64_t)in_size
+                ? (int64_t)in_size
+                : (int64_t)radius * 2 + 1);
   if (support_max < 1) {
     support_max = 1;
-  }
-  if ((uint32_t)support_max > in_size) {
-    // Never plan for more taps than the axis has samples; the clamped bounds
-    // below could not reach them anyway, and the allocation would be wasted.
-    support_max = (int32_t)in_size;
   }
 
   size_t weight_count = 0u;
@@ -215,14 +223,13 @@ static GIMG_Result gimg_resample_axis_build(const GIMG_Allocator * alloc,
   const double inv_filter_scale = 1.0 / filter_scale;
   for (uint32_t i = 0; i < out_size; i++) {
     const double center = ((double)i + 0.5) * scale;
-    int32_t xmin = (int32_t)(center - support + 0.5);
-    if (xmin < 0) {
-      xmin = 0;
-    }
-    int32_t xmax = (int32_t)(center + support + 0.5);
-    if (xmax > (int32_t)in_size) {
-      xmax = (int32_t)in_size;
-    }
+    // Clamped before the conversion, which is only defined inside int32.
+    const double lo = center - support + 0.5;
+    const double hi = center + support + 0.5;
+    int32_t xmin = lo <= 0.0 ? 0 : (lo >= (double)in_size ? (int32_t)in_size
+                                                           : (int32_t)lo);
+    int32_t xmax = hi <= 0.0 ? 0 : (hi >= (double)in_size ? (int32_t)in_size
+                                                          : (int32_t)hi);
     int32_t taps = xmax - xmin;
     if (taps < 1) {
       // Can only happen through rounding at an extreme ratio; one tap at the

@@ -33,6 +33,7 @@
 
 #include "../codec/codec_internal.h"
 #include "../core/alloc_internal.h"
+#include "../core/safe_math_internal.h"
 #include "doc_internal.h"
 
 GIMG_API GIMG_Result gimg_doc_create(GIMG_Doc ** out_doc) {
@@ -132,8 +133,11 @@ GIMG_API GIMG_Result gimg_doc_set_item_count(GIMG_Doc * doc, size_t count) {
   if (count == doc->item_count) {
     return GIMG_OK;
   }
-  GIMG_Item * new_items =
-      (GIMG_Item *)gimg_malloc(alloc, count * sizeof(GIMG_Item));
+  size_t item_bytes = 0;
+  if (!gcu_safe_mul_size(count, sizeof(GIMG_Item), &item_bytes)) {
+    return GIMG_ERR_LIMIT;
+  }
+  GIMG_Item * new_items = (GIMG_Item *)gimg_malloc(alloc, item_bytes);
   if (!new_items) {
     return GIMG_ERR_OOM;
   }

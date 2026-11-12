@@ -396,23 +396,17 @@ TEST(Ops, ConvertBitDepthRefusesWhatItCannotName) {
   }
   gimg_raster_destroy(gray8);
 
-  // Channels of different widths: legal to describe, and not something any
-  // conversion here knows how to widen.
+  // Channels of different widths: nothing here knows how to widen them, so a
+  // raster of that format is refused where it is made, not by each operation
+  // that would have misread it.
   GIMG_Pixel_Format mixed;
   ASSERT_EQ(gimg_pixel_format_multichannel(3u, 8u, &mixed), GIMG_OK);
   mixed.bits_per_channel[1] = 16u;
   GIMG_Raster * odd = nullptr;
-  // Asserted rather than guarded: a raster this test could not build is a
-  // test that checked nothing and said it passed.
-  ASSERT_EQ(
+  EXPECT_EQ(
       gimg_raster_create(1, 1, &mixed, GIMG_RASTER_OWNED, nullptr, 0, &odd),
-      GIMG_OK);
-  ASSERT_NE(odd, nullptr);
-  out = nullptr;
-  EXPECT_EQ(gimg_ops_convert_bit_depth(odd, 16u, &out), GIMG_ERR_UNSUPPORTED)
-      << "accepted a source whose channels are not all one width";
-  EXPECT_EQ(out, nullptr);
-  gimg_raster_destroy(odd);
+      GIMG_ERR_INVALID);
+  EXPECT_EQ(odd, nullptr);
 }
 
 TEST(Ops, ConvertBitDepthInvalidDstBitsReturnsError) {

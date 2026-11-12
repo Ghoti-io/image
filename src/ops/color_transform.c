@@ -108,7 +108,8 @@ static void gimg_color_endpoint_clear(gimg_color_endpoint * e) {
  * as a profile. A description without ICC needs primaries, white and
  * transfer, or for gray a white and a transfer.
  */
-static GIMG_Result gimg_color_endpoint_from_info(const GCOL_Color_Info * in,
+static GIMG_Result gimg_color_endpoint_from_info(
+    const GIMG_Allocator * allocator, const GCOL_Color_Info * in,
     bool is_cmyk_raster, gimg_color_endpoint * out) {
   memset(out, 0, sizeof(*out));
   if (!in) {
@@ -116,7 +117,7 @@ static GIMG_Result gimg_color_endpoint_from_info(const GCOL_Color_Info * in,
   }
   if (in->icc_bytes && in->icc_size > 0u) {
     GCOL_Result cr =
-        gcol_icc_parse(NULL, NULL, in->icc_bytes, in->icc_size, &out->icc);
+        gcol_icc_parse(allocator, NULL, in->icc_bytes, in->icc_size, &out->icc);
     if (cr != GCOL_OK) {
       return gimg_map_gcol_result(cr);
     }
@@ -339,11 +340,13 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
   memset(&dst_ep, 0, sizeof(dst_ep));
 
   GIMG_Result r =
-      gimg_color_endpoint_from_info(src_ci, src_cmyk, &src_ep);
+      gimg_color_endpoint_from_info(
+          gimg_raster_allocator(src), src_ci, src_cmyk, &src_ep);
   if (r != GIMG_OK) {
     return r;
   }
-  r = gimg_color_endpoint_from_info(&options->dest, false, &dst_ep);
+  r = gimg_color_endpoint_from_info(
+      gimg_raster_allocator(src), &options->dest, false, &dst_ep);
   if (r != GIMG_OK) {
     gimg_color_endpoint_clear(&src_ep);
     return r;
@@ -422,15 +425,15 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
   GCOL_Transform * xform = NULL;
   GCOL_Result cr = GCOL_ERR_INTERNAL;
   if (src_ep.use_lut) {
-    cr = gcol_transform_create_icc(NULL, src_ep.icc, &dst_ep.info,
+    cr = gcol_transform_create_icc(gimg_raster_allocator(src), src_ep.icc, &dst_ep.info,
         options->intent, options->flags, polarity, &xform);
   }
   else if (dst_ep.use_lut) {
-    cr = gcol_transform_create_to_icc(NULL, &src_ep.info, dst_ep.icc,
+    cr = gcol_transform_create_to_icc(gimg_raster_allocator(src), &src_ep.info, dst_ep.icc,
         options->intent, options->flags, options->dest.cmyk_polarity, &xform);
   }
   else {
-    cr = gcol_transform_create_model(NULL, &src_ep.info,
+    cr = gcol_transform_create_model(gimg_raster_allocator(src), &src_ep.info,
         src_ep.gray ? GCOL_PIXEL_GRAY : GCOL_PIXEL_RGB, &dst_ep.info,
         dst_ep.gray ? GCOL_PIXEL_GRAY : GCOL_PIXEL_RGB, options->intent,
         options->flags, &xform);
@@ -440,8 +443,8 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
   }
 
   GIMG_Raster * out = NULL;
-  r = gimg_raster_create(width, height, out_fmt, GIMG_RASTER_OWNED, NULL, 0,
-      &out);
+  r = gimg_raster_create_with_allocator(gimg_raster_allocator(src), width,
+      height, out_fmt, GIMG_RASTER_OWNED, NULL, 0, &out);
   if (r != GIMG_OK) {
     gcol_transform_free(xform);
     GIMG_XF_REFUSE(r);
