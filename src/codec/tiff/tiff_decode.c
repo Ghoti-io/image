@@ -43,6 +43,7 @@
 #include <ghoti.io/cutil/safemath.h>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/ops.h>
 #include <ghoti.io/color/color.h>
 #include <ghoti.io/color/math.h>
 #include <ghoti.io/image/raster.h>
@@ -511,10 +512,15 @@ static void tiff_ycbcr_to_rgb(const gimg_tiff_ifd_t * ifd, unsigned y,
       (int32_t)(((double)cr - ref[4]) * 127.0 / span_cr +
           (((double)cr - ref[4]) < 0.0 ? -0.5 : 0.5));
 
-  const int32_t r = yy + (int32_t)(((fix_r * crr) + one_half) >> 16);
-  const int32_t b = yy + (int32_t)(((fix_b * cbb) + one_half) >> 16);
-  const int32_t g =
-      yy + (int32_t)((((fix_gr * crr) + (fix_gb * cbb)) + one_half) >> 16);
+  // In 64 bits: the reference levels are the file's, and the products of a
+  // large span and a 16.16 coefficient pass what 32 can hold.
+  const int64_t r64 = (int64_t)yy + (((int64_t)fix_r * crr + one_half) >> 16);
+  const int64_t b64 = (int64_t)yy + (((int64_t)fix_b * cbb + one_half) >> 16);
+  const int64_t g64 = (int64_t)yy +
+      ((((int64_t)fix_gr * crr) + ((int64_t)fix_gb * cbb) + one_half) >> 16);
+  const int32_t r = r64 < -1000 ? -1000 : (r64 > 1000 ? 1000 : (int32_t)r64);
+  const int32_t b = b64 < -1000 ? -1000 : (b64 > 1000 ? 1000 : (int32_t)b64);
+  const int32_t g = g64 < -1000 ? -1000 : (g64 > 1000 ? 1000 : (int32_t)g64);
   const int32_t v[3] = {r, g, b};
   for (size_t k = 0; k < 3u; k++) {
     // Clamped: the conversion can leave the cube for a chroma pair no
@@ -1188,6 +1194,18 @@ GIMG_Result gimg_tiff_decode(GIMG_Codec * codec, const GIMG_Item * item,
     // set_color_info copies the profile, which is why the IFD may keep
     // owning these bytes and the raster may outlive nothing.
     (void)gimg_raster_set_color_info(raster, &info);
+  }
+
+  // The document's orientation is the first page's, and the generic decode
+  // turns every item by it.  A page of a multi-page file has its own tag, so
+  // there each page is turned by that here and the document states none.
+  if (st->ifd_count > 1u && ifd->orientation >= 2u && ifd->orientation <= 8u) {
+    GIMG_Result orr =
+        gimg_ops_apply_orientation(raster, (GIMG_Orientation)ifd->orientation);
+    if (orr != GIMG_OK) {
+      gimg_raster_destroy(raster);
+      return orr;
+    }
   }
 
   *out_raster = raster;

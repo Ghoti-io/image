@@ -639,6 +639,15 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint64_t at,
             *into[k] = (double)num / (double)den;
           }
         }
+        // Each coefficient is a share of the luma, so one outside (0, 1) is
+        // not a conversion: the 601 defaults stand, as when the tag is absent.
+        if (!(ifd->luma_red > 0.0 && ifd->luma_red < 1.0 &&
+                ifd->luma_green > 0.0 && ifd->luma_green < 1.0 &&
+                ifd->luma_blue > 0.0 && ifd->luma_blue < 1.0)) {
+          ifd->luma_red = 0.299;
+          ifd->luma_green = 0.587;
+          ifd->luma_blue = 0.114;
+        }
       }
       break;
     case GIMG_TIFF_TAG_REFERENCE_BLACK_WHITE:
@@ -649,6 +658,21 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint64_t at,
               tiff_u32(e.values + (k * 8u) + 4u, st->big_endian);
           if (den != 0u) {
             ifd->reference_black_white[k] = (double)num / (double)den;
+          }
+        }
+        // A reference span that is not a small positive range scales the
+        // samples out of any sensible size; the defaults stand instead.
+        const double * rbw = ifd->reference_black_white;
+        for (size_t k = 0; k < 6u; k += 2u) {
+          if (!(rbw[k] >= 0.0 && rbw[k + 1u] > rbw[k] &&
+                  rbw[k + 1u] <= 65535.0)) {
+            ifd->reference_black_white[0] = 0.0;
+            ifd->reference_black_white[1] = 255.0;
+            ifd->reference_black_white[2] = 128.0;
+            ifd->reference_black_white[3] = 255.0;
+            ifd->reference_black_white[4] = 128.0;
+            ifd->reference_black_white[5] = 255.0;
+            break;
           }
         }
       }
@@ -1502,7 +1526,8 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // does not, because a profile describes one picture's colours and a
   // multi-page TIFF's pages may each have their own. It is applied to the
   // raster at decode instead, beside the colour info it belongs to.
-  if (first->orientation >= 1u && first->orientation <= 8u) {
+  if (st->ifd_count == 1u && first->orientation >= 1u &&
+      first->orientation <= 8u) {
     GIMG_Meta_Common * common = NULL;
     if (gimg_doc_ensure_meta_common(doc, &common) == GIMG_OK && common) {
       gimg_meta_common_set_orientation(
