@@ -356,8 +356,63 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  return codec->save_cb(
-      (GIMG_Codec *)codec, doc, stream, format_name, options, report);
+  // No format here stores premultiplied colour, and none of the writers reads
+  // a raster's alpha form.  A premultiplied raster handed to one was written
+  // as straight and came back darkened wherever alpha was below full.  So a
+  // document holding one is saved through a view of itself whose such rasters
+  // are straight copies; the document the caller holds is not touched, which
+  // also keeps a save safe to run beside another on the same document.
+  size_t premultiplied = 0;
+  for (size_t i = 0; i < doc->item_count; i++) {
+    const GIMG_Raster * ras = doc->items[i].raster;
+    if (ras && gimg_raster_format(ras)->alpha_form == GIMG_ALPHA_PREMULTIPLIED) {
+      premultiplied++;
+    }
+  }
+  if (premultiplied == 0) {
+    return codec->save_cb(
+        (GIMG_Codec *)codec, doc, stream, format_name, options, report);
+  }
+
+  const GIMG_Allocator * alloc = gimg_alloc_or_default(doc->allocator);
+  GIMG_Doc view = *doc;
+  GIMG_Item * items =
+      (GIMG_Item *)gimg_malloc(alloc, doc->item_count * sizeof(GIMG_Item));
+  if (!items) {
+    return GIMG_ERR_OOM;
+  }
+  memcpy(items, doc->items, doc->item_count * sizeof(GIMG_Item));
+  view.items = items;
+  GIMG_Result r = GIMG_OK;
+  for (size_t i = 0; i < doc->item_count; i++) {
+    items[i].doc = &view;
+    const GIMG_Raster * ras = doc->items[i].raster;
+    if (r != GIMG_OK || !ras ||
+        gimg_raster_format(ras)->alpha_form != GIMG_ALPHA_PREMULTIPLIED) {
+      continue;
+    }
+    GIMG_Raster * copy = NULL;
+    r = gimg_raster_copy_with_allocator(alloc, ras, &copy);
+    if (r == GIMG_OK) {
+      r = gimg_alpha_unpremultiply(copy);
+      if (r != GIMG_OK) {
+        gimg_raster_destroy(copy);
+        copy = NULL;
+      }
+    }
+    items[i].raster = copy;
+  }
+  if (r == GIMG_OK) {
+    r = codec->save_cb(
+        (GIMG_Codec *)codec, &view, stream, format_name, options, report);
+  }
+  for (size_t i = 0; i < doc->item_count; i++) {
+    if (items[i].raster != doc->items[i].raster) {
+      gimg_raster_destroy(items[i].raster);
+    }
+  }
+  gimg_free(alloc, items);
+  return r;
 }
 
 GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
