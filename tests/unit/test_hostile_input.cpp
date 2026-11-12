@@ -17,6 +17,7 @@
  * Copyright 2026 by Corey Pennycuff
  */
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +25,7 @@
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/meta.h>
+#include <ghoti.io/image/ops.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
@@ -35,6 +37,7 @@
 #include "../../src/codec/codec_internal.h"
 #include "../../src/core/alloc_internal.h"
 #include "../../src/meta/exif_internal.h"
+#include "../../src/codec/bmp/bmp_internal.h"
 #include "../../src/codec/jpeg/jpeg_internal.h"
 
 namespace {
@@ -732,6 +735,97 @@ TEST(HostileInput, AGifDelayLongerThanTheFieldHoldsIsClampedNotWrapped) {
 }
 
 // ---------------------------------------------------------------------------
+// Pixel formats
+// ---------------------------------------------------------------------------
+
+GIMG_Result create_with(const GIMG_Pixel_Format & f, GIMG_Raster ** out) {
+  *out = nullptr;
+  return gimg_raster_create(8, 2, &f, GIMG_RASTER_OWNED, nullptr, 0, out);
+}
+
+TEST(HostileInput, AFormatThatDisagreesWithItselfIsRefusedByTheConstructor) {
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(create_with(GIMG_PIXEL_RGBA8, &r), GIMG_OK) << "control";
+  gimg_raster_destroy(r);
+  GIMG_Pixel_Format five;
+  ASSERT_EQ(gimg_pixel_format_multichannel(5, 16, &five), GIMG_OK);
+  ASSERT_EQ(create_with(five, &r), GIMG_OK) << "control: five 16-bit channels";
+  gimg_raster_destroy(r);
+
+  GIMG_Pixel_Format f = GIMG_PIXEL_RGBA16;
+  f.bits_per_channel[1] = f.bits_per_channel[2] = f.bits_per_channel[3] = 8;
+  EXPECT_NE(create_with(f, &r), GIMG_OK) << "RGBA of 16, 8, 8, 8 bits";
+  EXPECT_EQ(r, nullptr);
+
+  f = GIMG_PIXEL_GRAY8;
+  f.channel_count = 2;
+  f.bits_per_channel[1] = 8;
+  EXPECT_NE(create_with(f, &r), GIMG_OK) << "two gray channels";
+
+  f = GIMG_PIXEL_CMYK8;
+  f.channel_count = 5;
+  f.bits_per_channel[4] = 8;
+  EXPECT_NE(create_with(f, &r), GIMG_OK) << "five CMYK channels";
+
+  f = GIMG_PIXEL_GRAY8;
+  f.bits_per_channel[0] = 4;
+  EXPECT_NE(create_with(f, &r), GIMG_OK) << "four bits a sample";
+
+  f = GIMG_PIXEL_RGBA8;
+  f.layout = GIMG_LAYOUT_PLANAR;
+  EXPECT_NE(create_with(f, &r), GIMG_OK) << "planar";
+
+  f = GIMG_PIXEL_RGBA8;
+  f.channel_model = (GIMG_Channel_Model)200;
+  EXPECT_NE(create_with(f, &r), GIMG_OK) << "a model outside the enum";
+}
+
+TEST(HostileInput, ABorrowedBufferTheOperationsCouldNotReadSafelyIsRefused) {
+  alignas(8) unsigned char buf[64] = {0};
+  GIMG_Raster * r = nullptr;
+  EXPECT_EQ(gimg_raster_create(2, 2, &GIMG_PIXEL_GRAY16, GIMG_RASTER_BORROWED,
+                buf, 4, &r),
+      GIMG_OK)
+      << "control: aligned";
+  gimg_raster_destroy(r);
+  r = nullptr;
+  EXPECT_NE(gimg_raster_create(2, 2, &GIMG_PIXEL_GRAY16, GIMG_RASTER_BORROWED,
+                buf + 1, 4, &r),
+      GIMG_OK)
+      << "an odd address for 16-bit samples";
+  EXPECT_NE(gimg_raster_create(2, 2, &GIMG_PIXEL_GRAY16, GIMG_RASTER_BORROWED,
+                buf, 5, &r),
+      GIMG_OK)
+      << "an odd stride";
+  // Bytes are read as bytes wherever they sit.
+  EXPECT_EQ(gimg_raster_create(2, 2, &GIMG_PIXEL_GRAY8, GIMG_RASTER_BORROWED,
+                buf + 1, 3, &r),
+      GIMG_OK);
+  gimg_raster_destroy(r);
+}
+
+TEST(HostileInput, AnItemCountThatOverflowsItsArrayIsRefused) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  EXPECT_NE(gimg_doc_set_item_count(doc, SIZE_MAX / 8u), GIMG_OK);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u) << "the document is as it was";
+  gimg_doc_destroy(doc);
+}
+
+TEST(HostileInput, ConvertingBetweenAlphaFormsIsNotARelabel) {
+  GIMG_Raster * src = nullptr;
+  ASSERT_EQ(create_with(GIMG_PIXEL_RGBA8, &src), GIMG_OK);
+  GIMG_Pixel_Format premultiplied = GIMG_PIXEL_RGBA8;
+  premultiplied.alpha_form = GIMG_ALPHA_PREMULTIPLIED;
+  GIMG_Raster * out = nullptr;
+  EXPECT_NE(gimg_ops_convert_pixel_format(src, &premultiplied, &out), GIMG_OK);
+  EXPECT_EQ(out, nullptr);
+  gimg_raster_destroy(out);
+  gimg_raster_destroy(src);
+}
+
+// ---------------------------------------------------------------------------
 // Orientation
 // ---------------------------------------------------------------------------
 
@@ -1179,6 +1273,535 @@ TEST(HostileInput, ThumbnailsInsideThumbnailsAreNotFollowed) {
   EXPECT_EQ(n.result, GIMG_OK) << "the outer picture is still a JPEG";
 }
 #endif
+
+TEST(HostileInput, ExifStripsThatOverlapCannotAddUpToMoreThanTheBlob) {
+  // Three strips, each of 60 bytes, all at offset 40 of a 160-byte blob: 180
+  // bytes of thumbnail from a blob that cannot hold them.
+  Bytes b = {'I', 'I', 42, 0, 8, 0, 0, 0};
+  le16(b, 0);
+  le32(b, 14);
+  const uint32_t arrays = 14u + 2u + 6u * 12u + 4u;
+  le16(b, 6);
+  entry(b, 256, kLong, 1, 2);
+  entry(b, 257, kLong, 1, 2);
+  entry(b, 258, kShort, 1, 8);
+  entry(b, 259, kShort, 1, 1);
+  entry(b, 273, kLong, 3, arrays);
+  entry(b, 279, kLong, 3, arrays + 12u);
+  le32(b, 0);
+  for (int k = 0; k < 3; k++) {
+    le32(b, 40);
+  }
+  for (int k = 0; k < 3; k++) {
+    le32(b, 60);
+  }
+  b.resize(160, 0x33);
+  ASSERT_EQ(b.size(), 160u);
+  uint32_t w = 0, h = 0;
+  uint8_t bits = 0;
+  uint16_t photo = 0;
+  void * data = nullptr;
+  size_t n = 0;
+  EXPECT_EQ(gimg_exif_embedded_thumbnail_uncompressed(nullptr, b.data(),
+                b.size(), &w, &h, &bits, &photo, &data, &n),
+      GIMG_OK);
+  EXPECT_EQ(n, 0u) << "no thumbnail, not 180 bytes of aliased ones";
+  free(data);
+}
+
+TEST(HostileInput, ALoadReadsASeekableStreamFromItsStart) {
+  const Bytes png = gray_png(Bytes{0, 0x80});
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(png.data(), png.size(), &s), GIMG_OK);
+  ASSERT_EQ(gimg_stream_seek(s, 5), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK)
+      << "identified and decoded from the same place";
+  if (doc) {
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(s);
+}
+
+/** A RIFF chunk: fourcc, little-endian size, payload, pad. */
+void riff_chunk(Bytes & out, const char * cc, const Bytes & payload) {
+  out.insert(out.end(), cc, cc + 4);
+  le32(out, (uint32_t)payload.size());
+  out.insert(out.end(), payload.begin(), payload.end());
+  if (payload.size() & 1u) {
+    out.push_back(0);
+  }
+}
+
+TEST(HostileInput, AWebpBitstreamLargerThanItsCanvasIsRefusedBeforeItIsDecoded) {
+  // VP8X says one pixel; the VP8L header says 16384 x 16384.  Each pixel of
+  // such a stream costs no bits, so the decoder would allocate gigabytes to
+  // produce a picture of a size no limit had been asked about.
+  Bytes body = {'W', 'E', 'B', 'P'};
+  riff_chunk(body, "VP8X", Bytes{0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+  riff_chunk(body, "VP8L", Bytes{0x2F, 0xFF, 0xFF, 0xFF, 0x0F, 0, 0, 0});
+  Bytes f = {'R', 'I', 'F', 'F'};
+  le32(f, (uint32_t)body.size());
+  f.insert(f.end(), body.begin(), body.end());
+
+  GIMG_Codec * codec = gimg_codec_by_name("webp");
+  ASSERT_NE(codec, nullptr);
+  const GIMG_Allocator * saved = codec->allocator;
+  Watching w;
+  w.a.ctx = &w;
+  w.a.malloc_fn = w_malloc;
+  w.a.calloc_fn = w_calloc;
+  w.a.realloc_fn = w_realloc;
+  w.a.free_fn = w_free;
+  codec->allocator = &w.a;
+  GIMG_Raster * out = nullptr;
+  const GIMG_Result r = load_and_decode(f, 0, nullptr, &out);
+  codec->allocator = saved;
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(out, nullptr);
+  EXPECT_LT(w.largest, (size_t)1 << 20);
+}
+
+TEST(HostileInput, ALossyWebpWhoseTokenPartitionIsCutShortIsRefused) {
+  GIMG_Raster * ras = nullptr;
+  ASSERT_EQ(gimg_raster_create(64, 64, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &ras),
+      GIMG_OK);
+  uint8_t * px = (uint8_t *)gimg_raster_pixels(ras);
+  uint32_t seed = 12345;
+  for (size_t i = 0; i < 64u * 64u * 4u; i++) {
+    seed = seed * 1664525u + 1013904223u;
+    px[i] = (uint8_t)(seed >> 24);
+    if ((i & 3u) == 3u) {
+      px[i] = 255;
+    }
+  }
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), ras);
+  GIMG_Save_Options o;
+  memset(&o, 0, sizeof o);
+  o.webp_lossless = GIMG_WEBP_COMPRESS_LOSSY;
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "webp", &o, &report), GIMG_OK);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &data, &size);
+  Bytes f((const uint8_t *)data, (const uint8_t *)data + size);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+
+  GIMG_Raster * got = nullptr;
+  ASSERT_EQ(load_and_decode(f, 0, nullptr, &got), GIMG_OK) << "control";
+  gimg_raster_destroy(got);
+
+  // Find the VP8 chunk, drop the second half of its payload and keep every
+  // size in the file consistent with what is left.
+  size_t at = 0;
+  for (size_t i = 12; i + 8 < f.size(); i++) {
+    if (memcmp(&f[i], "VP8 ", 4) == 0) {
+      at = i;
+      break;
+    }
+  }
+  ASSERT_NE(at, 0u);
+  const uint32_t payload = (uint32_t)(f[at + 4] | (f[at + 5] << 8) |
+      (f[at + 6] << 16) | ((uint32_t)f[at + 7] << 24));
+  ASSERT_GT(payload, 400u) << "noise should not compress to nothing";
+  const uint32_t keep = (payload / 2u) & ~1u;
+  Bytes cut(f.begin(), f.begin() + at + 8 + keep);
+  for (int k = 0; k < 4; k++) {
+    cut[at + 4 + k] = (uint8_t)(keep >> (8 * k));
+  }
+  const uint32_t riff = (uint32_t)cut.size() - 8u;
+  for (int k = 0; k < 4; k++) {
+    cut[4 + k] = (uint8_t)(riff >> (8 * k));
+  }
+  EXPECT_NE(load_and_decode(cut, 0, nullptr, &got), GIMG_OK)
+      << "half of the picture's tokens are missing";
+  EXPECT_EQ(got, nullptr);
+}
+
+TEST(HostileInput, ABmpEndpointOutsideTheFixedPointRangeIsClampedNotUndefined) {
+  // A PNG cHRM can carry 0xFFFFFFFF, which loads as a coordinate of 42949.67;
+  // converted to FXPT2DOT30 as it stood, that is undefined and came out as
+  // INT32_MIN.
+  GCOL_Color_Info info;
+  gcol_color_info_default(&info);
+  info.primaries_stated = true;
+  info.gamut.red.x = 42949.67;
+  info.gamut.red.y = -42949.67;
+  unsigned char tail[GIMG_BMP_V5HEADER_SIZE - GIMG_BMP_V4_TAIL_AT];
+  ASSERT_NE(gimg_bmp_color_to_header(&info, tail), 0u);
+  auto field = [&](size_t i) {
+    const unsigned char * q = tail + GIMG_BMP_V4_ENDPOINTS_AT + i * 4u;
+    return (int32_t)((uint32_t)q[0] | ((uint32_t)q[1] << 8) |
+        ((uint32_t)q[2] << 16) | ((uint32_t)q[3] << 24));
+  };
+  EXPECT_EQ(field(0), INT32_MAX) << "red x, far above 2";
+  EXPECT_EQ(field(1), INT32_MIN) << "red y, far below -2";
+}
+
+TEST(HostileInput, ABmpOnAStreamThatCannotSeekIsRefusedAndSaysWhy) {
+  Bytes f = {'B', 'M'};
+  le32(f, 14 + 40 + 16);
+  le32(f, 0);
+  le32(f, 14 + 40);
+  le32(f, 40);
+  le32(f, 2);
+  le32(f, 2);
+  le16(f, 1);
+  le16(f, 24);
+  le32(f, 0);
+  le32(f, 16);
+  le32(f, 0);
+  le32(f, 0);
+  le32(f, 0);
+  le32(f, 0);
+  f.insert(f.end(), 16, 0x55);
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_no_seek(f.data(), f.size(), &s), GIMG_OK);
+  GIMG_Diagnostics d = {};
+  gimg_diagnostics_init(&d, nullptr);
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(gimg_doc_load(s, nullptr, &d, &doc), GIMG_ERR_UNSUPPORTED);
+  bool said = false;
+  for (size_t i = 0; i < d.count; i++) {
+    said = said || strstr(d.items[i].recommended_action, "seek") != nullptr;
+  }
+  EXPECT_TRUE(said) << "the refusal names its reason";
+  gimg_diagnostics_destroy(&d);
+  gimg_stream_destroy(s);
+}
+
+TEST(HostileInput, PngImageDataMustBeConsecutiveAndPresent) {
+  auto png = [](const std::vector<std::pair<const char *, Bytes>> & chunks) {
+    Bytes f = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    Bytes ihdr;
+    be32(ihdr, 1);
+    be32(ihdr, 1);
+    ihdr.insert(ihdr.end(), {8, 0, 0, 0, 0});
+    chunk(f, "IHDR", ihdr);
+    for (const auto & c : chunks) {
+      chunk(f, c.first, c.second);
+    }
+    chunk(f, "IEND", Bytes());
+    return f;
+  };
+  const Bytes z = zlib_stored(Bytes{0, 0x80});
+  const Bytes a(z.begin(), z.begin() + 5), b(z.begin() + 5, z.end());
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(load_with(png({{"IDAT", a}, {"IDAT", b}}), nullptr, &doc), GIMG_OK)
+      << "control: split across two consecutive chunks";
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+  EXPECT_EQ(load_with(png({{"IDAT", a}, {"tEXt", Bytes{'k', 0, 'v'}},
+                          {"IDAT", b}}),
+                nullptr, &doc),
+      GIMG_ERR_FORMAT);
+  // A file with no image data loads - its chunks are readable - and fails when
+  // a picture is asked of it.
+  GIMG_Raster * r = nullptr;
+  EXPECT_NE(load_and_decode(png({}), 0, nullptr, &r), GIMG_OK)
+      << "no image data at all";
+  EXPECT_EQ(r, nullptr);
+}
+
+TEST(HostileInput, EachPageOfATiffIsTurnedByItsOwnOrientation) {
+  // Two 2 x 1 RGB pages; page 1 upright, page 2 stored rotated (6).  The
+  // document's orientation is the first page's, and every page used to be
+  // turned by it.
+  const uint32_t entries = 10;
+  const uint32_t ifd_bytes = 2u + entries * 12u + 4u;
+  const uint32_t first = 8u;
+  const uint32_t second = first + ifd_bytes;
+  const uint32_t bps_at = second + ifd_bytes;
+  const uint32_t strip_at = bps_at + 6u;
+  Bytes b = {'I', 'I', 42, 0, 8, 0, 0, 0};
+  for (int page = 0; page < 2; page++) {
+    le16(b, (uint16_t)entries);
+    entry(b, 256, kLong, 1, 2);
+    entry(b, 257, kLong, 1, 1);
+    entry(b, 258, kShort, 3, bps_at);
+    entry(b, 259, kShort, 1, 1);
+    entry(b, 262, kShort, 1, 2);
+    entry(b, 273, kLong, 1, strip_at);
+    entry(b, 274, kShort, 1, page == 0 ? 1 : 6);
+    entry(b, 277, kShort, 1, 3);
+    entry(b, 278, kLong, 1, 1);
+    entry(b, 279, kLong, 1, 6);
+    le32(b, page == 0 ? second : 0u);
+  }
+  le16(b, 8);
+  le16(b, 8);
+  le16(b, 8);
+  for (uint32_t i = 0; i < 6; i++) {
+    b.push_back((uint8_t)(i + 1u));
+  }
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(load_and_decode(b, 0, nullptr, &r), GIMG_OK);
+  EXPECT_EQ(gimg_raster_width(r), 2u);
+  EXPECT_EQ(gimg_raster_height(r), 1u);
+  gimg_raster_destroy(r);
+  ASSERT_EQ(load_and_decode(b, 1, nullptr, &r), GIMG_OK);
+  EXPECT_EQ(gimg_raster_width(r), 1u) << "page 2 turned a quarter by its own tag";
+  EXPECT_EQ(gimg_raster_height(r), 2u);
+  gimg_raster_destroy(r);
+}
+
+Bytes ycbcr_tiff(bool bad_coefficients) {
+  const uint32_t entries = bad_coefficients ? 11u : 10u;
+  const uint32_t ifd_bytes = 2u + entries * 12u + 4u;
+  const uint32_t bps_at = 8u + ifd_bytes;
+  const uint32_t coeff_at = bps_at + 6u;
+  const uint32_t strip_at = coeff_at + (bad_coefficients ? 24u : 0u);
+  Bytes b = {'I', 'I', 42, 0, 8, 0, 0, 0};
+  le16(b, (uint16_t)entries);
+  entry(b, 256, kLong, 1, 1);
+  entry(b, 257, kLong, 1, 1);
+  entry(b, 258, kShort, 3, bps_at);
+  entry(b, 259, kShort, 1, 1);
+  entry(b, 262, kShort, 1, 6); // YCbCr
+  entry(b, 273, kLong, 1, strip_at);
+  entry(b, 277, kShort, 1, 3);
+  entry(b, 278, kLong, 1, 1);
+  entry(b, 279, kLong, 1, 3);
+  entry(b, 530, kShort, 2, 1u | (1u << 16)); // 1 x 1 subsampling
+  if (bad_coefficients) {
+    entry(b, 529, 5, 3, coeff_at); // RATIONAL x 3
+  }
+  le32(b, 0);
+  le16(b, 8);
+  le16(b, 8);
+  le16(b, 8);
+  if (bad_coefficients) {
+    for (int c = 0; c < 3; c++) {
+      le32(b, 0xFFFFFFFFu); // 4294967295 / 1
+      le32(b, 1);
+    }
+  }
+  b.insert(b.end(), {100, 90, 200});
+  return b;
+}
+
+TEST(HostileInput, TiffYcbcrCoefficientsThatAreNotSharesOfLumaAreIgnored) {
+  GIMG_Raster * plain = nullptr;
+  GIMG_Raster * bad = nullptr;
+  ASSERT_EQ(load_and_decode(ycbcr_tiff(false), 0, nullptr, &plain), GIMG_OK);
+  ASSERT_EQ(load_and_decode(ycbcr_tiff(true), 0, nullptr, &bad), GIMG_OK);
+  const uint8_t * a = (const uint8_t *)gimg_raster_pixels_const(plain);
+  const uint8_t * c = (const uint8_t *)gimg_raster_pixels_const(bad);
+  EXPECT_EQ(memcmp(a, c, 3), 0) << "the 601 defaults stand";
+  gimg_raster_destroy(plain);
+  gimg_raster_destroy(bad);
+}
+
+TEST(HostileInput, AOneComponentJpegWithSamplingFactorsIsReadInRasterOrder) {
+  // A single-component scan is non-interleaved (T.81 A.2.2): its blocks run
+  // left to right, top to bottom, whatever H and V say.  Eight blocks, each a
+  // DC step of +32 (so each is 4 levels brighter than the one before it in
+  // file order), for a 32 x 16 picture.
+  Bytes j = {0xFF, 0xD8};
+  const Bytes dqt = jpeg_segment(0xDB, [] {
+    Bytes q = {0};
+    q.insert(q.end(), 64, 1);
+    return q;
+  }());
+  j.insert(j.end(), dqt.begin(), dqt.end());
+  const Bytes sof = jpeg_segment(0xC0, Bytes{8, 0, 16, 0, 32, 1, 1, 0x22, 0});
+  j.insert(j.end(), sof.begin(), sof.end());
+  Bytes dc = {0x00, 1};
+  dc.insert(dc.end(), 15, 0);
+  dc.push_back(6);
+  Bytes ac = {0x10, 1};
+  ac.insert(ac.end(), 15, 0);
+  ac.push_back(0);
+  const Bytes dht = jpeg_segment(0xC4, [&] {
+    Bytes t = dc;
+    t.insert(t.end(), ac.begin(), ac.end());
+    return t;
+  }());
+  j.insert(j.end(), dht.begin(), dht.end());
+  const Bytes sos = jpeg_segment(0xDA, Bytes{1, 1, 0x00, 0, 63, 0});
+  j.insert(j.end(), sos.begin(), sos.end());
+  j.insert(j.end(), 8, 0x40);
+  j.insert(j.end(), {0xFF, 0xD9});
+
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(load_and_decode(j, 0, nullptr, &r), GIMG_OK);
+  ASSERT_EQ(gimg_raster_width(r), 32u);
+  const uint8_t * px = (const uint8_t *)gimg_raster_pixels_const(r);
+  const size_t stride = gimg_raster_stride_bytes(r);
+  const size_t bpp = gimg_raster_bytes_per_pixel(gimg_raster_format(r));
+  // Block (0, 1) is the fifth stored: DC 5 * 32 / 8 above 128.
+  EXPECT_NEAR(px[8 * stride], 148, 2) << "bpp " << bpp;
+  EXPECT_NEAR(px[0], 132, 2);
+  EXPECT_NEAR(px[8 * bpp * 3], 144, 2) << "block (3,0) is the fourth";
+  gimg_raster_destroy(r);
+}
+
+TEST(HostileInput, AJpegFrameOf255ComponentsIsHeldToTheMemoryCapAsAWhole) {
+  // 16 million pixels of 255 components is four gigabytes of planes, asked for
+  // by a few hundred bytes of header; each plane alone is under the cap.
+  Bytes sof = {8, 0x10, 0x00, 0x10, 0x00, 255};
+  for (int c = 1; c <= 255; c++) {
+    sof.insert(sof.end(), {(uint8_t)c, 0x11, 0});
+  }
+  Bytes j = {0xFF, 0xD8};
+  const Bytes f = jpeg_segment(0xC0, sof);
+  j.insert(j.end(), f.begin(), f.end());
+  const Bytes s1 = sos_for(1);
+  j.insert(j.end(), s1.begin(), s1.end());
+  j.insert(j.end(), {0xFF, 0xD9});
+  std::string why;
+  EXPECT_EQ(load_jpeg(j, nullptr, &why), GIMG_ERR_LIMIT) << why;
+  EXPECT_NE(why.find("max_memory"), std::string::npos) << why;
+}
+
+TEST(HostileInput, APngWriterDoesNotCopyAChunkThatIsUnsafeToCopy) {
+  auto resaved_has = [](const char * type) {
+    Bytes f = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    Bytes ihdr;
+    be32(ihdr, 1);
+    be32(ihdr, 1);
+    ihdr.insert(ihdr.end(), {8, 0, 0, 0, 0});
+    chunk(f, "IHDR", ihdr);
+    chunk(f, type, Bytes{1, 2, 3});
+    chunk(f, "IDAT", zlib_stored(Bytes{0, 0x80}));
+    chunk(f, "IEND", Bytes());
+    GIMG_Stream * s = nullptr;
+    EXPECT_EQ(gimg_stream_create_memory(f.data(), f.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    EXPECT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    EXPECT_EQ(gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr), GIMG_OK);
+    GIMG_Stream * out = nullptr;
+    EXPECT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Report report = {};
+    EXPECT_EQ(gimg_doc_save(doc, out, "png", nullptr, &report), GIMG_OK);
+    const void * data = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &data, &size);
+    const std::string bytes((const char *)data, size);
+    const bool found = bytes.find(type) != std::string::npos;
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    return found;
+  };
+  EXPECT_TRUE(resaved_has("prVt")) << "control: safe to copy";
+  EXPECT_FALSE(resaved_has("prVT")) << "the fourth letter says it depends on the data";
+}
+
+TEST(HostileInput, APngChunkTypeThatIsNotFourLettersIsRefused) {
+  Bytes f = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  Bytes ihdr;
+  be32(ihdr, 1);
+  be32(ihdr, 1);
+  ihdr.insert(ihdr.end(), {8, 0, 0, 0, 0});
+  chunk(f, "IHDR", ihdr);
+  chunk(f, "pr1t", Bytes{1});
+  chunk(f, "IDAT", zlib_stored(Bytes{0, 0x80}));
+  chunk(f, "IEND", Bytes());
+  GIMG_Doc * doc = nullptr;
+  EXPECT_NE(load_with(f, nullptr, &doc), GIMG_OK);
+  EXPECT_EQ(doc, nullptr);
+}
+
+TEST(HostileInput, StripGpsAlsoDropsTheXmpPacketAndRawProfilesOfAPng) {
+  auto kept = [](const char * keyword, GIMG_Meta_Policy policy) {
+    Bytes f = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    Bytes ihdr;
+    be32(ihdr, 1);
+    be32(ihdr, 1);
+    ihdr.insert(ihdr.end(), {8, 0, 0, 0, 0});
+    chunk(f, "IHDR", ihdr);
+    Bytes text(keyword, keyword + strlen(keyword));
+    text.insert(text.end(), {0, 0, 0, 0, 0, 'x'}); // iTXt: flags, language, translated
+    chunk(f, "iTXt", text);
+    chunk(f, "IDAT", zlib_stored(Bytes{0, 0x80}));
+    chunk(f, "IEND", Bytes());
+    GIMG_Stream * s = nullptr;
+    EXPECT_EQ(gimg_stream_create_memory(f.data(), f.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    EXPECT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    EXPECT_EQ(gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr), GIMG_OK);
+    GIMG_Save_Options o;
+    memset(&o, 0, sizeof o);
+    o.metadata_policy = policy;
+    GIMG_Stream * out = nullptr;
+    EXPECT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Report report = {};
+    EXPECT_EQ(gimg_doc_save(doc, out, "png", &o, &report), GIMG_OK);
+    const void * data = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &data, &size);
+    const std::string bytes((const char *)data, size);
+    const bool found = bytes.find("iTXt") != std::string::npos;
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    return found;
+  };
+  EXPECT_TRUE(kept("XML:com.adobe.xmp", GIMG_META_PRESERVE_ALL)) << "control";
+  EXPECT_FALSE(kept("XML:com.adobe.xmp", GIMG_META_STRIP_GPS));
+  EXPECT_FALSE(kept("Raw profile type exif", GIMG_META_STRIP_GPS));
+  EXPECT_TRUE(kept("Raw profile type icc", GIMG_META_STRIP_GPS));
+  EXPECT_TRUE(kept("Author", GIMG_META_STRIP_GPS)) << "ordinary text stays";
+}
+
+TEST(HostileInput, CountingColoursOfARedGreenGradientIsNotQuadratic) {
+  // Every colour differs in red and green only, so alpha and blue are
+  // constant: the low bits of the old hash were the same for all of them and
+  // the whole histogram was one probe chain.
+  GIMG_Raster * ras = nullptr;
+  ASSERT_EQ(gimg_raster_create(512, 512, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &ras),
+      GIMG_OK);
+  uint8_t * px = (uint8_t *)gimg_raster_pixels(ras);
+  const size_t stride = gimg_raster_stride_bytes(ras);
+  for (size_t y = 0; y < 512; y++) {
+    for (size_t x = 0; x < 512; x++) {
+      uint8_t * q = px + y * stride + x * 4u;
+      q[0] = (uint8_t)(x & 255u);
+      q[1] = (uint8_t)(y & 255u);
+      q[2] = 7;
+      q[3] = 255;
+    }
+  }
+  const auto begin = std::chrono::steady_clock::now();
+  size_t n = 0;
+  bool exact = false;
+  ASSERT_EQ(gimg_ops_count_colors(ras, 1u << 20, &n, &exact), GIMG_OK);
+  const double seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - begin).count();
+  EXPECT_EQ(n, 65536u);
+  EXPECT_TRUE(exact);
+  EXPECT_LT(seconds, 2.0) << "the old hash took many times this";
+  gimg_raster_destroy(ras);
+}
+
+TEST(HostileInput, AGifOfMoreFramesThanTheDefaultHoldsIsRefused) {
+  auto gif_of = [](size_t frames) {
+    Bytes g = {'G', 'I', 'F', '8', '9', 'a', 1, 0, 1, 0, 0x80, 0, 0};
+    g.insert(g.end(), {0, 0, 0, 255, 255, 255});
+    for (size_t i = 0; i < frames; i++) {
+      g.insert(g.end(), {0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0});
+      g.insert(g.end(), {2, 2, 0x44, 0x01, 0});
+    }
+    g.push_back(0x3B);
+    return g;
+  };
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(load_with(gif_of(2), nullptr, &doc), GIMG_OK) << "control";
+  gimg_doc_destroy(doc);
+  doc = nullptr;
+  EXPECT_EQ(load_with(gif_of(65537), nullptr, &doc), GIMG_ERR_LIMIT);
+  EXPECT_EQ(doc, nullptr);
+}
 
 } // namespace
 

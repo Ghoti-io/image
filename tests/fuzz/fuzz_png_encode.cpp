@@ -23,6 +23,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
   if (data == nullptr || size == 0) {
     return 0;
   }
+  fuzz_select_arm(data, size);
 
   GIMG_Stream * s = nullptr;
   GIMG_Result r = gimg_stream_create_memory(data, size, &s);

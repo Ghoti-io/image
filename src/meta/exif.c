@@ -406,7 +406,11 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
     }
   }
   const uint64_t total = payload_base + payload_bytes;
-  if (total > (uint64_t)UINT32_MAX) {
+  // Stripping removes a tag; the result is never legitimately much larger
+  // than what went in.  Entries that name the same bytes are written once
+  // each, so a blob of a few kilobytes could be made to produce gigabytes.
+  if (total > (uint64_t)UINT32_MAX ||
+      total > (uint64_t)size * 4u + 4096u) {
     return GIMG_ERR_LIMIT;
   }
 
@@ -870,6 +874,13 @@ GIMG_Result gimg_exif_embedded_thumbnail_uncompressed(
     uint32_t so, sc;
     if (!exif_strip_at(buf, size, le, &strips, s, &so, &sc)) {
       return GIMG_ERR_CORRUPT;
+    }
+    // Strips lie in the blob and so cannot honestly add up to more than it
+    // holds; ones that do are overlapping, which a file can use to ask for a
+    // gigabyte out of sixty-four kilobytes.  No thumbnail, as for any other
+    // table that does not describe one.
+    if (sc > size || total_bytes > size - sc) {
+      return GIMG_OK;
     }
     total_bytes += sc;
   }

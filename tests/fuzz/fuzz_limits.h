@@ -22,24 +22,70 @@
 #ifndef GIMG_TESTS_FUZZ_FUZZ_LIMITS_H
 #define GIMG_TESTS_FUZZ_FUZZ_LIMITS_H
 
+#include <cstdint>
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/stream.h>
 
+/**
+ * Which limits this input is run under, derived from its own bytes so every
+ * seed stays a valid file and the fuzzer reaches the other arms by mutating
+ * content it already has.
+ *
+ *   0  a four-megapixel cap: the arm that keeps a run exploring the decoders
+ *      instead of rediscovering that a header can ask for a large picture.
+ *   1  no options at all: the library's own defaults, which is what a caller
+ *      who has read nothing gets.  Every harness set a pixel cap before, so
+ *      the default limits - and the allocation cap under them - were never
+ *      fuzzed.
+ *   2  the defaults with a small memory cap, which is the arm that walks the
+ *      refusal paths under every codec.
+ */
+enum { FUZZ_ARM_CAPPED = 0, FUZZ_ARM_DEFAULTS = 1, FUZZ_ARM_SMALL_MEMORY = 2 };
+
+static inline int & fuzz_arm_ref() {
+  static int arm = FUZZ_ARM_CAPPED;
+  return arm;
+}
+
+static inline void fuzz_select_arm(const uint8_t * data, size_t size) {
+  uint32_t h = 2654435761u;
+  for (size_t i = 0; i < size && i < 32u; i++) {
+    h = (h ^ data[i]) * 16777619u;
+  }
+  h = (h ^ (uint32_t)size) * 16777619u;
+  // Mostly the capped arm: the other two are slower per input.
+  const uint32_t v = (h >> 8) % 8u;
+  fuzz_arm_ref() = v == 0u   ? FUZZ_ARM_DEFAULTS
+      : v == 1u              ? FUZZ_ARM_SMALL_MEMORY
+                             : FUZZ_ARM_CAPPED;
+}
+
 static inline const GIMG_Limits * fuzz_limits() {
   static GIMG_Limits l = {};
+  l = GIMG_Limits{};
+  if (fuzz_arm_ref() == FUZZ_ARM_SMALL_MEMORY) {
+    l.max_memory = 1u << 20;
+    return &l;
+  }
   l.max_decoded_pixels = 4u * 1024u * 1024u;
   return &l;
 }
 
 static inline const GIMG_Load_Options * fuzz_load_options() {
   static GIMG_Load_Options o = {};
+  if (fuzz_arm_ref() == FUZZ_ARM_DEFAULTS) {
+    return nullptr;
+  }
   o.limits = fuzz_limits();
   return &o;
 }
 
 static inline const GIMG_Decode_Options * fuzz_decode_options() {
   static GIMG_Decode_Options o = {};
+  if (fuzz_arm_ref() == FUZZ_ARM_DEFAULTS) {
+    return nullptr;
+  }
   o.limits = fuzz_limits();
   return &o;
 }

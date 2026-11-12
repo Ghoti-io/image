@@ -44,10 +44,9 @@ bool read_all(const std::string & path, std::vector<uint8_t> & out) {
   return true;
 }
 
-void replay(const std::vector<uint8_t> & data) {
-  if (data.empty()) {
-    return;
-  }
+/** One seed under one set of limits, as a harness would run it. */
+void replay_once(const std::vector<uint8_t> & data, int arm) {
+  fuzz_arm_ref() = arm;
   GIMG_Stream * s = nullptr;
   if (gimg_stream_create_memory(data.data(), data.size(), &s) != GIMG_OK) {
     return;
@@ -61,12 +60,23 @@ void replay(const std::vector<uint8_t> & data) {
   const size_t n = gimg_doc_item_count(doc);
   for (size_t i = 0; i < n; i++) {
     GIMG_Raster * raster = nullptr;
-    (void)gimg_item_decode(gimg_doc_item(doc, i), nullptr, &raster);
+    (void)gimg_item_decode(gimg_doc_item(doc, i), fuzz_decode_options(), &raster);
     if (raster) {
       gimg_raster_destroy(raster);
     }
   }
   gimg_doc_destroy(doc);
+}
+
+/** Every seed under all three arms the harnesses choose between: the
+ * four-megapixel cap, the library's defaults, and a small memory cap. */
+void replay(const std::vector<uint8_t> & data) {
+  if (data.empty()) {
+    return;
+  }
+  for (int arm : {FUZZ_ARM_CAPPED, FUZZ_ARM_DEFAULTS, FUZZ_ARM_SMALL_MEMORY}) {
+    replay_once(data, arm);
+  }
 }
 
 TEST(FuzzCorpus, EveryCommittedLoadSeedReplaysWithoutAFault) {
