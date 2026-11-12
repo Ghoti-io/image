@@ -313,7 +313,7 @@ adding or restricting features.
 
 | Area | Supported | Rejected / limitation |
 |------|-----------|-----------------------|
-| **File header** | `BM` magic, `bfOffBits` honored for the pixel data | Magic other than `BM` &rarr; `GIMG_ERR_FORMAT`. `bfOffBits` below 14 or past the end of a sized stream &rarr; `GIMG_ERR_CORRUPT`. `bfSize` and the reserved words are not trusted |
+| **File header** | `BM` magic, `bfOffBits` honored for the pixel data | Magic other than `BM` &rarr; `GIMG_ERR_FORMAT`. `bfOffBits` below 14 or past the end of a sized stream &rarr; `GIMG_ERR_CORRUPT`. `bfSize` and the reserved words are not trusted. A stream that cannot seek is refused (`GIMG_ERR_UNSUPPORTED`, with a diagnostic): the pixel data is found by `bfOffBits`, and a stream that cannot report its position cannot be read forward to it |
 | **DIB header** | Sizes 12, 40, 52, 56, 108 and 124 as Windows headers; every multiple of 4 from 16 to 64 as an OS/2 `BITMAPCOREHEADER2`. All normalized into one internal header | Any other size &rarr; `GIMG_ERR_UNSUPPORTED`. Guessing at an unknown size shifts everything after the header, so it is refused rather than approximated. 40, 52 and 56 belong to both vocabularies and are read as Windows |
 | **Dimensions** | 16-bit unsigned (core header), 32-bit signed elsewhere; a negative height means top-down rows | Zero width or height &rarr; `GIMG_ERR_CORRUPT`; a width above `INT32_MAX`, which is a negative `biWidth`, &rarr; `GIMG_ERR_CORRUPT` |
 | **Bit depth** | 1, 2, 4, 8 (palette), 16, 24, 32, 64 | Any other value &rarr; `GIMG_ERR_UNSUPPORTED`, except under `BI_JPEG` and `BI_PNG`, where the embedded stream carries its own depth and `biBitCount` is not a constraint on it |

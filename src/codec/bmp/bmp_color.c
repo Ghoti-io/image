@@ -298,8 +298,18 @@ static void bmp_endpoints_from_gamut(
     double y = point[channel]->y;
     double triple[3] = {x, y, 1.0 - x - y};
     for (unsigned int i = 0; i < 3; i++) {
-      int32_t fixed =
-          (int32_t)((triple[i] * (double)GIMG_BMP_FXPT2DOT30_ONE) + 0.5);
+      // FXPT2DOT30 holds -2 up to just under 2.  A chromaticity from a hostile
+      // file (or NaN) is out of that range, and converting a double that is
+      // out of range to an integer is undefined.  Rounded to nearest, ties
+      // away from zero.
+      double scaled = triple[i] * (double)GIMG_BMP_FXPT2DOT30_ONE;
+      if (!(scaled > -2147483648.0)) {
+        scaled = -2147483648.0;
+      }
+      else if (scaled > 2147483647.0) {
+        scaled = 2147483647.0;
+      }
+      int32_t fixed = (int32_t)(scaled < 0.0 ? scaled - 0.5 : scaled + 0.5);
       gimg_bmp_write_u32(
           out + (((channel * 3) + i) * 4), (uint32_t)fixed);
     }

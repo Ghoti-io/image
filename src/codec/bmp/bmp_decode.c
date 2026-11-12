@@ -80,7 +80,8 @@ static uint8_t bmp_scale_channel(
   }
   // Round rather than truncate so that the maximum input maps to 255 and the
   // midpoint does not drift downward.
-  return (uint8_t)(((value * 255u) + (m->max / 2u)) / m->max);
+  // In 64 bits: a mask of more than 24 bits makes value * 255 pass 2^32.
+  return (uint8_t)((((uint64_t)value * 255u) + (m->max / 2u)) / m->max);
 }
 
 /** Read a little-endian pixel of `bytes` width (2 or 4). */

@@ -750,7 +750,9 @@ static GIMG_Result bmp_read_pixels(GIMG_Stream * stream,
   GIMG_Result r = gimg_stream_seek(stream, (size_t)data_offset);
   if (r != GIMG_OK) {
     bmp_load_diag(
-        diagnostics, (size_t)data_offset, "cannot seek to pixel data");
+        diagnostics, (size_t)data_offset,
+        "a BMP needs a stream that can seek: its pixel data is found by the "
+        "offset in the file header");
     return r;
   }
 
