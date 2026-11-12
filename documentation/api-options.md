@@ -52,7 +52,7 @@ T.81 describes none. WebP write is VP8L by default and VP8 when asked; a lossy p
 
 | Field        | Description |
 |-------------|-------------|
-| `limits`    | Pointer to **GIMG_Limits**; `NULL` = use defaults (no limits). Enforced during load and decode (chunk size, decoded pixels, frame count). |
+| `limits`    | Pointer to **GIMG_Limits**; `NULL` = the library's defaults, which are finite. Enforced during load and decode (chunk size, decoded pixels, frame count). |
 | `strictness`| **GIMG_Strictness** — how to handle recoverable issues (see below). |
 | `jpeg_tables` | For JPEG: tables to install before reading an abbreviated stream (T.81 B.4). Ignored by other codecs. |
 | `bmp_rgb32_alpha` | For BMP: what the undefined fourth byte of a 32-bit `BI_RGB` pixel means. `GIMG_BMP_RGB32_ALPHA_IGNORE` (0, default) decodes such an image opaque; `GIMG_BMP_RGB32_ALPHA_HEURISTIC` reads the byte as alpha when any pixel sets it. A file that *declares* its alpha is unaffected either way. Ignored by other codecs. |
@@ -162,22 +162,24 @@ Used by `gimg_item_decode()`.
 
 ## Limits (GIMG_Limits)
 
-**GIMG_Limits** (see `ghoti.io/image/stream.h`) is used by load and decode to cap resource use. Initialize with `gimg_limits_default()`; any field set to `0` means “no limit”.
+**GIMG_Limits** (see `ghoti.io/image/stream.h`) is used by load and decode to cap resource use. Initialize with `gimg_limits_default()`. A field set to `0` means the library's default for that field; `GIMG_LIMIT_NONE` means no limit.
 
 | Field                  | Read by | Use |
 |------------------------|---------|-----|
-| `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF, ICO, WebP | Reject if width×height (or the sum over frames) exceeds this. ICO applies it per entry; WebP applies it to the VP8X canvas. |
-| `max_memory`           | **BMP only** | A cap on what one image's pixel data may take. No other codec reads it. |
+| `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF, ICO, WebP | Reject if width×height (or the sum over frames) exceeds this. `0` is `GIMG_DEFAULT_MAX_DECODED_PIXELS`, 2^28. ICO applies it per entry; WebP applies it to the VP8X canvas. |
+| `max_memory`           | every codec | The largest single allocation a load or decode may make. `0` is `GIMG_DEFAULT_MAX_MEMORY`, one gibibyte. Enforced in the library's allocation path, beneath the codecs. |
 | `max_metadata_size`    | PNG, JPEG, BMP, GIF, TIFF, WebP | Cap what is kept that is not pixels, including a *total* across segments. `0` is a four-mebibyte guard, not "no limit". |
 | `max_frame_count`      | PNG, GIF, TIFF, WebP | Max frames (APNG, GIF frames, TIFF's IFD chain and its SubIFD pages, WebP ANMF). A BMP bitmap array is several items and is not capped. ICO entries are alternates, not frames; their count is capped at `GIMG_ICO_MAX_ENTRIES` (64) instead. |
 | `max_chunk_size`       | PNG, JPEG, GIF, WebP | Reject a declared segment payload larger than this (bomb protection). WebP applies it to every RIFF chunk, nested ANMF bitstreams included. A BMP wrapping a PNG or JPEG, a TIFF whose strips are JPEG, and an icon entry that is a PNG all pass it down. |
 
-Every declared field is read by something. `max_memory` is the ragged one: it
-is read by BMP alone, and the cap that bounds every format is
-**`max_decoded_pixels`**, which is the one to set for pixel data.
+Every declared field is read by something. `max_memory` is the one no codec
+reads for itself: `gimg_doc_load()` and `gimg_item_decode()` hold it for the
+whole call on the calling thread, and every allocation the library makes in
+that time is compared with it, so a codec cannot forget it. It bounds each
+allocation and not their sum; the sum is what `max_decoded_pixels`,
+`max_frame_count` and `max_metadata_size` are for.
 
-`max_metadata_size` is the exception to "`0` means no limit". Left at zero it
-is a four-mebibyte guard, because the alternative is that a caller who never
+`max_metadata_size` at zero is a four-mebibyte guard, because the alternative is that a caller who never
 thought about metadata has no bound on it at all. It is also the only cap that
 can see an accumulated *total*: `max_chunk_size` bounds one segment as it sits
 in the file, and a file of many comment segments - each within that cap -
@@ -196,36 +198,32 @@ depth to cap. A field nothing reads is not a promise.
 
 The compress library’s DEFLATE decoder may use a separate limit (e.g. `limits.max_output_bytes`) for decompression; the image library passes limits where applicable.
 
-### The default is no limits, and that is a decision the caller makes
+### The defaults are finite, and lifting one is a decision the caller makes
 
-`gimg_limits_default()` sets every field to zero, and a `NULL` `limits` pointer
-means the same thing. **An image is a header that names a size, so a file of a
-hundred bytes can ask for as much memory as its fields allow.** Measured on
-this library:
+`gimg_limits_default()` sets every field to zero, a `NULL` `limits` pointer
+means the same thing, and zero means the library's default:
 
-| File | Bytes | Raster it names | Peak RSS to refuse it |
-|---|---|---|---|
-| BMP naming 46340 &times; 46340 at 32 bpp | 118 | ~8.6 GB | 236 KB |
-| JPEG with SOF0 naming 65535 &times; 65535, 3 components | 78 | ~17 GB | below measurement |
-| PNG with IHDR naming 65535 &times; 65535 RGBA8 | 69 | ~17 GB | 1.9 MB |
+| Field | Default at zero |
+|---|---|
+| `max_decoded_pixels` | `GIMG_DEFAULT_MAX_DECODED_PIXELS`, 2^28 (16384 &times; 16384) |
+| `max_memory` | `GIMG_DEFAULT_MAX_MEMORY`, one gibibyte in a single allocation |
+| `max_metadata_size` | a four-mebibyte guard (over it, the object is dropped) |
+| `max_frame_count`, `max_chunk_size` | each codec's own built-in bound, where it has one |
 
-None of these crashes: each allocation is checked and a failure comes back as
-`GIMG_ERR_OOM`. A header naming more pixel data than the file actually holds
-is refused as `GIMG_ERR_CORRUPT` **before** the allocation it names, whether
-or not a limit is set - the BMP loader used to allocate first and discover the
-truncation on the read, so the 118-byte row above really did allocate 8.6 GB.
-What an unlimited default costs is therefore not safety from a malformed file
-but **a bound on what a well-formed hostile one can make the process try to
-allocate**: a file that genuinely carries 8.6 GB of pixels is not lying, and
-only a limit will stop it.
+**An image is a header that names a size, so a file of a hundred bytes can
+ask for as much memory as its fields allow.** A BMP of 118 bytes can name a
+46340 &times; 46340 picture at 32 bpp, about 8.6 GB; a 78-byte JPEG or a
+69-byte PNG can name 65535 &times; 65535, about 17 GB. With the defaults each
+of those is `GIMG_ERR_LIMIT` before anything is allocated.
 
-This matches libpng and libjpeg, which have no built-in cap either, and it is
-the right default for a library that does not know whether it is decoding a
-thumbnail or a satellite image. It is the wrong setting for a service reading
-files it did not produce. **Set `max_decoded_pixels` to whatever your largest
-legitimate input needs**, and the shape above becomes `GIMG_ERR_LIMIT` before
-anything is allocated. `max_memory` is worth setting beside it, but it only
-bounds BMP - see the table above - so it is not a substitute.
+The defaults used to be "no limit", on the reasoning that a library cannot
+know whether it is decoding a thumbnail or a satellite image. That made the
+documented way to call the library the unbounded one, and every caller who
+did not read this page was exposed. The defaults now cover a 268-megapixel
+picture at eight bits a channel. A larger one, or one whose raster passes a
+gibibyte, needs the two fields raised or set to `GIMG_LIMIT_NONE`, and a
+service reading files it did not produce should set them lower: **set
+`max_decoded_pixels` to whatever your largest legitimate input needs.**
 
 Limits set on the **load** are remembered and applied to a later **decode**
 that carries none of its own, so setting them once at load is enough - and the

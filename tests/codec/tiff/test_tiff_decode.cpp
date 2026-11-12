@@ -780,7 +780,14 @@ TEST(TiffDecode, AStripOffsetPastFourGigabytesIsRead) {
   ASSERT_EQ(gimg_stream_create_memory(map, (size_t)file_size, &s), GIMG_OK);
   GIMG_Diagnostics diag = {};
   GIMG_Doc * doc = nullptr;
-  const GIMG_Result loaded = gimg_doc_load(s, nullptr, &diag, &doc);
+  // A file past four gigabytes is past the default memory cap by design, so
+  // this caller says it wants none.
+  GIMG_Limits unlimited;
+  gimg_limits_default(&unlimited);
+  unlimited.max_memory = GIMG_LIMIT_NONE;
+  GIMG_Load_Options big = {};
+  big.limits = &unlimited;
+  const GIMG_Result loaded = gimg_doc_load(s, &big, &diag, &doc);
   if (loaded != GIMG_OK) {
     for (size_t i = 0; i < diag.count; i++) {
       ADD_FAILURE() << diag.items[i].recommended_action;

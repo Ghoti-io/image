@@ -386,6 +386,12 @@ TEST(Corrupt, TheBmpLoaderNamesTheHeaderFieldItRefused) {
     s.bpp = 64u;
     cases.push_back({"a stride times a height that overflows",
         "pixel data size overflows", GIMG_ERR_LIMIT, make_bmp(s)});
+    // Without limits by request: the default pixel cap would answer first,
+    // and this case is about the arithmetic behind it.
+    cases.back().use_limits = true;
+    gimg_limits_default(&cases.back().limits);
+    cases.back().limits.max_decoded_pixels = GIMG_LIMIT_NONE;
+    cases.back().limits.max_memory = GIMG_LIMIT_NONE;
   }
   {
     // A negative biWidth reads back above INT32_MAX.

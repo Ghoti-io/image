@@ -424,56 +424,37 @@ TEST(Limits, AChunkCapOfOneByteRefusesEveryChunkedFormat) {
 }
 
 /**
- * The memory cap, which the BMP decoder reads and no other decoder does.
+ * max_memory is held under every codec.
  *
- * A byte is below anything, so what this asserts is presence: BMP refuses and
- * the formats with a decoder of their own do not notice. The asymmetry is the
- * finding - a caller who sets max_memory to bound a decode gets a bound on
- * BMP and nothing on the others, which is not what the manual's one-line
- * description leads them to expect.
- *
- * **The third bucket is ICO, and it is not an exception to the rule but a
- * consequence of it.** An icon entry whose payload is a Windows DIB is handed
- * to gimg_bmp_load_dib() with the caller's limits forwarded, so the cap is
- * read - by the BMP decoder, one level down, exactly as the chunk cap is for
- * a BMP that wraps a PNG and for a TIFF whose strips are JPEG. The test was
- * named "...ByNoOtherCodec" and said "the other three" when there were five
- * codecs; widening the corpus to seven on 2026-10-02 made it fail, and the
- * claim rather than the code was what was wrong. Counted in its own bucket so
- * that a *decoder* newly reading the cap is still a failure here.
+ * It was read by the BMP decoder alone, and this file said so with a sweep
+ * that counted any other decoder refusing on it as a failure.
  */
-TEST(Limits, AMemoryCapIsReadByTheBmpDecoderAndNothingElse) {
-  long bmp_refused = 0, others_through = 0, others_refused = 0,
-       delegated_refused = 0;
+TEST(Limits, AMemoryCapIsHeldUnderEveryCodec) {
+  // This was AMemoryCapIsReadByTheBmpDecoderAndNothingElse, an assertion of
+  // absence that failed the day the cap moved beneath the codecs, which is
+  // what it was for.  The cap is now held by the allocation path for the
+  // whole of a load and a decode, so no fixture that loads can get through a
+  // cap of one byte, in any codec.
+  std::map<std::string, long> refused;
+  long subjects = 0;
   for (const Fixture & f : corpus()) {
+    GIMG_Limits open = none();
+    if (run_with(f.bytes, &open).result != GIMG_OK) {
+      continue; // Not a subject: it does not load with room to.
+    }
+    subjects++;
     GIMG_Limits tiny = none();
     tiny.max_memory = 1u;
-    const GIMG_Result r = run_with(f.bytes, &tiny).result;
-    const std::string c = f.codec;
-    if (c == "bmp") {
-      EXPECT_EQ(r, GIMG_ERR_LIMIT)
-          << f.name << ": a one-byte memory cap let the file through";
-      bmp_refused++;
-    }
-    else if (c == "ico") {
-      // Either bucket is correct: a PNG-payload entry does not reach the BMP
-      // decoder and a DIB-payload one does.
-      (r == GIMG_OK ? others_through : delegated_refused)++;
-    }
-    else if (r == GIMG_OK) { others_through++; }
-    else { others_refused++; }
+    EXPECT_EQ(run_with(f.bytes, &tiny).result, GIMG_ERR_LIMIT)
+        << f.name << ": a one-byte memory cap let the file through";
+    refused[f.codec]++;
   }
-  std::printf("  one-byte memory cap: bmp refused %ld; %ld ico refused it "
-              "through the BMP decoder their DIB payload reaches; "
-              "%ld other fixtures went through, %ld were refused\n",
-      bmp_refused, delegated_refused, others_through, others_refused);
-  EXPECT_GT(bmp_refused, 0);
-  EXPECT_GT(delegated_refused, 0)
-      << "no ICO fixture reached the BMP decoder's memory cap, so the "
-         "DIB-payload entries are not in this corpus";
-  EXPECT_EQ(others_refused, 0)
-      << "a decoder other than BMP's refused on max_memory; the matrix in "
-         "this file and the note in stream.h both need updating";
+  std::printf("  one-byte memory cap: %ld fixtures that load, all refused\n",
+      subjects);
+  for (const char * codec :
+      {"bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"}) {
+    EXPECT_GT(refused[codec], 0) << codec << " has no fixture in this sweep";
+  }
 }
 
 /**

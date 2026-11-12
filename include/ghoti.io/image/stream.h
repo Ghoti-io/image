@@ -218,14 +218,33 @@ GIMG_API void gimg_stream_destroy(GIMG_Stream * stream);
 //
 
 /**
+ * @brief A limit field's value for "no limit".
+ *
+ * Zero does not mean this. Zero means the library's default for that field,
+ * so that a caller who passes no limits, or a zeroed struct, is protected,
+ * and a caller who wants none has to say so.
+ */
+#define GIMG_LIMIT_NONE ((size_t)-1)
+
+/** @brief The default for GIMG_Limits.max_decoded_pixels: 2^28, 16384 squared. */
+#define GIMG_DEFAULT_MAX_DECODED_PIXELS ((size_t)1 << 28)
+
+/** @brief The default for GIMG_Limits.max_memory: one gibibyte. */
+#define GIMG_DEFAULT_MAX_MEMORY ((size_t)1 << 30)
+
+/**
  * @brief Resource limits applied while loading and decoding.
  *
- * A field of 0 means no limit.
+ * A field of 0 means the library's default for that field, and passing no
+ * limits at all means the default for every field. ::GIMG_LIMIT_NONE removes
+ * a limit. The defaults are there because an image file's header can name a
+ * picture of any size in a few bytes: without them a hundred-byte file can
+ * ask for gigabytes.
  * @see api_options
  */
 typedef struct GIMG_Limits {
   /**
-   * 0 = no limit. Read by every codec, at whichever stage knows the size:
+   * 0 = ::GIMG_DEFAULT_MAX_DECODED_PIXELS. Read by every codec, at whichever stage knows the size:
    * BMP and JPEG while parsing the frame header, PNG, GIF and TIFF while
    * decoding, WebP from the canvas product at load. ICO reaches it through
    * whichever codec owns an entry's payload. A cap equal to the image's own
@@ -234,14 +253,20 @@ typedef struct GIMG_Limits {
    */
   size_t max_decoded_pixels;
   /**
-   * 0 = no limit.
-   * @warning **Read by the BMP decoder and by nothing else.** No other
-   * decoder consults it, so a caller who sets this to bound a decode gets a
-   * bound on BMP and nothing on PNG, JPEG, GIF, TIFF or WebP. An ICO is the
-   * one indirect case: an entry whose payload is a Windows DIB is decoded by
-   * BMP with the caller's limits forwarded, so the cap applies there and not
-   * to an entry whose payload is a PNG. Use max_decoded_pixels, which every
-   * codec reads, to bound the size of what comes back.
+   * 0 = ::GIMG_DEFAULT_MAX_MEMORY. The largest single allocation, in bytes,
+   * that a load or a decode may make.
+   *
+   * Enforced beneath every codec, in the library's own allocation path, for
+   * the whole of gimg_doc_load() and gimg_item_decode() on the calling
+   * thread: the decoded raster, every working buffer, every copied block of
+   * metadata. A request over it fails the call with GIMG_ERR_LIMIT. With the
+   * default, a picture whose raster is over a gibibyte - 2^28 pixels at
+   * sixteen bits a channel, for one - needs this raised as well as
+   * max_decoded_pixels.
+   *
+   * It bounds each allocation, not their sum. A file that makes the library
+   * hold many allocations at once, each within the cap, is bounded by
+   * max_decoded_pixels, max_frame_count and max_metadata_size.
    */
   size_t max_memory;
   /**
@@ -267,7 +292,8 @@ typedef struct GIMG_Limits {
    */
   size_t max_metadata_size;
   /**
-   * 0 = no limit.
+   * 0 = each codec's own built-in bound, where it has one, and otherwise
+   * none.
    * @warning **Read by PNG, GIF, TIFF and WebP.** The formats whose multi-image
    * form this was written for - APNG, GIF's own frames, TIFF's IFD chain
    * (SubIFD pages too), and WebP ANMF frames. A BMP bitmap array also loads
@@ -275,7 +301,8 @@ typedef struct GIMG_Limits {
    */
   size_t max_frame_count;
   /**
-   * 0 = no limit (bomb protection). Read by PNG, JPEG, GIF and WebP - the
+   * 0 = no cap on a single segment beyond the length of the stream. Read by
+   * PNG, JPEG, GIF and WebP - the
    * formats built out of length-prefixed segments - and by whichever codec a
    * BMP wrapping a PNG or a JPEG, a TIFF whose strips are JPEG, or an icon
    * whose entry is a PNG hands its payload to. A DIB, a TIFF's tag table and
@@ -294,7 +321,9 @@ typedef struct GIMG_Limits {
 } GIMG_Limits;
 
 /**
- * @brief Initialize limits to defaults (no limits).
+ * @brief Initialize limits to the defaults: every field zero, which selects
+ * the library's default for that field. Set a field to ::GIMG_LIMIT_NONE to
+ * remove its limit.
  */
 GIMG_API void gimg_limits_default(GIMG_Limits * limits);
 

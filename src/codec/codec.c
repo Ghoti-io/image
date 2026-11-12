@@ -35,6 +35,7 @@
 
 #include "../container/doc_internal.h"
 #include "../core/alloc_internal.h"
+#include "../core/budget_internal.h"
 #include "codec_internal.h"
 
 #define REGISTRY_INITIAL 8
@@ -295,13 +296,41 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
     return r;
   }
 
-  r = codec->load_cb(codec, stream, options, diagnostics, out_doc);
-  // Remember the caller's limits on the document.  A load only parses headers;
-  // the pixels are decoded later, so without this the limits would apply to
+  // The codec is handed limits that are never NULL and carry the library's
+  // defaults where the caller left a zero, so "no options" is a bounded load
+  // and not an unbounded one.  The memory cap is held for the whole call, by
+  // the allocation path and not by the codec.
+  GIMG_Limits limits;
+  gimg_limits_resolve(options ? options->limits : NULL, &limits);
+  GIMG_Load_Options resolved;
+  if (options) {
+    resolved = *options;
+  }
+  else {
+    // Every field of GIMG_Load_Options takes its default at zero.
+    memset(&resolved, 0, sizeof(resolved));
+  }
+  resolved.limits = &limits;
+
+  gimg_budget_scope_t scope;
+  gimg_budget_enter(&scope, limits.max_memory);
+  r = codec->load_cb(codec, stream, &resolved, diagnostics, out_doc);
+  const bool over_cap = gimg_budget_leave(&scope);
+  if (over_cap && r != GIMG_OK) {
+    // Whatever the codec made of the refused allocation, the cause is the cap.
+    if (diagnostics) {
+      (void)gimg_diagnostics_append(diagnostics, codec->name,
+          gimg_stream_tell(stream), 0u, GIMG_DIAG_ERROR,
+          "increase max_memory");
+    }
+    r = GIMG_ERR_LIMIT;
+  }
+  // Remember the limits on the document.  A load only parses headers; the
+  // pixels are decoded later, so without this the limits would apply to
   // nothing that actually allocates.  Copied by value: the caller owns the
   // GIMG_Limits it passed and may free it as soon as the load returns.
-  if (r == GIMG_OK && *out_doc && options && options->limits) {
-    (*out_doc)->load_limits = *options->limits;
+  if (r == GIMG_OK && *out_doc) {
+    (*out_doc)->load_limits = limits;
     (*out_doc)->has_load_limits = 1;
   }
   return r;
@@ -364,7 +393,26 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
     options = &inherited;
   }
 
-  GIMG_Result r = codec->decode_cb(codec, item, options, out_raster);
+  // As at load: resolved limits, and the memory cap held for the call.  A
+  // document that was not loaded through gimg_doc_load() has no limits of
+  // its own and gets the defaults.
+  GIMG_Limits limits;
+  gimg_limits_resolve(options ? options->limits : NULL, &limits);
+  GIMG_Decode_Options resolved;
+  if (options) {
+    resolved = *options;
+  }
+  else {
+    memset(&resolved, 0, sizeof(resolved));
+  }
+  resolved.limits = &limits;
+
+  gimg_budget_scope_t scope;
+  gimg_budget_enter(&scope, limits.max_memory);
+  GIMG_Result r = codec->decode_cb(codec, item, &resolved, out_raster);
+  if (gimg_budget_leave(&scope) && r != GIMG_OK) {
+    r = GIMG_ERR_LIMIT;
+  }
   if (r != GIMG_OK || !*out_raster) {
     if (*out_raster) {
       gimg_raster_destroy(*out_raster);

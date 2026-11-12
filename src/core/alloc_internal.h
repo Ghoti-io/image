@@ -32,6 +32,8 @@
 #include <ghoti.io/image/allocator.h>
 #include <stddef.h>
 
+#include "budget_internal.h"
+
 static inline const GIMG_Allocator * gimg_alloc_or_default(
     const GIMG_Allocator * allocator) {
   return allocator ? allocator : gimg_allocator_default();
@@ -39,18 +41,32 @@ static inline const GIMG_Allocator * gimg_alloc_or_default(
 
 static inline void * gimg_malloc(
     const GIMG_Allocator * allocator, size_t size) {
+  if (!gimg_budget_allows(size)) {
+    return NULL;
+  }
   allocator = gimg_alloc_or_default(allocator);
   return allocator->malloc_fn(allocator->ctx, size);
 }
 
 static inline void * gimg_calloc(
     const GIMG_Allocator * allocator, size_t nitems, size_t size) {
+  // The product is what is being asked for; one that overflows is over
+  // any cap, and the allocator refuses it as well.
+  if (size != 0 && nitems > (size_t)-1 / size) {
+    return NULL;
+  }
+  if (!gimg_budget_allows(nitems * size)) {
+    return NULL;
+  }
   allocator = gimg_alloc_or_default(allocator);
   return allocator->calloc_fn(allocator->ctx, nitems, size);
 }
 
 static inline void * gimg_realloc(
     const GIMG_Allocator * allocator, void * ptr, size_t size) {
+  if (!gimg_budget_allows(size)) {
+    return NULL;
+  }
   allocator = gimg_alloc_or_default(allocator);
   return allocator->realloc_fn(allocator->ctx, ptr, size);
 }

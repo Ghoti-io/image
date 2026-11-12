@@ -1454,10 +1454,22 @@ TEST(BmpDecode, NoLimitsMeansTheHeaderIsStillCheckedAgainstTheFile) {
   // What makes this checkable without measuring memory is that the file says
   // it is lying: bfOffBits plus the pixel data the stride and height imply is
   // past the end of a stream that knows how long it is.
+  //
+  // "No limits" is now something a caller asks for: with none passed the
+  // default pixel cap answers first, which the test above this one covers.
   std::vector<uint8_t> bomb = header_naming(46340, 46340, 32u);
+  GIMG_Limits unlimited;
+  gimg_limits_default(&unlimited);
+  unlimited.max_decoded_pixels = GIMG_LIMIT_NONE;
+  unlimited.max_memory = GIMG_LIMIT_NONE;
+  GIMG_Load_Options options = {};
+  options.limits = &unlimited;
   Loaded img;
-  EXPECT_EQ(img.load_bytes(bomb, nullptr), GIMG_ERR_CORRUPT)
+  EXPECT_EQ(img.load_bytes(bomb, &options), GIMG_ERR_CORRUPT)
       << "a 118-byte file cannot hold eight gigabytes of pixels";
+  Loaded by_default;
+  EXPECT_EQ(by_default.load_bytes(bomb, nullptr), GIMG_ERR_LIMIT)
+      << "and with no options the default cap refuses it";
 }
 
 TEST(BmpDecode, AProfileLargerThanThisCodecReadsLeavesTheFileUntagged) {
