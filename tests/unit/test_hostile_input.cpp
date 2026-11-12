@@ -219,6 +219,158 @@ TEST(HostileInput, ATiffOfTwoToTheThirtyOneSquaredIsRefused) {
     gimg_raster_destroy(out);
   }
 }
+/** Load with limits, from memory; the loader's own verdict. */
+GIMG_Result load_with(const Bytes & file, const GIMG_Limits * limits,
+    GIMG_Doc ** out_doc) {
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(file.data(), file.size(), &s) != GIMG_OK) {
+    return GIMG_ERR_INTERNAL;
+  }
+  GIMG_Load_Options o;
+  memset(&o, 0, sizeof o);
+  o.limits = limits;
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, &o, nullptr, &doc);
+  gimg_stream_destroy(s);
+  if (out_doc && r == GIMG_OK) {
+    *out_doc = doc;
+  }
+  else if (doc) {
+    gimg_doc_destroy(doc);
+  }
+  return r;
+}
+
+TEST(HostileInput, ATiffTileIsHeldToThePixelLimit) {
+  // One pixel of picture in a tile 4096 x 1024 wide.  Every buffer decode
+  // makes is sized from the tile, not the picture, so the picture's own
+  // size said nothing about what the file could make the decoder ask for.
+  Bytes c = {'I', 'I', 42, 0, 8, 0, 0, 0};
+  const uint32_t tile_at2 = 8u + 2u + 10u * 12u + 4u;
+  le16(c, 10);
+  entry(c, 256, kLong, 1, 1);
+  entry(c, 257, kLong, 1, 1);
+  entry(c, 258, kShort, 1, 8);
+  entry(c, 259, kShort, 1, 1);
+  entry(c, 262, kShort, 1, 1);
+  entry(c, 277, kShort, 1, 1);
+  entry(c, 322, kLong, 1, 4096);
+  entry(c, 323, kLong, 1, 1024);
+  entry(c, 324, kLong, 1, tile_at2);
+  entry(c, 325, kLong, 1, 1);
+  le32(c, 0);
+  c.push_back(0x80);
+
+  GIMG_Limits roomy;
+  memset(&roomy, 0, sizeof roomy);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_with(c, &roomy, &doc), GIMG_OK)
+      << "control: the tile is within the default limit";
+  gimg_doc_destroy(doc);
+
+  GIMG_Limits tight;
+  memset(&tight, 0, sizeof tight);
+  tight.max_decoded_pixels = 4;
+  EXPECT_EQ(load_with(c, &tight, nullptr), GIMG_ERR_LIMIT);
+}
+
+TEST(HostileInput, ASubDirectoryThatIsItsOwnPageIsNotReadTwice) {
+  Bytes b = rgb_tiff(2, 2, 12);
+  // Add a SubIFDs entry (tag 330) naming the directory itself, at offset 8.
+  Bytes d = {'I', 'I', 42, 0, 8, 0, 0, 0};
+  const uint32_t bps_at = 8u + 2u + 9u * 12u + 4u;
+  const uint32_t strip_at = bps_at + 6u;
+  le16(d, 9);
+  entry(d, 256, kLong, 1, 2);
+  entry(d, 257, kLong, 1, 2);
+  entry(d, 258, kShort, 3, bps_at);
+  entry(d, 259, kShort, 1, 1);
+  entry(d, 262, kShort, 1, 2);
+  entry(d, 273, kLong, 1, strip_at);
+  entry(d, 277, kShort, 1, 3);
+  entry(d, 279, kLong, 1, 12);
+  entry(d, 330, kLong, 1, 8);
+  le32(d, 0);
+  le16(d, 8);
+  le16(d, 8);
+  le16(d, 8);
+  for (uint32_t i = 0; i < 12; i++) {
+    d.push_back((uint8_t)(i + 1u));
+  }
+  GIMG_Doc * doc = nullptr;
+  EXPECT_NE(load_with(d, nullptr, &doc), GIMG_OK);
+  EXPECT_EQ(doc, nullptr);
+  EXPECT_EQ(load_with(b, nullptr, &doc), GIMG_OK) << "control";
+  gimg_doc_destroy(doc);
+}
+
+TEST(HostileInput, ARepeatedTiffTagKeepsItsFirstValue) {
+  Bytes d = {'I', 'I', 42, 0, 8, 0, 0, 0};
+  const uint32_t bps_at = 8u + 2u + 9u * 12u + 4u;
+  const uint32_t strip_at = bps_at + 6u;
+  le16(d, 9);
+  entry(d, 256, kLong, 1, 2);
+  entry(d, 257, kLong, 1, 2);
+  entry(d, 258, kShort, 3, bps_at);
+  entry(d, 259, kShort, 1, 1);
+  entry(d, 262, kShort, 1, 2);
+  entry(d, 273, kLong, 1, strip_at);
+  entry(d, 277, kShort, 1, 3);
+  entry(d, 279, kLong, 1, 12);
+  entry(d, 256, kLong, 1, 64); // a second ImageWidth
+  le32(d, 0);
+  le16(d, 8);
+  le16(d, 8);
+  le16(d, 8);
+  for (uint32_t i = 0; i < 12; i++) {
+    d.push_back((uint8_t)(i + 1u));
+  }
+  GIMG_Raster * out = nullptr;
+  ASSERT_EQ(load_and_decode(d, 0, nullptr, &out), GIMG_OK);
+  ASSERT_NE(out, nullptr);
+  EXPECT_EQ(gimg_raster_width(out), 2u);
+  gimg_raster_destroy(out);
+}
+
+TEST(HostileInput, ManyTiffDirectoriesCannotEachKeepTheSameProfile) {
+  // 200 directories, each naming the same 4 MB of the file as its ICC
+  // profile.  Each is under the per-object limit; kept 200 times they are
+  // 800 MB from a file of about 4 MB.
+  const uint32_t blob = 4000000u;
+  const uint32_t n = 200u;
+  const uint32_t ifd_bytes = 2u + 9u * 12u + 4u;
+  const uint32_t bps_at = 8u;
+  const uint32_t strip_at = bps_at + 6u;
+  const uint32_t first = strip_at + 12u;
+  const uint32_t blob_at = first + n * ifd_bytes;
+  Bytes b = {'I', 'I', 42, 0};
+  le32(b, first);
+  le16(b, 8);
+  le16(b, 8);
+  le16(b, 8);
+  for (uint32_t i = 0; i < 12; i++) {
+    b.push_back((uint8_t)(i + 1u));
+  }
+  for (uint32_t k = 0; k < n; k++) {
+    le16(b, 9);
+    entry(b, 256, kLong, 1, 2);
+    entry(b, 257, kLong, 1, 2);
+    entry(b, 258, kShort, 3, bps_at);
+    entry(b, 259, kShort, 1, 1);
+    entry(b, 262, kShort, 1, 2);
+    entry(b, 273, kLong, 1, strip_at);
+    entry(b, 277, kShort, 1, 3);
+    entry(b, 279, kLong, 1, 12);
+    entry(b, 34675, 7, blob, blob_at);
+    le32(b, k + 1u < n ? first + (k + 1u) * ifd_bytes : 0u);
+  }
+  b.resize(b.size() + blob, 0x55);
+
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(load_with(b, nullptr, &doc), GIMG_ERR_LIMIT);
+  EXPECT_EQ(doc, nullptr);
+}
+
 
 TEST(HostileInput, ATiffWhoseJpegStripIsTheFileItselfDoesNotRecurse) {
   // Compression 7 with a strip that starts at byte 0 and runs the length of

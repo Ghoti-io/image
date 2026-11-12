@@ -206,6 +206,18 @@ extern const uint16_t gimg_tiff_info_tags[GIMG_TIFF_INFO_COUNT];
  */
 #define GIMG_TIFF_MAX_IFDS 4096u
 
+/** The smallest tile area, in pixels, that is allowed whatever the pixel
+ * limit says: 1024 x 1024. */
+#define GIMG_TIFF_MIN_TILE_ALLOWANCE ((size_t)1u << 20)
+
+/**
+ * The most a document may keep of what its directories carry (metadata, block
+ * tables, colour maps).  Each directory is held to max_metadata_size per
+ * item, and a file can point thousands of directories at the same bytes, so
+ * the total needs a bound of its own.
+ */
+#define GIMG_TIFF_MAX_RETAINED ((size_t)256u << 20)
+
 /** How many entries one IFD may hold.  The count is a 16-bit field, so this
  * is its own ceiling rather than a policy. */
 #define GIMG_TIFF_MAX_ENTRIES 65535u
@@ -333,6 +345,9 @@ typedef struct {
    * positive finite DOUBLE; otherwise the file has not said. */
   double stonits;
   bool has_stonits;
+  /** Where this directory was read from, so that a second reference to the
+   * same offset is recognised. */
+  uint64_t at;
 } gimg_tiff_ifd_t;
 
 /** Document-private state: the file, and one entry per IFD. */
@@ -345,6 +360,7 @@ typedef struct {
   size_t file_size;
   gimg_tiff_ifd_t * ifds;
   size_t ifd_count;
+  size_t retained; ///< Bytes the directories read so far hold.
 } gimg_tiff_doc_state_t;
 
 /** Read the header and say which byte order it declares.

@@ -435,6 +435,7 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint64_t at,
   uint64_t * strip_counts = NULL;
   size_t strip_count_count = 0;
   bool have_tile_width = false, have_tile_height = false;
+  uint64_t seen[1024] = {0}; // one bit per tag number
   GIMG_Result r = GIMG_OK;
 
   for (uint32_t i = 0; i < count && r == GIMG_OK; i++) {
@@ -450,6 +451,13 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint64_t at,
     if (e.count == 0u) {
       continue;
     }
+    // The first occurrence of a tag wins.  TIFF 6.0 section 2 has each tag
+    // once, and a repeat would redo the work of the first (and, for a blob,
+    // allocate and copy it again) for nothing.
+    if ((seen[e.tag >> 6] >> (e.tag & 63u)) & 1u) {
+      continue;
+    }
+    seen[e.tag >> 6] |= (uint64_t)1u << (e.tag & 63u);
     {
       const int slot = tiff_info_slot(e.tag);
       if (slot >= 0) {
@@ -952,6 +960,25 @@ static GIMG_Result tiff_check_blocks(const gimg_tiff_doc_state_t * st,
     tiff_diag(diag, which, "increase max_decoded_pixels");
     return GIMG_ERR_LIMIT;
   }
+  // A tile may overhang the image (TIFF 6.0 section 15), but every buffer
+  // decode makes is sized from the whole tile, so the tile is held to the
+  // pixel limit as well.  The floor keeps a small image with an ordinary
+  // 256 x 256 tile readable under a tight limit.
+  if (ifd->tiled) {
+    size_t tile_pixels = 0;
+    size_t allowed = (limits && limits->max_decoded_pixels)
+                         ? limits->max_decoded_pixels
+                         : GIMG_DEFAULT_MAX_DECODED_PIXELS;
+    if (allowed < GIMG_TIFF_MIN_TILE_ALLOWANCE) {
+      allowed = GIMG_TIFF_MIN_TILE_ALLOWANCE;
+    }
+    if (gimg_safe_pixel_count(
+            ifd->tile_width, ifd->tile_height, &tile_pixels) != GIMG_OK ||
+        tile_pixels > allowed) {
+      tiff_diag(diag, which, "a tile is larger than the pixel limit allows");
+      return GIMG_ERR_LIMIT;
+    }
+  }
   return GIMG_OK;
 }
 
@@ -1245,6 +1272,15 @@ static GIMG_Result tiff_append_ifd(GIMG_Codec * codec,
     tiff_diag(diagnostics, at, "increase max_frame_count");
     return GIMG_ERR_LIMIT;
   }
+  // A directory named twice - a SubIFD pointing at its own page, or two
+  // pages sharing one - is read once.  The chain's own rule that offsets
+  // advance does not cover SubIFDs, which are lists held by a tag.
+  for (size_t i = 0; i < st->ifd_count; i++) {
+    if (st->ifds[i].at == at) {
+      tiff_diag(diagnostics, (size_t)at, "a directory is named more than once");
+      return GIMG_ERR_CORRUPT;
+    }
+  }
   size_t bytes = 0;
   if (!gcu_safe_mul_size(st->ifd_count + 1u, sizeof(gimg_tiff_ifd_t),
           &bytes)) {
@@ -1263,6 +1299,25 @@ static GIMG_Result tiff_append_ifd(GIMG_Codec * codec,
     // The slot owns nothing: tiff_read_ifd frees what it took before
     // returning a failure, and ifd_count still excludes it.
     return r;
+  }
+  st->ifds[st->ifd_count].at = at;
+  {
+    const gimg_tiff_ifd_t * got = &st->ifds[st->ifd_count];
+    size_t held = got->icc_size + got->xmp_size + got->jpeg_tables_size +
+        got->block_count * 2u * sizeof(uint64_t) +
+        got->color_map_count * sizeof(uint16_t) +
+        got->sub_ifd_count * sizeof(uint64_t);
+    for (size_t i = 0; i < GIMG_TIFF_INFO_COUNT; i++) {
+      held += got->info_size[i];
+    }
+    held += got->description ? strlen(got->description) + 1u : 0u;
+    st->retained += held;
+    if (st->retained > GIMG_TIFF_MAX_RETAINED) {
+      tiff_free_ifd(st->allocator, &st->ifds[st->ifd_count]);
+      tiff_diag(diagnostics, (size_t)at,
+          "the directories hold more metadata than this codec keeps");
+      return GIMG_ERR_LIMIT;
+    }
   }
   st->ifd_count++;
   *out_index = st->ifd_count - 1u;
