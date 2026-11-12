@@ -287,11 +287,17 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         max_payload = (size_t)limits->max_chunk_size;
       }
       else {
+        max_payload = (size_t)GIMG_PNG_DEFAULT_MAX_CHUNK_PAYLOAD;
+      }
+      // Whatever the cap, a chunk cannot be longer than what is left of the
+      // stream that holds it.
+      {
         size_t total = gimg_stream_size(stream);
         size_t pos = gimg_stream_tell(stream);
-        max_payload = (total != (size_t)-1 && pos != (size_t)-1 && total >= pos)
-            ? (total - pos)
-            : (size_t)GIMG_PNG_DEFAULT_MAX_CHUNK_PAYLOAD;
+        if (total != (size_t)-1 && pos != (size_t)-1 && total >= pos &&
+            total - pos < max_payload) {
+          max_payload = total - pos;
+        }
       }
       if ((size_t)length > max_payload) {
         png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_LIMIT,

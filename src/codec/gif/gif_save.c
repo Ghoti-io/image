@@ -1445,7 +1445,10 @@ GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       gimg_item_frame_delay(item, &delay_num, &delay_den);
       if (delay_den != 0u) {
         // The item model carries a fraction; GIF counts hundredths (89a 23).
-        delay_cs = (uint16_t)(((uint32_t)delay_num * 100u) / delay_den);
+        const uint64_t cs = ((uint64_t)delay_num * 100u) / delay_den;
+        // A longer delay than the field holds is the longest it can say, not
+        // that number modulo 65536.
+        delay_cs = (uint16_t)(cs > 65535u ? 65535u : cs);
       }
     }
 

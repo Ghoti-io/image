@@ -208,7 +208,10 @@ GIMG_Result gimg_png_decode_idat_to_pixels(const gimg_png_doc_state_t * state,
       gimg_png_zlib_decode(idat_ptr, idat_len, raw, raw_size, &out_len);
   if (gr != GIMG_OK || out_len != raw_size) {
     gimg_free(alloc, raw);
-    return (gr != GIMG_OK) ? gr : GIMG_ERR_CORRUPT;
+    // The output buffer is exactly what the header calls for, so a stream
+    // that fills it and has more is damaged, not over a limit the caller
+    // could raise.
+    return (gr != GIMG_OK && gr != GIMG_ERR_LIMIT) ? gr : GIMG_ERR_CORRUPT;
   }
   unsigned int bpp = gimg_png_bpp(ihdr);
   size_t raw_full_size = 0;

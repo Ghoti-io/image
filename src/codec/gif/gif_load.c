@@ -598,6 +598,18 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
       // A stream that simply stops is common enough in the wild that the
       // frames already read are worth more than the failure; the loop ends
       // here and the check below decides whether anything was salvaged.
+      // Only the end of the stream is that: a read that failed is not a
+      // short file, and handing back what had arrived as if it were the
+      // whole picture would hide it.
+      if (r != GIMG_ERR_FORMAT) {
+        gimg_gif_free_doc_state(codec, state);
+        return r;
+      }
+      if (diagnostics) {
+        (void)gimg_diagnostics_append(diagnostics, "gif",
+            gimg_stream_tell(stream), 0u, GIMG_DIAG_WARNING,
+            "the stream ends without a trailer");
+      }
       break;
     }
 
