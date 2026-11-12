@@ -152,12 +152,28 @@ static GIMG_Result gimg_png_append_idat(
   const GIMG_Allocator * alloc = state->allocator;
   alloc = gimg_alloc_or_default(alloc);
   size_t new_size = state->idat_size + len;
-  unsigned char * new_buf =
-      (unsigned char *)gimg_realloc(alloc, state->idat, new_size);
-  if (!new_buf) {
-    return GIMG_ERR_OOM;
+  if (new_size < state->idat_size) {
+    return GIMG_ERR_LIMIT;
   }
-  state->idat = new_buf;
+  if (new_size > state->idat_cap) {
+    // Geometric: sized to each chunk, N one-byte chunks copied N^2/2 bytes on
+    // an allocator that does not grow in place.
+    size_t cap = state->idat_cap ? state->idat_cap : 4096u;
+    while (cap < new_size) {
+      if (cap > (size_t)-1 / 2u) {
+        cap = new_size;
+        break;
+      }
+      cap *= 2u;
+    }
+    unsigned char * new_buf =
+        (unsigned char *)gimg_realloc(alloc, state->idat, cap);
+    if (!new_buf) {
+      return GIMG_ERR_OOM;
+    }
+    state->idat = new_buf;
+    state->idat_cap = cap;
+  }
   memcpy(state->idat + state->idat_size, data, len);
   state->idat_size = new_size;
   return GIMG_OK;
@@ -172,12 +188,26 @@ GIMG_Result gimg_png_append_frame_data(gimg_png_doc_state_t * state,
   alloc = gimg_alloc_or_default(alloc);
   gimg_png_frame_t * f = &state->frames[frame_index];
   size_t new_size = f->data_size + len;
-  unsigned char * new_buf =
-      (unsigned char *)gimg_realloc(alloc, f->data, new_size);
-  if (!new_buf) {
-    return GIMG_ERR_OOM;
+  if (new_size < f->data_size) {
+    return GIMG_ERR_LIMIT;
   }
-  f->data = new_buf;
+  if (new_size > f->data_cap || !f->data) {
+    size_t cap = f->data_cap ? f->data_cap : 4096u;
+    while (cap < new_size) {
+      if (cap > (size_t)-1 / 2u) {
+        cap = new_size;
+        break;
+      }
+      cap *= 2u;
+    }
+    unsigned char * new_buf =
+        (unsigned char *)gimg_realloc(alloc, f->data, cap);
+    if (!new_buf) {
+      return GIMG_ERR_OOM;
+    }
+    f->data = new_buf;
+    f->data_cap = cap;
+  }
   if (len > 0 && data) {
     memcpy(f->data + f->data_size, data, len);
   }

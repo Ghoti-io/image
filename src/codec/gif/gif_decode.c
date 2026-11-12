@@ -292,8 +292,12 @@ static void gif_cache_store(gimg_gif_doc_state_t * state,
   // frame has drawn, so it can neither be used nor be worth keeping in
   // preference to this one.
   GCU_MUTEX_LOCK(state->cache_lock);
+  // Frame 0 is always worth taking: it is where a looping player starts over,
+  // and a cache left at the end of the last pass made every frame of the next
+  // one replay all those before it - N^2/2 expansions a loop, for ever.
   const bool worth_taking = !state->cache_canvas ||
-      state->cache_background != background || state->cache_next <= index;
+      state->cache_background != background || state->cache_next <= index ||
+      index == 0u;
   GCU_MUTEX_UNLOCK(state->cache_lock);
   if (!worth_taking) {
     return;
@@ -314,7 +318,7 @@ static void gif_cache_store(gimg_gif_doc_state_t * state,
   // This is the test that counts: another thread may have moved the cache on
   // since the one above.
   if (!state->cache_canvas || state->cache_background != background ||
-      state->cache_next <= index) {
+      state->cache_next <= index || index == 0u) {
     gimg_free(alloc, state->cache_canvas);
     state->cache_canvas = snapshot;
     state->cache_stride = stride;

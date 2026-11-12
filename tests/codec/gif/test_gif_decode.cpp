@@ -590,6 +590,23 @@ TEST(GifCanvasCache, ForwardWalkMatchesAColdDecodeOfEachFrame) {
   }
 }
 
+TEST(GifCanvasCache, ALoopedForwardWalkMatchesAColdDecodeOnEveryPass) {
+  // A player that loops starts over at frame 0.  The cache used to be left at
+  // the end of the first pass, so every frame of the next one replayed all
+  // the frames before it; frame 0 now takes the cache back to the start.  What
+  // this pins is that doing so changes no pixel, over several passes.
+  Loaded img;
+  ASSERT_EQ(img.load(kCycle), GIMG_OK);
+  const size_t count = gimg_doc_item_count(img.doc());
+  for (int pass = 0; pass < 3; pass++) {
+    for (size_t i = 0; i < count; i++) {
+      ASSERT_EQ(img.decode(nullptr, i), GIMG_OK) << "pass " << pass << " frame " << i;
+      EXPECT_EQ(frame_pixels(img), decode_cold(kCycle, i))
+          << "pass " << pass << " frame " << i;
+    }
+  }
+}
+
 TEST(GifCanvasCache, ReverseWalkMatchesAColdDecodeOfEachFrame) {
   // Backwards the cache is always ahead of what is asked for, so every frame
   // replays from the beginning.  What this pins is that being unusable is all

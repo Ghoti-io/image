@@ -253,12 +253,14 @@ as its guarantees:
   setting replaces the cache rather than reading it. A caller who alternates
   gets no head start, and a caller who does not - which is all of them - is
   unaffected.
-- **A second forward walk gets no benefit unless the cache is cleared first.**
-  Moving only forward is what stops two walks in opposite directions from
-  dragging it back and forth, and the price is that starting over at frame 0
-  finds it at the end. The encoder is the one caller that does start over -
-  once to see whether the frames share a palette, once to write them - and it
-  clears the cache itself between the two. See "One table or many".
+- **Decoding frame 0 takes the cache back to the start.** Otherwise it would
+  stay at the end of the last pass, and a player that loops - which is what a
+  loop count is for - would replay every frame before the one it wants on every
+  pass. A walk in reverse still replays from the beginning for each frame (the
+  cache is ahead of what it asks for), and two walks in opposite directions
+  drag the cache back only when one of them asks for frame 0. The encoder, the
+  caller that starts over twice, still clears the cache itself between its two
+  passes. See "One table or many".
 - **It is the one thing decode writes through a `const` document**, and the
   mutex in `gimg_gif_doc_state_t` is what makes that safe. A single-image GIF
   is left out: there is no later frame to hand a head start to, so the cache

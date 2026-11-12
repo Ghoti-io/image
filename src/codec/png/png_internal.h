@@ -202,6 +202,7 @@ typedef struct {
   gimg_png_fctl_t fctl;
   unsigned char * data; ///< Zlib-wrapped DEFLATE (same as IDAT); owned.
   size_t data_size;
+  size_t data_cap; ///< Bytes @a data has room for; grown geometrically.
 } gimg_png_frame_t;
 
 /** Single ancillary chunk (payload owned). */
@@ -240,6 +241,7 @@ struct gimg_png_doc_state {
   unsigned char * idat; ///< Single-frame PNG: image data. APNG: default image
                         ///< only (if not first frame).
   size_t idat_size;
+  size_t idat_cap; ///< Bytes @a idat has room for; grown geometrically.
   gimg_png_ancillary_t * ancillary; ///< Ordered list of ancillary chunks (read
                                     ///< order) for round-trip.
   size_t ancillary_count;
