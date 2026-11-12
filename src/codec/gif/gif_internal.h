@@ -48,6 +48,9 @@
  * The probe matches only the first three, because the version is not a magic -
  * a file may say "89a" and use nothing 89a added.
  */
+/** Frames a GIF may hold when max_frame_count is unset. */
+#define GIMG_GIF_DEFAULT_MAX_FRAMES 65536u
+
 #define GIMG_GIF_SIGNATURE_LEN 3
 
 /** Header block length: the signature and the version that follows it. */

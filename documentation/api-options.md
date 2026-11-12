@@ -123,7 +123,7 @@ say what a given option costs in a real file.
 | `gif_alpha_threshold` | For GIF: what to do with a pixel that is neither fully opaque nor fully transparent. GIF has one bit of transparency (89a 23), so an alpha of 128 cannot be stored, only decided about. `0` (default) refuses such a raster with `GIMG_ERR_UNSUPPORTED` rather than choosing silently; `1`–`255` is a threshold, alpha at or above it becoming opaque. Fully opaque and fully transparent pixels are unaffected. Ignored by other codecs. |
 | `gif_loop_count` | For GIF: how many times a written animation repeats, as the NETSCAPE2.0 Application Extension every decoder reads for this. **An override, not the source** - the count normally comes from `gimg_doc_set_loop_count()`, so a loaded animation keeps what it declared. Non-zero wins; `0` (the default) means the caller did not ask and the document answers. Zero cannot mean "forever" here because it cannot also mean "not set"; say that on the document, which has a spelling for both. A document declaring no count gets no block at all, which browsers play once. Ignored by other codecs. |
 | `ico_payload` | For ICO/CUR: how each entry's image is stored. **GIMG_ICO_PAYLOAD_AUTO** (0, default) writes a PNG when either dimension is greater than 128 or the source has non-trivial alpha, and a DIB otherwise. **GIMG_ICO_PAYLOAD_DIB** and **GIMG_ICO_PAYLOAD_PNG** force one kind for every entry. See \ref format_ico "ICO and CUR". Ignored by other codecs. |
-| `webp_lossless` | For WebP: **GIMG_WEBP_COMPRESS_LOSSLESS** (0, default) writes VP8L. **GIMG_WEBP_COMPRESS_LOSSY** writes a VP8 keyframe; a non-opaque picture also writes an `ALPH` chunk, VP8L of the green channel when that is shorter than the raw plane, and the colour is premultiplied. Ignored by other codecs. |
+| `webp_lossless` | For WebP: **GIMG_WEBP_COMPRESS_LOSSLESS** (0, default) writes VP8L. **GIMG_WEBP_COMPRESS_LOSSY** writes a VP8 keyframe; a non-opaque picture also writes an `ALPH` chunk, VP8L of the green channel when that is shorter than the raw plane, and the colour stays straight (RGB is zeroed only where alpha is 0). Ignored by other codecs. |
 | `webp_effort` | For WebP: 0–9. Lossless: search budget; effort ≥ 1 applies subtract-green. Lossy: the quantizer ladder, coarser at 0. Effort 4 is index 26, the single-segment index `cwebp` writes at quality 75. When `options` is NULL the codec uses 4; a zero in a present struct means effort 0. Ignored by other codecs. |
 | `webp_exact` | For WebP: non-zero keeps RGB under fully transparent pixels (libwebp `-exact`). Zero clears them. Ignored by other codecs. |
 
@@ -208,7 +208,7 @@ means the same thing, and zero means the library's default:
 | `max_decoded_pixels` | `GIMG_DEFAULT_MAX_DECODED_PIXELS`, 2^28 (16384 &times; 16384) |
 | `max_memory` | `GIMG_DEFAULT_MAX_MEMORY`, one gibibyte in a single allocation |
 | `max_metadata_size` | a four-mebibyte guard (over it, the object is dropped) |
-| `max_frame_count`, `max_chunk_size` | each codec's own built-in bound, where it has one |
+| `max_frame_count`, `max_chunk_size` | each codec's own built-in bound: 65536 frames for APNG and GIF, 1024 for WebP, 4096 directories for TIFF; `max_chunk_size` is the stream's own length (64 MiB when it has none) |
 
 **An image is a header that names a size, so a file of a hundred bytes can
 ask for as much memory as its fields allow.** A BMP of 118 bytes can name a

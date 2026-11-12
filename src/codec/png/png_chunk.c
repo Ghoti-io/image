@@ -88,6 +88,15 @@ GIMG_Result gimg_png_read_chunk_header(GIMG_Stream * stream,
       (uint32_t)buf[2] << 8 | (uint32_t)buf[3];
   gimg_png_chunk_type_t type = (gimg_png_chunk_type_t)buf[4] << 24 |
       (uint32_t)buf[5] << 16 | (uint32_t)buf[6] << 8 | (uint32_t)buf[7];
+  // PNG 5.3: a chunk type is four ASCII letters.  Anything else is not a type
+  // at all, and one carried through to a writer would be copied back out
+  // verbatim as though it were.
+  for (int k = 4; k < 8; k++) {
+    const unsigned char c = buf[k];
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) {
+      return GIMG_ERR_FORMAT;
+    }
+  }
   *out_length = length;
   *out_type = type;
   return GIMG_OK;

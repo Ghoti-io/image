@@ -292,8 +292,8 @@ typedef struct GIMG_Limits {
    */
   size_t max_metadata_size;
   /**
-   * 0 = each codec's own built-in bound, where it has one, and otherwise
-   * none.
+   * 0 = each codec's own built-in bound: 65536 frames for APNG and GIF, 1024
+   * for WebP, 4096 directories for TIFF. GIMG_LIMIT_NONE lifts it.
    * @warning **Read by PNG, GIF, TIFF and WebP.** The formats whose multi-image
    * form this was written for - APNG, GIF's own frames, TIFF's IFD chain
    * (SubIFD pages too), and WebP ANMF frames. A BMP bitmap array also loads

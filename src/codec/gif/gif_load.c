@@ -618,8 +618,11 @@ GIMG_Result gimg_gif_load(GIMG_Codec * codec, GIMG_Stream * stream,
       break;
     }
     if (introducer == GIMG_GIF_BLOCK_IMAGE) {
-      if (limits && limits->max_frame_count &&
-          state->frame_count >= limits->max_frame_count) {
+      // Each frame costs the heap a few hundred bytes for twelve bytes of
+      // file, so "no cap set" is a finite one; GIMG_LIMIT_NONE lifts it.
+      if (state->frame_count >=
+          ((limits && limits->max_frame_count) ? limits->max_frame_count
+                                               : GIMG_GIF_DEFAULT_MAX_FRAMES)) {
         gif_load_diag(diagnostics, gimg_stream_tell(stream),
             "increase max_frame_count");
         gimg_gif_free_doc_state(codec, state);

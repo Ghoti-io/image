@@ -248,6 +248,7 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   bool have_plte = false;
   bool have_trns = false;
   int seen_idat = 0;
+  int idat_ended = 0; // a chunk of another kind followed the IDAT run
   // APNG state (only meaningful when state->is_apng).
   int actl_seen = 0;
   int fcTL_before_first_idat =
@@ -308,6 +309,9 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
       }
     }
 
+    if (seen_idat && type != GIMG_PNG_IDAT) {
+      idat_ended = 1;
+    }
     if (type == GIMG_PNG_IHDR) {
       png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
           "a second IHDR; a PNG has one, and it is the first chunk "
@@ -367,8 +371,9 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_png_free_doc_state(codec, state);
         return r;
       }
-      if (limits && limits->max_frame_count != 0 &&
-          num_frames > limits->max_frame_count) {
+      if (num_frames > ((limits && limits->max_frame_count != 0)
+                  ? limits->max_frame_count
+                  : (size_t)GIMG_PNG_DEFAULT_MAX_FRAMES)) {
         png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_LIMIT,
             "increase max_frame_count");
         gimg_png_free_doc_state(codec, state);
@@ -659,6 +664,12 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     }
 
     if (type == GIMG_PNG_IDAT) {
+      if (idat_ended) {
+        png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
+            "IDAT chunks must be consecutive (PNG 5.6)");
+        gimg_png_free_doc_state(codec, state);
+        return GIMG_ERR_FORMAT;
+      }
       if (state->ihdr.color_type == 3 && !have_plte) {
         png_load_diag(diagnostics, chunk_start, type, GIMG_ERR_FORMAT,
             "a palette image needs its PLTE before the first IDAT (PNG 11.2.3)");

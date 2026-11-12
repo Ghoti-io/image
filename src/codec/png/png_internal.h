@@ -55,6 +55,9 @@
  */
 #define GIMG_PNG_DEFAULT_MAX_CHUNK_PAYLOAD (64u * 1024u * 1024u)
 
+/** APNG frames allowed when max_frame_count is unset. */
+#define GIMG_PNG_DEFAULT_MAX_FRAMES 65536u
+
 #define GHOTI_IO_GIMG_SRC_CODEC_PNG_PNG_INTERNAL_H
 
 #include <ghoti.io/image/macros.h>

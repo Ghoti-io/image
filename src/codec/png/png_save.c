@@ -107,6 +107,39 @@
  * one carrying any other value does not, and is written at 8 bits instead so
  * nothing is quietly rounded away.
  */
+/** Whether this library gives the chunk type a meaning of its own. */
+static bool png_chunk_is_known(gimg_png_chunk_type_t t) {
+  switch (t) {
+  case GIMG_PNG_IHDR:
+  case GIMG_PNG_PLTE:
+  case GIMG_PNG_IDAT:
+  case GIMG_PNG_IEND:
+  case GIMG_PNG_tRNS:
+  case GIMG_PNG_tEXt:
+  case GIMG_PNG_zTXt:
+  case GIMG_PNG_iTXt:
+  case GIMG_PNG_iCCP:
+  case GIMG_PNG_sRGB:
+  case GIMG_PNG_gAMA:
+  case GIMG_PNG_cHRM:
+  case GIMG_PNG_eXIf:
+  case GIMG_PNG_sBIT:
+  case GIMG_PNG_bKGD:
+  case GIMG_PNG_hIST:
+  case GIMG_PNG_pHYs:
+  case GIMG_PNG_tIME:
+  case GIMG_PNG_cICP:
+  case GIMG_PNG_mDCv:
+  case GIMG_PNG_cLLi:
+  case GIMG_PNG_acTL:
+  case GIMG_PNG_fcTL:
+  case GIMG_PNG_fdAT:
+    return true;
+  default:
+    return false;
+  }
+}
+
 static bool gimg_png_gray_fits_depth(
     const GIMG_Raster * raster, uint8_t bit_depth) {
   uint32_t w = gimg_raster_width(raster);
@@ -954,6 +987,37 @@ static bool gimg_png_text_keyword_is_description_or_comment(
  * Return true if the text chunk payload has a GPS-related keyword (tEXt/zTXt/iTXt:
  * keyword is the first null-terminated string). STRIP_GPS skips such chunks.
  */
+static unsigned char png_ascii_lower(unsigned char c) {
+  // Not tolower(): that follows LC_CTYPE, and in a Turkish single-byte locale
+  // 'I' does not lower to 'i', so "EXIF:GPS" stopped matching.
+  return (c >= 'A' && c <= 'Z') ? (unsigned char)(c + ('a' - 'A')) : c;
+}
+
+/** Whether the keyword begins with @p prefix, ignoring ASCII case. */
+static bool png_keyword_starts(const unsigned char * kw, size_t kw_len,
+    const char * prefix) {
+  const size_t n = strlen(prefix);
+  if (kw_len < n) {
+    return false;
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (png_ascii_lower(kw[i]) != (unsigned char)prefix[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether a text chunk may carry a location, by its keyword.
+ *
+ * "GPS" and "EXIF:GPS..." name one outright.  The other two are the places a
+ * location is far more often found: the XMP packet (exif:GPSLatitude lives in
+ * it) and the ImageMagick-style "Raw profile type ..." chunks, which are a
+ * hex dump of an Exif, IPTC or XMP block.  Neither is parsed, so under
+ * STRIP_GPS they are dropped whole, as the WebP and TIFF writers drop XMP.  A
+ * raw ICC profile is colour, not a location, and stays.
+ */
 static bool gimg_png_text_keyword_is_gps(
     const unsigned char * payload, size_t payload_size) {
   if (!payload || payload_size == 0) {
@@ -966,29 +1030,20 @@ static bool gimg_png_text_keyword_is_gps(
   if (kw_len == 0) {
     return false;
   }
-  // Case-insensitive: "GPS", "GPS ", "EXIF:GPS", "exif:gps", etc.
-  if (kw_len >= 3) {
-    unsigned char a = (unsigned char)tolower((unsigned char)payload[0]);
-    unsigned char b = (unsigned char)tolower((unsigned char)payload[1]);
-    unsigned char c = (unsigned char)tolower((unsigned char)payload[2]);
-    if (a == 'g' && b == 'p' && c == 's') {
-      if (kw_len == 3 || payload[3] == ' ' || payload[3] == 0) {
-        return true;
-      }
-    }
+  if (kw_len >= 3 && png_keyword_starts(payload, kw_len, "gps") &&
+      (kw_len == 3 || payload[3] == ' ')) {
+    return true;
   }
-  if (kw_len >= 8) {
-    const char * exif_gps = "exif:gps";
-    bool match = true;
-    for (size_t i = 0; i < 8 && i < kw_len; i++) {
-      if (tolower((unsigned char)payload[i]) != (unsigned char)exif_gps[i]) {
-        match = false;
-        break;
-      }
-    }
-    if (match) {
-      return true;
-    }
+  if (png_keyword_starts(payload, kw_len, "exif:gps")) {
+    return true;
+  }
+  if (kw_len == 17 && png_keyword_starts(payload, kw_len, "xml:com.adobe.xmp")) {
+    return true;
+  }
+  if (png_keyword_starts(payload, kw_len, "raw profile type ") &&
+      !png_keyword_starts(payload, kw_len, "raw profile type icc") &&
+      !png_keyword_starts(payload, kw_len, "raw profile type icm")) {
+    return true;
   }
   return false;
 }
@@ -2242,6 +2297,12 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
           have_color_from_ancillary = true;
         }
         if (t == GIMG_PNG_IHDR || t == GIMG_PNG_IDAT || t == GIMG_PNG_IEND) {
+          continue;
+        }
+        // PNG 14.2: a chunk this library does not know, whose fourth letter is
+        // upper case, depends on the image data and may be copied only if no
+        // critical chunk changed.  The writer re-encodes, so none is.
+        if (!png_chunk_is_known(t) && (t & 0x20u) == 0u) {
           continue;
         }
         if (policy == GIMG_META_STRIP_GPS &&
