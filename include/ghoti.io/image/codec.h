@@ -273,7 +273,14 @@ typedef struct {
 } GIMG_Load_Options;
 
 /**
- * @brief Load document from stream (stub: returns UNSUPPORTED or minimal doc).
+ * @brief Load a document from a stream.
+ *
+ * The format is recognised from the bytes. A load parses headers and
+ * metadata; pixels are decoded later by gimg_item_decode(), and the limits
+ * passed here are remembered on the document and applied there too.
+ *
+ * @return GIMG_OK; GIMG_ERR_UNSUPPORTED when no registered codec claims the
+ *   bytes; otherwise the codec's result.
  */
 GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
@@ -802,8 +809,8 @@ typedef struct {
 
 /** @name TIFF compression (TIFF 6.0 sections 9 and 13)
  *
- * Every one of these is lossless; the format's lossy option is JPEG, which
- * this codec neither reads nor writes.
+ * Every one of these is lossless. The format's lossy option is JPEG, which
+ * this codec reads and does not write.
  * @{ */
 #define GIMG_TIFF_COMPRESS_NONE 0u     ///< Store the strips. The default.
 #define GIMG_TIFF_COMPRESS_PACKBITS 1u ///< PackBits (section 9).
@@ -875,8 +882,8 @@ typedef struct {
  *   the format cannot hold. So saving a document of several items as a BMP is
  *   lossy by design and says so only here.
  * @param stream Destination, opened for output.
- * @param format_name "png", "jpeg", "bmp" or "gif" - the name of a
- *   registered codec, as gimg_codec_name() reports it.
+ * @param format_name The name of a registered codec, as gimg_codec_name()
+ *   reports it: "bmp", "gif", "ico", "jpeg", "png", "tiff" or "webp".
  * @param options May be NULL for the defaults; see @ref api_options.
  * @param report Required. On success its bytes_written is the file size.
  * @return GIMG_OK; GIMG_ERR_UNSUPPORTED when the raster's pixel format is one

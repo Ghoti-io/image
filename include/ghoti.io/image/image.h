@@ -66,7 +66,7 @@
  *   count as writes and not as reads.
  * - **The codec registry is global and unsynchronized.** gimg_codec_register()
  *   writes it; gimg_probe(), gimg_doc_load(), gimg_doc_save(),
- *   gimg_codec_by_name() and gimg_codec_count() read it. The four built-in
+ *   gimg_codec_by_name() and gimg_codec_count() read it. The built-in
  *   codecs register themselves before `main()` runs, so a program that adds
  *   none of its own never touches this. A program that does should register
  *   them before it starts threads.

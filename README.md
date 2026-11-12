@@ -89,8 +89,9 @@ installs `ghoti.io-image-dev` instead.
 
 ## Building the library
 
-[cutil](https://github.com/Ghoti-io/cutil) and
-[compress](https://github.com/Ghoti-io/compress) must already be installed
+[cutil](https://github.com/Ghoti-io/cutil),
+[compress](https://github.com/Ghoti-io/compress) and
+[color](https://github.com/Ghoti-io/color) must already be installed
 where pkg-config can see them. A dependency it cannot find is a hard error
 naming the fix. Google Test builds the unit tests. Python 3 with Pillow is
 what `make test` uses to read this library's output back.
@@ -126,7 +127,7 @@ Everything is prefixed `gimg_` / `GIMG_`, under `<ghoti.io/image/...>`.
 - **`codec.h`** — `gimg_probe()`, `gimg_doc_load()`, `gimg_doc_save()`, and `gimg_item_decode()`. The format is recognised from the bytes.
 - **`doc.h`** — a document of items (frames or pages), loop count, frame delay, dispose and blend.
 - **`raster.h`** — width, height, stride, pixel format, and the pixel buffer.
-- **`color.h`** — includes `ghoti.io/color/color.h`. Colour information a file stated (`GCOL_Color_Info`: profile, chromaticities, transfer) is reported and preserved on load/save; sample remapping is `gimg_ops_transform_color` in `ops.h`.
+- **`ghoti.io/color/color.h`** (from the color library; `raster.h` includes it). Colour information a file stated (`GCOL_Color_Info`: profile, chromaticities, transfer) is reported and preserved on load/save; sample remapping is `gimg_ops_transform_color` in `ops.h`.
 - **`meta.h`** — common metadata, plus the raw chunks a format carried so a round trip can put them back.
 - **`ops.h`** — orientation, pixel-format and bit-depth conversion, colour transform, colour reduction, crop, resize, and composite.
 - **`allocator.h`** — `GIMG_Allocator`, which is cutil's `GCU_Allocator`.
@@ -136,11 +137,12 @@ Everything is prefixed `gimg_` / `GIMG_`, under `<ghoti.io/image/...>`.
 
 ## Dependencies
 
-Both are found through pkg-config, and the installed `.pc` file names them,
+All three are found through pkg-config, and the installed `.pc` file names them,
 so a program that links `ghoti.io-image-0` links these too.
 
 - [ghoti.io-cutil](https://github.com/Ghoti-io/cutil) — the allocator and the overflow-checked size arithmetic.
-- [ghoti.io-compress](https://github.com/Ghoti-io/compress) — deflate and CRC-32 for PNG.
+- [ghoti.io-compress](https://github.com/Ghoti-io/compress) — deflate, LZW and CRC-32.
+- [ghoti.io-color](https://github.com/Ghoti-io/color) — color descriptions, ICC profiles and color transforms.
 
 ## Documentation
 
