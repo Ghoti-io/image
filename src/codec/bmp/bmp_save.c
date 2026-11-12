@@ -655,6 +655,11 @@ static GIMG_Result bmp_save_wrapper(GIMG_Stream * stream,
   size_t data_offset =
       (size_t)GIMG_BMP_FILE_HEADER_SIZE + (size_t)GIMG_BMP_INFOHEADER_SIZE;
   size_t file_size;
+  if (width > (uint32_t)INT32_MAX || height > (uint32_t)INT32_MAX) {
+    gimg_stream_destroy(payload);
+    gimg_doc_destroy(inner);
+    return GIMG_ERR_LIMIT;
+  }
   if (!size || !gcu_safe_add_size(data_offset, size, &file_size) ||
       file_size > UINT32_MAX) {
     gimg_stream_destroy(payload);
@@ -822,6 +827,12 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       result = GIMG_ERR_FORMAT;
       goto done;
     }
+    // biWidth and biHeight are signed 32-bit: a larger one reads back as a
+    // negative size, which this library's own loader refuses.
+    if (width > (uint32_t)INT32_MAX || height > (uint32_t)INT32_MAX) {
+      result = GIMG_ERR_LIMIT;
+      goto done;
+    }
 
     bmp_plan_t plan;
     memset(&plan, 0, sizeof(plan));
@@ -960,6 +971,10 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           use_rle = true;
           plan.os2 = true;
           plan.dib_size = GIMG_BMP_OS2V2_MAX_SIZE;
+          // The OS/2 header has no colour fields, so there is nothing for an
+          // appended profile to be pointed at from.
+          plan.profile = NULL;
+          plan.profile_bytes = 0;
           plan.compression = GIMG_BMP_OS2_HUFFMAN1D;
           plan.pixel_bytes = encoded_size;
         }
@@ -1026,6 +1041,10 @@ GIMG_Result gimg_bmp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
           use_rle = true;
           plan.os2 = true;
           plan.dib_size = GIMG_BMP_OS2V2_MAX_SIZE;
+          // The OS/2 header has no colour fields, so there is nothing for an
+          // appended profile to be pointed at from.
+          plan.profile = NULL;
+          plan.profile_bytes = 0;
           plan.compression = GIMG_BMP_OS2_RLE24;
           plan.pixel_bytes = encoded_size;
         }

@@ -112,6 +112,11 @@ static GIMG_Result ico_decode_dib(const gimg_ico_entry_t * entry,
   if (compression == 1u || compression == 2u) {
     return GIMG_ERR_UNSUPPORTED;
   }
+  // BI_JPEG and BI_PNG (4, 5) wrap another codec's stream; an icon entry that
+  // is one is refused here, before that codec runs on the payload.
+  if (compression == 4u || compression == 5u) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
   // Compression 3/4 mean BI_BITFIELDS / BI_JPEG on a Windows header, but
   // Huffman 1D / RLE24 on an OS/2 BITMAPCOREHEADER2. Icons never carry the
   // OS/2 spellings; refuse them before BMP expands a Huffman stream into an

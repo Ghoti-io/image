@@ -28,10 +28,12 @@
  */
 
 #include <ghoti.io/image/macros.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
+#include "../../core/safe_math_internal.h"
 #include "../codec_internal.h"
 #include "ico_internal.h"
 
@@ -142,9 +144,13 @@ static GIMG_Result ico_encode_dib(const GIMG_Allocator * alloc,
   uint32_t h = gimg_raster_height(raster);
   size_t xor_stride = ((size_t)w * 4u + 3u) & ~(size_t)3u;
   size_t mask_stride = ((size_t)w + 31u) / 32u * 4u;
-  size_t xor_bytes = xor_stride * (size_t)h;
-  size_t mask_bytes = mask_stride * (size_t)h;
-  size_t total = 40u + xor_bytes + mask_bytes;
+  size_t xor_bytes = 0, mask_bytes = 0, total = 0;
+  if (!gcu_safe_mul_size(xor_stride, (size_t)h, &xor_bytes) ||
+      !gcu_safe_mul_size(mask_stride, (size_t)h, &mask_bytes) ||
+      !gcu_safe_add_size(xor_bytes, mask_bytes, &total) ||
+      !gcu_safe_add_size(total, 40u, &total) || total > (size_t)UINT32_MAX) {
+    return GIMG_ERR_LIMIT;
+  }
 
   unsigned char * buf = (unsigned char *)gimg_calloc(alloc, 1u, total);
   if (!buf) {
@@ -329,6 +335,16 @@ GIMG_Result gimg_ico_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     payloads[i].width = gimg_raster_width(raster);
     payloads[i].height = gimg_raster_height(raster);
     gimg_item_hotspot(item, &payloads[i].hotspot_x, &payloads[i].hotspot_y);
+    // A directory entry states a size in one byte, where 0 means 256; a
+    // larger picture cannot be described, and its DIB would disagree with
+    // the entry that points at it.
+    if (payloads[i].width > 256u || payloads[i].height > 256u) {
+      if (owned) {
+        gimg_raster_destroy(raster);
+      }
+      r = GIMG_ERR_UNSUPPORTED;
+      break;
+    }
     payloads[i].is_png = ico_choose_png(raster, payload_opt);
     if (payloads[i].is_png) {
       r = ico_encode_png(
@@ -352,8 +368,22 @@ GIMG_Result gimg_ico_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     size_t dir_end =
         GIMG_ICO_DIR_SIZE + count * GIMG_ICO_DIRENTRY_SIZE;
     size_t total = dir_end;
-    for (size_t i = 0; i < count; i++) {
-      total += payloads[i].size;
+    for (size_t i = 0; i < count && r == GIMG_OK; i++) {
+      if (!gcu_safe_add_size(total, payloads[i].size, &total)) {
+        r = GIMG_ERR_LIMIT;
+      }
+    }
+    // Sizes and offsets are 32-bit fields of the directory.
+    if (r == GIMG_OK && total > (size_t)UINT32_MAX) {
+      r = GIMG_ERR_LIMIT;
+    }
+    if (r != GIMG_OK) {
+      for (size_t i = 0; i < count; i++) {
+        gimg_free(alloc, payloads[i].bytes);
+      }
+      gimg_free(alloc, payloads);
+      gimg_free(alloc, indices);
+      return r;
     }
     unsigned char * out = (unsigned char *)gimg_malloc(alloc, total);
     if (!out) {
@@ -379,7 +409,7 @@ GIMG_Result gimg_ico_save(GIMG_Codec * codec, const GIMG_Doc * doc,
         }
         else {
           ico_write_u16(e + 4, 1u); // planes
-          ico_write_u16(e + 6, payloads[i].is_png ? 32u : 32u);
+          ico_write_u16(e + 6, 32u);
         }
         ico_write_u32(e + 8, (uint32_t)payloads[i].size);
         ico_write_u32(e + 12, (uint32_t)offset);

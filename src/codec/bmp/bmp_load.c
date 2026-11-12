@@ -515,7 +515,9 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     // installed and the decoder reads the layout directly.
     out->has_masks = false;
   }
-  else if (out->bit_count >= 16) {
+  else if (out->bit_count >= 16 && !gimg_bmp_is_embedded(out->compression)) {
+    // An embedded stream carries its own pixel format; the wrapper's
+    // biBitCount is not a constraint on it.
     if (!bmp_default_masks(out)) {
       return GIMG_ERR_INTERNAL;
     }
@@ -542,7 +544,8 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
   }
 
   // Palette entry count.  biClrUsed of 0 means "the maximum for this depth".
-  if (out->bit_count <= 8) {
+  // An embedded stream has no palette of the wrapper's own.
+  if (out->bit_count <= 8 && !gimg_bmp_is_embedded(out->compression)) {
     uint32_t maximum = bmp_default_palette_count(out->bit_count);
     out->palette_count = clr_used ? clr_used : maximum;
     if (out->palette_count > maximum) {
@@ -851,7 +854,7 @@ static GIMG_Result bmp_load_array(GIMG_Codec * codec, GIMG_Stream * stream,
   size_t count = 0;
   uint32_t at = 0;
   while (count < GIMG_BMP_ARRAY_MAX_ENTRIES) {
-    if ((size_t)at + GIMG_BMP_ARRAY_HEADER_SIZE > size) {
+    if ((size_t)at > size || size - (size_t)at < GIMG_BMP_ARRAY_HEADER_SIZE) {
       gimg_free(alloc, file);
       bmp_load_diag(diagnostics, (size_t)at, "bitmap array header past the end");
       return GIMG_ERR_CORRUPT;
@@ -1057,10 +1060,12 @@ static GIMG_Result bmp_load_dib_core(GIMG_Codec * codec, GIMG_Stream * stream,
   const GIMG_Limits * limits = options ? options->limits : NULL;
 
   gimg_bmp_header_t header;
+  const size_t dib_at = gimg_stream_tell(stream);
   GIMG_Result r = bmp_read_dib_header(stream, diagnostics, &header);
   if (r != GIMG_OK) {
     return r;
   }
+  header.dib_offset = dib_at;
 
   // ICO stores biHeight as twice the real height (XOR + AND). The caller
   // passes the real height so only the XOR rows are read; the AND mask is

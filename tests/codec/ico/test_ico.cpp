@@ -406,6 +406,130 @@ TEST(Ico, SavePublishMultiDib) {
   gimg_doc_destroy(doc);
 }
 
+
+void put16(std::vector<uint8_t> & b, uint16_t v) {
+  b.push_back((uint8_t)(v & 0xFFu));
+  b.push_back((uint8_t)(v >> 8));
+}
+void put32(std::vector<uint8_t> & b, uint32_t v) {
+  put16(b, (uint16_t)(v & 0xFFFFu));
+  put16(b, (uint16_t)(v >> 16));
+}
+
+/** One 1 x 1 icon whose DIB has a header of @p header_size bytes, the
+ * compression @p compression, and @p extra bytes after the pixels. */
+std::vector<uint8_t> one_pixel_icon(uint32_t header_size,
+    uint32_t compression, const std::vector<uint8_t> & extra,
+    uint32_t cs_type, uint32_t profile_offset, uint32_t profile_size) {
+  std::vector<uint8_t> dib;
+  put32(dib, header_size);
+  put32(dib, 1);
+  put32(dib, 2); // XOR rows plus AND rows
+  put16(dib, 1);
+  put16(dib, 32);
+  put32(dib, compression);
+  put32(dib, 8);
+  put32(dib, 0);
+  put32(dib, 0);
+  put32(dib, 0);
+  put32(dib, 0);
+  dib.resize(header_size, 0);
+  if (header_size >= 124) {
+    for (int k = 0; k < 4; k++) {
+      dib[56 + k] = (uint8_t)(cs_type >> (8 * k));
+      dib[112 + k] = (uint8_t)(profile_offset >> (8 * k));
+      dib[116 + k] = (uint8_t)(profile_size >> (8 * k));
+    }
+  }
+  const uint8_t pixel[4] = {10, 20, 30, 255};
+  dib.insert(dib.end(), pixel, pixel + 4);
+  dib.insert(dib.end(), 4, 0); // AND mask
+  dib.insert(dib.end(), extra.begin(), extra.end());
+
+  std::vector<uint8_t> f;
+  put16(f, 0);
+  put16(f, 1);
+  put16(f, 1);
+  f.push_back(1);
+  f.push_back(1);
+  f.push_back(0);
+  f.push_back(0);
+  put16(f, 1);
+  put16(f, 32);
+  put32(f, (uint32_t)dib.size());
+  put32(f, 22);
+  f.insert(f.end(), dib.begin(), dib.end());
+  return f;
+}
+
+GIMG_Result decode_icon(const std::vector<uint8_t> & f, GIMG_Raster ** out) {
+  *out = nullptr;
+  GIMG_Stream * s = nullptr;
+  if (gimg_stream_create_memory(f.data(), f.size(), &s) != GIMG_OK) {
+    return GIMG_ERR_INTERNAL;
+  }
+  GIMG_Doc * doc = nullptr;
+  GIMG_Result r = gimg_doc_load(s, nullptr, nullptr, &doc);
+  if (r == GIMG_OK) {
+    r = gimg_item_decode(gimg_doc_item(doc, 0), nullptr, out);
+  }
+  if (doc) {
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(s);
+  return r;
+}
+
+TEST(Ico, AnEntryThatIsAJpegOrPngWrapperIsUnsupported) {
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(decode_icon(one_pixel_icon(40, 0, {}, 0, 0, 0), &r), GIMG_OK)
+      << "control";
+  gimg_raster_destroy(r);
+  for (uint32_t c : {4u, 5u}) {
+    SCOPED_TRACE(c);
+    EXPECT_EQ(decode_icon(one_pixel_icon(40, c, {'x', 'y'}, 0, 0, 0), &r),
+        GIMG_ERR_UNSUPPORTED);
+  }
+}
+
+TEST(Ico, AV5IconsProfileIsReadFromItsOwnHeaderNotFromByteFourteen) {
+  // bV5ProfileData counts from the start of the DIB header, which is byte 0
+  // of an icon entry and not byte 14 as it is in a BM file.
+  const std::vector<uint8_t> profile = {'A', 'B', 'C', 'D'};
+  // The pixel (4) and mask (4) follow the 124-byte header; the profile is next.
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(decode_icon(one_pixel_icon(124, 0, profile, 0x4D424544u, 132, 4), &r),
+      GIMG_OK);
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(r);
+  ASSERT_NE(ci, nullptr);
+  ASSERT_EQ(ci->icc_size, 4u);
+  EXPECT_EQ(memcmp(ci->icc_bytes, "ABCD", 4), 0);
+  gimg_raster_destroy(r);
+}
+
+TEST(Ico, TheWriterRefusesASizeADirectoryEntryCannotState) {
+  for (int payload : {GIMG_ICO_PAYLOAD_DIB, GIMG_ICO_PAYLOAD_PNG}) {
+    GIMG_Doc * ok = doc_from_solid(256, 1, 1, 2, 3, 255);
+    GIMG_Doc * big = doc_from_solid(257, 1, 1, 2, 3, 255);
+    ASSERT_NE(ok, nullptr);
+    ASSERT_NE(big, nullptr);
+    GIMG_Save_Options opts = {};
+    GIMG_Save_Report rep = {};
+    opts.ico_payload = payload;
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    EXPECT_EQ(gimg_doc_save(ok, out, "ico", &opts, &rep), GIMG_OK)
+        << "control: 256 is the largest an entry states";
+    gimg_stream_destroy(out);
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    EXPECT_EQ(gimg_doc_save(big, out, "ico", &opts, &rep),
+        GIMG_ERR_UNSUPPORTED);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(ok);
+    gimg_doc_destroy(big);
+  }
+}
+
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

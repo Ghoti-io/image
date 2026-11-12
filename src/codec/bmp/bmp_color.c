@@ -226,9 +226,9 @@ GIMG_Result gimg_bmp_read_profile(GIMG_Stream * stream,
     return GIMG_OK;
   }
 
-  // bV5ProfileData is measured from the start of the DIB header, which is the
-  // file header's length into the file.
-  size_t at = (size_t)GIMG_BMP_FILE_HEADER_SIZE + (size_t)header->profile_offset;
+  // bV5ProfileData is measured from the start of the DIB header: 14 bytes
+  // into a BM file, 0 in an icon's bare DIB, 28 into the entry of an array.
+  size_t at = header->dib_offset + (size_t)header->profile_offset;
   size_t size = (size_t)header->profile_size;
 
   size_t stream_size = gimg_stream_size(stream);
@@ -394,7 +394,7 @@ GIMG_Result gimg_bmp_read_linked_path(GIMG_Stream * stream,
 
   // bV5ProfileData is measured from the start of the DIB header, the same as
   // an embedded profile's.
-  size_t at = (size_t)GIMG_BMP_FILE_HEADER_SIZE + (size_t)header->profile_offset;
+  size_t at = header->dib_offset + (size_t)header->profile_offset;
   size_t size = (size_t)header->profile_size;
 
   // A path is a path.  Anything longer than this is not one, and is not worth

@@ -188,6 +188,7 @@ typedef struct {
   uint32_t intent;         ///< bV5Intent (LCS_GM_*); 0 before V5.
   uint32_t profile_offset; ///< bV5ProfileData, from the DIB header's start.
   uint32_t profile_size;   ///< bV5ProfileSize.
+  size_t dib_offset;       ///< Where the DIB header began in the stream.
 } gimg_bmp_header_t;
 
 /** @brief True for the compressions whose pixel data is a whole other image. */
