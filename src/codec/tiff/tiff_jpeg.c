@@ -60,6 +60,7 @@
 #include <string.h>
 
 #include "../../core/alloc_internal.h"
+#include "../jpeg/jpeg_internal.h"
 #include "tiff_internal.h"
 
 GIMG_Result gimg_tiff_jpeg_block(const gimg_tiff_doc_state_t * st,
@@ -166,7 +167,10 @@ GIMG_Result gimg_tiff_jpeg_block(const gimg_tiff_doc_state_t * st,
   opts.limits = limits;
 
   GIMG_Doc * doc = NULL;
-  r = gimg_doc_load(stream, &opts, NULL, &doc);
+  // The strip is a JPEG or it is refused.  The format-sniffing loader took
+  // whatever the bytes claimed to be, so a strip that was the TIFF itself
+  // decoded itself until the stack was gone.
+  r = gimg_jpeg_load_nested(stream, &opts, NULL, &doc);
   if (r == GIMG_OK && doc) {
     GIMG_Decode_Options dopts;
     memset(&dopts, 0, sizeof(dopts));

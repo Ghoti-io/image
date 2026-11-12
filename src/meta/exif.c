@@ -625,17 +625,21 @@ static uint32_t tag_value_or_offset(const unsigned char * buf,
 }
 
 // Get pointer to tag data: if inline, return buf+ent_off+8; else return
-// buf+offset.
+// buf+offset, or NULL when the values do not lie inside the buffer.  The
+// offset is the file's, so it is bounded here before anyone follows it.
 static const unsigned char * tag_data_ptr(const unsigned char * buf,
-    size_t ent_off, int le, uint16_t type, uint32_t count) {
-  size_t type_size = (type == GIMG_EXIF_TYPE_SHORT) ? 2u : 4u;
+    size_t size, size_t ent_off, int le, uint16_t type, uint32_t count) {
+  uint64_t type_size = (type == GIMG_EXIF_TYPE_SHORT) ? 2u : 4u;
   if (type == GIMG_EXIF_TYPE_UNDEFINED) {
     type_size = 1u;
   }
-  if (count * type_size <= 4) {
+  if ((uint64_t)count * type_size <= 4u) {
     return buf + ent_off + 8;
   }
   uint32_t off = read_u32(buf + ent_off + 8, le);
+  if (!exif_region_fits(off, (uint64_t)count * type_size, size)) {
+    return NULL;
+  }
   return buf + off;
 }
 
@@ -677,8 +681,12 @@ static bool exif_strip_at(const unsigned char * buf, size_t size, int le,
   else {
     const uint32_t ow = t->offsets_long ? 4u : 2u;
     const uint32_t cw = t->counts_long ? 4u : 2u;
-    if (t->offsets_val + ow * ((uint32_t)s + 1u) > size ||
-        t->counts_val + cw * ((uint32_t)s + 1u) > size) {
+    // In 64 bits: the array offsets are the file's, and 0xFFFFFFFC plus four
+    // is zero in 32.
+    if (!exif_region_fits(t->offsets_val, (uint64_t)ow * ((uint64_t)s + 1u),
+            size) ||
+        !exif_region_fits(t->counts_val, (uint64_t)cw * ((uint64_t)s + 1u),
+            size)) {
       return false;
     }
     so = t->offsets_long
@@ -688,7 +696,7 @@ static bool exif_strip_at(const unsigned char * buf, size_t size, int le,
         ? read_u32(buf + t->counts_val + (size_t)s * 4, le)
         : (uint32_t)read_u16(buf + t->counts_val + (size_t)s * 2, le);
   }
-  if (so > size || sc > size || so + sc > size) {
+  if (!exif_region_fits(so, sc, size)) {
     return false;
   }
   *out_off = so;
@@ -767,8 +775,12 @@ GIMG_Result gimg_exif_embedded_thumbnail_uncompressed(
     }
     else if (tag == GIMG_EXIF_TAG_BITS_PER_SAMPLE) {
       if (type == GIMG_EXIF_TYPE_SHORT && count >= 1) {
-        bits_per_sample =
-            (uint16_t)read_u16(tag_data_ptr(buf, off, le, type, count), le);
+        const unsigned char * bps =
+            tag_data_ptr(buf, size, off, le, type, count);
+        if (!bps) {
+          return GIMG_ERR_CORRUPT;
+        }
+        bits_per_sample = (uint16_t)read_u16(bps, le);
       }
     }
     else if (tag == GIMG_EXIF_TAG_STRIP_OFFSETS) {

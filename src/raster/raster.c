@@ -30,6 +30,7 @@
 #include <string.h>
 
 #include "../core/alloc_internal.h"
+#include "../core/safe_math_internal.h"
 #include "raster_internal.h"
 
 // Canonical format definitions.
@@ -306,13 +307,27 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  size_t min_stride = width * bpp;
+  // Every size below is checked, here and nowhere else.  Each decoder and
+  // operation ends in this constructor, and a product that wraps is not a
+  // large raster but a small one that says it is large: 2^31 x 2^31 RGBA8 is
+  // 2^64 bytes, which is zero, and a zero-size request succeeds.
+  size_t min_stride = 0;
+  if (!gcu_safe_mul_size((size_t)width, bpp, &min_stride)) {
+    return GIMG_ERR_LIMIT;
+  }
   uint8_t align = format->alignment ? format->alignment : 1;
   if (stride_bytes == 0) {
+    if (min_stride > SIZE_MAX - (size_t)(align - 1u)) {
+      return GIMG_ERR_LIMIT;
+    }
     stride_bytes = align_stride(min_stride, align);
   }
   else if (stride_bytes < min_stride) {
     return GIMG_ERR_INTERNAL;
+  }
+  size_t total = 0;
+  if (!gcu_safe_mul_size(stride_bytes, (size_t)height, &total)) {
+    return GIMG_ERR_LIMIT;
   }
 
   allocator = gimg_alloc_or_default(allocator);
@@ -332,7 +347,6 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
   r->color_icc_linked_path_owned = NULL;
 
   if (ownership == GIMG_RASTER_OWNED) {
-    size_t total = stride_bytes * height;
     if (buffer) {
       // Caller transferred ownership; see raster.h OWNED + non-NULL.
       r->pixels = buffer;
@@ -418,41 +432,43 @@ GIMG_API GIMG_Result gimg_raster_set_color_info(GIMG_Raster * raster,
     return GIMG_ERR_INTERNAL;
   }
   const GIMG_Allocator * alloc = raster->allocator;
+  // Both copies are made before anything the raster holds is released.
+  // `info` may be this raster's own description, copied out and edited, in
+  // which case its profile and path pointers are the blocks about to be
+  // freed.  It also means a failed allocation leaves the raster as it was.
+  void * icc_copy = NULL;
+  char * path_copy = NULL;
+  if (info->icc_size > 0 && info->icc_bytes) {
+    icc_copy = gimg_malloc(alloc, info->icc_size);
+    if (!icc_copy) {
+      return GIMG_ERR_OOM;
+    }
+    memcpy(icc_copy, info->icc_bytes, info->icc_size);
+  }
+  // The linked path is copied for the same reason the profile is: a raster
+  // outlives the document that read it.
+  if (info->icc_linked_path) {
+    size_t len = strlen(info->icc_linked_path);
+    path_copy = (char *)gimg_malloc(alloc, len + 1u);
+    if (!path_copy) {
+      gimg_free(alloc, icc_copy);
+      return GIMG_ERR_OOM;
+    }
+    memcpy(path_copy, info->icc_linked_path, len + 1u);
+  }
+  GCOL_Color_Info next = *info;
+  next.icc_bytes = icc_copy;
+  next.icc_size = icc_copy ? info->icc_size : 0u;
+  next.icc_linked_path = path_copy;
   if (raster->color_icc_owned) {
     gimg_free(alloc, raster->color_icc_owned);
-    raster->color_icc_owned = NULL;
   }
   if (raster->color_icc_linked_path_owned) {
     gimg_free(alloc, raster->color_icc_linked_path_owned);
-    raster->color_icc_linked_path_owned = NULL;
   }
-  raster->color_info = *info;
-  if (info->icc_size > 0 && info->icc_bytes) {
-    void * copy = gimg_malloc(alloc, info->icc_size);
-    if (!copy) {
-      gcol_color_info_default(&raster->color_info);
-      return GIMG_ERR_OOM;
-    }
-    memcpy(copy, info->icc_bytes, info->icc_size);
-    raster->color_icc_owned = copy;
-    raster->color_info.icc_bytes = copy;
-  }
-  // The linked path is copied for the same reason the profile is: a raster
-  // outlives the document that read it, and a caller reading either off the
-  // raster afterwards must not be reading freed memory.
-  if (info->icc_linked_path) {
-    size_t len = strlen(info->icc_linked_path);
-    char * copy = (char *)gimg_malloc(alloc, len + 1u);
-    if (!copy) {
-      gimg_free(alloc, raster->color_icc_owned);
-      raster->color_icc_owned = NULL;
-      gcol_color_info_default(&raster->color_info);
-      return GIMG_ERR_OOM;
-    }
-    memcpy(copy, info->icc_linked_path, len + 1u);
-    raster->color_icc_linked_path_owned = copy;
-    raster->color_info.icc_linked_path = copy;
-  }
+  raster->color_icc_owned = icc_copy;
+  raster->color_icc_linked_path_owned = path_copy;
+  raster->color_info = next;
   return GIMG_OK;
 }
 

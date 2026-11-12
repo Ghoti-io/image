@@ -80,6 +80,7 @@
 #include "../../container/doc_internal.h"
 #include "../../core/alloc_internal.h"
 #include "../../core/limits_internal.h"
+#include "../../core/safe_math_internal.h"
 #include "../../raster/raster_internal.h"
 #include "../codec_internal.h"
 #include "png_internal.h"
@@ -502,7 +503,11 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
       const GIMG_Limits * lim = options ? options->limits : NULL;
       uint32_t canvas_w = ihdr->width;
       uint32_t canvas_h = ihdr->height;
-      size_t canvas_pixels = (size_t)canvas_w * (size_t)canvas_h;
+      size_t canvas_pixels = 0;
+      if (gimg_safe_pixel_count(canvas_w, canvas_h, &canvas_pixels) !=
+          GIMG_OK) {
+        return GIMG_ERR_LIMIT;
+      }
       size_t max_px = (lim && lim->max_decoded_pixels != 0)
           ? lim->max_decoded_pixels
           : canvas_pixels;
@@ -533,25 +538,35 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         return GIMG_ERR_FORMAT;
       }
       size_t bpp_out = gimg_raster_bytes_per_pixel(fmt);
-      size_t canvas_stride = (size_t)canvas_w * bpp_out;
+      // The canvas is the IHDR's, and both of its dimensions are the file's
+      // to choose.  A byte size that wraps would give a small canvas that
+      // every frame is then clipped against the large one for.
+      size_t canvas_stride = 0;
+      size_t canvas_bytes = 0;
+      if (!gcu_safe_mul_size((size_t)canvas_w, bpp_out, &canvas_stride) ||
+          canvas_stride > SIZE_MAX - (GIMG_DEFAULT_STRIDE_ALIGNMENT - 1)) {
+        return GIMG_ERR_LIMIT;
+      }
       if (canvas_stride % GIMG_DEFAULT_STRIDE_ALIGNMENT) {
         canvas_stride = (canvas_stride + GIMG_DEFAULT_STRIDE_ALIGNMENT - 1) &
             ~(size_t)(GIMG_DEFAULT_STRIDE_ALIGNMENT - 1);
       }
-      unsigned char * canvas =
-          (unsigned char *)gimg_malloc(a, canvas_stride * (size_t)canvas_h);
+      if (!gcu_safe_mul_size(canvas_stride, (size_t)canvas_h, &canvas_bytes)) {
+        return GIMG_ERR_LIMIT;
+      }
+      unsigned char * canvas = (unsigned char *)gimg_malloc(a, canvas_bytes);
       if (!canvas) {
         return GIMG_ERR_OOM;
       }
-      memset(canvas, 0, canvas_stride * (size_t)canvas_h);
+      memset(canvas, 0, canvas_bytes);
       // prev_rect: for DISPOSE_PREVIOUS we save the frame rect before drawing.
       unsigned char * prev_rect =
-          (unsigned char *)gimg_malloc(a, canvas_stride * (size_t)canvas_h);
+          (unsigned char *)gimg_malloc(a, canvas_bytes);
       if (!prev_rect) {
         gimg_free(a, canvas);
         return GIMG_ERR_OOM;
       }
-      memset(prev_rect, 0, canvas_stride * (size_t)canvas_h);
+      memset(prev_rect, 0, canvas_bytes);
       // APNG canvas loop: for each frame up to the requested index, apply
       // previous frame's dispose (BACKGROUND or PREVIOUS), then save rect for
       // PREVIOUS if needed, decode this frame, and blend onto canvas.
@@ -658,7 +673,10 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
           }
         }
         else if (icc_refused) {
-          gimg_free(a, canvas);
+          // The raster owns the canvas by now; freeing the canvas here as
+          // well was a double free once the caller destroyed the raster.
+          gimg_raster_destroy(*out_raster);
+          *out_raster = NULL;
           return GIMG_ERR_LIMIT;
         }
       }

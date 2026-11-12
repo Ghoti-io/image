@@ -958,6 +958,20 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
     GIMG_Doc ** out_doc);
 
 /**
+ * Load a JPEG that came from inside another file: an embedded thumbnail, or
+ * a TIFF's JPEG-compressed strip.
+ *
+ * Unlike gimg_doc_load() this does not sniff the format - the bytes are a
+ * JPEG or they are refused, so a file cannot name itself, or another format,
+ * as its own strip - and it does not extract thumbnails, so nesting stops
+ * here.  A caller's limits are carried on the document as gimg_doc_load()
+ * carries them.
+ */
+GIMG_Result gimg_jpeg_load_nested(GIMG_Stream * stream,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    GIMG_Doc ** out_doc);
+
+/**
  * Free codec-private state (called when document is destroyed).
  */
 void gimg_jpeg_free_doc_state(GIMG_Codec * codec, void * codec_private);

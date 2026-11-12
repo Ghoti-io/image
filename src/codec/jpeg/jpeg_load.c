@@ -544,9 +544,16 @@ static GIMG_Result jpeg_begin_hierarchical_frame(gimg_jpeg_doc_state_t * state,
   return GIMG_OK;
 }
 
-GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
+/**
+ * The loader.  @p nested is set for a stream that came from inside another
+ * file - an embedded thumbnail, a TIFF's JPEG strip - and makes this load
+ * leave thumbnails alone: a thumbnail's own thumbnail is nobody's to show,
+ * and following them made the depth of the recursion the file's to choose,
+ * at about twenty-seven bytes a level.
+ */
+static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
     const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
-    GIMG_Doc ** out_doc) {
+    GIMG_Doc ** out_doc, bool nested) {
   if (!codec || !stream || !out_doc) {
     return GIMG_ERR_INTERNAL;
   }
@@ -2018,7 +2025,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   // EXIF embedded thumbnail (IFD1): try Compression=6 (JPEG), then 1
   // (uncompressed), then 7 (TIFF JPEG).
-  if (state->app1_exif && state->app1_exif_len > 6) {
+  if (!nested && state->app1_exif && state->app1_exif_len > 6) {
     const void * exif_tiff = state->app1_exif + 6;
     size_t exif_tiff_len = state->app1_exif_len - 6;
     int thumb_added = 0;
@@ -2035,7 +2042,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           alloc, thumb_data, thumb_len, &thumb_stream);
       if (r == GIMG_OK && thumb_stream) {
         GIMG_Doc * thumb_doc = NULL;
-        r = gimg_doc_load(thumb_stream, options, diagnostics, &thumb_doc);
+        r = gimg_jpeg_load_nested(
+            thumb_stream, options, diagnostics, &thumb_doc);
         gimg_stream_destroy(thumb_stream);
         if (r == GIMG_OK && thumb_doc && gimg_doc_item_count(thumb_doc) >= 1) {
           GIMG_Raster * thumb_raster = NULL;
@@ -2084,6 +2092,27 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
         else if (tphoto == 2 && tbits == 8) {
           fmt = &GIMG_PIXEL_RGBA8;
         }
+        // The dimensions are IFD1's and the strip bytes are whatever the
+        // strips held; nothing upstream relates the two.  A thumbnail whose
+        // strips are shorter than its pixels is not a thumbnail, and reading
+        // it anyway copied whatever followed the strip buffer on the heap
+        // into a raster the caller receives.
+        if (fmt) {
+          size_t t_row = (fmt == &GIMG_PIXEL_RGBA8)
+              ? 3u
+              : (fmt == &GIMG_PIXEL_GRAY16 ? 2u : 1u);
+          size_t t_pixels = 0;
+          size_t t_need = 0;
+          if (tbits != 8 && tbits != 16) {
+            fmt = NULL; // Packed rows; not what the copy below reads.
+          }
+          else if (gimg_safe_pixel_count(tw, th, &t_pixels) != GIMG_OK ||
+                   t_pixels > GIMG_JPEG_MAX_THUMB_PIXELS ||
+                   !gcu_safe_mul_size(t_pixels, t_row, &t_need) ||
+                   strip_size < t_need) {
+            fmt = NULL;
+          }
+        }
         if (fmt) {
           GIMG_Raster * thumb_raster = NULL;
           r = gimg_raster_create_with_allocator(
@@ -2102,7 +2131,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             else {
               for (uint32_t y = 0; y < th; y++) {
                 for (uint32_t x = 0; x < tw; x++) {
-                  size_t src_off = (size_t)(y * tw + x) * 3u;
+                  size_t src_off = ((size_t)y * tw + x) * 3u;
                   size_t dst_off = (size_t)y * stride + (size_t)x * 4u;
                   ((unsigned char *)pixels)[dst_off + 0] = src[src_off + 0];
                   ((unsigned char *)pixels)[dst_off + 1] = src[src_off + 1];
@@ -2141,7 +2170,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
             alloc, tiff_jpeg_buf, tiff_jpeg_len, &thumb_stream);
         if (r == GIMG_OK && thumb_stream) {
           GIMG_Doc * thumb_doc = NULL;
-          r = gimg_doc_load(thumb_stream, options, diagnostics, &thumb_doc);
+          r = gimg_jpeg_load_nested(
+            thumb_stream, options, diagnostics, &thumb_doc);
           gimg_stream_destroy(thumb_stream);
           gimg_free(alloc, tiff_jpeg_buf);
           tiff_jpeg_buf = NULL;
@@ -2181,7 +2211,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
 
   // JFIF embedded thumbnail (APP0 bytes 12-15 = X,Y; offset 16 = pixels).
   // Only add second item if EXIF did not already provide a thumbnail.
-  if (gimg_doc_item_count(doc) == 1 && state->app0_jfif &&
+  if (!nested && gimg_doc_item_count(doc) == 1 && state->app0_jfif &&
       state->app0_jfif_len >= GIMG_JPEG_JFIF_APP0_FIXED_LEN) {
     // JFIF 1.02: the APP0 payload is "JFIF\0" (5), version (2), units (1),
     // Xdensity (2), Ydensity (2), Xthumbnail (1), Ythumbnail (1) - fourteen
@@ -2262,7 +2292,7 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // JFXX (JFIF 1.02 extension): 0x10 = JPEG thumbnail, 0x11 = 1 BPP, 0x13 = 3
   // BPP. Only add second item if we do not already have one (EXIF or JFIF
   // embedded).
-  if (gimg_doc_item_count(doc) == 1 && state->app0_jfxx &&
+  if (!nested && gimg_doc_item_count(doc) == 1 && state->app0_jfxx &&
       state->app0_jfxx_len >= 6) {
     uint8_t ext_code = state->app0_jfxx[5];
     const unsigned char * jfxx_data = state->app0_jfxx + 6;
@@ -2275,7 +2305,8 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
           alloc, jfxx_data, jfxx_data_len, &thumb_stream);
       if (r == GIMG_OK && thumb_stream) {
         GIMG_Doc * thumb_doc = NULL;
-        r = gimg_doc_load(thumb_stream, options, diagnostics, &thumb_doc);
+        r = gimg_jpeg_load_nested(
+            thumb_stream, options, diagnostics, &thumb_doc);
         gimg_stream_destroy(thumb_stream);
         if (r == GIMG_OK && thumb_doc && gimg_doc_item_count(thumb_doc) >= 1) {
           GIMG_Raster * thumb_raster = NULL;
@@ -2406,4 +2437,32 @@ GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
   }
   *out_doc = doc;
   return GIMG_OK;
+}
+
+GIMG_Result gimg_jpeg_load(GIMG_Codec * codec, GIMG_Stream * stream,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    GIMG_Doc ** out_doc) {
+  return jpeg_load_impl(codec, stream, options, diagnostics, out_doc, false);
+}
+
+GIMG_Result gimg_jpeg_load_nested(GIMG_Stream * stream,
+    const GIMG_Load_Options * options, GIMG_Diagnostics * diagnostics,
+    GIMG_Doc ** out_doc) {
+  if (!stream || !out_doc) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_doc = NULL;
+  GIMG_Codec * codec = gimg_codec_by_name("jpeg");
+  if (!codec) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  GIMG_Result r =
+      jpeg_load_impl(codec, stream, options, diagnostics, out_doc, true);
+  // What gimg_doc_load does for a caller's limits: a load only parses, so
+  // the document has to carry them to the decode.
+  if (r == GIMG_OK && *out_doc && options && options->limits) {
+    (*out_doc)->load_limits = *options->limits;
+    (*out_doc)->has_load_limits = 1;
+  }
+  return r;
 }
