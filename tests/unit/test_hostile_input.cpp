@@ -23,6 +23,7 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/doc.h>
+#include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
 #include <ghoti.io/image/stream.h>
 #include <gtest/gtest.h>
@@ -34,6 +35,7 @@
 #include "../../src/codec/codec_internal.h"
 #include "../../src/core/alloc_internal.h"
 #include "../../src/meta/exif_internal.h"
+#include "../../src/codec/jpeg/jpeg_internal.h"
 
 namespace {
 
@@ -580,6 +582,247 @@ TEST(HostileInput, AnApngFrameCountIsHeldToWhatTheFileCouldHold) {
   }
 }
 
+/** A 1 x 1 gray 8-bit PNG whose IDAT is @p raw as a stored zlib stream. */
+Bytes gray_png(const Bytes & raw) {
+  Bytes f = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  Bytes p;
+  be32(p, 1);
+  be32(p, 1);
+  p.insert(p.end(), {8, 0, 0, 0, 0});
+  chunk(f, "IHDR", p);
+  chunk(f, "IDAT", zlib_stored(raw));
+  chunk(f, "IEND", Bytes());
+  return f;
+}
+
+TEST(HostileInput, MoreImageDataThanTheHeaderCallsForIsCorruptNotOverALimit) {
+  GIMG_Raster * out = nullptr;
+  ASSERT_EQ(load_and_decode(gray_png(Bytes{0, 0x80}), 0, nullptr, &out),
+      GIMG_OK)
+      << "control";
+  gimg_raster_destroy(out);
+  // The same picture with three more bytes than its one row and filter byte.
+  // There is no limit to raise: the file is damaged.
+  EXPECT_EQ(load_and_decode(
+                gray_png(Bytes{0, 0x80, 1, 2, 3}), 0, nullptr, &out),
+      GIMG_ERR_CORRUPT);
+  EXPECT_EQ(out, nullptr);
+}
+
+TEST(HostileInput, AChunkCapDoesNotLoosenWhatTheStreamCouldHold) {
+  // An IDAT that claims 200 MB at the end of a file of a few dozen bytes.  A
+  // caller who sets max_chunk_size well above that must not be the one who
+  // gets a 200 MB allocation for it.
+  // signature + IHDR + a bare IDAT length and name.
+  Bytes g = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  Bytes ihdr;
+  be32(ihdr, 1);
+  be32(ihdr, 1);
+  ihdr.insert(ihdr.end(), {8, 0, 0, 0, 0});
+  chunk(g, "IHDR", ihdr);
+  be32(g, 200000000u);
+  g.insert(g.end(), {'I', 'D', 'A', 'T'});
+
+  GIMG_Codec * codec = gimg_codec_by_name("png");
+  ASSERT_NE(codec, nullptr);
+  const GIMG_Allocator * saved = codec->allocator;
+  Watching w;
+  w.a.ctx = &w;
+  w.a.malloc_fn = w_malloc;
+  w.a.calloc_fn = w_calloc;
+  w.a.realloc_fn = w_realloc;
+  w.a.free_fn = w_free;
+  codec->allocator = &w.a;
+  GIMG_Limits lim;
+  gimg_limits_default(&lim);
+  lim.max_chunk_size = (size_t)1 << 30;
+  GIMG_Raster * out = nullptr;
+  const GIMG_Result r = load_and_decode(g, 0, &lim, &out);
+  codec->allocator = saved;
+  EXPECT_NE(r, GIMG_OK);
+  EXPECT_EQ(out, nullptr);
+  EXPECT_LT(w.largest, (size_t)1 << 20);
+}
+
+// ---------------------------------------------------------------------------
+// GIF
+// ---------------------------------------------------------------------------
+
+/** A 1 x 1 GIF; @p trailer says whether the 0x3B is there. */
+Bytes tiny_gif(bool trailer) {
+  Bytes g = {'G', 'I', 'F', '8', '9', 'a', 1, 0, 1, 0, 0x80, 0, 0};
+  g.insert(g.end(), {0, 0, 0, 255, 255, 255}); // two-entry colour table
+  g.insert(g.end(), {0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0});
+  g.insert(g.end(), {2, 2, 0x44, 0x01, 0});
+  if (trailer) {
+    g.push_back(0x3B);
+  }
+  return g;
+}
+
+size_t warnings_loading(const Bytes & file, GIMG_Result * r) {
+  GIMG_Stream * s = nullptr;
+  EXPECT_EQ(gimg_stream_create_memory(file.data(), file.size(), &s), GIMG_OK);
+  GIMG_Diagnostics d = {};
+  gimg_diagnostics_init(&d, nullptr);
+  GIMG_Doc * doc = nullptr;
+  *r = gimg_doc_load(s, nullptr, &d, &doc);
+  size_t n = 0;
+  for (size_t i = 0; i < d.count; i++) {
+    if (d.items[i].severity == GIMG_DIAG_WARNING) {
+      n++;
+    }
+  }
+  gimg_diagnostics_destroy(&d);
+  if (doc) {
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(s);
+  return n;
+}
+
+TEST(HostileInput, AGifThatEndsWithoutATrailerLoadsAndSaysSo) {
+  GIMG_Result r = GIMG_ERR_INTERNAL;
+  EXPECT_EQ(warnings_loading(tiny_gif(true), &r), 0u);
+  EXPECT_EQ(r, GIMG_OK) << "control";
+  EXPECT_EQ(warnings_loading(tiny_gif(false), &r), 1u);
+  EXPECT_EQ(r, GIMG_OK);
+}
+
+TEST(HostileInput, AGifDelayLongerThanTheFieldHoldsIsClampedNotWrapped) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  for (size_t k = 0; k < 2; k++) {
+    GIMG_Raster * ras = nullptr;
+    ASSERT_EQ(gimg_raster_create(
+                  2, 2, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &ras),
+        GIMG_OK);
+    uint8_t * px = (uint8_t *)gimg_raster_pixels(ras);
+    for (size_t y = 0; y < 2; y++) {
+      for (size_t x = 0; x < 2; x++) {
+        uint8_t * q = px + y * gimg_raster_stride_bytes(ras) + x * 4u;
+        q[0] = (uint8_t)(60u * (k + 1u)); // opaque: a GIF has no partial alpha
+        q[1] = 0;
+        q[2] = 0;
+        q[3] = 255;
+      }
+    }
+    gimg_item_set_raster(gimg_doc_item(doc, k), ras);
+    gimg_item_set_frame_delay(gimg_doc_item(doc, k), 700, 1); // 70000 cs
+  }
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "gif", nullptr, &report), GIMG_OK);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &data, &size);
+  const uint8_t * b = (const uint8_t *)data;
+  size_t seen = 0;
+  for (size_t at = 0; at + 8 <= size; at++) {
+    if (b[at] == 0x21 && b[at + 1] == 0xF9 && b[at + 2] == 4) {
+      EXPECT_EQ((uint16_t)(b[at + 4] | (b[at + 5] << 8)), 65535u);
+      seen++;
+    }
+  }
+  EXPECT_EQ(seen, 2u);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
+// ---------------------------------------------------------------------------
+// Orientation
+// ---------------------------------------------------------------------------
+
+/** A little-endian Exif blob whose IFD0 holds only Orientation = @p value. */
+Bytes exif_with_orientation(uint16_t value) {
+  Bytes b = {'I', 'I', 42, 0, 8, 0, 0, 0};
+  le16(b, 1);
+  entry(b, 0x0112, kShort, 1, value);
+  le32(b, 0);
+  return b;
+}
+
+GIMG_Orientation orientation_of(const Bytes & exif) {
+  GIMG_Orientation o = GIMG_ORIENTATION_UNKNOWN;
+  EXPECT_EQ(gimg_exif_parse_orientation(exif.data(), exif.size(), &o), GIMG_OK);
+  return o;
+}
+
+TEST(HostileInput, AWriterPutsOutExifOrientationOneWheneverItKeepsExif) {
+  // Decoding has already turned the pixels upright, so a tag that still says
+  // 6 turns them a second time in every viewer.
+  const Bytes six = exif_with_orientation(6);
+  ASSERT_EQ(orientation_of(six), 6) << "control";
+  for (GIMG_Meta_Policy p : {GIMG_META_PRESERVE_ALL, GIMG_META_STRIP_GPS,
+           GIMG_META_NORMALIZE_EXIF}) {
+    SCOPED_TRACE((int)p);
+    void * out = nullptr;
+    size_t n = 0;
+    ASSERT_EQ(gimg_exif_for_save(nullptr, p, six.data(), six.size(), &out, &n),
+        GIMG_OK);
+    ASSERT_NE(out, nullptr);
+    const Bytes got((uint8_t *)out, (uint8_t *)out + n);
+    EXPECT_EQ(orientation_of(got), 1);
+    free(out);
+  }
+  // A policy that says to leave Exif alone leaves it alone.
+  void * out = nullptr;
+  size_t n = 0;
+  ASSERT_EQ(gimg_exif_for_save(nullptr, GIMG_META_KEEP_RAW_ONLY, six.data(),
+                six.size(), &out, &n),
+      GIMG_OK);
+  EXPECT_EQ(out, nullptr);
+  // PRESERVE_ALL does not lose what it cannot read.
+  const Bytes junk(40, 0x7F);
+  ASSERT_EQ(gimg_exif_for_save(nullptr, GIMG_META_PRESERVE_ALL, junk.data(),
+                junk.size(), &out, &n),
+      GIMG_OK);
+  EXPECT_EQ(out, nullptr);
+}
+
+TEST(HostileInput, APngRoundTripDoesNotCarryARotationItAlreadyApplied) {
+  Bytes f = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  Bytes p;
+  be32(p, 2);
+  be32(p, 1);
+  p.insert(p.end(), {8, 0, 0, 0, 0});
+  chunk(f, "IHDR", p);
+  chunk(f, "eXIf", exif_with_orientation(6));
+  chunk(f, "IDAT", zlib_stored(Bytes{0, 0x10, 0x20}));
+  chunk(f, "IEND", Bytes());
+
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(f.data(), f.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  ASSERT_EQ(gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr), GIMG_OK);
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Report report = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "png", nullptr, &report), GIMG_OK);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &data, &size);
+  GIMG_Stream * back = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(data, size, &back), GIMG_OK);
+  GIMG_Doc * again = nullptr;
+  ASSERT_EQ(gimg_doc_load(back, nullptr, nullptr, &again), GIMG_OK);
+  EXPECT_EQ(gimg_meta_common_orientation(gimg_doc_meta_common(again)),
+      GIMG_ORIENTATION_NORMAL);
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(again, 0), nullptr, &r), GIMG_OK);
+  EXPECT_EQ(gimg_raster_width(r), 1u) << "rotated once: 2 x 1 became 1 x 2";
+  EXPECT_EQ(gimg_raster_height(r), 2u);
+  gimg_raster_destroy(r);
+  gimg_doc_destroy(again);
+  gimg_stream_destroy(back);
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
 // ---------------------------------------------------------------------------
 // Exif thumbnails
 // ---------------------------------------------------------------------------
@@ -716,6 +959,169 @@ TEST(HostileInput, ExifThumbnailTagOffsetsAreBoundedBeforeTheyAreFollowed) {
 // ---------------------------------------------------------------------------
 // Thumbnails inside thumbnails
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// JPEG segments
+// ---------------------------------------------------------------------------
+
+Bytes jpeg_segment(uint8_t marker, const Bytes & payload) {
+  Bytes b = {0xFF, marker};
+  be16(b, (uint16_t)(payload.size() + 2u));
+  b.insert(b.end(), payload.begin(), payload.end());
+  return b;
+}
+
+/** SOI, @p segments, then a two-component 8 x 8 baseline frame, @p scans, EOI. */
+Bytes jpeg_of(const std::vector<Bytes> & segments,
+    const std::vector<Bytes> & scans) {
+  Bytes j = {0xFF, 0xD8};
+  for (const Bytes & s : segments) {
+    j.insert(j.end(), s.begin(), s.end());
+  }
+  const Bytes sof = jpeg_segment(0xC0,
+      Bytes{8, 0, 8, 0, 8, 2, 1, 0x11, 0, 2, 0x11, 0});
+  j.insert(j.end(), sof.begin(), sof.end());
+  for (const Bytes & s : scans) {
+    j.insert(j.end(), s.begin(), s.end());
+  }
+  j.insert(j.end(), {0xFF, 0xD9});
+  return j;
+}
+
+Bytes sos_for(uint8_t component) {
+  return jpeg_segment(0xDA, Bytes{1, component, 0x00, 0, 63, 0});
+}
+
+GIMG_Result load_jpeg(const Bytes & file, const GIMG_Limits * limits,
+    std::string * diagnostics_text) {
+  GIMG_Stream * s = nullptr;
+  EXPECT_EQ(gimg_stream_create_memory(file.data(), file.size(), &s), GIMG_OK);
+  GIMG_Load_Options o;
+  memset(&o, 0, sizeof o);
+  o.limits = limits;
+  GIMG_Diagnostics d = {};
+  gimg_diagnostics_init(&d, nullptr);
+  GIMG_Doc * doc = nullptr;
+  const GIMG_Result r = gimg_doc_load(s, &o, &d, &doc);
+  if (diagnostics_text) {
+    for (size_t i = 0; i < d.count; i++) {
+      *diagnostics_text += d.items[i].recommended_action;
+      *diagnostics_text += ";";
+    }
+  }
+  gimg_diagnostics_destroy(&d);
+  if (doc) {
+    gimg_doc_destroy(doc);
+  }
+  gimg_stream_destroy(s);
+  return r;
+}
+
+TEST(HostileInput, CommentsOverTheMetadataCapFreeWhatTheLoadHadRead) {
+  // The refusal returned without releasing the document state.  LeakSanitizer
+  // is the instrument; the result is only the precondition.
+  Bytes com(100, 'c');
+  GIMG_Limits lim;
+  gimg_limits_default(&lim);
+  lim.max_metadata_size = 8;
+  EXPECT_EQ(load_jpeg(jpeg_of({jpeg_segment(0xFE, com)}, {}), &lim, nullptr),
+      GIMG_ERR_LIMIT);
+}
+
+TEST(HostileInput, AnIccProfileSentTwoWaysIsFreedOnce) {
+  // APP2 ICC_PROFILE 1 of 1, then 1 of 2 and 2 of 2: the second form
+  // assembled a profile over the first without freeing it.
+  auto icc = [](uint8_t seq, uint8_t total, size_t n) {
+    Bytes p = {'I', 'C', 'C', '_', 'P', 'R', 'O', 'F', 'I', 'L', 'E', 0, seq,
+        total};
+    p.insert(p.end(), n, 0x5A);
+    return jpeg_segment(0xE2, p);
+  };
+  EXPECT_EQ(load_jpeg(jpeg_of({icc(1, 1, 40), icc(1, 2, 20), icc(2, 2, 20)}, {}),
+                nullptr, nullptr),
+      GIMG_OK);
+}
+
+TEST(HostileInput, ASequentialScanCannotCodeAComponentTwice) {
+  // Each repeat is a full pass over the samples, and a frame may hold 1024.
+  std::string why;
+  load_jpeg(jpeg_of({}, {sos_for(1), sos_for(2)}), nullptr, &why);
+  EXPECT_EQ(why.find("already coded"), std::string::npos)
+      << "control: one scan per component is what T.81 A.2.3 allows";
+  why.clear();
+  EXPECT_EQ(load_jpeg(jpeg_of({}, {sos_for(1), sos_for(1)}), nullptr, &why),
+      GIMG_ERR_FORMAT);
+  EXPECT_NE(why.find("already coded"), std::string::npos) << why;
+}
+
+TEST(HostileInput, ACommentRightAfterAScansDataIsKept) {
+  // The segment loop that reads a scan's entropy data used to read the first
+  // DQT, APPn or COM after it and throw it away.
+  const Bytes com = jpeg_segment(0xFE, Bytes{'h', 'i'});
+  const Bytes file = jpeg_of({}, {sos_for(1), com, sos_for(2)});
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(file.data(), file.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Meta_Raw * raw = gimg_doc_meta_raw(doc);
+  ASSERT_NE(raw, nullptr);
+  size_t n = 0;
+  EXPECT_EQ(gimg_meta_raw_get(raw, "jpeg", GIMG_JPEG_RAW_COM, nullptr, &n),
+      GIMG_OK);
+  EXPECT_GT(n, 0u) << "the comment was dropped";
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(HostileInput, EveryJpegWriterRefusesASizeItsOwnReaderRefuses) {
+  // 32769 is past what the reader accepts and, for the others, the frame
+  // header would have held it modulo 65536 only from 65536 up; either way the
+  // file written was one this library cannot read.
+  GIMG_Raster * ras = nullptr;
+  ASSERT_EQ(gimg_raster_create(32769, 1, &GIMG_PIXEL_GRAY8, GIMG_RASTER_OWNED,
+                nullptr, 0, &ras),
+      GIMG_OK);
+  memset(gimg_raster_pixels(ras), 0x40, 32769);
+  struct Mode {
+    const char * name;
+    uint8_t precision, predictor, levels;
+  } modes[] = {{"baseline", 0, 0, 0}, {"12-bit", 12, 0, 0},
+      {"lossless", 0, 1, 0}, {"hierarchical", 0, 0, 2}};
+  for (const Mode & m : modes) {
+    SCOPED_TRACE(m.name);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+    GIMG_Raster * copy = nullptr;
+    ASSERT_EQ(gimg_raster_create(32769, 1, &GIMG_PIXEL_GRAY8,
+                  GIMG_RASTER_OWNED, nullptr, 0, &copy),
+        GIMG_OK);
+    memcpy(gimg_raster_pixels(copy), gimg_raster_pixels(ras), 32769);
+    gimg_item_set_raster(gimg_doc_item(doc, 0), copy);
+    GIMG_Save_Options o;
+    memset(&o, 0, sizeof o);
+    o.jpeg_precision = m.precision;
+    o.jpeg_lossless_predictor = m.predictor;
+    o.jpeg_hierarchical_levels = m.levels;
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Report report = {};
+    EXPECT_NE(gimg_doc_save(doc, out, "jpeg", &o, &report), GIMG_OK);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+  }
+  gimg_raster_destroy(ras);
+}
+
+TEST(HostileInput, YCbCrAtSixteenBitsDoesNotOverflowItsProducts) {
+  int r = 0, g = 0, b = 0;
+  jpeg_ycbcr_to_rgb(30000, 0, 0, 32768, 65535, &r, &g, &b);
+  // Red and blue fall below zero and clamp.
+  EXPECT_EQ(r, 0);
+  EXPECT_EQ(b, 0);
+  // Green is y + 0.34414 * 32768 + 0.71414 * 32768 = 64678.
+  EXPECT_NEAR(g, 64678, 3);
+}
 
 #ifndef _WIN32
 /** A JPEG whose JFXX thumbnail is @p inner. */
