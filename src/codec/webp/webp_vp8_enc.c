@@ -2362,8 +2362,9 @@ GIMG_Result gimg_webp_vp8_encode(const uint8_t * rgba, uint32_t width,
   uint8_t * y_plane = NULL;
   uint8_t * u_plane = NULL;
   uint8_t * v_plane = NULL;
-  bool_writer_t part0;
-  bool_writer_t tokens;
+  // Zeroed: the exits before either writer is set up free both buffers.
+  bool_writer_t part0 = {0};
+  bool_writer_t tokens = {0};
   unsigned char * out = NULL;
   size_t out_cap = 0;
   size_t out_len = 0;
