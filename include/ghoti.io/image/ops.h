@@ -304,7 +304,13 @@ GIMG_API GIMG_Result gimg_ops_crop(const GIMG_Raster * src, uint32_t x,
     uint32_t y, uint32_t width, uint32_t height, GIMG_Raster ** out_raster);
 
 /**
- * @brief Convert pixel format: a same-format copy, or CMYK to RGBA.
+ * @brief Convert pixel format: a same-format copy, gray to RGBA, or CMYK to RGBA.
+ *
+ * **Gray to RGBA** at the same sample width (GRAY8/12/16 to RGBA8/12/16)
+ * gives (v, v, v, full scale): lossless, opaque, and the only reading there
+ * is. The result keeps the source's GCOL_Color_Info unless that holds an ICC
+ * profile or a linked profile path, which describe one gray channel and would
+ * mislabel three; for those, run ::gimg_ops_transform_color to an RGB space.
  *
  * A **same-format** conversion copies the samples, and the result carries the
  * source's GCOL_Color_Info, profile included: copying samples does not change

@@ -73,6 +73,56 @@ TEST(Ops, ConvertUnsupportedReturnsError) {
   gimg_raster_destroy(src);
 }
 
+TEST(Ops, GrayToRgbaIsTheNeutralAndOpaque) {
+  struct Case {
+    const GIMG_Pixel_Format * g;
+    const GIMG_Pixel_Format * c;
+    unsigned bits;
+  };
+  const Case cases[] = {{&GIMG_PIXEL_GRAY8, &GIMG_PIXEL_RGBA8, 8},
+      {&GIMG_PIXEL_GRAY12, &GIMG_PIXEL_RGBA12, 12},
+      {&GIMG_PIXEL_GRAY16, &GIMG_PIXEL_RGBA16, 16}};
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.bits);
+    const unsigned max = (1u << c.bits) - 1u;
+    const unsigned vals[3] = {0u, 77u, max};
+    GIMG_Raster * src = nullptr;
+    ASSERT_EQ(gimg_raster_create(3, 1, c.g, GIMG_RASTER_OWNED, nullptr, 0, &src),
+        GIMG_OK);
+    if (c.bits == 8) {
+      for (int i = 0; i < 3; i++) {
+        ((unsigned char *)gimg_raster_pixels(src))[i] = (unsigned char)vals[i];
+      }
+    }
+    else {
+      for (int i = 0; i < 3; i++) {
+        ((uint16_t *)gimg_raster_pixels(src))[i] = (uint16_t)vals[i];
+      }
+    }
+    GIMG_Raster * out = nullptr;
+    ASSERT_EQ(gimg_ops_convert_pixel_format(src, c.c, &out), GIMG_OK);
+    for (int i = 0; i < 3; i++) {
+      unsigned px[4];
+      for (int k = 0; k < 4; k++) {
+        px[k] = c.bits == 8
+            ? ((const unsigned char *)gimg_raster_pixels_const(out))[i * 4 + k]
+            : ((const uint16_t *)gimg_raster_pixels_const(out))[i * 4 + k];
+      }
+      EXPECT_EQ(px[0], vals[i]);
+      EXPECT_EQ(px[1], vals[i]);
+      EXPECT_EQ(px[2], vals[i]);
+      EXPECT_EQ(px[3], max) << "opaque at full scale";
+    }
+    GIMG_Raster * bad = nullptr;
+    EXPECT_EQ(gimg_ops_convert_pixel_format(src,
+                  c.bits == 8 ? &GIMG_PIXEL_RGBA16 : &GIMG_PIXEL_RGBA8, &bad),
+        GIMG_ERR_UNSUPPORTED)
+        << "a width change is convert_bit_depth's job";
+    gimg_raster_destroy(out);
+    gimg_raster_destroy(src);
+  }
+}
+
 TEST(Ops, BitdepthSampleConversions) {
   EXPECT_EQ(gimg_bitdepth_8_to_12(0), 0);
   EXPECT_EQ(gimg_bitdepth_8_to_12(255), 4095u);

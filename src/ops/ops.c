@@ -384,12 +384,82 @@ GIMG_Result gimg_ops_carry_color(
   return gimg_raster_set_color_info(dst, ci);
 }
 
+/**
+ * Gray to opaque RGBA at the same sample width: (v, v, v, max).
+ *
+ * Lossless, and the only reading there is: a gray sample is the neutral of
+ * its space.  The colour description is carried unless it holds a profile or
+ * a profile path, which describe one gray channel and would mislabel three.
+ */
+static GIMG_Result ops_gray_to_rgba(const GIMG_Raster * src,
+    const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster) {
+  const GIMG_Pixel_Format * src_f = gimg_raster_format(src);
+  uint8_t bits = src_f->bits_per_channel[0];
+  if (bits != dst_format->bits_per_channel[0] || (bits != 8 && bits != 12 &&
+      bits != 16)) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+  uint32_t max = (UINT32_C(1) << bits) - 1u;
+  uint32_t w = gimg_raster_width(src);
+  uint32_t h = gimg_raster_height(src);
+  GIMG_Result r = gimg_raster_create_with_allocator(gimg_raster_allocator(src),
+      w, h, dst_format, GIMG_RASTER_OWNED, NULL, 0, out_raster);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  size_t src_stride = gimg_raster_stride_bytes(src);
+  size_t dst_stride = gimg_raster_stride_bytes(*out_raster);
+  const unsigned char * sp =
+      (const unsigned char *)gimg_raster_pixels_const(src);
+  unsigned char * dp = (unsigned char *)gimg_raster_pixels(*out_raster);
+  for (uint32_t y = 0; y < h; y++) {
+    const unsigned char * sr = sp + ((size_t)y * src_stride);
+    unsigned char * dr = dp + ((size_t)y * dst_stride);
+    for (uint32_t x = 0; x < w; x++) {
+      if (bits == 8) {
+        dr[(size_t)x * 4u] = dr[(size_t)x * 4u + 1u] =
+            dr[(size_t)x * 4u + 2u] = sr[x];
+        dr[(size_t)x * 4u + 3u] = (unsigned char)max;
+      }
+      else {
+        uint16_t v;
+        memcpy(&v, sr + (size_t)x * 2u, sizeof v);
+        uint16_t px[4] = {v, v, v, (uint16_t)max};
+        memcpy(dr + (size_t)x * 8u, px, sizeof px);
+      }
+    }
+  }
+  const GCOL_Color_Info * ci = gimg_raster_color_info_const(src);
+  if (ci && !(ci->icc_bytes && ci->icc_size > 0u) && !ci->icc_linked_path) {
+    r = gimg_raster_set_color_info(*out_raster, ci);
+    if (r != GIMG_OK) {
+      gimg_raster_destroy(*out_raster);
+      *out_raster = NULL;
+      return r;
+    }
+  }
+  return GIMG_OK;
+}
+
 GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
     const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster) {
   if (!src || !dst_format || !out_raster) {
     return GIMG_ERR_INTERNAL;
   }
   const GIMG_Pixel_Format * src_f = gimg_raster_format(src);
+  if (src_f->channel_model == GIMG_CHANNEL_GRAY && src_f->channel_count == 1 &&
+      dst_format->channel_model == GIMG_CHANNEL_RGBA &&
+      dst_format->channel_count == 4 &&
+      src_f->layout == GIMG_LAYOUT_INTERLEAVED &&
+      dst_format->layout == GIMG_LAYOUT_INTERLEAVED &&
+      src_f->channel_type == GIMG_CHANNEL_UNORM &&
+      dst_format->channel_type == GIMG_CHANNEL_UNORM) {
+    GIMG_Result gr = ops_gray_to_rgba(src, dst_format, out_raster);
+    if (gr != GIMG_OK) {
+      *out_raster = NULL;
+    }
+    return gr;
+  }
   if (src_f->channel_model == GIMG_CHANNEL_CMYK &&
       src_f->channel_count == 4 &&
       dst_format->channel_model == GIMG_CHANNEL_RGBA &&
