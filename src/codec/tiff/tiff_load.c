@@ -112,6 +112,7 @@ static size_t tiff_type_size(uint16_t type) {
   case GIMG_TIFF_TYPE_LONG:
   case GIMG_TIFF_TYPE_SLONG:
   case GIMG_TIFF_TYPE_FLOAT:
+  case GIMG_TIFF_TYPE_IFD:
     return 4u;
   case GIMG_TIFF_TYPE_RATIONAL:
   case GIMG_TIFF_TYPE_SRATIONAL:
@@ -446,6 +447,27 @@ static GIMG_Result tiff_read_ifd(gimg_tiff_doc_state_t * st, uint64_t at,
       // is right for a tag nobody reads and wrong for one that decides how to
       // decode; the check after the loop is what separates them, because a
       // required tag that was skipped is a required tag that is missing.
+      //
+      // The tags that decide how the samples are read are not ones to fall
+      // back on: a damaged Compression became "uncompressed", BitsPerSample
+      // "one bit", and the page decoded as noise with a success.
+      switch (e.tag) {
+      case GIMG_TIFF_TAG_IMAGE_WIDTH:
+      case GIMG_TIFF_TAG_IMAGE_LENGTH:
+      case GIMG_TIFF_TAG_BITS_PER_SAMPLE:
+      case GIMG_TIFF_TAG_COMPRESSION:
+      case GIMG_TIFF_TAG_PHOTOMETRIC:
+      case GIMG_TIFF_TAG_SAMPLES_PER_PIXEL:
+      case GIMG_TIFF_TAG_PLANAR_CONFIG:
+      case GIMG_TIFF_TAG_PREDICTOR:
+      case GIMG_TIFF_TAG_SAMPLE_FORMAT:
+        tiff_diag(diag, pos, "a tag that decides how the samples are read "
+                             "is damaged or lies outside the file");
+        r = GIMG_ERR_CORRUPT;
+        break;
+      default:
+        break;
+      }
       continue;
     }
     if (e.count == 0u) {

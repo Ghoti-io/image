@@ -28,6 +28,7 @@
  */
 
 #include <ghoti.io/image/macros.h>
+#include <ghoti.io/image/ops.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -290,6 +291,13 @@ GIMG_Result gimg_ico_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     }
     indices[count++] = i;
   }
+  // A cursor whose hotspots are all the top-left pixel carries no non-zero
+  // hotspot to say so; the type it was loaded as is what says it is a cursor.
+  if (!any_hotspot && doc->loaded_by_codec == codec && doc->codec_private &&
+      ((const gimg_ico_doc_state_t *)doc->codec_private)->type ==
+          GIMG_ICO_TYPE_CURSOR) {
+    any_hotspot = 1;
+  }
   if (count == 0u) {
     gimg_free(alloc, indices);
     return GIMG_ERR_UNSUPPORTED;
@@ -344,6 +352,32 @@ GIMG_Result gimg_ico_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
       r = GIMG_ERR_UNSUPPORTED;
       break;
+    }
+    // An icon is eight bits a channel (as is the DIB that holds it), and the
+    // choice of payload below reads the alpha as bytes.  A deeper raster is
+    // narrowed first, as the BMP writer does, rather than read as if it were
+    // eight-bit or refused.
+    {
+      const GIMG_Pixel_Format * pf = gimg_raster_format(raster);
+      if (pf->bits_per_channel[0] != 8u &&
+          (pf->channel_model == GIMG_CHANNEL_GRAY ||
+              pf->channel_model == GIMG_CHANNEL_RGB ||
+              pf->channel_model == GIMG_CHANNEL_RGBA) &&
+          pf->channel_type == GIMG_CHANNEL_UNORM) {
+        GIMG_Raster * narrow = NULL;
+        r = gimg_ops_convert_bit_depth(raster, 8u, &narrow);
+        if (r != GIMG_OK) {
+          if (owned) {
+            gimg_raster_destroy(raster);
+          }
+          break;
+        }
+        if (owned) {
+          gimg_raster_destroy(raster);
+        }
+        raster = narrow;
+        owned = 1;
+      }
     }
     payloads[i].is_png = ico_choose_png(raster, payload_opt);
     if (payloads[i].is_png) {

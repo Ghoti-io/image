@@ -507,6 +507,57 @@ TEST(Ico, AV5IconsProfileIsReadFromItsOwnHeaderNotFromByteFourteen) {
   gimg_raster_destroy(r);
 }
 
+TEST(Ico, ACursorWhoseHotspotIsTheTopLeftPixelIsStillWrittenAsACursor) {
+  std::vector<uint8_t> f = one_pixel_icon(40, 0, {}, 0, 0, 0);
+  f[2] = 2; // type: cursor
+  f[10] = f[11] = f[12] = f[13] = 0; // the entry's hotspot is (0, 0)
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory(f.data(), f.size(), &s), GIMG_OK);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Options opts = {};
+  opts.ico_payload = GIMG_ICO_PAYLOAD_DIB;
+  GIMG_Save_Report rep = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "ico", &opts, &rep), GIMG_OK);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &data, &size);
+  ASSERT_GE(size, 6u);
+  EXPECT_EQ(static_cast<const uint8_t *>(data)[2], 2) << "type 2 is a cursor";
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+TEST(Ico, ASixteenBitRasterIsNarrowedAndWritten) {
+  for (int payload : {GIMG_ICO_PAYLOAD_DIB, GIMG_ICO_PAYLOAD_PNG,
+           GIMG_ICO_PAYLOAD_AUTO}) {
+    SCOPED_TRACE(payload);
+    GIMG_Doc * doc = nullptr;
+    ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+    ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+    GIMG_Raster * ras = nullptr;
+    ASSERT_EQ(gimg_raster_create(4, 4, &GIMG_PIXEL_RGBA16, GIMG_RASTER_OWNED,
+                  nullptr, 0, &ras),
+        GIMG_OK);
+    uint16_t * px = static_cast<uint16_t *>(gimg_raster_pixels(ras));
+    for (size_t k = 0; k < 4u * 4u * 4u; k++) {
+      px[k] = (k % 4u == 3u) ? 65535u : 40000u;
+    }
+    gimg_item_set_raster(gimg_doc_item(doc, 0), ras);
+    GIMG_Save_Options opts = {};
+    opts.ico_payload = payload;
+    GIMG_Save_Report rep = {};
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    EXPECT_EQ(gimg_doc_save(doc, out, "ico", &opts, &rep), GIMG_OK);
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+  }
+}
+
 TEST(Ico, TheWriterRefusesASizeADirectoryEntryCannotState) {
   for (int payload : {GIMG_ICO_PAYLOAD_DIB, GIMG_ICO_PAYLOAD_PNG}) {
     GIMG_Doc * ok = doc_from_solid(256, 1, 1, 2, 3, 255);

@@ -526,6 +526,7 @@ TEST(HostileInput, AnApngWhoseProfileIsRefusedIsFreedOnce) {
 struct Watching {
   GIMG_Allocator a{};
   size_t largest = 0;
+  size_t reallocs = 0;
 };
 const size_t kRefuseAbove = (size_t)16 << 20;
 void * w_malloc(void * ctx, size_t n) {
@@ -542,6 +543,7 @@ void * w_calloc(void * ctx, size_t n, size_t size) {
 }
 void * w_realloc(void * ctx, void * p, size_t n) {
   Watching * w = (Watching *)ctx;
+  w->reallocs++;
   w->largest = n > w->largest ? n : w->largest;
   return n > kRefuseAbove ? nullptr : realloc(p, n ? n : 1u);
 }
@@ -1801,6 +1803,152 @@ TEST(HostileInput, AGifOfMoreFramesThanTheDefaultHoldsIsRefused) {
   doc = nullptr;
   EXPECT_EQ(load_with(gif_of(65537), nullptr, &doc), GIMG_ERR_LIMIT);
   EXPECT_EQ(doc, nullptr);
+}
+
+TEST(HostileInput, APremultipliedRasterIsWrittenAsStraightColour) {
+  GIMG_Pixel_Format fmt = GIMG_PIXEL_RGBA8;
+  fmt.alpha_form = GIMG_ALPHA_PREMULTIPLIED;
+  GIMG_Raster * ras = nullptr;
+  ASSERT_EQ(gimg_raster_create(2, 1, &fmt, GIMG_RASTER_OWNED, nullptr, 0, &ras),
+      GIMG_OK);
+  uint8_t * px = (uint8_t *)gimg_raster_pixels(ras);
+  for (int x = 0; x < 2; x++) {
+    px[x * 4 + 0] = 128; // red 255 at half alpha, premultiplied
+    px[x * 4 + 1] = 0;
+    px[x * 4 + 2] = 0;
+    px[x * 4 + 3] = 128;
+  }
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), ras);
+  for (const char * format : {"png", "webp"}) {
+    SCOPED_TRACE(format);
+    GIMG_Save_Options o;
+    memset(&o, 0, sizeof o);
+    GIMG_Stream * out = nullptr;
+    ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Report report = {};
+    ASSERT_EQ(gimg_doc_save(doc, out, format, &o, &report), GIMG_OK);
+    const void * data = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &data, &size);
+    Bytes f((const uint8_t *)data, (const uint8_t *)data + size);
+    GIMG_Raster * back = nullptr;
+    ASSERT_EQ(load_and_decode(f, 0, nullptr, &back), GIMG_OK);
+    const uint8_t * q = (const uint8_t *)gimg_raster_pixels_const(back);
+    EXPECT_EQ(q[3], 128);
+    EXPECT_GE(q[0], 250) << "straight colour, not the premultiplied 128";
+    gimg_raster_destroy(back);
+    gimg_stream_destroy(out);
+  }
+  // The caller's document is as it was.
+  EXPECT_EQ(gimg_raster_format(gimg_item_raster(gimg_doc_item(doc, 0)))->alpha_form,
+      GIMG_ALPHA_PREMULTIPLIED);
+  EXPECT_EQ(((const uint8_t *)gimg_raster_pixels_const(
+                 gimg_item_raster(gimg_doc_item(doc, 0))))[0],
+      128);
+  gimg_doc_destroy(doc);
+}
+
+TEST(HostileInput, ManyTinyIdatChunksAreNotCopiedOverAndOver) {
+  // A 3000 x 1 gray picture whose zlib stream arrives one byte per IDAT.  The
+  // buffer was resized to fit each chunk, and an allocator that does not
+  // grow in place then copied the whole of it each time.
+  Bytes raw(3001, 0x40);
+  raw[0] = 0;
+  const Bytes z = zlib_stored(raw);
+  Bytes f = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  Bytes ihdr;
+  be32(ihdr, 3000);
+  be32(ihdr, 1);
+  ihdr.insert(ihdr.end(), {8, 0, 0, 0, 0});
+  chunk(f, "IHDR", ihdr);
+  for (uint8_t b : z) {
+    chunk(f, "IDAT", Bytes{b});
+  }
+  chunk(f, "IEND", Bytes());
+
+  GIMG_Codec * codec = gimg_codec_by_name("png");
+  ASSERT_NE(codec, nullptr);
+  const GIMG_Allocator * saved = codec->allocator;
+  Watching w;
+  w.a.ctx = &w;
+  w.a.malloc_fn = w_malloc;
+  w.a.calloc_fn = w_calloc;
+  w.a.realloc_fn = w_realloc;
+  w.a.free_fn = w_free;
+  codec->allocator = &w.a;
+  GIMG_Raster * out = nullptr;
+  const GIMG_Result r = load_and_decode(f, 0, nullptr, &out);
+  codec->allocator = saved;
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_raster_destroy(out);
+  EXPECT_LT(w.reallocs, 200u) << z.size() << " chunks";
+}
+
+TEST(HostileInput, ASubIfdsTagOfTypeIfdIsReadLikeOneOfTypeLong) {
+  // Technical Note 1 gives SubIFDs the type IFD (13), and an entry of a type
+  // the codec could not size was skipped, so the levels vanished silently.
+  const uint32_t first_entries = 9, second_entries = 8;
+  const uint32_t first_bytes = 2u + first_entries * 12u + 4u;
+  const uint32_t second_bytes = 2u + second_entries * 12u + 4u;
+  const uint32_t second = 8u + first_bytes;
+  const uint32_t bps_at = second + second_bytes;
+  const uint32_t strip_at = bps_at + 6u;
+  Bytes b = {'I', 'I', 42, 0, 8, 0, 0, 0};
+  for (int page = 0; page < 2; page++) {
+    le16(b, (uint16_t)(page == 0 ? first_entries : second_entries));
+    entry(b, 256, kLong, 1, 1);
+    entry(b, 257, kLong, 1, 1);
+    entry(b, 258, kShort, 3, bps_at);
+    entry(b, 259, kShort, 1, 1);
+    entry(b, 262, kShort, 1, 2);
+    entry(b, 273, kLong, 1, strip_at);
+    entry(b, 277, kShort, 1, 3);
+    entry(b, 279, kLong, 1, 3);
+    if (page == 0) {
+      entry(b, 330, 13, 1, second);
+    }
+    le32(b, 0);
+  }
+  le16(b, 8);
+  le16(b, 8);
+  le16(b, 8);
+  b.insert(b.end(), {10, 20, 30});
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(load_with(b, nullptr, &doc), GIMG_OK);
+  EXPECT_EQ(gimg_doc_item_count(doc), 2u);
+  gimg_doc_destroy(doc);
+}
+
+TEST(HostileInput, ADamagedTagThatDecidesHowSamplesAreReadRefusesThePage) {
+  Bytes b = rgb_tiff(2, 2, 12);
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(load_and_decode(b, 0, nullptr, &r), GIMG_OK) << "control";
+  gimg_raster_destroy(r);
+  // The fourth entry is Compression (259).  A type nobody can size used to
+  // skip the entry, and the page decoded as uncompressed whatever it was.
+  ASSERT_EQ((uint16_t)(b[46] | (b[47] << 8)), 259u);
+  b[48] = 99;
+  b[49] = 0;
+  GIMG_Doc * doc = nullptr;
+  EXPECT_EQ(load_with(b, nullptr, &doc), GIMG_ERR_CORRUPT);
+  EXPECT_EQ(doc, nullptr);
+}
+
+TEST(HostileInput, ASparseCompressedBlockOfNoBytesLeavesItsRowsAlone) {
+  Bytes b = rgb_tiff(2, 2, 12);
+  ASSERT_EQ((uint16_t)(b[46] | (b[47] << 8)), 259u);
+  b[54] = 8; // Deflate
+  b[55] = 0;
+  ASSERT_EQ((uint16_t)(b[94] | (b[95] << 8)), 279u);
+  b[102] = b[103] = b[104] = b[105] = 0; // StripByteCounts = 0
+  GIMG_Raster * r = nullptr;
+  EXPECT_EQ(load_and_decode(b, 0, nullptr, &r), GIMG_OK)
+      << "an empty stored block was already fine; an empty compressed one "
+         "failed the page";
+  gimg_raster_destroy(r);
 }
 
 } // namespace

@@ -262,6 +262,16 @@ GIMG_Result gimg_tiff_block_bytes(const gimg_tiff_doc_state_t * st,
     return GIMG_ERR_OOM;
   }
   gcomp_options_t * opts = NULL;
+  // A block with no bytes at all is a sparse one - GIS tooling writes offset 0
+  // and count 0 for a tile it left empty - and is what a stored block of no
+  // bytes already is: its rows stay as they were.  It is not a reason to
+  // refuse the pages whose other blocks decoded.
+  if (stored_size == 0u) {
+    *out_bytes = room;
+    *out_size = 0;
+    *out_owned = true;
+    return GIMG_OK;
+  }
   GIMG_Result r =
       tiff_method_options(ifd->compression, stored, stored_size, &opts);
   if (r != GIMG_OK) {

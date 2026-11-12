@@ -69,6 +69,7 @@ extern const unsigned char gimg_tiff_magic_be_big[GIMG_TIFF_SIGNATURE_LEN];
 #define GIMG_TIFF_TYPE_SRATIONAL 10
 #define GIMG_TIFF_TYPE_FLOAT 11
 #define GIMG_TIFF_TYPE_DOUBLE 12
+#define GIMG_TIFF_TYPE_IFD 13 ///< Technical Note 1: the type of a SubIFDs offset.
 /** 64-bit types. BigTIFF stores offsets in these; classic TIFF does not. */
 #define GIMG_TIFF_TYPE_LONG8 16
 #define GIMG_TIFF_TYPE_SLONG8 17
