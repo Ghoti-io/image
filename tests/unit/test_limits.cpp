@@ -262,8 +262,7 @@ TEST(Limits, AFrameCapRefusesTheFileItIsOneShortOf) {
     const std::string c = f.codec;
     // BMP's bitmap arrays make a multi-item document too, and bmp_load.c
     // reads no frame cap: the array is walked to its end whatever the caller
-    // asked for. That is a gap in the limits, not in this sweep, and it is
-    // recorded in notes/image/open-questions.md.
+    // asked for. That is a gap in the limits, not in this sweep.
     if (c != "png" && c != "gif") { continue; }
     GIMG_Limits at = none();
     at.max_frame_count = f.items;
