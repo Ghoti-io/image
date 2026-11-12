@@ -10,8 +10,7 @@ duration, dispose and blend; decode returns the composited canvas),
 **VP8L lossless encode**, a **VP8 lossy encode** (Intra16 or 4×4
 predictors, a coefficient trellis, a finer segment, and an alpha plane;
 see Save and `make webp-rd`), and **animation encode** (each item is the
-canvas; the file stores the changed rectangle as a keyframe). See \ref image_format_references "Formats"
-and `notes/image/webp-plan.md`.
+canvas; the file stores the changed rectangle as a keyframe). See \ref image_format_references "Formats".
 
 Claims below are checked. The structure gate is `webpinfo` (committed
 fixtures under `tests/data/webp/` plus outside corpora from
@@ -333,8 +332,7 @@ one-axis bar is unable to see.
 
 - **A second independent reading of the VP8 bitstream.** Every pixel gate here
   compares against `dwebp`, and Pillow, ImageMagick and GdkPixbuf all link
-  libwebp, so the count is one reference and not four. `notes/image/webp-plan.md`
-  §7 names what would close it: FFmpeg's native decoder (`libavcodec/vp8.c`)
+  libwebp, so the count is one reference and not four. What would close it: FFmpeg's native decoder (`libavcodec/vp8.c`)
   and libvpx are separate codebases written from RFC 6386, both are Debian
   packages, and both would go in the oracle image pinned by full version.
   Until then the only reading independent of libwebp is `check-vp8-tables`,

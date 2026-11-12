@@ -339,8 +339,8 @@ Listed so the absences are visible rather than discovered:
   both of which compress a thresholded page perfectly well.
 - **Transparency masks** (PhotometricInterpretation 4).
 - **Region decode.** A TIFF too large to hold is refused through
-  `max_decoded_pixels` rather than decoded in pieces. The reasoning is in the
-  workspace note on the decode model: that needs a lazy load contract, which
+  `max_decoded_pixels` rather than decoded in pieces. Decoding in pieces
+  needs a lazy load contract, which
   is a document-model change for every codec rather than a TIFF feature.
 - **Exif.** Tag 34665 is an offset to another directory. Copying those bytes
   would keep offsets that no longer point anywhere, which is why it is not
