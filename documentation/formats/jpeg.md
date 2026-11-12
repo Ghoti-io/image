@@ -238,6 +238,8 @@ Short list of dimension/stream edge cases; update when adding tests. See `image/
 
 Nothing of T.81 is known to be missing. What is bounded rather than absent, and why: a DCT frame is written at 8 or 12 bits, which is all Table B.2 allows; a hierarchical sequence is built at 8 (its reconstruction would need its own pass at 12) and at up to four components (see the checklist — no oracle exists for a wider one, and a self-consistent round trip is not evidence). A lossless frame writes any precision from 2 to 16 and any component count.
 
+Two bounds of this library's own, not of T.81: a frame wider or taller than 32768 is refused with `GIMG_ERR_LIMIT` whatever the caller's limits say (T.81 allows 65535; every writer here refuses the same size, so what it writes it can read), and a frame whose working set - pixels times components times the bytes a sample takes in the decoder's buffers - is more than `max_memory` is refused at load.
+
 ---
 
 Back to \ref image_format_references "Format and specification references".

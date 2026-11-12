@@ -201,7 +201,7 @@ GIMG_Result jpeg_parse_sof(const unsigned char * payload, size_t len,
   return GIMG_OK;
 }
 
-void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
+GIMG_Result jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload_buf, size_t payload_size,
     const GIMG_Allocator * alloc) {
   const unsigned char * p = payload_buf;
@@ -232,10 +232,15 @@ void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
         gimg_free(alloc, *dest);
       }
       *dest = (unsigned char *)gimg_malloc(alloc, table_len);
-      if (*dest) {
-        memcpy(*dest, p, table_len);
-        *dest_len = table_len;
+      if (!*dest) {
+        // Left as it was, a stale length beside a NULL table would read as a
+        // table that is there; and a load that goes on without it decodes
+        // with whichever table came last.
+        *dest_len = 0;
+        return GIMG_ERR_OOM;
       }
+      memcpy(*dest, p, table_len);
+      *dest_len = table_len;
     }
     else {
       unsigned char ** dest = &state->huff_dc[th];
@@ -244,17 +249,23 @@ void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
         gimg_free(alloc, *dest);
       }
       *dest = (unsigned char *)gimg_malloc(alloc, table_len);
-      if (*dest) {
-        memcpy(*dest, p, table_len);
-        *dest_len = table_len;
+      if (!*dest) {
+        // Left as it was, a stale length beside a NULL table would read as a
+        // table that is there; and a load that goes on without it decodes
+        // with whichever table came last.
+        *dest_len = 0;
+        return GIMG_ERR_OOM;
       }
+      memcpy(*dest, p, table_len);
+      *dest_len = table_len;
     }
     p += table_len;
     remain -= table_len;
   }
+  return GIMG_OK;
 }
 
-void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
+GIMG_Result jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload_buf, size_t payload_size,
     const GIMG_Allocator * alloc) {
   const unsigned char * p = payload_buf;
@@ -277,7 +288,7 @@ void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
         (tc && (num_symbols == 17 || num_symbols == 18)) ? 1 : 0;
     unsigned char * copy = (unsigned char *)gimg_malloc(alloc, table_len);
     if (!copy) {
-      break;
+      return GIMG_ERR_OOM;
     }
     memcpy(copy, p, table_len);
     state->dht_entries[state->num_dht_entries].tc = (uint8_t)tc;
@@ -289,6 +300,7 @@ void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
     p += table_len;
     remain -= table_len;
   }
+  return GIMG_OK;
 }
 
 GIMG_Result jpeg_append_scan_data(gimg_jpeg_doc_state_t * state,

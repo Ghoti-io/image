@@ -745,7 +745,15 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
   // read it is the one Annex G already needed, so such a frame goes through
   // the coefficient-buffer path rather than either single-scan walk.  Before
   // the precision branch, because that path takes 8- and 12-bit frames alike.
-  if (state->num_scans > 1u) {
+  //
+  // So does a scan with a single component, whatever its sampling factors say
+  // (A.2.2): its data units run left to right and top to bottom over the
+  // component's own blocks, not over MCUs of H x V blocks, which is the order
+  // both single-scan walks below assume.  Only a 2 x 2 component of a
+  // one-component frame is affected, and it is scrambled when it is.
+  if (state->num_scans > 1u ||
+      (scan0->comp_count == 1u &&
+          (sof->h_samp[0] != 1u || sof->v_samp[0] != 1u))) {
     return jpeg_decode_progressive_extended(state, options, out_raster);
   }
   if (sof->precision != 8) {

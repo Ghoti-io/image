@@ -900,9 +900,15 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
       break;
     }
     case GIMG_JPEG_MARKER_DHT: {
-      jpeg_apply_dht_payload(state, payload_buf, payload_size, alloc);
-      jpeg_record_dht_payload(state, payload_buf, payload_size, alloc);
+      r = jpeg_apply_dht_payload(state, payload_buf, payload_size, alloc);
+      if (r == GIMG_OK) {
+        r = jpeg_record_dht_payload(state, payload_buf, payload_size, alloc);
+      }
       gimg_free(alloc, payload_buf);
+      if (r != GIMG_OK) {
+        gimg_jpeg_free_doc_state(codec, state);
+        return r;
+      }
       break;
     }
     case GIMG_JPEG_MARKER_SOS: {
@@ -1170,6 +1176,7 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
         // table that happened not to have 17 or 18 symbols landed in the wrong slot
         // and the search had to be bent to compensate.  T.81 has one kind of AC
         // table; see jpeg_parse.c.
+        bool snapshot_failed = false;
         for (int ti = 0; ti < 4; ti++) {
           if (state->huff_dc[ti] && state->huff_dc_len[ti] > 0) {
             scan->huff_dc[ti] =
@@ -1177,6 +1184,9 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
             if (scan->huff_dc[ti]) {
               memcpy(scan->huff_dc[ti], state->huff_dc[ti], state->huff_dc_len[ti]);
               scan->huff_dc_len[ti] = state->huff_dc_len[ti];
+            }
+            else {
+              snapshot_failed = true;
             }
           }
           if (state->huff_ac[ti] && state->huff_ac_len[ti] > 0) {
@@ -1186,7 +1196,21 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
               memcpy(scan->huff_ac[ti], state->huff_ac[ti], state->huff_ac_len[ti]);
               scan->huff_ac_len[ti] = state->huff_ac_len[ti];
             }
+            else {
+              snapshot_failed = true;
+            }
           }
+        }
+        if (snapshot_failed) {
+          // Without its own copy the scan would fall back to whichever table
+          // of that number came last in the file, and decode with it.  Counted
+          // first so that what was copied is freed with the rest.
+          (*sos_num_scans)++;
+          gimg_free(alloc, payload_buf);
+          jpeg_load_diag(diagnostics, seg_start, marker, GIMG_ERR_OOM,
+              "out of memory copying the tables in force for a scan");
+          gimg_jpeg_free_doc_state(codec, state);
+          return GIMG_ERR_OOM;
         }
         (*sos_num_scans)++;
         // Entropy bytes read below belong to this scan wherever it lives.
@@ -1354,8 +1378,15 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
               gimg_jpeg_free_doc_state(codec, state);
               return r;
             }
-            jpeg_apply_dht_payload(state, dht_buf, payload_size, alloc);
-            jpeg_record_dht_payload(state, dht_buf, payload_size, alloc);
+            r = jpeg_apply_dht_payload(state, dht_buf, payload_size, alloc);
+            if (r == GIMG_OK) {
+              r = jpeg_record_dht_payload(state, dht_buf, payload_size, alloc);
+            }
+            if (r != GIMG_OK) {
+              gimg_free(alloc, dht_buf);
+              gimg_jpeg_free_doc_state(codec, state);
+              return r;
+            }
             {
               const unsigned char * dp = dht_buf;
               size_t dremain = payload_size;
@@ -1842,6 +1873,29 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
         GIMG_ERR_LIMIT, "increase max_decoded_pixels");
     gimg_jpeg_free_doc_state(codec, state);
     return GIMG_ERR_LIMIT;
+  }
+
+  // A frame may have up to 255 components, and every decoder allocates and
+  // zeroes a plane for each before reading any entropy data, so the pixel cap
+  // alone does not bound memory: 16 million pixels of 255 components is
+  // gigabytes from a few hundred bytes of header.  The working set is held to
+  // max_memory as a whole, which the per-allocation cap cannot see.
+  if (limits && limits->max_memory != 0u) {
+    const size_t per_sample = state->is_hierarchical ? 8u
+        : (state->is_progressive || state->is_lossless ||
+              state->num_scans > 1u || state->sof.precision > 8u)
+        ? 4u
+        : 1u;
+    size_t working = 0;
+    if (!gcu_safe_mul_size(pixel_count, (size_t)state->sof.num_components,
+            &working) ||
+        !gcu_safe_mul_size(working, per_sample, &working) ||
+        working > limits->max_memory) {
+      jpeg_load_diag(diagnostics, 0u, (uint32_t)GIMG_JPEG_MARKER_SOF0,
+          GIMG_ERR_LIMIT, "increase max_memory");
+      gimg_jpeg_free_doc_state(codec, state);
+      return GIMG_ERR_LIMIT;
+    }
   }
 
   // Build document.

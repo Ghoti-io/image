@@ -1551,11 +1551,11 @@ int jpeg_sof_is_lossless(uint8_t m);
 int jpeg_sof_is_arithmetic(uint8_t m);
 /** @} */
 /** Apply DHT payload to state (store DC/AC tables). Uses alloc for storage. */
-void jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
+GIMG_Result jpeg_apply_dht_payload(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload_buf, size_t payload_size,
     const GIMG_Allocator * alloc);
 /** Record DHT for “first DHT after previous scan” (progressive). */
-void jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
+GIMG_Result jpeg_record_dht_payload(gimg_jpeg_doc_state_t * state,
     const unsigned char * payload_buf, size_t payload_size,
     const GIMG_Allocator * alloc);
 /** Append SOS scan data to current scan. */

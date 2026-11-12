@@ -221,7 +221,7 @@ GIMG_Result gimg_jpeg_tables_install(const GIMG_JPEG_Tables * tables,
         r = gimg_jpeg_apply_dqt(state, payload, payload_size, false, out_why);
         break;
       case GIMG_JPEG_MARKER_DHT:
-        jpeg_apply_dht_payload(state, payload, payload_size, alloc);
+        r = jpeg_apply_dht_payload(state, payload, payload_size, alloc);
         break;
       case GIMG_JPEG_MARKER_DAC:
         r = gimg_jpeg_apply_dac(state, payload, payload_size, out_why);
