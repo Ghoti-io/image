@@ -110,13 +110,20 @@ static bool fax_push(gimg_tiff_fax_line_t * line, uint32_t at) {
  *   sentinel every reference line is given so that this never runs off.
  */
 static size_t fax_b1(const gimg_tiff_fax_line_t * ref, int64_t a0,
-    bool white) {
+    bool white, size_t * cursor) {
   const size_t want_parity = white ? 0u : 1u;
-  for (size_t i = 0; i < ref->count; i++) {
+  // From where the last one was found, less one, not from the start of the
+  // line: a0 only moves right in a valid row, so nothing before that can be
+  // wanted (one element back covers the colour changing under it), and a row
+  // of C changes cost C^2/2 comparisons when every search began at zero.
+  size_t i = *cursor > 0u ? *cursor - 1u : 0u;
+  for (; i < ref->count; i++) {
     if ((int64_t)ref->changes[i] > a0 && (i & 1u) == want_parity) {
+      *cursor = i;
       return i;
     }
   }
+  *cursor = ref->count;
   return ref->count;
 }
 
@@ -205,6 +212,7 @@ static bool fax_row_2d(gimg_ccitt_bits_t * bits, unsigned char * row,
     gimg_tiff_fax_line_t * cur) {
   int64_t a0 = -1;
   bool white = true;
+  size_t ref_cursor = 0;
   cur->count = 0;
 
   while (a0 < (int64_t)width) {
@@ -237,7 +245,7 @@ static bool fax_row_2d(gimg_ccitt_bits_t * bits, unsigned char * row,
       }
     }
 
-    const size_t b1_index = fax_b1(ref, a0, white);
+    const size_t b1_index = fax_b1(ref, a0, white, &ref_cursor);
     const uint32_t b1 = fax_at(ref, b1_index, width);
     int64_t a1 = 0;
     bool vertical = false;
@@ -323,6 +331,12 @@ static bool fax_row_2d(gimg_ccitt_bits_t * bits, unsigned char * row,
       a1 = width;
     }
     const int64_t start = a0 < 0 ? 0 : a0;
+    // T.4 and T.6 do not let a vertical mode move a0 backwards.  A row that
+    // does consumes input without advancing, and the search for b1 above
+    // relies on a0 never moving left.
+    if (a1 < start) {
+      return false;
+    }
     fax_paint(row, (uint32_t)start, (uint32_t)a1, white);
     if (!fax_push(cur, (uint32_t)a1)) {
       return false;
