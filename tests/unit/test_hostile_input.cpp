@@ -2117,6 +2117,221 @@ TEST(HostileInput, ADocumentOfFramesThatDifferInSizeWritesNothingAsApng) {
   gimg_doc_destroy(doc);
 }
 
+TEST(HostileInput, AGroup4RowOfManyChangesIsNotDecodedInQuadraticTime) {
+  // 100000 pixels wide, two rows.  Row 1 alternates one white and one black
+  // pixel in horizontal mode (50000 pairs); row 2 repeats row 1 with V(0) for
+  // each of its 100000 changes.  Finding b1 from the start of the reference
+  // line every time made that 100000^2 / 2 comparisons.
+  const uint32_t width = 100000;
+  std::string bits;
+  for (int i = 0; i < 50000; i++) {
+    bits += "001";    // horizontal mode
+    bits += "000111"; // white run of 1
+    bits += "010";    // black run of 1
+  }
+  for (uint32_t i = 0; i < width; i++) {
+    bits += "1"; // V(0)
+  }
+  while (bits.size() % 8) {
+    bits += "0";
+  }
+  Bytes data;
+  for (size_t i = 0; i < bits.size(); i += 8) {
+    uint8_t v = 0;
+    for (int k = 0; k < 8; k++) {
+      v = (uint8_t)((v << 1) | (bits[i + k] == '1'));
+    }
+    data.push_back(v);
+  }
+  const uint32_t entries = 9;
+  const uint32_t strip_at = 8u + 2u + entries * 12u + 4u;
+  Bytes b = {'I', 'I', 42, 0, 8, 0, 0, 0};
+  le16(b, (uint16_t)entries);
+  entry(b, 256, kLong, 1, width);
+  entry(b, 257, kLong, 1, 2);
+  entry(b, 258, kShort, 1, 1);
+  entry(b, 259, kShort, 1, 4); // CCITT Group 4
+  entry(b, 262, kShort, 1, 0);
+  entry(b, 273, kLong, 1, strip_at);
+  entry(b, 277, kShort, 1, 1);
+  entry(b, 278, kLong, 1, 2);
+  entry(b, 279, kLong, 1, (uint32_t)data.size());
+  le32(b, 0);
+  b.insert(b.end(), data.begin(), data.end());
+
+  const auto begin = std::chrono::steady_clock::now();
+  GIMG_Raster * r = nullptr;
+  const GIMG_Result result = load_and_decode(b, 0, nullptr, &r);
+  const double seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - begin).count();
+  EXPECT_EQ(result, GIMG_OK);
+  EXPECT_LT(seconds, 2.0) << "quadratic in the changes of a row";
+  gimg_raster_destroy(r);
+}
+
+TEST(HostileInput, ATextChunkWithAnotherKeywordIsNotInflatedAtLoad) {
+  Bytes f = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  Bytes ihdr;
+  be32(ihdr, 1);
+  be32(ihdr, 1);
+  ihdr.insert(ihdr.end(), {8, 0, 0, 0, 0});
+  chunk(f, "IHDR", ihdr);
+  Bytes ztxt = {'O', 't', 'h', 'e', 'r', 0, 0};
+  const Bytes z = zlib_stored(Bytes(100, 'x'));
+  ztxt.insert(ztxt.end(), z.begin(), z.end());
+  chunk(f, "zTXt", ztxt);
+  chunk(f, "IDAT", zlib_stored(Bytes{0, 0x80}));
+  chunk(f, "IEND", Bytes());
+
+  GIMG_Codec * codec = gimg_codec_by_name("png");
+  ASSERT_NE(codec, nullptr);
+  const GIMG_Allocator * saved = codec->allocator;
+  Watching w;
+  w.a.ctx = &w;
+  w.a.malloc_fn = w_malloc;
+  w.a.calloc_fn = w_calloc;
+  w.a.realloc_fn = w_realloc;
+  w.a.free_fn = w_free;
+  codec->allocator = &w.a;
+  GIMG_Doc * doc = nullptr;
+  const GIMG_Result r = load_with(f, nullptr, &doc);
+  codec->allocator = saved;
+  ASSERT_EQ(r, GIMG_OK);
+  gimg_doc_destroy(doc);
+  EXPECT_LT(w.largest, (size_t)512 << 10)
+      << "a megabyte was made ready to inflate a chunk nobody asked for";
+}
+
+// ---------------------------------------------------------------------------
+// A stream the caller supplies
+// ---------------------------------------------------------------------------
+
+struct Source {
+  const Bytes * data;
+  size_t at = 0;
+  size_t step = 7; // at most this many bytes per read, as a socket gives them
+  bool closed = false;
+};
+GIMG_Result src_read(void * ctx, void * buf, size_t n, size_t * out) {
+  Source * s = (Source *)ctx;
+  size_t take = n < s->step ? n : s->step;
+  if (take > s->data->size() - s->at) {
+    take = s->data->size() - s->at;
+  }
+  memcpy(buf, s->data->data() + s->at, take);
+  s->at += take;
+  *out = take;
+  return GIMG_OK;
+}
+GIMG_Result src_seek(void * ctx, size_t offset) {
+  Source * s = (Source *)ctx;
+  if (offset > s->data->size()) {
+    return GIMG_ERR_IO;
+  }
+  s->at = offset;
+  return GIMG_OK;
+}
+size_t src_size(void * ctx) {
+  return ((Source *)ctx)->data->size();
+}
+void src_close(void * ctx) {
+  ((Source *)ctx)->closed = true;
+}
+
+TEST(HostileInput, ACallerSuppliedForwardOnlyStreamLoadsAPng) {
+  const Bytes png = gray_png(Bytes{0, 0x80});
+  Source src{&png};
+  GIMG_Stream_Callbacks cb = {};
+  cb.read = src_read;
+  cb.close = src_close;
+  cb.ctx = &src;
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_callbacks(&cb, &s), GIMG_OK);
+  EXPECT_EQ(gimg_stream_size(s), GIMG_STREAM_SIZE_UNKNOWN);
+  EXPECT_EQ(gimg_stream_tell(s), (size_t)-1);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK)
+      << "seven bytes a read, and the probe peeked without a seek";
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &r), GIMG_OK);
+  gimg_raster_destroy(r);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+  EXPECT_TRUE(src.closed);
+}
+
+TEST(HostileInput, ACallerSuppliedSeekableStreamLoadsAFormatThatNeedsOne) {
+  const Bytes tiff = rgb_tiff(2, 2, 12);
+  Source src{&tiff};
+  GIMG_Stream_Callbacks cb = {};
+  cb.read = src_read;
+  cb.seek = src_seek;
+  cb.size = src_size;
+  cb.ctx = &src;
+  GIMG_Stream * s = nullptr;
+  ASSERT_EQ(gimg_stream_create_callbacks(&cb, &s), GIMG_OK);
+  EXPECT_EQ(gimg_stream_size(s), tiff.size());
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(gimg_item_decode(gimg_doc_item(doc, 0), nullptr, &r), GIMG_OK);
+  EXPECT_EQ(gimg_raster_width(r), 2u);
+  gimg_raster_destroy(r);
+  gimg_doc_destroy(doc);
+  gimg_stream_destroy(s);
+}
+
+struct Sink {
+  Bytes bytes;
+};
+GIMG_Result sink_write(void * ctx, const void * buf, size_t n, size_t * out) {
+  Sink * s = (Sink *)ctx;
+  s->bytes.insert(s->bytes.end(), (const uint8_t *)buf, (const uint8_t *)buf + n);
+  *out = n;
+  return GIMG_OK;
+}
+
+TEST(HostileInput, ACallerSuppliedOutputStreamReceivesTheSameBytesAsMemory) {
+  GIMG_Raster * ras = nullptr;
+  ASSERT_EQ(gimg_raster_create(3, 3, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED,
+                nullptr, 0, &ras),
+      GIMG_OK);
+  memset(gimg_raster_pixels(ras), 0x80, gimg_raster_stride_bytes(ras) * 3u);
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 1), GIMG_OK);
+  gimg_item_set_raster(gimg_doc_item(doc, 0), ras);
+
+  Sink sink;
+  GIMG_Stream_Callbacks cb = {};
+  cb.write = sink_write;
+  cb.ctx = &sink;
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_callbacks(&cb, &out), GIMG_OK);
+  GIMG_Save_Report rep = {};
+  ASSERT_EQ(gimg_doc_save(doc, out, "png", nullptr, &rep), GIMG_OK);
+  gimg_stream_destroy(out);
+
+  GIMG_Stream * mem = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&mem), GIMG_OK);
+  ASSERT_EQ(gimg_doc_save(doc, mem, "png", nullptr, &rep), GIMG_OK);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(mem, &data, &size);
+  EXPECT_EQ(sink.bytes, Bytes((const uint8_t *)data, (const uint8_t *)data + size));
+  gimg_stream_destroy(mem);
+  gimg_doc_destroy(doc);
+
+  // A callback set that names both directions, or neither, is not a stream.
+  GIMG_Stream_Callbacks both = {};
+  both.read = src_read;
+  both.write = sink_write;
+  GIMG_Stream * none = nullptr;
+  EXPECT_EQ(gimg_stream_create_callbacks(&both, &none), GIMG_ERR_INVALID);
+  GIMG_Stream_Callbacks neither = {};
+  EXPECT_EQ(gimg_stream_create_callbacks(&neither, &none), GIMG_ERR_INVALID);
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {

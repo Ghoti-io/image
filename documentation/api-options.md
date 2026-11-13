@@ -541,3 +541,19 @@ One document, raster or stream is not safe to modify from two threads, and a
 stream is not safe to read from two. The memory cap and the limits of a load or
 decode are held per thread for the length of the call (see Limits), so
 concurrent calls do not share a budget.
+
+## Streams of your own
+
+The library never opens a file or a socket; it reads from and writes to a
+`GIMG_Stream`. `gimg_stream_create_memory()` and its relatives wrap a buffer.
+`gimg_stream_create_callbacks()` wraps anything else: fill in a
+`GIMG_Stream_Callbacks` with a `read` (or a `write`) and, if the source can
+do them, `seek`, `size` and `close`.
+
+A source with no `seek` is read forward only, like a pipe: formats that find
+their data by offset (BMP, TIFF) are refused on it with `GIMG_ERR_UNSUPPORTED`,
+and a stream with a `size` lets a decoder refuse a header that names more than
+the source holds before it allocates. `gimg_stream_peek()` works on any of them,
+up to `GIMG_STREAM_PEEK_MAX` bytes, by reading ahead into the stream's own
+buffer. A callback that reports more bytes than it was given room for makes the
+stream fail with `GIMG_ERR_IO`.

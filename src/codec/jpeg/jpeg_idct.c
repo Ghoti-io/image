@@ -45,6 +45,20 @@ void jpeg_dequantize_32(
   }
 }
 
+/**
+ * The transform's result as an int32 the callers can add a level shift to.
+ *
+ * With 16-bit quantizer values (legal at 12 bits) the true result can pass 32
+ * bits, and the narrowing left a value anywhere - including within 128 of
+ * INT32_MAX, where the shift overflowed.  Every caller clamps the sample to
+ * its range straight afterwards, so clamping here, at 2^30 - far beyond any
+ * sample, and with room to add a level shift - changes no picture.
+ */
+static inline int32_t idct_saturate(int64_t v) {
+  const int64_t limit = (int64_t)1 << 30;
+  return (int32_t)(v < -limit ? -limit : (v > limit ? limit : v));
+}
+
 #define IDCT_ISLOW_CONST_BITS 13
 #define IDCT_ISLOW_ONE ((int64_t)1)
 #define IDCT_ISLOW_LEFT_SHIFT(x, n) ((int64_t)((uint64_t)(x) << (n)))
@@ -200,7 +214,7 @@ void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits) {
       // own clamp subsumes it, but it destroys a 12-bit frame, whose samples
       // legitimately reach +-2048.
       int32_t dcval =
-          (int32_t)IDCT_ISLOW_DESCALE((int64_t)wsptr[0], descale_dc_row);
+          idct_saturate(IDCT_ISLOW_DESCALE((int64_t)wsptr[0], descale_dc_row));
       for (int c = 0; c < 8; c++) {
         outptr[c] = dcval;
       }
@@ -261,14 +275,14 @@ void jpeg_idct_8x8_islow(const int32_t * in, int32_t * out, int pass1_bits) {
     tmp2 += z2 + z3;
     tmp3 += z1 + z4;
 
-    outptr[0] = (int32_t)IDCT_ISLOW_DESCALE(tmp10 + tmp3, descale_pass2);
-    outptr[7] = (int32_t)IDCT_ISLOW_DESCALE(tmp10 - tmp3, descale_pass2);
-    outptr[1] = (int32_t)IDCT_ISLOW_DESCALE(tmp11 + tmp2, descale_pass2);
-    outptr[6] = (int32_t)IDCT_ISLOW_DESCALE(tmp11 - tmp2, descale_pass2);
-    outptr[2] = (int32_t)IDCT_ISLOW_DESCALE(tmp12 + tmp1, descale_pass2);
-    outptr[5] = (int32_t)IDCT_ISLOW_DESCALE(tmp12 - tmp1, descale_pass2);
-    outptr[3] = (int32_t)IDCT_ISLOW_DESCALE(tmp13 + tmp0, descale_pass2);
-    outptr[4] = (int32_t)IDCT_ISLOW_DESCALE(tmp13 - tmp0, descale_pass2);
+    outptr[0] = idct_saturate(IDCT_ISLOW_DESCALE(tmp10 + tmp3, descale_pass2));
+    outptr[7] = idct_saturate(IDCT_ISLOW_DESCALE(tmp10 - tmp3, descale_pass2));
+    outptr[1] = idct_saturate(IDCT_ISLOW_DESCALE(tmp11 + tmp2, descale_pass2));
+    outptr[6] = idct_saturate(IDCT_ISLOW_DESCALE(tmp11 - tmp2, descale_pass2));
+    outptr[2] = idct_saturate(IDCT_ISLOW_DESCALE(tmp12 + tmp1, descale_pass2));
+    outptr[5] = idct_saturate(IDCT_ISLOW_DESCALE(tmp12 - tmp1, descale_pass2));
+    outptr[3] = idct_saturate(IDCT_ISLOW_DESCALE(tmp13 + tmp0, descale_pass2));
+    outptr[4] = idct_saturate(IDCT_ISLOW_DESCALE(tmp13 - tmp0, descale_pass2));
   }
 }
 

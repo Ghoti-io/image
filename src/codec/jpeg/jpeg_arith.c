@@ -477,7 +477,10 @@ static GIMG_Result jpeg_arith_decode_dc(jpeg_arith_decoder_t * d,
   if (sign) {
     v = -v;
   }
-  stats->dc_pred[comp] += (int)v;
+  // Wrapping, as the Huffman path's int16_t does: enough maximal differences
+  // overflow an int, and that is not defined.
+  stats->dc_pred[comp] =
+      (int)((uint32_t)stats->dc_pred[comp] + (uint32_t)(int32_t)v);
   block[0] = (int16_t)stats->dc_pred[comp];
   return GIMG_OK;
 }

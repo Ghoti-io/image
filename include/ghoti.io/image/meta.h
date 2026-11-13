@@ -173,10 +173,19 @@ GIMG_API GIMG_Result gimg_meta_raw_copy_with_allocator(
 
 /** @see api_options for behavior per policy. */
 typedef enum {
+  /**
+   * Keep every tag. Orientation goes out as 1, however, wherever Exif is kept:
+   * decoding has already turned the pixels upright, and a tag that still said
+   * 6 would turn them a second time in every viewer. Exif this library cannot
+   * parse is written as it came.
+   */
   GIMG_META_PRESERVE_ALL = 0,
   GIMG_META_DROP_ALL,
   /**
    * Remove the GPS IFD, its pointer tag (0x8825) and everything it points at.
+   *
+   * An XMP packet is not parsed and can carry a location, so it is left out
+   * as well; so are the XMP and "Raw profile" text chunks of a PNG.
    *
    * **Fails the save with GIMG_ERR_CORRUPT when the Exif cannot be parsed.**
    * The alternatives are both silent and both wrong: writing the blob through

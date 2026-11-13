@@ -137,7 +137,7 @@ static GIMG_Result hier_expand(
         int32_t a = src[x];
         int32_t b = src[(x + 1u < p->w) ? (x + 1u) : x];
         dst[x * 2u] = a;
-        dst[x * 2u + 1u] = (a + b) / 2;
+        dst[x * 2u + 1u] = (int32_t)(((int64_t)a + b) / 2);
       }
     }
     hier_plane_free(alloc, p);
@@ -162,7 +162,7 @@ static GIMG_Result hier_expand(
       int32_t * d1 = out.s + (size_t)(y * 2u + 1u) * p->w;
       for (uint32_t x = 0; x < p->w; x++) {
         d0[x] = a[x];
-        d1[x] = (a[x] + b[x]) / 2;
+        d1[x] = (int32_t)(((int64_t)a[x] + b[x]) / 2);
       }
     }
     hier_plane_free(alloc, p);
@@ -1290,7 +1290,7 @@ GIMG_Result gimg_jpeg_decode_hierarchical(const gimg_jpeg_doc_state_t * state,
       // Thirty-two frames of 16-bit samples cannot overflow int32.
       size_t n = (size_t)dst->w * dst->h;
       for (size_t k = 0; k < n; k++) {
-        dst->s[k] += cur[i].s[k];
+        dst->s[k] = (int32_t)((uint32_t)dst->s[k] + (uint32_t)cur[i].s[k]);
       }
     }
     for (uint8_t i = 0; i < GIMG_JPEG_MAX_COMPONENTS; i++) {

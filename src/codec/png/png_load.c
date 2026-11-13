@@ -1019,6 +1019,22 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
     if (!state->ancillary[i].payload || state->ancillary[i].payload_size == 0) {
       continue;
     }
+    // The keyword is in the clear at the front, so it is checked before the
+    // chunk is inflated: every text chunk used to be, to find the one or two
+    // this wants, and a file of small zTXt chunks that each expand to a
+    // megabyte was a thousand-to-one CPU amplifier at load.
+    {
+      const unsigned char * head = state->ancillary[i].payload;
+      const size_t head_size = state->ancillary[i].payload_size;
+      size_t k = 0;
+      while (k < head_size && head[k] != 0u) {
+        k++;
+      }
+      if (!((k == 11 && memcmp(head, "Description", 11) == 0) ||
+              (k == 7 && memcmp(head, "Comment", 7) == 0))) {
+        continue;
+      }
+    }
     size_t kw_len = 0;
     char * text = NULL;
     r = gimg_png_text_chunk_decode(t, state->ancillary[i].payload,
