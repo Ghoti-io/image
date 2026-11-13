@@ -31,6 +31,7 @@
 #include <dirent.h>
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -168,6 +169,10 @@ TEST(AllocFailure, EveryFailedLoadFreesEverythingItTook) {
 
   long swept = 0, skipped = 0, injections = 0;
   std::vector<std::string> seen;
+  // The totals above are global, so a codec whose fixtures stopped loading
+  // would leave them far above their floors and nobody would see it.  Each
+  // codec is held to a floor of its own.
+  std::map<std::string, std::pair<long, long>> per_codec; // swept, injected
   for (const Dir & d : dirs) {
     DIR * dp = opendir(d.path);
     if (!dp) {
@@ -204,6 +209,7 @@ TEST(AllocFailure, EveryFailedLoadFreesEverythingItTook) {
       const long total = probe.attempts;
       if (total == 0) { skipped++; continue; }
       swept++;
+      per_codec[d.codec].first++;
       seen.push_back(name);
 
       for (long n = 1; n <= total; n++) {
@@ -212,6 +218,7 @@ TEST(AllocFailure, EveryFailedLoadFreesEverythingItTook) {
         f.fail_at = n;
         const GIMG_Result r = load_with(d.codec, bytes, f);
         injections++;
+        per_codec[d.codec].second++;
         EXPECT_TRUE(r == GIMG_OK || r == GIMG_ERR_OOM ||
             r == GIMG_ERR_CORRUPT || r == GIMG_ERR_FORMAT ||
             r == GIMG_ERR_LIMIT || r == GIMG_ERR_UNSUPPORTED)
@@ -233,6 +240,13 @@ TEST(AllocFailure, EveryFailedLoadFreesEverythingItTook) {
   ASSERT_GT(swept, 50)
       << "only " << swept << " fixtures loaded cleanly - a sweep this narrow "
                              "is not measuring what it claims to";
+  for (const Dir & d : dirs) {
+    const auto & c = per_codec[d.codec];
+    EXPECT_GE(c.first, 3) << d.codec << ": only " << c.first
+                          << " fixtures were swept";
+    EXPECT_GE(c.second, 20) << d.codec << ": only " << c.second
+                            << " allocation failures were injected";
+  }
 
   // The segments that are easiest to lose.  Each carries state the others do
   // not - arithmetic conditioning tables, a restart interval, a hierarchical
