@@ -283,11 +283,11 @@ static GIMG_Result jpeg_decode_baseline_extended(
         uint8_t h_samp = sof->h_samp[comp_idx];
         uint8_t v_samp = sof->v_samp[comp_idx];
         uint8_t qid = sof->quant_tbl_id[comp_idx];
-        if (qid >= GIMG_JPEG_MAX_QUANT_TABLES ||
-            !state->quant_tbl_present[qid]) {
+        const uint16_t * quant =
+            gimg_jpeg_component_quant(state, comp_idx, qid);
+        if (!quant) {
           goto ext_fail;
         }
-        const uint16_t * quant = state->quant_tbl[qid];
         const gimg_jpeg_huff_table_t * dc_tbl = &dc_tables[scan0->dc_tbl[s]];
         const gimg_jpeg_huff_table_t * ac_tbl = &ac_tables[scan0->ac_tbl[s]];
 
@@ -942,11 +942,11 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
         uint8_t h_samp = sof->h_samp[comp_idx];
         uint8_t v_samp = sof->v_samp[comp_idx];
         uint8_t qid = sof->quant_tbl_id[comp_idx];
-        if (qid >= GIMG_JPEG_MAX_QUANT_TABLES ||
-            !state->quant_tbl_present[qid]) {
+        const uint16_t * quant =
+            gimg_jpeg_component_quant(state, comp_idx, qid);
+        if (!quant) {
           goto fail_comp;
         }
-        const uint16_t * quant = state->quant_tbl[qid];
         const gimg_jpeg_huff_table_t * dc_tbl = &dc_tables[scan0->dc_tbl[s]];
         const gimg_jpeg_huff_table_t * ac_tbl = &ac_tables[scan0->ac_tbl[s]];
 
@@ -1741,10 +1741,10 @@ static GIMG_Result jpeg_decode_progressive_extended(
   int32_t block_idct[64];
   for (uint8_t comp_idx = 0; comp_idx < num_comp; comp_idx++) {
     uint8_t qid = sof->quant_tbl_id[comp_idx];
-    if (qid >= GIMG_JPEG_MAX_QUANT_TABLES || !state->quant_tbl_present[qid]) {
+    const uint16_t * quant = gimg_jpeg_component_quant(state, comp_idx, qid);
+    if (!quant) {
       goto prog_ext_fail_buf;
     }
-    const uint16_t * quant = state->quant_tbl[qid];
     // Read the blocks that hold real samples, addressed with the grid's row
     // stride.  These are two different numbers whenever the component is not a
     // whole number of MCUs wide, and the truncating comp_w/8 used here before

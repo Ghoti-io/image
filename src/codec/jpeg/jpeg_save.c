@@ -2105,7 +2105,12 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
     // scan headers come from the frame rather than being assumed here.
     for (unsigned si = 0; si < fr->num_scans; si++) {
       const gimg_jpeg_enc_scan_t * sc = &fr->scans[si];
-      uint16_t sos_len = (uint16_t)(6 + 2 * (uint16_t)sc->ns);
+      // A scan names at most four components (B.2.3); said here so that the
+      // buffer below is provably big enough, not only so in fact.
+      const unsigned ns = sc->ns > GIMG_JPEG_MAX_SCAN_COMPONENTS
+          ? (unsigned)GIMG_JPEG_MAX_SCAN_COMPONENTS
+          : (unsigned)sc->ns;
+      uint16_t sos_len = (uint16_t)(6 + 2 * ns);
       r = jpeg_write_marker(stream, GIMG_JPEG_MARKER_SOS, &n);
       if (r != GIMG_OK) {
         return r;
@@ -2116,12 +2121,12 @@ static GIMG_Result jpeg_write_image_body_hierarchical(GIMG_Stream * stream,
       }
       unsigned char sos[4 + 2 * GIMG_JPEG_MAX_SCAN_COMPONENTS];
       memset(sos, 0, sizeof(sos));
-      sos[0] = sc->ns;
-      for (int c = 0; c < (int)sc->ns; c++) {
+      sos[0] = (unsigned char)ns;
+      for (unsigned c = 0; c < ns; c++) {
         sos[1 + c * 2] = (unsigned char)(sc->comp[c] + 1);
         sos[2 + c * 2] = sc->td_ta[c];
       }
-      size_t tail = 1 + 2 * (size_t)sc->ns;
+      size_t tail = 1 + 2 * (size_t)ns;
       sos[tail] = sc->ss;
       sos[tail + 1] = sc->se;
       sos[tail + 2] = (unsigned char)((sc->ah << 4) | (sc->al & 0x0Fu));
@@ -3575,13 +3580,23 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   // T.81 Annex J: a pyramid of frames rather than one.  Built here, before the
   // markers are written, because each frame depends on the reconstruction of
   // the one before it and they cannot be produced as they are emitted.
-  gimg_jpeg_enc_frame_t hier_frames[GIMG_JPEG_MAX_FRAMES];
+  // On the heap, and only for a pyramid: the array is about 263 KB, and it was
+  // on the stack of every save, hierarchical or not - more than a default
+  // musl thread stack holds.
+  gimg_jpeg_enc_frame_t * hier_frames = NULL;
   unsigned hier_num_frames = 0;
   // Whether the sequence's three components are color, which decides whether
   // it needs an Adobe marker saying they are not.
   int hier_is_color = 1;
-  memset(hier_frames, 0, sizeof(hier_frames));
   if (hier_levels != 0) {
+    hier_frames = (gimg_jpeg_enc_frame_t *)gimg_calloc(
+        alloc, GIMG_JPEG_MAX_FRAMES, sizeof(gimg_jpeg_enc_frame_t));
+    if (!hier_frames) {
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      return GIMG_ERR_OOM;
+    }
     gimg_jpeg_default_quant_scaled(quality, quant_luma, quant_chroma);
     width = gimg_raster_width(raster);
     height = gimg_raster_height(raster);
@@ -3608,6 +3623,7 @@ static GIMG_Result jpeg_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       gimg_raster_destroy(raster);
     }
     if (r != GIMG_OK) {
+      gimg_free(alloc, hier_frames);
       return r;
     }
     goto have_scan;
@@ -4153,9 +4169,11 @@ have_scan:
         }
       }
 
-      // APP1 XMP
+      // APP1 XMP.  A packet can carry a location (exif:GPSLatitude) and is not
+      // parsed, so STRIP_GPS leaves it out, as the PNG, TIFF and WebP writers
+      // do.
       size_t xmp_size = 0;
-      if (meta_raw &&
+      if (meta_raw && policy != GIMG_META_STRIP_GPS &&
           gimg_meta_raw_get(meta_raw, "jpeg", GIMG_JPEG_RAW_APP1_XMP, NULL,
               &xmp_size) == GIMG_OK &&
           xmp_size > 0) {
@@ -4441,7 +4459,10 @@ done:
   // anywhere in the header, a marker before the frame, leaked the entire
   // encoded image.  A budget-limited stream finds it at the first byte.
   gimg_free(alloc, to_free);
-  gimg_jpeg_free_enc_frames(alloc, hier_frames, hier_num_frames);
+  if (hier_frames) {
+    gimg_jpeg_free_enc_frames(alloc, hier_frames, hier_num_frames);
+    gimg_free(alloc, hier_frames);
+  }
   for (unsigned si = 0; si < lossless_num_scans; si++) {
     gimg_free(alloc, lossless_scans[si].data);
     gimg_free(alloc, lossless_scans[si].dht);

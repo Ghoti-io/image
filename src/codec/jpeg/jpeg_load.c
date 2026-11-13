@@ -1019,6 +1019,25 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
             }
           }
         }
+        // Snapshot the quantization table of each component this scan is the
+        // first to carry.  Not for a hierarchical frame, which keeps its own.
+        if (!cur_frame) {
+          for (uint8_t a = 0; a < ns; a++) {
+            for (uint8_t j = 0; j < sos_sof->num_components; j++) {
+              if (sos_sof->comp_id[j] != scan->comp_id[a] ||
+                  state->comp_quant_set[j]) {
+                continue;
+              }
+              const uint8_t qid = sos_sof->quant_tbl_id[j];
+              if (qid < GIMG_JPEG_MAX_QUANT_TABLES &&
+                  state->quant_tbl_present[qid]) {
+                memcpy(state->comp_quant[j], state->quant_tbl[qid],
+                    sizeof(state->comp_quant[j]));
+                state->comp_quant_set[j] = 1;
+              }
+            }
+          }
+        }
         scan->ss = payload_buf[1 + ns * 2];
         scan->se = payload_buf[2 + ns * 2];
         {

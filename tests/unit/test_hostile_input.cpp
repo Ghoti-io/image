@@ -1951,6 +1951,172 @@ TEST(HostileInput, ASparseCompressedBlockOfNoBytesLeavesItsRowsAlone) {
   gimg_raster_destroy(r);
 }
 
+TEST(HostileInput, AQuantizationTableRedefinedBetweenScansKeepsEachComponentsOwn) {
+  // Two components, one scan each, with a DQT of all 1s before the first scan
+  // and of all 2s before the second.  Each is dequantized with the table in
+  // force at its own scan; the last definition used to be applied to both.
+  auto dqt = [](uint8_t v) {
+    Bytes q = {0};
+    q.insert(q.end(), 64, v);
+    return jpeg_segment(0xDB, q);
+  };
+  Bytes j = {0xFF, 0xD8};
+  auto add = [&](const Bytes & seg) { j.insert(j.end(), seg.begin(), seg.end()); };
+  add(dqt(1));
+  add(jpeg_segment(0xC0, Bytes{8, 0, 8, 0, 8, 2, 1, 0x11, 0, 2, 0x11, 0}));
+  Bytes dc = {0x00, 1};
+  dc.insert(dc.end(), 15, 0);
+  dc.push_back(6);
+  Bytes ac = {0x10, 1};
+  ac.insert(ac.end(), 15, 0);
+  ac.push_back(0);
+  Bytes tables = dc;
+  tables.insert(tables.end(), ac.begin(), ac.end());
+  add(jpeg_segment(0xC4, tables));
+  add(sos_for(1));
+  j.push_back(0x40); // one block: DC +32, then end of block
+  add(dqt(2));
+  add(sos_for(2));
+  j.push_back(0x40);
+  j.insert(j.end(), {0xFF, 0xD9});
+
+  GIMG_Raster * r = nullptr;
+  ASSERT_EQ(load_and_decode(j, 0, nullptr, &r), GIMG_OK);
+  ASSERT_EQ(gimg_raster_format(r)->channel_count, 2u);
+  const uint8_t * px = (const uint8_t *)gimg_raster_pixels_const(r);
+  EXPECT_NEAR(px[0], 132, 1) << "component 1 was dequantized with table of 2s";
+  EXPECT_NEAR(px[1], 136, 1);
+  gimg_raster_destroy(r);
+}
+
+TEST(HostileInput, StripGpsLeavesTheXmpPacketOutOfAJpeg) {
+  // A decodable 8 x 8 gray picture with an XMP packet (which is where a
+  // location is far more often found than in Exif) after SOI.
+  auto build = [] {
+    Bytes j = {0xFF, 0xD8};
+    Bytes xmp = {'h', 't', 't', 'p', ':', '/', '/', 'n', 's', '.', 'a', 'd',
+        'o', 'b', 'e', '.', 'c', 'o', 'm', '/', 'x', 'a', 'p', '/', '1', '.',
+        '0', '/', 0};
+    const char * packet = "<x:xmpmeta exif:GPSLatitude=\"1\"/>";
+    xmp.insert(xmp.end(), packet, packet + strlen(packet));
+    const Bytes app1 = jpeg_segment(0xE1, xmp);
+    j.insert(j.end(), app1.begin(), app1.end());
+    Bytes q = {0};
+    q.insert(q.end(), 64, 1);
+    const Bytes dqt = jpeg_segment(0xDB, q);
+    j.insert(j.end(), dqt.begin(), dqt.end());
+    const Bytes sof = jpeg_segment(0xC0, Bytes{8, 0, 8, 0, 8, 1, 1, 0x11, 0});
+    j.insert(j.end(), sof.begin(), sof.end());
+    Bytes dc = {0x00, 1};
+    dc.insert(dc.end(), 15, 0);
+    dc.push_back(6);
+    Bytes ac = {0x10, 1};
+    ac.insert(ac.end(), 15, 0);
+    ac.push_back(0);
+    Bytes t = dc;
+    t.insert(t.end(), ac.begin(), ac.end());
+    const Bytes dht = jpeg_segment(0xC4, t);
+    j.insert(j.end(), dht.begin(), dht.end());
+    const Bytes sos = jpeg_segment(0xDA, Bytes{1, 1, 0x00, 0, 63, 0});
+    j.insert(j.end(), sos.begin(), sos.end());
+    j.push_back(0x40);
+    j.insert(j.end(), {0xFF, 0xD9});
+    return j;
+  };
+  auto resaved_has_xmp = [&](GIMG_Meta_Policy policy) {
+    const Bytes f = build();
+    GIMG_Stream * s = nullptr;
+    EXPECT_EQ(gimg_stream_create_memory(f.data(), f.size(), &s), GIMG_OK);
+    GIMG_Doc * doc = nullptr;
+    EXPECT_EQ(gimg_doc_load(s, nullptr, nullptr, &doc), GIMG_OK);
+    EXPECT_EQ(gimg_item_ensure_decoded(gimg_doc_item(doc, 0), nullptr), GIMG_OK);
+    GIMG_Save_Options o;
+    memset(&o, 0, sizeof o);
+    o.metadata_policy = policy;
+    GIMG_Stream * out = nullptr;
+    EXPECT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+    GIMG_Save_Report report = {};
+    EXPECT_EQ(gimg_doc_save(doc, out, "jpeg", &o, &report), GIMG_OK);
+    const void * data = nullptr;
+    size_t size = 0;
+    gimg_stream_output_buffer(out, &data, &size);
+    const std::string bytes((const char *)data, size);
+    const bool found = bytes.find("GPSLatitude") != std::string::npos;
+    gimg_stream_destroy(out);
+    gimg_doc_destroy(doc);
+    gimg_stream_destroy(s);
+    return found;
+  };
+  EXPECT_TRUE(resaved_has_xmp(GIMG_META_PRESERVE_ALL)) << "control";
+  EXPECT_FALSE(resaved_has_xmp(GIMG_META_STRIP_GPS));
+}
+
+TEST(HostileInput, StripGpsRemovesAGpsPointerWhateverItsTypeOrValue) {
+  // IFD0 holds Orientation and a GPS pointer.  Variants: a pointer of TIFF's
+  // IFD type (13), a pointer whose value is 0, and two GPS entries.  Each used
+  // to come back as a verbatim copy (or a directory one entry too long).
+  auto blob = [](uint16_t gps_type, uint32_t gps_value, int gps_count) {
+    Bytes b = {'I', 'I', 42, 0, 8, 0, 0, 0};
+    le16(b, (uint16_t)(1 + gps_count));
+    entry(b, 0x0112, kShort, 1, 6);
+    for (int k = 0; k < gps_count; k++) {
+      entry(b, 0x8825, gps_type, 1, gps_value);
+    }
+    le32(b, 0);
+    return b;
+  };
+  struct Case {
+    uint16_t type;
+    uint32_t value;
+    int count;
+  } cases[] = {{13, 0x40, 1}, {kLong, 0, 1}, {kLong, 0x40, 2}};
+  for (const Case & c : cases) {
+    SCOPED_TRACE(c.type);
+    const Bytes in = blob(c.type, c.value, c.count);
+    void * out = nullptr;
+    size_t n = 0;
+    ASSERT_EQ(gimg_exif_strip_gps(nullptr, in.data(), in.size(), &out, &n),
+        GIMG_OK);
+    ASSERT_NE(out, nullptr);
+    const uint8_t * o = (const uint8_t *)out;
+    // The directory is where the header says; it must hold one entry, the
+    // orientation, and none of them may be the GPS pointer.
+    const uint32_t ifd0 = o[4] | (o[5] << 8) | (o[6] << 16) | ((uint32_t)o[7] << 24);
+    ASSERT_LE(ifd0 + 2u, n);
+    const uint16_t entries = (uint16_t)(o[ifd0] | (o[ifd0 + 1] << 8));
+    EXPECT_EQ(entries, 1u);
+    for (uint16_t i = 0; i < entries && ifd0 + 2u + i * 12u + 2u <= n; i++) {
+      const uint8_t * e = o + ifd0 + 2u + i * 12u;
+      EXPECT_NE((uint16_t)(e[0] | (e[1] << 8)), 0x8825u);
+    }
+    free(out);
+  }
+}
+
+TEST(HostileInput, ADocumentOfFramesThatDifferInSizeWritesNothingAsApng) {
+  GIMG_Doc * doc = nullptr;
+  ASSERT_EQ(gimg_doc_create(&doc), GIMG_OK);
+  ASSERT_EQ(gimg_doc_set_item_count(doc, 2), GIMG_OK);
+  for (size_t k = 0; k < 2; k++) {
+    GIMG_Raster * ras = nullptr;
+    ASSERT_EQ(gimg_raster_create(k == 0 ? 8 : 4, k == 0 ? 8 : 4,
+                  &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, nullptr, 0, &ras),
+        GIMG_OK);
+    gimg_item_set_raster(gimg_doc_item(doc, k), ras);
+  }
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Report report = {};
+  EXPECT_EQ(gimg_doc_save(doc, out, "png", nullptr, &report),
+      GIMG_ERR_UNSUPPORTED);
+  const void * data = nullptr;
+  size_t size = 0;
+  gimg_stream_output_buffer(out, &data, &size);
+  EXPECT_EQ(size, 0u) << "a refusal leaves no part of a file behind";
+  gimg_stream_destroy(out);
+  gimg_doc_destroy(doc);
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {

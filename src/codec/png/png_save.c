@@ -2095,6 +2095,20 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
   int do_interlaced = options && options->png_interlaced;
   size_t num_items = gimg_doc_item_count(doc);
   int is_apng = (num_items > 1);
+  // Frames that cannot share the canvas are refused before a byte is written:
+  // found after frame 0, this left a truncated APNG on the caller's stream
+  // with an error after it.  Only rasters already attached can be measured
+  // without decoding; the rest come from one codec and share its size.
+  for (size_t i = 1; i < num_items && is_apng; i++) {
+    const GIMG_Raster * fr = gimg_item_raster(gimg_doc_item((GIMG_Doc *)doc, i));
+    if (fr &&
+        (gimg_raster_width(fr) != width || gimg_raster_height(fr) != height)) {
+      if (raster_owned) {
+        gimg_raster_destroy(raster);
+      }
+      return GIMG_ERR_UNSUPPORTED;
+    }
+  }
 
   // The palette to write, which is the frame's own when it arrived with one.
   const gimg_png_doc_state_t * palette_state = use_palette ? state : NULL;

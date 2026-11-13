@@ -88,6 +88,13 @@ GIMG_API GIMG_Result gimg_codec_create_stub_with_allocator(
  * @brief Register a codec (by name, probe, capabilities).
  * @param codec Codec to register (library takes ownership of pointer).
  * @return GIMG_OK or GIMG_ERR_OOM / duplicate name.
+ *
+ * The built-in codecs register themselves before main() runs, so the registry
+ * is read-only for the life of a program that adds none, and calls that work
+ * on their own documents, rasters and streams may then be made from any
+ * number of threads. Registration
+ * itself is not synchronised: add a codec of your own once, at start-up,
+ * before another thread loads, probes or saves anything.
  */
 GIMG_API GIMG_Result gimg_codec_register(GIMG_Codec * codec);
 

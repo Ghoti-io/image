@@ -318,10 +318,19 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
     return GIMG_ERR_CORRUPT;
   }
 
-  // Is there a GPS pointer to remove at all?
-  const uint32_t gps_off = exif_find_uint(
-      buf, le, &ifd[EXIF_IFD_0], GIMG_EXIF_TAG_GPS_IFD, 0u);
-  if (gps_off == 0u) {
+  // Is there a GPS pointer to remove at all?  Counted by entry, not by the
+  // value of the first one found: that value is 0 both when the tag is absent
+  // and when it is present with a type that is not SHORT or LONG (TIFF's IFD
+  // type is legal for a sub-IFD pointer) or an offset of zero, and every one
+  // of those used to hand the blob back as it was, location and all.
+  uint16_t gps_entries = 0u;
+  for (uint16_t i = 0; i < ifd[EXIF_IFD_0].n_src; i++) {
+    const size_t ent = ifd[EXIF_IFD_0].src + 2u + (size_t)i * 12u;
+    if (read_u16(buf + ent, le) == GIMG_EXIF_TAG_GPS_IFD) {
+      gps_entries++;
+    }
+  }
+  if (gps_entries == 0u) {
     // Nothing to strip: hand back a copy, as the contract promises.
     allocator = gimg_alloc_or_default(allocator);
     unsigned char * copy = (unsigned char *)gimg_malloc(allocator, size);
@@ -333,7 +342,9 @@ GIMG_Result gimg_exif_strip_gps(const GIMG_Allocator * allocator,
     *out_size = size;
     return GIMG_OK;
   }
-  ifd[EXIF_IFD_0].n_dst = (uint16_t)(ifd[EXIF_IFD_0].n_src - 1u);
+  // Every entry of the tag is dropped (the emit pass skips them all), so the
+  // directory loses that many, not one.
+  ifd[EXIF_IFD_0].n_dst = (uint16_t)(ifd[EXIF_IFD_0].n_src - gps_entries);
 
   // The rest of the standard tree. Each is optional; a pointer that does not
   // resolve is dropped rather than followed, which loses the sub-IFD but

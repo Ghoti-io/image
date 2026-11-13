@@ -750,6 +750,12 @@ typedef struct gimg_jpeg_doc_state {
   // Quantization tables: 64 entries each; -1 = not present.
   int quant_tbl_present[GIMG_JPEG_MAX_QUANT_TABLES];
   uint16_t quant_tbl[GIMG_JPEG_MAX_QUANT_TABLES][GIMG_JPEG_DQT_ENTRIES];
+  /** The table a component's first scan found in force (B.2.4.1: it is
+   * defined before the first scan that includes the component, and may be
+   * redefined between scans).  The decoders dequantize after every scan has
+   * been read, when quant_tbl holds only the last definition. */
+  uint16_t comp_quant[GIMG_JPEG_MAX_COMPONENTS][GIMG_JPEG_DQT_ENTRIES];
+  uint8_t comp_quant_set[GIMG_JPEG_MAX_COMPONENTS];
 
   // Huffman tables (simplified: we store raw DHT payloads for decode later).
   unsigned char * huff_dc[4]; ///< DC 0..3
@@ -829,6 +835,23 @@ typedef struct gimg_jpeg_doc_state {
   unsigned char * unknown_app_combined;
   size_t unknown_app_combined_size;
 } gimg_jpeg_doc_state_t;
+
+/**
+ * The quantization table component @p comp_idx is dequantized with, or NULL
+ * when none was defined for it: the one in force at its first scan, else the
+ * last definition of the table its frame header names.
+ */
+static inline const uint16_t * gimg_jpeg_component_quant(
+    const gimg_jpeg_doc_state_t * state, unsigned comp_idx, unsigned qid) {
+  if (comp_idx < GIMG_JPEG_MAX_COMPONENTS && state->comp_quant_set[comp_idx]) {
+    return state->comp_quant[comp_idx];
+  }
+  if (qid >= GIMG_JPEG_MAX_QUANT_TABLES || !state->quant_tbl_present[qid]) {
+    return NULL;
+  }
+  return state->quant_tbl[qid];
+}
+
 
 /**
  * @brief Tell a decoded raster what its samples mean.

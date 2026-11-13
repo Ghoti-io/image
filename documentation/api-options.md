@@ -528,3 +528,16 @@ declare "this is an animation" - every file is nominally one - so the item
 count is the only thing that can settle it, and APNG follows the same rule
 rather than keeping a second one: an `acTL` declaring a single frame still
 sets the document's loop count, so nothing about the animation is lost.
+
+## Threads
+
+Calls on separate objects - their own streams, documents and rasters - may run
+on any number of threads at once; nothing is shared between them but the codec
+registry, which is filled before `main()` runs and only read afterwards. The
+one exception is `gimg_codec_register()`, which is not synchronised: register a
+codec of your own at start-up, before another thread uses the library.
+
+One document, raster or stream is not safe to modify from two threads, and a
+stream is not safe to read from two. The memory cap and the limits of a load or
+decode are held per thread for the length of the call (see Limits), so
+concurrent calls do not share a budget.
