@@ -68,6 +68,8 @@ GIMG_API GIMG_Result gimg_stream_create_memory_with_allocator(
   s->can_seek = true;
   s->writable = false;
   s->max_read_chunk = 0;
+  s->cb = NULL;
+  s->pushback_len = 0;
   *out_stream = s;
   return GIMG_OK;
 }
@@ -95,6 +97,8 @@ GIMG_API GIMG_Result gimg_stream_create_memory_no_seek_with_allocator(
   s->can_seek = false;
   s->writable = false;
   s->max_read_chunk = 0;
+  s->cb = NULL;
+  s->pushback_len = 0;
   *out_stream = s;
   return GIMG_OK;
 }
@@ -129,6 +133,8 @@ GIMG_API GIMG_Result gimg_stream_create_memory_chunked_with_allocator(
   s->can_seek = true;
   s->writable = false;
   s->max_read_chunk = max_bytes_per_read;
+  s->cb = NULL;
+  s->pushback_len = 0;
   *out_stream = s;
   return GIMG_OK;
 }
@@ -163,6 +169,8 @@ GIMG_API GIMG_Result gimg_stream_create_memory_no_seek_chunked_with_allocator(
   s->can_seek = false;
   s->writable = false;
   s->max_read_chunk = max_bytes_per_read;
+  s->cb = NULL;
+  s->pushback_len = 0;
   *out_stream = s;
   return GIMG_OK;
 }
@@ -209,6 +217,8 @@ GIMG_API GIMG_Result gimg_stream_create_memory_output_with_allocator(
   s->can_seek = true;
   s->writable = true;
   s->max_read_chunk = 0;
+  s->cb = NULL;
+  s->pushback_len = 0;
   *out_stream = s;
   return GIMG_OK;
 }
@@ -222,8 +232,59 @@ GIMG_API void gimg_stream_output_buffer(const GIMG_Stream * stream,
   *out_size = stream->writable ? stream->position : 0;
 }
 
+GIMG_API GIMG_Result gimg_stream_create_callbacks(
+    const GIMG_Stream_Callbacks * callbacks, GIMG_Stream ** out_stream) {
+  return gimg_stream_create_callbacks_with_allocator(
+      NULL, callbacks, out_stream);
+}
+
+GIMG_API GIMG_Result gimg_stream_create_callbacks_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Stream_Callbacks * callbacks,
+    GIMG_Stream ** out_stream) {
+  if (!callbacks || !out_stream) {
+    return GIMG_ERR_INVALID;
+  }
+  // One direction or the other, never both: a stream that is read and written
+  // has no meaning for any caller here.
+  if ((callbacks->read != NULL) == (callbacks->write != NULL)) {
+    return GIMG_ERR_INVALID;
+  }
+  allocator = gimg_alloc_or_default(allocator);
+  GIMG_Stream * s = (GIMG_Stream *)gimg_malloc(allocator, sizeof(GIMG_Stream));
+  if (!s) {
+    return GIMG_ERR_OOM;
+  }
+  s->cb = (GIMG_Stream_Callbacks *)gimg_malloc(
+      allocator, sizeof(GIMG_Stream_Callbacks));
+  if (!s->cb) {
+    gimg_free(allocator, s);
+    return GIMG_ERR_OOM;
+  }
+  *s->cb = *callbacks;
+  s->allocator = allocator;
+  s->data = NULL;
+  s->size = 0;
+  s->position = 0;
+  s->error = GIMG_OK;
+  s->can_seek = callbacks->seek != NULL;
+  s->writable = callbacks->write != NULL;
+  s->max_read_chunk = 0;
+  s->pushback_len = 0;
+  *out_stream = s;
+  return GIMG_OK;
+}
+
 GIMG_API void gimg_stream_destroy(GIMG_Stream * stream) {
   if (!stream) {
+    return;
+  }
+  if (stream->cb) {
+    if (stream->cb->close) {
+      stream->cb->close(stream->cb->ctx);
+    }
+    gimg_free(stream->allocator, stream->cb);
+    stream->cb = NULL;
+    gimg_free(stream->allocator, stream);
     return;
   }
   if (stream->writable && stream->data) {
@@ -251,6 +312,20 @@ GIMG_API GIMG_Result gimg_stream_write(GIMG_Stream * stream,
   if (!buffer) {
     return GIMG_ERR_INTERNAL;
   }
+  if (stream->cb) {
+    size_t wrote = 0;
+    GIMG_Result r = stream->cb->write(stream->cb->ctx, buffer, size, &wrote);
+    if (r == GIMG_OK && wrote > size) {
+      r = GIMG_ERR_IO; // more than was offered is a broken callback
+    }
+    if (r != GIMG_OK) {
+      stream->error = r;
+      return r;
+    }
+    stream->position += wrote;
+    *out_bytes_written = wrote;
+    return GIMG_OK;
+  }
   size_t need = stream->position + size;
   if (need > stream->size) {
     GIMG_Result r = grow_output(stream, need);
@@ -276,6 +351,43 @@ GIMG_API GIMG_Result gimg_stream_read(
   }
   if (stream->writable) {
     *out_bytes_read = 0;
+    return GIMG_OK;
+  }
+  if (stream->cb) {
+    // What was peeked comes first; then the source, if the caller wants more.
+    size_t got = 0;
+    unsigned char * out = (unsigned char *)buffer;
+    if (stream->pushback_len > 0 && size > 0) {
+      got = size < stream->pushback_len ? size : stream->pushback_len;
+      memcpy(out, stream->pushback, got);
+      stream->pushback_len -= got;
+      memmove(stream->pushback, stream->pushback + got, stream->pushback_len);
+    }
+    // A source hands over what it has, which for a socket or a decompressor is
+    // often less than was asked.  The codecs read headers and segments with a
+    // single call and take a short one for the end of the file, so the
+    // callback is called until the request is met or the source ends: a
+    // stream of the caller's reads as a file does.
+    while (got < size) {
+      size_t n = 0;
+      GIMG_Result r =
+          stream->cb->read(stream->cb->ctx, out + got, size - got, &n);
+      if (r == GIMG_OK && n > size - got) {
+        r = GIMG_ERR_IO;
+      }
+      if (r != GIMG_OK) {
+        stream->error = r;
+        stream->position += got;
+        *out_bytes_read = got;
+        return r;
+      }
+      if (n == 0) {
+        break;
+      }
+      got += n;
+    }
+    stream->position += got;
+    *out_bytes_read = got;
     return GIMG_OK;
   }
   if (stream->max_read_chunk > 0 && size > stream->max_read_chunk) {
@@ -324,6 +436,36 @@ GIMG_API GIMG_Result gimg_stream_peek(GIMG_Stream * stream, void * buffer,
     *out_bytes_available = 0;
     return stream->error;
   }
+  if (stream->cb) {
+    if (size > GIMG_STREAM_PEEK_MAX) {
+      *out_bytes_available = 0;
+      return GIMG_ERR_LIMIT;
+    }
+    // Read ahead into the stream's own buffer, so the source need not seek.
+    while (stream->pushback_len < size) {
+      size_t n = 0;
+      GIMG_Result r = stream->cb->read(stream->cb->ctx,
+          stream->pushback + stream->pushback_len,
+          size - stream->pushback_len, &n);
+      if (r == GIMG_OK && n > size - stream->pushback_len) {
+        r = GIMG_ERR_IO;
+      }
+      if (r != GIMG_OK) {
+        stream->error = r;
+        *out_bytes_available = 0;
+        return r;
+      }
+      if (n == 0) {
+        break;
+      }
+      stream->pushback_len += n;
+    }
+    const size_t have =
+        size < stream->pushback_len ? size : stream->pushback_len;
+    memcpy(buffer, stream->pushback, have);
+    *out_bytes_available = have;
+    return GIMG_OK;
+  }
   size_t avail = stream->size - stream->position;
   if (size > avail) {
     size = avail;
@@ -344,6 +486,27 @@ GIMG_API GIMG_Result gimg_stream_skip(
     *out_bytes_skipped = 0;
     return stream->error;
   }
+  if (stream->cb) {
+    // Read and set aside: the source may not be able to seek.
+    unsigned char scratch[512];
+    size_t skipped = 0;
+    while (skipped < count) {
+      const size_t want =
+          count - skipped < sizeof(scratch) ? count - skipped : sizeof(scratch);
+      size_t n = 0;
+      GIMG_Result r = gimg_stream_read(stream, scratch, want, &n);
+      if (r != GIMG_OK) {
+        *out_bytes_skipped = skipped;
+        return r;
+      }
+      if (n == 0) {
+        break;
+      }
+      skipped += n;
+    }
+    *out_bytes_skipped = skipped;
+    return GIMG_OK;
+  }
   size_t avail = stream->size - stream->position;
   if (count > avail) {
     count = avail;
@@ -359,6 +522,16 @@ GIMG_API GIMG_Result gimg_stream_seek(GIMG_Stream * stream, size_t offset) {
   }
   if (!stream->can_seek) {
     return GIMG_ERR_UNSUPPORTED;
+  }
+  if (stream->cb) {
+    GIMG_Result r = stream->cb->seek(stream->cb->ctx, offset);
+    if (r != GIMG_OK) {
+      stream->error = r;
+      return r;
+    }
+    stream->pushback_len = 0;
+    stream->position = offset;
+    return GIMG_OK;
   }
   if (offset > stream->size) {
     stream->error = GIMG_ERR_IO;
@@ -382,6 +555,10 @@ GIMG_API size_t gimg_stream_size(const GIMG_Stream * stream) {
   // only model the codecs are ever tested against.
   if (!stream || !stream->can_seek) {
     return GIMG_STREAM_SIZE_UNKNOWN;
+  }
+  if (stream->cb) {
+    return stream->cb->size ? stream->cb->size(stream->cb->ctx)
+                            : GIMG_STREAM_SIZE_UNKNOWN;
   }
   return stream->size;
 }

@@ -126,6 +126,57 @@ GIMG_API size_t gimg_stream_size(const GIMG_Stream * stream);
 GIMG_API GIMG_Result gimg_stream_error(const GIMG_Stream * stream);
 
 /**
+ * @brief A stream the caller supplies: a socket, a decompressor, a file read
+ * by the caller's own code - anything the library is not to open itself.
+ *
+ * Every function but @a read (for an input stream) or @a write (for an output
+ * one) is optional.  A source with no @a seek is read forward only, like a pipe
+ * (gimg_stream_tell() answers (size_t)-1 for it, as for a memory stream that
+ * cannot seek, and formats that find their data by offset - BMP, TIFF - are
+ * refused on it); one with @a seek is treated as seekable, and one with @a size
+ * as having a known length, which lets a decoder refuse a header that names more
+ * than the source holds before it allocates.
+ *
+ * A read asks the callback again until the request is filled or it reports the
+ * end of the stream, so a short read is never mistaken for the end.
+ *
+ * The callbacks are called from the thread that called the library function
+ * and never from two at once on one stream.
+ */
+typedef struct GIMG_Stream_Callbacks {
+  /** Read up to @p size bytes; set @p out_read (zero at end of stream). */
+  GIMG_Result (*read)(
+      void * ctx, void * buffer, size_t size, size_t * out_read);
+  /** Write @p size bytes; set @p out_written. */
+  GIMG_Result (*write)(
+      void * ctx, const void * buffer, size_t size, size_t * out_written);
+  /** Move to an absolute offset. */
+  GIMG_Result (*seek)(void * ctx, size_t offset);
+  /** The total length, or ::GIMG_STREAM_SIZE_UNKNOWN. */
+  size_t (*size)(void * ctx);
+  /** Called once when the stream is destroyed. */
+  void (*close)(void * ctx);
+  /** Passed to every callback. */
+  void * ctx;
+} GIMG_Stream_Callbacks;
+
+/** The most gimg_stream_peek() can return from a stream of the caller's. */
+#define GIMG_STREAM_PEEK_MAX 64u
+
+/**
+ * @brief Create a stream from the caller's callbacks (copied).
+ * @return GIMG_OK, GIMG_ERR_INVALID when neither @a read nor @a write is set
+ *   (or both are), or GIMG_ERR_OOM.
+ */
+GIMG_API GIMG_Result gimg_stream_create_callbacks(
+    const GIMG_Stream_Callbacks * callbacks, GIMG_Stream ** out_stream);
+
+/** @brief As gimg_stream_create_callbacks() with an allocator. */
+GIMG_API GIMG_Result gimg_stream_create_callbacks_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Stream_Callbacks * callbacks,
+    GIMG_Stream ** out_stream);
+
+/**
  * @brief Create a memory stream from a buffer (borrowed; not freed).
  * Uses default allocator for the stream object.
  */

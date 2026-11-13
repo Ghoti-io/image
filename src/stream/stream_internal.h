@@ -51,6 +51,13 @@ struct GIMG_Stream {
   bool writable;         ///< True if stream supports write (output stream).
   size_t max_read_chunk; ///< Max bytes to return per read (0 = no limit). Used
                          ///< for chunked/short-read testing.
+  /** The caller's callbacks, copied, when this stream is theirs rather than a
+   * buffer.  NULL for every memory stream. */
+  GIMG_Stream_Callbacks * cb;
+  /** Bytes peeked from a callback stream and not yet read, so that peeking
+   * does not need the source to seek. */
+  unsigned char pushback[GIMG_STREAM_PEEK_MAX];
+  size_t pushback_len;
 };
 
 #endif // GHOTI_IO_GIMG_SRC_STREAM_STREAM_INTERNAL_H
