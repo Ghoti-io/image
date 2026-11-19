@@ -155,15 +155,15 @@ GIMG_Result gimg_webp_alpha_decode(const unsigned char * data, size_t size,
   const unsigned char * body = data + 1;
   const size_t body_size = size - 1u;
   const size_t plane_n = (size_t)width * (size_t)height;
-  uint8_t * plane = (uint8_t *)gimg_malloc(alloc, plane_n);
-  if (!plane) {
-    return GIMG_ERR_OOM;
-  }
+  uint8_t * plane = NULL;
 
   if (method == ALPHA_NO_COMPRESSION) {
     if (body_size < plane_n) {
-      gimg_free(alloc, plane);
       return GIMG_ERR_CORRUPT;
+    }
+    plane = (uint8_t *)gimg_malloc(alloc, plane_n);
+    if (!plane) {
+      return GIMG_ERR_OOM;
     }
     {
       const uint8_t * prev = NULL;
@@ -177,16 +177,13 @@ GIMG_Result gimg_webp_alpha_decode(const unsigned char * data, size_t size,
     }
   }
   else {
-    /* VP8L-compressed: decode green plane, then unfilter. */
-    uint8_t * green = NULL;
+    /* VP8L-compressed: the decoded green plane is the plane, unfiltered in
+     * place, with no second copy of it. */
     GIMG_Result r = gimg_webp_vp8l_decode_alpha(
-        body, body_size, width, height, alloc, &green);
+        body, body_size, width, height, alloc, &plane);
     if (r != GIMG_OK) {
-      gimg_free(alloc, plane);
       return r;
     }
-    memcpy(plane, green, plane_n);
-    gimg_free(alloc, green);
     apply_filter_inplace(plane, (int)width, (int)height, filter);
   }
 

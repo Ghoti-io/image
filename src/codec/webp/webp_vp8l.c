@@ -47,8 +47,12 @@ enum {
   VP8L_BLUE = 2,
   VP8L_ALPHA = 3,
   VP8L_DIST = 4,
-  /* Initial node pool; it grows as a file's codes need more. */
-  VP8L_HUFF_NODE_POOL = 65536,
+  /* Initial node pool; it grows as a file's codes need more, so a small
+   * picture does not pay for a large one's worst case. */
+  VP8L_HUFF_NODE_POOL = 4096,
+  /* Fewest bits one group's five prefix codes can take: a simple code is a
+   * flag, a count, a length selector and one symbol bit. */
+  VP8L_MIN_GROUP_BITS = 5 * 4,
   VP8L_MAX_SYMBOLS = VP8L_NUM_LITERAL + VP8L_NUM_LENGTH + (1 << VP8L_MAX_CACHE_BITS)
 };
 
@@ -108,6 +112,11 @@ static void br_fill(vp8l_br_t * br) {
     br->bits |= (uint64_t)br->buf[br->byte_pos++] << br->nbits;
     br->nbits += 8;
   }
+}
+
+/* Bits not yet consumed, buffered or still in the input. */
+static size_t br_bits_left(const vp8l_br_t * br) {
+  return (size_t)br->nbits + (br->size - br->byte_pos) * 8u;
 }
 
 static int br_read_bits(vp8l_br_t * br, int n) {
@@ -649,6 +658,14 @@ static int read_huffman_codes(vp8l_dec_t * dec, int xsize, int ysize,
         num_htree_groups_max = group + 1;
       }
     }
+    /* Every group's codes are in the stream, used or not, so a group count
+     * the rest of the stream cannot hold is refused before anything is
+     * sized from it (the read would have run dry in any case). */
+    if ((uint64_t)br_bits_left(&dec->br) <
+        (uint64_t)num_htree_groups_max * VP8L_MIN_GROUP_BITS) {
+      set_err(dec, GIMG_ERR_CORRUPT);
+      goto Error;
+    }
     if (num_htree_groups_max > 1000 ||
         num_htree_groups_max > xsize * ysize) {
       mapping = (int *)gimg_malloc(
@@ -1022,68 +1039,55 @@ End:
   return ok;
 }
 
-static GIMG_Result apply_all_inverse(vp8l_dec_t * dec, uint32_t * pixels,
-    uint32_t ** out_argb) {
-  /* Coding buffer may be narrower than the canvas (colour indexing). Apply
-   * transforms in reverse into a full canvas_width x canvas_height buffer. */
-  const int cw = dec->canvas_width;
-  const int ch = dec->canvas_height;
-  uint32_t * buf_a = NULL;
-  uint32_t * buf_b = NULL;
-  uint32_t * in;
-  uint32_t * out;
-  size_t full_n = (size_t)cw * (size_t)ch;
-  size_t coded_n = (size_t)dec->width * (size_t)dec->height;
+/*
+ * Decode the level-0 pixels and undo every transform, in one buffer.
+ *
+ * The buffer is allocated at the canvas size from the start, which is at least
+ * the coded size (colour indexing packs several pixels into one), so each
+ * inverse transform runs in place the way libwebp's do: the pointwise ones and
+ * the predictor read a pixel before they write its slot and look only at
+ * pixels already written, and the colour-index unpack moves its packed input
+ * to the end of the buffer first.  The buffer is 4 bytes a pixel and is the
+ * only canvas-sized allocation until the caller converts it.
+ */
+static GIMG_Result decode_level0_argb(vp8l_dec_t * dec, uint32_t ** out_argb) {
+  const size_t full_n = (size_t)dec->canvas_width * (size_t)dec->canvas_height;
+  const size_t coded_n = (size_t)dec->width * (size_t)dec->height;
+  uint32_t * pixels;
 
-  buf_a = (uint32_t *)gimg_malloc(dec->alloc, full_n * sizeof(uint32_t));
-  buf_b = (uint32_t *)gimg_malloc(dec->alloc, full_n * sizeof(uint32_t));
-  if (!buf_a || !buf_b) {
-    gimg_free(dec->alloc, buf_a);
-    gimg_free(dec->alloc, buf_b);
+  *out_argb = NULL;
+  if (dec->next_transform == 0 && coded_n != full_n) {
+    return GIMG_ERR_CORRUPT;
+  }
+  if (coded_n > full_n) {
+    return GIMG_ERR_CORRUPT;
+  }
+  pixels = (uint32_t *)gimg_malloc(dec->alloc, full_n * sizeof(*pixels));
+  if (!pixels) {
     return GIMG_ERR_OOM;
   }
-
-  /* Start with coded pixels in buf_a (may be smaller; packed at start). */
-  memcpy(buf_a, pixels, coded_n * sizeof(uint32_t));
-  in = buf_a;
-  out = buf_b;
-
-  if (dec->next_transform == 0) {
-    /* No transforms: coded size equals canvas. */
-    if (coded_n != full_n) {
-      gimg_free(dec->alloc, buf_a);
-      gimg_free(dec->alloc, buf_b);
-      return GIMG_ERR_CORRUPT;
-    }
-    *out_argb = buf_a;
-    gimg_free(dec->alloc, buf_b);
-    return GIMG_OK;
+  if (!decode_image_data(dec, pixels, dec->width, dec->height)) {
+    gimg_free(dec->alloc, pixels);
+    return (dec->err != GIMG_OK) ? dec->err : GIMG_ERR_CORRUPT;
   }
+  /* The entropy-coding state is finished with; give it back before the
+   * transforms run. */
+  clear_metadata(dec);
+  gimg_free(dec->alloc, dec->node_pool);
+  dec->node_pool = NULL;
+  dec->node_pool_cap = 0;
 
   for (int n = dec->next_transform - 1; n >= 0; --n) {
-    const gimg_webp_vp8l_xform_t * xf = &dec->transforms[n];
-    gimg_webp_vp8l_inverse_xform(xf, 0, ch, in, out);
-    {
-      uint32_t * tmp = in;
-      in = out;
-      out = tmp;
-    }
+    gimg_webp_vp8l_inverse_xform(
+        &dec->transforms[n], 0, dec->canvas_height, pixels, pixels);
   }
-
-  *out_argb = in;
-  if (in == buf_a) {
-    gimg_free(dec->alloc, buf_b);
-  }
-  else {
-    gimg_free(dec->alloc, buf_a);
-  }
+  *out_argb = pixels;
   return GIMG_OK;
 }
 
 GIMG_Result gimg_webp_vp8l_decode(const unsigned char * data, size_t size,
     const GIMG_Allocator * alloc, GIMG_Raster ** out_raster) {
   vp8l_dec_t dec;
-  uint32_t * pixels = NULL;
   uint32_t * argb = NULL;
   GIMG_Raster * raster = NULL;
   GIMG_Result r = GIMG_OK;
@@ -1129,49 +1133,31 @@ GIMG_Result gimg_webp_vp8l_decode(const unsigned char * data, size_t size,
     goto Done;
   }
 
-  {
-    const size_t n = (size_t)dec.width * (size_t)dec.height;
-    pixels = (uint32_t *)gimg_malloc(alloc, n * sizeof(*pixels));
-    if (!pixels) {
-      r = GIMG_ERR_OOM;
-      goto Done;
-    }
-  }
-
-  if (!decode_image_data(&dec, pixels, dec.width, dec.height)) {
-    r = (dec.err != GIMG_OK) ? dec.err : GIMG_ERR_CORRUPT;
-    goto Done;
-  }
-
-  r = apply_all_inverse(&dec, pixels, &argb);
+  r = decode_level0_argb(&dec, &argb);
   if (r != GIMG_OK) {
     goto Done;
   }
-  gimg_free(alloc, pixels);
-  pixels = NULL;
 
+  /* ARGB words to RGBA bytes, in place: the buffer is already four bytes a
+   * pixel, and each word is read before its slot is written.  The raster
+   * then adopts it, so the decoded image exists once. */
+  {
+    const size_t n = (size_t)dec.canvas_width * (size_t)dec.canvas_height;
+    for (size_t i = 0; i < n; ++i) {
+      const uint32_t p = argb[i];
+      const uint8_t px[4] = { (uint8_t)((p >> 16) & 0xffu),
+        (uint8_t)((p >> 8) & 0xffu), (uint8_t)(p & 0xffu),
+        (uint8_t)((p >> 24) & 0xffu) };
+      memcpy(&argb[i], px, 4u);
+    }
+  }
   r = gimg_raster_create_with_allocator(alloc, (uint32_t)dec.canvas_width,
-      (uint32_t)dec.canvas_height, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL,
-      0, &raster);
+      (uint32_t)dec.canvas_height, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, argb,
+      (size_t)dec.canvas_width * 4u, &raster);
   if (r != GIMG_OK) {
     goto Done;
   }
-
-  {
-    uint8_t * dst = (uint8_t *)gimg_raster_pixels(raster);
-    const size_t stride = gimg_raster_stride_bytes(raster);
-    for (int y = 0; y < dec.canvas_height; ++y) {
-      uint8_t * row = dst + (size_t)y * stride;
-      const uint32_t * src = argb + (size_t)y * (size_t)dec.canvas_width;
-      for (int x = 0; x < dec.canvas_width; ++x) {
-        const uint32_t p = src[x];
-        row[4 * x + 0] = (uint8_t)((p >> 16) & 0xffu);
-        row[4 * x + 1] = (uint8_t)((p >> 8) & 0xffu);
-        row[4 * x + 2] = (uint8_t)(p & 0xffu);
-        row[4 * x + 3] = (uint8_t)((p >> 24) & 0xffu);
-      }
-    }
-  }
+  argb = NULL; /* owned by the raster now */
 
   *out_raster = raster;
   raster = NULL;
@@ -1181,7 +1167,6 @@ Done:
   if (raster) {
     gimg_raster_destroy(raster);
   }
-  gimg_free(alloc, pixels);
   gimg_free(alloc, argb);
   clear_metadata(&dec);
   clear_transforms(&dec);
@@ -1193,7 +1178,6 @@ GIMG_Result gimg_webp_vp8l_decode_alpha(const unsigned char * data, size_t size,
     uint32_t width, uint32_t height, const GIMG_Allocator * alloc,
     uint8_t ** out_alpha) {
   vp8l_dec_t dec;
-  uint32_t * pixels = NULL;
   uint32_t * argb = NULL;
   uint8_t * alpha = NULL;
   GIMG_Result r = GIMG_OK;
@@ -1224,37 +1208,28 @@ GIMG_Result gimg_webp_vp8l_decode_alpha(const unsigned char * data, size_t size,
     goto Done;
   }
 
-  {
-    const size_t n = (size_t)dec.width * (size_t)dec.height;
-    pixels = (uint32_t *)gimg_malloc(alloc, n * sizeof(*pixels));
-    if (!pixels) {
-      r = GIMG_ERR_OOM;
-      goto Done;
-    }
-  }
-
-  if (!decode_image_data(&dec, pixels, dec.width, dec.height)) {
-    r = (dec.err != GIMG_OK) ? dec.err : GIMG_ERR_CORRUPT;
-    goto Done;
-  }
-
-  r = apply_all_inverse(&dec, pixels, &argb);
+  r = decode_level0_argb(&dec, &argb);
   if (r != GIMG_OK) {
     goto Done;
   }
-  gimg_free(alloc, pixels);
-  pixels = NULL;
 
   {
+    /* Alpha samples ride in the green channel (libwebp ExtractAlphaRows).
+     * Packed to the front of the ARGB buffer, then the buffer is trimmed to
+     * the plane, so the plane does not cost four bytes a pixel for as long
+     * as the caller holds it. */
     const size_t n = (size_t)width * (size_t)height;
-    alpha = (uint8_t *)gimg_malloc(alloc, n);
-    if (!alpha) {
-      r = GIMG_ERR_OOM;
-      goto Done;
-    }
-    /* Alpha samples ride in the green channel (libwebp ExtractAlphaRows). */
+    uint8_t * const plane = (uint8_t *)argb;
     for (size_t i = 0; i < n; ++i) {
-      alpha[i] = (uint8_t)((argb[i] >> 8) & 0xffu);
+      plane[i] = (uint8_t)((argb[i] >> 8) & 0xffu);
+    }
+    alpha = plane;
+    argb = NULL;
+    {
+      uint8_t * const trimmed = (uint8_t *)gimg_realloc(alloc, alpha, n);
+      if (trimmed) {
+        alpha = trimmed;
+      }
     }
   }
 
@@ -1264,7 +1239,6 @@ GIMG_Result gimg_webp_vp8l_decode_alpha(const unsigned char * data, size_t size,
 
 Done:
   gimg_free(alloc, alpha);
-  gimg_free(alloc, pixels);
   gimg_free(alloc, argb);
   clear_metadata(&dec);
   clear_transforms(&dec);

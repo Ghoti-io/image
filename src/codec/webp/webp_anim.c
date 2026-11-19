@@ -58,6 +58,19 @@ GIMG_Result gimg_webp_parse_anmf_header(const unsigned char * header16,
   return GIMG_OK;
 }
 
+/** Write @a alpha (width x height samples) into the A bytes of @a raster. */
+static void webp_apply_alpha_plane(GIMG_Raster * raster, const uint8_t * alpha) {
+  const uint32_t w = gimg_raster_width(raster);
+  const uint32_t h = gimg_raster_height(raster);
+  uint8_t * px = (uint8_t *)gimg_raster_pixels(raster);
+  const size_t stride = gimg_raster_stride_bytes(raster);
+  for (uint32_t y = 0; y < h; ++y) {
+    for (uint32_t x = 0; x < w; ++x) {
+      px[(size_t)y * stride + (size_t)x * 4u + 3u] = alpha[(size_t)y * w + x];
+    }
+  }
+}
+
 GIMG_Result gimg_webp_decode_picture(const unsigned char * vp8, size_t vp8_size,
     const unsigned char * vp8l, size_t vp8l_size, const unsigned char * alph,
     size_t alph_size, const GIMG_Allocator * alloc, gimg_vp8_seq * seq,
@@ -66,65 +79,65 @@ GIMG_Result gimg_webp_decode_picture(const unsigned char * vp8, size_t vp8_size,
     return GIMG_ERR_INTERNAL;
   }
   *out_raster = NULL;
-  if (vp8l && !vp8) {
-    GIMG_Result r =
-        gimg_webp_vp8l_decode(vp8l, vp8l_size, alloc, out_raster);
+  if ((vp8l != NULL) == (vp8 != NULL)) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  // ALPH beside VP8L is unusual for still files; ANMF may still carry it.
+  //
+  // The alpha plane is decoded first when the bitstream header says how big
+  // it is, so its working set (four bytes a pixel for the lossless decoder
+  // that makes it) is gone before the colour picture's is built, and the two
+  // never stand together.  A header that does not say - a VP8 frame that is
+  // not a key frame - is decoded in the old order.
+  uint8_t * alpha = NULL;
+  uint32_t want_w = 0u;
+  uint32_t want_h = 0u;
+  const int have_alph = alph && alph_size > 0u;
+  const int sized = have_alph &&
+      (vp8l ? gimg_webp_peek_vp8l_dims(vp8l, vp8l_size, &want_w, &want_h, NULL)
+            : gimg_webp_peek_vp8_dims(vp8, vp8_size, &want_w, &want_h));
+  if (sized) {
+    const GIMG_Result ar = gimg_webp_alpha_decode(
+        alph, alph_size, want_w, want_h, alloc, &alpha);
+    if (ar != GIMG_OK) {
+      return ar;
+    }
+  }
+
+  GIMG_Result r;
+  if (vp8l) {
+    r = gimg_webp_vp8l_decode(vp8l, vp8l_size, alloc, out_raster);
+  }
+  else {
+    r = seq ? gimg_webp_vp8_decode_frame(vp8, vp8_size, alloc, seq, out_raster)
+            : gimg_webp_vp8_decode(vp8, vp8_size, alloc, out_raster);
+  }
+  if (r != GIMG_OK) {
+    gimg_free(alloc, alpha);
+    return r;
+  }
+  if (have_alph && !sized) {
+    r = gimg_webp_alpha_decode(alph, alph_size, gimg_raster_width(*out_raster),
+        gimg_raster_height(*out_raster), alloc, &alpha);
     if (r != GIMG_OK) {
+      gimg_raster_destroy(*out_raster);
+      *out_raster = NULL;
       return r;
     }
-    // ALPH beside VP8L is unusual for still files; ANMF may still carry it.
-    if (alph && alph_size > 0u) {
-      const uint32_t w = gimg_raster_width(*out_raster);
-      const uint32_t h = gimg_raster_height(*out_raster);
-      uint8_t * alpha = NULL;
-      r = gimg_webp_alpha_decode(alph, alph_size, w, h, alloc, &alpha);
-      if (r != GIMG_OK) {
-        gimg_raster_destroy(*out_raster);
-        *out_raster = NULL;
-        return r;
-      }
-      uint8_t * px = (uint8_t *)gimg_raster_pixels(*out_raster);
-      const size_t stride = gimg_raster_stride_bytes(*out_raster);
-      for (uint32_t y = 0; y < h; ++y) {
-        for (uint32_t x = 0; x < w; ++x) {
-          px[(size_t)y * stride + (size_t)x * 4u + 3u] =
-              alpha[(size_t)y * w + x];
-        }
-      }
-      gimg_free(alloc, alpha);
-    }
-    return GIMG_OK;
   }
-  if (vp8 && !vp8l) {
-    GIMG_Result r = seq
-        ? gimg_webp_vp8_decode_frame(vp8, vp8_size, alloc, seq, out_raster)
-        : gimg_webp_vp8_decode(vp8, vp8_size, alloc, out_raster);
-    if (r != GIMG_OK) {
-      return r;
-    }
-    if (alph && alph_size > 0u) {
-      const uint32_t w = gimg_raster_width(*out_raster);
-      const uint32_t h = gimg_raster_height(*out_raster);
-      uint8_t * alpha = NULL;
-      r = gimg_webp_alpha_decode(alph, alph_size, w, h, alloc, &alpha);
-      if (r != GIMG_OK) {
-        gimg_raster_destroy(*out_raster);
-        *out_raster = NULL;
-        return r;
-      }
-      uint8_t * px = (uint8_t *)gimg_raster_pixels(*out_raster);
-      const size_t stride = gimg_raster_stride_bytes(*out_raster);
-      for (uint32_t y = 0; y < h; ++y) {
-        for (uint32_t x = 0; x < w; ++x) {
-          px[(size_t)y * stride + (size_t)x * 4u + 3u] =
-              alpha[(size_t)y * w + x];
-        }
-      }
-      gimg_free(alloc, alpha);
-    }
-    return GIMG_OK;
+  else if (sized && (gimg_raster_width(*out_raster) != want_w ||
+                        gimg_raster_height(*out_raster) != want_h)) {
+    gimg_free(alloc, alpha);
+    gimg_raster_destroy(*out_raster);
+    *out_raster = NULL;
+    return GIMG_ERR_CORRUPT;
   }
-  return GIMG_ERR_UNSUPPORTED;
+  if (alpha) {
+    webp_apply_alpha_plane(*out_raster, alpha);
+    gimg_free(alloc, alpha);
+  }
+  return GIMG_OK;
 }
 
 /** Non-premultiplied OVER, matching libwebp BlendPixelNonPremult (RGBA). */

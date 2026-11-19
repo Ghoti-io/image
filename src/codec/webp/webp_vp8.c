@@ -1337,6 +1337,10 @@ static const int k_bicubic[8][6] = {
 
 struct gimg_vp8_seq {
   int ready;
+  /* Whether the three reference pictures are kept.  A sequence made for one
+   * still frame has no later frame to predict from, so it keeps none: they
+   * were three more full pictures, allocated, zeroed and filled for nothing. */
+  int keep_refs;
   uint32_t width;
   uint32_t height;
   uint32_t mb_w;
@@ -1412,6 +1416,7 @@ GIMG_Result gimg_vp8_seq_create(const GIMG_Allocator * alloc,
     return GIMG_ERR_OOM;
   }
   memset(seq, 0, sizeof(*seq));
+  seq->keep_refs = 1;
   vp8_seq_reset_entropy(seq);
   *out = seq;
   return GIMG_OK;
@@ -2493,7 +2498,7 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
     }
     memset(skip_mb, 0, (size_t)mb_w * mb_h);
   }
-  if (!vp8_seq_alloc_planes(seq, alloc, mb_w, mb_h) ||
+  if ((seq->keep_refs && !vp8_seq_alloc_planes(seq, alloc, mb_w, mb_h)) ||
       !vp8_seq_alloc_seg(seq, alloc, (size_t)mb_w * (size_t)mb_h)) {
     gimg_free(alloc, skip_mb);
     return GIMG_ERR_OOM;
@@ -2903,39 +2908,56 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
   memcpy(seq->seg_prob, seg_prob, sizeof(seg_prob));
   memcpy(seq->ref_lf, ref_lf, sizeof(ref_lf));
   memcpy(seq->mode_lf, mode_lf, sizeof(mode_lf));
-  /* Section 9.7. Copy another reference first, then let a refresh
-   * replace that buffer with the filtered current frame. */
-  if (copy_arf == 1) {
-    vp8_copy_ref(seq->y[2], seq->u[2], seq->v[2], seq->y[0], seq->u[0],
-        seq->v[0], seq->y_bytes, seq->uv_bytes);
-  }
-  else if (copy_arf == 2) {
-    vp8_copy_ref(seq->y[2], seq->u[2], seq->v[2], seq->y[1], seq->u[1],
-        seq->v[1], seq->y_bytes, seq->uv_bytes);
-  }
-  if (copy_gf == 1) {
-    vp8_copy_ref(seq->y[1], seq->u[1], seq->v[1], seq->y[0], seq->u[0],
-        seq->v[0], seq->y_bytes, seq->uv_bytes);
-  }
-  else if (copy_gf == 2) {
-    vp8_copy_ref(seq->y[1], seq->u[1], seq->v[1], seq->y[2], seq->u[2],
-        seq->v[2], seq->y_bytes, seq->uv_bytes);
-  }
-  if (refresh_gf) {
-    vp8_copy_ref(seq->y[1], seq->u[1], seq->v[1], y_plane, u_plane, v_plane,
-        seq->y_bytes, seq->uv_bytes);
-  }
-  if (refresh_arf) {
-    vp8_copy_ref(seq->y[2], seq->u[2], seq->v[2], y_plane, u_plane, v_plane,
-        seq->y_bytes, seq->uv_bytes);
-  }
-  if (refresh_last) {
-    vp8_copy_ref(seq->y[0], seq->u[0], seq->v[0], y_plane, u_plane, v_plane,
-        seq->y_bytes, seq->uv_bytes);
+  if (seq->keep_refs) {
+    /* Section 9.7. Copy another reference first, then let a refresh
+     * replace that buffer with the filtered current frame. */
+    if (copy_arf == 1) {
+      vp8_copy_ref(seq->y[2], seq->u[2], seq->v[2], seq->y[0], seq->u[0],
+          seq->v[0], seq->y_bytes, seq->uv_bytes);
+    }
+    else if (copy_arf == 2) {
+      vp8_copy_ref(seq->y[2], seq->u[2], seq->v[2], seq->y[1], seq->u[1],
+          seq->v[1], seq->y_bytes, seq->uv_bytes);
+    }
+    if (copy_gf == 1) {
+      vp8_copy_ref(seq->y[1], seq->u[1], seq->v[1], seq->y[0], seq->u[0],
+          seq->v[0], seq->y_bytes, seq->uv_bytes);
+    }
+    else if (copy_gf == 2) {
+      vp8_copy_ref(seq->y[1], seq->u[1], seq->v[1], seq->y[2], seq->u[2],
+          seq->v[2], seq->y_bytes, seq->uv_bytes);
+    }
+    if (refresh_gf) {
+      vp8_copy_ref(seq->y[1], seq->u[1], seq->v[1], y_plane, u_plane, v_plane,
+          seq->y_bytes, seq->uv_bytes);
+    }
+    if (refresh_arf) {
+      vp8_copy_ref(seq->y[2], seq->u[2], seq->v[2], y_plane, u_plane, v_plane,
+          seq->y_bytes, seq->uv_bytes);
+    }
+    if (refresh_last) {
+      vp8_copy_ref(seq->y[0], seq->u[0], seq->v[0], y_plane, u_plane, v_plane,
+          seq->y_bytes, seq->uv_bytes);
+    }
   }
   seq->width = width;
   seq->height = height;
-  seq->ready = 1;
+  seq->ready = seq->keep_refs;
+
+  /* The mode records, skip flags and non-zero maps are not read again; give
+   * them back before the raster is allocated, so they are not live beside it. */
+  gimg_free(alloc, modes);
+  modes = NULL;
+  gimg_free(alloc, skip_mb);
+  skip_mb = NULL;
+  gimg_free(alloc, y_nz);
+  y_nz = NULL;
+  gimg_free(alloc, u_nz);
+  u_nz = NULL;
+  gimg_free(alloc, v_nz);
+  v_nz = NULL;
+  gimg_free(alloc, y2_above);
+  y2_above = NULL;
 
   r = gimg_raster_create_with_allocator(alloc, width, height, &GIMG_PIXEL_RGBA8,
       GIMG_RASTER_OWNED, NULL, 0, &raster);
@@ -2993,6 +3015,7 @@ GIMG_Result gimg_webp_vp8_decode(const unsigned char * data, size_t size,
     }
     return r;
   }
+  seq->keep_refs = 0;
   r = gimg_webp_vp8_decode_frame(data, size, alloc, seq, out_raster);
   gimg_vp8_seq_destroy(alloc, seq);
   return r;

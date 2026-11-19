@@ -130,6 +130,45 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   straight (a fully transparent sample's RGB is zeroed). See Save and
   `make webp-rd`.
 
+## Memory of a still decode
+
+A decode holds the output raster, four bytes a pixel, and a working set
+beside it; the figures are measured by `testWebp_decode_memory` through an
+allocator that tracks its live bytes, and stated there as multiples of the
+raster.
+
+- **VP8L** decodes into one buffer of the picture's size, undoes every
+  inverse transform in it (the predictor, the cross-colour and
+  subtract-green transforms read a pixel before they write its slot, and the
+  colour-index unpack moves its packed input to the end of the buffer first),
+  converts the words to RGBA bytes in place, and hands the buffer to the
+  raster. The picture exists once: a peak of about 1.1 times the raster,
+  where it was about 3.3 (the decoded words, then two further full-size
+  buffers for the transforms, then the raster beside them). The prefix-code
+  node pool starts at 4096 nodes and doubles as the codes need, so a small
+  picture does not carry a large one's tables; a meta image that names more
+  groups than the rest of the stream has bits for (20 a group at the least)
+  is refused before anything is sized from the count.
+- **VP8** keeps the three planes (1.5 bytes a pixel), the per-macroblock mode
+  records and the raster. The three reference pictures that a later frame
+  would predict from are allocated only for a sequence that has a later frame
+  (an animation); a still decode, which has none, skips them and the copies
+  into them. The mode records, skip flags and non-zero maps are freed before
+  the raster is allocated.
+- **ALPH** is decoded before the colour picture when the bitstream header
+  gives its size, so its working set is gone first and only the plane (one
+  byte a pixel) stands beside the colour decoder. A lossless-compressed plane
+  is the decoder's own green plane, unfiltered in place and trimmed, not a
+  copy of it.
+- `max_memory` bounds each allocation, as everywhere (`stream.h`); the
+  whole-file read, the raster and every working buffer pass through it, so a
+  request over it fails the call with `GIMG_ERR_LIMIT` before the allocator
+  is asked. The decoder's total is now at most the raster plus a small
+  working set, so that single-allocation cap is also close to a bound on the
+  total. A VP8 key frame's mode records are the largest remaining excess
+  (160 bytes a macroblock, 0.6 bytes a pixel) and are held until the loop
+  filter has run.
+
 ## YUV→RGB (a match, not a derivation)
 
 VP8 produces YUV 4:2:0. Turning that into RGB is a choice of matrix, range and
