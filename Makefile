@@ -1533,6 +1533,10 @@ test-quiet: test-inputs $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $
 # build with no diagnostic.
 TSAN_DIR := $(BUILD_DIR)/tsan
 TSAN_FLAGS := -fsanitize=thread -g -O1 -fPIC
+# Each test is its own binary, since each has its own main(). The second is the
+# one that uses what threads share on purpose: the registry, one loaded
+# document, the lazily built tables and the per-thread memory cap.
+TSAN_TESTS := tests/unit/test_threads.cpp tests/unit/test_threads_shared.cpp
 
 test-tsan: ## Build the concurrency test under ThreadSanitizer and run it (Linux only)
 ifeq ($(OS_NAME), Linux)
@@ -1544,11 +1548,17 @@ test-tsan: $(LIBVER_GEN)
 		$(CC) $(TSAN_FLAGS) -std=c17 -DGIMG_BUILD $(INCLUDE) -c $$src -o $$obj \
 			|| exit 1; \
 	done
-	@$(CXX) $(TSAN_FLAGS) -std=c++20 $(INCLUDE) -c tests/unit/test_threads.cpp \
-		-o $(TSAN_DIR)/test_threads.o
-	@$(CXX) $(TSAN_FLAGS) -o $(TSAN_DIR)/testThreads $(TSAN_DIR)/*.o \
-		$(LDFLAGS) $(TESTFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS) -lpthread
-	@env -u LD_PRELOAD $(TSAN_DIR)/testThreads
+	@mkdir -p $(TSAN_DIR)/tests
+	@for t in $(TSAN_TESTS); do \
+		name=$$(basename $$t .cpp); \
+		$(CXX) $(TSAN_FLAGS) -std=c++20 $(INCLUDE) -c $$t \
+			-o $(TSAN_DIR)/tests/$$name.o || exit 1; \
+		$(CXX) $(TSAN_FLAGS) -o $(TSAN_DIR)/tests/$$name \
+			$(TSAN_DIR)/tests/$$name.o $(TSAN_DIR)/*.o \
+			$(LDFLAGS) $(TESTFLAGS) $(COMPRESS_LIBS) $(CUTIL_LIBS) $(COLOR_LIBS) \
+			-lpthread || exit 1; \
+		env -u LD_PRELOAD $(TSAN_DIR)/tests/$$name || exit 1; \
+	done
 	@printf "\033[0;32mThreadSanitizer found no data races.\033[0m\n"
 else
 test-tsan:

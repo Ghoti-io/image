@@ -615,6 +615,16 @@ stream is not safe to read from two. The memory cap and the limits of a load or
 decode are held per thread for the length of the call (see Limits), so
 concurrent calls do not share a budget.
 
+A loaded document may be shared by threads that only read it. Any number of
+threads may call `gimg_item_decode()` on its items, in any order and on the
+same item, and `gimg_doc_save()` on the document, at the same time: the
+animation canvas a GIF, APNG or WebP document keeps to make a forward walk
+linear is guarded by a lock of its own, and a decode returns a raster that
+belongs to the caller. What is not a read is what changes the document:
+`gimg_item_ensure_decoded()` attaches a raster to the item, and the `set`
+functions, `gimg_doc_set_item_count()` and destroying the document all need
+the document to themselves.
+
 ## Streams of your own
 
 The library never opens a file or a socket; it reads from and writes to a

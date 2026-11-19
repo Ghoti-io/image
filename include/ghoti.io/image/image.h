@@ -59,11 +59,14 @@
  *
  * What that leaves, in full:
  *
- * - **No object here is internally locked.** Two threads touching the *same*
- *   GIMG_Doc, GIMG_Raster or GIMG_Stream must arrange that between
- *   themselves, exactly as for a `struct` of their own. gimg_item_decode()
- *   and gimg_item_ensure_decoded() mutate the item they are given, so they
- *   count as writes and not as reads.
+ * - **A document is not internally locked, except for reading.** Two threads
+ *   touching the *same* GIMG_Doc, GIMG_Raster or GIMG_Stream must arrange that
+ *   between themselves, exactly as for a `struct` of their own, with one
+ *   exception: threads that only read a loaded GIMG_Doc may share it.
+ *   gimg_item_decode() on any of its items, in any order, and gimg_doc_save()
+ *   are reads (the animation canvas caches are guarded by a lock of their
+ *   own). gimg_item_ensure_decoded() mutates the item it is given, so it
+ *   counts as a write, as does every setter.
  * - **The codec registry is global and unsynchronized.** gimg_codec_register()
  *   writes it; gimg_probe(), gimg_doc_load(), gimg_doc_save(),
  *   gimg_codec_by_name() and gimg_codec_count() read it. The built-in
@@ -76,10 +79,14 @@
  *
  * This is checked rather than asserted: `tests/unit/test_threads.cpp`
  * requires a concurrent save to produce the same bytes as a solitary one, and
- * `make test-tsan` runs it under ThreadSanitizer from a cold start. Both were
- * watched failing against real defects - reciprocal quantizer tables the JPEG
- * encoder kept in statics, and derived Huffman tables published without
- * ordering - before being believed.
+ * `tests/unit/test_threads_shared.cpp` decodes the items of one shared
+ * animation in random order, holds a different memory cap on every thread,
+ * loads and saves from several threads at once and uses every format cold.
+ * `make test-tsan` runs both under ThreadSanitizer. They were watched failing
+ * against real defects - reciprocal quantizer tables the JPEG encoder kept in
+ * statics, derived Huffman tables published without ordering, an animation
+ * cache read without its lock, a memory cap shared between threads - before
+ * being believed.
  * @{
  */
 /** @} */
