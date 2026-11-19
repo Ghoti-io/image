@@ -65,7 +65,10 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   way `webpinfo` does.
 - `ICCP`, `EXIF`, `XMP ` attached as `meta_raw` under format id `"webp"` with
   the chunk fourcc as the tag; EXIF orientation into `meta_common` when
-  parseable.
+  parseable. The `ICCP` profile is also put on every raster the decoder
+  returns (a still's, or each animation canvas), as the PNG, JPEG and TIFF
+  decoders do theirs, so a loaded WebP saved as JPEG, PNG, TIFF or BMP carries
+  it; the raw block stays, which is what a WebP save reads.
 - `max_decoded_pixels` applied to the canvas product at load.
 - `max_chunk_size` applied to every chunk's declared payload, in
   `webp_push_chunk()` - the one function both the top-level RIFF walk and the
@@ -330,7 +333,7 @@ one-axis bar is unable to see.
 | Chunks | every RIFF chunk's declared payload bounded by `max_chunk_size`, nested `ANMF` bitstreams included | over the cap → `GIMG_ERR_LIMIT`; declared past the RIFF end → `GIMG_ERR_CORRUPT` |
 | Metadata | `ICCP`/`EXIF`/`XMP ` on the document, each bounded by `max_metadata_size` | over the caller's cap → `GIMG_ERR_LIMIT`; past the built-in 4 MiB guard → dropped with a warning, because an oversized profile says nothing about whether the picture decodes |
 | Metadata on save | `GIMG_META_STRIP_GPS` removes the GPS directory from `EXIF` and leaves `XMP ` out (it can carry a location and is not parsed); `GIMG_META_NORMALIZE_EXIF` rewrites `EXIF` | Exif the library cannot parse under either policy fails the save rather than passing through |
-| Metadata not carried | `EXIF` and `XMP ` are written from the raw blocks under the format id `"webp"` only; `ICCP` from the raw block or the raster's profile | Exif and XMP that arrived in another format, the resolution, the description, comments and text have no place, and a save with `GIMG_Save_Report.diagnostics` set names each kind dropped (@ref api_options_save_loss). A loop count or frame delays on a one-item document are dropped, and an item's thumbnail or alternate role becomes an animation frame. The decoder leaves a file's profile in the `ICCP` block and not on the raster, so a loaded WebP saved as another format is reported as dropping it; `GIMG_META_KEEP_COMMON_ONLY` writes no `ICCP` and reports the profile as dropped |
+| Metadata not carried | `EXIF` and `XMP ` are written from the raw blocks under the format id `"webp"` only; `ICCP` from the raw block or the raster's profile | Exif and XMP that arrived in another format, the resolution, the description, comments and text have no place, and a save with `GIMG_Save_Report.diagnostics` set names each kind dropped (@ref api_options_save_loss). A loop count or frame delays on a one-item document are dropped, and an item's thumbnail or alternate role becomes an animation frame. The decoder puts a file's profile on the raster as well as leaving it in the `ICCP` block, so a loaded WebP saved as another format carries it; `GIMG_META_KEEP_COMMON_ONLY` writes no `ICCP` and reports the profile as dropped |
 | VP8L decode | byte-identical to `dwebp -pam` | corrupt bitstream → `GIMG_ERR_CORRUPT` |
 | ALPH plane | byte-identical to `dwebp` alpha | corrupt → `GIMG_ERR_CORRUPT` |
 | VP8 decode | keyframe and, in one sequence, interframe → RGBA, optional ALPH merge, 9-3-3-1 chroma; a keyframe matches `dwebp` | a still interframe → `GIMG_ERR_CORRUPT`; version above 3 → `GIMG_ERR_UNSUPPORTED` |

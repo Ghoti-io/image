@@ -27,7 +27,9 @@
  * Phase E: ANIM/ANMF items and composited frame decode.
  */
 
+#include <ghoti.io/color/color.h>
 #include <ghoti.io/image/macros.h>
+#include <ghoti.io/image/raster.h>
 #include <string.h>
 
 #include "../../container/doc_internal.h"
@@ -559,9 +561,47 @@ GIMG_Result gimg_webp_check_bitstream_size(const unsigned char * vp8,
   return (w == want_w && h == want_h) ? GIMG_OK : GIMG_ERR_CORRUPT;
 }
 
+static GIMG_Result webp_decode_picture_or_frame(GIMG_Codec * codec,
+    const GIMG_Item * item, GIMG_Raster ** out_raster);
+
+/**
+ * Put the file's ICCP profile on a raster this file produced, the way the PNG,
+ * JPEG and TIFF decoders put theirs on theirs, so that a save into any format
+ * that reads the profile from the raster carries it.  The chunk stays in the
+ * document's raw blocks as well, which is what a WebP save reads.  The profile
+ * is copied by the raster; failing to attach it (no memory) leaves the picture
+ * as it was without one, as it is for those decoders.
+ */
+static void webp_attach_profile(
+    const gimg_webp_doc_state_t * st, GIMG_Raster * raster) {
+  if (!raster || !st->iccp || st->iccp_size == 0u) {
+    return;
+  }
+  GCOL_Color_Info info;
+  gcol_color_info_default(&info);
+  const GCOL_Color_Info * existing = gimg_raster_color_info_const(raster);
+  if (existing) {
+    info = *existing;
+  }
+  info.icc_bytes = st->iccp;
+  info.icc_size = st->iccp_size;
+  (void)gimg_raster_set_color_info(raster, &info);
+}
+
 GIMG_Result gimg_webp_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster) {
   (void)options;
+  const GIMG_Result r = webp_decode_picture_or_frame(codec, item, out_raster);
+  if (r == GIMG_OK && out_raster && item && item->doc &&
+      item->doc->codec_private) {
+    webp_attach_profile(
+        (const gimg_webp_doc_state_t *)item->doc->codec_private, *out_raster);
+  }
+  return r;
+}
+
+static GIMG_Result webp_decode_picture_or_frame(GIMG_Codec * codec,
+    const GIMG_Item * item, GIMG_Raster ** out_raster) {
   if (out_raster) {
     *out_raster = NULL;
   }

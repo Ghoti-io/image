@@ -477,9 +477,12 @@ typedef struct {
   uint32_t present;                 ///< Bit per kind.
   uint32_t family[GIMG_LOSS_COUNT]; ///< Families the raw kinds came from.
   /**
-   * A WebP ICCP chunk the document holds and no raster carries.  The WebP
-   * decoder leaves the profile in the raw block, and every writer but WebP's
-   * reads the profile from the raster, so it does not cross.
+   * A WebP ICCP chunk the document holds and its first item's decoded raster
+   * does not carry (the raster was replaced, or built without it).  The WebP
+   * decoder puts the profile on the rasters it returns as well as keeping the
+   * raw block, but a raster the caller supplied in its place has none, and
+   * every writer but WebP's reads the profile from the raster, so it does not
+   * cross.
    */
   bool webp_profile_off_raster;
 } inventory_t;
@@ -635,11 +638,20 @@ static void take_inventory(const GIMG_Doc * doc, inventory_t * inv) {
       classify_raw(inv, &doc->meta_raw->blocks[i], has_description);
     }
   }
-  if (inv->webp_profile_off_raster && doc->item_count > 0u && doc->items[0].raster) {
-    const GCOL_Color_Info * ci =
-        gimg_raster_color_info_const(doc->items[0].raster);
-    if (ci && ci->icc_bytes && ci->icc_size > 0u) {
-      inv->webp_profile_off_raster = false; // The caller put it there.
+  if (inv->webp_profile_off_raster) {
+    const GIMG_Raster * first =
+        doc->item_count > 0u ? doc->items[0].raster : NULL;
+    if (!first) {
+      // Not decoded yet.  The WebP decoder puts the profile on every raster it
+      // returns, and a writer decodes an item that has none through it, so the
+      // profile is there when it is read.
+      inv->webp_profile_off_raster = false;
+    }
+    else {
+      const GCOL_Color_Info * ci = gimg_raster_color_info_const(first);
+      if (ci && ci->icc_bytes && ci->icc_size > 0u) {
+        inv->webp_profile_off_raster = false; // On the raster, as decoded or put there.
+      }
     }
   }
   // A PNG-loaded document keeps its text, XMP and private chunks in the chunk
