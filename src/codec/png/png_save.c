@@ -194,11 +194,11 @@ static bool gimg_png_alpha_fits_trns(const GIMG_Raster * raster,
     for (uint32_t x = 0; x < w; x++) {
       uint16_t c[4];
       if (bit_depth == 16) {
-        const uint16_t * p = (const uint16_t *)(const void *)row + (size_t)x * 4u;
-        c[0] = p[0];
-        c[1] = p[1];
-        c[2] = p[2];
-        c[3] = p[3];
+        const unsigned char * p = row + (size_t)x * 8u;
+        c[0] = gimg_png_ld16(p);
+        c[1] = gimg_png_ld16(p + 2);
+        c[2] = gimg_png_ld16(p + 4);
+        c[3] = gimg_png_ld16(p + 6);
       }
       else {
         const unsigned char * p = row + (size_t)x * 4u;
@@ -239,11 +239,11 @@ static bool gimg_png_alpha_fits_trns(const GIMG_Raster * raster,
     for (uint32_t x = 0; x < w; x++) {
       uint16_t c[4];
       if (bit_depth == 16) {
-        const uint16_t * p = (const uint16_t *)(const void *)row + (size_t)x * 4u;
-        c[0] = p[0];
-        c[1] = p[1];
-        c[2] = p[2];
-        c[3] = p[3];
+        const unsigned char * p = row + (size_t)x * 8u;
+        c[0] = gimg_png_ld16(p);
+        c[1] = gimg_png_ld16(p + 2);
+        c[2] = gimg_png_ld16(p + 4);
+        c[3] = gimg_png_ld16(p + 6);
       }
       else {
         const unsigned char * p = row + (size_t)x * 4u;
@@ -1311,7 +1311,7 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
         for (uint32_t x = 0; x < w; x++) {
           const unsigned char * p = src + (size_t)x * src_pixel_bytes;
           gimg_png_write_be16(
-              row + 1 + (size_t)x * 2u, (uint16_t)(p[0] | (p[1] << 8)));
+              row + 1 + (size_t)x * 2u, gimg_png_ld16(p + 0));
         }
       }
     }
@@ -1327,11 +1327,11 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
       else {
         for (uint32_t x = 0; x < w; x++) {
           gimg_png_write_be16(row + 1 + 6u * (size_t)x + 0u,
-              (uint16_t)(src[0] | (src[1] << 8)));
+              gimg_png_ld16(src + 0));
           gimg_png_write_be16(row + 1 + 6u * (size_t)x + 2u,
-              (uint16_t)(src[2] | (src[3] << 8)));
+              gimg_png_ld16(src + 2));
           gimg_png_write_be16(row + 1 + 6u * (size_t)x + 4u,
-              (uint16_t)(src[4] | (src[5] << 8)));
+              gimg_png_ld16(src + 4));
           src += 8;
         }
       }
@@ -1347,9 +1347,9 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
       else {
         for (uint32_t x = 0; x < w; x++) {
           gimg_png_write_be16(row + 1 + 4u * (size_t)x + 0u,
-              (uint16_t)(src[0] | (src[1] << 8)));
+              gimg_png_ld16(src + 0));
           gimg_png_write_be16(row + 1 + 4u * (size_t)x + 2u,
-              (uint16_t)(src[6] | (src[7] << 8)));
+              gimg_png_ld16(src + 6));
           src += 8;
         }
       }
@@ -1361,13 +1361,13 @@ static GIMG_Result gimg_png_raster_to_raw_rows(const GIMG_Raster * raster,
       else {
         for (uint32_t x = 0; x < w; x++) {
           gimg_png_write_be16(row + 1 + 8u * (size_t)x + 0u,
-              (uint16_t)(src[0] | (src[1] << 8)));
+              gimg_png_ld16(src + 0));
           gimg_png_write_be16(row + 1 + 8u * (size_t)x + 2u,
-              (uint16_t)(src[2] | (src[3] << 8)));
+              gimg_png_ld16(src + 2));
           gimg_png_write_be16(row + 1 + 8u * (size_t)x + 4u,
-              (uint16_t)(src[4] | (src[5] << 8)));
+              gimg_png_ld16(src + 4));
           gimg_png_write_be16(row + 1 + 8u * (size_t)x + 6u,
-              (uint16_t)(src[6] | (src[7] << 8)));
+              gimg_png_ld16(src + 6));
           src += 8;
         }
       }
@@ -1489,7 +1489,7 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
       dest[0] = p[0];
       return 1;
     }
-    gimg_png_write_be16(dest, (uint16_t)(p[0] | (p[1] << 8)));
+    gimg_png_write_be16(dest, gimg_png_ld16(p + 0));
     return 2;
   }
   if (color_type == 2) {
@@ -1500,9 +1500,9 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
       dest[2] = p[2];
       return 3;
     }
-    gimg_png_write_be16(dest + 0, (uint16_t)(p[0] | (p[1] << 8)));
-    gimg_png_write_be16(dest + 2, (uint16_t)(p[2] | (p[3] << 8)));
-    gimg_png_write_be16(dest + 4, (uint16_t)(p[4] | (p[5] << 8)));
+    gimg_png_write_be16(dest + 0, gimg_png_ld16(p + 0));
+    gimg_png_write_be16(dest + 2, gimg_png_ld16(p + 2));
+    gimg_png_write_be16(dest + 4, gimg_png_ld16(p + 4));
     return 6;
   }
   if (color_type == 4) {
@@ -1512,8 +1512,8 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
       dest[1] = p[3];
       return 2;
     }
-    gimg_png_write_be16(dest + 0, (uint16_t)(p[0] | (p[1] << 8)));
-    gimg_png_write_be16(dest + 2, (uint16_t)(p[6] | (p[7] << 8)));
+    gimg_png_write_be16(dest + 0, gimg_png_ld16(p + 0));
+    gimg_png_write_be16(dest + 2, gimg_png_ld16(p + 6));
     return 4;
   }
   if (color_type == 6) {
@@ -1522,10 +1522,10 @@ static size_t gimg_png_write_pixel_at(const GIMG_Raster * raster,
       return 4;
     }
     const unsigned char * p = src + (size_t)x * 8u;
-    gimg_png_write_be16(dest + 0, (uint16_t)(p[0] | (p[1] << 8)));
-    gimg_png_write_be16(dest + 2, (uint16_t)(p[2] | (p[3] << 8)));
-    gimg_png_write_be16(dest + 4, (uint16_t)(p[4] | (p[5] << 8)));
-    gimg_png_write_be16(dest + 6, (uint16_t)(p[6] | (p[7] << 8)));
+    gimg_png_write_be16(dest + 0, gimg_png_ld16(p + 0));
+    gimg_png_write_be16(dest + 2, gimg_png_ld16(p + 2));
+    gimg_png_write_be16(dest + 4, gimg_png_ld16(p + 4));
+    gimg_png_write_be16(dest + 6, gimg_png_ld16(p + 6));
     return 8;
   }
   return 0;
@@ -2516,7 +2516,12 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
       if (desc) {
         size_t dlen = strlen(desc);
         size_t kw_len = 11;  // "Description"
-        if (dlen <= 0x7FFFFFFFu - kw_len - 1u) {
+        if (dlen > GIMG_PNG_CHUNK_LENGTH_MAX - kw_len - 1u) {
+          // Too long for a chunk's 31-bit length: refuse rather than drop it.
+          gimg_free(alloc, zlib_buf);
+          return GIMG_ERR_LIMIT;
+        }
+        {
           size_t total = kw_len + 1u + dlen;
           unsigned char * tEXt_payload =
               (unsigned char *)gimg_malloc(alloc, total);

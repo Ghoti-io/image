@@ -116,9 +116,8 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
         unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
         for (uint32_t x = 0; x < w; x++) {
           uint32_t v = gimg_png_sample_at(src, x, depth);
-          uint16_t le = (uint16_t)v;
-          dst[x * 2u] = (unsigned char)(le & 0xFFu);
-          dst[x * 2u + 1u] = (unsigned char)(le >> 8);
+          uint16_t le = (uint16_t)v; // host-order sample
+          gimg_png_st16(dst + (size_t)x * 2u, le);
         }
       }
     }
@@ -142,14 +141,10 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
           }
           else {
             uint16_t a16 = (uint16_t)(match ? 0 : 65535);
-            dst[0] = (unsigned char)(v16 & 0xFFu);
-            dst[1] = (unsigned char)(v16 >> 8);
-            dst[2] = (unsigned char)(v16 & 0xFFu);
-            dst[3] = (unsigned char)(v16 >> 8);
-            dst[4] = (unsigned char)(v16 & 0xFFu);
-            dst[5] = (unsigned char)(v16 >> 8);
-            dst[6] = (unsigned char)(a16 & 0xFFu);
-            dst[7] = (unsigned char)(a16 >> 8);
+            gimg_png_st16(dst + 0, v16);
+            gimg_png_st16(dst + 2, v16);
+            gimg_png_st16(dst + 4, v16);
+            gimg_png_st16(dst + 6, a16);
             dst += 8;
           }
         }
@@ -191,14 +186,10 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
           uint16_t r = gimg_png_read_be16(src), g = gimg_png_read_be16(src + 2),
                    b = gimg_png_read_be16(src + 4);
           bool match = has_trns && (r == trns_r && g == trns_g && b == trns_b);
-          dst[0] = (unsigned char)(r & 0xFFu);
-          dst[1] = (unsigned char)(r >> 8);
-          dst[2] = (unsigned char)(g & 0xFFu);
-          dst[3] = (unsigned char)(g >> 8);
-          dst[4] = (unsigned char)(b & 0xFFu);
-          dst[5] = (unsigned char)(b >> 8);
-          dst[6] = (unsigned char)(match ? 0 : 255);
-          dst[7] = (unsigned char)(match ? 0 : 255);
+          gimg_png_st16(dst + 0, r);
+          gimg_png_st16(dst + 2, g);
+          gimg_png_st16(dst + 4, b);
+          gimg_png_st16(dst + 6, (uint16_t)(match ? 0u : 65535u));
           src += 6;
           dst += 8;
         }
@@ -245,14 +236,10 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
         unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
         for (uint32_t x = 0; x < w; x++) {
           uint16_t g = gimg_png_read_be16(src), a = gimg_png_read_be16(src + 2);
-          dst[0] = (unsigned char)(g & 0xFFu);
-          dst[1] = (unsigned char)(g >> 8);
-          dst[2] = (unsigned char)(g & 0xFFu);
-          dst[3] = (unsigned char)(g >> 8);
-          dst[4] = (unsigned char)(g & 0xFFu);
-          dst[5] = (unsigned char)(g >> 8);
-          dst[6] = (unsigned char)(a & 0xFFu);
-          dst[7] = (unsigned char)(a >> 8);
+          gimg_png_st16(dst + 0, g);
+          gimg_png_st16(dst + 2, g);
+          gimg_png_st16(dst + 4, g);
+          gimg_png_st16(dst + 6, a);
           src += 4;
           dst += 8;
         }
@@ -272,14 +259,10 @@ void gimg_png_raw_full_to_pixels(const gimg_png_doc_state_t * state,
         const unsigned char * src = raw_full + (size_t)y * row_bytes;
         unsigned char * dst = (unsigned char *)pixels + (size_t)y * stride;
         for (uint32_t x = 0; x < w; x++) {
-          dst[0] = (unsigned char)(gimg_png_read_be16(src) & 0xFFu);
-          dst[1] = (unsigned char)(gimg_png_read_be16(src) >> 8);
-          dst[2] = (unsigned char)(gimg_png_read_be16(src + 2) & 0xFFu);
-          dst[3] = (unsigned char)(gimg_png_read_be16(src + 2) >> 8);
-          dst[4] = (unsigned char)(gimg_png_read_be16(src + 4) & 0xFFu);
-          dst[5] = (unsigned char)(gimg_png_read_be16(src + 4) >> 8);
-          dst[6] = (unsigned char)(gimg_png_read_be16(src + 6) & 0xFFu);
-          dst[7] = (unsigned char)(gimg_png_read_be16(src + 6) >> 8);
+          gimg_png_st16(dst + 0, gimg_png_read_be16(src + 0));
+          gimg_png_st16(dst + 2, gimg_png_read_be16(src + 2));
+          gimg_png_st16(dst + 4, gimg_png_read_be16(src + 4));
+          gimg_png_st16(dst + 6, gimg_png_read_be16(src + 6));
           src += 8;
           dst += 8;
         }

@@ -121,6 +121,39 @@ palette the image has left - so the file is composed in memory and handed to the
 stream whole, only on success. A sink that fails during that hand-over is
 reported as an error, never as success, and can leave a partial file.
 
+## Byte order of 16-bit samples
+
+PNG stores a 16-bit sample big-endian (7.1). A 16-bit raster (`GIMG_PIXEL_GRAY16`,
+`GIMG_PIXEL_RGBA16`) holds each sample as a `uint16_t` in the host's byte order,
+as every raster of that depth does (see the note in `raster.h`). The codec
+converts at the file boundary and nowhere else: decoding reads the two file
+bytes as `(hi << 8) | lo` and stores the value into the raster as a `uint16_t`;
+encoding loads the raster's `uint16_t` and writes `hi` then `lo`. Both go
+through `memcpy`, so no alignment or effective type is assumed of the buffer.
+The result is that a file decodes to the same sample values, and a raster is
+written to the same bytes, on a little-endian and a big-endian host. The
+same holds for the pieces that read raster samples without being the codec
+proper: the choice of colour type and the tRNS key search on save, and the
+16-bit APNG compositing, all of which compare sample values, not bytes.
+Alpha that tRNS adds to a 16-bit image is 0 or 65535.
+
+Earlier code stored each decoded sample as the byte pair (low, high), which is
+the host's order only on a little-endian machine, and so a big-endian host got
+byte-swapped samples from every 16-bit PNG while the operations in `ops` read
+the same raster as `uint16_t`.
+
+## A chunk's length is 31 bits
+
+A chunk's length field may not exceed 2^31 - 1 (5.3). `gimg_png_write_chunk`
+refuses a larger payload with `GIMG_ERR_LIMIT` before writing anything, and a
+non-zero size with no payload with `GIMG_ERR_INVALID`; it used to clamp the
+length and write a chunk whose header disagreed with its data. Every caller
+passes the error on, which makes a save refuse (and, as above, write nothing).
+Image data is written in chunks of at most 32768 bytes, so this limit is
+reached only by an ancillary payload (a text description, an embedded profile or
+Exif block); a `Description` too long for the chunk is now refused instead of
+being left out.
+
 ## The background colour
 
 bKGD (11.3.4.1) names a colour to present the image against. What its payload

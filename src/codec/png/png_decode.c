@@ -416,14 +416,14 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
       }
       else {
         for (uint32_t x = 0; x < fw; x++) {
-          uint16_t sa = (uint16_t)src[6] | ((uint16_t)src[7] << 8);
+          uint16_t sa = gimg_png_ld16(src + 6);
           if (sa == 65535) {
             memcpy(dst, src, 8);
           }
           else if (sa != 0) {
             const uint32_t inv_sa = 65535u - (uint32_t)sa;
             const uint32_t da =
-                (uint32_t)((uint16_t)dst[6] | ((uint16_t)dst[7] << 8));
+                (uint32_t)gimg_png_ld16(dst + 6);
             // See the eight-bit branch: the destination's alpha weights its
             // colour and the result is divided by the composite alpha.  This
             // used the opaque-destination simplification its own comment
@@ -432,10 +432,8 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
             const uint64_t ao =
                 (uint64_t)sa * 65535u + (uint64_t)da * inv_sa; // sa > 0
             for (int c = 0; c < 4; c++) {
-              uint16_t sc =
-                  (uint16_t)src[c * 2] | ((uint16_t)src[c * 2 + 1] << 8);
-              uint16_t dc =
-                  (uint16_t)dst[c * 2] | ((uint16_t)dst[c * 2 + 1] << 8);
+              uint16_t sc = gimg_png_ld16(src + c * 2);
+              uint16_t dc = gimg_png_ld16(dst + c * 2);
               uint32_t v;
               if (c < 3) {
                 const uint64_t sum = (uint64_t)sc * (uint64_t)sa * 65535u +
@@ -448,8 +446,7 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
               if (v > 65535u) {
                 v = 65535u;
               }
-              dst[c * 2] = (unsigned char)(v & 0xFFu);
-              dst[c * 2 + 1] = (unsigned char)(v >> 8);
+              gimg_png_st16(dst + c * 2, (uint16_t)v);
             }
           }
           src += 8;

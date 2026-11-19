@@ -186,8 +186,18 @@ GIMG_Result gimg_png_write_chunk(GIMG_Stream * stream,
   if (!stream) {
     return GIMG_ERR_INTERNAL;
   }
-  uint32_t len = (uint32_t)(payload_size > 0x7FFFFFFFu ? 0x7FFFFFFFu
-                                                       : payload_size);
+  // The length field is a 31-bit value (PNG 5.3).  A larger payload used to be
+  // written with its length clamped, which is a chunk whose CRC and bytes
+  // disagree with its own header; it is refused before a byte reaches the
+  // stream instead.  A payload that is absent while a length is claimed is the
+  // same kind of fault and is refused too.
+  if (payload_size > GIMG_PNG_CHUNK_LENGTH_MAX) {
+    return GIMG_ERR_LIMIT;
+  }
+  if (payload_size > 0 && !payload) {
+    return GIMG_ERR_INVALID;
+  }
+  uint32_t len = (uint32_t)payload_size;
   unsigned char header[8];
   header[0] = (unsigned char)(len >> 24);
   header[1] = (unsigned char)(len >> 16);

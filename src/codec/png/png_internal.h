@@ -72,6 +72,30 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+
+/** Largest payload a chunk can carry: its length field is 31 bits (PNG 5.3). */
+#define GIMG_PNG_CHUNK_LENGTH_MAX ((size_t)0x7FFFFFFFu)
+
+/**
+ * @brief Load one 16-bit raster sample.
+ *
+ * A 16-bit raster (GRAY16, RGBA16) holds its samples as `uint16_t` in the
+ * host's byte order.  The file stores them big-endian; the codec converts at
+ * that boundary and nowhere else.  These two helpers are the only places the
+ * codec reads or writes a raster sample through bytes, with `memcpy`, so
+ * neither alignment nor effective type is assumed of the buffer.
+ */
+static inline uint16_t gimg_png_ld16(const unsigned char * p) {
+  uint16_t v;
+  memcpy(&v, p, sizeof v);
+  return v;
+}
+
+/** @brief Store one 16-bit raster sample in host order. */
+static inline void gimg_png_st16(unsigned char * p, uint16_t v) {
+  memcpy(p, &v, sizeof v);
+}
 
 #ifdef __cplusplus
 extern "C" {
@@ -551,6 +575,12 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
 /**
  * @brief Write one PNG chunk to stream: length (4 BE), type (4), payload, CRC
  * (4). Stream must support write.
+ *
+ * Nothing is written when the chunk cannot be: a payload over
+ * GIMG_PNG_CHUNK_LENGTH_MAX (the length field is 31 bits, PNG 5.3) returns
+ * GIMG_ERR_LIMIT, and a non-empty size with a NULL payload returns
+ * GIMG_ERR_INVALID.  The refusal is decided from @a payload_size alone, before
+ * the payload is read.
  */
 GIMG_Result gimg_png_write_chunk(GIMG_Stream * stream,
     gimg_png_chunk_type_t type, const unsigned char * payload,

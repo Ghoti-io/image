@@ -173,6 +173,23 @@ GIMG_API uint8_t gimg_pixel_format_channel_bits(
 GIMG_API GIMG_Result gimg_pixel_format_multichannel(
     uint8_t channel_count, uint8_t bits, GIMG_Pixel_Format * out_format);
 
+/**
+ * Byte order of a sample wider than eight bits.
+ *
+ * A raster whose format has 12- or 16-bit channels (GIMG_PIXEL_GRAY16,
+ * GIMG_PIXEL_RGBA16, the 12-bit and CMYK formats) holds each sample as one
+ * `uint16_t` in the **host's** byte order, and a raster of 32-bit channels
+ * holds one 32-bit value per sample, also in host order.  A sample is
+ * therefore read and written through a `uint16_t` (or `uint32_t`) object, and
+ * a buffer lent to gimg_raster_create_with_allocator() as GIMG_RASTER_BORROWED
+ * must be aligned for that type (the call refuses one that is not).  It is
+ * never a pair of bytes in a fixed order.  A codec converts between this and
+ * its file format's byte order at its own boundary (PNG stores 16-bit samples
+ * big-endian), so one file decodes to the same sample values on a big- and on
+ * a little-endian host, and what a codec writes is a function of the sample
+ * values and never of the host.
+ */
+
 /** @brief Canonical RGBA 8-bit per channel (sRGB). */
 extern const GIMG_Pixel_Format GIMG_PIXEL_RGBA8;
 /** @brief Canonical RGBA 16-bit per channel. */
