@@ -301,6 +301,12 @@ or many".
 - A document whose frames differ in size is refused: the canvas is the first
   frame's, so a differing size asks a placement question the caller has not
   been asked.
+- A save that is refused leaves the output stream untouched, not merely
+  incomplete. Some refusals are only found part-way through - a later frame
+  with more than 256 colours, a later frame of another size or pixel format - so
+  the file is composed in memory and handed to the stream whole, only on
+  success. A sink that fails during that hand-over is reported as `GIMG_ERR_IO`
+  (or its own error), never as success, and can leave a partial file.
 
 ### One table or many
 

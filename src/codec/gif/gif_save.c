@@ -1181,7 +1181,7 @@ static unsigned char gif_aspect_byte(const GIMG_Doc * doc) {
   return (unsigned char)(scaled - 15u);
 }
 
-GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
+static GIMG_Result gif_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report) {
   (void)format_name;
@@ -1564,3 +1564,62 @@ done:
   report->bytes_written = gimg_stream_tell(stream);
   return GIMG_OK;
 }
+
+/**
+ * Write what a finished save produced to the caller's stream, whole or not at
+ * all as far as this writer can tell.
+ *
+ * The save is composed in memory and handed over only once it has succeeded,
+ * so a refusal - a frame that cannot be expressed, a colour count that is
+ * found only when a later frame is planned, metadata that cannot be encoded -
+ * leaves the caller's stream exactly as it was, however deep into the document
+ * it was found.  Only a failing sink can still leave a partial file, and that
+ * is reported as the error it is.
+ */
+static GIMG_Result gif_flush(
+    GIMG_Stream * stream, const unsigned char * data, size_t size) {
+  size_t done = 0;
+  while (done < size) {
+    size_t written = 0;
+    const GIMG_Result r =
+        gimg_stream_write(stream, data + done, size - done, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    if (written == 0u) {
+      return GIMG_ERR_IO;
+    }
+    done += written;
+  }
+  return GIMG_OK;
+}
+
+GIMG_Result gimg_gif_save(GIMG_Codec * codec, const GIMG_Doc * doc,
+    GIMG_Stream * stream, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report) {
+  if (!codec || !doc || !stream || !report) {
+    return GIMG_ERR_INTERNAL;
+  }
+  GIMG_Stream * staged = NULL;
+  GIMG_Result r = gimg_stream_create_memory_output_with_allocator(
+      codec->allocator, &staged);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  GIMG_Save_Report staged_report;
+  memset(&staged_report, 0, sizeof(staged_report));
+  r = gif_save_body(
+      codec, doc, staged, format_name, options, &staged_report);
+  if (r == GIMG_OK) {
+    const void * data = NULL;
+    size_t size = 0;
+    gimg_stream_output_buffer(staged, &data, &size);
+    r = gif_flush(stream, (const unsigned char *)data, size);
+    if (r == GIMG_OK) {
+      report->bytes_written = size;
+    }
+  }
+  gimg_stream_destroy(staged);
+  return r;
+}
+

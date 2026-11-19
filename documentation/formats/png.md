@@ -112,6 +112,15 @@ V5 embedded ICC profile came out as an untagged PNG and the profile was read
 only to be dropped. `GIMG_META_DROP_ALL` and `GIMG_META_KEEP_RAW_ONLY` still
 drop it, as they drop the rest.
 
+## A refused save writes nothing
+
+A save that is refused leaves the output stream untouched. Several refusals are
+only found after frame 0 has been encoded - an APNG frame of another size or
+colour type, an Exif chunk that a stripping policy cannot rewrite, a kept
+palette the image has left - so the file is composed in memory and handed to the
+stream whole, only on success. A sink that fails during that hand-over is
+reported as an error, never as success, and can leave a partial file.
+
 ## The background colour
 
 bKGD (11.3.4.1) names a colour to present the image against. What its payload

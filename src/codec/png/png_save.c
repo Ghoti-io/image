@@ -3025,6 +3025,34 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
 }
 
 /**
+ * Write what a finished save produced to the caller's stream.
+ *
+ * The save is composed in memory and handed over only once it has succeeded,
+ * so a refusal - a frame that cannot be expressed, a failure found only when a
+ * later frame is encoded, metadata that cannot be written - leaves the caller's
+ * stream exactly as it was, however deep into the document it was found.  Only
+ * a failing sink can still leave a partial file, and that is reported as the
+ * error it is.
+ */
+static GIMG_Result png_flush(
+    GIMG_Stream * stream, const unsigned char * data, size_t size) {
+  size_t done = 0;
+  while (done < size) {
+    size_t written = 0;
+    const GIMG_Result r =
+        gimg_stream_write(stream, data + done, size - done, &written);
+    if (r != GIMG_OK) {
+      return r;
+    }
+    if (written == 0u) {
+      return GIMG_ERR_IO;
+    }
+    done += written;
+  }
+  return GIMG_OK;
+}
+
+/**
  * Save a document as a PNG.
  *
  * A thin owner around png_save_body: the colour the chunk writer states has
@@ -3036,10 +3064,30 @@ static GIMG_Result png_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
 GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     GIMG_Stream * stream, const char * format_name,
     const GIMG_Save_Options * options, GIMG_Save_Report * report) {
+  if (!codec || !doc || !stream || !report) {
+    return GIMG_ERR_INTERNAL;
+  }
+  GIMG_Stream * staged = NULL;
+  GIMG_Result r = gimg_stream_create_memory_output_with_allocator(
+      codec->allocator, &staged);
+  if (r != GIMG_OK) {
+    return r;
+  }
   void * icc_copy = NULL;
-  GIMG_Result r =
-      png_save_body(codec, doc, stream, format_name, options, report,
-          &icc_copy);
-  gimg_free(codec ? gimg_alloc_or_default(codec->allocator) : NULL, icc_copy);
+  GIMG_Save_Report staged_report;
+  memset(&staged_report, 0, sizeof(staged_report));
+  r = png_save_body(
+      codec, doc, staged, format_name, options, &staged_report, &icc_copy);
+  gimg_free(gimg_alloc_or_default(codec->allocator), icc_copy);
+  if (r == GIMG_OK) {
+    const void * data = NULL;
+    size_t size = 0;
+    gimg_stream_output_buffer(staged, &data, &size);
+    r = png_flush(stream, (const unsigned char *)data, size);
+    if (r == GIMG_OK) {
+      report->bytes_written = size;
+    }
+  }
+  gimg_stream_destroy(staged);
   return r;
 }
