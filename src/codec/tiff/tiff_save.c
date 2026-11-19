@@ -86,6 +86,8 @@ typedef struct {
   uint16_t bits;           ///< BitsPerSample, the same for every sample.
   uint16_t photometric;
   bool has_alpha;
+  /** A reduced-resolution item (not the first): NewSubfileType bit 0. */
+  bool is_level;
   uint32_t rows_per_strip;
   size_t strip_count;
   unsigned char ** strips; ///< Each strip's bytes as they go into the file.
@@ -564,6 +566,14 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
   page->pool_size = 0;
 
   unsigned char scratch[8];
+  // 254 sorts before every other tag, so it goes first. A reader that sees
+  // bit 0 on a directory in the main chain takes it for a smaller copy of the
+  // full-size page before it, which is what the item was.
+  if (page->is_level) {
+    tiff_put_u32(scratch, 1u, be);
+    tiff_add_entry(page, GIMG_TIFF_TAG_NEW_SUBFILE_TYPE, GIMG_TIFF_TYPE_LONG,
+        1u, scratch, 4u);
+  }
   tiff_put_u32(scratch, page->width, be);
   tiff_add_entry(page, GIMG_TIFF_TAG_IMAGE_WIDTH, GIMG_TIFF_TYPE_LONG, 1u,
       scratch, 4u);
@@ -824,6 +834,7 @@ GIMG_Result gimg_tiff_save(GIMG_Codec * codec, const GIMG_Doc * doc,
       r = GIMG_ERR_INTERNAL;
       break;
     }
+    page->is_level = i > 0u && gimg_item_role(item) == GIMG_ITEM_LEVEL;
     page->raster = gimg_item_raster(item);
     if (!page->raster) {
       GIMG_Result dr = gimg_item_decode(item, NULL, &page->raster);

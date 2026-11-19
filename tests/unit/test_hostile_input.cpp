@@ -302,9 +302,14 @@ TEST(HostileInput, ASubDirectoryThatIsItsOwnPageIsNotReadTwice) {
   for (uint32_t i = 0; i < 12; i++) {
     d.push_back((uint8_t)(i + 1u));
   }
+  // The page is read once; the SubIFD that names it again is dropped, not
+  // read as a level of itself, and the page is kept.
   GIMG_Doc * doc = nullptr;
-  EXPECT_NE(load_with(d, nullptr, &doc), GIMG_OK);
-  EXPECT_EQ(doc, nullptr);
+  EXPECT_EQ(load_with(d, nullptr, &doc), GIMG_OK);
+  ASSERT_NE(doc, nullptr);
+  EXPECT_EQ(gimg_doc_item_count(doc), 1u);
+  gimg_doc_destroy(doc);
+  doc = nullptr;
   EXPECT_EQ(load_with(b, nullptr, &doc), GIMG_OK) << "control";
   gimg_doc_destroy(doc);
 }

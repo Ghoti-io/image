@@ -69,6 +69,34 @@ static void tiff_diag(
       d, "tiff", offset, 0u, GIMG_DIAG_ERROR, action);
 }
 
+/**
+ * Whether a refusal of one directory is damage to that directory (the pages
+ * that did read can be kept) rather than a limit, an allocation failure or an
+ * internal error (which refuse the whole file, as before).
+ */
+static bool tiff_damage_tolerable(GIMG_Result r) {
+  return r == GIMG_ERR_CORRUPT || r == GIMG_ERR_UNSUPPORTED;
+}
+
+/**
+ * Record that a directory was dropped and the load went on without it.
+ *
+ * The reasons the failing directory gave were appended as errors on the way;
+ * the load succeeded, so they are demoted to warnings from @p mark on, and
+ * one more says what was lost.
+ */
+static void tiff_diag_damaged(GIMG_Diagnostics * d, size_t mark, size_t offset,
+    const char * what) {
+  if (!d) {
+    return;
+  }
+  for (size_t i = mark; i < d->count; i++) {
+    d->items[i].severity = GIMG_DIAG_WARNING;
+  }
+  (void)gimg_diagnostics_append(
+      d, "tiff", offset, 0u, GIMG_DIAG_WARNING, what);
+}
+
 // ---------------------------------------------------------------------------
 // Byte-order-aware readers
 //
@@ -1347,9 +1375,10 @@ static GIMG_Result tiff_append_ifd(GIMG_Codec * codec,
     return r;
   }
   st->ifds[st->ifd_count].at = at;
+  size_t held = 0;
   {
     const gimg_tiff_ifd_t * got = &st->ifds[st->ifd_count];
-    size_t held = got->icc_size + got->xmp_size + got->jpeg_tables_size +
+    held = got->icc_size + got->xmp_size + got->jpeg_tables_size +
         got->block_count * 2u * sizeof(uint64_t) +
         got->color_map_count * sizeof(uint16_t) +
         got->sub_ifd_count * sizeof(uint64_t);
@@ -1365,12 +1394,20 @@ static GIMG_Result tiff_append_ifd(GIMG_Codec * codec,
       return GIMG_ERR_LIMIT;
     }
   }
+  // Checked before the slot is counted, so a directory the caller may drop
+  // leaves nothing behind: its memory is freed and its metadata is given back
+  // to the retained budget.
+  r = tiff_check_supported(st, &st->ifds[st->ifd_count], limits, diagnostics,
+      st->ifd_count);
+  if (r != GIMG_OK) {
+    tiff_free_ifd(st->allocator, &st->ifds[st->ifd_count]);
+    st->retained -= held;
+    return r;
+  }
   st->ifd_count++;
   *out_index = st->ifd_count - 1u;
-  r = tiff_check_supported(st, &st->ifds[*out_index], limits, diagnostics,
-      *out_index);
   (void)codec;
-  return r;
+  return GIMG_OK;
 }
 
 GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
@@ -1459,19 +1496,35 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // it until now. A directory in the *chain* whose NewSubfileType says
   // "reduced resolution" is the older spelling of the same thing and belongs
   // to the last full-size page seen.
+  //
+  // The first directory must read: without it there is no picture. A later
+  // one that cannot read (a bad offset, a truncated or corrupt directory, one
+  // that names an earlier directory again, or a compression this codec does
+  // not undo) ends the chain there: the pages before it are kept and a
+  // warning says the rest was not read. A SubIFD that cannot read is dropped
+  // and its siblings and the chain go on. Limits and allocation failures
+  // still refuse the file.
   uint64_t previous = 0u;
   size_t last_full_size = 0;
   while (at != 0u) {
-    if (st->ifd_count > 0u && at <= previous) {
-      tiff_diag(diagnostics, (size_t)at, "the directory chain does not advance");
-      gimg_tiff_free_doc_state(codec, st);
-      return GIMG_ERR_CORRUPT;
-    }
+    const size_t mark = diagnostics ? diagnostics->count : 0u;
     size_t index = 0;
     uint64_t next = 0u;
-    r = tiff_append_ifd(
-        codec, st, at, limits, diagnostics, &index, &next);
+    if (st->ifd_count > 0u && at <= previous) {
+      tiff_diag(diagnostics, (size_t)at, "the directory chain does not advance");
+      r = GIMG_ERR_CORRUPT;
+    }
+    else {
+      r = tiff_append_ifd(
+          codec, st, at, limits, diagnostics, &index, &next);
+    }
     if (r != GIMG_OK) {
+      if (st->ifd_count > 0u && tiff_damage_tolerable(r)) {
+        tiff_diag_damaged(diagnostics, mark, (size_t)at,
+            "a directory could not be read; it and the pages after it "
+            "were dropped");
+        break;
+      }
       gimg_tiff_free_doc_state(codec, st);
       return r;
     }
@@ -1493,6 +1546,7 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
       if (where == 0u) {
         continue;
       }
+      const size_t level_mark = diagnostics ? diagnostics->count : 0u;
       size_t level_index = 0;
       uint64_t ignored = 0u;
       r = tiff_append_ifd(codec, st, where, limits, diagnostics, &level_index,
@@ -1500,6 +1554,12 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
       if (r == GIMG_OK) {
         st->ifds[level_index].role = GIMG_ITEM_LEVEL;
         st->ifds[level_index].role_subject = index;
+      }
+      else if (tiff_damage_tolerable(r)) {
+        tiff_diag_damaged(diagnostics, level_mark, (size_t)where,
+            "a reduced-resolution directory could not be read and was "
+            "dropped");
+        r = GIMG_OK;
       }
     }
     if (r != GIMG_OK) {
