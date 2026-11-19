@@ -1226,11 +1226,11 @@ TEST(Webp, SaveLossyDecodable) {
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_32x16.webp";
     std::ofstream out(path, std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(out));
+    EXPECT_TRUE(static_cast<bool>(out)) << "cannot write the published file";
     out.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(mark));
+    EXPECT_TRUE(static_cast<bool>(mark)) << "cannot write the published file";
   }
 
   gimg_raster_destroy(back);
@@ -1296,11 +1296,11 @@ TEST(Webp, SaveLossyGradientKeepsDetail) {
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_gradient.webp";
     std::ofstream file(path, std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(file));
+    EXPECT_TRUE(static_cast<bool>(file)) << "cannot write the published file";
     file.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(mark));
+    EXPECT_TRUE(static_cast<bool>(mark)) << "cannot write the published file";
   }
 
   gimg_raster_destroy(back);
@@ -1367,11 +1367,11 @@ TEST(Webp, SaveLossyRampPricesBits) {
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_ramp.webp";
     std::ofstream file(path, std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(file));
+    EXPECT_TRUE(static_cast<bool>(file)) << "cannot write the published file";
     file.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(mark));
+    EXPECT_TRUE(static_cast<bool>(mark)) << "cannot write the published file";
   }
 
   gimg_raster_destroy(back);
@@ -1439,11 +1439,11 @@ TEST(Webp, SaveLossyStepPricesVertical) {
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_step.webp";
     std::ofstream file(path, std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(file));
+    EXPECT_TRUE(static_cast<bool>(file)) << "cannot write the published file";
     file.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(mark));
+    EXPECT_TRUE(static_cast<bool>(mark)) << "cannot write the published file";
   }
 
   gimg_raster_destroy(back);
@@ -1515,11 +1515,11 @@ TEST(Webp, SaveLossyCheckerUsesSubblocks) {
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_checker.webp";
     std::ofstream file(path, std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(file));
+    EXPECT_TRUE(static_cast<bool>(file)) << "cannot write the published file";
     file.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(mark));
+    EXPECT_TRUE(static_cast<bool>(mark)) << "cannot write the published file";
   }
 
   gimg_raster_destroy(back);
@@ -1570,11 +1570,11 @@ TEST(Webp, SaveLossySpikeDropsWeakCoeff) {
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_spike.webp";
     std::ofstream file(path, std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(file));
+    EXPECT_TRUE(static_cast<bool>(file)) << "cannot write the published file";
     file.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(mark));
+    EXPECT_TRUE(static_cast<bool>(mark)) << "cannot write the published file";
   }
   gimg_stream_destroy(out);
   gimg_doc_destroy(doc);
@@ -1652,11 +1652,11 @@ TEST(Webp, SaveLossyAlphaKeepsPlane) {
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_alpha.webp";
     std::ofstream file(path, std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(file));
+    EXPECT_TRUE(static_cast<bool>(file)) << "cannot write the published file";
     file.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(mark));
+    EXPECT_TRUE(static_cast<bool>(mark)) << "cannot write the published file";
   }
 
   gimg_raster_destroy(back);
@@ -1785,11 +1785,11 @@ TEST(Webp, SaveLossySegmentsFlatBesideDetail) {
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_segments.webp";
     std::ofstream outfile(path, std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(outfile));
+    EXPECT_TRUE(static_cast<bool>(outfile)) << "cannot write the published file";
     outfile.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(mark));
+    EXPECT_TRUE(static_cast<bool>(mark)) << "cannot write the published file";
   }
 
   gimg_raster_destroy(back);
@@ -1871,11 +1871,11 @@ TEST(Webp, SaveLossySkipDropsEmptyTokens) {
     const std::string path =
         std::string(GIMG_TEST_OUT_WEBP) + "/stub_lossy_skip.webp";
     std::ofstream outfile(path, std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(outfile));
+    EXPECT_TRUE(static_cast<bool>(outfile)) << "cannot write the published file";
     outfile.write(static_cast<const char *>(bytes),
         static_cast<std::streamsize>(nbytes));
     std::ofstream mark(path + ".lossy", std::ios::binary);
-    ASSERT_TRUE(static_cast<bool>(mark));
+    EXPECT_TRUE(static_cast<bool>(mark)) << "cannot write the published file";
   }
 
   gimg_raster_destroy(back);
