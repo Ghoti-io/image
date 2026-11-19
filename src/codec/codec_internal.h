@@ -120,6 +120,22 @@ GIMG_Result gimg_codec_add_magic(
     GIMG_Codec * codec, const void * bytes, size_t length, size_t offset);
 
 /**
+ * @brief Run a writer so that it leaves the caller's stream untouched unless
+ * it succeeds.
+ *
+ * The file is composed in a memory stream and handed over only once @p body
+ * has returned GIMG_OK, so a refusal found after the first byte had been
+ * produced - an allocation the memory cap turns down while a later segment is
+ * built, a feature the output cannot express - writes nothing. Only a failing
+ * sink can leave a partial file, and that is reported as the error it is.
+ * report->bytes_written is the size of the file on success and zero on any
+ * failure.
+ */
+GIMG_Result gimg_codec_save_staged(GIMG_Codec * codec, gimg_codec_save_fn body,
+    const GIMG_Doc * doc, GIMG_Stream * stream, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report);
+
+/**
  * @brief Set load callback (internal; used by codec registration).
  */
 void gimg_codec_set_load_cb(GIMG_Codec * codec, gimg_codec_load_fn fn);

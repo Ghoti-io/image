@@ -245,6 +245,12 @@ typedef enum {
 /**
  * @brief Create a raster image (uses default allocator).
  *
+ * The caller chooses the dimensions and the allocation is the caller's own:
+ * it is not held to GIMG_Limits (there are none to pass), and a width and
+ * height whose pixel buffer does not fit in a size_t fail with
+ * GIMG_ERR_LIMIT. A raster made by a load, a decode or a save is counted
+ * against that call's max_memory while the call runs.
+ *
  * @return GIMG_ERR_UNSUPPORTED for a format with no whole-byte pixel, or a
  *   GIMG_CHANNEL_FLOAT format with any channel not 32 bits wide.
  */

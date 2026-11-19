@@ -345,6 +345,44 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
   return r;
 }
 
+GIMG_Result gimg_codec_save_staged(GIMG_Codec * codec, gimg_codec_save_fn body,
+    const GIMG_Doc * doc, GIMG_Stream * stream, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report) {
+  if (!codec || !body || !doc || !stream || !report) {
+    return GIMG_ERR_INTERNAL;
+  }
+  report->bytes_written = 0;
+  GIMG_Stream * staged = NULL;
+  GIMG_Result r = gimg_stream_create_memory_output_with_allocator(
+      codec->allocator, &staged);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  GIMG_Save_Report staged_report;
+  memset(&staged_report, 0, sizeof(staged_report));
+  r = body(codec, doc, staged, format_name, options, &staged_report);
+  if (r == GIMG_OK) {
+    const void * buffer = NULL;
+    size_t size = 0;
+    gimg_stream_output_buffer(staged, &buffer, &size);
+    const unsigned char * data = (const unsigned char *)buffer;
+    size_t done = 0;
+    while (r == GIMG_OK && done < size) {
+      size_t written = 0;
+      r = gimg_stream_write(stream, data + done, size - done, &written);
+      if (r == GIMG_OK && written == 0u) {
+        r = GIMG_ERR_IO;
+      }
+      done += written;
+    }
+    if (r == GIMG_OK) {
+      report->bytes_written = size;
+    }
+  }
+  gimg_stream_destroy(staged);
+  return r;
+}
+
 /**
  * Run a codec's writer and, when it succeeds, append to the caller's
  * report.diagnostics a warning for each kind of metadata the document holds
@@ -355,11 +393,23 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
 static GIMG_Result gimg_codec_save_reporting(GIMG_Codec * codec,
     const GIMG_Doc * doc, const GIMG_Doc * saved, GIMG_Stream * stream,
     const char * format_name, const GIMG_Save_Options * options,
-    GIMG_Save_Report * report) {
+    GIMG_Save_Report * report, bool capped) {
   gimg_save_loss_t scope;
   gimg_save_loss_begin(&scope);
-  GIMG_Result r =
-      codec->save_cb(codec, saved, stream, format_name, options, report);
+  // BMP, JPEG and TIFF hand the stream their bytes as they go, and the memory
+  // cap can turn an allocation down after the first of them - the growth of a
+  // memory stream used as the destination, for one.  Under a cap they compose
+  // the file in memory and hand it over whole, so that a refusal writes
+  // nothing.  GIF and PNG always do, and ICO and WebP build the file before a
+  // single write.  Uncapped, nothing can refuse an allocation but the
+  // allocator itself, and the file is not held twice.
+  const bool stage = capped &&
+      (strcmp(codec->name, "bmp") == 0 || strcmp(codec->name, "jpeg") == 0 ||
+          strcmp(codec->name, "tiff") == 0);
+  GIMG_Result r = stage
+      ? gimg_codec_save_staged(
+            codec, codec->save_cb, saved, stream, format_name, options, report)
+      : codec->save_cb(codec, saved, stream, format_name, options, report);
   gimg_save_loss_end(&scope);
   if (r == GIMG_OK) {
     gimg_save_loss_report(&scope, doc, codec->name, options, report);
@@ -367,17 +417,10 @@ static GIMG_Result gimg_codec_save_reporting(GIMG_Codec * codec,
   return r;
 }
 
-GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
-    const char * format_name, const GIMG_Save_Options * options,
-    GIMG_Save_Report * report) {
-  if (!doc || !stream || !format_name) {
-    return GIMG_ERR_INTERNAL;
-  }
-
-  GIMG_Codec * codec = gimg_codec_by_name(format_name);
-  if (!codec || !codec->save_cb) {
-    return GIMG_ERR_UNSUPPORTED;
-  }
+static GIMG_Result gimg_doc_save_in_scope(const GIMG_Doc * doc,
+    GIMG_Stream * stream, GIMG_Codec * codec, const char * format_name,
+    const GIMG_Save_Options * options, GIMG_Save_Report * report,
+    bool capped) {
 
   // No format here stores premultiplied colour, and none of the writers reads
   // a raster's alpha form.  A premultiplied raster handed to one was written
@@ -394,7 +437,8 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
   }
   if (premultiplied == 0) {
     return gimg_codec_save_reporting(
-        (GIMG_Codec *)codec, doc, doc, stream, format_name, options, report);
+        (GIMG_Codec *)codec, doc, doc, stream, format_name, options, report,
+        capped);
   }
 
   const GIMG_Allocator * alloc = gimg_alloc_or_default(doc->allocator);
@@ -427,7 +471,7 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
   }
   if (r == GIMG_OK) {
     r = gimg_codec_save_reporting((GIMG_Codec *)codec, doc, &view, stream,
-        format_name, options, report);
+        format_name, options, report, capped);
   }
   for (size_t i = 0; i < doc->item_count; i++) {
     if (items[i].raster != doc->items[i].raster) {
@@ -435,6 +479,46 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     }
   }
   gimg_free(alloc, items);
+  return r;
+}
+
+GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
+    const char * format_name, const GIMG_Save_Options * options,
+    GIMG_Save_Report * report) {
+  if (!doc || !stream || !format_name) {
+    return GIMG_ERR_INTERNAL;
+  }
+
+  GIMG_Codec * codec = gimg_codec_by_name(format_name);
+  if (!codec || !codec->save_cb) {
+    return GIMG_ERR_UNSUPPORTED;
+  }
+
+  // The save is held to the same cumulative memory cap as the load that made
+  // the document: the limits the document remembers.  The scope is the one a
+  // load and a decode use, so everything the writer takes - its working
+  // buffers, the staged file, the straight copies of premultiplied rasters, an
+  // item it has to decode for itself, and the growth of a memory stream used
+  // as the destination - is counted from the allocation that takes it until
+  // the free.  The caller's own rasters, which were allocated before the
+  // call, are not.
+  //
+  // A document that was built in memory remembers no limits and its save is
+  // not capped: there is no field on GIMG_Save_Options to lift a default, so a
+  // default here would refuse a legitimate large save with no way to allow it.
+  GIMG_Limits limits;
+  gimg_limits_resolve(doc->has_load_limits ? &doc->load_limits : NULL, &limits);
+  if (!doc->has_load_limits) {
+    limits.max_memory = GIMG_LIMIT_NONE;
+  }
+  gimg_budget_scope_t scope;
+  gimg_budget_enter(&scope, limits.max_memory);
+  GIMG_Result r = gimg_doc_save_in_scope(doc, stream, codec, format_name,
+      options, report, limits.max_memory != GIMG_LIMIT_NONE);
+  if (gimg_budget_leave(&scope) && r != GIMG_OK) {
+    // Whatever the writer made of the refused allocation, the cause is the cap.
+    r = GIMG_ERR_LIMIT;
+  }
   return r;
 }
 

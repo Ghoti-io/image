@@ -235,14 +235,14 @@ Used by `gimg_item_decode()`.
 | Field                  | Read by | Use |
 |------------------------|---------|-----|
 | `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF, ICO, WebP | Reject if width×height (or the sum over frames) exceeds this. `0` is `GIMG_DEFAULT_MAX_DECODED_PIXELS`, 2^28. ICO applies it per entry; WebP applies it to the VP8X canvas. |
-| `max_memory`           | every codec | The most live memory a load or decode may hold: the peak sum of the library's own allocations within one `gimg_doc_load()` or `gimg_item_decode()` call. `0` is `GIMG_DEFAULT_MAX_MEMORY`, two gibibytes. Enforced in the library's allocation path, beneath the codecs. |
+| `max_memory`           | every codec | The most live memory a load, a decode or a save may hold: the peak sum of the library's own allocations within one `gimg_doc_load()`, `gimg_item_decode()` or `gimg_doc_save()` call. `0` is `GIMG_DEFAULT_MAX_MEMORY`, two gibibytes. Enforced in the library's allocation path, beneath the codecs. |
 | `max_metadata_size`    | PNG, JPEG, BMP, GIF, TIFF, WebP | Cap what is kept that is not pixels, including a *total* across segments. `0` is a four-mebibyte guard, not "no limit". |
 | `max_frame_count`      | PNG, GIF, TIFF, WebP | Max frames (APNG, GIF frames, TIFF's IFD chain and its SubIFD pages, WebP ANMF). A BMP bitmap array is several items and is not capped. ICO entries are alternates, not frames; their count is capped at `GIMG_ICO_MAX_ENTRIES` (64) instead. |
 | `max_chunk_size`       | PNG, JPEG, GIF, WebP | Reject a declared segment payload larger than this (bomb protection). WebP applies it to every RIFF chunk, nested ANMF bitstreams included. A BMP wrapping a PNG or JPEG, a TIFF whose strips are JPEG, and an icon entry that is a PNG all pass it down. |
 
 Every declared field is read by something. `max_memory` is the one no codec
-reads for itself: `gimg_doc_load()` and `gimg_item_decode()` hold it for the
-whole call on the calling thread, and every allocation the library makes in
+reads for itself: `gimg_doc_load()`, `gimg_item_decode()` and `gimg_doc_save()`
+hold it for the whole call on the calling thread, and every allocation the library makes in
 that time is counted against it, so a codec cannot forget it. It bounds the
 sum: the library keeps the size of each block it takes inside the call and
 drops it when the block is freed, and an allocation that would take the live
@@ -251,10 +251,61 @@ the library's own allocations in the call therefore never exceed `max_memory`
 (a request is counted at the size asked for; an allocator that moves a block
 on `realloc` briefly holds the old and new copy, which is not counted). The
 returned raster counts while the call runs and is the caller's afterwards.
-Blocks taken before the call (a document's earlier decodes), the caller's
-own allocations, and saves and operations outside a load or decode are not
-counted. Each call gets the whole cap; a cap of `GIMG_LIMIT_NONE` keeps no
-account at all. Until 2026-11 the cap applied to each allocation separately.
+Blocks taken before the call (a document's earlier decodes, the rasters a
+save is given) and the caller's own allocations are not counted. Each call gets
+the whole cap; a cap of `GIMG_LIMIT_NONE` keeps no account at all. Until 2026-11
+the cap applied to each allocation separately.
+
+### Which calls the cap bounds
+
+| Call | Bounded by `max_memory` | Limits it takes |
+|---|---|---|
+| `gimg_doc_load()` | yes | `GIMG_Load_Options.limits` |
+| `gimg_item_decode()` | yes | `GIMG_Decode_Options.limits`, else the limits the document was loaded with |
+| `gimg_item_ensure_decoded()` | yes, it is a `gimg_item_decode()` (the raster it attaches is the document's afterwards and is not counted again) | as `gimg_item_decode()` |
+| `gimg_doc_save()`, all seven writers | yes: working buffers, the file composed in memory, the straight copies a premultiplied raster is saved through, an item decoded for the save, the Exif thumbnail, and the growth of a memory stream given as the destination | the limits the document was loaded with; a document not loaded remembers none and its save is not capped, as where they say `GIMG_LIMIT_NONE`. `GIMG_Save_Options` has no limits field |
+| `gimg_ops_*` (convert, resize, crop, quantize, palette, colour transform, rotate, flip, orientation, composite) and `gimg_alpha_*` | no, when a caller makes them directly: they take no limits and the caller sizes the raster they make. When a load, decode or save calls them they are inside its scope and counted | none |
+| `gimg_raster_create*()`, `gimg_raster_copy*()`, `gimg_doc_copy*()`, `gimg_doc_from_raster*()` | no: the dimensions are the caller's, and the allocation is the caller's own | none |
+
+The operations' working sets, measured at 512 &times; 384 RGBA8 in multiples of
+the 786,432-byte source (the result included): bit depth 8 to 16 2.0, resize to
+half 0.8, resize to double 6.1, resize to a third in linear light 3.2, crop to
+the middle half 0.25, quantize to 256 colours 4.7 (to 64 with dithering 3.8),
+a quarter turn or an orientation 1.0, `gimg_ops_count_colors()` 3.3 at a limit
+of 2^20 (its table follows the `limit` argument), and composite and premultiply
+none. `tests/unit/test_save_memory.cpp` measures them and checks that each one,
+given an allocator that allows exactly that peak, succeeds, and given one byte
+less fails without leaking.
+
+What the scope cannot see: the compression library keeps its own
+deflate and inflate state (windows and hash tables, fixed by the algorithm and
+not by the picture) and allocates it itself, so it is not counted. The colour
+library's blocks (a parsed profile, a transform) are counted, because the
+colour transform hands it an allocator that goes through the same path.
+
+A save is the same working set as the load that made the document, so it is
+held to the same cap, and it is held the same way: a save over it returns
+`GIMG_ERR_LIMIT`. **A refused save writes nothing to the stream.** ICO and WebP
+compose the whole file in one buffer and write it once; GIF and PNG always, and
+BMP, JPEG and TIFF whenever a cap is in force, compose the file in a memory
+stream and hand it over only when it is complete (a save with no cap is not held
+twice). The cost is the file held once more, and a memory stream used as the
+destination grows inside the call and is counted too, so saving to one holds the
+file twice, once staged and once delivered. A failing sink is still reported as the
+error it is, and can leave a partial file; the cap cannot. (A memory stream that
+already held bytes before the call is charged in full when it first grows inside
+it, because the library cannot tell what it held.)
+
+What a save holds, measured on an incompressible RGBA8 picture of 192 &times; 160
+(a 122,880-byte raster) with the destination a memory stream, in multiples of
+that raster: JPEG 1.1, BMP 2.1, TIFF 2.1, WebP lossy 2.3, PNG 2.6 (3.6 when the
+raster is premultiplied, which adds a straight copy), GIF 2.9, ICO 3.4 and
+WebP lossless 7.8. The working set grows with the picture, so a document
+loaded with the two-gibibyte default reaches the cap in a lossless WebP save at
+a raster of about 270 MB (about 67 megapixels of RGBA8) and in a PNG save at
+about 800 MB; a picture past that needs a document loaded with a larger
+`max_memory`. A compressible
+picture holds less. `tests/unit/test_save_memory.cpp` measures these.
 
 `max_metadata_size` at zero is a four-mebibyte guard, because the alternative is that a caller who never
 thought about metadata has no bound on it at all. It is also the only cap that
@@ -305,7 +356,11 @@ service reading files it did not produce should set them lower: **set
 Limits set on the **load** are remembered and applied to a later **decode**
 that carries none of its own, so setting them once at load is enough - and the
 save paths, which re-decode their source item and have no options to pass on,
-are covered by the same fallback.
+are covered by the same fallback. They are also what a **save** is held to
+(`GIMG_Save_Options` carries no limits of its own): a service that loads with a
+small `max_memory` saves under the same one, and a document built in memory
+remembers no limits and its save is uncapped, because there is nowhere on
+`GIMG_Save_Options` to lift a default.
 
 ## Strictness (GIMG_Strictness)
 

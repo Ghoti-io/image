@@ -327,10 +327,22 @@ typedef struct GIMG_Limits {
    * charged for the growth; an allocator that moves the block holds old and
    * new together for a moment, which is its own and is not counted.
    *
+   * It also bounds gimg_doc_save(), with the limits the document was loaded
+   * with (a document built in memory remembers none, and its save is not
+   * capped): the writer's working
+   * buffers, the file composed in memory before it is written, the straight
+   * copies a premultiplied raster is saved through, an item the save has to
+   * decode for itself, and the growth of a memory stream given as the
+   * destination, all counted together as above. A save refused by the cap
+   * returns GIMG_ERR_LIMIT and writes nothing to the stream.
+   * gimg_item_ensure_decoded() is a gimg_item_decode().
+   *
    * What it does not bound: memory the call did not take (the stream's own
    * buffers, the caller's allocator's overhead, blocks taken before the call
-   * such as a document's earlier decodes, which are not counted again), and
-   * anything outside a load or decode - a save, an operation. The returned
+   * such as a document's earlier decodes or the rasters a save is given,
+   * which are not counted again), and the operations in ops.h and the
+   * raster constructors when a caller makes them directly: they take no
+   * limits, so what they allocate is the caller's to size. The returned
    * raster is counted while the call runs; once the call returns it is the
    * caller's. Each call gets the whole cap afresh. With the default, a
    * picture whose raster and working set pass two gibibytes needs this

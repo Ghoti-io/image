@@ -102,6 +102,46 @@ static void gimg_color_endpoint_clear(gimg_color_endpoint * e) {
 }
 
 /**
+ * An allocator for libs/color that goes through the library's own allocation
+ * path.  libs/color is handed the allocator it is to use for the profile it
+ * parses and the transform it builds; handing it the raster's own would let
+ * those blocks bypass the memory scope of a load, a decode or a save, which
+ * counts only what passes through gimg_malloc.  Everything made with this
+ * allocator is destroyed before the operation returns, so it lives on the
+ * operation's stack.
+ */
+typedef struct {
+  const GIMG_Allocator * inner;
+  GIMG_Allocator self;
+} gimg_counted_allocator;
+
+static void * gimg_counted_malloc(void * ctx, size_t n) {
+  return gimg_malloc((const GIMG_Allocator *)ctx, n);
+}
+
+static void * gimg_counted_calloc(void * ctx, size_t n, size_t size) {
+  return gimg_calloc((const GIMG_Allocator *)ctx, n, size);
+}
+
+static void * gimg_counted_realloc(void * ctx, void * p, size_t n) {
+  return gimg_realloc((const GIMG_Allocator *)ctx, p, n);
+}
+
+static void gimg_counted_free(void * ctx, void * p) {
+  gimg_free((const GIMG_Allocator *)ctx, p);
+}
+
+static void gimg_counted_allocator_init(
+    gimg_counted_allocator * a, const GIMG_Allocator * inner) {
+  a->inner = gimg_alloc_or_default(inner);
+  a->self.ctx = (void *)a->inner;
+  a->self.malloc_fn = gimg_counted_malloc;
+  a->self.calloc_fn = gimg_counted_calloc;
+  a->self.realloc_fn = gimg_counted_realloc;
+  a->self.free_fn = gimg_counted_free;
+}
+
+/**
  * Resolve a Color_Info (and optional ICC bytes) into a transform endpoint.
  *
  * Matrix/TRC ICC - RGB or gray - becomes a description. LUT / CMYK ICC stays
@@ -314,6 +354,9 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
     return GIMG_ERR_INTERNAL;
   }
 
+  gimg_counted_allocator counted;
+  gimg_counted_allocator_init(&counted, gimg_raster_allocator(src));
+
   const GIMG_Pixel_Format * fmt = gimg_raster_format(src);
   GCOL_Pixel_Model raster_model;
   unsigned raster_channels = 0;
@@ -341,12 +384,12 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
 
   GIMG_Result r =
       gimg_color_endpoint_from_info(
-          gimg_raster_allocator(src), src_ci, src_cmyk, &src_ep);
+          &counted.self, src_ci, src_cmyk, &src_ep);
   if (r != GIMG_OK) {
     return r;
   }
   r = gimg_color_endpoint_from_info(
-      gimg_raster_allocator(src), &options->dest, false, &dst_ep);
+      &counted.self, &options->dest, false, &dst_ep);
   if (r != GIMG_OK) {
     gimg_color_endpoint_clear(&src_ep);
     return r;
@@ -425,15 +468,15 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
   GCOL_Transform * xform = NULL;
   GCOL_Result cr = GCOL_ERR_INTERNAL;
   if (src_ep.use_lut) {
-    cr = gcol_transform_create_icc(gimg_raster_allocator(src), src_ep.icc, &dst_ep.info,
+    cr = gcol_transform_create_icc(&counted.self, src_ep.icc, &dst_ep.info,
         options->intent, options->flags, polarity, &xform);
   }
   else if (dst_ep.use_lut) {
-    cr = gcol_transform_create_to_icc(gimg_raster_allocator(src), &src_ep.info, dst_ep.icc,
+    cr = gcol_transform_create_to_icc(&counted.self, &src_ep.info, dst_ep.icc,
         options->intent, options->flags, options->dest.cmyk_polarity, &xform);
   }
   else {
-    cr = gcol_transform_create_model(gimg_raster_allocator(src), &src_ep.info,
+    cr = gcol_transform_create_model(&counted.self, &src_ep.info,
         src_ep.gray ? GCOL_PIXEL_GRAY : GCOL_PIXEL_RGB, &dst_ep.info,
         dst_ep.gray ? GCOL_PIXEL_GRAY : GCOL_PIXEL_RGB, options->intent,
         options->flags, &xform);

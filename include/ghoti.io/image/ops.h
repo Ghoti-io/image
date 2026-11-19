@@ -40,6 +40,17 @@
  *   gimg_ops_convert_bit_depth()) accept either form and give the result the
  *   source's form.
  * - gimg_ops_raster_equal() treats two rasters of different forms as unequal.
+ *
+ * **Memory.** Nothing here takes GIMG_Limits, so a direct call is not held to
+ * GIMG_Limits.max_memory: the raster it makes is the size the caller asked
+ * for, and the working set beside it (the resampler's coefficient tables, the
+ * quantizer's histogram, a transposed copy for a quarter turn) is whatever
+ * the operation needs, unbounded by the library. Every allocation goes
+ * through the library's allocation path and the raster's own allocator, and
+ * every operation unwinds without a leak when one is refused. When a load,
+ * a decode or a save calls an operation (an orientation applied at decode,
+ * the straight copy of a premultiplied raster at save), it runs inside that
+ * call's memory scope and is counted against that call's cap.
  */
 
 #ifndef GHOTI_IO_GIMG_OPS_H

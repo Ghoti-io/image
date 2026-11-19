@@ -908,9 +908,26 @@ typedef struct {
  *   GIMG_ERR_CORRUPT when @p options asks for a metadata policy that edits
  *   Exif (GIMG_META_STRIP_GPS, GIMG_META_NORMALIZE_EXIF) and the document's
  *   Exif cannot be parsed - the save reports rather than silently leaving the
- *   policy unapplied;
+ *   policy unapplied; GIMG_ERR_LIMIT when the save would hold more than
+ *   GIMG_Limits.max_memory at once (see below);
  *   GIMG_ERR_INTERNAL for a null argument, @p report included - it is
  *   required, unlike @p options.
+ *
+ * **Memory.** A save is held to the live total of its own allocations, as a
+ * load is, under the max_memory of the limits the document was loaded with.
+ * A document that was not loaded remembers none and its save is not capped,
+ * as is a loaded one whose limits say GIMG_LIMIT_NONE. Counted: every
+ * writer's working buffers, the file composed in memory before it is handed
+ * to the stream, the straight copies a premultiplied raster is saved through,
+ * an item decoded for the save because it holds no raster, and the growth of
+ * a memory stream used as @p stream. Not counted: the document and its
+ * rasters, which exist before the call. A save that passes the cap returns
+ * GIMG_ERR_LIMIT and leaves @p stream untouched: GIF and PNG always compose
+ * the file in a memory stream and hand it over when it is complete, BMP, JPEG
+ * and TIFF do so whenever a cap is in force (an uncapped save is not held
+ * twice), and ICO and WebP build the whole file before their single write, so
+ * a refusal never leaves a partial file behind. There is no save-specific limit field; to bound a save
+ * differently, load the document with other limits.
  */
 GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     const char * format_name, const GIMG_Save_Options * options,
