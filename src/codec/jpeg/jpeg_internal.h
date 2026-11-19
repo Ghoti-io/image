@@ -289,6 +289,20 @@ static inline void gimg_jpeg_sampling_max(int num_components,
  */
 #define GIMG_JPEG_MAX_SCANS 1024u
 
+/**
+ * Scans a progressive frame may carry, per component.  Annex G sends each
+ * coefficient once and then refines it at most thirteen times, and scan
+ * scripts in use (libjpeg's default, mozjpeg's) spend between five and about
+ * fifteen scans per component, DC included.  64 leaves several times that
+ * and still makes the work a file can ask for proportional to its component
+ * count: a three-component frame is refused at its 193rd scan, not its
+ * 1025th.  Scans are also checked against each other (a coefficient band
+ * cannot be re-sent or refined out of order), so this is the ceiling for a
+ * script that makes progress on every pass.  Sequential and lossless frames
+ * code a component once and need no such bound.
+ */
+#define GIMG_JPEG_PROGRESSIVE_SCANS_PER_COMPONENT 64u
+
 /** Max DHT table entries we record (for "first DHT after previous scan" rule).
  */
 #define GIMG_JPEG_MAX_DHT_ENTRIES 128u

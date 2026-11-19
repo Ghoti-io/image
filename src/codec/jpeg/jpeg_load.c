@@ -945,7 +945,18 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
         gimg_jpeg_free_doc_state(codec, state);
         return GIMG_ERR_FORMAT;
       }
-      if (*sos_num_scans >= GIMG_JPEG_MAX_SCANS) {
+      unsigned sos_scan_cap = GIMG_JPEG_MAX_SCANS;
+      if (sos_progressive) {
+        // A progressive frame needs a bounded number of scans per component
+        // (see GIMG_JPEG_PROGRESSIVE_SCANS_PER_COMPONENT); a frame past that
+        // is not a picture but a request for that many passes over it.
+        const unsigned per = GIMG_JPEG_PROGRESSIVE_SCANS_PER_COMPONENT *
+            (unsigned)sos_sof->num_components;
+        if (per < sos_scan_cap) {
+          sos_scan_cap = per;
+        }
+      }
+      if (*sos_num_scans >= sos_scan_cap) {
         if (payload_buf)
           gimg_free(alloc, payload_buf);
         jpeg_load_diag(
@@ -1172,6 +1183,50 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
                 scan->al != 0u) {
               why = "sequential scan must have Ss=0 Se=63 Ah=0 Al=0 "
                     "(T.81 B.2.3)";
+            }
+          }
+          if (!why && progressive) {
+            // T.81 G.1.1.1.2 and G.1.2: a coefficient is sent once for the
+            // first time (Ah = 0) and thereafter refined one bit per scan, each
+            // refinement's Ah being the Al of the scan before it.  So a scan is
+            // legal only against what the earlier scans of the same component
+            // already sent.  A scan that repeats a band at the same Al, sends
+            // overlapping bands, or refines before the first scan of the band
+            // does no new work and is a full pass over the frame for nothing.
+            for (uint8_t i = 0; i < ns && !why; i++) {
+              int sent[64];
+              for (int k = 0; k < 64; k++) {
+                sent[k] = -1;
+              }
+              for (unsigned prev = 0; prev < *sos_num_scans; prev++) {
+                const gimg_jpeg_scan_t * ps = &sos_scans[prev];
+                int named = 0;
+                for (uint8_t a = 0; a < ps->comp_count; a++) {
+                  if (ps->comp_id[a] == scan->comp_id[i]) {
+                    named = 1;
+                  }
+                }
+                if (!named) {
+                  continue;
+                }
+                for (unsigned k = ps->ss; k <= ps->se && k < 64u; k++) {
+                  sent[k] = (int)ps->al;
+                }
+              }
+              for (unsigned k = scan->ss; k <= scan->se && k < 64u; k++) {
+                if (scan->ah == 0u) {
+                  if (sent[k] != -1) {
+                    why = "progressive scan sends a coefficient an earlier "
+                          "scan already sent (T.81 G.1.1.1.2)";
+                    break;
+                  }
+                }
+                else if (sent[k] != (int)scan->ah) {
+                  why = "progressive refinement does not follow a scan "
+                        "that left that bit (T.81 G.1.1.1.2)";
+                  break;
+                }
+              }
             }
           }
           if (why) {

@@ -853,18 +853,25 @@ static std::vector<uint8_t> make_progressive_with_sos(
     buf.push_back(0);
   }
   uint16_t ls = (uint16_t)(2 + 1 + 2 * ns + 3);
-  buf.push_back(0xFF);
-  buf.push_back(0xDA);
-  buf.push_back((unsigned char)(ls >> 8));
-  buf.push_back((unsigned char)(ls & 0xFF));
-  buf.push_back(ns);
-  for (uint8_t i = 0; i < ns; i++) {
-    buf.push_back((unsigned char)(i + 1)); // Cs
-    buf.push_back(0x00);                   // Td = Ta = 0
+  // A refinement scan only means something after the scan that first sent its
+  // band (T.81 G.1.1.1.2), and a file without one is refused; so a refinement
+  // is preceded by the first pass, left at the point transform it refines.
+  const int passes = (ah != 0 && ns == 1) ? 2 : 1;
+  for (int pass = 0; pass < passes; pass++) {
+    const bool first = passes == 2 && pass == 0;
+    buf.push_back(0xFF);
+    buf.push_back(0xDA);
+    buf.push_back((unsigned char)(ls >> 8));
+    buf.push_back((unsigned char)(ls & 0xFF));
+    buf.push_back(ns);
+    for (uint8_t i = 0; i < ns; i++) {
+      buf.push_back((unsigned char)(i + 1)); // Cs
+      buf.push_back(0x00);                   // Td = Ta = 0
+    }
+    buf.push_back(ss);
+    buf.push_back(se);
+    buf.push_back((unsigned char)(first ? (ah & 0x0F) : ((ah << 4) | (al & 0x0F))));
   }
-  buf.push_back(ss);
-  buf.push_back(se);
-  buf.push_back((unsigned char)((ah << 4) | (al & 0x0F)));
   append(buf, (const unsigned char *)"\xFF\xD9", 2);
   return buf;
 }
