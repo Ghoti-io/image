@@ -30,8 +30,8 @@
 #include "ico_internal.h"
 
 GIMG_Result gimg_ico_apply_and_mask(GIMG_Raster * raster,
-    const unsigned char * mask, size_t mask_size, int force) {
-  if (!raster || !mask) {
+    const unsigned char * mask, size_t mask_size, int force, int top_down) {
+  if (!raster || (!mask && force)) {
     return GIMG_ERR_INTERNAL;
   }
   const GIMG_Pixel_Format * fmt = gimg_raster_format(raster);
@@ -42,10 +42,12 @@ GIMG_Result gimg_ico_apply_and_mask(GIMG_Raster * raster,
 
   uint32_t width = gimg_raster_width(raster);
   uint32_t height = gimg_raster_height(raster);
-  // AND mask rows are 1 bit per pixel, padded to 32-bit boundaries, bottom-up.
+  // AND mask rows are 1 bit per pixel, padded to 32-bit boundaries, in the
+  // same row order as the XOR bitmap (bottom-up unless the DIB is top-down).
   size_t row_bytes = ((size_t)width + 31u) / 32u * 4u;
   size_t needed = row_bytes * (size_t)height;
-  if (needed > mask_size) {
+  int mask_usable = mask && needed <= mask_size;
+  if (force && !mask_usable) {
     return GIMG_ERR_CORRUPT;
   }
 
@@ -67,11 +69,23 @@ GIMG_Result gimg_ico_apply_and_mask(GIMG_Raster * raster,
     if (any_alpha) {
       return GIMG_OK;
     }
+    if (!mask_usable) {
+      // An identically-zero alpha channel with no complete mask behind it
+      // states nothing: the writer left both unset, so the image is opaque.
+      for (uint32_t y = 0; y < height; y++) {
+        uint8_t * row = pixels + (size_t)y * stride;
+        for (uint32_t x = 0; x < width; x++) {
+          row[x * 4u + 3u] = 255u;
+        }
+      }
+      return GIMG_OK;
+    }
   }
 
   for (uint32_t y = 0; y < height; y++) {
-    // File stores bottom-up; raster is top-down.
-    const unsigned char * mrow = mask + ((size_t)(height - 1u - y) * row_bytes);
+    // The raster is top-down; the mask is bottom-up unless the DIB is not.
+    size_t src_row = top_down ? y : (size_t)(height - 1u - y);
+    const unsigned char * mrow = mask + (src_row * row_bytes);
     uint8_t * row = pixels + (size_t)y * stride;
     for (uint32_t x = 0; x < width; x++) {
       unsigned bit = (mrow[x / 8u] >> (7u - (x % 8u))) & 1u;

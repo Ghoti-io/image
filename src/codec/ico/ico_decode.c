@@ -163,6 +163,15 @@ static GIMG_Result ico_decode_dib(const gimg_ico_entry_t * entry,
     return GIMG_ERR_UNSUPPORTED;
   }
   uint16_t bit_count = bmp_state ? bmp_state->header.bit_count : 0u;
+  int top_down = bmp_state && bmp_state->header.top_down;
+  // Whether the XOR bitmap carries an alpha channel: a 32-bpp BI_RGB entry
+  // keeps it in the fourth byte (which the BMP codec ignores), and a
+  // BI_BITFIELDS or V4/V5 entry says where in its alpha mask.
+  int xor_alpha = bmp_state && bit_count == 32u &&
+      (bmp_state->header.compression == GIMG_BMP_COMP_RGB ||
+          bmp_state->header.alpha.mask != 0u);
+  int raw_alpha = bmp_state && bit_count == 32u &&
+      bmp_state->header.compression == GIMG_BMP_COMP_RGB;
 
   GIMG_Raster * raster = NULL;
   r = bmp_codec->decode_cb
@@ -183,7 +192,7 @@ static GIMG_Result ico_decode_dib(const gimg_ico_entry_t * entry,
   // A 32-bpp ICO DIB stores alpha in the fourth byte even under BI_RGB, which
   // the BMP codec ignores by default (every desktop BMP reader does). Restore
   // those bytes so the identically-zero alpha fallback in §5.3 can see them.
-  if (bit_count == 32u && raster) {
+  if (raw_alpha && raster) {
     uint32_t w = gimg_raster_width(raster);
     uint32_t h = gimg_raster_height(raster);
     size_t xor_stride = ((size_t)w * 4u + 3u) & ~(size_t)3u;
@@ -194,9 +203,9 @@ static GIMG_Result ico_decode_dib(const gimg_ico_entry_t * entry,
       uint8_t * dest = (uint8_t *)gimg_raster_pixels(raster);
       size_t dest_stride = gimg_raster_stride_bytes(raster);
       for (uint32_t y = 0; y < h; y++) {
-        // XOR is bottom-up; raster is top-down.
-        const unsigned char * srow =
-            xor_base + (size_t)(h - 1u - y) * xor_stride;
+        // XOR is bottom-up unless the DIB is top-down; raster is top-down.
+        const unsigned char * srow = xor_base +
+            (size_t)(top_down ? y : (h - 1u - y)) * xor_stride;
         uint8_t * drow = dest + (size_t)y * dest_stride;
         for (uint32_t x = 0; x < w; x++) {
           drow[x * 4u + 3u] = srow[x * 4u + 3u];
@@ -205,12 +214,14 @@ static GIMG_Result ico_decode_dib(const gimg_ico_entry_t * entry,
     }
   }
 
-  if (mask_avail > 0u) {
-    // 1/4/8/16/24 bpp: AND mask is the transparency. 32 bpp: apply only when
-    // the alpha channel is identically zero (§5.3).
-    int force = (bit_count != 32);
-    r = gimg_ico_apply_and_mask(
-        raster, bytes + after_xor, mask_avail, force);
+  if (xor_alpha || mask_avail > 0u) {
+    // No alpha channel: the AND mask is the transparency (absent means
+    // opaque).  With one: the mask is used only when the alpha channel is
+    // identically zero (§5.3), and then only if it is complete.
+    int force = !xor_alpha;
+    r = gimg_ico_apply_and_mask(raster,
+        mask_avail > 0u ? bytes + after_xor : NULL, mask_avail, force,
+        top_down);
     if (r != GIMG_OK) {
       gimg_raster_destroy(raster);
       gimg_stream_destroy(stream);

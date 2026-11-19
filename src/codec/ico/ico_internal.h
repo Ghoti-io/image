@@ -116,14 +116,18 @@ void gimg_ico_free_doc_state(GIMG_Codec * codec, void * codec_private);
 /**
  * @brief Apply a 1-bit AND mask as alpha onto an RGBA8 raster.
  *
- * Rows are bottom-up, padded to 32-bit boundaries, matching the ICO DIB
- * layout. A set bit means transparent.
+ * Rows are padded to 32-bit boundaries and stored in the XOR bitmap's row
+ * order. A set bit means transparent.
  *
  * @param force When non-zero, overwrite alpha even if some pixels already have
- *   non-zero alpha. When zero, only used by the identically-zero alpha fallback.
+ *   non-zero alpha; an absent or short mask is GIMG_ERR_CORRUPT. When zero, this
+ *   is the identically-zero alpha fallback: nothing changes if any pixel has
+ *   alpha, and if none does and the mask is NULL or short, the image becomes
+ *   opaque.
+ * @param top_down Non-zero when the DIB stored its rows top to bottom.
  */
 GIMG_Result gimg_ico_apply_and_mask(GIMG_Raster * raster,
-    const unsigned char * mask, size_t mask_size, int force);
+    const unsigned char * mask, size_t mask_size, int force, int top_down);
 
 /** Directory width/height byte → real dimension (0 means 256). */
 static inline uint32_t gimg_ico_dir_dim(uint8_t byte) {

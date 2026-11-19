@@ -28,6 +28,20 @@ none was set).
 - The 1-bit AND mask, applied as alpha. For 32-bpp XOR bitmaps whose alpha
   channel is identically zero, the AND mask is used instead (§5.3 of the
   implementation plan). Exact zero only — no threshold.
+- Row order. A negative `biHeight` (top-down DIB) is honoured for the XOR
+  bitmap, its alpha bytes and the AND mask alike: the mask is stored in the
+  same row order as the XOR bitmap it follows.
+- Which XOR bitmaps have an alpha channel. A 32-bpp `BI_RGB` entry carries
+  alpha in the fourth byte of each pixel. A 32-bpp `BI_BITFIELDS` or V4/V5
+  entry carries it where its alpha mask says, and has none if the mask is
+  empty; such an entry is then treated like a 1-24 bpp one, and the AND mask
+  is its transparency.
+- Absent or short masks. An entry with no alpha channel and no AND mask at all
+  is opaque; one whose mask is present but shorter than the image needs is
+  `GIMG_ERR_CORRUPT`. An entry with an alpha channel never needs the mask
+  unless the channel is identically zero, so a short or absent mask is not an
+  error there: with real alpha it is ignored, and with all-zero alpha it
+  leaves the image opaque (the writer set neither, so nothing says otherwise).
 - PNG payloads, loaded through the nested PNG codec (by name, not by probe).
 - Directory dimensions and bpp are advisory: the payload is trusted, and a
   `GIMG_DIAG_WARNING` is recorded when they disagree.
@@ -57,7 +71,7 @@ item writes `type = 2` (CUR).
 | ICO and CUR directory | yes | count outside `1..GIMG_ICO_MAX_ENTRIES`, or an entry past EOF → `GIMG_ERR_CORRUPT` |
 | DIB payloads | 1–32 bpp `BI_RGB` / `BI_BITFIELDS` | `BI_RLE4` / `BI_RLE8`, OS/2 Huffman 1D / RLE24, and embedded `BI_JPEG` / `BI_PNG` → `GIMG_ERR_UNSUPPORTED` |
 | PNG payloads | via nested PNG codec | whatever PNG refuses; nested load and DIB load honour the caller's `max_decoded_pixels` |
-| AND mask / alpha | yes, with zero-alpha fallback | — |
+| AND mask / alpha | yes, with zero-alpha fallback; top-down DIBs | a short mask on an entry that needs it → `GIMG_ERR_CORRUPT` |
 | Hotspot | per-item API | — |
 | Animation as icon | — | `GIMG_ITEM_FRAME` on save → `GIMG_ERR_UNSUPPORTED` |
 

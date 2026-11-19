@@ -153,7 +153,9 @@ document state, and the encoder's row and encoding buffers.
   is dropped on save rather than written somewhere it does not belong.
 - **Row order:** rows are written into the raster top-down whichever way the
   file stored them, by choosing the destination row rather than reversing the
-  buffer afterwards.
+  buffer afterwards. The ICO and CUR reader decodes its XOR bitmap through
+  this path, so a top-down icon DIB is honoured there too, together with its
+  AND mask and any alpha bytes the BMP decoder does not read.
 - **Output:** always `GIMG_PIXEL_RGBA8`, one item per document. A sample
   narrower than 8 bits is expanded by `round(value x 255 / max)` rather than
   by truncation, so the maximum input maps to 255 and the midpoint does not
