@@ -1531,6 +1531,13 @@ test-quiet: test-inputs $(APP_DIR)/$(TARGET) $(TEST_EXECUTABLES) $(TEST_GATES) $
 # Sources are compiled directly rather than through the object tree: an
 # instrumented object dropped into build/ would be linked by a later plain
 # build with no diagnostic.
+#
+# Only this library is instrumented. The libraries it links (cutil, compress,
+# color) are whatever PREFIX holds, and ThreadSanitizer sees a race inside code
+# that was not built with -fsanitize=thread only as an uninstrumented access: it
+# misses the race or reports it from the caller's side. For the target to see
+# races inside a dependency, build that dependency with -fsanitize=thread too
+# and point PREFIX and PKG_CONFIG_PATH at the instrumented build.
 TSAN_DIR := $(BUILD_DIR)/tsan
 TSAN_FLAGS := -fsanitize=thread -g -O1 -fPIC
 # Each test is its own binary, since each has its own main(). The second is the
