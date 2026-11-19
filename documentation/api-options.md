@@ -209,10 +209,10 @@ lossless RGB frames) is not reported. Not yet reported either: a document's
 background colour, its pixel aspect ratio, and an item's dispose and blend
 operations.
 
-A profile in a WebP file is the one case where the document holds a metadata
-block that is not on its raster: the WebP decoder leaves it in the raw `ICCP`
-block, and every writer but WebP's reads the profile from the raster, so a
-loaded WebP saved as anything else is reported as dropping its ICC profile.
+The WebP decoder attaches a file's `ICCP` profile to every raster it returns,
+as the PNG, JPEG and TIFF decoders do, and keeps the raw `ICCP` block as well,
+so a loaded WebP saved as any other format carries its profile and a WebP saved
+as WebP writes one `ICCP` chunk.
 
 ## Decode options
 
