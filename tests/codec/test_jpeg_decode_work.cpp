@@ -295,6 +295,83 @@ TEST(JpegDecodeWork, FlatImageNeedsAlmostNoEntropyData) {
   }
 }
 
+// Frames of a hierarchical sequence, each as large as the image DHP declares.
+static Bytes hier_file(unsigned n, unsigned nframes) {
+  Bytes f;
+  put(f, {0xFF, 0xD8});
+  dqt(f);
+  frame(f, 0xDE, n, n);
+  for (unsigned k = 0; k < nframes; k++) {
+    frame(f, k == 0 ? 0xC9 : 0xCD, n, n);
+    scan(f, 1, 0, 63, 0x00);
+  }
+  put(f, {0xFF, 0xD9});
+  return f;
+}
+
+// Eight full-size frames are within the budget and cost eight passes; a ninth,
+// or the thirty-two the format counts allow, are refused at load.  Before the
+// bound all of them loaded and 32 cost 32 passes from 822 bytes.
+TEST(JpegDecodeWork, HierarchicalFullSizeFramesBounded) {
+  const unsigned n = 1024;
+  Bytes ok = hier_file(n, 8);
+  Result r = run(ok);
+  say("hier-8", ok, r);
+  EXPECT_EQ(r.load, GIMG_OK);
+  EXPECT_EQ(r.decode, GIMG_OK);
+  EXPECT_EQ(r.blocks, 8u * blocks_of(n, n));
+  for (unsigned frames : {9u, 32u}) {
+    Bytes bad = hier_file(n, frames);
+    Result q = run(bad);
+    say("hier-over", bad, q);
+    EXPECT_EQ(q.load, GIMG_ERR_LIMIT) << frames;
+    EXPECT_EQ(q.blocks, 0u);
+  }
+}
+
+// What the writer produces is a pyramid, which the bound never approaches.
+TEST(JpegDecodeWork, HierarchicalPyramidStillLoads) {
+  for (int arith = 0; arith < 2; arith++) {
+    for (unsigned levels : {1u, 3u, 6u}) {
+      GIMG_Raster * ras = nullptr;
+      ASSERT_EQ(gimg_raster_create(64, 64, &GIMG_PIXEL_GRAY8,
+                    GIMG_RASTER_OWNED, nullptr, 0, &ras),
+          GIMG_OK);
+      auto * p = static_cast<uint8_t *>(gimg_raster_pixels(ras));
+      for (unsigned i = 0; i < 64 * 64; i++) {
+        p[i] = (uint8_t)(i * 7);
+      }
+      GIMG_Doc * doc = nullptr;
+      ASSERT_EQ(gimg_doc_from_raster(ras, &doc), GIMG_OK);
+      gimg_raster_destroy(ras);
+      GIMG_Save_Options o;
+      std::memset(&o, 0, sizeof(o));
+      o.jpeg_hierarchical_levels = (uint8_t)levels;
+      o.jpeg_arithmetic = (uint8_t)arith;
+      Bytes out;
+      GIMG_Stream_Callbacks cb = {};
+      cb.write = [](void * ctx, const void * buf, size_t len, size_t * wr) {
+        auto * v = static_cast<Bytes *>(ctx);
+        auto * q = static_cast<const uint8_t *>(buf);
+        v->insert(v->end(), q, q + len);
+        *wr = len;
+        return GIMG_OK;
+      };
+      cb.ctx = &out;
+      GIMG_Stream * st = nullptr;
+      ASSERT_EQ(gimg_stream_create_callbacks(&cb, &st), GIMG_OK);
+      GIMG_Save_Report rep;
+      std::memset(&rep, 0, sizeof(rep));
+      ASSERT_EQ(gimg_doc_save(doc, st, "jpeg", &o, &rep), GIMG_OK);
+      gimg_stream_destroy(st);
+      gimg_doc_destroy(doc);
+      Result r = run(out);
+      EXPECT_EQ(r.load, GIMG_OK) << levels << " " << arith;
+      EXPECT_EQ(r.decode, GIMG_OK) << levels << " " << arith;
+    }
+  }
+}
+
 // A legal progressive frame cannot take more than 64 scans per component, and
 // each scan is a pass over that component's blocks, so the work it can ask for
 // is at most 64 visits per block (whatever the coder, however cheap the scan).

@@ -468,6 +468,18 @@ static GIMG_Result jpeg_apply_dnl(gimg_jpeg_doc_state_t * state,
 }
 
 /**
+ * The 8x8 blocks a frame covers, over all its components: the area its
+ * decode, and a hierarchical sequence's expansion of it, is proportional to.
+ * Every component is counted at the full frame size, which over-counts a
+ * subsampled one the same way for every frame of a sequence.
+ */
+static uint64_t jpeg_frame_blocks(const gimg_jpeg_sof_t * sof) {
+  uint64_t bw = ((uint64_t)sof->width + 7u) / 8u;
+  uint64_t bh = ((uint64_t)sof->height + 7u) / 8u;
+  return bw * bh * (uint64_t)sof->num_components;
+}
+
+/**
  * Start another frame of a hierarchical sequence (T.81 B.3.1, Annex J).
  *
  * The frame takes a copy of the quantization tables and arithmetic
@@ -1925,6 +1937,27 @@ static GIMG_Result jpeg_load_impl(GIMG_Codec * codec, GIMG_Stream * stream,
     }
     state->sof.height = tallest;
     state->dhp.height = tallest;
+  }
+  // The frames of a hierarchical sequence are each decoded and expanded in
+  // proportion to their own area, so their sum is the work the file asks for.
+  // It is held to a multiple of the image the sequence declares, which a
+  // pyramid never approaches (GIMG_JPEG_HIERARCHICAL_AREA_FACTOR).
+  if (state->is_hierarchical && state->sof.height != 0u) {
+    uint64_t declared_blocks = jpeg_frame_blocks(&state->dhp);
+    uint64_t sum = 0;
+    for (unsigned i = 0; i < state->num_frames; i++) {
+      sum += jpeg_frame_blocks(&state->frames[i]->sof);
+    }
+    // One block of each component for every frame the sequence may hold.
+    uint64_t budget = declared_blocks * GIMG_JPEG_HIERARCHICAL_AREA_FACTOR +
+        (uint64_t)GIMG_JPEG_MAX_FRAMES * state->dhp.num_components;
+    if (sum > budget) {
+      jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_LIMIT,
+          "hierarchical frames add up to more than eight times the image "
+          "DHP declares");
+      gimg_jpeg_free_doc_state(codec, state);
+      return GIMG_ERR_LIMIT;
+    }
   }
   if (state->sof.height == 0) {
     jpeg_load_diag(diagnostics, 0u, 0u, GIMG_ERR_FORMAT,

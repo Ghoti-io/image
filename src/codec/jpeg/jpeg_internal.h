@@ -700,6 +700,20 @@ typedef struct {
 #define GIMG_JPEG_MAX_FRAMES 32u
 
 /**
+ * What the frames of a hierarchical sequence may add up to, as a multiple of
+ * one frame of the size DHP declares.  A frame is decoded, expanded to the
+ * next resolution and added to the reference, all in proportion to its own
+ * area, and nothing in Annex J stops each of GIMG_JPEG_MAX_FRAMES frames from
+ * being as large as the whole image, which would make a file of a few hundred
+ * bytes cost thirty-two decodes.  A pyramid that doubles each frame's
+ * dimensions sums to 4/3 of the top frame whatever its depth, so 8 leaves six
+ * more full-size frames of refinement on top of one.  Areas are counted in
+ * whole blocks per component, and every frame is allowed one block of each
+ * so that a deep pyramid over a tiny image is not refused for its depth.
+ */
+#define GIMG_JPEG_HIERARCHICAL_AREA_FACTOR 8u
+
+/**
  * One frame of a hierarchical sequence (T.81 Annex J).
  *
  * Outside hierarchical mode a JPEG file holds exactly one frame, and the doc
