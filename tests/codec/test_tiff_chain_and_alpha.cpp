@@ -21,7 +21,7 @@
 /**
  * @file
  *
- * Contracts of the TIFF codec, each on files built here byte by byte:
+ * Three contracts of the TIFF codec, each on files built here byte by byte:
  *
  * - a directory chain whose next pointer steps backwards in the file is valid
  *   and every page loads (only a directory named twice ends the chain);
@@ -68,6 +68,46 @@ static void entry(Bytes & b, uint16_t tag, uint16_t type, uint32_t value) {
   }
 }
 
+/** One 4x4 8-bit grey strip page. */
+struct Page {
+  uint16_t compression = 1;
+  Bytes strip;                // empty: 16 bytes of (k + index)
+  bool has_next = false;      // next-IFD word is `next` rather than the
+  uint32_t next = 0;          // following page / 0
+};
+
+static Bytes build(const std::vector<Page> & pages) {
+  Bytes b = {'I', 'I', 42, 0};
+  p32(b, 8);
+  for (size_t i = 0; i < pages.size(); i++) {
+    const Page & pg = pages[i];
+    Bytes data = pg.strip;
+    if (data.empty()) {
+      for (uint32_t k = 0; k < 16; k++) {
+        data.push_back((uint8_t)(k + i));
+      }
+    }
+    const uint32_t data_at = (uint32_t)b.size() + 2 + 10 * 12 + 4;
+    p16(b, 10);
+    entry(b, 256, 4, 4);
+    entry(b, 257, 4, 4);
+    entry(b, 258, 3, 8);
+    entry(b, 259, 3, pg.compression);
+    entry(b, 262, 3, 1);
+    entry(b, 273, 4, data_at);
+    entry(b, 277, 3, 1);
+    entry(b, 278, 4, 4);
+    entry(b, 279, 4, (uint32_t)data.size());
+    entry(b, 284, 3, 1);
+    p32(b, pg.has_next ? pg.next
+                       : (i + 1 < pages.size()
+                                 ? data_at + (uint32_t)data.size()
+                                 : 0u));
+    b.insert(b.end(), data.begin(), data.end());
+  }
+  return b;
+}
+
 struct Loaded {
   GIMG_Doc * doc = nullptr;
   GIMG_Diagnostics diag = {};
@@ -89,6 +129,25 @@ static void load(const Bytes & file, Loaded & out) {
   GIMG_Load_Options opts = {};
   out.r = gimg_doc_load(s, &opts, &out.diag, &out.doc);
   gimg_stream_destroy(s);
+}
+
+static size_t count_severity(const GIMG_Diagnostics & d, GIMG_Diag_Severity s) {
+  size_t n = 0;
+  for (size_t i = 0; i < d.count; i++) {
+    n += d.items[i].severity == s;
+  }
+  return n;
+}
+
+/** First byte of an item's decoded raster, or -1 when decoding fails. */
+static int first_byte(Loaded & l, size_t item) {
+  GIMG_Raster * px = nullptr;
+  if (gimg_item_decode(gimg_doc_item(l.doc, item), nullptr, &px) != GIMG_OK) {
+    return -1;
+  }
+  const int v = ((const uint8_t *)gimg_raster_pixels(px))[0];
+  gimg_raster_destroy(px);
+  return v;
 }
 
 /** One RGBA8 two-pixel little-endian file; the ExtraSamples value is given. */
@@ -145,6 +204,52 @@ static int tag_value(const Bytes & f, uint16_t tag) {
 }
 
 } // namespace
+
+// -- a page that fails at decode --------------------------------------------
+
+TEST(TiffPageDecodeFailure, OnePagesBadStripFailsOnlyThatItem) {
+  Page good0, bad, good2;
+  bad.compression = 8; // Deflate, over bytes that are not a zlib stream
+  bad.strip = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  Loaded l;
+  load(build({good0, bad, good2}), l);
+  // Loading cannot tell: the strip is inside the file and the directory is
+  // well formed.  The failure is the decoder's, on that item alone.
+  ASSERT_EQ(l.r, GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(l.doc), 3u);
+  EXPECT_EQ(count_severity(l.diag, GIMG_DIAG_ERROR), 0u);
+
+  EXPECT_EQ(first_byte(l, 0), 0);
+  GIMG_Raster * px = nullptr;
+  EXPECT_EQ(gimg_item_decode(gimg_doc_item(l.doc, 1), nullptr, &px),
+      GIMG_ERR_CORRUPT);
+  EXPECT_EQ(px, nullptr);
+  // The failure leaves nothing behind that affects the others, in either
+  // direction of travel, and asking again gives the same answer.
+  EXPECT_EQ(first_byte(l, 2), 2);
+  EXPECT_EQ(first_byte(l, 0), 0);
+  EXPECT_EQ(gimg_item_decode(gimg_doc_item(l.doc, 1), nullptr, &px),
+      GIMG_ERR_CORRUPT);
+  EXPECT_EQ(first_byte(l, 2), 2);
+}
+
+TEST(TiffPageDecodeFailure, SavingTheDocumentReportsTheSameResult) {
+  // A document with a page that cannot decode cannot be saved whole: the save
+  // decodes that item and passes its result through, with nothing written as
+  // if it had succeeded.
+  Page good0, bad;
+  bad.compression = 8;
+  bad.strip = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  Loaded l;
+  load(build({good0, bad}), l);
+  ASSERT_EQ(l.r, GIMG_OK);
+  GIMG_Stream * out = nullptr;
+  ASSERT_EQ(gimg_stream_create_memory_output(&out), GIMG_OK);
+  GIMG_Save_Report report = {};
+  EXPECT_EQ(gimg_doc_save(l.doc, out, "tiff", nullptr, &report),
+      GIMG_ERR_CORRUPT);
+  gimg_stream_destroy(out);
+}
 
 // -- alpha ------------------------------------------------------------------
 

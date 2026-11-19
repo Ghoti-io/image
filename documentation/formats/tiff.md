@@ -134,6 +134,16 @@ full can differ by a level from what a premultiplying writer started with.
 A colour brighter than its own alpha allows saturates, and at alpha zero the
 stored colour is kept.
 
+**A page that fails at decode.** Loading checks the directory, not the
+strips' contents, so a page whose compressed strips are corrupt loads and
+fails later, on its own: `gimg_item_decode` for that item returns
+`GIMG_ERR_CORRUPT` (a strip that yields no bytes at all) and every other
+item decodes as before, in any order and after the failure. A strip that
+yields some bytes and then stops is not a failure: the rows that arrived are
+kept and the rest are zero. `gimg_item_decode` has no diagnostics parameter,
+so the result code is all a caller gets; which strip failed is not reported.
+A caller that must know a page decoded completely has no way to ask.
+
 **CIE L\*a\*b\*.** PhotometricInterpretation 8 (TIFF 6.0 section 23) and 9
 (ICCLab, from Adobe's TIFF technical note) both come back as RGBA8.
 Photometric 8 stores a\* and b\* signed; photometric 9 stores them with 128
