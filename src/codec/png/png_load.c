@@ -137,6 +137,11 @@ void gimg_png_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   gimg_free(alloc, state->plte);
   gimg_free(alloc, state->trns);
   gimg_free(alloc, state->idat);
+  gimg_free(alloc, state->cache_canvas);
+  gimg_free(alloc, state->cache_prev);
+  if (state->cache_lock_ready) {
+    GCU_MUTEX_DESTROY(state->cache_lock);
+  }
   if (state->frames) {
     for (size_t i = 0; i < state->frame_count; i++) {
       gimg_free(alloc, state->frames[i].data);
@@ -266,11 +271,17 @@ GIMG_Result gimg_png_load(GIMG_Codec * codec, GIMG_Stream * stream,
   }
   memset(state, 0, sizeof(*state));
   state->allocator = alloc;
+  // Created with the state so that the teardown has one rule.  Failing to
+  // make it costs the canvas cache and nothing else.
+  state->cache_lock_ready = (GCU_MUTEX_CREATE(state->cache_lock) == 0);
   const char * ihdr_why = NULL;
   r = gimg_png_parse_ihdr(ihdr_buf, &state->ihdr, &ihdr_why);
   if (r != GIMG_OK) {
     png_load_diag(diagnostics, 8u, GIMG_PNG_IHDR, r,
         ihdr_why ? ihdr_why : "IHDR could not be read");
+    if (state->cache_lock_ready) {
+      GCU_MUTEX_DESTROY(state->cache_lock);
+    }
     gimg_free(alloc, state);
     return r;
   }

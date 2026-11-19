@@ -68,6 +68,7 @@
 #include <ghoti.io/image/stream.h>
 #include <ghoti.io/compress/options.h>
 #include <ghoti.io/compress/zlib.h>
+#include <ghoti.io/cutil/mutex.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -253,6 +254,27 @@ struct gimg_png_doc_state {
   gimg_png_frame_t *
       frames;         ///< Array of length frame_count; NULL for non-APNG.
   size_t frame_count; ///< 1 for static PNG, acTL num_frames for APNG.
+
+  /** @name Canvas cache (APNG only).
+   *
+   * A frame is drawn on the canvas the frames before it left, so decoding
+   * frame N means decoding 0 to N-1 first.  Left at that, walking an N-frame
+   * file costs N(N+1)/2 frame decodes.  The cache keeps the canvas as it stood
+   * after frame `cache_next - 1` was drawn, so the next frame asked for that
+   * lies at or past `cache_next` starts there.  It is an optimization and
+   * never an input: a frame decoded from it is byte for byte the frame decoded
+   * from nothing, and a cache that cannot be made (no memory, no lock) is
+   * simply not there.  Both buffers are taken through the document's
+   * allocator, so the caller's memory cap applies to them as to any other.
+   * @{ */
+  unsigned char * cache_canvas; ///< Canvas after `cache_next - 1` was drawn.
+  unsigned char * cache_prev;   ///< The saved rectangle (dispose PREVIOUS);
+                                ///< NULL when that frame has no use for one.
+  size_t cache_bytes;           ///< Length of each cached buffer.
+  size_t cache_next;            ///< The frame the cached canvas is input to.
+  bool cache_lock_ready;        ///< `cache_lock` was created.
+  GCU_MUTEX_T cache_lock;       ///< Guards every field in this group.
+  /** @} */
 };
 
 /** Adam7 pass parameters (W3C §2.6 Interlaced data order). Shared by decode

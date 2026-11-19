@@ -460,6 +460,72 @@ static void gimg_png_apng_blend_frame(unsigned char * canvas,
   }
 }
 
+/**
+ * Record the canvas that frame `index + 1` starts from.
+ *
+ * What that frame starts from is the canvas as frame `index` left it, before
+ * frame `index`'s own disposal, which is applied at the top of the next
+ * iteration from the frame's control block alone.  The saved rectangle is
+ * only read back when `index` disposes to the previous content, and was
+ * written during that very frame, so it is kept for that case and dropped
+ * otherwise.
+ *
+ * Failing to take the snapshot is not a decode failure: the answer is
+ * computed, and what is lost is the head start for the next frame.  The cache
+ * only moves forward, except that frame 0 always replaces it, so that a
+ * second pass of a looping player starts from the beginning cheaply instead of
+ * replaying the whole file for every frame, and so that two walks in opposite
+ * directions do not take turns dragging it back.
+ */
+static void gimg_png_apng_cache_store(gimg_png_doc_state_t * state, size_t index,
+    const unsigned char * canvas, const unsigned char * prev_rect,
+    size_t canvas_bytes) {
+  const GIMG_Allocator * alloc = gimg_alloc_or_default(state->allocator);
+  // Asked first because the answer is usually no and the work below is a
+  // canvas-sized copy; asked again under the same lock as the write.
+  GCU_MUTEX_LOCK(state->cache_lock);
+  const bool worth_taking = !state->cache_canvas ||
+      state->cache_bytes != canvas_bytes || state->cache_next <= index ||
+      index == 0u;
+  GCU_MUTEX_UNLOCK(state->cache_lock);
+  if (!worth_taking) {
+    return;
+  }
+  unsigned char * snapshot = (unsigned char *)gimg_malloc(alloc, canvas_bytes);
+  unsigned char * saved = NULL;
+  if (snapshot) {
+    memcpy(snapshot, canvas, canvas_bytes);
+    if (state->frames[index].fctl.dispose_op == 2) {
+      saved = (unsigned char *)gimg_malloc(alloc, canvas_bytes);
+      if (saved) {
+        memcpy(saved, prev_rect, canvas_bytes);
+      }
+      else {
+        gimg_free(alloc, snapshot);
+        snapshot = NULL;
+      }
+    }
+  }
+  if (!snapshot) {
+    return;
+  }
+  GCU_MUTEX_LOCK(state->cache_lock);
+  if (!state->cache_canvas || state->cache_bytes != canvas_bytes ||
+      state->cache_next <= index || index == 0u) {
+    gimg_free(alloc, state->cache_canvas);
+    gimg_free(alloc, state->cache_prev);
+    state->cache_canvas = snapshot;
+    state->cache_prev = saved;
+    state->cache_bytes = canvas_bytes;
+    state->cache_next = index + 1u;
+    snapshot = NULL;
+    saved = NULL;
+  }
+  GCU_MUTEX_UNLOCK(state->cache_lock);
+  gimg_free(alloc, snapshot);
+  gimg_free(alloc, saved);
+}
+
 GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
     const GIMG_Decode_Options * options, GIMG_Raster ** out_raster) {
   if (!codec || !item || !out_raster) {
@@ -567,10 +633,29 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
         return GIMG_ERR_OOM;
       }
       memset(prev_rect, 0, canvas_bytes);
+      // Start from the canvas an earlier decode left, when there is one at or
+      // before this frame: every frame between it and this one is then drawn
+      // from what it already holds instead of from nothing.  The cache is only
+      // consulted for a document with a second frame, because a one-frame
+      // animation has nobody to hand a head start to.
+      size_t start = 0;
+      const bool use_cache = state->frame_count > 1u && state->cache_lock_ready;
+      if (use_cache) {
+        GCU_MUTEX_LOCK(state->cache_lock);
+        if (state->cache_canvas && state->cache_next <= item->index &&
+            state->cache_bytes == canvas_bytes) {
+          memcpy(canvas, state->cache_canvas, canvas_bytes);
+          if (state->cache_prev) {
+            memcpy(prev_rect, state->cache_prev, canvas_bytes);
+          }
+          start = state->cache_next;
+        }
+        GCU_MUTEX_UNLOCK(state->cache_lock);
+      }
       // APNG canvas loop: for each frame up to the requested index, apply
       // previous frame's dispose (BACKGROUND or PREVIOUS), then save rect for
       // PREVIOUS if needed, decode this frame, and blend onto canvas.
-      for (size_t i = 0; i <= item->index; i++) {
+      for (size_t i = start; i <= item->index; i++) {
         const gimg_png_fctl_t * fctl = &state->frames[i].fctl;
         uint32_t fx = fctl->x_offset;
         uint32_t fy = fctl->y_offset;
@@ -651,6 +736,10 @@ GIMG_Result gimg_png_decode(GIMG_Codec * codec, const GIMG_Item * item,
             (const unsigned char *)frame_pixels, frame_stride, fx, fy, dec_fw,
             dec_fh, bpp_out, (state->frames[i].fctl.blend_op == 1) ? 1 : 0);
         gimg_free(a, frame_pixels);
+      }
+      if (use_cache) {
+        gimg_png_apng_cache_store(
+            state, item->index, canvas, prev_rect, canvas_bytes);
       }
       gimg_free(a, prev_rect);
       GIMG_Result rr = gimg_raster_create_with_allocator(a, canvas_w, canvas_h,

@@ -280,6 +280,66 @@ static GIMG_Result webp_decode_one_frame(const gimg_webp_doc_state_t * st,
       vp8, vp8_size, vp8l, vp8l_size, alph, alph_size, st->allocator, seq, out);
 }
 
+/**
+ * Whether decoding frame @p index depends on nothing the frames before it
+ * left behind in the VP8 sequence state.  A lossless frame resets it, and a
+ * lossy key frame restores every default it holds, so either can be decoded
+ * from a fresh sequence; an inter frame cannot.  Anything that cannot be
+ * classified is treated as dependent, which only costs a replay.
+ */
+static int webp_frame_starts_fresh(
+    const gimg_webp_doc_state_t * st, size_t index) {
+  const gimg_webp_frame_t * fr = &st->frames[index];
+  if (fr->vp8l_payload_size > 0u) {
+    return 1;
+  }
+  if (fr->vp8_payload_size == 0u ||
+      fr->vp8_payload_off + (size_t)fr->vp8_payload_size > st->file_size) {
+    return 0;
+  }
+  uint32_t w = 0;
+  uint32_t h = 0;
+  return gimg_webp_peek_vp8_dims(
+      st->file_bytes + fr->vp8_payload_off, fr->vp8_payload_size, &w, &h);
+}
+
+/**
+ * Record the canvas frame @p index + 1 starts from, which is the picture frame
+ * @p index returned.  Failing to is not a decode failure; only the head start
+ * for the next frame is lost.  The cache only moves forward, except that frame
+ * 0 always replaces it: a looping player starts over there, and a cache left
+ * at the end of the last pass would make every frame of the next one replay
+ * all those before it.
+ */
+static void webp_cache_store(gimg_webp_doc_state_t * st, size_t index,
+    const uint8_t * canvas, size_t stride, size_t bytes, int key) {
+  GCU_MUTEX_LOCK(st->cache_lock);
+  const bool worth_taking = !st->cache_canvas || st->cache_bytes != bytes ||
+      st->cache_next <= index || index == 0u;
+  GCU_MUTEX_UNLOCK(st->cache_lock);
+  if (!worth_taking) {
+    return;
+  }
+  uint8_t * snapshot = (uint8_t *)gimg_malloc(st->allocator, bytes);
+  if (!snapshot) {
+    return;
+  }
+  memcpy(snapshot, canvas, bytes);
+  GCU_MUTEX_LOCK(st->cache_lock);
+  if (!st->cache_canvas || st->cache_bytes != bytes ||
+      st->cache_next <= index || index == 0u) {
+    gimg_free(st->allocator, st->cache_canvas);
+    st->cache_canvas = snapshot;
+    st->cache_bytes = bytes;
+    st->cache_stride = stride;
+    st->cache_next = index + 1u;
+    st->cache_prev_key = key;
+    snapshot = NULL;
+  }
+  GCU_MUTEX_UNLOCK(st->cache_lock);
+  gimg_free(st->allocator, snapshot);
+}
+
 GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
     size_t index, GIMG_Raster ** out_raster) {
   if (!st || !out_raster) {
@@ -308,8 +368,32 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
   const size_t canvas_stride = gimg_raster_stride_bytes(canvas);
   memset(canvas_px, 0, canvas_stride * (size_t)canvas_h);
 
+  // The cache is the one mutable thing in the document state, and decode is
+  // handed it as const.  `codec_private` is a plain `void *`, so the const is
+  // on this view of the state and not on the state, and the lock is what makes
+  // writing through it safe.  A one-frame file has nobody to hand a head start
+  // to.
+  gimg_webp_doc_state_t * cache_st =
+      (st->frame_count > 1u && st->cache_lock_ready)
+      ? (gimg_webp_doc_state_t *)st
+      : NULL;
+  const size_t canvas_bytes = canvas_stride * (size_t)canvas_h;
   int prev_was_key_frame = 0;
-  for (size_t i = 0; i <= index; ++i) {
+  size_t start = 0;
+  if (cache_st) {
+    GCU_MUTEX_LOCK(cache_st->cache_lock);
+    if (cache_st->cache_canvas && cache_st->cache_next <= index &&
+        cache_st->cache_bytes == canvas_bytes &&
+        cache_st->cache_stride == canvas_stride &&
+        webp_frame_starts_fresh(st, cache_st->cache_next)) {
+      memcpy(canvas_px, cache_st->cache_canvas, canvas_bytes);
+      start = cache_st->cache_next;
+      prev_was_key_frame = cache_st->cache_prev_key;
+    }
+    GCU_MUTEX_UNLOCK(cache_st->cache_lock);
+  }
+  int last_key = 0;
+  for (size_t i = start; i <= index; ++i) {
     const gimg_webp_frame_t * fr = &st->frames[i];
     const int key = webp_is_key_frame(st, i, prev_was_key_frame);
     if (key) {
@@ -355,8 +439,13 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
         fr->height, replace);
     gimg_raster_destroy(frame_ras);
     prev_was_key_frame = key;
+    last_key = key;
   }
 
+  if (cache_st) {
+    webp_cache_store(
+        cache_st, index, canvas_px, canvas_stride, canvas_bytes, last_key);
+  }
   gimg_vp8_seq_destroy(st->allocator, seq);
   *out_raster = canvas;
   return GIMG_OK;

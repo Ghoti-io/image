@@ -103,6 +103,21 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   codec-private state. Decode of item *i* returns the full VP8X canvas after
   compositing frames `0…i`, matching `anim_dump`. `ANIM` loop count and
   background colour are carried on the document. `max_frame_count` caps ANMFs.
+  Each decode used to composite frames `0…i` from nothing, so walking an
+  *N*-frame file cost N(N+1)/2 frame decodes. The document now keeps the
+  canvas frame *i* returned and a later decode of a frame at or after that
+  point starts from it. It resumes only at a frame that needs nothing from the
+  frames before it for bitstream state, which is a lossless frame or a lossy
+  key frame; a lossy inter frame continues from reference planes that are not
+  cached, so a run of them still replays from the key frame that begins it
+  (libwebp's own encoders write none, and `anim_dump` refuses them). Frame 0
+  always replaces the cache, so a looping player's second pass is as cheap as
+  its first. The cache is one canvas taken through the document's allocator,
+  so `max_memory` applies to it, and failing to take it only costs the head
+  start. Output is the same in every order: `testAnim_decode_cost` compares
+  sequential, reverse and random walks byte for byte with a cold decode of
+  each frame, and counts allocations (48 lossless frames: 8376 calls for a
+  walk before, 528 after, against 340 for decoding the last frame cold).
 - **VP8L encode** of a still image (first document item): Huffman over
   literals, subtract-green when `webp_effort` ≥ 1, optional `ICCP` / `EXIF` /
   `XMP ` via `VP8X`. See Save.

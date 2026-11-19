@@ -197,6 +197,10 @@ void gimg_webp_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   gimg_free(alloc, state->chunks);
   gimg_free(alloc, state->frames);
   gimg_free(alloc, state->file_bytes);
+  gimg_free(alloc, state->cache_canvas);
+  if (state->cache_lock_ready) {
+    GCU_MUTEX_DESTROY(state->cache_lock);
+  }
   gimg_free(alloc, state);
 }
 
@@ -264,6 +268,9 @@ GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
     return GIMG_ERR_OOM;
   }
   state->allocator = alloc;
+  // Created with the state so that the teardown has one rule.  Failing to
+  // make it costs the canvas cache and nothing else.
+  state->cache_lock_ready = (GCU_MUTEX_CREATE(state->cache_lock) == 0);
   state->file_bytes = bytes;
   state->file_size = file_size;
   state->chunks = (gimg_webp_chunk_t *)gimg_calloc(

@@ -36,6 +36,8 @@
 #include <ghoti.io/image/codec.h>
 #include <ghoti.io/image/doc.h>
 #include <ghoti.io/image/stream.h>
+#include <ghoti.io/cutil/mutex.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -163,6 +165,32 @@ typedef struct {
   size_t exif_size;
   const unsigned char * xmp;
   size_t xmp_size;
+
+  /** @name Canvas cache (animations only).
+   *
+   * Frame N is drawn on the canvas frames 0 to N-1 left, so decoding it used
+   * to decode all of them first: an N-frame file cost N(N+1)/2 frame decodes
+   * to walk once.  The cache keeps the composited canvas as it stood after
+   * frame `cache_next - 1` was drawn, which is also the picture that frame's
+   * decode returned, and the next frame asked for that lies at or past
+   * `cache_next` starts there.  It is an optimization and never an input: a
+   * cache that cannot be made (no memory, no lock) is not there, and what is
+   * returned is the same either way.
+   *
+   * It is used only to start at a frame that does not depend on the one
+   * before it for bitstream state: a lossless frame, or a lossy key frame.
+   * A lossy inter frame continues from the reference planes the frames before
+   * it built, which are not cached, so a run of those still replays from the
+   * key frame that begins it.
+   * @{ */
+  unsigned char * cache_canvas;
+  size_t cache_bytes;      ///< Length of `cache_canvas`.
+  size_t cache_stride;     ///< Row stride it was written with.
+  size_t cache_next;       ///< The frame the cached canvas is input to.
+  int cache_prev_key;      ///< Whether frame `cache_next - 1` was a key frame.
+  bool cache_lock_ready;   ///< `cache_lock` was created.
+  GCU_MUTEX_T cache_lock;  ///< Guards every field in this group.
+  /** @} */
 } gimg_webp_doc_state_t;
 
 GIMG_Result gimg_webp_load(GIMG_Codec * codec, GIMG_Stream * stream,
