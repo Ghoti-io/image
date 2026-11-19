@@ -529,15 +529,18 @@ TEST(WebpDecodeMemory, HugeLosslessDimensionsAreRefusedAtTheCap) {
   EXPECT_EQ(c.retained, 0u);
 }
 
-TEST(WebpDecodeMemory, HugeLossyDimensionsAreRefusedAtTheCap) {
-  // A key frame of 16383 x 16383 with a two-byte first partition.
+TEST(WebpDecodeMemory, HugeLossyDimensionsAreRefusedWithoutALargeRequest) {
+  // A key frame of 16383 x 16383 with a two-byte first partition.  The
+  // partition cannot hold the picture's macroblocks, so the frame is corrupt
+  // as soon as that is seen and nothing is sized from its declared size; a
+  // cap is never reached, which is what the request bound below says.
   Bytes p = { 0x50, 0x00, 0x00, 0x9d, 0x01, 0x2a, 0xff, 0x3f, 0xff, 0x3f, 0, 0 };
   p[0] = static_cast<uint8_t>((2u << 5) | (1u << 4));
   const Bytes file = riff("VP8 ", p);
   const size_t cap = 1u << 18;
   const Cost c = measure(file, cap, static_cast<size_t>(1) << 30);
   EXPECT_EQ(c.load, GIMG_OK);
-  EXPECT_EQ(c.decode, GIMG_ERR_LIMIT);
+  EXPECT_EQ(c.decode, GIMG_ERR_CORRUPT);
   EXPECT_LE(c.max_request, cap);
 }
 

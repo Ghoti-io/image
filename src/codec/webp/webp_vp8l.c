@@ -756,6 +756,30 @@ Error:
   return ok;
 }
 
+/*
+ * Whether the bits left cannot make @a pixels pixels.
+ *
+ * A symbol of a prefix code with two or more symbols costs at least one bit,
+ * and one symbol makes at most 4096 pixels (the longest backward copy), so a
+ * stream whose every group has such a green code cannot make more than 4096
+ * pixels a bit.  A stream with a one-symbol green code can make a pixel for
+ * nothing, and is not judged here: a flat picture of any size is a few bytes.
+ * The test is made before the pixel buffer is, so a header that declares a
+ * picture the rest of the file cannot hold does not get the buffer.
+ */
+static int pixels_exceed_data(const vp8l_dec_t * dec, size_t pixels) {
+  const uint64_t most = (uint64_t)br_bits_left(&dec->br) * 4096u;
+  if (dec->num_htree_groups <= 0) {
+    return 0;
+  }
+  for (int i = 0; i < dec->num_htree_groups; ++i) {
+    if (dec->htree_groups[i].trees[VP8L_GREEN].has_single) {
+      return 0;
+    }
+  }
+  return (uint64_t)pixels > most;
+}
+
 static int decode_image_data(vp8l_dec_t * dec, uint32_t * data, int width,
     int height) {
   int row = 0;
@@ -1010,6 +1034,11 @@ static int decode_image_stream(vp8l_dec_t * dec, int xsize, int ysize,
 
   {
     const size_t total = (size_t)transform_xsize * (size_t)transform_ysize;
+    if (pixels_exceed_data(dec, total)) {
+      ok = 0;
+      set_err(dec, GIMG_ERR_CORRUPT);
+      goto End;
+    }
     data = (uint32_t *)gimg_malloc(dec->alloc, total * sizeof(*data));
     if (!data) {
       ok = 0;
@@ -1060,6 +1089,9 @@ static GIMG_Result decode_level0_argb(vp8l_dec_t * dec, uint32_t ** out_argb) {
     return GIMG_ERR_CORRUPT;
   }
   if (coded_n > full_n) {
+    return GIMG_ERR_CORRUPT;
+  }
+  if (pixels_exceed_data(dec, coded_n)) {
     return GIMG_ERR_CORRUPT;
   }
   pixels = (uint32_t *)gimg_malloc(dec->alloc, full_n * sizeof(*pixels));

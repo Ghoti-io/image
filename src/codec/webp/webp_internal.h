@@ -343,6 +343,18 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
     const GIMG_Allocator * alloc, gimg_vp8_seq * seq, GIMG_Raster ** out_raster);
 
 /**
+ * @brief Read a key frame's first partition and nothing after it.
+ *
+ * Returns @c GIMG_OK when the partition holds a mode record for every
+ * macroblock the frame declares, and @c GIMG_ERR_CORRUPT when it ends first.
+ * The cost is in proportion to the bytes it reads, not to the declared
+ * picture, so a decode that has other work to do for the same file (a
+ * picture-sized alpha plane) can ask first and not do it for nothing.
+ */
+GIMG_Result gimg_webp_vp8_check_modes(const unsigned char * data, size_t size,
+    const GIMG_Allocator * alloc);
+
+/**
  * @brief Decode one still picture (VP8 and/or VP8L, optional ALPH) to RGBA8.
  *
  * Used by both the still-image path and per-ANMF frame decode. Exactly one of

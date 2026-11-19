@@ -97,6 +97,15 @@ GIMG_Result gimg_webp_decode_picture(const unsigned char * vp8, size_t vp8_size,
   const int sized = have_alph &&
       (vp8l ? gimg_webp_peek_vp8l_dims(vp8l, vp8l_size, &want_w, &want_h, NULL)
             : gimg_webp_peek_vp8_dims(vp8, vp8_size, &want_w, &want_h));
+  if (sized && vp8) {
+    // The alpha plane is the size the frame declares, which a few bytes of
+    // header can make as large as the limits allow.  Make sure the colour
+    // data holds that many macroblocks before spending a plane on it.
+    const GIMG_Result mr = gimg_webp_vp8_check_modes(vp8, vp8_size, alloc);
+    if (mr != GIMG_OK) {
+      return mr;
+    }
+  }
   if (sized) {
     const GIMG_Result ar = gimg_webp_alpha_decode(
         alph, alph_size, want_w, want_h, alloc, &alpha);

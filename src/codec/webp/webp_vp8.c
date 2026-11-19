@@ -129,6 +129,7 @@ typedef struct {
   uint8_t nz; /* any nonzero coefficient in this macroblock */
   uint8_t seg;
   uint8_t ref; /* 0 intra, 1 last, 2 golden, 3 altref */
+  uint8_t skip; /* the frame's skip flag: no coefficients are coded */
   uint8_t b[16];
   /* Eighth-pel luma vectors. The macroblock vector is subblock 15
    * when the mode is SPLITMV. */
@@ -182,6 +183,10 @@ typedef struct {
 
 /** The most bytes a sound partition's final reads may take from beyond it. */
 #define VP8_BOOL_OVERRUN_ALLOWED 2
+
+/** Macroblock records allocated before the first is read; they double from
+ * there up to the picture's count. */
+#define VP8_MODES_FIRST 256u
 
 typedef uint8_t vp8_probs[4][8][3][11];
 
@@ -1341,6 +1346,9 @@ struct gimg_vp8_seq {
    * still frame has no later frame to predict from, so it keeps none: they
    * were three more full pictures, allocated, zeroed and filled for nothing. */
   int keep_refs;
+  /* Stop once the first partition has been read in full: the mode records
+   * are the only thing parsed, and no picture is made. */
+  int parse_only;
   uint32_t width;
   uint32_t height;
   uint32_t mb_w;
@@ -2168,9 +2176,10 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
   uint8_t * u_nz = NULL;
   uint8_t * v_nz = NULL;
   uint8_t * y2_above = NULL;
-  uint8_t * skip_mb = NULL;
   uint8_t * above_b = NULL;
   vp8_mb * modes = NULL;
+  size_t modes_cap = 0;
+  uint32_t rows_cap = 0;
   GIMG_Raster * raster = NULL;
   GIMG_Result r = GIMG_OK;
   const uint8_t * part0;
@@ -2491,21 +2500,6 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
   mb_h = (height + 15u) >> 4;
   y_stride = mb_w * 16u;
   uv_stride = mb_w * 8u;
-  if (skip_enabled) {
-    skip_mb = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * mb_h);
-    if (!skip_mb) {
-      return GIMG_ERR_OOM;
-    }
-    memset(skip_mb, 0, (size_t)mb_w * mb_h);
-  }
-  if ((seq->keep_refs && !vp8_seq_alloc_planes(seq, alloc, mb_w, mb_h)) ||
-      !vp8_seq_alloc_seg(seq, alloc, (size_t)mb_w * (size_t)mb_h)) {
-    gimg_free(alloc, skip_mb);
-    return GIMG_ERR_OOM;
-  }
-  if (is_key) {
-    memset(seq->seg_ids, 0, (size_t)mb_w * (size_t)mb_h);
-  }
   {
     int s;
     for (s = 0; s < 4; ++s) {
@@ -2535,25 +2529,51 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
     }
   }
 
-  modes = (vp8_mb *)gimg_malloc(
-      alloc, (size_t)mb_w * (size_t)mb_h * sizeof(vp8_mb));
+  /* Nothing below is sized from the picture's declared dimensions until the
+   * data has shown it holds that many macroblocks.  A key frame's header can
+   * say 16383 x 16383 in ten bytes, and 160 bytes of mode record for each of
+   * its million macroblocks, and the planes after them, were once allocated
+   * before the first partition was read.  The mode records grow as the
+   * macroblocks are read and the planes as their rows are decoded, and a
+   * partition that has run past its end stops the decode where it is, so what
+   * a file costs is in proportion to what it holds. */
   above_b = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * 4u);
-  if (!modes || !above_b) {
-    gimg_free(alloc, modes);
-    gimg_free(alloc, above_b);
-    gimg_free(alloc, skip_mb);
+  if (!above_b) {
     return GIMG_ERR_OOM;
   }
-  memset(modes, 0, (size_t)mb_w * (size_t)mb_h * sizeof(vp8_mb));
   memset(above_b, 0, (size_t)mb_w * 4u);
 
   for (mb_y = 0; mb_y < mb_h && r == GIMG_OK; ++mb_y) {
     uint8_t left_b[4] = { 0, 0, 0, 0 };
     for (mb_x = 0; mb_x < mb_w; ++mb_x) {
-      vp8_mb * mb = &modes[mb_y * mb_w + mb_x];
+      vp8_mb * mb;
       int ymode;
       int uvmode;
       int j;
+      /* A partition past its end only ever gets further past it, so the
+       * verdict reached after the last macroblock is reached here, as soon
+       * as it is certain. */
+      if (hdr.over > VP8_BOOL_OVERRUN_ALLOWED) {
+        r = GIMG_ERR_CORRUPT;
+        break;
+      }
+      if ((size_t)mb_y * mb_w + mb_x >= modes_cap) {
+        const size_t total = (size_t)mb_w * (size_t)mb_h;
+        size_t want = modes_cap ? modes_cap * 2u : VP8_MODES_FIRST;
+        vp8_mb * grown;
+        if (want > total) {
+          want = total;
+        }
+        grown = (vp8_mb *)gimg_realloc(alloc, modes, want * sizeof(vp8_mb));
+        if (!grown) {
+          r = GIMG_ERR_OOM;
+          break;
+        }
+        modes = grown;
+        memset(modes + modes_cap, 0, (want - modes_cap) * sizeof(vp8_mb));
+        modes_cap = want;
+      }
+      mb = &modes[mb_y * mb_w + mb_x];
       /* Section 10: the segment id precedes the skip flag, and only when
        * this frame updates the map. A segmentation that stays on without
        * a new map reuses the previous frame's ids. */
@@ -2564,9 +2584,9 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
           break;
         }
         mb->seg = (uint8_t)id;
-        seq->seg_ids[mb_y * mb_w + mb_x] = (uint8_t)id;
       }
-      else if (seg_on && !is_key) {
+      else if (seg_on && !is_key && seq->seg_ids &&
+          (size_t)mb_y * mb_w + mb_x < seq->seg_count) {
         mb->seg = seq->seg_ids[mb_y * mb_w + mb_x];
       }
       /* Section 11.1: the skip flag is in the first partition, before the
@@ -2577,7 +2597,7 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
           r = GIMG_ERR_CORRUPT;
           break;
         }
-        skip_mb[mb_y * mb_w + mb_x] = (uint8_t)skip_bit;
+        mb->skip = (uint8_t)skip_bit;
       }
       if (!is_key) {
         if (!vp8_read_inter_mb(&hdr, mb, modes, (int)mb_w, (int)mb_h,
@@ -2635,27 +2655,48 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
   }
   gimg_free(alloc, above_b);
   above_b = NULL;
+  if (r == GIMG_OK && hdr.over > VP8_BOOL_OVERRUN_ALLOWED) {
+    r = GIMG_ERR_CORRUPT;
+  }
   if (r != GIMG_OK) {
     gimg_free(alloc, modes);
-    gimg_free(alloc, skip_mb);
     return r;
   }
+  if (seq->parse_only) {
+    /* The caller wanted to know whether the first partition holds the
+     * picture's macroblocks, and it does. */
+    gimg_free(alloc, modes);
+    return GIMG_OK;
+  }
 
-  y_plane = (uint8_t *)gimg_malloc(alloc, (size_t)y_stride * mb_h * 16u);
-  u_plane = (uint8_t *)gimg_malloc(alloc, (size_t)uv_stride * mb_h * 8u);
-  v_plane = (uint8_t *)gimg_malloc(alloc, (size_t)uv_stride * mb_h * 8u);
-  y_nz = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * 4u * mb_h * 4u);
-  u_nz = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * 2u * mb_h * 2u);
-  v_nz = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w * 2u * mb_h * 2u);
+  /* Segment ids outlive the frame only in a sequence that goes on to read
+   * another; a key frame starts them over, and a frame that updates the map
+   * replaces them. */
+  if (seq->keep_refs) {
+    if (!vp8_seq_alloc_seg(seq, alloc, (size_t)mb_w * (size_t)mb_h)) {
+      gimg_free(alloc, modes);
+      return GIMG_ERR_OOM;
+    }
+    if (is_key) {
+      memset(seq->seg_ids, 0, seq->seg_count);
+    }
+    if (seg_on && seg_map) {
+      size_t n;
+      for (n = 0; n < seq->seg_count; ++n) {
+        seq->seg_ids[n] = modes[n].seg;
+      }
+    }
+    if (!vp8_seq_alloc_planes(seq, alloc, mb_w, mb_h)) {
+      gimg_free(alloc, modes);
+      return GIMG_ERR_OOM;
+    }
+  }
+
   y2_above = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w);
-  if (!y_plane || !u_plane || !v_plane || !y_nz || !u_nz || !v_nz ||
-      !y2_above) {
+  if (!y2_above) {
     r = GIMG_ERR_OOM;
     goto Done;
   }
-  memset(y_nz, 0, (size_t)mb_w * 4u * mb_h * 4u);
-  memset(u_nz, 0, (size_t)mb_w * 2u * mb_h * 2u);
-  memset(v_nz, 0, (size_t)mb_w * 2u * mb_h * 2u);
   memset(y2_above, 0, (size_t)mb_w);
   /* Section 9.5. The sizes of every coefficient partition except the
    * last are 3 little-endian bytes immediately after the first
@@ -2703,9 +2744,39 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
   for (mb_y = 0; mb_y < mb_h; ++mb_y) {
     int y2_left = 0;
     vp8_bool * row_tok = &part_dec[mb_y & (uint32_t)(npart - 1)];
+    if (mb_y >= rows_cap) {
+      /* The planes and the non-zero maps hold the rows decoded so far and
+       * grow by doubling, to the picture's height at most. */
+      uint32_t want = rows_cap ? rows_cap * 2u : 2u;
+      uint8_t * grown;
+      if (want > mb_h) {
+        want = mb_h;
+      }
+#define VP8_GROW_ROWS(ptr, per_row, zero)                                    \
+  do {                                                                       \
+    grown = (uint8_t *)gimg_realloc(alloc, (ptr), (size_t)want * (per_row)); \
+    if (!grown) {                                                            \
+      r = GIMG_ERR_OOM;                                                      \
+      goto Done;                                                             \
+    }                                                                        \
+    (ptr) = grown;                                                           \
+    if (zero) {                                                              \
+      memset((ptr) + (size_t)rows_cap * (per_row), 0,                        \
+          (size_t)(want - rows_cap) * (per_row));                            \
+    }                                                                        \
+  } while (0)
+      VP8_GROW_ROWS(y_plane, (size_t)y_stride * 16u, 0);
+      VP8_GROW_ROWS(u_plane, (size_t)uv_stride * 8u, 0);
+      VP8_GROW_ROWS(v_plane, (size_t)uv_stride * 8u, 0);
+      VP8_GROW_ROWS(y_nz, (size_t)mb_w * 16u, 1);
+      VP8_GROW_ROWS(u_nz, (size_t)mb_w * 4u, 1);
+      VP8_GROW_ROWS(v_nz, (size_t)mb_w * 4u, 1);
+#undef VP8_GROW_ROWS
+      rows_cap = want;
+    }
     for (mb_x = 0; mb_x < mb_w; ++mb_x) {
       vp8_mb * mb = &modes[mb_y * mb_w + mb_x];
-      int skip = skip_mb ? skip_mb[mb_y * mb_w + mb_x] : 0;
+      int skip = mb->skip;
       int sy;
       int sx;
       int had;
@@ -2871,6 +2942,13 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
         }
       }
     }
+    /* As for the first partition: once this row's partition has run past its
+     * end, the verdict below cannot change, so the rows after it are not
+     * decoded. */
+    if (row_tok->over > VP8_BOOL_OVERRUN_ALLOWED) {
+      r = GIMG_ERR_CORRUPT;
+      goto Done;
+    }
   }
 
   /* A partition that ran dry decoded zeros for what it lacked: a flat,
@@ -2948,8 +3026,6 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
    * them back before the raster is allocated, so they are not live beside it. */
   gimg_free(alloc, modes);
   modes = NULL;
-  gimg_free(alloc, skip_mb);
-  skip_mb = NULL;
   gimg_free(alloc, y_nz);
   y_nz = NULL;
   gimg_free(alloc, u_nz);
@@ -2996,12 +3072,26 @@ Done:
   gimg_free(alloc, u_nz);
   gimg_free(alloc, v_nz);
   gimg_free(alloc, y2_above);
-  gimg_free(alloc, skip_mb);
   gimg_free(alloc, above_b);
   gimg_free(alloc, modes);
   if (r != GIMG_OK) {
     *out_raster = NULL;
   }
+  return r;
+}
+
+GIMG_Result gimg_webp_vp8_check_modes(const unsigned char * data, size_t size,
+    const GIMG_Allocator * alloc) {
+  gimg_vp8_seq * seq = NULL;
+  GIMG_Raster * none = NULL;
+  GIMG_Result r = gimg_vp8_seq_create(alloc, &seq);
+  if (r != GIMG_OK) {
+    return r;
+  }
+  seq->keep_refs = 0;
+  seq->parse_only = 1;
+  r = gimg_webp_vp8_decode_frame(data, size, alloc, seq, &none);
+  gimg_vp8_seq_destroy(alloc, seq);
   return r;
 }
 

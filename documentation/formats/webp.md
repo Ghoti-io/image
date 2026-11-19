@@ -169,6 +169,39 @@ raster.
   (160 bytes a macroblock, 0.6 bytes a pixel) and are held until the loop
   filter has run.
 
+### What a header can ask for
+
+A frame's size is stated in a few bytes, and a stream can be sound and tiny at
+any size (a flat 4096 x 4096 picture is under 30 KB in either WebP, and a hand-built
+one is a few hundred bytes),
+so the size alone is no evidence of anything. What the decoder does is to
+charge each allocation to the data that has been read, not to the declaration:
+
+- **VP8** sizes nothing from the picture until the first partition has shown
+  that it holds a mode record for every macroblock. The mode records grow as
+  they are read (from 256 up, by doubling), and the planes and non-zero maps
+  grow by rows as the token partitions are decoded. A partition that has run
+  past its end is `GIMG_ERR_CORRUPT` as before, but is now found where it
+  happens and not after the last macroblock: it only ever runs further past,
+  so the verdict is the same one, reached early. A 52-byte file declaring
+  16383 x 12287 asks the allocator for about 5 KB in all and returns at once;
+  it asked for 447 MB and ran a million macroblocks (about a second) before.
+  In an animation the three reference pictures are allocated after the first
+  partition has been read, for the same reason, and a still keeps none.
+- **VP8L** refuses a picture before its pixel buffer is allocated when every
+  green code has two or more symbols and the bits left cannot make that many
+  pixels: a symbol of such a code costs at least one bit and makes at most
+  4096 pixels (the longest backward copy). A stream with a one-symbol green
+  code makes pixels for nothing and is not judged by this, because it is
+  sound at any size.
+- **ALPH beside VP8**: the alpha plane is decoded first (above), so the
+  colour frame's first partition is read before the plane is built, and a
+  frame that cannot hold its macroblocks is refused without it.
+- What remains is the cost of a sound, highly compressible file, which is the
+  output the caller asked for. `max_decoded_pixels` and `max_memory` bound
+  it, and an animation's canvas is allocated at the size the `VP8X` header
+  states for the same reason.
+
 ## YUV→RGB (a match, not a derivation)
 
 VP8 produces YUV 4:2:0. Turning that into RGB is a choice of matrix, range and
