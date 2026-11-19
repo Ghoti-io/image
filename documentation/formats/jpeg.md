@@ -235,6 +235,16 @@ Short list of dimension/stream edge cases; update when adding tests. See `image/
 | **DNL after first scan** | make_minimal_jpeg_with_dnl_after_scan (DNL matches SOF 8); LoadJpegWithDnlMismatchFails, LoadJpegDnlBeforeScanFails (negative) |
 | **RST in scan** | make_minimal_jpeg_with_rst_in_scan (RST5), LoadJpegWithRstInScanSucceeds |
 
+## Decode cost
+
+A small file can ask for a great deal of decoding.  This is what bounds it, and what does not, counted as 8x8 blocks the entropy decoders visit (a visit counts even when the block is skipped inside an end-of-band run), so the figures are facts about the file and not about a host.  Times are from a release build at -O1 on a 32-thread x86-64 host.
+
+| Case | Worst case | Rule |
+|------|------------|------|
+| **Arithmetic scan with no entropy data** | One pass over the frame: 4.2 million blocks and 0.48 s at 16384 x 16384 (2^28 pixels, the default `max_decoded_pixels`), from a 96-byte file | None beyond the pass. T.81 D.2.9 has the decoder read zeros once the data ends, and that is what a real encoder's flat frame decodes from: this library's writer puts **3 bytes** of entropy data behind a flat 4096 x 4096 or 8192 x 8192 gray frame (47 to 50 for one differing pixel), so a floor on entropy bytes per MCU would refuse the writer's own output. The cost is bounded by the pixel and memory limits, as for any frame |
+| **Hierarchical frames** | Each of the 32 frames the count allows may be as large as the image DHP declares, so 822 bytes make 32 passes: 2.1 million blocks, 0.26 s at 2048 x 2048 | Not yet bounded |
+| **Progressive scans that are cheap each** | At most 64 visits per block of the image per component: 63 Huffman scans of one end-of-band run each cost 16.5 million visits (200 ms) at 4096 x 4096 from 2.3 kB; 64 arithmetic scans of no data, 16.8 million (130 ms). At the default limits (pixels times components at most 2^28) that is at most 2^28 visits, a few seconds, against half a second for one pass | No further cap. A legal frame already has at most 64 scans per component (1024 in all) and scans may not repeat or overlap a band, so the existing scan bound is the work bound; a visit cap tighter than it would refuse the 64 one-coefficient scans a script may legally use |
+
 ## Not implemented
 
 Nothing of T.81 is known to be missing. What is bounded rather than absent, and why: a DCT frame is written at 8 or 12 bits, which is all Table B.2 allows; a hierarchical sequence is built at 8 (its reconstruction would need its own pass at 12) and at up to four components (see the checklist — no oracle exists for a wider one, and a self-consistent round trip is not evidence). A lossless frame writes any precision from 2 to 16 and any component count.

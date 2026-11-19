@@ -33,6 +33,20 @@
 #include "../../container/doc_internal.h"
 #include "jpeg_internal.h"
 
+static _Thread_local uint64_t jpeg_work_blocks;
+
+void gimg_jpeg_work_reset(void) {
+  jpeg_work_blocks = 0;
+}
+
+uint64_t gimg_jpeg_work_blocks(void) {
+  return jpeg_work_blocks;
+}
+
+void gimg_jpeg_work_add(uint64_t blocks) {
+  jpeg_work_blocks += blocks;
+}
+
 /**
  * Restate a decoded raster at the precision the caller asked for.
  *

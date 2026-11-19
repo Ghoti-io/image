@@ -303,6 +303,20 @@ static inline void gimg_jpeg_sampling_max(int num_components,
  */
 #define GIMG_JPEG_PROGRESSIVE_SCANS_PER_COMPONENT 64u
 
+/**
+ * Decode work: the 8x8 blocks the entropy decoders of a DCT frame visited on
+ * this thread since the counter was last reset.  A visit counts whether the
+ * block carried data or was skipped inside an end-of-band run, so a scan that
+ * costs almost nothing per block still shows as a full pass over the frame.
+ * Each scan adds its own total when it finishes, so the counter costs one
+ * thread-local update per scan, not per block.  It exists so that a test can
+ * state the work a file asks for as a number rather than as a time; nothing in
+ * the library reads it.
+ */
+void gimg_jpeg_work_reset(void);
+uint64_t gimg_jpeg_work_blocks(void);
+void gimg_jpeg_work_add(uint64_t blocks);
+
 /** Max DHT table entries we record (for "first DHT after previous scan" rule).
  */
 #define GIMG_JPEG_MAX_DHT_ENTRIES 128u

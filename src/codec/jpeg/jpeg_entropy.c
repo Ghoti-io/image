@@ -352,6 +352,8 @@ static GIMG_Result jpeg_decode_baseline_extended(
     }
   }
 
+  gimg_jpeg_work_add(block_counter);
+
   GIMG_Result r;
   if (num_comp == 4) {
     // A twelve-bit CMYK or YCCK frame; see jpeg_emit_four_component.
@@ -1051,6 +1053,8 @@ GIMG_Result gimg_jpeg_decode_baseline(const gimg_jpeg_doc_state_t * state,
     }
   }
 
+  gimg_jpeg_work_add(block_counter_8);
+
   // Create output raster: grayscale or RGB.
   if (num_comp == 1) {
     r = gimg_raster_create_with_allocator(alloc, (uint32_t)width,
@@ -1561,6 +1565,7 @@ GIMG_Result jpeg_decode_progressive_scans(const gimg_jpeg_doc_state_t * state,
         }
       }
     }
+    gimg_jpeg_work_add(block_counter_prog);
   }
 
   return GIMG_OK;

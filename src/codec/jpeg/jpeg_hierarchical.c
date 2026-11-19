@@ -341,6 +341,7 @@ static GIMG_Result hier_decode_dct_frame(const gimg_jpeg_doc_state_t * state,
   }
   int16_t dc_pred[GIMG_JPEG_MAX_COMPONENTS];
   memset(dc_pred, 0, sizeof(dc_pred));
+  uint64_t work_blocks = 0;
 
   // A.3.1's level shift, which a differential frame does not apply: J.2.3.1 -
   // "the IDCT of the differential output is calculated without the level
@@ -433,6 +434,7 @@ static GIMG_Result hier_decode_dct_frame(const gimg_jpeg_doc_state_t * state,
             if (r != GIMG_OK) {
               goto fail;
             }
+            work_blocks++;
             jpeg_dezigzag(block_zig, block_rz);
             jpeg_dequantize_32(block_rz, quant, block_q);
             jpeg_idct_8x8_islow(block_q, block_idct, pass1_bits);
@@ -460,6 +462,7 @@ static GIMG_Result hier_decode_dct_frame(const gimg_jpeg_doc_state_t * state,
       }
     }
   }
+  gimg_jpeg_work_add(work_blocks);
   return GIMG_OK;
 
 fail:
