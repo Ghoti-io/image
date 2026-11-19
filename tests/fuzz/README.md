@@ -14,6 +14,8 @@
 
 **fuzz_bmp_encode**: Round-trip harness for BMP (load -> decode -> save as BMP -> load). Note that `gimg_doc_load` dispatches on the bytes rather than on the harness's name, so this feeds the BMP *writer* rasters decoded from PNG and JPEG too.
 
+**Encode harness options.** The encode harnesses do not write the default file. `fuzz_encode.h` derives the whole `GIMG_Save_Options` (WebP effort and compressor, PNG filter and palette policy, JPEG progressive/arithmetic/lossless/hierarchical/non-interleaved/abbreviated modes with quality, subsampling, precision and restart interval, TIFF compression/predictor/byte order/BigTIFF/strip size, GIF interlace/threshold/loop count, BMP RLE/OS-2/wrapper/top-down, ICO payload) from a hash of the input's own bytes, so seeds stay valid files and mutation moves between option sets. Where the writer is lossless for the options chosen, the decoded picture is compared with the source; otherwise the output must load and decode. `tests/unit/test_fuzz_corpus.cpp` replays every `*.seed` under a fixed list of selectors on every `make test`.
+
 **fuzz_gif_load** / **fuzz_gif_encode**, **fuzz_tiff_load** / **fuzz_tiff_encode**: The same pair for GIF and TIFF.
 
 ## Build and run
