@@ -39,13 +39,22 @@ static inline const GIMG_Allocator * gimg_alloc_or_default(
   return allocator ? allocator : gimg_allocator_default();
 }
 
+// Every block goes through these four, so the scope in budget.c sees each
+// one taken and each one released, and holds the sum of what is live to the
+// cap.  A block's size is known at the free because the scope recorded it
+// when the block was taken.
+
 static inline void * gimg_malloc(
     const GIMG_Allocator * allocator, size_t size) {
   if (!gimg_budget_allows(size)) {
     return NULL;
   }
   allocator = gimg_alloc_or_default(allocator);
-  return allocator->malloc_fn(allocator->ctx, size);
+  void * p = allocator->malloc_fn(allocator->ctx, size);
+  if (p) {
+    gimg_budget_took(p, size);
+  }
+  return p;
 }
 
 static inline void * gimg_calloc(
@@ -59,22 +68,31 @@ static inline void * gimg_calloc(
     return NULL;
   }
   allocator = gimg_alloc_or_default(allocator);
-  return allocator->calloc_fn(allocator->ctx, nitems, size);
+  void * p = allocator->calloc_fn(allocator->ctx, nitems, size);
+  if (p) {
+    gimg_budget_took(p, nitems * size);
+  }
+  return p;
 }
 
 static inline void * gimg_realloc(
     const GIMG_Allocator * allocator, void * ptr, size_t size) {
-  if (!gimg_budget_allows(size)) {
+  if (!gimg_budget_allows_realloc(ptr, size)) {
     return NULL;
   }
   allocator = gimg_alloc_or_default(allocator);
-  return allocator->realloc_fn(allocator->ctx, ptr, size);
+  void * p = allocator->realloc_fn(allocator->ctx, ptr, size);
+  if (p) {
+    gimg_budget_resized(ptr, p, size);
+  }
+  return p;
 }
 
 static inline void gimg_free(const GIMG_Allocator * allocator, void * ptr) {
   if (!ptr) {
     return;
   }
+  gimg_budget_released(ptr);
   allocator = gimg_alloc_or_default(allocator);
   allocator->free_fn(allocator->ctx, ptr);
 }

@@ -475,7 +475,13 @@ TEST(WebpDecodeMemory, TheBoundsHoldAtEverySize) {
 // max_memory is enforced before each large allocation
 // ---------------------------------------------------------------------------
 
-TEST(WebpDecodeMemory, MaxMemoryOfTheRasterAdmitsEveryKindAndOneLessRefuses) {
+TEST(WebpDecodeMemory, MaxMemoryIsTheLiveTotalAndTheRasterAloneIsNotEnough) {
+  // max_memory bounds the sum of the blocks a call holds at once (it used to
+  // bound each block, and this test then gave the raster as the cap that
+  // admitted a decode). The raster is the largest block and is held beside a
+  // working set, so a cap of exactly the raster now refuses; the measured
+  // peak of an unlimited decode, which the tracker overstates when a block
+  // grows (it counts old and new together), admits.
   struct Case {
     const char * name;
     Kind kind;
@@ -486,14 +492,20 @@ TEST(WebpDecodeMemory, MaxMemoryOfTheRasterAdmitsEveryKindAndOneLessRefuses) {
   for (const Case & k : cases) {
     SCOPED_TRACE(k.name);
     const Bytes file = encode(kW, kH, make_pixels(kW, kH, k.kind), k.lossy);
-    const Cost ok = measure(file, kRaster);
+    const Cost open = measure(file, GIMG_LIMIT_NONE);
+    EXPECT_EQ(open.load, GIMG_OK);
+    EXPECT_EQ(open.decode, GIMG_OK);
+    EXPECT_GT(open.peak, kRaster) << "the decode holds a working set";
+    const Cost ok = measure(file, open.peak);
     EXPECT_EQ(ok.load, GIMG_OK);
-    EXPECT_EQ(ok.decode, GIMG_OK) << "the raster is the largest block";
-    const Cost refused = measure(file, kRaster - 1u);
-    EXPECT_EQ(refused.load, GIMG_OK);
-    EXPECT_EQ(refused.decode, GIMG_ERR_LIMIT);
-    EXPECT_LE(refused.max_request, kRaster - 1u);
-    EXPECT_EQ(refused.retained, 0u);
+    EXPECT_EQ(ok.decode, GIMG_OK) << "the whole measured peak is admitted";
+    for (size_t cap : { kRaster, kRaster - 1u }) {
+      const Cost refused = measure(file, cap);
+      EXPECT_EQ(refused.load, GIMG_OK);
+      EXPECT_EQ(refused.decode, GIMG_ERR_LIMIT) << "cap " << cap;
+      EXPECT_LE(refused.max_request, cap);
+      EXPECT_EQ(refused.retained, 0u);
+    }
   }
 }
 

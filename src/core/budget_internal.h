@@ -30,9 +30,15 @@
  * that thread until the scope closes is held to it.  A codec does not opt in
  * and cannot forget.
  *
- * What it bounds is one allocation, not their sum.  Blocks carry no size, so
- * a running total could only be kept by wrapping every block the library
- * hands out, including pixel buffers whose ownership passes to the caller.
+ * What it bounds is the sum: the bytes the library holds at once, in blocks
+ * it took inside the scope and has not yet released.  Blocks carry no size,
+ * so the scope keeps a table of the live ones, keyed by address, filled by
+ * gimg_malloc/calloc/realloc and drained by gimg_free.  Nothing is added to
+ * the blocks themselves, so a block that leaves the scope - the raster a
+ * decode returns - is the caller's, is freed through the same allocator
+ * without the scope's knowing, and cannot take the total below zero: a free
+ * of an address the table does not hold subtracts nothing.  A scope whose cap
+ * is GIMG_LIMIT_NONE keeps no table and costs nothing.
  *
  * A request over the cap fails as an allocation failure does, so every codec
  * unwinds through arms the allocation-failure sweep already runs.  The scope
@@ -60,9 +66,9 @@ typedef struct {
 } gimg_budget_scope_t;
 
 /**
- * Open a scope with @p cap as the largest single allocation.  Scopes nest -
- * a thumbnail is loaded inside a load - and an inner one can tighten the cap
- * but never loosen it.
+ * Open a scope with @p cap as the most live bytes the library may hold in
+ * blocks taken from here on.  Scopes nest - a thumbnail is loaded inside a
+ * load - and an inner one can tighten the cap but never loosen it.
  */
 void gimg_budget_enter(gimg_budget_scope_t * scope, size_t cap);
 
@@ -72,8 +78,26 @@ void gimg_budget_enter(gimg_budget_scope_t * scope, size_t cap);
  */
 bool gimg_budget_leave(gimg_budget_scope_t * scope);
 
-/** Whether an allocation of @p size may go ahead; records a refusal. */
+/**
+ * Whether a new block of @p size may be taken without the live total passing
+ * the cap; records a refusal.  Also makes room for the block's entry, so
+ * that gimg_budget_took() cannot fail.  A false return without a recorded
+ * refusal is that room not being had, which the caller treats as the
+ * allocator failing.
+ */
 bool gimg_budget_allows(size_t size);
+
+/** As gimg_budget_allows(), for @p old resized to @p size (old may be NULL). */
+bool gimg_budget_allows_realloc(const void * old, size_t size);
+
+/** A new block of @p size was taken at @p ptr. */
+void gimg_budget_took(void * ptr, size_t size);
+
+/** @p old was resized to @p size and now lives at @p ptr (not NULL). */
+void gimg_budget_resized(void * old, void * ptr, size_t size);
+
+/** @p ptr is being released. */
+void gimg_budget_released(void * ptr);
 
 /**
  * Resolve a caller's limits into the ones a codec is handed: never NULL, and

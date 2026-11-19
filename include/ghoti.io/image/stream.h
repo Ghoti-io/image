@@ -280,8 +280,13 @@ GIMG_API void gimg_stream_destroy(GIMG_Stream * stream);
 /** @brief The default for GIMG_Limits.max_decoded_pixels: 2^28, 16384 squared. */
 #define GIMG_DEFAULT_MAX_DECODED_PIXELS ((size_t)1 << 28)
 
-/** @brief The default for GIMG_Limits.max_memory: one gibibyte. */
-#define GIMG_DEFAULT_MAX_MEMORY ((size_t)1 << 30)
+/**
+ * @brief The default for GIMG_Limits.max_memory: two gibibytes of live
+ * allocations. It is a sum, so it has to hold the largest raster the default
+ * pixel cap admits (2^28 pixels at four bytes, one gibibyte) and the working
+ * set beside it.
+ */
+#define GIMG_DEFAULT_MAX_MEMORY ((size_t)1 << 31)
 
 /**
  * @brief Resource limits applied while loading and decoding.
@@ -304,20 +309,35 @@ typedef struct GIMG_Limits {
    */
   size_t max_decoded_pixels;
   /**
-   * 0 = ::GIMG_DEFAULT_MAX_MEMORY. The largest single allocation, in bytes,
-   * that a load or a decode may make.
+   * 0 = ::GIMG_DEFAULT_MAX_MEMORY. The most memory, in bytes, that the
+   * library may hold live at once in the blocks a load or a decode takes: the
+   * peak of the sum of its own allocations within one gimg_doc_load() or
+   * gimg_item_decode() call.
    *
    * Enforced beneath every codec, in the library's own allocation path, for
-   * the whole of gimg_doc_load() and gimg_item_decode() on the calling
-   * thread: the decoded raster, every working buffer, every copied block of
-   * metadata. A request over it fails the call with GIMG_ERR_LIMIT. With the
-   * default, a picture whose raster is over a gibibyte - 2^28 pixels at
-   * sixteen bits a channel, for one - needs this raised as well as
-   * max_decoded_pixels.
+   * the whole of the call on the calling thread: the decoded raster, every
+   * working buffer, every copied block of metadata. Each block is counted
+   * from the allocation that takes it (a request is counted at the size
+   * asked for, with no allowance for the allocator's own overhead) until it
+   * is freed, so a decode that holds a raster and then a second buffer is
+   * charged for both and one that frees the first before taking the second
+   * is charged for the larger. An allocation that would take the live total
+   * past the cap fails, and the call returns GIMG_ERR_LIMIT; the total
+   * never exceeds the cap. Growing a block with the allocator's realloc is
+   * charged for the growth; an allocator that moves the block holds old and
+   * new together for a moment, which is its own and is not counted.
    *
-   * It bounds each allocation, not their sum. A file that makes the library
-   * hold many allocations at once, each within the cap, is bounded by
-   * max_decoded_pixels, max_frame_count and max_metadata_size.
+   * What it does not bound: memory the call did not take (the stream's own
+   * buffers, the caller's allocator's overhead, blocks taken before the call
+   * such as a document's earlier decodes, which are not counted again), and
+   * anything outside a load or decode - a save, an operation. The returned
+   * raster is counted while the call runs; once the call returns it is the
+   * caller's. Each call gets the whole cap afresh. With the default, a
+   * picture whose raster and working set pass two gibibytes needs this
+   * raised as well as max_decoded_pixels.
+   *
+   * An inner load made by the library (a thumbnail, an embedded image) can
+   * tighten the cap for itself and is also held to this one.
    */
   size_t max_memory;
   /**

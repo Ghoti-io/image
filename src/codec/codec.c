@@ -493,9 +493,23 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
   }
   resolved.limits = &limits;
 
+  // The orientation is applied inside the scope, so that a transposed copy
+  // held beside the raster it replaces is counted with it.
   gimg_budget_scope_t scope;
   gimg_budget_enter(&scope, limits.max_memory);
   GIMG_Result r = codec->decode_cb(codec, item, &resolved, out_raster);
+  if (r == GIMG_OK && *out_raster) {
+    // Apply EXIF (or other) orientation so decoded pixels match display image
+    // (CIPA DC-008 / EXIF 2.32 orientation convention).
+    GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
+    if (meta) {
+      GIMG_Orientation orient = gimg_meta_common_orientation(meta);
+      if (orient != GIMG_ORIENTATION_UNKNOWN &&
+          orient != GIMG_ORIENTATION_NORMAL) {
+        r = gimg_ops_apply_orientation(*out_raster, orient);
+      }
+    }
+  }
   if (gimg_budget_leave(&scope) && r != GIMG_OK) {
     r = GIMG_ERR_LIMIT;
   }
@@ -505,21 +519,6 @@ GIMG_API GIMG_Result gimg_item_decode(const GIMG_Item * item,
       *out_raster = NULL;
     }
     return r;
-  }
-
-  // Apply EXIF (or other) orientation so decoded pixels match display image
-  // (CIPA DC-008 / EXIF 2.32 orientation convention).
-  GIMG_Meta_Common * meta = gimg_doc_meta_common(doc);
-  if (meta) {
-    GIMG_Orientation orient = gimg_meta_common_orientation(meta);
-    if (orient != GIMG_ORIENTATION_UNKNOWN && orient != GIMG_ORIENTATION_NORMAL) {
-      r = gimg_ops_apply_orientation(*out_raster, orient);
-      if (r != GIMG_OK) {
-        gimg_raster_destroy(*out_raster);
-        *out_raster = NULL;
-        return r;
-      }
-    }
   }
   return GIMG_OK;
 }

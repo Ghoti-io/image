@@ -160,12 +160,12 @@ raster.
   byte a pixel) stands beside the colour decoder. A lossless-compressed plane
   is the decoder's own green plane, unfiltered in place and trimmed, not a
   copy of it.
-- `max_memory` bounds each allocation, as everywhere (`stream.h`); the
-  whole-file read, the raster and every working buffer pass through it, so a
-  request over it fails the call with `GIMG_ERR_LIMIT` before the allocator
-  is asked. The decoder's total is now at most the raster plus a small
-  working set, so that single-allocation cap is also close to a bound on the
-  total. A VP8 key frame's mode records are the largest remaining excess
+- `max_memory` bounds the live total of the call, as everywhere
+  (`stream.h`); the whole-file read, the raster and every working buffer pass
+  through it, and a request that would take the sum past it fails the call
+  with `GIMG_ERR_LIMIT` before the allocator is asked. The decoder's total is
+  at most the raster plus a small working set, so a cap a little above the
+  raster is enough. A VP8 key frame's mode records are the largest remaining excess
   (160 bytes a macroblock, 0.6 bytes a pixel) and are held until the loop
   filter has run.
 

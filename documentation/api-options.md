@@ -235,7 +235,7 @@ Used by `gimg_item_decode()`.
 | Field                  | Read by | Use |
 |------------------------|---------|-----|
 | `max_decoded_pixels`   | PNG, JPEG, BMP, GIF, TIFF, ICO, WebP | Reject if width×height (or the sum over frames) exceeds this. `0` is `GIMG_DEFAULT_MAX_DECODED_PIXELS`, 2^28. ICO applies it per entry; WebP applies it to the VP8X canvas. |
-| `max_memory`           | every codec | The largest single allocation a load or decode may make. `0` is `GIMG_DEFAULT_MAX_MEMORY`, one gibibyte. Enforced in the library's allocation path, beneath the codecs. |
+| `max_memory`           | every codec | The most live memory a load or decode may hold: the peak sum of the library's own allocations within one `gimg_doc_load()` or `gimg_item_decode()` call. `0` is `GIMG_DEFAULT_MAX_MEMORY`, two gibibytes. Enforced in the library's allocation path, beneath the codecs. |
 | `max_metadata_size`    | PNG, JPEG, BMP, GIF, TIFF, WebP | Cap what is kept that is not pixels, including a *total* across segments. `0` is a four-mebibyte guard, not "no limit". |
 | `max_frame_count`      | PNG, GIF, TIFF, WebP | Max frames (APNG, GIF frames, TIFF's IFD chain and its SubIFD pages, WebP ANMF). A BMP bitmap array is several items and is not capped. ICO entries are alternates, not frames; their count is capped at `GIMG_ICO_MAX_ENTRIES` (64) instead. |
 | `max_chunk_size`       | PNG, JPEG, GIF, WebP | Reject a declared segment payload larger than this (bomb protection). WebP applies it to every RIFF chunk, nested ANMF bitstreams included. A BMP wrapping a PNG or JPEG, a TIFF whose strips are JPEG, and an icon entry that is a PNG all pass it down. |
@@ -243,9 +243,18 @@ Used by `gimg_item_decode()`.
 Every declared field is read by something. `max_memory` is the one no codec
 reads for itself: `gimg_doc_load()` and `gimg_item_decode()` hold it for the
 whole call on the calling thread, and every allocation the library makes in
-that time is compared with it, so a codec cannot forget it. It bounds each
-allocation and not their sum; the sum is what `max_decoded_pixels`,
-`max_frame_count` and `max_metadata_size` are for.
+that time is counted against it, so a codec cannot forget it. It bounds the
+sum: the library keeps the size of each block it takes inside the call and
+drops it when the block is freed, and an allocation that would take the live
+total past the cap fails the call with `GIMG_ERR_LIMIT`. Peak live bytes of
+the library's own allocations in the call therefore never exceed `max_memory`
+(a request is counted at the size asked for; an allocator that moves a block
+on `realloc` briefly holds the old and new copy, which is not counted). The
+returned raster counts while the call runs and is the caller's afterwards.
+Blocks taken before the call (a document's earlier decodes), the caller's
+own allocations, and saves and operations outside a load or decode are not
+counted. Each call gets the whole cap; a cap of `GIMG_LIMIT_NONE` keeps no
+account at all. Until 2026-11 the cap applied to each allocation separately.
 
 `max_metadata_size` at zero is a four-mebibyte guard, because the alternative is that a caller who never
 thought about metadata has no bound on it at all. It is also the only cap that
@@ -274,7 +283,7 @@ means the same thing, and zero means the library's default:
 | Field | Default at zero |
 |---|---|
 | `max_decoded_pixels` | `GIMG_DEFAULT_MAX_DECODED_PIXELS`, 2^28 (16384 &times; 16384) |
-| `max_memory` | `GIMG_DEFAULT_MAX_MEMORY`, one gibibyte in a single allocation |
+| `max_memory` | `GIMG_DEFAULT_MAX_MEMORY`, two gibibytes live at once |
 | `max_metadata_size` | a four-mebibyte guard (over it, the object is dropped) |
 | `max_frame_count`, `max_chunk_size` | each codec's own built-in bound: 65536 frames for APNG and GIF, 1024 for WebP, 4096 directories for TIFF; `max_chunk_size` is the stream's own length (64 MiB when it has none) |
 
@@ -289,7 +298,7 @@ know whether it is decoding a thumbnail or a satellite image. That made the
 documented way to call the library the unbounded one, and every caller who
 did not read this page was exposed. The defaults now cover a 268-megapixel
 picture at eight bits a channel. A larger one, or one whose raster passes a
-gibibyte, needs the two fields raised or set to `GIMG_LIMIT_NONE`, and a
+gibibyte with its working set past two, needs the two fields raised or set to `GIMG_LIMIT_NONE`, and a
 service reading files it did not produce should set them lower: **set
 `max_decoded_pixels` to whatever your largest legitimate input needs.**
 
