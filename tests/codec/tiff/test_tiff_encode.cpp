@@ -258,13 +258,23 @@ TEST(TiffEncode, AnOffsetPastFourGigabytesIsWrittenAsBigTiff) {
   pixels[0] = 0x11;
   pixels[(size_t)rows * stride] = 0x22;
 
+  // A document built in memory is held to the default memory cap, two
+  // gibibytes, and this file is staged whole under a cap, so the save states
+  // that it has none.  Without it the 4.7 GB save is refused with
+  // GIMG_ERR_LIMIT, and the classic refusal below would be that one and not
+  // the one the container has to give.
+  GIMG_Limits no_cap = {};
+  no_cap.max_memory = GIMG_LIMIT_NONE;
+
   GIMG_Save_Options classic = {};
   classic.tiff_rows_per_strip = rows;
   classic.tiff_bigtiff = GIMG_TIFF_BIG_CLASSIC;
+  classic.limits = &no_cap;
   EXPECT_EQ(save(doc, &classic, nullptr), GIMG_ERR_LIMIT);
 
   GIMG_Save_Options opts = {};
   opts.tiff_rows_per_strip = rows;
+  opts.limits = &no_cap;
   GIMG_Stream * stream = nullptr;
   ASSERT_EQ(gimg_stream_create_memory_output(&stream), GIMG_OK);
   GIMG_Save_Report report = {};

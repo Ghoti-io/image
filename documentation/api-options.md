@@ -126,6 +126,7 @@ say what a given option costs in a real file.
 | `webp_lossless` | For WebP: **GIMG_WEBP_COMPRESS_LOSSLESS** (0, default) writes VP8L. **GIMG_WEBP_COMPRESS_LOSSY** writes a VP8 keyframe; a non-opaque picture also writes an `ALPH` chunk, VP8L of the green channel when that is shorter than the raw plane, and the colour stays straight (RGB is zeroed only where alpha is 0). Ignored by other codecs. |
 | `webp_effort` | For WebP: 0–9. Lossless: search budget; effort ≥ 1 applies subtract-green. Lossy: the quantizer ladder, coarser at 0. Effort 4 is index 26, the single-segment index `cwebp` writes at quality 75. When `options` is NULL the codec uses 4; a zero in a present struct means effort 0. Ignored by other codecs. |
 | `webp_exact` | For WebP: non-zero keeps RGB under fully transparent pixels (libwebp `-exact`). Zero clears them. Ignored by other codecs. |
+| `limits` | Resource limits for this save, or NULL. Only `max_memory` is read. NULL uses the limits the document was loaded with, and a document built in memory the defaults; a struct that is present overrides them whole, a zero field being the default and `GIMG_LIMIT_NONE` lifting the cap. A refusal is `GIMG_ERR_LIMIT` with nothing written. See the Limits section below. |
 
 **GIMG_JPEG_Progressive_Config** holds `scan_count` and `scans` (array of **GIMG_JPEG_Progressive_Scan**). Each scan has `Ss`, `Se` (spectral selection, 0–63), `Ah`, `Al` (successive approximation). Caller keeps the array valid for the duration of `gimg_doc_save()`. **When `jpeg_progressive_config` is NULL or `scan_count` is 0:** the encoder uses the default scan script (one DC scan Ss=0, Se=0 then one AC scan Ss=1..63, Ah=0, Al=0). **Custom script:** non-NULL with `scan_count` > 0 uses the given sequence of scans. Initial AC spectral bands (Ah=0, Ss≥1) must not overlap (T.81 Annex G); overlapping [Ss,Se] ranges are rejected with **GIMG_ERR_UNSUPPORTED**. Refinement passes (Ah>0) are supported: DC refinement (Ss=0, Se=0, Ah>0) and AC refinement (Ah>0 for band Ss..Se) with successive-approximation encoding and optional refinement DHT (Th=2).
 
@@ -263,7 +264,7 @@ the cap applied to each allocation separately.
 | `gimg_doc_load()` | yes | `GIMG_Load_Options.limits` |
 | `gimg_item_decode()` | yes | `GIMG_Decode_Options.limits`, else the limits the document was loaded with |
 | `gimg_item_ensure_decoded()` | yes, it is a `gimg_item_decode()` (the raster it attaches is the document's afterwards and is not counted again) | as `gimg_item_decode()` |
-| `gimg_doc_save()`, all seven writers | yes: working buffers, the file composed in memory, the straight copies a premultiplied raster is saved through, an item decoded for the save, the Exif thumbnail, and the growth of a memory stream given as the destination | the limits the document was loaded with; a document not loaded remembers none and its save is not capped, as where they say `GIMG_LIMIT_NONE`. `GIMG_Save_Options` has no limits field |
+| `gimg_doc_save()`, all seven writers | yes: working buffers, the file composed in memory, the straight copies a premultiplied raster is saved through, an item decoded for the save, the Exif thumbnail, and the growth of a memory stream given as the destination | `GIMG_Save_Options.limits` when given, else the limits the document was loaded with, else (a document built in memory) the defaults, `GIMG_DEFAULT_MAX_MEMORY`. `GIMG_LIMIT_NONE` lifts it. Only `max_memory` is read |
 | `gimg_ops_*` (convert, resize, crop, quantize, palette, colour transform, rotate, flip, orientation, composite) and `gimg_alpha_*` | no, when a caller makes them directly: they take no limits and the caller sizes the raster they make. When a load, decode or save calls them they are inside its scope and counted | none |
 | `gimg_raster_create*()`, `gimg_raster_copy*()`, `gimg_doc_copy*()`, `gimg_doc_from_raster*()` | no: the dimensions are the caller's, and the allocation is the caller's own | none |
 
@@ -284,7 +285,7 @@ library's blocks (a parsed profile, a transform) are counted, because the
 colour transform hands it an allocator that goes through the same path.
 
 A save is the same working set as the load that made the document, so it is
-held to the same cap, and it is held the same way: a save over it returns
+held to the same cap unless the save states its own, and it is held the same way: a save over it returns
 `GIMG_ERR_LIMIT`. **A refused save writes nothing to the stream.** ICO and WebP
 compose the whole file in one buffer and write it once; GIF and PNG always, and
 BMP, JPEG and TIFF whenever a cap is in force, compose the file in a memory
@@ -357,10 +358,14 @@ Limits set on the **load** are remembered and applied to a later **decode**
 that carries none of its own, so setting them once at load is enough - and the
 save paths, which re-decode their source item and have no options to pass on,
 are covered by the same fallback. They are also what a **save** is held to
-(`GIMG_Save_Options` carries no limits of its own): a service that loads with a
-small `max_memory` saves under the same one, and a document built in memory
-remembers no limits and its save is uncapped, because there is nowhere on
-`GIMG_Save_Options` to lift a default.
+unless `GIMG_Save_Options.limits` is given, which overrides them whole (a zero
+field is the default and `GIMG_LIMIT_NONE` lifts the cap, as at load): a service
+that loads with a small `max_memory` saves under the same one. A document built
+in memory remembers none and is held to the default two gibibytes, so a caller
+writing a file whose staging passes that (a 4.7 GB TIFF, say) passes limits with
+`GIMG_LIMIT_NONE` or a cap that fits. A save reads only `max_memory`: the pixel,
+frame, metadata and chunk caps bound what a file can make a reader allocate, and
+a writer is handed a raster that already exists, so they are ignored.
 
 ## Strictness (GIMG_Strictness)
 

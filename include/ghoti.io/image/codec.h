@@ -806,6 +806,16 @@ typedef struct {
 
   /** Zero; room to grow. */
   uint8_t _reserved[4];
+
+  /** Resource limits for this save, or NULL. Only GIMG_Limits.max_memory is
+   * read: a writer is handed a raster that already exists, so the pixel,
+   * frame, metadata and chunk caps, which bound what a file can make a reader
+   * allocate, are ignored here. NULL uses the limits the document remembers
+   * from its load, and a document built in memory the library's defaults (a
+   * zero max_memory is GIMG_DEFAULT_MAX_MEMORY; GIMG_LIMIT_NONE lifts the
+   * cap). A struct that is present overrides the remembered limits, zero
+   * fields included. See gimg_doc_save(). */
+  const GIMG_Limits * limits;
 } GIMG_Save_Options;
 
 /** @name WebP compressor choice
@@ -914,20 +924,22 @@ typedef struct {
  *   required, unlike @p options.
  *
  * **Memory.** A save is held to the live total of its own allocations, as a
- * load is, under the max_memory of the limits the document was loaded with.
- * A document that was not loaded remembers none and its save is not capped,
- * as is a loaded one whose limits say GIMG_LIMIT_NONE. Counted: every
- * writer's working buffers, the file composed in memory before it is handed
- * to the stream, the straight copies a premultiplied raster is saved through,
- * an item decoded for the save because it holds no raster, and the growth of
- * a memory stream used as @p stream. Not counted: the document and its
- * rasters, which exist before the call. A save that passes the cap returns
- * GIMG_ERR_LIMIT and leaves @p stream untouched: GIF and PNG always compose
- * the file in a memory stream and hand it over when it is complete, BMP, JPEG
- * and TIFF do so whenever a cap is in force (an uncapped save is not held
- * twice), and ICO and WebP build the whole file before their single write, so
- * a refusal never leaves a partial file behind. There is no save-specific limit field; to bound a save
- * differently, load the document with other limits.
+ * load is, under GIMG_Save_Options::limits when @p options carries it, and
+ * otherwise under the limits the document was loaded with. A document built
+ * in memory remembers none and is held to the default, GIMG_DEFAULT_MAX_MEMORY;
+ * a caller saving a larger file passes limits with GIMG_LIMIT_NONE or a cap
+ * that fits. Counted: every writer's working buffers, the file composed in
+ * memory before it is handed to the stream, the straight copies a
+ * premultiplied raster is saved through, an item decoded for the save because
+ * it holds no raster, and the growth of a memory stream used as @p stream.
+ * Not counted: the document and its rasters, which exist before the call. A
+ * save that passes the cap returns GIMG_ERR_LIMIT and leaves @p stream
+ * untouched: GIF and PNG always compose the file in a memory stream and hand
+ * it over when it is complete, BMP, JPEG and TIFF do so whenever a cap is in
+ * force (an uncapped save is not held twice), and ICO and WebP build the
+ * whole file before their single write, so a refusal never leaves a partial
+ * file behind. Only max_memory is read from the limits; the other fields bound
+ * what a reader allocates and are ignored by a save.
  */
 GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     const char * format_name, const GIMG_Save_Options * options,

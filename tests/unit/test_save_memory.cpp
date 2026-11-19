@@ -24,8 +24,9 @@
  * What a save holds, and what the operations hold, measured.
  *
  * gimg_doc_save() runs inside the same cumulative memory scope as a load and a
- * decode, with the limits the document remembers from its load (the library
- * defaults for a document built in memory). The tests here use an allocator
+ * decode, with the limits given in the save options, else the ones the document
+ * remembers from its load, else the library defaults (see test_save_limits.cpp
+ * for the choice among them). The tests here use an allocator
  * that knows the size of every live block, and require of each of the seven
  * writers that
  *
@@ -410,9 +411,10 @@ TEST(SaveMemory, WorkingSetGrowsWithThePictureAndStaysUnderTwelveRasters) {
   }
 }
 
-TEST(SaveMemory, ADocumentWithNoRememberedLimitsIsNotCapped) {
-  // Nothing was said, and GIMG_Save_Options has no field to lift a default, so
-  // the save runs as it always did.
+TEST(SaveMemory, ADocumentWithNoRememberedLimitsRunsUnderTheDefault) {
+  // Nothing was said, so the default cap applies; these pictures are far
+  // under it. That the default is in force, and that a caller lifts it with
+  // GIMG_Save_Options::limits, is test_save_limits.cpp.
   for (const Subject & s : subjects()) {
     const SaveRun got = save_in_memory(s, 0);
     EXPECT_EQ(got.result, GIMG_OK) << s.label;

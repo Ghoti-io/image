@@ -327,9 +327,9 @@ typedef struct GIMG_Limits {
    * charged for the growth; an allocator that moves the block holds old and
    * new together for a moment, which is its own and is not counted.
    *
-   * It also bounds gimg_doc_save(), with the limits the document was loaded
-   * with (a document built in memory remembers none, and its save is not
-   * capped): the writer's working
+   * It also bounds gimg_doc_save(), under GIMG_Save_Options::limits when the
+   * options carry it, else the limits the document was loaded with, else (a
+   * document built in memory) the defaults: the writer's working
    * buffers, the file composed in memory before it is written, the straight
    * copies a premultiplied raster is saved through, an item the save has to
    * decode for itself, and the growth of a memory stream given as the

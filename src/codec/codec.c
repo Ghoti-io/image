@@ -494,23 +494,29 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     return GIMG_ERR_UNSUPPORTED;
   }
 
-  // The save is held to the same cumulative memory cap as the load that made
-  // the document: the limits the document remembers.  The scope is the one a
-  // load and a decode use, so everything the writer takes - its working
-  // buffers, the staged file, the straight copies of premultiplied rasters, an
-  // item it has to decode for itself, and the growth of a memory stream used
-  // as the destination - is counted from the allocation that takes it until
-  // the free.  The caller's own rasters, which were allocated before the
-  // call, are not.
+  // The save is held to a cumulative memory cap, the one scope a load and a
+  // decode use, so everything the writer takes - its working buffers, the
+  // staged file, the straight copies of premultiplied rasters, an item it has
+  // to decode for itself, and the growth of a memory stream used as the
+  // destination - is counted from the allocation that takes it until the
+  // free.  The caller's own rasters, which were allocated before the call,
+  // are not.
   //
-  // A document that was built in memory remembers no limits and its save is
-  // not capped: there is no field on GIMG_Save_Options to lift a default, so a
-  // default here would refuse a legitimate large save with no way to allow it.
-  GIMG_Limits limits;
-  gimg_limits_resolve(doc->has_load_limits ? &doc->load_limits : NULL, &limits);
-  if (!doc->has_load_limits) {
-    limits.max_memory = GIMG_LIMIT_NONE;
+  // Whose limits: the ones in the options when it carries any (a zero field
+  // is the default, GIMG_LIMIT_NONE lifts it, as at load); otherwise the ones
+  // the document remembers from its load; otherwise, for a document built in
+  // memory, the defaults.  Only max_memory is read: a writer is given a
+  // raster that already exists, so the pixel, frame, metadata and chunk caps,
+  // which guard what a file may make a reader allocate, have nothing to
+  // bound.
+  const GIMG_Limits * given = NULL;
+  if (options && options->limits) {
+    given = options->limits;
+  } else if (doc->has_load_limits) {
+    given = &doc->load_limits;
   }
+  GIMG_Limits limits;
+  gimg_limits_resolve(given, &limits);
   gimg_budget_scope_t scope;
   gimg_budget_enter(&scope, limits.max_memory);
   GIMG_Result r = gimg_doc_save_in_scope(doc, stream, codec, format_name,
