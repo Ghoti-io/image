@@ -76,6 +76,9 @@ struct Page {
   uint32_t next = 0;          // following page / 0
 };
 
+/** Size of an uncompressed default page: 10 entries, then 16 bytes. */
+constexpr uint32_t kPageBytes = 2 + 10 * 12 + 4 + 16;
+
 static Bytes build(const std::vector<Page> & pages) {
   Bytes b = {'I', 'I', 42, 0};
   p32(b, 8);
@@ -204,6 +207,60 @@ static int tag_value(const Bytes & f, uint16_t tag) {
 }
 
 } // namespace
+
+// -- directory chain order --------------------------------------------------
+
+TEST(TiffChainOrder, ANextPointerThatStepsBackwardsStillLoadsEveryPage) {
+  // File order A B C; chain order A -> C -> B.  C's next pointer is below it.
+  const uint32_t a = 8, b = a + kPageBytes, c = b + kPageBytes;
+  Page pa, pb, pc;
+  pa.has_next = true;
+  pa.next = c;
+  pb.has_next = true;
+  pb.next = 0;
+  pc.has_next = true;
+  pc.next = b;
+  Loaded l;
+  load(build({pa, pb, pc}), l);
+  ASSERT_EQ(l.r, GIMG_OK);
+  ASSERT_EQ(gimg_doc_item_count(l.doc), 3u);
+  EXPECT_EQ(count_severity(l.diag, GIMG_DIAG_WARNING), 0u);
+  EXPECT_EQ(count_severity(l.diag, GIMG_DIAG_ERROR), 0u);
+  // Pixel k of page i is k + i: the chain visited A, C, B.
+  EXPECT_EQ(first_byte(l, 0), 0);
+  EXPECT_EQ(first_byte(l, 1), 2);
+  EXPECT_EQ(first_byte(l, 2), 1);
+  (void)a;
+}
+
+TEST(TiffChainOrder, ADirectoryNamedTwiceStillEndsTheChain) {
+  // A -> C -> B -> A again: three pages, then a warning, not a loop.
+  const uint32_t a = 8, b = a + kPageBytes, c = b + kPageBytes;
+  Page pa, pb, pc;
+  pa.has_next = true;
+  pa.next = c;
+  pb.has_next = true;
+  pb.next = a;
+  pc.has_next = true;
+  pc.next = b;
+  Loaded l;
+  load(build({pa, pb, pc}), l);
+  ASSERT_EQ(l.r, GIMG_OK);
+  EXPECT_EQ(gimg_doc_item_count(l.doc), 3u);
+  EXPECT_GE(count_severity(l.diag, GIMG_DIAG_WARNING), 1u);
+  EXPECT_EQ(count_severity(l.diag, GIMG_DIAG_ERROR), 0u);
+}
+
+TEST(TiffChainOrder, AnOffsetPastTheEndStillKeepsEarlierPages) {
+  Page pa, pb;
+  pa.has_next = true;
+  pa.next = 0x7FFFFFF0u;
+  Loaded l;
+  load(build({pa, pb}), l);
+  ASSERT_EQ(l.r, GIMG_OK);
+  EXPECT_EQ(gimg_doc_item_count(l.doc), 1u);
+  EXPECT_GE(count_severity(l.diag, GIMG_DIAG_WARNING), 1u);
+}
 
 // -- a page that fails at decode --------------------------------------------
 

@@ -48,10 +48,14 @@ role is how the model says so.
 **A directory that cannot be read.** The first directory must read: without it
 there is no picture, and the load fails as before. A later directory in the
 chain that cannot (an offset past the end of the file, a truncated or corrupt
-entry table, a chain that points backwards or at a directory already read, or a
-compression this codec does not undo) ends the chain there. The pages before it
+entry table, a chain that points at a directory already read, or a compression
+this codec does not undo) ends the chain there. The pages before it
 are kept, the load succeeds, and the load diagnostics carry a warning at the
 offset of the one dropped; the reasons it gave are reported as warnings too.
+A next-directory offset may be smaller than the directory it is read from:
+a writer is free to lay its directories out in any order, so the chain is
+followed to any offset inside the file that names a directory not yet read,
+and every page loads. Only naming a directory a second time ends the chain.
 A `SubIFDs` entry that cannot be read, including one naming a directory already
 read, drops only that level. Limits (`max_frame_count`, the directory and
 retained-metadata caps) and allocation failures still refuse the whole file.
@@ -243,7 +247,7 @@ back is not available, because an output stream here is append-only.
 |---|---|---|
 | Byte order | "II" and "MM" | - |
 | Version | 42, and 43 (BigTIFF) when the header's offset size is 8 | An offset size other than 8 &rarr; `GIMG_ERR_UNSUPPORTED`, named |
-| IFD chain | Any number up to 4096, refusing a chain that does not advance | A chain that points backwards or at itself ends there (see below); `max_frame_count` caps it lower, as `GIMG_ERR_LIMIT` |
+| IFD chain | Any number up to 4096, in any file order | A chain that names a directory already read ends there (see above); `max_frame_count` caps it lower, as `GIMG_ERR_LIMIT` |
 | Compression (read) | 1 (none), 2 (CCITT modified Huffman), 3 (Group 3, one- and two-dimensional), 4 (Group 4), 5 (LZW, including the pre-1993 bit-reversed spelling), 6 (old-style JPEG, both shapes), 7 (JPEG), 8 and 32946 (Deflate), 32773 (PackBits), 32809 (ThunderScan), 34676 (SGILog) and 34677 (SGILog24) on LogLuv pages | Anything else &rarr; `GIMG_ERR_UNSUPPORTED`, named; SGILog on any photometric but LogL or LogLuv &rarr; `GIMG_ERR_CORRUPT` |
 | JPEG-in-TIFF | Compression 7 with JPEGTables (347), decoded by this library's own JPEG codec through T.81 B.4's abbreviated format - which is what the tag pair *is*. Compression 6 too: the 1992 tags, whose tables are bare arrays at file offsets and whose strips hold entropy data with no frame header, so the frame is assembled from the TIFF tags | 8-bit only, PlanarConfiguration 1 only, JPEGProc other than baseline, and a Lab photometric &rarr; `GIMG_ERR_UNSUPPORTED`, named. The Lab refusal is because the JPEG decoder has already converted the strip |
 | ThunderScan | Compression 32809, four-bit greyscale | Any other depth or sample count &rarr; `GIMG_ERR_CORRUPT`, named |

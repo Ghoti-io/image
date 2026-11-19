@@ -1487,8 +1487,11 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
     at = tiff_u32(st->file + 4, st->big_endian);
   }
 
-  // Walk the chain, refusing one that does not move forward.  An offset that
-  // pointed backwards or at itself would loop here for ever.
+  // Walk the chain.  Any offset is accepted that names a directory not read
+  // already: a writer may lay its directories out in any order, so a next
+  // pointer that steps backwards in the file is valid.  What ends the chain
+  // is a directory named a second time (tiff_append_ifd refuses it), which is
+  // the only way the walk could loop; the count caps bound the rest.
   //
   // Each directory in the chain is a page. Each SubIFD hanging off one is a
   // reduced-resolution version of it, which the document model calls a
@@ -1504,20 +1507,12 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
   // warning says the rest was not read. A SubIFD that cannot read is dropped
   // and its siblings and the chain go on. Limits and allocation failures
   // still refuse the file.
-  uint64_t previous = 0u;
   size_t last_full_size = 0;
   while (at != 0u) {
     const size_t mark = diagnostics ? diagnostics->count : 0u;
     size_t index = 0;
     uint64_t next = 0u;
-    if (st->ifd_count > 0u && at <= previous) {
-      tiff_diag(diagnostics, (size_t)at, "the directory chain does not advance");
-      r = GIMG_ERR_CORRUPT;
-    }
-    else {
-      r = tiff_append_ifd(
-          codec, st, at, limits, diagnostics, &index, &next);
-    }
+    r = tiff_append_ifd(codec, st, at, limits, diagnostics, &index, &next);
     if (r != GIMG_OK) {
       if (st->ifd_count > 0u && tiff_damage_tolerable(r)) {
         tiff_diag_damaged(diagnostics, mark, (size_t)at,
@@ -1566,7 +1561,6 @@ GIMG_Result gimg_tiff_load(GIMG_Codec * codec, GIMG_Stream * stream,
       gimg_tiff_free_doc_state(codec, st);
       return r;
     }
-    previous = at;
     at = next;
   }
 
