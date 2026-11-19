@@ -704,6 +704,12 @@ static GIMG_Result tiff_build_entries(const GIMG_Allocator * alloc,
     // not premultiplied. Saying nothing would leave a reader to guess, and
     // libtiff's guess is that a fourth sample it was not told about is
     // unspecified rather than alpha.
+    //
+    // A raster whose alpha form is premultiplied never gets here:
+    // gimg_doc_save writes such a document through straight copies, and
+    // every decoder hands back straight rasters, so what this writer is
+    // given is always unassociated.  A test pins that, because the tag
+    // written here would be wrong for a premultiplied raster.
     tiff_put_u16(scratch, GIMG_TIFF_EXTRA_UNASSOCIATED_ALPHA, be);
     tiff_add_entry(page, GIMG_TIFF_TAG_EXTRA_SAMPLES, GIMG_TIFF_TYPE_SHORT,
         1u, scratch, 2u);

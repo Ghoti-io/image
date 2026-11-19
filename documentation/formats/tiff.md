@@ -127,7 +127,12 @@ RGBA8.
 
 **Alpha.** ExtraSamples 1 (associated) is divided back out, because this
 library's RGBA8 is unassociated; ExtraSamples 2 (unassociated) passes through.
-The same two rules apply after a Lab page has been converted to RGB.
+The same two rules apply after a Lab page has been converted to RGB. A decoded
+raster is therefore always straight (`GIMG_ALPHA_STRAIGHT`), whichever the
+file said, and the division rounds to nearest, so colour at an alpha below
+full can differ by a level from what a premultiplying writer started with.
+A colour brighter than its own alpha allows saturates, and at alpha zero the
+stored colour is kept.
 
 **CIE L\*a\*b\*.** PhotometricInterpretation 8 (TIFF 6.0 section 23) and 9
 (ICCLab, from Adobe's TIFF technical note) both come back as RGBA8.
@@ -194,6 +199,12 @@ and 16, always interleaved (PlanarConfiguration 1) and always in strips of
 about eight kilobytes. `ExtraSamples` says *unassociated* for an RGBA raster,
 because that is what this library's RGBA means and because libtiff's guess
 for a fourth sample it was not told about is "unspecified" rather than alpha.
+A premultiplied raster never reaches the writer as one: `gimg_doc_save`
+writes a document through straight copies of any premultiplied raster (the
+caller's document is not touched), so the colour is divided out before it is
+stored and the tag matches the samples. Reloading gives that straight colour,
+within a level of the original at alpha below full; nothing here stores
+associated alpha.
 Resolution is written when the document carries DPI.
 
 Five options, all in @ref api_options "API options": `tiff_compression`
