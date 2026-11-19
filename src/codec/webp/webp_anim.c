@@ -326,40 +326,76 @@ static int webp_frame_starts_fresh(
 }
 
 /**
- * Record the canvas frame @p index + 1 starts from, which is the picture frame
- * @p index returned.  Failing to is not a decode failure; only the head start
- * for the next frame is lost.  The cache only moves forward, except that frame
- * 0 always replaces it: a looping player starts over there, and a cache left
- * at the end of the last pass would make every frame of the next one replay
- * all those before it.
+ * Whether frame @p index exists and is a lossy frame that is not a key frame,
+ * which is the only kind that reads the reference pictures the frame before it
+ * left.  The tag's first bit is the frame type (RFC 6386 section 9.1: 0 is a
+ * key frame).  Anything that cannot be read is not one: such a frame fails
+ * when it is decoded, and then nothing was waiting on a reference.
  */
-static void webp_cache_store(gimg_webp_doc_state_t * st, size_t index,
-    const uint8_t * canvas, size_t stride, size_t bytes, int key) {
+static int webp_frame_is_vp8_inter(
+    const gimg_webp_doc_state_t * st, size_t index) {
+  if (index >= st->frame_count) {
+    return 0;
+  }
+  const gimg_webp_frame_t * fr = &st->frames[index];
+  if (fr->vp8l_payload_size > 0u || fr->vp8_payload_size == 0u ||
+      fr->vp8_payload_off + (size_t)fr->vp8_payload_size > st->file_size) {
+    return 0;
+  }
+  return (st->file_bytes[fr->vp8_payload_off] & 1u) != 0u;
+}
+
+/**
+ * Record the canvas frame @p index + 1 starts from, which is the picture frame
+ * @p index returned, and with it @p seq, the VP8 sequence state that frame
+ * left (reference pictures, probabilities, segment map) when frame @p index + 1
+ * is a lossy inter frame and needs it.  Failing to is not a decode failure;
+ * only the head start for the next frame is lost.  The cache only moves
+ * forward, except that frame 0 always replaces it: a looping player starts over
+ * there, and a cache left at the end of the last pass would make every frame of
+ * the next one replay all those before it.
+ *
+ * @p seq is the decoder's own sequence, which is finished with, so it is
+ * handed over rather than copied: the cache holds it and not a second copy of
+ * the references.
+ *
+ * @return Whether @p seq was taken.  When not, it is still the caller's.
+ */
+static int webp_cache_store(gimg_webp_doc_state_t * st, size_t index,
+    const uint8_t * canvas, size_t stride, size_t bytes, int key,
+    gimg_vp8_seq * seq) {
   GCU_MUTEX_LOCK(st->cache_lock);
   const bool worth_taking = !st->cache_canvas || st->cache_bytes != bytes ||
       st->cache_next <= index || index == 0u;
   GCU_MUTEX_UNLOCK(st->cache_lock);
   if (!worth_taking) {
-    return;
+    return 0;
   }
   uint8_t * snapshot = (uint8_t *)gimg_malloc(st->allocator, bytes);
   if (!snapshot) {
-    return;
+    return 0;
   }
   memcpy(snapshot, canvas, bytes);
+  int taken = 0;
+  gimg_vp8_seq * displaced = NULL;
   GCU_MUTEX_LOCK(st->cache_lock);
   if (!st->cache_canvas || st->cache_bytes != bytes ||
       st->cache_next <= index || index == 0u) {
     gimg_free(st->allocator, st->cache_canvas);
+    displaced = st->cache_seq;
     st->cache_canvas = snapshot;
     st->cache_bytes = bytes;
     st->cache_stride = stride;
     st->cache_next = index + 1u;
     st->cache_prev_key = key;
+    st->cache_seq = seq;
+    taken = seq != NULL;
     snapshot = NULL;
   }
   GCU_MUTEX_UNLOCK(st->cache_lock);
   gimg_free(st->allocator, snapshot);
+  gimg_vp8_seq_destroy(st->allocator, displaced);
+  return taken;
 }
 
 GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
@@ -379,11 +415,6 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
   GIMG_Result r = gimg_raster_create_with_allocator(st->allocator, canvas_w,
       canvas_h, &GIMG_PIXEL_RGBA8, GIMG_RASTER_OWNED, NULL, 0, &canvas);
   if (r != GIMG_OK) {
-    return r;
-  }
-  r = gimg_vp8_seq_create(st->allocator, &seq);
-  if (r != GIMG_OK) {
-    gimg_raster_destroy(canvas);
     return r;
   }
   uint8_t * canvas_px = (uint8_t *)gimg_raster_pixels(canvas);
@@ -406,13 +437,31 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
     GCU_MUTEX_LOCK(cache_st->cache_lock);
     if (cache_st->cache_canvas && cache_st->cache_next <= index &&
         cache_st->cache_bytes == canvas_bytes &&
-        cache_st->cache_stride == canvas_stride &&
-        webp_frame_starts_fresh(st, cache_st->cache_next)) {
-      memcpy(canvas_px, cache_st->cache_canvas, canvas_bytes);
-      start = cache_st->cache_next;
-      prev_was_key_frame = cache_st->cache_prev_key;
+        cache_st->cache_stride == canvas_stride) {
+      const int fresh = webp_frame_starts_fresh(st, cache_st->cache_next);
+      // A lossy inter frame continues from the sequence state the frame before
+      // it left, which the cache holds when that frame was the one it was
+      // taken at.  Another decode may have the state out at the moment (it is
+      // lent, not copied), and then this one replays, which is slower and
+      // gives the same pixels.
+      if (fresh || cache_st->cache_seq) {
+        memcpy(canvas_px, cache_st->cache_canvas, canvas_bytes);
+        start = cache_st->cache_next;
+        prev_was_key_frame = cache_st->cache_prev_key;
+        if (!fresh) {
+          seq = cache_st->cache_seq;
+          cache_st->cache_seq = NULL;
+        }
+      }
     }
     GCU_MUTEX_UNLOCK(cache_st->cache_lock);
+  }
+  if (!seq) {
+    r = gimg_vp8_seq_create(st->allocator, &seq);
+    if (r != GIMG_OK) {
+      gimg_raster_destroy(canvas);
+      return r;
+    }
   }
   int last_key = 0;
   for (size_t i = start; i <= index; ++i) {
@@ -435,6 +484,10 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
       return GIMG_ERR_CORRUPT;
     }
     GIMG_Raster * frame_ras = NULL;
+    // Keep this frame's picture as a reference only when the frame after it
+    // will read it.  The last frame asked for is kept for the cache's sake.
+    gimg_vp8_seq_keep_refs(
+        seq, (i < index || cache_st) && webp_frame_is_vp8_inter(st, i + 1u));
     r = webp_decode_one_frame(st, fr, seq, &frame_ras);
     if (r != GIMG_OK) {
       gimg_vp8_seq_destroy(st->allocator, seq);
@@ -464,11 +517,12 @@ GIMG_Result gimg_webp_decode_animation_frame(const gimg_webp_doc_state_t * st,
     last_key = key;
   }
 
-  if (cache_st) {
-    webp_cache_store(
-        cache_st, index, canvas_px, canvas_stride, canvas_bytes, last_key);
+  if (!cache_st ||
+      !webp_cache_store(cache_st, index, canvas_px, canvas_stride,
+          canvas_bytes, last_key,
+          webp_frame_is_vp8_inter(st, index + 1u) ? seq : NULL)) {
+    gimg_vp8_seq_destroy(st->allocator, seq);
   }
-  gimg_vp8_seq_destroy(st->allocator, seq);
   *out_raster = canvas;
   return GIMG_OK;
 }

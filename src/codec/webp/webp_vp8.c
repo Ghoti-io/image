@@ -1340,11 +1340,25 @@ static const int k_bicubic[8][6] = {
   { 0, -1, 12, 123, -6, 0 }
 };
 
+/* One decoded picture, shared by every reference slot that holds it.  The
+ * slots (last, golden, alternate) are pointers to these, so refreshing or
+ * copying a reference moves a pointer and never a picture, and a frame that
+ * refreshes all three is held once.  A picture is never written after it is
+ * made, which is what makes the sharing sound. */
+typedef struct vp8_pic {
+  int refs;
+  uint8_t * y;
+  uint8_t * u;
+  uint8_t * v;
+} vp8_pic;
+
 struct gimg_vp8_seq {
   int ready;
-  /* Whether the three reference pictures are kept.  A sequence made for one
-   * still frame has no later frame to predict from, so it keeps none: they
-   * were three more full pictures, allocated, zeroed and filled for nothing. */
+  /* Whether this frame's picture is kept as a reference for the next.  The
+   * caller sets it from what it knows follows: a still frame has no later
+   * frame, and in an animation only a frame whose successor is a lossy inter
+   * frame is read by anything.  Otherwise no reference is made, and a run of
+   * key frames never holds a picture beyond the one being decoded. */
   int keep_refs;
   /* Stop once the first partition has been read in full: the mode records
    * are the only thing parsed, and no picture is made. */
@@ -1357,9 +1371,7 @@ struct gimg_vp8_seq {
   uint32_t uv_stride;
   size_t y_bytes;
   size_t uv_bytes;
-  uint8_t * y[3];
-  uint8_t * u[3];
-  uint8_t * v[3];
+  vp8_pic * ref[3];
   vp8_probs probs;
   uint8_t ymode_prob[4];
   uint8_t uv_mode_prob[3];
@@ -1396,15 +1408,23 @@ static void vp8_seq_reset_entropy(gimg_vp8_seq * seq) {
   }
 }
 
+static void vp8_pic_release(const GIMG_Allocator * alloc, vp8_pic * pic) {
+  if (!pic) {
+    return;
+  }
+  if (--pic->refs <= 0) {
+    gimg_free(alloc, pic->y);
+    gimg_free(alloc, pic->u);
+    gimg_free(alloc, pic->v);
+    gimg_free(alloc, pic);
+  }
+}
+
 static void vp8_seq_free_planes(const GIMG_Allocator * alloc, gimg_vp8_seq * seq) {
   int i;
   for (i = 0; i < 3; ++i) {
-    gimg_free(alloc, seq->y[i]);
-    gimg_free(alloc, seq->u[i]);
-    gimg_free(alloc, seq->v[i]);
-    seq->y[i] = NULL;
-    seq->u[i] = NULL;
-    seq->v[i] = NULL;
+    vp8_pic_release(alloc, seq->ref[i]);
+    seq->ref[i] = NULL;
   }
   seq->y_bytes = 0;
   seq->uv_bytes = 0;
@@ -1424,7 +1444,6 @@ GIMG_Result gimg_vp8_seq_create(const GIMG_Allocator * alloc,
     return GIMG_ERR_OOM;
   }
   memset(seq, 0, sizeof(*seq));
-  seq->keep_refs = 1;
   vp8_seq_reset_entropy(seq);
   *out = seq;
   return GIMG_OK;
@@ -1450,36 +1469,6 @@ void gimg_vp8_seq_reset(const GIMG_Allocator * alloc, gimg_vp8_seq * seq) {
   vp8_seq_reset_entropy(seq);
 }
 
-static int vp8_seq_alloc_planes(gimg_vp8_seq * seq, const GIMG_Allocator * alloc,
-    uint32_t mb_w, uint32_t mb_h) {
-  size_t y_bytes = (size_t)mb_w * 16u * (size_t)mb_h * 16u;
-  size_t uv_bytes = (size_t)mb_w * 8u * (size_t)mb_h * 8u;
-  int i;
-  if (seq->y[0] && seq->mb_w == mb_w && seq->mb_h == mb_h) {
-    return 1;
-  }
-  vp8_seq_free_planes(alloc, seq);
-  for (i = 0; i < 3; ++i) {
-    seq->y[i] = (uint8_t *)gimg_malloc(alloc, y_bytes);
-    seq->u[i] = (uint8_t *)gimg_malloc(alloc, uv_bytes);
-    seq->v[i] = (uint8_t *)gimg_malloc(alloc, uv_bytes);
-    if (!seq->y[i] || !seq->u[i] || !seq->v[i]) {
-      vp8_seq_free_planes(alloc, seq);
-      return 0;
-    }
-    memset(seq->y[i], 0, y_bytes);
-    memset(seq->u[i], 0, uv_bytes);
-    memset(seq->v[i], 0, uv_bytes);
-  }
-  seq->y_bytes = y_bytes;
-  seq->uv_bytes = uv_bytes;
-  seq->mb_w = mb_w;
-  seq->mb_h = mb_h;
-  seq->y_stride = mb_w * 16u;
-  seq->uv_stride = mb_w * 8u;
-  return 1;
-}
-
 static int vp8_seq_alloc_seg(gimg_vp8_seq * seq, const GIMG_Allocator * alloc,
     size_t count) {
   uint8_t * ids;
@@ -1497,12 +1486,10 @@ static int vp8_seq_alloc_seg(gimg_vp8_seq * seq, const GIMG_Allocator * alloc,
   return 1;
 }
 
-static void vp8_copy_ref(uint8_t * dy, uint8_t * du, uint8_t * dv,
-    const uint8_t * sy, const uint8_t * su, const uint8_t * sv, size_t y_bytes,
-    size_t uv_bytes) {
-  memcpy(dy, sy, y_bytes);
-  memcpy(du, su, uv_bytes);
-  memcpy(dv, sv, uv_bytes);
+void gimg_vp8_seq_keep_refs(gimg_vp8_seq * seq, int keep) {
+  if (seq) {
+    seq->keep_refs = keep ? 1 : 0;
+  }
 }
 
 /* -4096..4095 full pixels, in eighth-pel units. */
@@ -2087,9 +2074,12 @@ static int vp8_predict_inter_mb(uint8_t * y, int y_stride, uint8_t * u,
   if (mb->ref < VP8_REF_LAST || mb->ref > VP8_REF_ALT) {
     return 0;
   }
-  ry = seq->y[mb->ref - 1];
-  ru = seq->u[mb->ref - 1];
-  rv = seq->v[mb->ref - 1];
+  if (!seq->ref[mb->ref - 1]) {
+    return 0;
+  }
+  ry = seq->ref[mb->ref - 1]->y;
+  ru = seq->ref[mb->ref - 1]->u;
+  rv = seq->ref[mb->ref - 1]->v;
   if (!ry || !ru || !rv) {
     return 0;
   }
@@ -2202,6 +2192,8 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
   int prob_last = 0;
   int prob_gf = 0;
   vp8_probs saved_probs;
+  vp8_pic * cur = NULL;
+  int planes_moved = 0;
 
   if (!out_raster || !seq) {
     return GIMG_ERR_INTERNAL;
@@ -2686,10 +2678,6 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
         seq->seg_ids[n] = modes[n].seg;
       }
     }
-    if (!vp8_seq_alloc_planes(seq, alloc, mb_w, mb_h)) {
-      gimg_free(alloc, modes);
-      return GIMG_ERR_OOM;
-    }
   }
 
   y2_above = (uint8_t *)gimg_malloc(alloc, (size_t)mb_w);
@@ -2987,36 +2975,60 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
   memcpy(seq->ref_lf, ref_lf, sizeof(ref_lf));
   memcpy(seq->mode_lf, mode_lf, sizeof(mode_lf));
   if (seq->keep_refs) {
-    /* Section 9.7. Copy another reference first, then let a refresh
-     * replace that buffer with the filtered current frame. */
-    if (copy_arf == 1) {
-      vp8_copy_ref(seq->y[2], seq->u[2], seq->v[2], seq->y[0], seq->u[0],
-          seq->v[0], seq->y_bytes, seq->uv_bytes);
+    /* Section 9.7.  The finished picture becomes a shared reference, taking
+     * the planes with it (this frame's planes are borrowed from here until
+     * the pixels have been read out below).  Copy another reference first,
+     * then let a refresh replace that slot with the filtered current frame.
+     * The alternate is copied before golden, so a golden copied from the
+     * alternate sees the value just written, as libvpx does. */
+    cur = (vp8_pic *)gimg_malloc(alloc, sizeof(*cur));
+    if (!cur) {
+      r = GIMG_ERR_OOM;
+      goto Done;
     }
-    else if (copy_arf == 2) {
-      vp8_copy_ref(seq->y[2], seq->u[2], seq->v[2], seq->y[1], seq->u[1],
-          seq->v[1], seq->y_bytes, seq->uv_bytes);
+    cur->refs = 1;
+    cur->y = y_plane;
+    cur->u = u_plane;
+    cur->v = v_plane;
+    planes_moved = 1;
+#define VP8_SET_REF(slot, pic)                \
+  do {                                        \
+    vp8_pic * old_ = seq->ref[(slot)];        \
+    seq->ref[(slot)] = (pic);                 \
+    seq->ref[(slot)]->refs++;                 \
+    vp8_pic_release(alloc, old_);             \
+  } while (0)
+    if (copy_arf == 1 && seq->ref[0]) {
+      VP8_SET_REF(2, seq->ref[0]);
     }
-    if (copy_gf == 1) {
-      vp8_copy_ref(seq->y[1], seq->u[1], seq->v[1], seq->y[0], seq->u[0],
-          seq->v[0], seq->y_bytes, seq->uv_bytes);
+    else if (copy_arf == 2 && seq->ref[1]) {
+      VP8_SET_REF(2, seq->ref[1]);
     }
-    else if (copy_gf == 2) {
-      vp8_copy_ref(seq->y[1], seq->u[1], seq->v[1], seq->y[2], seq->u[2],
-          seq->v[2], seq->y_bytes, seq->uv_bytes);
+    if (copy_gf == 1 && seq->ref[0]) {
+      VP8_SET_REF(1, seq->ref[0]);
+    }
+    else if (copy_gf == 2 && seq->ref[2]) {
+      VP8_SET_REF(1, seq->ref[2]);
     }
     if (refresh_gf) {
-      vp8_copy_ref(seq->y[1], seq->u[1], seq->v[1], y_plane, u_plane, v_plane,
-          seq->y_bytes, seq->uv_bytes);
+      VP8_SET_REF(1, cur);
     }
     if (refresh_arf) {
-      vp8_copy_ref(seq->y[2], seq->u[2], seq->v[2], y_plane, u_plane, v_plane,
-          seq->y_bytes, seq->uv_bytes);
+      VP8_SET_REF(2, cur);
     }
     if (refresh_last) {
-      vp8_copy_ref(seq->y[0], seq->u[0], seq->v[0], y_plane, u_plane, v_plane,
-          seq->y_bytes, seq->uv_bytes);
+      VP8_SET_REF(0, cur);
     }
+#undef VP8_SET_REF
+    seq->y_stride = y_stride;
+    seq->uv_stride = uv_stride;
+    seq->mb_w = mb_w;
+    seq->mb_h = mb_h;
+    seq->y_bytes = (size_t)y_stride * mb_h * 16u;
+    seq->uv_bytes = (size_t)uv_stride * mb_h * 8u;
+  }
+  else {
+    vp8_seq_free_planes(alloc, seq);
   }
   seq->width = width;
   seq->height = height;
@@ -3065,9 +3077,16 @@ GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
 
 Done:
   gimg_raster_destroy(raster);
-  gimg_free(alloc, y_plane);
-  gimg_free(alloc, u_plane);
-  gimg_free(alloc, v_plane);
+  if (planes_moved) {
+    /* The planes belong to the picture now; this drops the frame's own
+     * hold on it, and frees them if no reference slot took one. */
+    vp8_pic_release(alloc, cur);
+  }
+  else {
+    gimg_free(alloc, y_plane);
+    gimg_free(alloc, u_plane);
+    gimg_free(alloc, v_plane);
+  }
   gimg_free(alloc, y_nz);
   gimg_free(alloc, u_nz);
   gimg_free(alloc, v_nz);

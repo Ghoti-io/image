@@ -177,17 +177,24 @@ typedef struct {
    * cache that cannot be made (no memory, no lock) is not there, and what is
    * returned is the same either way.
    *
-   * It is used only to start at a frame that does not depend on the one
-   * before it for bitstream state: a lossless frame, or a lossy key frame.
-   * A lossy inter frame continues from the reference planes the frames before
-   * it built, which are not cached, so a run of those still replays from the
-   * key frame that begins it.
+   * A frame that does not depend on the one before it for bitstream state (a
+   * lossless frame, a lossy key frame) can start from the canvas alone.  A
+   * lossy inter frame continues from the VP8 sequence state the frame before
+   * it left (reference pictures, probabilities, segment map), which
+   * `cache_seq` holds when that frame is the one the cache was taken at and
+   * frame `cache_next` is such an inter frame; a decode that needs it takes it
+   * out and puts the state it ends with back, so a run of inter frames costs
+   * one frame decode each however long it is.  The state is handed over, not
+   * copied, and the pictures in it are shared between the three references, so
+   * the cache holds one picture (1.5 bytes a pixel) for each reference that
+   * differs from the others, at most three.
    * @{ */
   unsigned char * cache_canvas;
   size_t cache_bytes;      ///< Length of `cache_canvas`.
   size_t cache_stride;     ///< Row stride it was written with.
   size_t cache_next;       ///< The frame the cached canvas is input to.
   int cache_prev_key;      ///< Whether frame `cache_next - 1` was a key frame.
+  struct gimg_vp8_seq * cache_seq; ///< Sequence state after `cache_next - 1`, or NULL.
   bool cache_lock_ready;   ///< `cache_lock` was created.
   GCU_MUTEX_T cache_lock;  ///< Guards every field in this group.
   /** @} */
@@ -332,12 +339,19 @@ GIMG_Result gimg_vp8_seq_create(const GIMG_Allocator * alloc,
 void gimg_vp8_seq_destroy(const GIMG_Allocator * alloc, gimg_vp8_seq * seq);
 /** Drop reference pictures. The next frame has to be a keyframe. */
 void gimg_vp8_seq_reset(const GIMG_Allocator * alloc, gimg_vp8_seq * seq);
+/**
+ * Whether the next frame decoded is kept as a reference picture.  Off (the
+ * default) a frame makes none, and a following inter frame is corrupt; the
+ * caller turns it on for a frame only when the frame after reads it.
+ */
+void gimg_vp8_seq_keep_refs(gimg_vp8_seq * seq, int keep);
 
 /**
  * @brief Decode one VP8 frame, updating @a seq.
  *
  * A keyframe replaces the sequence dimensions and the three reference
- * pictures. An interframe reads them. @a seq is not freed.
+ * pictures. An interframe reads them. @a seq is not freed. References are made
+ * only while gimg_vp8_seq_keep_refs() has been turned on.
  */
 GIMG_Result gimg_webp_vp8_decode_frame(const unsigned char * data, size_t size,
     const GIMG_Allocator * alloc, gimg_vp8_seq * seq, GIMG_Raster ** out_raster);

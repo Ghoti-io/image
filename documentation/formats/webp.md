@@ -96,7 +96,10 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   conversion `dwebp` uses. A nonzero frame-scale field is ignored and the
   coded size is emitted. An animation keeps the last, golden, and altref
   pictures across its frames, so an interframe predicts from earlier frames
-  of that decode. Dispose and blend still follow the ANMF flags. When an
+  of that decode. The three are pointers to shared pictures, so refreshing or
+  copying one moves no pixels, and a frame is kept as a reference only when
+  the frame after it is a lossy inter frame: a run of key frames, or of
+  lossless frames, holds none. Dispose and blend still follow the ANMF flags. When an
   `ALPH` chunk is present, its plane replaces the opaque alpha channel
   sample-wise. A still interframe is corrupt. A version above 3 is
   unsupported.
@@ -109,18 +112,31 @@ Codec-owned allocations use the codec's allocator (default when NULL).
   Each decode used to composite frames `0…i` from nothing, so walking an
   *N*-frame file cost N(N+1)/2 frame decodes. The document now keeps the
   canvas frame *i* returned and a later decode of a frame at or after that
-  point starts from it. It resumes only at a frame that needs nothing from the
-  frames before it for bitstream state, which is a lossless frame or a lossy
-  key frame; a lossy inter frame continues from reference planes that are not
-  cached, so a run of them still replays from the key frame that begins it
-  (libwebp's own encoders write none, and `anim_dump` refuses them). Frame 0
-  always replaces the cache, so a looping player's second pass is as cheap as
-  its first. The cache is one canvas taken through the document's allocator,
-  so `max_memory` applies to it, and failing to take it only costs the head
-  start. Output is the same in every order: `testAnim_decode_cost` compares
-  sequential, reverse and random walks byte for byte with a cold decode of
-  each frame, and counts allocations (48 lossless frames: 8376 calls for a
-  walk before, 528 after, against 340 for decoding the last frame cold).
+  point starts from it. A frame that needs nothing from the frames before it
+  for bitstream state (a lossless frame, a lossy key frame) starts from the
+  canvas alone. A lossy inter frame continues from the VP8 sequence state the
+  frame before it left (the reference pictures, the probabilities, the segment
+  map), so the cache holds that too, when frame *i* + 1 is such a frame: the
+  decoder's own state is handed to the cache when a decode ends and taken back
+  by the next one that needs it, not copied, and its three references share
+  their pictures, so on top of the canvas the cache holds one picture (1.5
+  bytes a pixel) for each reference that differs from the others, which is one
+  when every frame refreshes them all and three at most. A run of inter frames therefore costs one frame decode
+  each however long it is, and a decode that finds the state out (another
+  thread has it) or gone (the cache could not be taken, or a frame before the
+  one asked for was never decoded here) replays from the start of the file,
+  which costs time and gives the same pixels. Walking backwards, or in any
+  order that does not move forward, replays from frame 0 each time, as GIF
+  does. libwebp's own encoders write no inter frames and `anim_dump` refuses
+  them; this library's writes key frames only, so the tests build inter-frame
+  streams by hand. Frame 0 always replaces the cache, so a looping player's
+  second pass is as cheap as its first. The cache is taken through the
+  document's allocator, so `max_memory` applies to it, and failing to take it
+  only costs the head start. Output is the same in every order:
+  `testAnim_decode_cost` and `testWebp_inter_and_profile` compare sequential,
+  reverse, random and looping walks byte for byte with a cold decode of each
+  frame, and count allocations (48 lossless frames: 8376 calls for a walk
+  before, 528 after, against 340 for decoding the last frame cold).
 - **VP8L encode** of a still image (first document item): Huffman over
   literals, subtract-green when `webp_effort` ≥ 1, optional `ICCP` / `EXIF` /
   `XMP ` via `VP8X`. See Save.
@@ -153,10 +169,11 @@ raster.
   groups than the rest of the stream has bits for (20 a group at the least)
   is refused before anything is sized from the count.
 - **VP8** keeps the three planes (1.5 bytes a pixel), the per-macroblock mode
-  records and the raster. The three reference pictures that a later frame
-  would predict from are allocated only for a sequence that has a later frame
-  (an animation); a still decode, which has none, skips them and the copies
-  into them. The mode records, skip flags and non-zero maps are freed before
+  records and the raster. A frame's finished picture becomes a reference
+  picture (shared by the references that hold it, never copied) only when a
+  later frame will read it: in an animation, when the next frame is a lossy
+  inter frame. A still decode, and a key frame followed by anything else,
+  makes none. The mode records, skip flags and non-zero maps are freed before
   the raster is allocated.
 - **ALPH** is decoded before the colour picture when the bitstream header
   gives its size, so its working set is gone first and only the plane (one

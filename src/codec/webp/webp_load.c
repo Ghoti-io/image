@@ -200,6 +200,7 @@ void gimg_webp_free_doc_state(GIMG_Codec * codec, void * codec_private) {
   gimg_free(alloc, state->frames);
   gimg_free(alloc, state->file_bytes);
   gimg_free(alloc, state->cache_canvas);
+  gimg_vp8_seq_destroy(alloc, state->cache_seq);
   if (state->cache_lock_ready) {
     GCU_MUTEX_DESTROY(state->cache_lock);
   }
