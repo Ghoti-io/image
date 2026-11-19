@@ -43,6 +43,8 @@ On PNG save, `GIMG_Save_Options.metadata_policy` controls which ancillary chunks
 - **GIMG_META_KEEP_RAW_ONLY:** Emit only ancillary chunks that are *not* known semantic metadata. Omitted: iCCP, sRGB, gAMA, cHRM, eXIf, tEXt, zTXt, iTXt. Emitted: any other ancillary chunk type (e.g. unknown or private chunks) in read order. eXIf from doc meta_raw is not written. PLTE/tRNS are emitted when required for the image.
 - **GIMG_META_KEEP_COMMON_ONLY:** Emit only metadata that maps to common metadata. Exactly one color chunk is written from the decoded raster's `GCOL_Color_Info` (see **Color on save** below). No eXIf, no text chunks, no other ancillary. PLTE/tRNS are emitted when required for the image.
 
+**What the save report names.** The text, XMP and private chunks a PNG carries are written only for a document this codec loaded, from its chunk list; eXIf is written from the raw block under the format id `"png"`. Exif, XMP, further comments and text fields that arrived in another format are not converted into chunks, and a save with `GIMG_Save_Report.diagnostics` set says so, one warning per kind (@ref api_options_save_loss). The resolution (pHYs) and the description (tEXt `Description`) are written from the common metadata whatever the source; `GIMG_META_KEEP_COMMON_ONLY` writes the resolution and not the description, and reports the description as dropped. A thumbnail, level or alternate item becomes a frame of the APNG, which is reported as its role being dropped; the loop count and the frame delays are written only for more than one item.
+
 ## Color on save
 
 At most one color chunk is written, because PNG 11.3.3.3 does not want sRGB

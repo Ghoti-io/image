@@ -144,7 +144,75 @@ Controls which ancillary metadata is written on save. Defined in `ghoti.io/image
 | **GIMG_META_KEEP_RAW_ONLY**  | Emit only ancillary chunks that are *not* known semantic (no iCCP, sRGB, gAMA, cHRM, eXIf, tEXt, zTXt, iTXt). |
 | **GIMG_META_KEEP_COMMON_ONLY** | Emit only metadata that maps to common metadata (e.g. one color chunk from raster color info; no eXIf or text). |
 
-Format-specific behavior is described on the format's own page: \ref format_png "PNG and APNG" (save metadata policies), \ref format_jpeg "JPEG" (APP segment handling), \ref format_bmp "BMP" (which ignores the policy, having no metadata to write).
+Format-specific behavior is described on the format's own page: \ref format_png "PNG and APNG" (save metadata policies), \ref format_jpeg "JPEG" (APP segment handling), \ref format_bmp "BMP" (the resolution and an embedded profile are all it has to write, and the policies that drop common metadata drop them).
+
+@subsection api_options_save_loss What a save could not carry
+
+Each writer stores what its format has a place for, so a document loaded from
+one format and saved as another meets the difference. The save still returns
+`GIMG_OK` and writes the same bytes it always did; what is new is that, when
+`GIMG_Save_Report.diagnostics` points to a **GIMG_Diagnostics**, the save
+appends one `GIMG_DIAG_WARNING` for each kind of metadata that
+
+1. the document holds,
+2. the writer did not write, and
+3. the metadata policy did not ask to have removed.
+
+The sentence is in `recommended_action` (`"XMP dropped: the BMP format has no
+XMP"`), the writer's codec name in `codec_name`, and the warnings come in the
+order of the table's rows. A save that fails appends nothing. A removal the
+caller asked for is not a loss: under `GIMG_META_DROP_ALL` nothing is warned
+that the policy removes, and only the playback and item rows below can still
+appear.
+
+| Kind | JPEG | PNG | TIFF | WebP | GIF | BMP | ICO |
+|---|---|---|---|---|---|---|---|
+| Exif | own | own | no | own | no | no | no |
+| XMP | own | own | own | own | no | no | no |
+| ICC profile | yes | yes | yes | yes | no | yes | no |
+| Resolution | yes | yes | yes | no | no | yes (not as a wrapper) | no |
+| Description | yes (not under `GIMG_META_KEEP_COMMON_ONLY`) | yes (not under `GIMG_META_KEEP_COMMON_ONLY`) | yes | no | yes | no | no |
+| Additional comments | own | no | no | no | own | no | no |
+| Text fields (PNG text chunks, TIFF text tags) | no | own | own | no | no | no | no |
+| Other format-specific blocks | own | own | no | no | no | no | no |
+| Loop count | no | animation | no | animation | yes | no | no |
+| Frame delays | no | animation | no | animation | yes | no | no |
+| Cursor hotspot | no | no | no | no | no | no | yes |
+| Item roles | thumbnail | no | level | no | no | n/a | n/a |
+| Items | first, plus one Exif thumbnail | all | all | all | all | first only | image and alternate |
+
+*yes*: written from the document's common metadata or the raster, whatever
+format it came from. *own*: written only when it arrived in that format's own
+form - the writers read raw metadata by the format id it was loaded under, so a
+JPEG's Exif is not converted into a PNG's `eXIf` chunk, and is reported as
+dropped. *animation*: written when the document has more than one item; a
+single-frame PNG or WebP has nowhere to put it. *no*: the writer has no place
+for it. *Item roles*: a thumbnail, level or alternate item that the writer
+stores as a plain page or animation frame.
+
+What a policy asks to remove, and so does not warn about:
+
+| Policy | Removes (not reported) |
+|---|---|
+| `GIMG_META_DROP_ALL` | Exif, XMP, ICC profile, resolution, description, comments, text and other blocks |
+| `GIMG_META_KEEP_COMMON_ONLY` | Exif, XMP, comments, text and other blocks (resolution, description and the profile are kept, so a writer that leaves them out is reported) |
+| `GIMG_META_KEEP_RAW_ONLY` | resolution, description and the profile read from the raster; for PNG also Exif, XMP and text |
+| `GIMG_META_STRIP_GPS` | the XMP packet (and the GPS directory inside Exif, which is not a separate kind) |
+| `GIMG_META_NORMALIZE_EXIF`, `GIMG_META_PRESERVE_ALL` | nothing |
+
+Three things are deliberately not reported. **Orientation** is applied to the
+pixels when an item is decoded, so no writer has a loss to report; every one
+writes it as 1 or not at all. **GPS** is part of Exif, so it is reported with
+it, and its removal under `GIMG_META_STRIP_GPS` is the policy's. **The JFIF
+density** of a JPEG that is written without a JFIF header (CMYK, YCCK and
+lossless RGB frames) is not reported. Not yet reported either: a document's
+background colour, its pixel aspect ratio, and an item's dispose and blend
+operations.
+
+A profile in a WebP file is the one case where the document holds a metadata
+block that is not on its raster: the WebP decoder leaves it in the raw `ICCP`
+block, and every writer but WebP's reads the profile from the raster, so a
+loaded WebP saved as anything else is reported as dropping its ICC profile.
 
 ## Decode options
 
@@ -248,10 +316,6 @@ are covered by the same fallback.
 > GIMG_STRICT, so zero-initialized options already ask for the strictest
 > setting and would change behaviour the day this is implemented.
 
-> **GIMG_Save_Report.diagnostics is never set** either. No save path writes to
-> it, so it holds whatever the caller left there. Saving reports through its
-> result code alone; `bytes_written` is always filled.
-
 > **Only a load fills diagnostics.** `gimg_doc_load()` takes a
 > `GIMG_Diagnostics *` and every refusal in every codec appends at least one
 > item saying which rule was broken - checked over the fuzz corpus by
@@ -263,12 +327,12 @@ are covered by the same fallback.
 
 ## Save report
 
-**GIMG_Save_Report** (see `ghoti.io/image/codec.h`): Optional output of `gimg_doc_save()`. Contains `bytes_written` and `diagnostics` (warnings, codec name, offset, chunk/tag when relevant).
+**GIMG_Save_Report** (see `ghoti.io/image/codec.h`): Output of `gimg_doc_save()`. Contains `bytes_written`, always filled, and `diagnostics`: NULL asks for nothing, and a pointer to an initialized **GIMG_Diagnostics** receives one warning for each kind of metadata the document holds that the file does not (see @ref api_options_save_loss). Zero-initialize the report: an uninitialized `diagnostics` pointer is read.
 
 ## Result and diagnostics
 
 - **GIMG_Result** — Result codes (e.g. `GIMG_OK`, `GIMG_ERR_FORMAT`, `GIMG_ERR_LIMIT`, `GIMG_ERR_CORRUPT`). See `ghoti.io/image/core.h`.
-- **GIMG_Diagnostics** — List of **GIMG_Diagnostic** items (codec name, offset, chunk/tag id, severity, recommended action). Filled by `gimg_doc_load()`, which is the only entry point that takes one: a decode has no diagnostics parameter, and a save's report field is never written. See the note under Strictness. **Lifecycle:** Call `gimg_diagnostics_init(d, allocator)` to set an optional allocator (NULL = default). Append uses this allocator for realloc. When done, call `gimg_diagnostics_clear(d)` to free the list and reset count/capacity, or `gimg_diagnostics_destroy(d)` to free and zero the whole struct. Callers must call clear or destroy to avoid leaks; the same allocator is used for growth and for release.
+- **GIMG_Diagnostics** — List of **GIMG_Diagnostic** items (codec name, offset, chunk/tag id, severity, recommended action). Filled by `gimg_doc_load()` (the rules a refused file broke) and by `gimg_doc_save()` through `GIMG_Save_Report.diagnostics` (the metadata a save could not carry); a decode has no diagnostics parameter. See the note under Strictness. **Lifecycle:** Call `gimg_diagnostics_init(d, allocator)` to set an optional allocator (NULL = default). Append uses this allocator for realloc. When done, call `gimg_diagnostics_clear(d)` to free the list and reset count/capacity, or `gimg_diagnostics_destroy(d)` to free and zero the whole struct. Callers must call clear or destroy to avoid leaks; the same allocator is used for growth and for release.
 
 @subsection api_options_diagnostics_functions Diagnostics API (lifecycle)
 

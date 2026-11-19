@@ -80,6 +80,12 @@ A single `GIMG_ITEM_IMAGE` becomes a one-entry icon. `IMAGE` plus
 item writes `type = 2` (CUR), and so does a document loaded from a CUR file
 whose hotspots are all (0, 0).
 
+An icon holds pictures and nothing else: the metadata kinds, the loop count and
+the frame delays have no place, an item whose role is a thumbnail or a level is
+skipped, and a save with `GIMG_Save_Report.diagnostics` set names each one
+(@ref api_options_save_loss). The hotspot is written, which is what makes the
+file a cursor.
+
 ## Compliance checklist
 
 | Area | Supported | Rejected / limitation |

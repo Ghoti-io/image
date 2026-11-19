@@ -36,6 +36,7 @@
 #include "../../core/alloc_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../codec_internal.h"
+#include "../../meta/meta_loss.h"
 #include "ico_internal.h"
 
 static void ico_write_u16(unsigned char * p, uint16_t v) {
@@ -253,7 +254,9 @@ GIMG_Result gimg_ico_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return GIMG_ERR_INTERNAL;
   }
   if (report) {
-    memset(report, 0, sizeof(*report));
+    // Not memset: the caller's diagnostics pointer is where the save report
+    // goes, and zeroing the struct would discard it.
+    report->bytes_written = 0;
   }
   if (doc->loaded_by_codec && doc->loaded_by_codec != codec) {
     // Foreign codec_private must not be touched; we only need items/rasters.
@@ -340,6 +343,13 @@ GIMG_Result gimg_ico_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     if (!raster) {
       r = GIMG_ERR_UNSUPPORTED;
       break;
+    }
+    if (i == 0u) {
+      // An icon has no place for a profile; the save report names the loss.
+      const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
+      if (ci && ci->icc_bytes && ci->icc_size > 0u) {
+        gimg_save_loss_note(GIMG_LOSS_ICC);
+      }
     }
     payloads[i].width = gimg_raster_width(raster);
     payloads[i].height = gimg_raster_height(raster);
@@ -469,4 +479,13 @@ GIMG_Result gimg_ico_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   gimg_free(alloc, payloads);
   gimg_free(alloc, indices);
   return r;
+}
+
+/** Whether a document the ICO codec loaded was a cursor file (CUR). */
+int gimg_ico_doc_is_cursor(const GIMG_Doc * doc) {
+  return doc && doc->loaded_by_codec && doc->codec_private &&
+      doc->loaded_by_codec->name &&
+      strcmp(doc->loaded_by_codec->name, "ico") == 0 &&
+      ((const gimg_ico_doc_state_t *)doc->codec_private)->type ==
+      GIMG_ICO_TYPE_CURSOR;
 }

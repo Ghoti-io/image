@@ -85,6 +85,7 @@
 #include "../../core/alloc_internal.h"
 #include "../../core/safe_math_internal.h"
 #include "../../meta/exif_internal.h"
+#include "../../meta/meta_loss.h"
 #include "../../raster/raster_internal.h"
 #include "../codec_internal.h"
 #include "../../core/resolution_internal.h"
@@ -3095,4 +3096,71 @@ GIMG_Result gimg_png_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   gimg_stream_destroy(staged);
   return r;
+}
+
+/**
+ * The kinds of metadata a PNG-loaded document's chunk list holds, as a bit per
+ * gimg_loss_kind_t, for the save report.  The chunks a PNG writer carries
+ * across (and no other writer does) are the text chunks, the XMP packet in its
+ * iTXt, and the private and informational chunks that are neither colour,
+ * resolution, background nor structure.  A text chunk that names the
+ * description or a comment is the description, which the common metadata holds.
+ * A chunk this library does not know and whose fourth letter is upper case is
+ * unsafe to copy (PNG 14.2) and is not written even by this writer, so it is
+ * not counted.
+ */
+uint32_t gimg_png_doc_loss_kinds(const GIMG_Doc * doc) {
+  if (!doc || !doc->loaded_by_codec || !doc->codec_private ||
+      !doc->loaded_by_codec->name ||
+      strcmp(doc->loaded_by_codec->name, "png") != 0) {
+    return 0u;
+  }
+  const gimg_png_doc_state_t * state =
+      (const gimg_png_doc_state_t *)doc->codec_private;
+  uint32_t kinds = 0u;
+  for (size_t i = 0; state->ancillary && i < state->ancillary_count; i++) {
+    const gimg_png_chunk_type_t t = state->ancillary[i].type;
+    const unsigned char * payload = state->ancillary[i].payload;
+    const size_t size = state->ancillary[i].payload_size;
+    if (t == GIMG_PNG_tEXt || t == GIMG_PNG_zTXt || t == GIMG_PNG_iTXt) {
+      size_t kw = 0;
+      while (payload && kw < size && payload[kw] != 0) {
+        kw++;
+      }
+      if (kw == 17 && png_keyword_starts(payload, kw, "xml:com.adobe.xmp")) {
+        kinds |= UINT32_C(1) << GIMG_LOSS_XMP;
+      }
+      else if (!gimg_png_text_keyword_is_description_or_comment(payload, size)) {
+        kinds |= UINT32_C(1) << GIMG_LOSS_TEXT;
+      }
+      continue;
+    }
+    switch (t) {
+    case GIMG_PNG_IHDR:
+    case GIMG_PNG_PLTE:
+    case GIMG_PNG_IDAT:
+    case GIMG_PNG_IEND:
+    case GIMG_PNG_tRNS:
+    case GIMG_PNG_iCCP:
+    case GIMG_PNG_sRGB:
+    case GIMG_PNG_gAMA:
+    case GIMG_PNG_cHRM:
+    case GIMG_PNG_cICP:
+    case GIMG_PNG_bKGD:
+    case GIMG_PNG_pHYs:
+    case GIMG_PNG_acTL:
+    case GIMG_PNG_fcTL:
+    case GIMG_PNG_fdAT:
+      break;
+    case GIMG_PNG_eXIf:
+      kinds |= UINT32_C(1) << GIMG_LOSS_EXIF;
+      break;
+    default:
+      if (png_chunk_is_known(t) || (t & 0x20u) != 0u) {
+        kinds |= UINT32_C(1) << GIMG_LOSS_NATIVE;
+      }
+      break;
+    }
+  }
+  return kinds;
 }

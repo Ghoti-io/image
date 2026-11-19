@@ -41,6 +41,7 @@
 #include "../codec_internal.h"
 #include "../../meta/exif_internal.h"
 #include "webp_internal.h"
+#include "../../meta/meta_loss.h"
 
 /**
  * Apply an Exif policy to the chunks about to be written.
@@ -778,6 +779,15 @@ static GIMG_Result webp_save_animation(GIMG_Codec * codec, const GIMG_Doc * doc,
       }
     }
   }
+  else if (first) {
+    // DROP_ALL and KEEP_COMMON_ONLY read neither the raw blocks nor the
+    // raster's profile.  The save report names a profile left out under the
+    // second, which keeps colour.
+    const GCOL_Color_Info * ci = gimg_raster_color_info_const(first);
+    if (ci && ci->icc_bytes && ci->icc_size > 0u) {
+      gimg_save_loss_note(GIMG_LOSS_ICC);
+    }
+  }
 
   if (any_alpha) {
     vp8x_flags = (uint8_t)(vp8x_flags | GIMG_WEBP_VP8X_ALPHA);
@@ -911,7 +921,9 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
     return GIMG_ERR_INTERNAL;
   }
   if (report) {
-    memset(report, 0, sizeof(*report));
+    // Not memset: the caller's diagnostics pointer is where the save report
+    // goes, and zeroing the struct would discard it.
+    report->bytes_written = 0;
   }
   alloc = gimg_alloc_or_default(codec->allocator);
   /* Done frees file.data. Several error returns reach it before the RIFF
@@ -1053,6 +1065,14 @@ GIMG_Result gimg_webp_save(GIMG_Codec * codec, const GIMG_Doc * doc,
   }
   if (meta_policy == GIMG_META_DROP_ALL ||
       meta_policy == GIMG_META_KEEP_COMMON_ONLY) {
+    {
+      // A profile the raster holds and this policy leaves out; under
+      // KEEP_COMMON_ONLY the colour is not what the caller asked to drop.
+      const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
+      if (ci && ci->icc_bytes && ci->icc_size > 0u) {
+        gimg_save_loss_note(GIMG_LOSS_ICC);
+      }
+    }
     gimg_free(alloc, iccp);
     gimg_free(alloc, exif);
     gimg_free(alloc, xmp);

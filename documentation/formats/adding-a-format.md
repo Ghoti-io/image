@@ -69,7 +69,11 @@ compression methods, metadata. Each cites its clause.
 ## Save
 
 What the encoder chooses and why; which options change it; what it never
-writes.
+writes. Also which metadata kinds the writer carries, and add the writer's row
+and column to the matrix in `src/meta/meta_loss.c` (and the table in the API
+options page): that table is what makes a save report what it left out, and the
+sweep in `tests/codec/test_meta_loss_report.cpp` fails for a writer it does not
+know.
 
 ## Compliance checklist
 

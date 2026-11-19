@@ -80,6 +80,7 @@
 #include "../../core/safe_math_internal.h"
 #include "../codec_internal.h"
 #include "gif_internal.h"
+#include "../../meta/meta_loss.h"
 
 // ---------------------------------------------------------------------------
 // Colour lookup
@@ -1416,6 +1417,14 @@ static GIMG_Result gif_save_body(GIMG_Codec * codec, const GIMG_Doc * doc,
           }
           r = GIMG_ERR_UNSUPPORTED;
           goto done;
+        }
+      }
+      if (i == 0u) {
+        // GIF has no place for a profile, so the first frame's is a loss the
+        // save report names (the policies that ask to drop it filter it out).
+        const GCOL_Color_Info * ci = gimg_raster_color_info_const(raster);
+        if (ci && ci->icc_bytes && ci->icc_size > 0u) {
+          gimg_save_loss_note(GIMG_LOSS_ICC);
         }
       }
 

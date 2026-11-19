@@ -36,6 +36,7 @@
 #include "../container/doc_internal.h"
 #include "../core/alloc_internal.h"
 #include "../core/budget_internal.h"
+#include "../meta/meta_loss.h"
 #include "codec_internal.h"
 
 #define REGISTRY_INITIAL 8
@@ -344,6 +345,28 @@ GIMG_API GIMG_Result gimg_doc_load(GIMG_Stream * stream,
   return r;
 }
 
+/**
+ * Run a codec's writer and, when it succeeds, append to the caller's
+ * report.diagnostics a warning for each kind of metadata the document holds
+ * and the file does not (see meta_loss.h).  @p doc is the caller's document:
+ * @p saved is what the writer is handed, which differs from it only when
+ * premultiplied rasters were copied.
+ */
+static GIMG_Result gimg_codec_save_reporting(GIMG_Codec * codec,
+    const GIMG_Doc * doc, const GIMG_Doc * saved, GIMG_Stream * stream,
+    const char * format_name, const GIMG_Save_Options * options,
+    GIMG_Save_Report * report) {
+  gimg_save_loss_t scope;
+  gimg_save_loss_begin(&scope);
+  GIMG_Result r =
+      codec->save_cb(codec, saved, stream, format_name, options, report);
+  gimg_save_loss_end(&scope);
+  if (r == GIMG_OK) {
+    gimg_save_loss_report(&scope, doc, codec->name, options, report);
+  }
+  return r;
+}
+
 GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     const char * format_name, const GIMG_Save_Options * options,
     GIMG_Save_Report * report) {
@@ -370,8 +393,8 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     }
   }
   if (premultiplied == 0) {
-    return codec->save_cb(
-        (GIMG_Codec *)codec, doc, stream, format_name, options, report);
+    return gimg_codec_save_reporting(
+        (GIMG_Codec *)codec, doc, doc, stream, format_name, options, report);
   }
 
   const GIMG_Allocator * alloc = gimg_alloc_or_default(doc->allocator);
@@ -403,8 +426,8 @@ GIMG_API GIMG_Result gimg_doc_save(const GIMG_Doc * doc, GIMG_Stream * stream,
     items[i].raster = copy;
   }
   if (r == GIMG_OK) {
-    r = codec->save_cb(
-        (GIMG_Codec *)codec, &view, stream, format_name, options, report);
+    r = gimg_codec_save_reporting((GIMG_Codec *)codec, doc, &view, stream,
+        format_name, options, report);
   }
   for (size_t i = 0; i < doc->item_count; i++) {
     if (items[i].raster != doc->items[i].raster) {

@@ -98,6 +98,12 @@ writes none of these, `GIMG_META_KEEP_COMMON_ONLY` the description alone,
 `GIMG_META_STRIP_GPS` everything but the XMP packet, which can carry a
 location and is not parsed. The ICC profile and the resolution are written
 under every policy: they say what the samples mean and how large a pixel is.
+The writer reads raw metadata under the format id `"tiff"` only, so Exif, further
+comments and other formats' blocks are not carried (there is no Exif directory
+to write), and a save with `GIMG_Save_Report.diagnostics` set names each kind
+dropped, along with a loop count or frame delays, a cursor hotspot, and a
+thumbnail or alternate item whose role the page does not keep (only the level
+role is) - see @ref api_options_save_loss.
 Orientation (274) is applied
 rather than carried. The Exif sub-IFD (34665) is not read: it is an offset
 to another directory, and preserving one by copying bytes would preserve

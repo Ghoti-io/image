@@ -123,6 +123,8 @@ copes with. A reader that assumes ASCII will see the encoded bytes. This is
 stated on `gimg_meta_common_set_description()` too, so a caller meets it
 before writing rather than after.
 
+**What a GIF cannot carry.** The comment extensions are the only metadata a GIF holds, written from the raw block under the format id `"gif"` (every comment) or from the description. Exif, XMP, the ICC profile, the resolution, text fields and the other formats' blocks have no place, and a save with `GIMG_Save_Report.diagnostics` set names each kind dropped (@ref api_options_save_loss). The loop count and the frame delays are written for any document. A thumbnail, level or alternate item is written as a frame, which is reported as its role being dropped.
+
 ### How many times to play
 
 `gimg_doc_loop_count()` reports what the NETSCAPE2.0 Application Extension

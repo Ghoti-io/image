@@ -858,14 +858,24 @@ typedef struct {
 typedef struct {
   size_t bytes_written; ///< Bytes the save actually wrote; always filled.
   /**
-   * @warning **Never set.** No codec's save path writes to this pointer, so
-   * it holds whatever the caller left in it. Saving reports through its
-   * result code alone.
+   * Where the save reports what it could not carry into the file.  NULL (the
+   * default for a zero-initialized report) asks for nothing; otherwise it must
+   * point to a GIMG_Diagnostics the caller has initialized, and a save that
+   * succeeds appends to it one GIMG_DIAG_WARNING for each kind of metadata the
+   * document holds, the file does not, and the metadata policy did not ask to
+   * remove.  Zero-initialize the report: an uninitialized pointer here is read.
    *
-   * Of the three, only gimg_doc_load() fills diagnostics: it takes a
-   * GIMG_Diagnostics and every refusal in every codec appends an item saying
-   * which rule was broken. gimg_item_decode() has no diagnostics parameter,
-   * so a decode reports through its result code alone as well.
+   * The sentence is in `recommended_action` ("XMP dropped: the BMP format has
+   * no XMP"), the writer's codec name in `codec_name`, and `offset` and
+   * `chunk_or_tag_id` are zero. The kinds are Exif, XMP, ICC profile,
+   * resolution, description, additional comments, text fields,
+   * format-specific metadata, loop count, frame delays, cursor hotspot, item
+   * roles and items; @ref api_options_save_loss has the table of what each
+   * writer carries. A save that fails appends nothing.
+   *
+   * A load fills a GIMG_Diagnostics passed to gimg_doc_load() with the rules
+   * it found broken; gimg_item_decode() has no diagnostics parameter, so a
+   * decode reports through its result code alone.
    */
   GIMG_Diagnostics * diagnostics;
   uint8_t _reserved[8]; ///< Zero; room to grow.
