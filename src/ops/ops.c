@@ -32,6 +32,7 @@
 #include <string.h>
 
 #include "../core/alloc_internal.h"
+#include "../core/limits_guard_internal.h"
 #include "../core/safe_math_internal.h"
 #include "../raster/raster_internal.h"
 #include "ops_internal.h"
@@ -182,7 +183,7 @@ static bool format_is_rgba8(const GIMG_Pixel_Format * f) {
       f->bits_per_channel[2] == 8 && f->bits_per_channel[3] == 8;
 }
 
-GIMG_API GIMG_Result gimg_ops_apply_orientation(
+static GIMG_Result ops_apply_orientation(
     GIMG_Raster * raster, GIMG_Orientation orientation) {
   if (!raster) {
     return GIMG_ERR_INTERNAL;
@@ -206,6 +207,42 @@ GIMG_API GIMG_Result gimg_ops_apply_orientation(
   default:
     return GIMG_ERR_UNSUPPORTED;
   }
+}
+
+/** Whether @p orientation rebuilds or rewrites the pixels (it is not a no-op). */
+static bool ops_orientation_moves_pixels(GIMG_Orientation orientation) {
+  switch (orientation) {
+  case GIMG_ORIENTATION_ROTATE_180:
+  case GIMG_ORIENTATION_FLIP_H:
+  case GIMG_ORIENTATION_FLIP_V:
+  case GIMG_ORIENTATION_TRANSPOSE:
+  case GIMG_ORIENTATION_ROTATE_90_CW:
+  case GIMG_ORIENTATION_TRANSVERSE:
+  case GIMG_ORIENTATION_ROTATE_90_CCW:
+    return true;
+  default:
+    return false;
+  }
+}
+
+GIMG_API GIMG_Result gimg_ops_apply_orientation_with_limits(
+    GIMG_Raster * raster, GIMG_Orientation orientation,
+    const GIMG_Limits * limits) {
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  GIMG_Result r = GIMG_ERR_LIMIT;
+  if (!raster || !ops_orientation_moves_pixels(orientation) ||
+      gimg_raster_ownership(raster) != GIMG_RASTER_OWNED ||
+      gimg_limits_guard_pixels_ok(&guard, gimg_raster_width(raster),
+          gimg_raster_height(raster))) {
+    r = ops_apply_orientation(raster, orientation);
+  }
+  return gimg_limits_guard_close(&guard, r, NULL);
+}
+
+GIMG_API GIMG_Result gimg_ops_apply_orientation(
+    GIMG_Raster * raster, GIMG_Orientation orientation) {
+  return gimg_ops_apply_orientation_with_limits(raster, orientation, NULL);
 }
 
 /**
@@ -445,7 +482,7 @@ static GIMG_Result ops_gray_to_rgba(const GIMG_Raster * src,
   return GIMG_OK;
 }
 
-GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
+static GIMG_Result ops_convert_pixel_format(const GIMG_Raster * src,
     const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster) {
   if (!src || !dst_format || !out_raster) {
     return GIMG_ERR_INTERNAL;
@@ -530,6 +567,31 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
   return GIMG_OK;
 }
 
+GIMG_API GIMG_Result gimg_ops_convert_pixel_format_with_limits(
+    const GIMG_Raster * src, const GIMG_Pixel_Format * dst_format,
+    GIMG_Raster ** out_raster, const GIMG_Limits * limits) {
+  if (!src || !dst_format || !out_raster) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  GIMG_Result r = GIMG_ERR_LIMIT;
+  if (gimg_limits_guard_pixels_ok(
+          &guard, gimg_raster_width(src), gimg_raster_height(src))) {
+    r = ops_convert_pixel_format(src, dst_format, out_raster);
+  }
+  else {
+    *out_raster = NULL;
+  }
+  return gimg_limits_guard_close(&guard, r, out_raster);
+}
+
+GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
+    const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster) {
+  return gimg_ops_convert_pixel_format_with_limits(
+      src, dst_format, out_raster, NULL);
+}
+
 //
 // Bit-depth conversion: same channel model, 8/12/16 bits per channel. Uses
 // library bitdepth sample-level functions (T.81 / codec-agnostic).
@@ -567,7 +629,7 @@ static const GIMG_Pixel_Format * format_for_bits(
   return NULL;
 }
 
-GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
+static GIMG_Result ops_convert_bit_depth(const GIMG_Raster * src,
     uint8_t dst_bits, GIMG_Raster ** out_raster) {
   if (!src || !out_raster) {
     return GIMG_ERR_INTERNAL;
@@ -677,6 +739,31 @@ GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
     return r;
   }
   return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_ops_convert_bit_depth_with_limits(
+    const GIMG_Raster * src, uint8_t dst_bits, GIMG_Raster ** out_raster,
+    const GIMG_Limits * limits) {
+  if (!src || !out_raster) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  GIMG_Result r = GIMG_ERR_LIMIT;
+  if (gimg_limits_guard_pixels_ok(
+          &guard, gimg_raster_width(src), gimg_raster_height(src))) {
+    r = ops_convert_bit_depth(src, dst_bits, out_raster);
+  }
+  else {
+    *out_raster = NULL;
+  }
+  return gimg_limits_guard_close(&guard, r, out_raster);
+}
+
+GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
+    uint8_t dst_bits, GIMG_Raster ** out_raster) {
+  return gimg_ops_convert_bit_depth_with_limits(
+      src, dst_bits, out_raster, NULL);
 }
 
 GIMG_API GIMG_Result gimg_alpha_premultiply(GIMG_Raster * raster) {

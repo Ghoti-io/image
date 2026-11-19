@@ -33,6 +33,7 @@
 
 #include "../codec/codec_internal.h"
 #include "../core/alloc_internal.h"
+#include "../core/limits_guard_internal.h"
 #include "../core/safe_math_internal.h"
 #include "doc_internal.h"
 
@@ -390,8 +391,8 @@ GIMG_API GIMG_Result gimg_doc_copy(const GIMG_Doc * src, GIMG_Doc ** out_doc) {
 // codec_private — the result is
 // a synthetic document. Items without an attached raster (e.g. loaded but not
 // decoded) yield items with no raster in the copy. Caller owns the new doc.
-GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
-    const GIMG_Allocator * allocator, const GIMG_Doc * src,
+static GIMG_Result doc_copy(const GIMG_Allocator * allocator,
+    const gimg_limits_guard_t * guard, const GIMG_Doc * src,
     GIMG_Doc ** out_doc) {
   if (!src || !out_doc) {
     return GIMG_ERR_INTERNAL;
@@ -448,7 +449,10 @@ GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
     GIMG_Raster * sr = gimg_item_raster(si);
     if (sr) {
       GIMG_Raster * copy_r = NULL;
-      r = gimg_raster_copy_with_allocator(doc->allocator, sr, &copy_r);
+      r = guard && !gimg_limits_guard_pixels_ok(guard, gimg_raster_width(sr),
+                       gimg_raster_height(sr))
+          ? GIMG_ERR_LIMIT
+          : gimg_raster_copy_with_allocator(doc->allocator, sr, &copy_r);
       if (r != GIMG_OK) {
         gimg_doc_destroy(doc);
         *out_doc = NULL;
@@ -492,13 +496,42 @@ GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
   return GIMG_OK;
 }
 
+GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Doc * src,
+    GIMG_Doc ** out_doc) {
+  return doc_copy(allocator, NULL, src, out_doc);
+}
+
+GIMG_API GIMG_Result gimg_doc_copy_with_allocator_and_limits(
+    const GIMG_Allocator * allocator, const GIMG_Limits * limits,
+    const GIMG_Doc * src, GIMG_Doc ** out_doc) {
+  if (!src || !out_doc) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  GIMG_Result r = doc_copy(allocator, guard.active ? &guard : NULL, src, out_doc);
+  if (gimg_limits_guard_leave(&guard) && r != GIMG_ERR_LIMIT) {
+    // Something was refused and the copy went on without it.
+    gimg_doc_destroy(*out_doc);
+    *out_doc = NULL;
+    r = GIMG_ERR_LIMIT;
+  }
+  return r;
+}
+
+GIMG_API GIMG_Result gimg_doc_copy_with_limits(const GIMG_Limits * limits,
+    const GIMG_Doc * src, GIMG_Doc ** out_doc) {
+  return gimg_doc_copy_with_allocator_and_limits(NULL, limits, src, out_doc);
+}
+
 GIMG_API GIMG_Result gimg_doc_from_raster(const GIMG_Raster * raster,
     GIMG_Doc ** out_doc) {
   return gimg_doc_from_raster_with_allocator(NULL, raster, out_doc);
 }
 
-GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator(
-    const GIMG_Allocator * allocator, const GIMG_Raster * raster,
+static GIMG_Result doc_from_raster(const GIMG_Allocator * allocator,
+    const gimg_limits_guard_t * guard, const GIMG_Raster * raster,
     GIMG_Doc ** out_doc) {
   if (!raster || !out_doc) {
     return GIMG_ERR_INTERNAL;
@@ -509,8 +542,11 @@ GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator(
     return r;
   }
   GIMG_Raster * copy_r = NULL;
-  r = gimg_raster_copy_with_allocator(
-      (*out_doc)->allocator, raster, &copy_r);
+  r = guard && !gimg_limits_guard_pixels_ok(guard, gimg_raster_width(raster),
+                   gimg_raster_height(raster))
+      ? GIMG_ERR_LIMIT
+      : gimg_raster_copy_with_allocator(
+            (*out_doc)->allocator, raster, &copy_r);
   if (r != GIMG_OK) {
     gimg_doc_destroy(*out_doc);
     *out_doc = NULL;
@@ -518,6 +554,37 @@ GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator(
   }
   gimg_item_set_raster(gimg_doc_item(*out_doc, 0), copy_r);
   return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Raster * raster,
+    GIMG_Doc ** out_doc) {
+  return doc_from_raster(allocator, NULL, raster, out_doc);
+}
+
+GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator_and_limits(
+    const GIMG_Allocator * allocator, const GIMG_Limits * limits,
+    const GIMG_Raster * raster, GIMG_Doc ** out_doc) {
+  if (!raster || !out_doc) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  GIMG_Result r = doc_from_raster(
+      allocator, guard.active ? &guard : NULL, raster, out_doc);
+  if (gimg_limits_guard_leave(&guard) && r != GIMG_ERR_LIMIT) {
+    gimg_doc_destroy(*out_doc);
+    *out_doc = NULL;
+    r = GIMG_ERR_LIMIT;
+  }
+  return r;
+}
+
+GIMG_API GIMG_Result gimg_doc_from_raster_with_limits(
+    const GIMG_Limits * limits, const GIMG_Raster * raster,
+    GIMG_Doc ** out_doc) {
+  return gimg_doc_from_raster_with_allocator_and_limits(
+      NULL, limits, raster, out_doc);
 }
 
 GIMG_API GIMG_Item_Role gimg_item_role(const GIMG_Item * item) {
@@ -542,8 +609,8 @@ GIMG_API void gimg_item_set_role(
                                                            : subject;
 }
 
-GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
-    GIMG_Item * dst_item) {
+static GIMG_Result item_copy(const gimg_limits_guard_t * guard,
+    const GIMG_Item * src_item, GIMG_Item * dst_item) {
   if (!src_item || !dst_item) {
     return GIMG_ERR_INTERNAL;
   }
@@ -559,6 +626,10 @@ GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
     const GIMG_Allocator * alloc = dst_item->doc ? dst_item->doc->allocator
                                                   : NULL;
     GIMG_Raster * copy_r = NULL;
+    if (guard && !gimg_limits_guard_pixels_ok(guard, gimg_raster_width(sr),
+                     gimg_raster_height(sr))) {
+      return GIMG_ERR_LIMIT;
+    }
     GIMG_Result r = gimg_raster_copy_with_allocator(alloc, sr, &copy_r);
     if (r != GIMG_OK) {
       return r;
@@ -569,4 +640,20 @@ GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
     gimg_item_set_raster(dst_item, NULL);
   }
   return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
+    GIMG_Item * dst_item) {
+  return item_copy(NULL, src_item, dst_item);
+}
+
+GIMG_API GIMG_Result gimg_item_copy_with_limits(const GIMG_Item * src_item,
+    GIMG_Item * dst_item, const GIMG_Limits * limits) {
+  if (!src_item || !dst_item) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  const GIMG_Result r = item_copy(guard.active ? &guard : NULL, src_item, dst_item);
+  return gimg_limits_guard_close(&guard, r, NULL);
 }

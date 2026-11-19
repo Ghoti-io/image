@@ -41,16 +41,48 @@
  *   source's form.
  * - gimg_ops_raster_equal() treats two rasters of different forms as unequal.
  *
- * **Memory.** Nothing here takes GIMG_Limits, so a direct call is not held to
- * GIMG_Limits.max_memory: the raster it makes is the size the caller asked
- * for, and the working set beside it (the resampler's coefficient tables, the
- * quantizer's histogram, a transposed copy for a quarter turn) is whatever
- * the operation needs, unbounded by the library. Every allocation goes
- * through the library's allocation path and the raster's own allocator, and
- * every operation unwinds without a leak when one is refused. When a load,
- * a decode or a save calls an operation (an orientation applied at decode,
- * the straight copy of a premultiplied raster at save), it runs inside that
- * call's memory scope and is counted against that call's cap.
+ * **Memory.** A direct call is held to nothing unless the caller says so, and
+ * the caller says so with a GIMG_Limits, which reaches every operation here
+ * that allocates:
+ *
+ * - the operations that take an options struct carry it as the struct's last
+ *   field, `limits` (GIMG_Resize_Options, GIMG_Color_Transform_Options,
+ *   GIMG_Quantize_Options: it also bounds gimg_ops_palette_build());
+ * - the others have a `_with_limits` variant that takes it as the final
+ *   argument: gimg_ops_apply_orientation(), the mirrors and quarter turns,
+ *   gimg_ops_crop(), the two conversions, gimg_ops_palette_from_raster(),
+ *   gimg_ops_palette_apply() and gimg_ops_count_colors().
+ *
+ * The limits are read as a load reads them. GIMG_Limits.max_memory is the most
+ * the call may hold live at once in blocks it takes - the raster it makes, and
+ * the working set beside it (the resampler's coefficient tables, the
+ * quantizer's histogram, a transposed copy for a quarter turn) - counted from
+ * the allocation that takes a block to the one that frees it, in the memory
+ * scope that gimg_doc_load() and gimg_item_decode() use. The source raster is
+ * the caller's and is not counted. GIMG_Limits.max_decoded_pixels is the most
+ * pixels a raster the call makes (or, for an in-place orientation, rebuilds)
+ * may have; the check is made as soon as the arguments are known to be
+ * well-formed, before the operation looks at the format. A zero field is the
+ * library default for it, and GIMG_LIMIT_NONE lifts it (the other three fields
+ * describe files and are not read). Past either cap the call returns
+ * GIMG_ERR_LIMIT, nothing leaks, @a out_raster is NULL, and a raster operated
+ * on in place is as it was.
+ *
+ * With no limits (a NULL pointer, or an options struct whose `limits` is NULL
+ * as gimg_resize_options_default() leaves it) nothing changes: the raster is
+ * the size the caller asked for and the working set is whatever the operation
+ * needs, unbounded by the library, because a caller may legitimately transform
+ * a very large raster. Every allocation goes through the library's allocation
+ * path and the raster's own allocator, and every operation unwinds without a
+ * leak when one is refused. When a load, a decode or a save calls an
+ * operation (an orientation applied at decode, the straight copy of a
+ * premultiplied raster at save), it runs inside that call's memory scope and is
+ * counted against that call's cap; limits given to the operation then tighten
+ * the cap for the call and never loosen the scope around it.
+ *
+ * gimg_ops_composite(), gimg_alpha_premultiply(), gimg_alpha_unpremultiply()
+ * and gimg_ops_raster_equal() work in place or read only and allocate nothing,
+ * so they have no limits to take.
  */
 
 #ifndef GHOTI_IO_GIMG_OPS_H
@@ -60,6 +92,7 @@
 #include <ghoti.io/image/macros.h>
 #include <ghoti.io/image/meta.h>
 #include <ghoti.io/image/raster.h>
+#include <ghoti.io/image/stream.h>
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -74,6 +107,22 @@ extern "C" {
  */
 GIMG_API GIMG_Result gimg_ops_apply_orientation(
     GIMG_Raster * raster, GIMG_Orientation orientation);
+
+/**
+ * @brief As gimg_ops_apply_orientation(), held to @p limits (see the Memory
+ * note at the top of this file).
+ *
+ * The identity orientations (UNKNOWN and NORMAL) do nothing and are never
+ * refused. The others rewrite the pixels, and a raster of more than
+ * max_decoded_pixels is refused with GIMG_ERR_LIMIT, as is a call that would
+ * hold more than max_memory live (the turned copy for a quarter turn or a
+ * diagonal mirror, a row buffer for a half turn). A refusal leaves the raster
+ * as it was.
+ * @param limits NULL for none, which is gimg_ops_apply_orientation().
+ */
+GIMG_API GIMG_Result gimg_ops_apply_orientation_with_limits(
+    GIMG_Raster * raster, GIMG_Orientation orientation,
+    const GIMG_Limits * limits);
 
 /** @name Mirrors and quarter turns
  *
@@ -98,6 +147,22 @@ GIMG_API GIMG_Result gimg_ops_rotate_90_cw(GIMG_Raster * raster);
 GIMG_API GIMG_Result gimg_ops_rotate_90_ccw(GIMG_Raster * raster);
 /** @brief Turn a half. */
 GIMG_API GIMG_Result gimg_ops_rotate_180(GIMG_Raster * raster);
+
+/** @brief As gimg_ops_flip_horizontal(), held to @p limits (NULL for none). */
+GIMG_API GIMG_Result gimg_ops_flip_horizontal_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits);
+/** @brief As gimg_ops_flip_vertical(), held to @p limits (NULL for none). */
+GIMG_API GIMG_Result gimg_ops_flip_vertical_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits);
+/** @brief As gimg_ops_rotate_90_cw(), held to @p limits (NULL for none). */
+GIMG_API GIMG_Result gimg_ops_rotate_90_cw_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits);
+/** @brief As gimg_ops_rotate_90_ccw(), held to @p limits (NULL for none). */
+GIMG_API GIMG_Result gimg_ops_rotate_90_ccw_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits);
+/** @brief As gimg_ops_rotate_180(), held to @p limits (NULL for none). */
+GIMG_API GIMG_Result gimg_ops_rotate_180_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits);
 /** @} */
 
 /** @brief How a source raster is combined with what is already there. */
@@ -237,6 +302,14 @@ typedef struct {
   GIMG_Resample_Filter filter; ///< Default GIMG_FILTER_AUTO.
   GIMG_Resample_Space space;   ///< Default GIMG_RESAMPLE_SPACE_ENCODED.
   uint8_t _reserved[8]; ///< Zero; room to grow.
+  /**
+   * Hold the resize to these limits (see the Memory note at the top of this
+   * file): max_decoded_pixels bounds the destination, max_memory the
+   * destination and the resampler's tables and passes together. NULL, which
+   * gimg_resize_options_default() sets, is no limit. Read during the call and
+   * not kept.
+   */
+  const GIMG_Limits * limits;
 } GIMG_Resize_Options;
 
 /**
@@ -272,7 +345,8 @@ GIMG_API void gimg_resize_options_default(GIMG_Resize_Options * options);
  *   on every failure.
  * @return GIMG_OK; GIMG_ERR_INTERNAL for a null argument or a zero
  *   dimension; GIMG_ERR_UNSUPPORTED for a format or option outside the above;
- *   GIMG_ERR_LIMIT if the coefficient table overflows; GIMG_ERR_OOM.
+ *   GIMG_ERR_LIMIT if the coefficient table overflows or @a options->limits
+ *   refuses the result or its working set; GIMG_ERR_OOM.
  */
 GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
     uint32_t dst_width, uint32_t dst_height,
@@ -313,6 +387,16 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
  */
 GIMG_API GIMG_Result gimg_ops_crop(const GIMG_Raster * src, uint32_t x,
     uint32_t y, uint32_t width, uint32_t height, GIMG_Raster ** out_raster);
+
+/**
+ * @brief As gimg_ops_crop(), held to @p limits: the rectangle may not have
+ * more than max_decoded_pixels pixels and the call may not hold more than
+ * max_memory live. GIMG_ERR_LIMIT, with @a out_raster NULL, when it would.
+ * @param limits NULL for none, which is gimg_ops_crop().
+ */
+GIMG_API GIMG_Result gimg_ops_crop_with_limits(const GIMG_Raster * src,
+    uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+    GIMG_Raster ** out_raster, const GIMG_Limits * limits);
 
 /**
  * @brief Convert pixel format: a same-format copy, gray to RGBA, or CMYK to RGBA.
@@ -365,6 +449,16 @@ GIMG_API GIMG_Result gimg_ops_convert_pixel_format(const GIMG_Raster * src,
     const GIMG_Pixel_Format * dst_format, GIMG_Raster ** out_raster);
 
 /**
+ * @brief As gimg_ops_convert_pixel_format(), held to @p limits: a source of
+ * more than max_decoded_pixels pixels, or a result that would take the call
+ * past max_memory, is GIMG_ERR_LIMIT with @a out_raster NULL.
+ * @param limits NULL for none, which is gimg_ops_convert_pixel_format().
+ */
+GIMG_API GIMG_Result gimg_ops_convert_pixel_format_with_limits(
+    const GIMG_Raster * src, const GIMG_Pixel_Format * dst_format,
+    GIMG_Raster ** out_raster, const GIMG_Limits * limits);
+
+/**
  * @brief Convert raster bit depth (8, 12, or 16 bits per channel). Same
  * channel model and count; uses library bit-depth conversion (bitshift/clamp).
  *
@@ -384,6 +478,16 @@ GIMG_API GIMG_Result gimg_ops_convert_bit_depth(const GIMG_Raster * src,
     uint8_t dst_bits, GIMG_Raster ** out_raster);
 
 /**
+ * @brief As gimg_ops_convert_bit_depth(), held to @p limits: GIMG_ERR_LIMIT,
+ * with @a out_raster NULL, for a source of more than max_decoded_pixels pixels
+ * or a result past max_memory.
+ * @param limits NULL for none, which is gimg_ops_convert_bit_depth().
+ */
+GIMG_API GIMG_Result gimg_ops_convert_bit_depth_with_limits(
+    const GIMG_Raster * src, uint8_t dst_bits, GIMG_Raster ** out_raster,
+    const GIMG_Limits * limits);
+
+/**
  * @brief Options for ::gimg_ops_transform_color.
  *
  * @a dest must state a usable destination: an ICC profile (`icc_bytes`), or
@@ -396,6 +500,14 @@ typedef struct {
   GCOL_Rendering_Intent intent;   ///< Rendering intent; defaults to relative colorimetric.
   uint32_t flags;                 ///< GCOL_TRANSFORM_* flags passed to libs/color.
   uint8_t _reserved[8];           ///< Zero; room to grow.
+  /**
+   * Hold the transform to these limits (see the Memory note at the top of this
+   * file): max_decoded_pixels bounds the result, max_memory the result, the
+   * row buffers and the blocks libs/color builds for the transform, which are
+   * taken through the library's allocation path. NULL, which the default
+   * functions set, is no limit. Read during the call and not kept.
+   */
+  const GIMG_Limits * limits;
 } GIMG_Color_Transform_Options;
 
 /**
@@ -450,6 +562,8 @@ GIMG_API void gimg_color_transform_options_srgb(
  * @param src Source raster.
  * @param options Destination and intent; NULL is refused (no implied sRGB).
  * @param out_raster On success, a new raster; set to NULL on every failure.
+ * @return GIMG_ERR_LIMIT when @a options->limits refuses the result or its
+ *   working set.
  */
 GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
     const GIMG_Color_Transform_Options * options, GIMG_Raster ** out_raster);
@@ -579,6 +693,15 @@ typedef struct {
   GIMG_Quantize_Method method; ///< How to choose them.
   GIMG_Dither dither;          ///< What to do with the rounding error.
   uint8_t _reserved[8];        ///< Zero; room to grow.
+  /**
+   * Hold the call to these limits (see the Memory note at the top of this
+   * file). Read by gimg_ops_quantize(), which holds the histogram, the
+   * palette search and the result to one max_memory and bounds the result by
+   * max_decoded_pixels, and by gimg_ops_palette_build(), which holds the
+   * histogram to max_memory. NULL, which zero-initialising gives, is no limit.
+   * Read during the call and not kept.
+   */
+  const GIMG_Limits * limits;
 } GIMG_Quantize_Options;
 
 /**
@@ -606,6 +729,17 @@ GIMG_API GIMG_Result gimg_ops_count_colors(const GIMG_Raster * src,
     size_t limit, size_t * out_count, bool * out_exact);
 
 /**
+ * @brief As gimg_ops_count_colors(), with the table it counts in held to
+ * @p limits' max_memory: GIMG_ERR_LIMIT when it would not fit. The table grows
+ * with the colours found, so @a limit, which stops the count, is also what
+ * bounds it.
+ * @param limits NULL for none, which is gimg_ops_count_colors().
+ */
+GIMG_API GIMG_Result gimg_ops_count_colors_with_limits(const GIMG_Raster * src,
+    size_t limit, size_t * out_count, bool * out_exact,
+    const GIMG_Limits * limits);
+
+/**
  * @brief The exact colour table of an image that already has few enough
  * colours.
  *
@@ -625,6 +759,15 @@ GIMG_API GIMG_Result gimg_ops_palette_from_raster(
     const GIMG_Raster * src, uint16_t max_colors, GIMG_Palette * out_palette);
 
 /**
+ * @brief As gimg_ops_palette_from_raster(), with its table held to @p limits'
+ * max_memory: GIMG_ERR_LIMIT when it would not fit.
+ * @param limits NULL for none, which is gimg_ops_palette_from_raster().
+ */
+GIMG_API GIMG_Result gimg_ops_palette_from_raster_with_limits(
+    const GIMG_Raster * src, uint16_t max_colors, GIMG_Palette * out_palette,
+    const GIMG_Limits * limits);
+
+/**
  * @brief Choose a colour table for one or more images.
  *
  * Several rasters rather than one because the frames of an animation have to
@@ -642,10 +785,12 @@ GIMG_API GIMG_Result gimg_ops_palette_from_raster(
  *
  * @param src Array of @a count raster pointers, none NULL.
  * @param count Rasters in @a src, at least 1.
- * @param options May be NULL for the defaults.
+ * @param options May be NULL for the defaults. Its `limits` hold the
+ *   histogram to max_memory; the rasters are the caller's and are not counted.
  * @param out_palette Filled on success.
  * @return GIMG_OK, GIMG_ERR_UNSUPPORTED for an unsupported pixel format or
- *   rasters that disagree about it, GIMG_ERR_OOM, or GIMG_ERR_INTERNAL.
+ *   rasters that disagree about it, GIMG_ERR_OOM, GIMG_ERR_LIMIT when
+ *   @a options->limits refuses the histogram, or GIMG_ERR_INTERNAL.
  */
 GIMG_API GIMG_Result gimg_ops_palette_build(const GIMG_Raster * const * src,
     size_t count, const GIMG_Quantize_Options * options,
@@ -677,6 +822,16 @@ GIMG_API GIMG_Result gimg_ops_palette_apply(const GIMG_Raster * src,
     GIMG_Raster ** out_raster);
 
 /**
+ * @brief As gimg_ops_palette_apply(), held to @p limits: GIMG_ERR_LIMIT, with
+ * @a out_raster NULL, for a source of more than max_decoded_pixels pixels or a
+ * result and error-diffusion rows past max_memory.
+ * @param limits NULL for none, which is gimg_ops_palette_apply().
+ */
+GIMG_API GIMG_Result gimg_ops_palette_apply_with_limits(const GIMG_Raster * src,
+    const GIMG_Palette * palette, GIMG_Dither dither,
+    GIMG_Raster ** out_raster, const GIMG_Limits * limits);
+
+/**
  * @brief Reduce an image to at most @a max_colors colours.
  *
  * gimg_ops_palette_build() followed by gimg_ops_palette_apply(), for the
@@ -700,10 +855,13 @@ GIMG_API GIMG_Result gimg_ops_palette_apply(const GIMG_Raster * src,
  * costs a comparison per pixel and loses nothing.
  *
  * @param src RGBA8 or GRAY8 raster.
- * @param options May be NULL for the defaults.
+ * @param options May be NULL for the defaults. Its `limits` hold the whole
+ *   call, both steps, to one max_memory and the result to max_decoded_pixels.
  * @param out_raster On success, a new raster; caller owns it.
  * @param out_palette Optional: the table that was chosen.
- * @return GIMG_OK, GIMG_ERR_UNSUPPORTED, or GIMG_ERR_OOM.
+ * @return GIMG_OK, GIMG_ERR_UNSUPPORTED, GIMG_ERR_OOM, or GIMG_ERR_LIMIT
+ *   when @a options->limits refuses it (@a out_raster is NULL and
+ *   @a out_palette is not written).
  */
 GIMG_API GIMG_Result gimg_ops_quantize(const GIMG_Raster * src,
     const GIMG_Quantize_Options * options, GIMG_Raster ** out_raster,

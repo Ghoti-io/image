@@ -427,6 +427,24 @@ GIMG_API GIMG_Result gimg_doc_copy_with_allocator(
     const GIMG_Allocator * allocator, const GIMG_Doc * src, GIMG_Doc ** out_doc);
 
 /**
+ * @brief As gimg_doc_copy(), held to @p limits.
+ *
+ * max_memory is the most the whole copy may hold live: the document, every
+ * copied raster, and the copied metadata, counted together. max_decoded_pixels
+ * is the most pixels any one copied raster may have. Past either the call is
+ * GIMG_ERR_LIMIT, @a out_doc is NULL and nothing is left allocated. See
+ * gimg_raster_create_with_limits() for how the fields read.
+ * @param limits NULL for none, which is gimg_doc_copy().
+ */
+GIMG_API GIMG_Result gimg_doc_copy_with_limits(const GIMG_Limits * limits,
+    const GIMG_Doc * src, GIMG_Doc ** out_doc);
+
+/** @brief As gimg_doc_copy_with_limits(), with a specific allocator (NULL = default). */
+GIMG_API GIMG_Result gimg_doc_copy_with_allocator_and_limits(
+    const GIMG_Allocator * allocator, const GIMG_Limits * limits,
+    const GIMG_Doc * src, GIMG_Doc ** out_doc);
+
+/**
  * @brief Create a one-item document with a copy of the given raster attached to
  * item 0. Caller keeps ownership of the original raster. Use with
  * gimg_doc_save to "save this one raster".
@@ -441,6 +459,22 @@ GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator(
     GIMG_Doc ** out_doc);
 
 /**
+ * @brief As gimg_doc_from_raster(), held to @p limits: the document and the
+ * copy of the raster together may not hold more than max_memory live, and the
+ * raster may not have more than max_decoded_pixels pixels. GIMG_ERR_LIMIT,
+ * with @a out_doc NULL, when it would.
+ * @param limits NULL for none, which is gimg_doc_from_raster().
+ */
+GIMG_API GIMG_Result gimg_doc_from_raster_with_limits(
+    const GIMG_Limits * limits, const GIMG_Raster * raster,
+    GIMG_Doc ** out_doc);
+
+/** @brief As gimg_doc_from_raster_with_limits(), with a specific allocator (NULL = default). */
+GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator_and_limits(
+    const GIMG_Allocator * allocator, const GIMG_Limits * limits,
+    const GIMG_Raster * raster, GIMG_Doc ** out_doc);
+
+/**
  * @brief Copy one item into another: frame delay, dispose_op, blend_op, and
  * attached raster (via gimg_raster_copy). Source and destination may be in
  * the same or different documents. Any existing raster on @a dst_item is
@@ -448,6 +482,15 @@ GIMG_API GIMG_Result gimg_doc_from_raster_with_allocator(
  */
 GIMG_API GIMG_Result gimg_item_copy(const GIMG_Item * src_item,
     GIMG_Item * dst_item);
+
+/**
+ * @brief As gimg_item_copy(), with the raster copy held to @p limits (see
+ * gimg_doc_copy_with_limits()). GIMG_ERR_LIMIT leaves the raster on
+ * @a dst_item as it was.
+ * @param limits NULL for none, which is gimg_item_copy().
+ */
+GIMG_API GIMG_Result gimg_item_copy_with_limits(const GIMG_Item * src_item,
+    GIMG_Item * dst_item, const GIMG_Limits * limits);
 
 #ifdef __cplusplus
 }

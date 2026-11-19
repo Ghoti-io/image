@@ -340,9 +340,12 @@ typedef struct GIMG_Limits {
    * What it does not bound: memory the call did not take (the stream's own
    * buffers, the caller's allocator's overhead, blocks taken before the call
    * such as a document's earlier decodes or the rasters a save is given,
-   * which are not counted again), and the operations in ops.h and the
-   * raster constructors when a caller makes them directly: they take no
-   * limits, so what they allocate is the caller's to size. The returned
+   * which are not counted again). The operations in ops.h and the raster
+   * constructors and copies are held to it too when the caller hands them
+   * limits (the `limits` field of their options, or the `_with_limits`
+   * variant; both caps read as here). Called without limits they are not
+   * capped, because a caller may legitimately make a very large raster, and
+   * what they allocate is the caller's to size. The returned
    * raster is counted while the call runs; once the call returns it is the
    * caller's. Each call gets the whole cap afresh. With the default, a
    * picture whose raster and working set pass two gibibytes needs this

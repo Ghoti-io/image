@@ -265,8 +265,32 @@ the cap applied to each allocation separately.
 | `gimg_item_decode()` | yes | `GIMG_Decode_Options.limits`, else the limits the document was loaded with |
 | `gimg_item_ensure_decoded()` | yes, it is a `gimg_item_decode()` (the raster it attaches is the document's afterwards and is not counted again) | as `gimg_item_decode()` |
 | `gimg_doc_save()`, all seven writers | yes: working buffers, the file composed in memory, the straight copies a premultiplied raster is saved through, an item decoded for the save, the Exif thumbnail, and the growth of a memory stream given as the destination | `GIMG_Save_Options.limits` when given, else the limits the document was loaded with, else (a document built in memory) the defaults, `GIMG_DEFAULT_MAX_MEMORY`. `GIMG_LIMIT_NONE` lifts it. Only `max_memory` is read |
-| `gimg_ops_*` (convert, resize, crop, quantize, palette, colour transform, rotate, flip, orientation, composite) and `gimg_alpha_*` | no, when a caller makes them directly: they take no limits and the caller sizes the raster they make. When a load, decode or save calls them they are inside its scope and counted | none |
-| `gimg_raster_create*()`, `gimg_raster_copy*()`, `gimg_doc_copy*()`, `gimg_doc_from_raster*()` | no: the dimensions are the caller's, and the allocation is the caller's own | none |
+| `gimg_ops_*` that allocate (convert, resize, crop, quantize, palette, count colours, colour transform, rotate, flip, orientation) | yes, when given limits: the live total of the blocks the call takes, its result raster included (the source is the caller's and is not counted). With no limits a direct call is not capped, because a caller may legitimately transform a very large raster; when a load, decode or save calls one it is counted by that call's scope. `gimg_ops_composite()`, `gimg_alpha_*()` and `gimg_ops_raster_equal()` allocate nothing | `GIMG_Resize_Options.limits`, `GIMG_Color_Transform_Options.limits`, `GIMG_Quantize_Options.limits` (which also covers `gimg_ops_palette_build()`); for the rest a `_with_limits` variant that takes the limits as its last argument. `max_memory` and `max_decoded_pixels` are read |
+| `gimg_raster_create*()`, `gimg_raster_copy*()`, `gimg_doc_copy*()`, `gimg_doc_from_raster*()`, `gimg_item_copy()` | yes through `gimg_raster_create_with_limits()`, `gimg_raster_copy_with_limits()`, `gimg_doc_copy_with_limits()`, `gimg_doc_from_raster_with_limits()` and `gimg_item_copy_with_limits()` (all but the item copy also have a `_with_allocator_and_limits` form). The plain functions take no limits: the dimensions and the allocation are the caller's own | the `limits` argument of those. `max_memory` and `max_decoded_pixels` are read |
+
+**Limits on the operations and the constructors.** A call that is given limits
+opens the same scope a load opens and holds itself to it, so `max_memory` is the
+most it may hold live at once in the blocks it takes (the result, the resampler's
+tables, the quantizer's histogram, the copied profile, a document's items and
+metadata), counted from the allocation to the free and measured as above. The
+source rasters belong to the caller and are not counted. `max_decoded_pixels` is
+the most pixels a raster the call makes may have; it is checked as soon as the
+arguments are known to be well-formed, before the operation looks at the format,
+and nothing has been allocated by then. For an operation that works in place
+(a rotation, a mirror, an orientation) it is the size of the raster it rebuilds.
+Operations that make no raster (counting colours, choosing a palette) have only
+the memory cap to meet. A zero field is the default (`GIMG_DEFAULT_MAX_MEMORY`,
+`GIMG_DEFAULT_MAX_DECODED_PIXELS`) and `GIMG_LIMIT_NONE` lifts the cap, so a
+zero-initialised `GIMG_Limits` is a cap of two gibibytes and 2^28 pixels, and
+NULL (or an options struct whose `limits` is NULL, which
+`gimg_resize_options_default()` and its two siblings leave it) is no cap at all,
+as these calls have always been. A refusal is `GIMG_ERR_LIMIT`, with nothing
+leaked, no raster handed back, and a raster operated on in place exactly as it
+was. A refusal by the pixel cap precedes the operation's own checks of the
+format; a malformed argument keeps its own error. Inside the scope of a load, a
+decode or a save the limits tighten that call's cap and never loosen it: it is
+held to both. The other three fields of `GIMG_Limits` bound what a file can make
+a reader allocate and are not read.
 
 The operations' working sets, measured at 512 &times; 384 RGBA8 in multiples of
 the 786,432-byte source (the result included): bit depth 8 to 16 2.0, resize to
@@ -276,7 +300,9 @@ a quarter turn or an orientation 1.0, `gimg_ops_count_colors()` 3.3 at a limit
 of 2^20 (its table follows the `limit` argument), and composite and premultiply
 none. `tests/unit/test_save_memory.cpp` measures them and checks that each one,
 given an allocator that allows exactly that peak, succeeds, and given one byte
-less fails without leaking.
+less fails without leaking; `tests/unit/test_ops_limits.cpp` checks the same
+through the limits the operations and the constructors take, at every cap from
+one byte to the peak.
 
 What the scope cannot see: the compression library keeps its own
 deflate and inflate state (windows and hash tables, fixed by the algorithm and

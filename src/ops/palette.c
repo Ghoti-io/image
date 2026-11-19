@@ -57,6 +57,7 @@
 #include <string.h>
 
 #include "../core/alloc_internal.h"
+#include "../core/limits_guard_internal.h"
 #include "../core/safe_math_internal.h"
 
 // ---------------------------------------------------------------------------
@@ -584,7 +585,7 @@ static uint16_t pal_max_colors(const GIMG_Quantize_Options * options) {
   return want;
 }
 
-GIMG_Result gimg_ops_count_colors(const GIMG_Raster * src, size_t limit,
+static GIMG_Result pal_count_colors(const GIMG_Raster * src, size_t limit,
     size_t * out_count, bool * out_exact) {
   if (!src || !out_count) {
     return GIMG_ERR_INTERNAL;
@@ -610,7 +611,22 @@ GIMG_Result gimg_ops_count_colors(const GIMG_Raster * src, size_t limit,
   return GIMG_OK;
 }
 
-GIMG_Result gimg_ops_palette_from_raster(
+GIMG_Result gimg_ops_count_colors_with_limits(const GIMG_Raster * src,
+    size_t limit, size_t * out_count, bool * out_exact,
+    const GIMG_Limits * limits) {
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  const GIMG_Result r = pal_count_colors(src, limit, out_count, out_exact);
+  return gimg_limits_guard_close(&guard, r, NULL);
+}
+
+GIMG_Result gimg_ops_count_colors(const GIMG_Raster * src, size_t limit,
+    size_t * out_count, bool * out_exact) {
+  return gimg_ops_count_colors_with_limits(
+      src, limit, out_count, out_exact, NULL);
+}
+
+static GIMG_Result pal_from_raster(
     const GIMG_Raster * src, uint16_t max_colors, GIMG_Palette * out_palette) {
   if (!src || !out_palette) {
     return GIMG_ERR_INTERNAL;
@@ -648,9 +664,23 @@ GIMG_Result gimg_ops_palette_from_raster(
   return GIMG_OK;
 }
 
-GIMG_Result gimg_ops_palette_build(const GIMG_Raster * const * src,
-    size_t count, const GIMG_Quantize_Options * options,
-    GIMG_Palette * out_palette) {
+GIMG_Result gimg_ops_palette_from_raster_with_limits(const GIMG_Raster * src,
+    uint16_t max_colors, GIMG_Palette * out_palette,
+    const GIMG_Limits * limits) {
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  const GIMG_Result r = pal_from_raster(src, max_colors, out_palette);
+  return gimg_limits_guard_close(&guard, r, NULL);
+}
+
+GIMG_Result gimg_ops_palette_from_raster(
+    const GIMG_Raster * src, uint16_t max_colors, GIMG_Palette * out_palette) {
+  return gimg_ops_palette_from_raster_with_limits(
+      src, max_colors, out_palette, NULL);
+}
+
+static GIMG_Result pal_build(const GIMG_Raster * const * src, size_t count,
+    const GIMG_Quantize_Options * options, GIMG_Palette * out_palette) {
   if (!src || count == 0u || !out_palette) {
     return GIMG_ERR_INTERNAL;
   }
@@ -892,7 +922,16 @@ static GIMG_Result pal_apply_dither(const GIMG_Raster * src, uint8_t channels,
   return GIMG_OK;
 }
 
-GIMG_Result gimg_ops_palette_apply(const GIMG_Raster * src,
+GIMG_Result gimg_ops_palette_build(const GIMG_Raster * const * src,
+    size_t count, const GIMG_Quantize_Options * options,
+    GIMG_Palette * out_palette) {
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, options ? options->limits : NULL);
+  const GIMG_Result r = pal_build(src, count, options, out_palette);
+  return gimg_limits_guard_close(&guard, r, NULL);
+}
+
+static GIMG_Result pal_apply(const GIMG_Raster * src,
     const GIMG_Palette * palette, GIMG_Dither dither,
     GIMG_Raster ** out_raster) {
   if (!src || !palette || !out_raster) {
@@ -931,6 +970,32 @@ GIMG_Result gimg_ops_palette_apply(const GIMG_Raster * src,
   return GIMG_OK;
 }
 
+GIMG_Result gimg_ops_palette_apply_with_limits(const GIMG_Raster * src,
+    const GIMG_Palette * palette, GIMG_Dither dither,
+    GIMG_Raster ** out_raster, const GIMG_Limits * limits) {
+  if (!src || !palette || !out_raster) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  GIMG_Result r = GIMG_ERR_LIMIT;
+  if (gimg_limits_guard_pixels_ok(
+          &guard, gimg_raster_width(src), gimg_raster_height(src))) {
+    r = pal_apply(src, palette, dither, out_raster);
+  }
+  else {
+    *out_raster = NULL;
+  }
+  return gimg_limits_guard_close(&guard, r, out_raster);
+}
+
+GIMG_Result gimg_ops_palette_apply(const GIMG_Raster * src,
+    const GIMG_Palette * palette, GIMG_Dither dither,
+    GIMG_Raster ** out_raster) {
+  return gimg_ops_palette_apply_with_limits(
+      src, palette, dither, out_raster, NULL);
+}
+
 GIMG_Result gimg_ops_quantize(const GIMG_Raster * src,
     const GIMG_Quantize_Options * options, GIMG_Raster ** out_raster,
     GIMG_Palette * out_palette) {
@@ -938,18 +1003,25 @@ GIMG_Result gimg_ops_quantize(const GIMG_Raster * src,
     return GIMG_ERR_INTERNAL;
   }
   *out_raster = NULL;
+  // One scope for the build and the apply together: they are one call, and
+  // the histogram is released before the second step takes its working set,
+  // which is what the sum should see.
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, options ? options->limits : NULL);
   GIMG_Palette palette;
-  GIMG_Result r = gimg_ops_palette_build(&src, 1u, options, &palette);
-  if (r != GIMG_OK) {
-    return r;
+  memset(&palette, 0, sizeof(palette));
+  GIMG_Result r = GIMG_ERR_LIMIT;
+  if (gimg_limits_guard_pixels_ok(
+          &guard, gimg_raster_width(src), gimg_raster_height(src))) {
+    r = pal_build(&src, 1u, options, &palette);
+    if (r == GIMG_OK) {
+      r = pal_apply(src, &palette,
+          options ? options->dither : GIMG_DITHER_NONE, out_raster);
+    }
   }
-  r = gimg_ops_palette_apply(src, &palette,
-      options ? options->dither : GIMG_DITHER_NONE, out_raster);
-  if (r != GIMG_OK) {
-    return r;
-  }
-  if (out_palette) {
+  r = gimg_limits_guard_close(&guard, r, out_raster);
+  if (r == GIMG_OK && out_palette) {
     *out_palette = palette;
   }
-  return GIMG_OK;
+  return r;
 }

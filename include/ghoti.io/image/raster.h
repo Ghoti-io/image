@@ -31,6 +31,7 @@
 #include <ghoti.io/color/color.h>
 #include <ghoti.io/image/core.h>
 #include <ghoti.io/image/macros.h>
+#include <ghoti.io/image/stream.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -246,10 +247,11 @@ typedef enum {
  * @brief Create a raster image (uses default allocator).
  *
  * The caller chooses the dimensions and the allocation is the caller's own:
- * it is not held to GIMG_Limits (there are none to pass), and a width and
- * height whose pixel buffer does not fit in a size_t fail with
- * GIMG_ERR_LIMIT. A raster made by a load, a decode or a save is counted
- * against that call's max_memory while the call runs.
+ * it is not held to GIMG_Limits, and a width and height whose pixel buffer
+ * does not fit in a size_t fail with GIMG_ERR_LIMIT. A caller who wants the
+ * size bounded calls gimg_raster_create_with_limits(). A raster made by a
+ * load, a decode or a save is counted against that call's max_memory while
+ * the call runs.
  *
  * @return GIMG_ERR_UNSUPPORTED for a format with no whole-byte pixel, or a
  *   GIMG_CHANNEL_FLOAT format with any channel not 32 bits wide.
@@ -268,6 +270,42 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
     const GIMG_Allocator * allocator, uint32_t width, uint32_t height,
     const GIMG_Pixel_Format * format, GIMG_Raster_Ownership ownership,
     void * buffer, size_t stride_bytes, GIMG_Raster ** out_raster);
+
+/**
+ * @brief As gimg_raster_create(), held to @p limits.
+ *
+ * - max_decoded_pixels: a raster of more pixels than this (width times
+ *   height, 0 = ::GIMG_DEFAULT_MAX_DECODED_PIXELS) is refused with
+ *   GIMG_ERR_LIMIT, before anything is allocated. It bounds the size the
+ *   raster says it has, so it applies to a borrowed buffer too.
+ * - max_memory: the most the call may hold live in the blocks it takes (0 =
+ *   ::GIMG_DEFAULT_MAX_MEMORY): the raster's own record and, when the library
+ *   allocates the pixels (OWNED with a NULL @a buffer), the pixel buffer. A
+ *   request that would pass it is GIMG_ERR_LIMIT. The cap is on this call: a
+ *   raster that is returned is the caller's, and is not counted afterwards.
+ *
+ * ::GIMG_LIMIT_NONE lifts either; the other three fields concern files and are
+ * not read. Called inside a load, a decode or a save the limits tighten that
+ * call's cap and never loosen it. @a out_raster is set to NULL on every
+ * failure, and a refusal leaves nothing allocated. Argument errors keep their
+ * own codes and are reported ahead of the limits.
+ *
+ * @param limits NULL for none, which is gimg_raster_create().
+ */
+GIMG_API GIMG_Result gimg_raster_create_with_limits(const GIMG_Limits * limits,
+    uint32_t width, uint32_t height, const GIMG_Pixel_Format * format,
+    GIMG_Raster_Ownership ownership, void * buffer, size_t stride_bytes,
+    GIMG_Raster ** out_raster);
+
+/**
+ * @brief As gimg_raster_create_with_limits(), with a specific allocator (NULL
+ * = default; see gimg_raster_create_with_allocator()).
+ */
+GIMG_API GIMG_Result gimg_raster_create_with_allocator_and_limits(
+    const GIMG_Allocator * allocator, const GIMG_Limits * limits,
+    uint32_t width, uint32_t height, const GIMG_Pixel_Format * format,
+    GIMG_Raster_Ownership ownership, void * buffer, size_t stride_bytes,
+    GIMG_Raster ** out_raster);
 
 /**
  * @brief Destroy a raster and, if owned, its buffer.
@@ -346,6 +384,24 @@ GIMG_API GIMG_Result gimg_raster_copy(const GIMG_Raster * src,
 GIMG_API GIMG_Result gimg_raster_copy_with_allocator(
     const GIMG_Allocator * allocator, const GIMG_Raster * src,
     GIMG_Raster ** out_raster);
+
+/**
+ * @brief As gimg_raster_copy(), held to @p limits: a source of more than
+ * max_decoded_pixels pixels, or a copy (the raster record, the pixels and a
+ * copied ICC profile) that would take the call past max_memory, is
+ * GIMG_ERR_LIMIT with @a out_raster NULL. See gimg_raster_create_with_limits().
+ * @param limits NULL for none, which is gimg_raster_copy().
+ */
+GIMG_API GIMG_Result gimg_raster_copy_with_limits(const GIMG_Limits * limits,
+    const GIMG_Raster * src, GIMG_Raster ** out_raster);
+
+/**
+ * @brief As gimg_raster_copy_with_limits(), with a specific allocator (NULL =
+ * default).
+ */
+GIMG_API GIMG_Result gimg_raster_copy_with_allocator_and_limits(
+    const GIMG_Allocator * allocator, const GIMG_Limits * limits,
+    const GIMG_Raster * src, GIMG_Raster ** out_raster);
 
 #ifdef __cplusplus
 }

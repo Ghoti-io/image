@@ -37,10 +37,10 @@
  *  - a refusal leaves the destination stream with no byte written; and
  *  - nothing is left allocated after a refusal.
  *
- * The operations have no way to state a limit (see api-options.md), so they
- * are measured and checked against an allocator that refuses: the peak is the
- * working set, an allocator that allows exactly that peak lets the call
- * succeed, one that allows a byte less makes it fail cleanly.
+ * The operations are measured and checked against an allocator that refuses:
+ * the peak is the working set, an allocator that allows exactly that peak lets
+ * the call succeed, one that allows a byte less makes it fail cleanly. The
+ * limits the operations take themselves are test_ops_limits.cpp.
  */
 
 #include <cstdint>

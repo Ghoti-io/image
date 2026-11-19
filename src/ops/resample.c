@@ -61,6 +61,7 @@
 #include <string.h>
 
 #include "../core/alloc_internal.h"
+#include "../core/limits_guard_internal.h"
 #include "../core/safe_math_internal.h"
 #include "../raster/raster_internal.h"
 #include "ops_internal.h"
@@ -741,9 +742,9 @@ static GIMG_Resample_Filter gimg_resample_resolve(GIMG_Resample_Filter f) {
   return (f == GIMG_FILTER_AUTO) ? GIMG_FILTER_CATMULL_ROM : f;
 }
 
-GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
-    uint32_t dst_width, uint32_t dst_height,
-    const GIMG_Resize_Options * options, GIMG_Raster ** out_raster) {
+static GIMG_Result ops_resize(const GIMG_Raster * src, uint32_t dst_width,
+    uint32_t dst_height, const GIMG_Resize_Options * options,
+    GIMG_Raster ** out_raster) {
   if (!src || !out_raster) {
     return GIMG_ERR_INTERNAL;
   }
@@ -894,4 +895,22 @@ GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
     return r;
   }
   return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_ops_resize(const GIMG_Raster * src,
+    uint32_t dst_width, uint32_t dst_height,
+    const GIMG_Resize_Options * options, GIMG_Raster ** out_raster) {
+  if (!src || !out_raster) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, options ? options->limits : NULL);
+  GIMG_Result r = GIMG_ERR_LIMIT;
+  if (gimg_limits_guard_pixels_ok(&guard, dst_width, dst_height)) {
+    r = ops_resize(src, dst_width, dst_height, options, out_raster);
+  }
+  else {
+    *out_raster = NULL;
+  }
+  return gimg_limits_guard_close(&guard, r, out_raster);
 }

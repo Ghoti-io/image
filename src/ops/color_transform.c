@@ -36,6 +36,7 @@
 #include <string.h>
 
 #include "../core/alloc_internal.h"
+#include "../core/limits_guard_internal.h"
 #include "../raster/raster_internal.h"
 #include "ops_internal.h"
 
@@ -345,7 +346,7 @@ static void gimg_xf_write(
   memcpy(row + i * 2u, &w, sizeof w);
 }
 
-GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
+static GIMG_Result ops_transform_color(const GIMG_Raster * src,
     const GIMG_Color_Transform_Options * options, GIMG_Raster ** out_raster) {
   if (out_raster) {
     *out_raster = NULL;
@@ -605,4 +606,22 @@ GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
 
   *out_raster = out;
   return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_ops_transform_color(const GIMG_Raster * src,
+    const GIMG_Color_Transform_Options * options, GIMG_Raster ** out_raster) {
+  if (out_raster) {
+    *out_raster = NULL;
+  }
+  if (!src || !options || !out_raster) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, options->limits);
+  GIMG_Result r = GIMG_ERR_LIMIT;
+  if (gimg_limits_guard_pixels_ok(
+          &guard, gimg_raster_width(src), gimg_raster_height(src))) {
+    r = ops_transform_color(src, options, out_raster);
+  }
+  return gimg_limits_guard_close(&guard, r, out_raster);
 }

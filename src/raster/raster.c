@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "../core/alloc_internal.h"
+#include "../core/limits_guard_internal.h"
 #include "../core/safe_math_internal.h"
 #include "raster_internal.h"
 
@@ -262,8 +263,12 @@ GIMG_API GIMG_Result gimg_raster_create(uint32_t width, uint32_t height,
       NULL, width, height, format, ownership, buffer, stride_bytes, out_raster);
 }
 
-GIMG_API GIMG_Result gimg_raster_create_with_allocator(
-    const GIMG_Allocator * allocator, uint32_t width, uint32_t height,
+// The constructor proper.  @p guard is the limits the caller gave, or NULL
+// for none; the memory cap is the scope the guard has already opened, so the
+// only thing it is asked here is whether the size is within the pixel cap,
+// once the arguments are known to describe a raster at all.
+static GIMG_Result raster_create(const GIMG_Allocator * allocator,
+    const gimg_limits_guard_t * guard, uint32_t width, uint32_t height,
     const GIMG_Pixel_Format * format, GIMG_Raster_Ownership ownership,
     void * buffer, size_t stride_bytes, GIMG_Raster ** out_raster) {
   if (!format || !out_raster || width == 0 || height == 0) {
@@ -397,6 +402,10 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
     }
   }
 
+  if (guard && !gimg_limits_guard_pixels_ok(guard, width, height)) {
+    return GIMG_ERR_LIMIT;
+  }
+
   allocator = gimg_alloc_or_default(allocator);
   GIMG_Raster * r = (GIMG_Raster *)gimg_malloc(allocator, sizeof(GIMG_Raster));
   if (!r) {
@@ -432,6 +441,37 @@ GIMG_API GIMG_Result gimg_raster_create_with_allocator(
 
   *out_raster = r;
   return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_raster_create_with_allocator(
+    const GIMG_Allocator * allocator, uint32_t width, uint32_t height,
+    const GIMG_Pixel_Format * format, GIMG_Raster_Ownership ownership,
+    void * buffer, size_t stride_bytes, GIMG_Raster ** out_raster) {
+  return raster_create(allocator, NULL, width, height, format, ownership,
+      buffer, stride_bytes, out_raster);
+}
+
+GIMG_API GIMG_Result gimg_raster_create_with_allocator_and_limits(
+    const GIMG_Allocator * allocator, const GIMG_Limits * limits,
+    uint32_t width, uint32_t height, const GIMG_Pixel_Format * format,
+    GIMG_Raster_Ownership ownership, void * buffer, size_t stride_bytes,
+    GIMG_Raster ** out_raster) {
+  if (out_raster) {
+    *out_raster = NULL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  GIMG_Result r = raster_create(allocator, guard.active ? &guard : NULL, width,
+      height, format, ownership, buffer, stride_bytes, out_raster);
+  return gimg_limits_guard_close(&guard, r, out_raster);
+}
+
+GIMG_API GIMG_Result gimg_raster_create_with_limits(const GIMG_Limits * limits,
+    uint32_t width, uint32_t height, const GIMG_Pixel_Format * format,
+    GIMG_Raster_Ownership ownership, void * buffer, size_t stride_bytes,
+    GIMG_Raster ** out_raster) {
+  return gimg_raster_create_with_allocator_and_limits(NULL, limits, width,
+      height, format, ownership, buffer, stride_bytes, out_raster);
 }
 
 GIMG_API void gimg_raster_destroy(GIMG_Raster * raster) {
@@ -549,9 +589,8 @@ GIMG_API GIMG_Result gimg_raster_copy(const GIMG_Raster * src,
 // is respected and destination gets library stride. Color info (including ICC
 // if present) is deep-copied. Planar formats return GIMG_ERR_UNSUPPORTED
 // (bpp == 0). Caller owns the returned raster.
-GIMG_API GIMG_Result gimg_raster_copy_with_allocator(
-    const GIMG_Allocator * allocator, const GIMG_Raster * src,
-    GIMG_Raster ** out_raster) {
+static GIMG_Result raster_copy(const GIMG_Allocator * allocator,
+    const GIMG_Raster * src, GIMG_Raster ** out_raster) {
   if (!src || !out_raster) {
     return GIMG_ERR_INTERNAL;
   }
@@ -589,4 +628,33 @@ GIMG_API GIMG_Result gimg_raster_copy_with_allocator(
     }
   }
   return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_raster_copy_with_allocator(
+    const GIMG_Allocator * allocator, const GIMG_Raster * src,
+    GIMG_Raster ** out_raster) {
+  return raster_copy(allocator, src, out_raster);
+}
+
+GIMG_API GIMG_Result gimg_raster_copy_with_allocator_and_limits(
+    const GIMG_Allocator * allocator, const GIMG_Limits * limits,
+    const GIMG_Raster * src, GIMG_Raster ** out_raster) {
+  if (!src || !out_raster) {
+    return GIMG_ERR_INTERNAL;
+  }
+  *out_raster = NULL;
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  GIMG_Result r = GIMG_ERR_LIMIT;
+  if (gimg_limits_guard_pixels_ok(
+          &guard, gimg_raster_width(src), gimg_raster_height(src))) {
+    r = raster_copy(allocator, src, out_raster);
+  }
+  return gimg_limits_guard_close(&guard, r, out_raster);
+}
+
+GIMG_API GIMG_Result gimg_raster_copy_with_limits(const GIMG_Limits * limits,
+    const GIMG_Raster * src, GIMG_Raster ** out_raster) {
+  return gimg_raster_copy_with_allocator_and_limits(
+      NULL, limits, src, out_raster);
 }

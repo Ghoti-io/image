@@ -43,12 +43,13 @@
 #include <ghoti.io/image/raster.h>
 #include <string.h>
 
+#include "../core/limits_guard_internal.h"
 #include "../core/safe_math_internal.h"
 #include "../raster/raster_internal.h"
 #include "ops_internal.h"
 
-GIMG_API GIMG_Result gimg_ops_crop(const GIMG_Raster * src, uint32_t x,
-    uint32_t y, uint32_t width, uint32_t height, GIMG_Raster ** out_raster) {
+static GIMG_Result ops_crop(const GIMG_Raster * src, uint32_t x, uint32_t y,
+    uint32_t width, uint32_t height, GIMG_Raster ** out_raster) {
   if (!src || !out_raster) {
     return GIMG_ERR_INTERNAL;
   }
@@ -114,6 +115,29 @@ GIMG_API GIMG_Result gimg_ops_crop(const GIMG_Raster * src, uint32_t x,
     return r;
   }
   return GIMG_OK;
+}
+
+GIMG_API GIMG_Result gimg_ops_crop_with_limits(const GIMG_Raster * src,
+    uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+    GIMG_Raster ** out_raster, const GIMG_Limits * limits) {
+  if (!src || !out_raster) {
+    return GIMG_ERR_INTERNAL;
+  }
+  gimg_limits_guard_t guard;
+  gimg_limits_guard_open(&guard, limits);
+  GIMG_Result r = GIMG_ERR_LIMIT;
+  if (gimg_limits_guard_pixels_ok(&guard, width, height)) {
+    r = ops_crop(src, x, y, width, height, out_raster);
+  }
+  else {
+    *out_raster = NULL;
+  }
+  return gimg_limits_guard_close(&guard, r, out_raster);
+}
+
+GIMG_API GIMG_Result gimg_ops_crop(const GIMG_Raster * src, uint32_t x,
+    uint32_t y, uint32_t width, uint32_t height, GIMG_Raster ** out_raster) {
+  return gimg_ops_crop_with_limits(src, x, y, width, height, out_raster, NULL);
 }
 
 /**
@@ -319,6 +343,36 @@ GIMG_API GIMG_Result gimg_ops_composite(GIMG_Raster * dst,
 // own loop. They forward rather than reimplement: two copies of one index
 // remap are two things to keep in step.
 //
+
+GIMG_API GIMG_Result gimg_ops_flip_horizontal_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits) {
+  return gimg_ops_apply_orientation_with_limits(
+      raster, GIMG_ORIENTATION_FLIP_H, limits);
+}
+
+GIMG_API GIMG_Result gimg_ops_flip_vertical_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits) {
+  return gimg_ops_apply_orientation_with_limits(
+      raster, GIMG_ORIENTATION_FLIP_V, limits);
+}
+
+GIMG_API GIMG_Result gimg_ops_rotate_90_cw_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits) {
+  return gimg_ops_apply_orientation_with_limits(
+      raster, GIMG_ORIENTATION_ROTATE_90_CW, limits);
+}
+
+GIMG_API GIMG_Result gimg_ops_rotate_90_ccw_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits) {
+  return gimg_ops_apply_orientation_with_limits(
+      raster, GIMG_ORIENTATION_ROTATE_90_CCW, limits);
+}
+
+GIMG_API GIMG_Result gimg_ops_rotate_180_with_limits(
+    GIMG_Raster * raster, const GIMG_Limits * limits) {
+  return gimg_ops_apply_orientation_with_limits(
+      raster, GIMG_ORIENTATION_ROTATE_180, limits);
+}
 
 GIMG_API GIMG_Result gimg_ops_flip_horizontal(GIMG_Raster * raster) {
   return gimg_ops_apply_orientation(raster, GIMG_ORIENTATION_FLIP_H);
