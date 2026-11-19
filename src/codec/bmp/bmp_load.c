@@ -543,6 +543,8 @@ static GIMG_Result bmp_read_dib_header(GIMG_Stream * stream,
     out->profile_size = bmp_read_u32(body + 112);
   }
 
+  out->clr_used = clr_used;
+
   // Palette entry count.  biClrUsed of 0 means "the maximum for this depth".
   // An embedded stream has no palette of the wrapper's own.
   if (out->bit_count <= 8 && !gimg_bmp_is_embedded(out->compression)) {
@@ -1106,6 +1108,25 @@ static GIMG_Result bmp_load_dib_core(GIMG_Codec * codec, GIMG_Stream * stream,
       return GIMG_ERR_LIMIT;
     }
     data_offset = (uint32_t)tell;
+    // The colour table a DIB states with biClrUsed is as long as that field
+    // says, whatever the depth: above 8 bpp it is optional but still present
+    // when stated (it is a hint for palette-based displays), and at or below
+    // it entries past 2^bpp are unreachable but are still in the file.  A BM
+    // file steps over them through bfOffBits; here nothing else can.
+    // BITMAPCOREHEADER has no such field and (like the Windows readers) an
+    // embedded stream's wrapper has no table of its own.
+    if (header.clr_used > header.palette_count &&
+        header.header_size != GIMG_BMP_COREHEADER_SIZE &&
+        !gimg_bmp_is_embedded(header.compression)) {
+      uint64_t skip = (uint64_t)(header.clr_used - header.palette_count) * 4u;
+      if ((uint64_t)data_offset + skip > UINT32_MAX) {
+        gimg_free(alloc, palette);
+        bmp_load_diag(diagnostics, (size_t)data_offset,
+            "colour table longer than the DIB can hold");
+        return GIMG_ERR_CORRUPT;
+      }
+      data_offset += (uint32_t)skip;
+    }
   }
 
   unsigned char * pixels = NULL;

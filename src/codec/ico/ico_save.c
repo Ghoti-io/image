@@ -77,7 +77,8 @@ static void ico_sample(const GIMG_Pixel_Format * f, const uint8_t * row,
 }
 
 static int ico_format_supported(const GIMG_Pixel_Format * fmt) {
-  if (!fmt || fmt->channel_type != GIMG_CHANNEL_UNORM) {
+  if (!fmt || fmt->channel_type != GIMG_CHANNEL_UNORM ||
+      fmt->layout != GIMG_LAYOUT_INTERLEAVED) {
     return 0;
   }
   if (fmt->bits_per_channel[0] != 8u) {

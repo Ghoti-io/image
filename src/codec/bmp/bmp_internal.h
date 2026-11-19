@@ -175,6 +175,7 @@ typedef struct {
   uint32_t x_ppm;         ///< biXPelsPerMeter; 0 means the file did not say.
   uint32_t y_ppm;         ///< biYPelsPerMeter; 0 means the file did not say.
   uint32_t palette_count; ///< Palette entries actually present in the file.
+  uint32_t clr_used;      ///< biClrUsed as stated; 0 for a core header.
   bool has_masks;         ///< True when the channel masks below are in use.
   gimg_bmp_channel_mask_t red;
   gimg_bmp_channel_mask_t green;

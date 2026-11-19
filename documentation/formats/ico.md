@@ -25,6 +25,21 @@ none was set).
 - `ICONDIR` / `ICONDIRENTRY` for both ICO and CUR.
 - DIB payloads at 1, 4, 8, 16, 24 and 32 bpp, `BI_RGB` and `BI_BITFIELDS`, via
   `gimg_bmp_load_dib` with a height override so only the XOR bitmap is read.
+  The BMP reader's wider set is also accepted, because nothing here narrows
+  it: 2 bpp, 64 bpp `BI_RGB`, V4 and V5 headers, and the OS/2 2.x header sizes
+  (44, 48, 60, 64) with compression 0. Writers do not produce those for icons;
+  they are tolerated, not part of the format.
+- The colour table. It is as long as `biClrUsed` says (2^bpp when that is 0 at
+  8 bpp or below) and the pixels follow it. Above 8 bpp the table is optional
+  but is skipped when stated, and entries beyond 2^bpp at 8 bpp or below are
+  unreachable but also skipped, so the pixels are found where the writer put
+  them. A table longer than the entry is `GIMG_ERR_CORRUPT`.
+- Height. `biHeight` is twice the image height (XOR plus AND), and is halved.
+  When the directory names a width and height equal to `biWidth` and
+  `biHeight` themselves, the writer
+  stored the real height; the bitmap is then the whole image (a mask that
+  follows is still read). Otherwise an even `biHeight` is halved whatever the
+  directory says, as Windows does, and a disagreement is a warning.
 - The 1-bit AND mask, applied as alpha. For 32-bpp XOR bitmaps whose alpha
   channel is identically zero, the AND mask is used instead (§5.3 of the
   implementation plan). Exact zero only — no threshold.
@@ -55,21 +70,22 @@ none was set).
 
 | Value | Behaviour |
 |-------|-----------|
-| `GIMG_ICO_PAYLOAD_AUTO` (0, default) | PNG when either dimension is greater than 128 or the source has non-trivial alpha; otherwise DIB |
-| `GIMG_ICO_PAYLOAD_DIB` | every entry as a 32-bpp DIB with AND mask |
+| `GIMG_ICO_PAYLOAD_AUTO` (0, default) | PNG when either dimension is greater than 128 or the source has non-trivial alpha; otherwise DIB. A 12- or 16-bit unsigned gray, RGB or RGBA raster is narrowed to 8 bits first, so the alpha test and the DIB see what is written; no other conversion is made |
+| `GIMG_ICO_PAYLOAD_DIB` | every entry as a 32-bpp DIB with AND mask; a raster that is not 8-bit interleaved gray, RGB or RGBA (planar, float, CMYK) is `GIMG_ERR_UNSUPPORTED` |
 | `GIMG_ICO_PAYLOAD_PNG` | every entry as a PNG |
 
 A single `GIMG_ITEM_IMAGE` becomes a one-entry icon. `IMAGE` plus
 `ALTERNATE`s (or all `ALTERNATE`s) become one entry each. Any
 `GIMG_ITEM_FRAME` returns `GIMG_ERR_UNSUPPORTED`. A non-zero hotspot on any
-item writes `type = 2` (CUR).
+item writes `type = 2` (CUR), and so does a document loaded from a CUR file
+whose hotspots are all (0, 0).
 
 ## Compliance checklist
 
 | Area | Supported | Rejected / limitation |
 |------|-----------|------------------------|
 | ICO and CUR directory | yes | count outside `1..GIMG_ICO_MAX_ENTRIES`, or an entry past EOF → `GIMG_ERR_CORRUPT` |
-| DIB payloads | 1–32 bpp `BI_RGB` / `BI_BITFIELDS` | `BI_RLE4` / `BI_RLE8`, OS/2 Huffman 1D / RLE24, and embedded `BI_JPEG` / `BI_PNG` → `GIMG_ERR_UNSUPPORTED` |
+| DIB payloads | 1–32 bpp `BI_RGB` / `BI_BITFIELDS` (2 and 64 bpp, V4/V5 and OS/2 2.x header sizes are also read, see above) | `BI_RLE4` / `BI_RLE8`, OS/2 Huffman 1D / RLE24, and embedded `BI_JPEG` / `BI_PNG` → `GIMG_ERR_UNSUPPORTED` |
 | PNG payloads | via nested PNG codec | whatever PNG refuses; nested load and DIB load honour the caller's `max_decoded_pixels` |
 | AND mask / alpha | yes, with zero-alpha fallback; top-down DIBs | a short mask on an entry that needs it → `GIMG_ERR_CORRUPT` |
 | Hotspot | per-item API | — |
@@ -111,6 +127,9 @@ item writes `type = 2` (CUR).
 - Encoder output vs the same three readers (`verify_ico_output.py`), with
   files published by the encode tests into `tests/out/ico/`.
 - Round-trip save/load of DIB payloads in `test_ico.cpp`.
+- Colour tables above 8 bpp, an undoubled `biHeight`, and the writer's refusal of
+  rasters a DIB cannot hold, from hand-built entries in
+  `tests/codec/test_ico_shape_and_writer.cpp`.
 - Fuzz: `fuzz_ico_load`, `fuzz_ico_encode` with seeds under
   `tests/fuzz/corpus/ico_{load,encode}/`.
 

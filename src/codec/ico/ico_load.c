@@ -174,11 +174,14 @@ GIMG_Result gimg_ico_load(GIMG_Codec * codec, GIMG_Stream * stream,
       // Absolute value in unsigned arithmetic: signed negation of INT_MIN is
       // undefined, and a fuzzer reached that bit pattern in under a minute.
       uint32_t bi_h = (bi_h_raw & 0x80000000u) ? (0u - bi_h_raw) : bi_h_raw;
-      if ((bi_h % 2u) == 0u) {
-        bi_h /= 2u;
-      }
       uint32_t dir_w = gimg_ico_dir_dim(ent->dir_width);
       uint32_t dir_h = gimg_ico_dir_dim(ent->dir_height);
+      // Doubled height unless the directory names the stored height itself
+      // (see ico_decode_dib, which makes the same choice).
+      if ((bi_h % 2u) == 0u &&
+          !(bi_h != 0u && dir_h == bi_h && dir_w == bi_w)) {
+        bi_h /= 2u;
+      }
       if (bi_w != dir_w || bi_h != dir_h) {
         ico_load_diag(diagnostics,
             (size_t)ent->offset, GIMG_DIAG_WARNING,

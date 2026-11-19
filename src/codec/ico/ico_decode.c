@@ -106,6 +106,13 @@ static GIMG_Result ico_decode_dib(const gimg_ico_entry_t * entry,
   else if (dir_h != 0u && dir_h * 2u == abs_height) {
     real_height = dir_h;
   }
+  else if (dir_h != 0u && dir_h == abs_height &&
+      gimg_ico_dir_dim(entry->dir_width) == ico_u32(bytes + 4)) {
+    // A writer that stored the real height instead of twice it.  The
+    // directory names the same width and height, so the bitmap is the whole picture
+    // and halving it would drop the lower half without a word.
+    real_height = abs_height;
+  }
 
   uint32_t compression = ico_u32(bytes + 16);
   // BI_RLE8=1, BI_RLE4=2 — refused for icon payloads.
